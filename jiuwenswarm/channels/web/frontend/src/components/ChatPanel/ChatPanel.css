@@ -67,6 +67,21 @@
   white-space: nowrap;
 }
 
+.chat-panel-header__usage {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
 .chat-panel-header__actions {
   display: flex;
   align-items: center;

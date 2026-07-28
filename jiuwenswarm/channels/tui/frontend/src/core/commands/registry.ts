@@ -25,6 +25,7 @@ import { createHarmonyOSProjectInitCommand } from "./builtins/harmonyos-project-
 import { createHooksCommand } from "./builtins/hooks.js";
 import { createKeybindingsCommand } from "./builtins/keybindings.js";
 import { createInitCommand } from "./builtins/init.js";
+import { createLimitCommand } from "./builtins/limit.js";
 import { createModelCommand } from "./builtins/model.js";
 import { createMcpCommand } from "./builtins/mcp.js";
 import { createMemoryCommand } from "./builtins/memory.js";
@@ -88,6 +89,7 @@ export function createBuiltinCommands(options: BuiltinCommandsOptions = {}): Sla
     createBtwCommand(),
     createClearCommand(),
     createInitCommand(),
+    createLimitCommand(),
     createColorCommand(),
     createCompactCommand(),
     createConfigCommand(),

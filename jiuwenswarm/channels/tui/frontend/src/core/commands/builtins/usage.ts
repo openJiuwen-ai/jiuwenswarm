@@ -4,12 +4,19 @@ import { CommandKind, type SlashCommand } from "../types.js";
 function showUsage(ctx: import("../types.js").CommandContext): void {
   const summary = ctx.getUsageSummary();
   const fmt = (n: number) => n.toLocaleString("en-US");
+  const fmtCost = (n: number) => `$${n.toFixed(4)}`;
 
   const items = [
     { label: "input_tokens", value: fmt(summary.total_input_tokens) },
     { label: "output_tokens", value: fmt(summary.total_output_tokens) },
     { label: "total_tokens", value: fmt(summary.total_tokens) },
   ];
+  if (summary.cost_available && typeof summary.total_cost === "number") {
+    items.push({ label: "total_cost", value: fmtCost(summary.total_cost) });
+    if (summary.cost_limit != null) {
+      items.push({ label: "cost_limit", value: fmtCost(summary.cost_limit) });
+    }
+  }
 
   if (summary.byModel.length > 0) {
     for (const entry of summary.byModel) {
@@ -18,6 +25,9 @@ function showUsage(ctx: import("../types.js").CommandContext): void {
         { label: `  input`, value: fmt(entry.input_tokens) },
         { label: `  output`, value: fmt(entry.output_tokens) },
       );
+      if (typeof entry.total_cost === "number") {
+        items.push({ label: `  cost`, value: fmtCost(entry.total_cost) });
+      }
     }
   }
 
@@ -33,7 +43,7 @@ function showUsage(ctx: import("../types.js").CommandContext): void {
 export function createUsageCommand(): SlashCommand {
   return {
     name: "usage",
-    description: "Show session token usage (input / output / total)",
+    description: "Show session token and cost usage when available",
     usage: "/usage",
     example: "/usage",
     kind: CommandKind.BUILT_IN,

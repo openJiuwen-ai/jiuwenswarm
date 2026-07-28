@@ -69,8 +69,12 @@ def apply_task_tool_debug_patch() -> None:
         from jiuwenswarm.server.runtime.debug_trace.context import (
             get_debug_trace_logger_for_session,
         )
+        from jiuwenswarm.server.runtime.usage_cost import (
+            CostLimitExceededError,
+            get_subagent_usage_sink,
+        )
 
-        # Not capturing -> pristine original SDK path, unchanged.
+        # Not capturing and no parent usage sink -> pristine original SDK path, unchanged.
         dbg = get_debug_trace_logger()
         if dbg is None:
             # TaskTool.invoke runs in the DeepAgent's supervisor task (created at
@@ -85,7 +89,7 @@ def apply_task_tool_debug_patch() -> None:
                         "[TaskTool] (debug) recovered trace logger via session "
                         "registry: %s", parent_session.get_session_id(),
                     )
-        if dbg is None or not dbg.captures_subagent_flow():
+        if (dbg is None or not dbg.captures_subagent_flow()) and get_subagent_usage_sink() is None:
             return await _orig_invoke(self, inputs, **kwargs)
 
         parent_session = kwargs.get("session", None)
@@ -142,6 +146,8 @@ def apply_task_tool_debug_patch() -> None:
                 data={"output": output, "agent_id": subagent.card.id},
                 error=None,
             )
+        except CostLimitExceededError:
+            raise
         except Exception as exc:
             logger.error(
                 "[TaskTool] Subagent: %s execution failed, error=%s",

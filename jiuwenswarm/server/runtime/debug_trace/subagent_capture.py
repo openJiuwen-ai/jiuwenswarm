@@ -59,6 +59,7 @@ async def invoke_subagent_with_trace(
         get_debug_trace_logger,
         get_debug_trace_logger_for_session,
     )
+    from jiuwenswarm.server.runtime.usage_cost import get_subagent_usage_sink
 
     dbg = get_debug_trace_logger()
     if dbg is None:
@@ -68,13 +69,16 @@ async def invoke_subagent_with_trace(
         sid = session.get_session_id() if hasattr(session, "get_session_id") else None
         if sid:
             dbg = get_debug_trace_logger_for_session(sid)
-    if dbg is None or not dbg.captures_subagent_flow():
-        # No debug run, or capture disabled — original path, unchanged.
+    usage_sink = get_subagent_usage_sink()
+    captures_debug = dbg is not None and dbg.captures_subagent_flow()
+    if not captures_debug and usage_sink is None:
+        # No debug run and no parent usage sink — original path, unchanged.
         return await subagent.invoke(inputs, session=session)
 
     output_parts: list[str] = []
     result: dict | None = None
-    dbg.begin_subagent(source=source_label, prompt=inputs.get("query", "") or "")
+    if captures_debug:
+        dbg.begin_subagent(source=source_label, prompt=inputs.get("query", "") or "")
     try:
         # Drain the subagent's stream from an ISOLATED session (session=None ->
         # ReActAgent.stream auto-creates one from inputs.conversation_id). Passing
@@ -85,16 +89,34 @@ async def invoke_subagent_with_trace(
         # The isolated session is drained only by this loop, so tagging is clean
         # and nothing leaks into the parent (TUI) stream.
         async for chunk in subagent.stream(inputs, session=None):
-            dbg.feed_subagent(source=source_label, chunk=chunk)
+            if captures_debug:
+                dbg.feed_subagent(source=source_label, chunk=chunk)
+            if usage_sink is not None:
+                usage_meta = _usage_metadata_from_chunk(chunk)
+                if usage_meta is not None:
+                    usage_sink(usage_meta, source_label)
             reduced = _reduce_stream_chunk(chunk, output_parts)
             if reduced is not None:
                 result = reduced
     finally:
-        dbg.end_subagent(source=source_label)
+        if captures_debug:
+            dbg.end_subagent(source=source_label)
 
     if result is None:
         result = {"output": "".join(output_parts), "result_type": "answer"}
     return result
+
+
+def _usage_metadata_from_chunk(chunk: Any) -> dict | None:
+    chunk_type = getattr(chunk, "type", None)
+    payload = getattr(chunk, "payload", None)
+    if isinstance(chunk, dict):
+        chunk_type = chunk.get("type", chunk_type)
+        payload = chunk.get("payload", payload)
+    if chunk_type != "llm_usage" or not isinstance(payload, dict):
+        return None
+    usage = payload.get("usage_metadata")
+    return usage if isinstance(usage, dict) else None
 
 
 def _reduce_stream_chunk(chunk: Any, output_parts: list[str]) -> dict | None:

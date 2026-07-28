@@ -106,6 +106,8 @@ export interface CommandContext {
   getWorkspaceDir: () => string | undefined;
   setInput?: (text: string) => void;
   getUsageSummary: () => SessionUsageSummary;
+  getSessionCostLimit?: () => number | null;
+  setSessionCostLimit?: (limit: number | null) => void;
   enterConfigEditor?: (
     focusKey?: string,
     configPayload?: Record<string, unknown> & { schema?: ConfigItemSchema[] },

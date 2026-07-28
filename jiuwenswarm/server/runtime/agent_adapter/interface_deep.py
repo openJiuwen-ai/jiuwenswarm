@@ -213,6 +213,7 @@ from jiuwenswarm.server.runtime.session.session_history import append_history_re
 # 时间戳与 live「答完再入列」对齐。按 session 暂存，跨同 session 的并发 stream 共享。
 _pending_goal_objective_history: dict[str, dict[str, Any]] = {}
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.usage_cost import CostLimitExceededError
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EVOLUTION_ACCEPT_LABELS,
     EVOLUTION_EXECUTE_LABELS,
@@ -8081,6 +8082,14 @@ class JiuWenSwarmDeepAdapter:
 
         stripped = query.strip()
 
+        usage_result = self._handle_usage_slash_command(stripped, session_id)
+        if usage_result is not None:
+            return usage_result
+
+        limit_result = self._handle_limit_slash_command(stripped, session_id)
+        if limit_result is not None:
+            return limit_result
+
         slash_result = await handle_evolution_slash_command(
             stripped,
             EvolutionSlashContext(
@@ -8101,6 +8110,147 @@ class JiuWenSwarmDeepAdapter:
             )
 
         return None
+
+    @staticmethod
+    def _format_count_value(value: Any) -> str:
+        try:
+            return f"{int(value):,}"
+        except (TypeError, ValueError):
+            return "0"
+
+    @staticmethod
+    def _format_cost_value(value: Any) -> str:
+        try:
+            return f"${float(value):.4f}"
+        except (TypeError, ValueError):
+            return "$0.0000"
+
+    def _format_usage_summary(self, summary: dict[str, Any]) -> str:
+        lines = [
+            f"Input tokens: {self._format_count_value(summary.get('input_tokens'))}",
+            f"Output tokens: {self._format_count_value(summary.get('output_tokens'))}",
+            f"Total tokens: {self._format_count_value(summary.get('total_tokens'))}",
+        ]
+        if bool(summary.get("cost_available")):
+            lines.append(f"Total cost: {self._format_cost_value(summary.get('total_cost'))}")
+            if summary.get("cost_limit") is not None:
+                lines.append(f"Cost limit: {self._format_cost_value(summary.get('cost_limit'))}")
+        return "\n".join(lines)
+
+    def _handle_usage_slash_command(
+        self,
+        query: str,
+        session_id: str = "default",
+    ) -> dict[str, Any] | None:
+        text = query.strip()
+        if text != "/usage":
+            return None
+
+        from jiuwenswarm.server.runtime.usage_cost import get_session_cost_summary
+
+        summary = get_session_cost_summary(session_id)
+        return {
+            "result_type": "usage_status",
+            "source": "slash_command",
+            "slash_command": "usage",
+            "display_level": "info",
+            "usage": summary,
+            "output": self._format_usage_summary(summary),
+        }
+
+    def _format_limit_summary(self, summary: dict[str, Any]) -> str:
+        limit = summary.get("cost_limit")
+        limit_text = "infinite" if limit is None else self._format_cost_value(limit)
+        lines = [f"Cost limit: {limit_text}"]
+        if bool(summary.get("cost_available")):
+            total = float(summary.get("total_cost", 0.0) or 0.0)
+            lines.append(f"Current cost: {self._format_cost_value(total)}")
+            if limit is not None:
+                remaining = max(0.0, float(limit) - total)
+                lines.append(f"Remaining: {self._format_cost_value(remaining)}")
+        else:
+            lines.append("Current cost: unavailable; provider has not returned cost metadata.")
+            if limit is not None:
+                lines.append("The limit will not be enforced until cost metadata is available.")
+        return "\n".join(lines)
+
+    def _handle_limit_slash_command(
+        self,
+        query: str,
+        session_id: str = "default",
+    ) -> dict[str, Any] | None:
+        text = query.strip()
+        if text != "/limit" and not text.startswith("/limit "):
+            return None
+
+        from jiuwenswarm.server.runtime.usage_cost import (
+            get_session_cost_summary,
+            set_session_cost_limit,
+        )
+
+        args = text[6:].strip().split()
+        result_base = {
+            "source": "slash_command",
+            "slash_command": "limit",
+            "display_level": "info",
+        }
+        if not args:
+            summary = get_session_cost_summary(session_id)
+            return {
+                **result_base,
+                "result_type": "limit_status",
+                "usage": summary,
+                "output": self._format_limit_summary(summary),
+            }
+
+        has_scope = args[0] in {"session", "task"}
+        offset = 1 if has_scope else 0
+        scope = args[0] if has_scope else "session"
+        command = args[offset] if len(args) > offset else ""
+        scope_label = "Current task/session" if scope == "task" else "Session"
+
+        if command == "clear":
+            summary = set_session_cost_limit(session_id, None)
+            return {
+                **result_base,
+                "result_type": "limit_updated",
+                "usage": summary,
+                "output": f"{scope_label} cost limit cleared (infinite).",
+            }
+
+        if command == "cost":
+            raw_value = args[offset + 1] if len(args) > offset + 1 else ""
+            normalized = raw_value.strip().removeprefix("$")
+            try:
+                value = float(normalized)
+            except ValueError:
+                value = -1.0
+            if value < 0:
+                return {
+                    **result_base,
+                    "result_type": "error",
+                    "display_level": "error",
+                    "error": "Usage: /limit [cost <amount>|session cost <amount>|task cost <amount>|clear]",
+                    "output": "Usage: /limit [cost <amount>|session cost <amount>|task cost <amount>|clear]",
+                }
+            summary = set_session_cost_limit(session_id, value)
+            suffix = ""
+            if not bool(summary.get("cost_available")):
+                suffix = " It will not be enforced until provider cost metadata is available."
+            return {
+                **result_base,
+                "result_type": "limit_updated",
+                "usage": summary,
+                "output": f"{scope_label} cost limit set to {self._format_cost_value(value)}.{suffix}",
+            }
+
+        return {
+            **result_base,
+            "result_type": "error",
+            "display_level": "error",
+            "error": "Usage: /limit [cost <amount>|session cost <amount>|task cost <amount>|clear]",
+            "output": "Usage: /limit [cost <amount>|session cost <amount>|task cost <amount>|clear]",
+        }
 
     # Goal capability adapter -------------------------------------------------
 
@@ -9217,12 +9367,71 @@ class JiuWenSwarmDeepAdapter:
             "input_cost": 0.0,
             "output_cost": 0.0,
             "total_cost": 0.0,
+            "cost_available": False,
         }
+        usage_sink_token = None
+        cost_limit_exceeded_summary: dict[str, Any] | None = None
         emitted_ask_user_request_ids: set[str] = set()
         # The run's final answer for the OTel trace output, kept as the streamed
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
         run_answer_deltas: list[str] = []
         run_answer_final = ""
+
+        def _accumulate_usage_metadata(
+            usage_meta: dict[str, Any],
+            source: str | None = None,
+        ) -> dict[str, Any] | None:
+            nonlocal cost_limit_exceeded_summary
+            if not isinstance(usage_meta, dict):
+                return None
+
+            def _number_value(name: str) -> float | None:
+                value = usage_meta.get(name)
+                if isinstance(value, bool):
+                    return None
+                if isinstance(value, (int, float)):
+                    return max(0.0, float(value))
+                return None
+
+            input_tokens = int(_number_value("input_tokens") or 0)
+            output_tokens = int(_number_value("output_tokens") or 0)
+            total_tokens_raw = _number_value("total_tokens")
+            total_tokens = int(total_tokens_raw if total_tokens_raw is not None else input_tokens + output_tokens)
+            usage_accumulator["input_tokens"] += input_tokens
+            usage_accumulator["output_tokens"] += output_tokens
+            usage_accumulator["total_tokens"] += total_tokens
+            # cache_tokens is provider-served prompt cache hits; develop tracks it
+            # apart from input/output and surfaces a hit rate in the usage summary.
+            cache_tokens = int(_number_value("cache_tokens") or 0)
+            usage_accumulator["cache_tokens"] += cache_tokens
+
+            def _cost_value(name: str) -> float | None:
+                return _number_value(name)
+
+            input_cost = _cost_value("input_cost") or 0.0
+            output_cost = _cost_value("output_cost") or 0.0
+            total_cost = _cost_value("total_cost")
+            if any(_cost_value(name) is not None for name in ("input_cost", "output_cost", "total_cost")):
+                usage_accumulator["cost_available"] = True
+            usage_accumulator["input_cost"] += input_cost
+            usage_accumulator["output_cost"] += output_cost
+            usage_accumulator["total_cost"] += (
+                total_cost if total_cost is not None else input_cost + output_cost
+            ) or 0.0
+            try:
+                from jiuwenswarm.server.runtime.usage_cost import add_session_usage
+
+                session_cost = add_session_usage(session_id, usage_meta)
+                if session_cost.get("cost_limit_exceeded"):
+                    cost_limit_exceeded_summary = session_cost
+                    if source != "main":
+                        raise CostLimitExceededError(session_cost)
+                return session_cost
+            except CostLimitExceededError:
+                raise
+            except Exception:
+                logger.debug("[JiuWenSwarmDeepAdapter] failed to record session cost", exc_info=True)
+            return None
 
         def should_skip_duplicate_ask_user(parsed: dict | None) -> bool:
             if not isinstance(parsed, dict):
@@ -9315,6 +9524,12 @@ class JiuWenSwarmDeepAdapter:
             )
             if self._stream_event_rail is not None:
                 self._stream_event_rail.reset_abort(session_id)
+            try:
+                from jiuwenswarm.server.runtime.usage_cost import set_subagent_usage_sink
+
+                usage_sink_token = set_subagent_usage_sink(_accumulate_usage_metadata)
+            except Exception:
+                logger.debug("[JiuWenSwarmDeepAdapter] failed to install usage sink", exc_info=True)
             inputs = dict(inputs)
             inputs = self._prepare_multimodal_image_inputs(
                 request,
@@ -9709,15 +9924,7 @@ class JiuWenSwarmDeepAdapter:
                         else {}
                     )
                     if isinstance(usage_meta, dict):
-                        for token in (
-                            "input_tokens",
-                            "output_tokens",
-                            "total_tokens",
-                            "cache_tokens",
-                        ):
-                            usage_accumulator[token] += usage_meta.get(token, 0) or 0
-                        for cost in ("input_cost", "output_cost", "total_cost"):
-                            usage_accumulator[cost] += usage_meta.get(cost, 0.0) or 0.0
+                        _accumulate_usage_metadata(usage_meta, "main")
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
@@ -9728,6 +9935,28 @@ class JiuWenSwarmDeepAdapter:
                         },
                         is_complete=False,
                     )
+                    if cost_limit_exceeded_summary is not None:
+                        yield AgentResponseChunk(
+                            request_id=rid,
+                            channel_id=cid,
+                            payload={
+                                "event_type": "chat.error",
+                                "error": (
+                                    "Cost limit exceeded: "
+                                    f"${float(cost_limit_exceeded_summary.get('total_cost', 0.0)):.4f} > "
+                                    f"${float(cost_limit_exceeded_summary.get('cost_limit', 0.0)):.4f}."
+                                ),
+                                "error_type": "CostLimitExceeded",
+                                "usage": cost_limit_exceeded_summary,
+                            },
+                            is_complete=False,
+                        )
+                        try:
+                            if self._instance is not None:
+                                await self._instance.abort()
+                        except Exception:
+                            logger.debug("[JiuWenSwarmDeepAdapter] cost-limit abort failed", exc_info=True)
+                        break
                     continue
 
                 if chunk_type == "llm_reasoning":
@@ -9963,6 +10192,32 @@ class JiuWenSwarmDeepAdapter:
             if _debug_logger is not None:
                 _debug_logger.end_run(status="cancelled")
             raise
+        except CostLimitExceededError as exc:
+            cost_limit_exceeded_summary = exc.summary
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] cost limit exceeded: request_id=%s session_id=%s usage=%s",
+                rid,
+                session_id,
+                cost_limit_exceeded_summary,
+            )
+            if _debug_logger is not None:
+                _debug_logger.end_run(status="cancelled")
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload={
+                    "event_type": "chat.error",
+                    "error": str(exc),
+                    "error_type": "CostLimitExceeded",
+                    "usage": cost_limit_exceeded_summary,
+                },
+                is_complete=False,
+            )
+            try:
+                if self._instance is not None:
+                    await self._instance.abort()
+            except Exception:
+                logger.debug("[JiuWenSwarmDeepAdapter] cost-limit abort failed", exc_info=True)
         except Exception as exc:
             logger.exception("[JiuWenSwarmDeepAdapter] 流式任务异常: %s", exc)
             if _debug_logger is not None:
@@ -10002,6 +10257,13 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 reset_current_multimodal_image_files(image_files_token)
+            if usage_sink_token is not None:
+                try:
+                    from jiuwenswarm.server.runtime.usage_cost import reset_subagent_usage_sink
+
+                    reset_subagent_usage_sink(usage_sink_token)
+                except Exception:
+                    logger.debug("[JiuWenSwarmDeepAdapter] failed to reset usage sink", exc_info=True)
             if interaction_stream is not None:
                 try:
                     await interaction_stream.close(
@@ -10033,11 +10295,9 @@ class JiuWenSwarmDeepAdapter:
             cache_tokens = usage_accumulator["cache_tokens"]
             summary["cache_tokens"] = cache_tokens
             summary["cache_hit_rate"] = f"{cache_tokens / input_tokens:.1%}"
-        if usage_accumulator["input_cost"] > 0:
+        if usage_accumulator["cost_available"]:
             summary["input_cost"] = round(usage_accumulator["input_cost"], 6)
-        if usage_accumulator["output_cost"] > 0:
             summary["output_cost"] = round(usage_accumulator["output_cost"], 6)
-        if usage_accumulator["total_cost"] > 0:
             summary["total_cost"] = round(usage_accumulator["total_cost"], 6)
 
         logger.info(
@@ -10082,7 +10342,7 @@ class JiuWenSwarmDeepAdapter:
             except Exception:
                 logger.debug("[JiuWenSwarmDeepAdapter] ContextUtils.resolve_context_max fallback failed", exc_info=True)
 
-        if usage_accumulator["total_tokens"] > 0:
+        if usage_accumulator["total_tokens"] > 0 or usage_accumulator["cost_available"]:
             payload: dict[str, Any] = {
                 "event_type": "chat.usage_summary",
                 "session_id": session_id,
