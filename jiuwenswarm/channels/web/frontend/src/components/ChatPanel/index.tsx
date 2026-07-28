@@ -967,6 +967,18 @@ export const ChatPanel = React.memo(function ChatPanel({
   const [isSending, setIsSending] = React.useState(false);
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
+  const sessionCostTotal = useMemo(() => {
+    let total = 0;
+    let available = false;
+    for (const message of messages) {
+      const cost = message.usageSummary?.total_cost;
+      if (typeof cost === 'number' && Number.isFinite(cost)) {
+        available = true;
+        total += Math.max(0, cost);
+      }
+    }
+    return available ? total : null;
+  }, [messages]);
   const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
   const historyLoadedPages = historyPager?.loadedPages ?? 0;
   const historyTotalPages = historyPager?.totalPages ?? 0;
@@ -1543,6 +1555,11 @@ export const ChatPanel = React.memo(function ChatPanel({
               >
                 <span className="chat-config-icon chat-config-icon--folder" aria-hidden="true" />
                 <span>{sessionProjectName}</span>
+              </div>
+            )}
+            {sessionCostTotal !== null && (
+              <div className="chat-panel-header__usage" title="Current session cost">
+                ${sessionCostTotal.toFixed(4)}
               </div>
             )}
           </div>
