@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -13557,7 +13558,7 @@ class JiuWenSwarmDeepAdapter:
                 value = float(normalized)
             except ValueError:
                 value = -1.0
-            if value < 0:
+            if not math.isfinite(value) or value < 0:
                 return {
                     **result_base,
                     "result_type": "error",

@@ -1,5 +1,7 @@
 from uuid import uuid4
 
+import pytest
+
 from jiuwenswarm.server.runtime.usage_cost import (
     add_session_usage,
     get_session_cost_summary,
@@ -70,3 +72,9 @@ def test_explicit_total_cost_takes_precedence_and_limit_can_clear() -> None:
     cleared = set_session_cost_limit(session_id, None)
     assert cleared["cost_limit"] is None
     assert get_session_cost_summary(session_id)["cost_limit_exceeded"] is False
+
+
+def test_cost_limit_rejects_non_finite_values() -> None:
+    for value in ("inf", "nan"):
+        with pytest.raises(ValueError):
+            set_session_cost_limit(_sid(), float(value))
