@@ -45,7 +45,11 @@ async function syncBackendLimit(
   commandText: string,
 ): Promise<void> {
   try {
-    await ctx.request("chat.send", { query: commandText, mode: ctx.mode }, 30_000);
+    await ctx.request(
+      "chat.send",
+      { query: commandText, mode: ctx.mode, log_as_user: false },
+      30_000,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     ctx.addItem(addError(ctx.sessionId, `backend cost limit sync failed: ${message}`));

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
+import math
 from threading import Lock
 from typing import Any, Callable
 
@@ -123,5 +124,8 @@ def set_session_cost_limit(session_id: str | None, limit: float | None) -> dict[
         if limit is None:
             _SESSION_COST_LIMITS.pop(key, None)
         else:
-            _SESSION_COST_LIMITS[key] = max(0.0, float(limit))
+            value = float(limit)
+            if not math.isfinite(value):
+                raise ValueError("cost limit must be finite")
+            _SESSION_COST_LIMITS[key] = max(0.0, value)
     return get_session_cost_summary(key)
