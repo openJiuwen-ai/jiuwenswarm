@@ -109,6 +109,14 @@ def get_session_cost_summary(session_id: str | None) -> dict[str, Any]:
     }
 
 
+def clear_session_cost(session_id: str | None) -> None:
+    """Clear accumulated cost totals and limits for a finished session."""
+    key = _session_key(session_id)
+    with _SESSION_COST_LOCK:
+        _SESSION_COST_TOTALS.pop(key, None)
+        _SESSION_COST_LIMITS.pop(key, None)
+
+
 def _token_value(usage: dict[str, Any], name: str) -> float | None:
     value = usage.get(name)
     if isinstance(value, bool):

@@ -132,6 +132,12 @@ class SessionManager:
             )
         )
 
+    @staticmethod
+    def _clear_session_cost(session_id: str) -> None:
+        from jiuwenswarm.server.runtime.usage_cost import clear_session_cost
+
+        clear_session_cost(session_id)
+
     async def close_session(
         self,
         session_id: str,
@@ -196,6 +202,7 @@ class SessionManager:
                     len(pending),
                 )
 
+        self._clear_session_cost(session_id)
         return had_runtime
 
     async def close_all_sessions(self) -> None:
@@ -281,6 +288,7 @@ class SessionManager:
                         self._session_tasks.pop(session_id, None)
                     if self._session_processors.get(session_id) is processor:
                         self._session_processors.pop(session_id, None)
+                    self._clear_session_cost(session_id)
                     logger.info(
                         "[SessionManager] Session 任务处理器已关闭: session_id=%s",
                         session_id,

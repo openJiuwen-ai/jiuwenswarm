@@ -4,6 +4,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.usage_cost import (
     add_session_usage,
+    clear_session_cost,
     get_session_cost_summary,
     set_session_cost_limit,
 )
@@ -78,3 +79,18 @@ def test_cost_limit_rejects_non_finite_values() -> None:
     for value in ("inf", "nan"):
         with pytest.raises(ValueError):
             set_session_cost_limit(_sid(), float(value))
+
+
+def test_clear_session_cost_removes_totals_and_limit() -> None:
+    session_id = _sid()
+
+    set_session_cost_limit(session_id, 0.01)
+    add_session_usage(session_id, {"input_tokens": 1, "total_cost": 0.02})
+
+    clear_session_cost(session_id)
+    summary = get_session_cost_summary(session_id)
+
+    assert summary["input_tokens"] == 0
+    assert summary["total_cost"] == 0.0
+    assert summary["cost_limit"] is None
+    assert summary["cost_available"] is False
