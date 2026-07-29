@@ -23,6 +23,7 @@ from openjiuwen.harness.tools.base_tool import ToolOutput
 from openjiuwen.harness.workspace.workspace import Workspace
 
 from jiuwenswarm.server.runtime.debug_trace import invoke_subagent_with_trace
+from jiuwenswarm.server.runtime.usage_cost import CostLimitExceededError
 
 if TYPE_CHECKING:
     from openjiuwen.core.session.agent import Session
@@ -333,6 +334,8 @@ class AgentTool(Tool):
                     success=True,
                     data={"output": output, "agent_id": subagent_type},
                 )
+            except CostLimitExceededError:
+                raise
             except Exception as exc:
                 logger.error(f"[AgentTool] Subagent execution failed: type={subagent_type}, error={exc}")
                 raise build_error(
@@ -351,6 +354,8 @@ class AgentTool(Tool):
                 session=parent_session,
                 source_label=f"subagent:custom:{subagent_type}",
             )
+        except CostLimitExceededError:
+            raise
         except Exception as exc:
             logger.error(
                 "[AgentTool] Async subagent '%s' failed: %s", subagent_type, exc
