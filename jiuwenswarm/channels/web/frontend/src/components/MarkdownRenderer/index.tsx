@@ -1,6 +1,7 @@
 import { Children, createContext, isValidElement, useContext, useEffect, useId, useMemo, useRef, useState, type AnchorHTMLAttributes, type HTMLAttributes, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeSlug from 'rehype-slug';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import type { MermaidConfig } from 'mermaid';
@@ -17,8 +18,8 @@ interface MarkdownRendererProps {
   /** 拦截非锚点链接点击。返回 true 表示已处理（阻止默认导航/新开标签）。 */
   onLinkClick?: (href: string, event: MouseEvent<HTMLAnchorElement>) => boolean | void;
   /**
-   * 页内锚点导航开关。默认关闭——#锚点 与其他链接一致新开标签页（历史基线，
-   * 企业版聊天等共用方不受影响）；个人上下文图谱详情等页内场景显式开启。
+   * @deprecated 兼容保留（个人上下文图谱详情等调用方仍传入）：MR !4410
+   * 迁入后 #锚点 链接默认不开新页，该开关不再影响行为。
    */
   inPageAnchors?: boolean;
 }
@@ -319,7 +320,7 @@ function isCompleteCodeFence(contentLines: string[], node?: HastElement): boolea
 function MarkdownLink({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
   const isFragmentLink = href?.startsWith('#');
   const isExternalLink = /^https?:/i.test(href ?? '');
-  const { onLinkClick, inPageAnchors } = useContext(MarkdownLinkPolicyContext);
+  const { onLinkClick } = useContext(MarkdownLinkPolicyContext);
 
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
     if (!href || isFragmentLink || isExternalLink || !onLinkClick) {
@@ -333,11 +334,10 @@ function MarkdownLink({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnc
   };
 
   // http(s) 链接始终新开标签页（target=_blank），不论是否提供 onLinkClick；
-  // 锚点链接默认与其他链接一致新开页（历史基线），仅在调用方显式开启 inPageAnchors
-  // （个人上下文图谱详情等页内场景）时不开新页；内部相对链接：提供 onLinkClick 时
-  // 交给其拦截（不开新页），未提供时保持新开标签（与历史行为一致，避免相对链接
-  // 在当前页导航破坏 SPA）。
-  const openInNewTab = isExternalLink || (!isFragmentLink || !inPageAnchors) && !onLinkClick;
+  // 锚点链接不开新页（MR !4410：修复 md 内部跳转打开新浏览器页签的问题）；
+  // 内部相对链接：提供 onLinkClick 时交给其拦截（不开新页），未提供时保持
+  // 新开标签（与历史行为一致，避免相对链接在当前页导航破坏 SPA）。
+  const openInNewTab = isExternalLink || (!isFragmentLink && !onLinkClick);
 
   return (
     <a
@@ -419,7 +419,7 @@ export function MarkdownRenderer({ content, className, testId, onLinkClick, inPa
   return (
     <div className={className} data-testid={testId}>
       <MarkdownLinkPolicyContext.Provider value={{ onLinkClick, inPageAnchors }}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]} components={components}>
           {markdown}
         </ReactMarkdown>
       </MarkdownLinkPolicyContext.Provider>
