@@ -4,7 +4,7 @@
  * 应用主布局，整合所有组件
  */
 
-import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
@@ -134,6 +134,16 @@ const LazyDiagnosisHistoryPanel = lazy(async () => {
 });
 
 const TEAM_SESSION_MODES = new Set(['team', 'team.plan', 'code.team']);
+const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
+const CHAT_PANEL_MIN_WIDTH_PCT = 20;
+const CHAT_PANEL_MAX_WIDTH_PCT = 70;
+
+type ChatPanelResizeDrag = {
+  pointerId: number;
+  startX: number;
+  startPct: number;
+  containerWidth: number;
+};
 const PREVIEW_MODEL_SETUP_GUIDE = import.meta.env.DEV
   && new URLSearchParams(window.location.search).get('modelSetupGuide') === '1';
 
@@ -640,7 +650,8 @@ function AppContent() {
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
-  const [chatPanelWidthPct, setChatPanelWidthPct] = useState(33.33);
+  const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
+  const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
 
   useEffect(() => {
@@ -660,28 +671,49 @@ function AppContent() {
     setTeamAreaExpanded(true);
   }, [setTeamAreaActiveTab, setTeamAreaExpanded]);
 
-  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startPct = chatPanelWidthPct;
-    const container = (e.currentTarget as HTMLElement).parentElement;
+  const handleDividerPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || chatPanelResizeDragRef.current) return;
+    const container = event.currentTarget.parentElement;
     if (!container) return;
     const containerWidth = container.getBoundingClientRect().width;
+    if (containerWidth <= 0) return;
 
-    const onMouseMove = (ev: MouseEvent) => {
-      const dx = ev.clientX - startX;
-      const newPct = Math.min(70, Math.max(20, startPct + (dx / containerWidth) * 100));
-      setChatPanelWidthPct(newPct);
+    event.preventDefault();
+    document.body.classList.add('workspace-resize-active');
+    event.currentTarget.setPointerCapture(event.pointerId);
+    chatPanelResizeDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startPct: chatPanelWidthPct,
+      containerWidth,
     };
-
-    const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
   }, [chatPanelWidthPct]);
+
+  const handleDividerPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = chatPanelResizeDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const nextWidthPct = drag.startPct + (dx / drag.containerWidth) * 100;
+    const clampedWidthPct = Math.min(
+      CHAT_PANEL_MAX_WIDTH_PCT,
+      Math.max(CHAT_PANEL_MIN_WIDTH_PCT, nextWidthPct),
+    );
+    setChatPanelWidthPct(clampedWidthPct);
+  }, []);
+
+  const clearChatPanelResize = useCallback((pointerId?: number): boolean => {
+    if (pointerId !== undefined && chatPanelResizeDragRef.current?.pointerId !== pointerId) return false;
+    chatPanelResizeDragRef.current = null;
+    document.body.classList.remove('workspace-resize-active');
+    return true;
+  }, []);
+
+  const finishDividerResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!clearChatPanelResize(event.pointerId)) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [clearChatPanelResize]);
 
   const clearMessages = useChatStore((s) => s.clearMessages);
   const clearSubtasks = useChatStore((s) => s.clearSubtasks);
@@ -2555,8 +2587,16 @@ function AppContent() {
     && missingSessionId === routeSessionId
     && isConversationMissing(routeSessionId, true, sessions);
   const showConversationNotFound = route.kind === 'not-found' || routeSessionMissing;
+  const showWorkspaceDivider = isTeamAreaExpanded && !showConversationNotFound;
   const isNewSessionPromotion = Boolean(sessionId && promotedFromNewSessionIdsRef.current.has(sessionId));
   const composerFocusKey = showConversationNotFound ? null : `${sessionId}:${composerFocusNonce}`;
+
+  useEffect(() => {
+    if (!showWorkspaceDivider) clearChatPanelResize();
+    return () => {
+      clearChatPanelResize();
+    };
+  }, [clearChatPanelResize, showWorkspaceDivider]);
 
   return (
     <div
@@ -2685,10 +2725,18 @@ function AppContent() {
                 </div>
 
                 {/* 可拖拽分割线 */}
-                {effectiveTeamAreaExpanded && !showConversationNotFound && (
+                {showWorkspaceDivider && (
                   <div
-                    className="resize-divider"
-                    onMouseDown={handleDividerMouseDown}
+                    className="resize-divider resize-divider--workspace touch-none select-none"
+                    role="separator"
+                    aria-orientation="vertical"
+                    onPointerDown={handleDividerPointerDown}
+                    onPointerMove={handleDividerPointerMove}
+                    onPointerUp={finishDividerResize}
+                    onPointerCancel={finishDividerResize}
+                    onLostPointerCapture={(event) => {
+                      clearChatPanelResize(event.pointerId);
+                    }}
                   />
                 )}
 
