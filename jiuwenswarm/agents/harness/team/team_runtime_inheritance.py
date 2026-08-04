@@ -50,6 +50,16 @@ from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "consecutive_threshold": 3,
+    "tool_args_consecutive_threshold": 5,
+    "reasoning_min_chars": 4,
+    "reasoning_preview_max_chars": 512,
+    "bailout_threshold": 3,
+    "tool_args_bailout_threshold": 2,
+}
+
 
 @dataclass
 class MemberInfo:
@@ -580,6 +590,27 @@ def get_context_engine_enabled(config: dict[str, Any] | None) -> bool:
     return True
 
 
+def _merge_context_engine_defaults(context_engine_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Preserve loop compaction defaults when users override context config."""
+    merged = dict(context_engine_cfg)
+    if not bool(merged.get("enabled", True)):
+        return merged
+
+    raw_reasoning_cfg = merged.get("reasoning_tool_loop_compact_config")
+    if raw_reasoning_cfg is False:
+        merged["reasoning_tool_loop_compact_config"] = {"enabled": False}
+    elif isinstance(raw_reasoning_cfg, dict):
+        merged["reasoning_tool_loop_compact_config"] = {
+            **_DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG,
+            **raw_reasoning_cfg,
+        }
+    else:
+        merged["reasoning_tool_loop_compact_config"] = dict(
+            _DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG
+        )
+    return merged
+
+
 def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProcessorRail | None:
     """Build a preset ContextProcessorRail for team members with user config thresholds.
 
@@ -602,7 +633,7 @@ def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProce
         ctx_cfg: dict[str, Any] = {}
         if isinstance(config, dict):
             raw = config.get("context_engine_config", {})
-            ctx_cfg = raw if isinstance(raw, dict) else {}
+            ctx_cfg = _merge_context_engine_defaults(raw) if isinstance(raw, dict) else {}
 
         offloader_cfg = ctx_cfg.get("message_summary_offloader_config", {})
         if isinstance(offloader_cfg, dict) and offloader_cfg:
