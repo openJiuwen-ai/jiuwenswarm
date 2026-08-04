@@ -49,6 +49,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EvolutionProgressStatus,
@@ -641,17 +642,49 @@ def _note_team_permission_resume_landing(query: Any, landed: bool) -> None:
 _MODEL_OUTPUT_EVENT_TYPES = frozenset({"chat.delta", "chat.final", "chat.reasoning"})
 
 
-def _normalize_team_query(query: Any, *, channel_id: str | None, language: str) -> Any:
-    from jiuwenswarm.server.runtime.a2ui.integration import build_user_prompt_if_a2ui_event
+def _resolve_user_turn(
+    inputs: dict[str, Any],
+    *,
+    channel_id: str | None,
+    language: str,
+) -> UserTurn:
+    """Return the turn built by the adapter, or reconstruct a minimal one.
 
-    a2ui_prompt = build_user_prompt_if_a2ui_event(
-        query,
+    ``_build_inputs`` attaches the turn for every ``chat.send``; the fallback
+    only covers callers that assemble ``inputs`` themselves, and keeps them on
+    the same renderer rather than silently delivering a bare string.
+
+    Args:
+        inputs: Runner inputs prepared by the adapter.
+        channel_id: Channel the request arrived on.
+        language: Resolved runtime language.
+
+    Returns:
+        The ``UserTurn`` for this request.
+    """
+    turn = inputs.get(TEAM_USER_TURN_KEY)
+    if isinstance(turn, UserTurn):
+        return turn
+    return UserTurn(
+        text=inputs.get("query", ""),
         channel=_resolve_channel_id(channel_id),
         language=language,
+        files={},
     )
-    if a2ui_prompt is not None:
-        return a2ui_prompt
-    return query
+
+
+def _deliverable(turn: UserTurn, text: Any) -> Any:
+    """Render ``text`` into the payload delivered to the team runtime.
+
+    Args:
+        turn: The turn carrying this request's context (files, skills, sender).
+        text: User text as it stands after directive / slash / ``$member``
+            rewriting.
+
+    Returns:
+        The rendered envelope, matching what a single agent would receive.
+    """
+    return turn.with_text(text).render()
 
 
 def is_team_control_continuation(request: Any, query: Any) -> bool:
@@ -1950,7 +1983,7 @@ async def _start_team_stream_round(
     team_manager: Any,
     team_name: str,
     team_spec: Any,
-    query: str,
+    query: Any,
     hide_dm: bool = False,
     debug: bool = False,
     source: str = "first",
@@ -2015,11 +2048,12 @@ async def process_team_message_stream(
 
     team_manager = get_team_manager(channel_id)
     language = _resolve_request_language(request)
-    query = _normalize_team_query(
-        inputs.get("query", ""),
-        channel_id=channel_id,
-        language=language,
-    )
+    # ``query`` stays the user's own words for the whole function — directive
+    # stripping, ``$member`` routing and slash commands all parse it. Every
+    # delivery into the team runtime goes through ``_deliverable`` instead, so
+    # the leader receives exactly the envelope a single agent would.
+    turn = _resolve_user_turn(inputs, channel_id=channel_id, language=language)
+    query = turn.text
     query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
@@ -2342,7 +2376,10 @@ async def process_team_message_stream(
             # Control continuations reuse the waiter that was active before
             # delivery. Other follow-ups already own the current request queue.
             if query:
-                success, reason = await team_manager.interact(session_id, query)
+                # Follow-up rounds carry their own attachments and context, so
+                # they are rendered exactly like the first one.
+                followup_payload = _deliverable(turn, query)
+                success, reason = await team_manager.interact(session_id, followup_payload)
                 if not success:
                     logger.warning(
                         "[TeamHelpers] interact failed: channel_id=%s session_id=%s reason=%s query=%s",
@@ -2356,7 +2393,7 @@ async def process_team_message_stream(
                         boundary_result = await _deliver_followup_interact_across_boundary(
                             team_manager,
                             session_id,
-                            query,
+                            followup_payload,
                             initial_reason=reason,
                         )
                         success = boundary_result.success
@@ -2566,7 +2603,7 @@ async def process_team_message_stream(
                 team_manager=team_manager,
                 team_name=team_name,
                 team_spec=team_spec,
-                query=query,
+                query=_deliverable(turn, query),
                 hide_dm=hide_dm,
                 debug=debug,
                 source=first_request_source,
@@ -2708,7 +2745,7 @@ async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
     team_spec: Any,
-    initial_query: str,
+    initial_query: Any,
     *,
     round_id: int,
     envs: dict[str, Any] | None = None,
