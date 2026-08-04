@@ -11,6 +11,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentRe
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.handlers import _default, _shared, chat
 from jiuwenswarm.server.runtime.agent_adapter import interface
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, _make_agent_cache_key
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.session import session_metadata
@@ -94,8 +95,18 @@ def facades(monkeypatch, tmp_path):
         facade._bind_tenant_request_context = Mock(return_value=(None, None))
         facade._reset_tenant_request_context = Mock()
         facade._cancel_team_work_for_session = AsyncMock()
+        # _build_inputs returns (inputs, memory_mode, turn); turn is a
+        # UserTurn envelope since the user-turn contract, not a raw str.
         facade._build_inputs = lambda req: (
-            {"query": req.params.get("query", "")}, "disabled", req.params.get("query", ""),
+            {"query": req.params.get("query", "")},
+            "disabled",
+            UserTurn(
+                text=req.params.get("query", ""),
+                channel=req.channel_id or "officeclaw",
+                language="zh",
+                files={},
+                metadata=req.metadata,
+            ),
         )
         return facade
 
