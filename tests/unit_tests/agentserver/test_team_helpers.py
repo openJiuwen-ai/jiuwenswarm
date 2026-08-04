@@ -461,6 +461,28 @@ def _evolution_record(content: str, *, score: float = 1.0) -> dict:
     }
 
 
+
+def _delivered_content(payload: Any) -> Any:
+    """Return the user content carried by a team delivery.
+
+    Team deliveries carry the same JSON envelope a single agent receives
+    (see ``UserTurn.render``), so assertions compare the user's own words
+    rather than the rendered wrapper.
+    """
+    if not isinstance(payload, str) or "{" not in payload:
+        return payload
+    try:
+        return json.loads(payload[payload.index("{"):])["content"]
+    except (ValueError, KeyError):
+        return payload
+
+
+def _delivered(calls: list) -> list:
+    """Map recorded delivery calls to ``(session_id, user content)``."""
+    return [(session_id, _delivered_content(payload)) for session_id, payload in calls]
+
+
+
 @pytest.mark.anyio
 async def test_team_evolution_monitor_pushes_status_with_real_request_id(monkeypatch):
     _FakeTransport.pushes = []
@@ -1433,7 +1455,7 @@ async def test_handle_team_slash_command_allows_evolve_rollback(monkeypatch, tmp
     skills_dir = _write_team_skill(tmp_path, "demo-skill")
 
     async def _fake_handler(query: str, context: object) -> dict[str, object]:
-        assert query == "/evolve_rollback demo-skill latest"
+        assert _delivered_content(query) == "/evolve_rollback demo-skill latest"
         assert getattr(context, "mode") == "team"
         assert getattr(context, "skills_dir") == skills_dir
         return {"output": "team rollback handled", "result_type": "answer"}
@@ -1656,7 +1678,7 @@ async def test_process_team_message_stream_followup_owns_waiter_until_team_compl
         chunks.append(chunk)
     await asyncio.gather(*manager.emitter_tasks)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-followup", "$human-reporter claim task"),
     ]
     assert [chunk.payload and chunk.payload.get("event_type") for chunk in chunks] == [
@@ -1804,7 +1826,7 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
             "deliver_to_leader_failed:[123023] deepagent runtime error, "
             "reason: NativeHarness not started."
         )
-        _FakeManager.interact_calls.append((session_id, f"retry:{query}"))
+        _FakeManager.interact_calls.append((session_id, f"retry:{_delivered_content(query)}"))
         return team_helpers._FollowupInteractBoundaryResult(
             success=True,
             reason=None,
@@ -1830,7 +1852,7 @@ async def test_process_team_message_stream_retries_followup_while_native_starts(
     ):
         chunks.append(chunk)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-followup-starting", "启动中追问"),
         ("sess-team-followup-starting", "retry:启动中追问"),
     ]
@@ -1933,7 +1955,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         chunks.append(chunk)
     await asyncio.sleep(0)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-followup-stopped", "查询杭州天气"),
     ]
     assert _FakeManager.skills_ready_calls == [
@@ -1941,7 +1963,12 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
     ]
     assert captured["prepared"] == ("sess-team-followup-stopped", "unit-team")
     assert captured["registered"] == "sess-team-followup-stopped"
-    assert captured["consumed"] == ("sess-team-followup-stopped", "查询杭州天气", 7)
+    consumed_session, consumed_query, consumed_round = captured["consumed"]
+    assert (consumed_session, _delivered_content(consumed_query), consumed_round) == (
+        "sess-team-followup-stopped",
+        "查询杭州天气",
+        7,
+    )
     assert chunks[-1].is_complete is True
     assert not any(
         chunk.payload
@@ -1989,7 +2016,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
     ):
         assert team_manager is not None
         assert session_id == "sess-team-followup-directives"
-        assert query == "/hide_dm /debug weather"
+        assert _delivered_content(query) == "/hide_dm /debug weather"
         assert initial_reason == "gate_closed"
         _FakeManager.stream_active = False
         return team_helpers._FollowupInteractBoundaryResult(
@@ -2033,12 +2060,17 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         chunks.append(chunk)
     await asyncio.sleep(0)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-followup-directives", "/hide_dm /debug weather"),
     ]
     assert captured["prepared"] == ("sess-team-followup-directives", "unit-team")
     assert captured["registered"] == "sess-team-followup-directives"
-    assert captured["consumed"][:3] == ("sess-team-followup-directives", "weather", 9)
+    consumed_session, consumed_query, consumed_round = captured["consumed"][:3]
+    assert (consumed_session, _delivered_content(consumed_query), consumed_round) == (
+        "sess-team-followup-directives",
+        "weather",
+        9,
+    )
     stream_envs = captured["consumed"][3]
     assert stream_envs["hide_dm"] is True
     assert stream_envs["JIUWENSWARM_TEAM_STREAM_TRACE"] == "1"
@@ -2060,7 +2092,7 @@ async def test_process_team_message_stream_silences_gate_closed_when_shutdown_ra
         @staticmethod
         async def interact(session_id: str, query: str):
             assert session_id == "sess-team-followup-timeout"
-            assert query == "还在收尾"
+            assert _delivered_content(query) == "还在收尾"
             return False, "gate_closed"
 
         @staticmethod
@@ -2157,7 +2189,7 @@ async def test_process_team_message_stream_passes_interactive_input_to_followup(
     ):
         chunks.append(chunk)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-plan-followup", approval_input),
     ]
     assert chunks[-1].is_complete is True
@@ -2230,7 +2262,7 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
     ):
         chunks.append(chunk)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-ask-followup", ask_answer_input),
     ]
     assert chunks[-1].is_complete is True
@@ -2303,7 +2335,7 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
     ):
         chunks.append(chunk)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-evolution-resume", approval_input),
     ]
     assert not any(
@@ -2405,7 +2437,7 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
 
     await asyncio.sleep(0)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-plan-resume", approval_input),
     ]
     assert "skills_ready" not in captured
@@ -2549,7 +2581,7 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
     ):
         chunks.append(chunk)
 
-    assert _FakeManager.interact_calls == [
+    assert _delivered(_FakeManager.interact_calls) == [
         ("sess-team-plan-recover", approval_input),
     ]
     assert chunks[0].payload == {"event_type": "team.completed"}
@@ -2637,7 +2669,12 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
 
     assert captured["prepared"] == ("sess-team-new-round", "unit-team")
     assert captured["registered"] == "sess-team-new-round"
-    assert captured["consumed"] == ("sess-team-new-round", "你好", 1)
+    consumed_session, consumed_query, consumed_round = captured["consumed"]
+    assert (consumed_session, _delivered_content(consumed_query), consumed_round) == (
+        "sess-team-new-round",
+        "你好",
+        1,
+    )
     assert captured["skills_ready"] == ("sess-team-new-round", "unit-team")
     assert chunks[-1].is_complete is True
 

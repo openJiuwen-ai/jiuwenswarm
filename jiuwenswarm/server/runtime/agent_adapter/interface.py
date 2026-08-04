@@ -20,8 +20,8 @@ import re
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Tuple
-
 from datetime import datetime, timedelta, timezone
+
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
 from jiuwenswarm.common.local_env_config import promote_staged_env
@@ -39,6 +39,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     append_history_record,
     collapse_file_content_blocks,
 )
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.session.permission_response_ledger import (
     PermissionResponseLedger,
@@ -1006,6 +1007,12 @@ def build_user_prompt(content: str | dict, files: dict, channel: str, language: 
     """Build user prompt for the agent.
 
     Args:
+        content: The user's message text, or an A2UI client-event dict.
+        files: ``chat.send`` files mapping carrying uploaded attachments.
+        channel: Originating channel id.
+        language: Preferred response language.
+        trusted_dirs: Directories the client declared as trusted.
+        metadata: Request metadata (sender / chat_type / interaction context).
         skills: 显式传入的 skill 名列表（来自 params.skills，前端从 content 提取）。
             若提供，直接作为 skills_to_use，且 **不再对 content 做 /skills use 剥离**
             （content 原样保留，如 "帮我用 /doc写文档"）。
@@ -1686,12 +1693,17 @@ class JiuWenSwarm:
             project_dir=project_dir,
         )
 
-    def build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, str]:
+    def build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, UserTurn]:
         """构建 adapter 所需的 inputs 字典（公共接口）."""
         return self._build_inputs(request)
 
-    def _build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, str]:
-        """构建 adapter 所需的 inputs 字典."""
+    def _build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, UserTurn]:
+        """构建 adapter 所需的 inputs 字典.
+
+        Returns:
+            ``(inputs, memory_mode, turn)`` — ``turn`` is the rendered user turn;
+            ``turn.text`` keeps the user's own words for callers that parse them.
+        """
         from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
         from jiuwenswarm.common.schema.chat_send import ChatSendParams
 
@@ -1701,9 +1713,8 @@ class JiuWenSwarm:
         query = params.get("query")
         if query is None or query == "":
             query = params.get("content", "")
-        # /debug 请求级指令：仅 agent/code 在此剥离前缀；team 自行从原始
-        # query 解析 /debug（process_message_stream 用 raw_query 覆写
-        # inputs["query"]），故此处对 team 不剥离。
+        # /debug 请求级指令：仅 agent/code 在此剥离前缀；team 自行从
+        # ``turn.text`` 解析 /debug（见 team_helpers），故此处对 team 不剥离。
         _request_debug = False
         _dbg_mode = params.get("mode")
         _dbg_mode_s = _dbg_mode.strip().lower() if isinstance(_dbg_mode, str) else ""
@@ -1767,6 +1778,19 @@ class JiuWenSwarm:
                 query[:2000] if isinstance(query, str) else str(query)[:2000],
             )
 
+        # One turn, one renderer: single-agent and team both deliver
+        # ``turn.render()``. The team path additionally keeps ``turn.text`` to
+        # parse directives / ``$member`` routing before it renders.
+        turn = UserTurn(
+            text=query,
+            channel=channel,
+            language=language,
+            files=params.get("files", {}) or {},
+            trusted_dirs=trusted_dirs,
+            skills=skills,
+            metadata=request.metadata,
+        )
+
         if isinstance(query, InteractiveInput):
             final_query = query
         else:
@@ -1800,6 +1824,7 @@ class JiuWenSwarm:
                 )
                 if interactive_input is not None:
                     final_query = interactive_input
+                    turn = turn.with_text(interactive_input)
                 else:
                     final_query = build_user_prompt(
                         query,
@@ -1981,7 +2006,13 @@ class JiuWenSwarm:
                 "[JiuWenSwarm] _build_inputs returning inputs keys=%s",
                 list(inputs.keys()),
             )
-        return inputs, memory_mode, query
+        # 2ad172a7e：turn 随 inputs 下发（team 路径经 TEAM_USER_TURN_KEY
+        # 拿到同一个 turn，用 turn.text 解析 /debug、$member 与 slash，
+        # 再统一 render() 投递）。单 agent 路径仍用上方 build_user_prompt
+        # 的 DS 信封（含企业态文件提示与 supplementary_info），不走
+        # turn.render()。
+        inputs[TEAM_USER_TURN_KEY] = turn
+        return inputs, memory_mode, turn
 
     @staticmethod
     def _team_plan_approval_payload_error_message() -> str:
@@ -2968,7 +2999,8 @@ class JiuWenSwarm:
                     session_id,
                 )
             try:
-                inputs, memory_mode, raw_query = self._build_inputs(request)
+                inputs, memory_mode, user_turn = self._build_inputs(request)
+                raw_query = user_turn.text
             except _TeamPlanApprovalPayloadError as exc:
                 return AgentResponse(
                     request_id=request.request_id,
@@ -3381,7 +3413,7 @@ class JiuWenSwarm:
                     "[JiuWenClaw] stream prepare-hook loop SKIPPED (permission continuation) session_id=%s",
                     session_id,
                 )
-            inputs, memory_mode, raw_query = self._build_inputs(request)
+            inputs, memory_mode, user_turn = self._build_inputs(request)
         except _TeamPlanApprovalPayloadError as exc:
             yield AgentResponseChunk(
                 request_id=rid,
@@ -3397,17 +3429,19 @@ class JiuWenSwarm:
             )
             return
 
-        # Team 模式：使用原始 query，而不是 build_user_prompt 包装后的内容
+        # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
+        # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此
+        # leader 收到的信封与单 agent 逐字段一致。
         team_query_is_interactive_input = False
         if is_team_mode:
             from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
             team_query_is_interactive_input = isinstance(inputs.get("query"), InteractiveInput)
-            if not team_query_is_interactive_input:
-                inputs["query"] = raw_query
+            inputs[TEAM_USER_TURN_KEY] = user_turn
             logger.info(
-                "[JiuWenSwarm] Team模式使用原始query: %s",
-                raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
+                "[JiuWenSwarm] Team模式 user turn: interactive_input=%s text=%s",
+                team_query_is_interactive_input,
+                str(getattr(user_turn, "text", ""))[:100],
             )
 
         # cloud memory: before chat hook
@@ -4146,7 +4180,7 @@ class JiuWenSwarm:
         finalized_assistant_message = await finalize_assistant_response_if_a2ui(
             assistant_message,
             channel=cid,
-            user_query=raw_query,
+            user_query=user_turn.text,
             request_id=rid or "",
             repair_call=repair_call,
             retry_without_a2ui_call=retry_without_a2ui_call,

@@ -631,6 +631,7 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
 )
 from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
 from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
@@ -19740,16 +19741,40 @@ class JiuWenSwarmDeepAdapter:
             try:
                 resolved_model = self._resolve_model_for_request(request)
                 self._apply_model_to_react_agent(resolved_model)
+                # 2ad172a7e：多模态准备会把带 hint 的渲染信封写进
+                # inputs["query"]，而 team 流水线应跑在用户原话上
+                # （team_helpers 会用 turn.text 重新 render 投递），因此
+                # 准备期间把 query 换成 turn.text，结束后还原。
+                team_turn = inputs.get(TEAM_USER_TURN_KEY)
+                rewrite_turn_text = isinstance(team_turn, UserTurn) and isinstance(team_turn.text, str)
+                rendered_query = inputs.get("query")
+                if rewrite_turn_text:
+                    inputs["query"] = team_turn.text
                 inputs = self._prepare_multimodal_image_inputs(request, inputs)
                 enable_read_image_multimodal = self._native_image_input_enabled(
                     self._config_cache,
                     resolved_model,
+                )
+                image_tool_fallback_notice = self._build_image_tool_fallback_notice(
+                    request,
+                    enable_read_image_multimodal=enable_read_image_multimodal,
+                    model=resolved_model,
                 )
                 inputs = self._prepare_react_image_tool_prompt(
                     request,
                     inputs,
                     enable_read_image_multimodal=enable_read_image_multimodal,
                 )
+                if rewrite_turn_text:
+                    inputs[TEAM_USER_TURN_KEY] = team_turn.with_text(inputs["query"])
+                    inputs["query"] = rendered_query
+                if image_tool_fallback_notice is not None:
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=image_tool_fallback_notice,
+                        is_complete=False,
+                    )
                 resolved_language = self._resolve_runtime_language()
                 resolved_channel = str(cid or self._resolve_prompt_channel(session_id) or "web").strip() or "web"
                 if self._runtime_prompt_rail:
