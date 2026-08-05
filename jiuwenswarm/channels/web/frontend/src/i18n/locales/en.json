@@ -2913,12 +2913,28 @@
     }
   },
   "mermaid": {
-    "image": "Image",
-    "code": "Code",
-    "copyCode": "Copy code",
+    "rendering": "Drawing…",
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out",
     "fitView": "Fit view"
+  },
+  "diagram": {
+    "image": "Image",
+    "code": "Code",
+    "moreActions": "More diagram actions",
+    "downloadSource": "Download source",
+    "downloadImage": "Download as image",
+    "copyCode": "Copy code",
+    "copied": "Copied",
+    "copyFailed": "Copy failed",
+    "downloadSourceFailed": "Could not save source file",
+    "preparingImage": "Preparing image…",
+    "downloadImageFailed": "Could not save image"
+  },
+  "svg": {
+    "streaming": "Drawing…",
+    "invalid": "Invalid SVG code",
+    "previewTitle": "SVG image preview"
   },
   "authPrompt": {
     "title": "Authorization",

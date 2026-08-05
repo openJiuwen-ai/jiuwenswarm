@@ -2903,12 +2903,28 @@
     }
   },
   "mermaid": {
-    "image": "图片",
-    "code": "代码",
-    "copyCode": "复制代码",
+    "rendering": "绘制中…",
     "zoomIn": "放大",
     "zoomOut": "缩小",
     "fitView": "适应视图"
+  },
+  "diagram": {
+    "image": "图片",
+    "code": "代码",
+    "moreActions": "更多图表操作",
+    "downloadSource": "下载到本地",
+    "downloadImage": "下载为图片",
+    "copyCode": "复制代码",
+    "copied": "已复制",
+    "copyFailed": "复制失败",
+    "downloadSourceFailed": "源文件保存失败",
+    "preparingImage": "正在生成图片…",
+    "downloadImageFailed": "图片保存失败"
+  },
+  "svg": {
+    "streaming": "绘制中…",
+    "invalid": "SVG 代码无效",
+    "previewTitle": "SVG 图片预览"
   },
   "authPrompt": {
     "title": "操作授权",
