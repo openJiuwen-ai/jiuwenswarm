@@ -38,6 +38,7 @@ import { WorkspaceQuotaBanner } from '../WorkspacePanel/WorkspaceQuotaBanner';
 import { useWorkspaceQuotaEnabled } from '../../features/workspace/useWorkspaceQuotaEnabled';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
+import { turnDiffKey } from '../../features/code-mode/turnChangeState';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
 import {
   canLoadOlderHistory,
@@ -749,6 +750,12 @@ export function ChatPanel({
     turnsByMessageId: codeTurnsByMessageId,
     loading: codeTurnHistoryLoading,
     reload: reloadCodeTurnHistory,
+    latestTurnKey: latestCodeTurnKey,
+    turnChangeOperation,
+    turnChangeError,
+    turnChangeNotice,
+    discardLatestTurn,
+    redoLatestTurn,
   } = useCodeTurnDiffHistory({
     project: sessionProject,
     sessionId: activeSessionId,
@@ -758,16 +765,37 @@ export function ChatPanel({
   const renderCodeChangesAfterMessage = useCallback((message: Message) => {
     const turns = codeTurnsByMessageId.get(message.id);
     if (!turns?.length) return null;
-    return turns.map(turn => (
-      <CodeChangesCard
-        key={turn.change_set_id || `turn-${turn.turn_index}`}
-        diff={turn}
-        refreshing={codeTurnHistoryLoading}
-        onRefresh={() => void reloadCodeTurnHistory()}
-        onReview={target => onOpenCodeReview?.(target)}
-      />
-    ));
-  }, [codeTurnHistoryLoading, codeTurnsByMessageId, onOpenCodeReview, reloadCodeTurnHistory]);
+    return turns.map(turn => {
+      const turnKey = turnDiffKey(turn);
+      const isLatest = turnKey === latestCodeTurnKey;
+      return (
+        <CodeChangesCard
+          key={turnKey}
+          diff={turn}
+          refreshing={codeTurnHistoryLoading}
+          isLatest={isLatest}
+          isProcessing={isProcessing}
+          operation={isLatest ? turnChangeOperation?.action ?? null : null}
+          operationError={turnChangeError?.turnKey === turnKey ? turnChangeError.message : null}
+          onRefresh={() => void reloadCodeTurnHistory()}
+          onReview={target => onOpenCodeReview?.(target)}
+          onDiscard={() => void discardLatestTurn()}
+          onRedo={() => void redoLatestTurn()}
+        />
+      );
+    });
+  }, [
+    codeTurnHistoryLoading,
+    codeTurnsByMessageId,
+    discardLatestTurn,
+    isProcessing,
+    latestCodeTurnKey,
+    onOpenCodeReview,
+    redoLatestTurn,
+    reloadCodeTurnHistory,
+    turnChangeError,
+    turnChangeOperation,
+  ]);
 
   // 跟踪用户是否正在查看历史消息（不在底部）
   const userScrolledUpRef = useRef(false);
@@ -1125,6 +1153,12 @@ export function ChatPanel({
       onDragOver={handleDesktopFileDragOver}
       onDrop={handleDesktopFileDrop}
     >
+      {turnChangeNotice ? (
+        <div className="code-turn-change-toast" role="status" aria-live="polite">
+          <CheckCircle2 size={17} aria-hidden="true" />
+          <span>{turnChangeNotice}</span>
+        </div>
+      ) : null}
       {shouldShowChatHeader && (
         <div className="chat-panel-header">
           <div className="chat-panel-header__meta">
