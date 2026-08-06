@@ -95,7 +95,10 @@ function showOverview(ctx: import("../types.js").CommandContext, payload: Status
 
 function showUsage(ctx: import("../types.js").CommandContext, summary: SessionUsageSummary): void {
   const fmt = (n: number) => n.toLocaleString("en-US");
-  const fmtCost = (n: number) => `$${n.toFixed(4)}`;
+  const fmtCost = (n: number) => {
+    const currency = summary.currency?.trim();
+    return currency ? `${n.toFixed(4)} ${currency}` : n.toFixed(4);
+  };
 
   const items = [
     { label: "input_tokens", value: fmt(summary.total_input_tokens) },
@@ -103,6 +106,7 @@ function showUsage(ctx: import("../types.js").CommandContext, summary: SessionUs
     { label: "total_tokens", value: fmt(summary.total_tokens) },
   ];
   if (summary.cost_available && typeof summary.total_cost === "number") {
+    items.push({ label: "cost_source", value: summary.cost_source ?? "provider_reported" });
     items.push({ label: "total_cost", value: fmtCost(summary.total_cost) });
     if (summary.cost_limit != null) {
       items.push({ label: "cost_limit", value: fmtCost(summary.cost_limit) });
