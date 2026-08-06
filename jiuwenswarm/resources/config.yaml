@@ -5,6 +5,15 @@ preferred_language: zh
 setup_guide:
   enabled: true
 
+# Experimental provider-reported session cost visibility.
+# Cost is shown/enforced only when the provider emits supported cost metadata.
+usage_cost:
+  enabled: false
+  mode: provider_reported
+  enforce_limits: false
+  unsupported_provider_behavior: refuse_limit
+  currency: ""
+
 # auto-recap：用户空闲5分钟后自动生成会话摘要（TUI 端）
 auto_recap:
   enabled: true

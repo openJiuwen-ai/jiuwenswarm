@@ -4,7 +4,10 @@ import { CommandKind, type SlashCommand } from "../types.js";
 function showUsage(ctx: import("../types.js").CommandContext): void {
   const summary = ctx.getUsageSummary();
   const fmt = (n: number) => n.toLocaleString("en-US");
-  const fmtCost = (n: number) => `$${n.toFixed(4)}`;
+  const fmtCost = (n: number) => {
+    const currency = summary.currency?.trim();
+    return currency ? `${n.toFixed(4)} ${currency}` : n.toFixed(4);
+  };
 
   const items = [
     { label: "input_tokens", value: fmt(summary.total_input_tokens) },
@@ -12,6 +15,7 @@ function showUsage(ctx: import("../types.js").CommandContext): void {
     { label: "total_tokens", value: fmt(summary.total_tokens) },
   ];
   if (summary.cost_available && typeof summary.total_cost === "number") {
+    items.push({ label: "cost_source", value: summary.cost_source ?? "provider_reported" });
     items.push({ label: "total_cost", value: fmtCost(summary.total_cost) });
     if (summary.cost_limit != null) {
       items.push({ label: "cost_limit", value: fmtCost(summary.cost_limit) });
@@ -26,7 +30,7 @@ function showUsage(ctx: import("../types.js").CommandContext): void {
         { label: `  output`, value: fmt(entry.output_tokens) },
       );
       if (typeof entry.total_cost === "number") {
-        items.push({ label: `  cost`, value: fmtCost(entry.total_cost) });
+        items.push({ label: `  provider_reported_cost`, value: fmtCost(entry.total_cost) });
       }
     }
   }

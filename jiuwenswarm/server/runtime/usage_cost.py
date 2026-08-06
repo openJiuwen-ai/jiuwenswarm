@@ -17,12 +17,60 @@ _SESSION_COST_TOTALS: dict[str, dict[str, float | bool]] = {}
 _SESSION_COST_LIMITS: dict[str, float] = {}
 
 
+def _bool_value(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
+
+
+def get_usage_cost_settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    if config is None:
+        try:
+            from jiuwenswarm.common.config import get_config
+
+            config = get_config()
+        except Exception:
+            config = {}
+    raw = config.get("usage_cost", {}) if isinstance(config, dict) else {}
+    section = raw if isinstance(raw, dict) else {}
+    mode = str(section.get("mode") or "provider_reported").strip() or "provider_reported"
+    currency_raw = section.get("currency")
+    currency = str(currency_raw).strip().upper() if currency_raw is not None else ""
+    enabled = _bool_value(section.get("enabled"), False) and mode == "provider_reported"
+    enforce_limits = enabled and _bool_value(section.get("enforce_limits"), False)
+    unsupported = str(section.get("unsupported_provider_behavior") or "refuse_limit").strip().lower()
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "enforce_limits": enforce_limits,
+        "unsupported_provider_behavior": unsupported or "refuse_limit",
+        "currency": currency or None,
+    }
+
+
+def is_usage_cost_enabled(config: dict[str, Any] | None = None) -> bool:
+    return bool(get_usage_cost_settings(config).get("enabled"))
+
+
+def is_usage_cost_limit_enforcement_enabled(config: dict[str, Any] | None = None) -> bool:
+    return bool(get_usage_cost_settings(config).get("enforce_limits"))
+
+
 class CostLimitExceededError(RuntimeError):
     def __init__(self, summary: dict[str, Any]):
         self.summary = summary
         total_cost = float(summary.get("total_cost", 0.0) or 0.0)
         cost_limit = float(summary.get("cost_limit", 0.0) or 0.0)
-        super().__init__(f"Cost limit exceeded: ${total_cost:.4f} > ${cost_limit:.4f}.")
+        currency = str(summary.get("currency") or "").strip().upper()
+        total_text = f"{total_cost:.4f} {currency}" if currency else f"{total_cost:.4f}"
+        limit_text = f"{cost_limit:.4f} {currency}" if currency else f"{cost_limit:.4f}"
+        super().__init__(f"Cost limit exceeded: {total_text} > {limit_text}.")
 
 
 def set_subagent_usage_sink(sink: UsageSink | None) -> Token[UsageSink | None]:
@@ -53,6 +101,7 @@ def _cost_value(usage: dict[str, Any], name: str) -> float | None:
 def add_session_usage(session_id: str | None, usage: dict[str, Any]) -> dict[str, Any]:
     """Accumulate provider cost metadata for a session and return the summary."""
     key = _session_key(session_id)
+    settings = get_usage_cost_settings()
     input_tokens = _token_value(usage, "input_tokens") or 0.0
     output_tokens = _token_value(usage, "output_tokens") or 0.0
     total_tokens_raw = _token_value(usage, "total_tokens")
@@ -60,7 +109,9 @@ def add_session_usage(session_id: str | None, usage: dict[str, Any]) -> dict[str
     input_cost_raw = _cost_value(usage, "input_cost")
     output_cost_raw = _cost_value(usage, "output_cost")
     total_cost_raw = _cost_value(usage, "total_cost")
-    cost_available = any(v is not None for v in (input_cost_raw, output_cost_raw, total_cost_raw))
+    cost_available = bool(settings.get("enabled")) and any(
+        v is not None for v in (input_cost_raw, output_cost_raw, total_cost_raw)
+    )
     input_cost = input_cost_raw or 0.0
     output_cost = output_cost_raw or 0.0
     total_cost = total_cost_raw if total_cost_raw is not None else input_cost + output_cost
@@ -90,22 +141,30 @@ def add_session_usage(session_id: str | None, usage: dict[str, Any]) -> dict[str
 
 def get_session_cost_summary(session_id: str | None) -> dict[str, Any]:
     key = _session_key(session_id)
+    settings = get_usage_cost_settings()
     with _SESSION_COST_LOCK:
         current = dict(_SESSION_COST_TOTALS.get(key) or {})
         limit = _SESSION_COST_LIMITS.get(key)
-    cost_available = bool(current.get("cost_available"))
-    total_cost = float(current.get("total_cost", 0.0) or 0.0)
+    feature_enabled = bool(settings.get("enabled"))
+    cost_available = feature_enabled and bool(current.get("cost_available"))
+    total_cost = float(current.get("total_cost", 0.0) or 0.0) if cost_available else 0.0
+    enforcement_enabled = bool(settings.get("enforce_limits"))
     return {
         "session_id": key,
         "input_tokens": int(current.get("input_tokens", 0.0) or 0.0),
         "output_tokens": int(current.get("output_tokens", 0.0) or 0.0),
         "total_tokens": int(current.get("total_tokens", 0.0) or 0.0),
+        "cost_feature_enabled": feature_enabled,
         "cost_available": cost_available,
-        "input_cost": round(float(current.get("input_cost", 0.0) or 0.0), 6),
-        "output_cost": round(float(current.get("output_cost", 0.0) or 0.0), 6),
+        "cost_source": "provider_reported" if cost_available else "unavailable",
+        "currency": settings.get("currency"),
+        "input_cost": round(float(current.get("input_cost", 0.0) or 0.0), 6) if cost_available else 0.0,
+        "output_cost": round(float(current.get("output_cost", 0.0) or 0.0), 6) if cost_available else 0.0,
         "total_cost": round(total_cost, 6),
         "cost_limit": round(limit, 6) if limit is not None else None,
-        "cost_limit_exceeded": cost_available and limit is not None and total_cost > limit,
+        "limit_supported": cost_available and enforcement_enabled,
+        "limit_enforcement_enabled": enforcement_enabled,
+        "cost_limit_exceeded": cost_available and enforcement_enabled and limit is not None and total_cost > limit,
     }
 
 
@@ -128,10 +187,19 @@ def _token_value(usage: dict[str, Any], name: str) -> float | None:
 
 def set_session_cost_limit(session_id: str | None, limit: float | None) -> dict[str, Any]:
     key = _session_key(session_id)
+    summary = get_session_cost_summary(key)
     with _SESSION_COST_LOCK:
         if limit is None:
             _SESSION_COST_LIMITS.pop(key, None)
         else:
+            if not bool(summary.get("cost_feature_enabled")):
+                raise ValueError("usage cost is disabled")
+            if not bool(summary.get("limit_enforcement_enabled")):
+                raise ValueError("cost limit enforcement is disabled")
+            if not bool(summary.get("cost_available")):
+                raise ValueError(
+                    "cost limit unavailable: provider has not reported supported cost metadata"
+                )
             value = float(limit)
             if not math.isfinite(value):
                 raise ValueError("cost limit must be finite")

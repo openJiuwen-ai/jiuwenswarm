@@ -761,14 +761,19 @@ export function ChatPanel({
   const sessionCostTotal = useMemo(() => {
     let total = 0;
     let available = false;
+    let currency = '';
     for (const message of messages) {
       const cost = message.usageSummary?.total_cost;
       if (typeof cost === 'number' && Number.isFinite(cost)) {
         available = true;
         total += Math.max(0, cost);
+        const reportedCurrency = message.usageSummary?.currency;
+        if (typeof reportedCurrency === 'string' && reportedCurrency.trim()) {
+          currency = reportedCurrency.trim().toUpperCase();
+        }
       }
     }
-    return available ? total : null;
+    return available ? { total, currency } : null;
   }, [messages]);
   const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
   const historyLoadedPages = historyPager?.loadedPages ?? 0;
@@ -1109,8 +1114,10 @@ export function ChatPanel({
               </div>
             )}
             {sessionCostTotal !== null && (
-              <div className="chat-panel-header__usage" title="Current session cost">
-                ${sessionCostTotal.toFixed(4)}
+              <div className="chat-panel-header__usage" title="Provider-reported current session cost">
+                {sessionCostTotal.currency
+                  ? `${sessionCostTotal.total.toFixed(4)} ${sessionCostTotal.currency}`
+                  : `provider cost ${sessionCostTotal.total.toFixed(4)}`}
               </div>
             )}
           </div>

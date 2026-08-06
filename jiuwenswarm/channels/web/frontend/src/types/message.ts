@@ -27,6 +27,8 @@ export interface UsageSummary {
   input_cost?: number;
   output_cost?: number;
   total_cost?: number;
+  cost_source?: string;
+  currency?: string | null;
 }
 
 export interface FileDownloadItem {

@@ -653,9 +653,11 @@ export const MessageItem = memo(function MessageItem({
             </span>
             {message.usageSummary.total_cost != null && message.usageSummary.total_cost > 0 && (
               <span>
-                ${message.usageSummary.input_cost?.toFixed(4)} in /{' '}
-                ${message.usageSummary.output_cost?.toFixed(4)} out /{' '}
-                ${message.usageSummary.total_cost.toFixed(4)} total
+                provider-reported{' '}
+                {message.usageSummary.input_cost?.toFixed(4)} in /{' '}
+                {message.usageSummary.output_cost?.toFixed(4)} out /{' '}
+                {message.usageSummary.total_cost.toFixed(4)} total
+                {message.usageSummary.currency ? ` ${message.usageSummary.currency}` : ''}
               </span>
             )}
           </div>

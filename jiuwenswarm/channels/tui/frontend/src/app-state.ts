@@ -105,10 +105,15 @@ export interface SessionUsageSummary {
   total_output_tokens: number;
   total_tokens: number;
   cost_available: boolean;
+  cost_feature_enabled?: boolean;
+  cost_source?: string;
+  currency?: string | null;
   total_input_cost?: number;
   total_output_cost?: number;
   total_cost?: number;
   cost_limit?: number | null;
+  limit_supported?: boolean;
+  limit_enforcement_enabled?: boolean;
   cost_limit_exceeded: boolean;
   byModel: ModelUsageEntry[];
 }
@@ -408,8 +413,6 @@ export class CliPiAppState {
   private statusLineText: string | null = null;
   private statusLineTimer: ReturnType<typeof setInterval> | null = null;
   private usageByModel = new Map<string, ModelUsageEntry>();
-  private sessionCostLimit: number | null = null;
-  private costLimitExceeded = false;
   private currentQueryUsage: CurrentQueryUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -1272,8 +1275,6 @@ export class CliPiAppState {
       setInput: this._setInputRef ?? undefined,
       enterStatusView: undefined,
       getUsageSummary: () => this.getUsageSummary(),
-      getSessionCostLimit: () => this.getSessionCostLimit(),
-      setSessionCostLimit: (limit) => this.setSessionCostLimit(limit),
       restartStatusLine: () => this.restartStatusLinePoll(),
       getStatusLineJsonInput: () => this.buildStatusLineJsonInput(),
       hasRunningTeamTasks: () => {
@@ -1314,6 +1315,8 @@ export class CliPiAppState {
       total_output_tokens: entries.reduce((s, e) => s + e.output_tokens, 0),
       total_tokens: entries.reduce((s, e) => s + e.total_tokens, 0),
       cost_available: costAvailable,
+      cost_feature_enabled: costAvailable,
+      cost_source: costAvailable ? "provider_reported" : "unavailable",
       ...(costAvailable
         ? {
             total_input_cost: inputCost,
@@ -1321,8 +1324,10 @@ export class CliPiAppState {
             total_cost: totalCost,
           }
         : {}),
-      cost_limit: this.sessionCostLimit,
-      cost_limit_exceeded: this.costLimitExceeded,
+      cost_limit: null,
+      limit_supported: false,
+      limit_enforcement_enabled: false,
+      cost_limit_exceeded: false,
       byModel: entries,
     };
   }
@@ -1360,17 +1365,7 @@ export class CliPiAppState {
       entry.total_cost = (existing?.total_cost ?? 0) + (totalCostDelta ?? 0);
     }
     this.usageByModel.set(key, entry);
-    this.enforceCostLimit();
-  }
-
-  setSessionCostLimit(limit: number | null): void {
-    this.sessionCostLimit = limit !== null ? Math.max(0, limit) : null;
-    this.costLimitExceeded = false;
     this.emitChange();
-  }
-
-  getSessionCostLimit(): number | null {
-    return this.sessionCostLimit;
   }
 
   private updateCurrentUsageTokens(usage: Record<string, unknown>): void {
@@ -1396,28 +1391,6 @@ export class CliPiAppState {
 
   private safeCostValue(value: unknown): number | undefined {
     return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined;
-  }
-
-  private enforceCostLimit(): void {
-    if (this.sessionCostLimit === null || this.costLimitExceeded) {
-      return;
-    }
-    const summary = this.getUsageSummary();
-    if (!summary.cost_available || typeof summary.total_cost !== "number") {
-      return;
-    }
-    if (summary.total_cost <= this.sessionCostLimit) {
-      return;
-    }
-    this.costLimitExceeded = true;
-    this.sendEventOnly("chat.interrupt", { intent: "cancel", mode: this.mode });
-    this.addItem(
-      addError(
-        this.sessionId,
-        `Cost limit exceeded: $${summary.total_cost.toFixed(4)} > $${this.sessionCostLimit.toFixed(4)}. Task interrupted.`,
-      ),
-    );
-    this.emitChange();
   }
 
   private resetCurrentUsageTokens(): void {
@@ -1821,8 +1794,6 @@ export class CliPiAppState {
     this.sessionId = newId;
     this.lastVisibleUserRequest = null;
     this.usageByModel.clear();
-    this.sessionCostLimit = null;
-    this.costLimitExceeded = false;
     this.resetCurrentUsageTokens();
     this.workflowRuns = [];
     this.pendingHumanPrompts = new Map();
@@ -3346,6 +3317,8 @@ export class CliPiAppState {
         cost_available: usage.cost_available,
         ...(usage.cost_available
           ? {
+              cost_source: usage.cost_source ?? "provider_reported",
+              currency: usage.currency ?? null,
               total_input_cost: usage.total_input_cost ?? 0,
               total_output_cost: usage.total_output_cost ?? 0,
               total_cost: usage.total_cost ?? 0,
