@@ -528,7 +528,7 @@ function AppContent() {
   const historyPageCancelRef = useRef(new Map<string, () => void>());
   const historyBackgroundPrefetchTokensRef = useRef(new Map<string, number>());
   const creatingSessionRef = useRef(false);
-  const promotedFromNewSessionIdsRef = useRef(new Set<string>());
+  const sessionIdsCreatedInThisPageRef = useRef(new Set<string>());
   const shareExportRef = useRef<HTMLDivElement>(null);
   const shareExportFilenameRef = useRef('jiuwenswarm-share.png');
   const shareExportTokenRef = useRef(0);
@@ -1875,7 +1875,7 @@ function AppContent() {
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
     
-    if (promotedFromNewSessionIdsRef.current.has(sessionId)) {
+    if (sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -1891,8 +1891,8 @@ function AppContent() {
       return;
     }
 
-    // 已有完整历史恢复状态则跳过历史加载，直接使用内存数据。
-    // historyPagerMeta 是唯一可靠的"history 是否完整加载过"标记。
+    // 当前页面新建的会话已在上方复用实时内存数据；对于其他会话，
+    // historyPagerMeta 表示已完成 history 首屏恢复，可直接复用并继续补齐剩余分页。
     const existingRuntime = useChatStore.getState().getRuntime(sessionId);
     if (existingRuntime && existingRuntime.historyPagerMeta) {
       setLoadingHistory(sessionId, false);
@@ -2079,7 +2079,7 @@ function AppContent() {
         }
         usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
         useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
-        promotedFromNewSessionIdsRef.current.add(newSid);
+        sessionIdsCreatedInThisPageRef.current.add(newSid);
         useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
         sessionIdRef.current = newSid;
         setSessionId(newSid);
@@ -2378,7 +2378,7 @@ function AppContent() {
         !options?.skipHistoryLoad &&
         (!(cronRuntimeAfterSettle ?? existingRuntime)?.historyPagerMeta || cronNeedsHistoryReload) &&
         !(cronRuntimeAfterSettle ?? existingRuntime)?.isNewSession &&
-        !promotedFromNewSessionIdsRef.current.has(targetSessionId);
+        !sessionIdsCreatedInThisPageRef.current.has(targetSessionId);
       if (willLoadHistory) {
         setHistoryPagerMeta(targetSessionId, null);
         setLoadingHistory(targetSessionId, true);
@@ -2755,7 +2755,7 @@ function AppContent() {
     && isConversationMissing(routeSessionId, true, sessions);
   const showConversationNotFound = route.kind === 'not-found' || routeSessionMissing;
   const showWorkspaceDivider = isTeamAreaExpanded && !showConversationNotFound;
-  const isNewSessionPromotion = Boolean(sessionId && promotedFromNewSessionIdsRef.current.has(sessionId));
+  const isNewSessionPromotion = Boolean(sessionId && sessionIdsCreatedInThisPageRef.current.has(sessionId));
   const composerFocusKey = showConversationNotFound ? null : `${sessionId}:${composerFocusNonce}`;
 
   useEffect(() => {

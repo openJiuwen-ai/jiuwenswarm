@@ -1,14 +1,47 @@
 import { createStaticPreviewDocument } from '../isolatedPreview';
+import { getSvgNaturalHeight, getSvgNaturalWidth } from '../../../utils/svgDimensions';
 
-export type SvgMarkupStatus = 'streaming' | 'ready' | 'invalid';
+export type SvgMarkupStatus = 'streaming' | 'ready' | 'previewable' | 'invalid';
+
+export interface SvgPreview {
+  markup: string;
+  aspectRatio: number | null;
+  wellFormed: boolean;
+}
+
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 
 export const SVG_PREVIEW_DOCUMENT = createStaticPreviewDocument({
   styles: `
-      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-      body { display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
-      body > svg { display: block; width: 100%; height: 100%; }
+      html, body { width: 100%; margin: 0; overflow: hidden; }
+      body > svg { display: block; width: 100%; height: auto; }
     `,
 });
+
+export function getSvgPreview(code: string): SvgPreview | null {
+  if (typeof DOMParser === 'undefined') return null;
+
+  // Match the iframe's browser-defined HTML/SVG parsing behavior. This keeps
+  // preview status and output consistent even when the source is not XML-well-formed.
+  const document = new DOMParser().parseFromString(code, 'text/html');
+  const root = document.body.querySelector('svg');
+  if (!root) return null;
+
+  const svg = root as unknown as SVGSVGElement;
+  const width = getSvgNaturalWidth(svg);
+  const height = getSvgNaturalHeight(svg);
+  const normalized = root.cloneNode(true) as SVGSVGElement;
+  if (!normalized.hasAttribute('xmlns')) normalized.setAttribute('xmlns', SVG_NAMESPACE);
+  const xmlDocument = new DOMParser().parseFromString(code, 'image/svg+xml');
+  const xmlRoot = xmlDocument.documentElement;
+  const wellFormed = xmlDocument.querySelector('parsererror') === null && xmlRoot.namespaceURI === SVG_NAMESPACE && xmlRoot.localName === 'svg';
+
+  return {
+    markup: normalized.outerHTML,
+    aspectRatio: width > 0 && height > 0 ? width / height : null,
+    wellFormed,
+  };
+}
 
 function isSameDomNodeType(current: Node, next: Node): boolean {
   if (current.nodeType !== next.nodeType) return false;
@@ -75,12 +108,8 @@ export function updateSvgPreview(frame: HTMLIFrameElement | null, code: string):
   else body.appendChild(nextSvg);
 }
 
-export function getSvgMarkupStatus(code: string, complete: boolean): SvgMarkupStatus {
-  if (!complete) return 'streaming';
-  if (typeof DOMParser === 'undefined') return 'invalid';
-
-  const document = new DOMParser().parseFromString(code, 'image/svg+xml');
-  const root = document.documentElement;
-  const hasParserError = document.querySelector('parsererror') !== null;
-  return !hasParserError && root.namespaceURI === 'http://www.w3.org/2000/svg' && root.localName === 'svg' ? 'ready' : 'invalid';
+export function getSvgMarkupStatus(preview: SvgPreview | null, complete: boolean, isStreaming: boolean): SvgMarkupStatus {
+  if (!complete && isStreaming) return 'streaming';
+  if (!preview) return 'invalid';
+  return preview.wellFormed ? 'ready' : 'previewable';
 }
