@@ -10,7 +10,7 @@ import { MarkdownRenderer } from '../node_modules/.cache/markdown-renderer/Markd
 import { convertSvgToPng, downloadBlob, saveBlob } from '../node_modules/.cache/markdown-renderer/diagrams/diagramExport.js';
 import { MermaidDiagram } from '../node_modules/.cache/markdown-renderer/diagrams/MermaidDiagram.js';
 import { SvgDiagram } from '../node_modules/.cache/markdown-renderer/diagrams/SvgDiagram.js';
-import { getSvgMarkupStatus, SVG_PREVIEW_DOCUMENT, updateSvgPreview } from '../node_modules/.cache/markdown-renderer/diagrams/svgPreview.js';
+import { getSvgMarkupStatus, getSvgPreview, SVG_PREVIEW_DOCUMENT, updateSvgPreview } from '../node_modules/.cache/markdown-renderer/diagrams/svgPreview.js';
 import { UNTRUSTED_STATIC_PREVIEW_CSP, UNTRUSTED_STATIC_PREVIEW_SANDBOX } from '../node_modules/.cache/markdown-renderer/isolatedPreview.js';
 
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
@@ -54,7 +54,7 @@ function createI18n() {
           },
           svg: {
             streaming: 'Drawing…',
-            invalid: 'Invalid SVG code',
+            invalid: 'SVG code contains errors',
             previewTitle: 'SVG image preview',
           },
           mermaid: {
@@ -74,10 +74,32 @@ test('classifies streaming, valid, and malformed SVG markup with browser DOM par
   const dom = new JSDOM();
   const restore = installGlobals({ DOMParser: dom.window.DOMParser });
   try {
-    assert.equal(getSvgMarkupStatus('<svg><g>', false), 'streaming');
-    assert.equal(getSvgMarkupStatus(`<svg xmlns="${SVG_NAMESPACE}"><rect /></svg>`, true), 'ready');
-    assert.equal(getSvgMarkupStatus(`<svg xmlns="${SVG_NAMESPACE}"><g></svg>`, true), 'invalid');
-    assert.equal(getSvgMarkupStatus('<div />', true), 'invalid');
+    const unclosedPreview = getSvgPreview('<svg><g>');
+    assert.equal(getSvgMarkupStatus(unclosedPreview, false, true), 'streaming');
+    assert.equal(getSvgMarkupStatus(unclosedPreview, false, false), 'previewable');
+    assert.equal(getSvgMarkupStatus(getSvgPreview(`<svg xmlns="${SVG_NAMESPACE}"><rect /></svg>`), false, false), 'ready');
+    assert.equal(getSvgMarkupStatus(getSvgPreview(`<svg xmlns="${SVG_NAMESPACE}"><rect /></svg>`), true, false), 'ready');
+    assert.equal(getSvgMarkupStatus(getSvgPreview(`<svg xmlns="${SVG_NAMESPACE}"><g></svg>`), true, false), 'previewable');
+    assert.equal(getSvgMarkupStatus(getSvgPreview('<div />'), true, false), 'invalid');
+
+    const normalized = new dom.window.DOMParser().parseFromString(unclosedPreview.markup, 'image/svg+xml');
+    assert.equal(normalized.querySelector('parsererror'), null);
+    assert.equal(normalized.documentElement.namespaceURI, SVG_NAMESPACE);
+  } finally {
+    restore();
+    dom.window.close();
+  }
+});
+
+test('derives the SVG preview aspect ratio from intrinsic dimensions', () => {
+  const dom = new JSDOM();
+  const restore = installGlobals({ DOMParser: dom.window.DOMParser });
+  try {
+    assert.equal(getSvgPreview(`<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 800 600" />`).aspectRatio, 4 / 3);
+    assert.equal(getSvgPreview(`<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 800 1200"><g>`).aspectRatio, 2 / 3);
+    assert.equal(getSvgPreview(`<svg xmlns="${SVG_NAMESPACE}" width="640px" height="320" />`).aspectRatio, 2);
+    assert.equal(getSvgPreview(`<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 0 100" />`).aspectRatio, null);
+    assert.equal(getSvgPreview('<div />'), null);
   } finally {
     restore();
     dom.window.close();
@@ -135,12 +157,18 @@ test('renders SVG markup only inside a sandboxed iframe and falls back to code f
   });
   const container = dom.window.document.querySelector('#root');
   const i18n = createI18n();
+  const streamingCode = `<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 800 1200"><g>`;
   const validCode = `<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 10 10"><script>alert('outside')</script><rect width="10" height="10" /></svg>`;
   let root;
   try {
     root = createRoot(container);
     await act(async () => {
-      root.render(createElement(I18nextProvider, { i18n }, createElement(SvgDiagram, { code: validCode, complete: true })));
+      root.render(createElement(I18nextProvider, { i18n }, createElement(SvgDiagram, { code: streamingCode, complete: false, isStreaming: true })));
+    });
+    assert.equal(container.querySelector('[data-svg-status="streaming"] iframe')?.style.aspectRatio, `${2 / 3}`);
+
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(SvgDiagram, { code: validCode, complete: true, isStreaming: false })));
     });
 
     const diagram = container.querySelector('[data-svg-status="ready"]');
@@ -148,6 +176,7 @@ test('renders SVG markup only inside a sandboxed iframe and falls back to code f
     assert.ok(frame);
     assert.equal(frame.getAttribute('sandbox'), UNTRUSTED_STATIC_PREVIEW_SANDBOX);
     assert.equal(frame.getAttribute('sandbox').includes('allow-scripts'), false);
+    assert.equal(frame.style.aspectRatio, '1');
     for (const directive of UNTRUSTED_STATIC_PREVIEW_CSP.split('; ')) {
       assert.match(frame.getAttribute('srcdoc'), new RegExp(directive.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
@@ -167,9 +196,11 @@ test('renders SVG markup only inside a sandboxed iframe and falls back to code f
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => {
-      root.render(createElement(I18nextProvider, { i18n }, createElement(SvgDiagram, { code: `<svg xmlns="${SVG_NAMESPACE}"><g></svg>`, complete: true })));
+      root.render(createElement(I18nextProvider, { i18n }, createElement(SvgDiagram, { code: '<div>not an SVG</div>', complete: true, isStreaming: false })));
     });
     assert.ok(container.querySelector('[data-svg-status="invalid"] .svg-diagram__code-view'));
+    assert.ok(container.querySelector('[data-svg-status="invalid"] .diagram-toolbar-status--warning'));
+    assert.equal(container.querySelector('[data-svg-status="invalid"] .diagram-toolbar-status--error'), null);
     assert.equal(container.querySelector('[data-svg-status="invalid"] iframe'), null);
   } finally {
     if (root) await act(async () => root.unmount());
@@ -267,6 +298,46 @@ test('ignores a stale Mermaid render after the source changes', async () => {
     assert.equal(container.querySelector('[data-source="first"]'), null);
     await act(async () => pending.get('second')('<svg data-source="second" viewBox="0 0 10 10" />'));
     assert.ok(container.querySelector('[data-source="second"]'));
+  } finally {
+    if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('keeps the image tab selected when a response ends with browser-renderable unclosed SVG', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const restore = installGlobals({
+    DOMParser: dom.window.DOMParser,
+    Event: dom.window.Event,
+    HTMLElement: dom.window.HTMLElement,
+    HTMLIFrameElement: dom.window.HTMLIFrameElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    Node: dom.window.Node,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+  });
+  const container = dom.window.document.querySelector('#root');
+  const i18n = createI18n();
+  const markdown = `\`\`\`svg\n<svg xmlns="${SVG_NAMESPACE}" viewBox="0 0 100 100"><g>`;
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(MarkdownRenderer, { content: markdown, isStreaming: true })));
+    });
+    assert.match(container.textContent, /Drawing/);
+    assert.ok(container.querySelector('[data-svg-status="streaming"] iframe'));
+
+    await act(async () => {
+      root.render(createElement(I18nextProvider, { i18n }, createElement(MarkdownRenderer, { content: markdown, isStreaming: false })));
+    });
+    assert.doesNotMatch(container.textContent, /Drawing/);
+    assert.match(container.textContent, /SVG code contains errors/);
+    assert.ok(container.querySelector('[data-svg-status="previewable"] iframe'));
+    assert.ok(container.querySelector('[data-svg-status="previewable"] .diagram-toolbar-status--warning'));
+    assert.equal(container.querySelector('[data-svg-status="previewable"] [aria-pressed="true"]')?.textContent, 'Image');
   } finally {
     if (root) await act(async () => root.unmount());
     restore();
