@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -38,6 +39,101 @@ from jiuwenswarm.agents.harness.common.tools.command_runtime import (
 
 class CommandCancelled(Exception):
     """Raised when a blocking command is terminated by user interrupt."""
+
+
+def collect_process_descendant_pids(pid: int | None) -> list[int]:
+    """Return descendant pids for *pid*, best effort.
+
+    Must be called while the parent is still enumerable. Background jobs started
+    with ``&`` can outlive ``killpg`` and become orphans once the shell exits;
+    collecting their pids before the parent dies is the only reliable way to
+    reach them afterward.
+    """
+    if pid is None:
+        return []
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover - psutil is a declared dependency
+        return []
+    try:
+        return [child.pid for child in psutil.Process(pid).children(recursive=True)]
+    except Exception:  # noqa: BLE001 - gone, or the pid was recycled
+        return []
+
+
+def kill_process_pids(pids: Sequence[int]) -> None:
+    """Kill *pids*, best effort. Nothing here raises."""
+    if not pids:
+        return
+    for pid in pids:
+        try:
+            if os.name != "nt":
+                os.kill(pid, signal.SIGKILL)
+                continue
+            import psutil
+
+            psutil.Process(pid).kill()
+        except Exception:  # noqa: BLE001 - exited between walk and kill
+            continue
+
+
+def reap_process_descendants(pid: int | None, *, descendant_pids: list[int] | None = None) -> None:
+    """Kill everything below *pid*, best effort.
+
+    Shared by the two shell paths this product exposes. ``terminate_shell_process``
+    and agent-core's ``AsyncProcessHandler._kill_process_tree`` both reach the
+    whole process group via ``killpg`` on POSIX but fall back to killing the
+    direct child on Windows. That child is the shell wrapper; the process actually
+    doing the work is its descendant, so on Windows it survives -- exactly the
+    platform the 2026-08-02 runaway-allocation incident happened on, where the
+    survivor is the one holding the memory.
+
+    When *descendant_pids* is supplied, those pids were collected **before** the
+    parent was killed. Otherwise walk from *pid* directly (the parent must still
+    be alive enough for psutil to enumerate children).
+
+    Nothing here raises: failing to reap one member must not prevent reaping the
+    rest, and a pid that has already been waited on may have been recycled.
+    """
+    if descendant_pids is not None:
+        kill_process_pids(descendant_pids)
+        return
+    kill_process_pids(collect_process_descendant_pids(pid))
+
+
+def process_was_reaped(proc: Any) -> bool:
+    """True once the child has been waited on, so its pid may be recycled.
+
+    A reaped pid is not merely dead: the kernel is free to hand it to an
+    unrelated process, and walking it would return *that* process's children.
+    Killing those is the one way this teardown can do real damage, so every
+    walk is gated on this.
+    """
+    return getattr(proc, "returncode", None) is not None
+
+
+def _terminate_command_tree(proc: Any) -> None:
+    """Terminate the command, then everything it spawned.
+
+    Background ``&`` jobs can survive ``killpg`` and become orphans once the
+    foreground child dies and the shell exits, so the descendant pids are
+    collected *before* the parent is killed and that snapshot is what gets
+    swept. Snapshot pids are safe to kill afterwards: they were read while the
+    parent was alive, so they name this command's own tree.
+
+    Walking the parent again is only safe while the parent is still alive.
+    ``terminate_shell_process`` normally waits on the child, and this function
+    can also be reached a second time for one command -- the timeout path
+    raises through the outer handler -- so both walks are skipped once the pid
+    has been reaped.
+    """
+    pid = getattr(proc, "pid", None)
+    descendants = [] if process_was_reaped(proc) else collect_process_descendant_pids(pid)
+    kill_process_pids(descendants)
+    terminate_shell_process(proc)
+    kill_process_pids(descendants)
+    if not process_was_reaped(proc):
+        kill_process_pids(collect_process_descendant_pids(pid))
 
 
 # ── jiuwenswarm-tui 反复 spawn 护栏 ────────────────────────────────
@@ -705,13 +801,13 @@ def _run_command_sync(
     try:
         while proc.poll() is None:
             if time.monotonic() >= deadline:
-                terminate_shell_process(proc)
+                _terminate_command_tree(proc)
                 raise subprocess.TimeoutExpired(cmd=command, timeout=timeout_seconds) from None
             # Check cancel flag inside the poll loop for responsive cancellation.
             # Without this, a long-running command could block for up to 600s
             # after the user cancels, waiting for communicate() to drain pipes.
             if sid and consume_shell_session_cancelled(sid):
-                terminate_shell_process(proc)
+                _terminate_command_tree(proc)
                 raise CommandCancelled(command)
             time.sleep(0.1)
         # Child exited, but grandchildren may still hold pipe FDs open.
@@ -721,7 +817,7 @@ def _run_command_sync(
         try:
             stdout, stderr = proc.communicate(timeout=remaining)
         except subprocess.TimeoutExpired:
-            terminate_shell_process(proc)
+            _terminate_command_tree(proc)
             raise subprocess.TimeoutExpired(cmd=command, timeout=timeout_seconds) from None
         # Final cancel check after communicate drains — covers the case where
         # cancel arrived between the last poll iteration and communicate().
@@ -730,7 +826,7 @@ def _run_command_sync(
     except CommandCancelled:
         raise
     except Exception:
-        terminate_shell_process(proc)
+        _terminate_command_tree(proc)
         raise
     finally:
         if sid:
@@ -886,6 +982,32 @@ async def _run_command_in_bound_sandbox(
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _failure_payload(command: str, message: str, *, exit_code: int = -1,
+                     **extra: Any) -> str:
+    """Return a failure in the shape the execution guards can read.
+
+    The tool documents its contract as JSON, but until now several failure
+    paths returned a bare ``[ERROR]: ...`` string. At the time, the
+    ``ToolResultErrorDetector`` read such a string as neither success nor
+    error, so a command that timed out or was blocked by the safety check
+    counted toward no streak at all. The detector has since learned the bare
+    prefix (openJiuwen-ai/jiuwenswarm#4294); the structured shape is kept
+    because it is the documented contract and carries an ``exit_code``.
+
+    The message stays human-readable in ``stderr``, keeping its ``[ERROR]:``
+    prefix, while ``exit_code`` gives the guards something to key on.
+    """
+    payload = {
+        "command": command,
+        "exit_code": exit_code,
+        "stdout": "",
+        "stderr": message,
+        "success": False,
+    }
+    payload.update(extra)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 @tool(
     name="mcp_exec_command",
     description=(
@@ -909,11 +1031,13 @@ async def mcp_exec_command(
 ) -> str:
     command = (command or "").strip()
     if not command:
-        return "[ERROR]: command cannot be empty."
+        return _failure_payload(command, "[ERROR]: command cannot be empty.")
 
     blocked_reason = _check_command_safety(command)
     if blocked_reason:
-        return f"[ERROR]: command rejected for safety ({blocked_reason})."
+        return _failure_payload(
+            command, f"[ERROR]: command rejected for safety ({blocked_reason})."
+        )
 
     # Guardrail: rate-limit jiuwenswarm-tui spawn loops. Returns a friendly
     # error (not a safety block) so the LLM can recover and pick an
@@ -922,12 +1046,14 @@ async def mcp_exec_command(
     # contextvar is set.
     spawn_block = _enforce_tui_spawn_budget(command, resolve_shell_session_id() or "")
     if spawn_block:
-        return f"[ERROR]: {spawn_block}"
+        return _failure_payload(command, f"[ERROR]: {spawn_block}")
 
     try:
         resolved_workdir = _resolve_command_workdir(workdir)
     except Exception:
-        return "[ERROR]: workdir is outside project workspace."
+        return _failure_payload(
+            command, "[ERROR]: workdir is outside project workspace."
+        )
 
     try:
         timeout_seconds = int(timeout_seconds)
@@ -969,9 +1095,9 @@ async def mcp_exec_command(
                 normalized_shell_type,
             )
         except Exception as exc:
-            return f"[ERROR]: command failed to start: {exc}"
+            return _failure_payload(command, f"[ERROR]: command failed to start: {exc}")
         if err:
-            return f"[ERROR]: background command failed: {err}"
+            return _failure_payload(command, f"[ERROR]: background command failed: {err}")
         payload = {
             "command": command,
             "cwd": str(resolved_workdir),
@@ -993,21 +1119,27 @@ async def mcp_exec_command(
             resolve_shell_session_id(),
         )
     except CommandCancelled:
-        payload = {
-            "command": command,
-            "cwd": str(resolved_workdir),
-            "shell_type": normalized_shell_type,
-            "resolved_shell": normalized_shell_type,
-            "exit_code": -1,
-            "stdout": "",
-            "stderr": "[Interrupted] Command cancelled by user.",
-            "cancelled": True,
-        }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        # Also `success: False`, via the shared helper. A cancel is a user action
+        # rather than a tool fault, but it is still not a success, and leaving it
+        # as the one path the detector reads differently is how "every failure
+        # path is legible" quietly stops being true. An agent that keeps
+        # re-issuing a command the user keeps cancelling is stuck, and should
+        # count as such.
+        return _failure_payload(
+            command,
+            "[Interrupted] Command cancelled by user.",
+            cwd=str(resolved_workdir),
+            shell_type=normalized_shell_type,
+            resolved_shell=normalized_shell_type,
+            cancelled=True,
+        )
     except subprocess.TimeoutExpired:
-        return f"[ERROR]: command timed out after {timeout_seconds}s."
+        return _failure_payload(
+            command, f"[ERROR]: command timed out after {timeout_seconds}s.",
+            timed_out=True,
+        )
     except Exception as exc:
-        return f"[ERROR]: command execution failed: {exc}"
+        return _failure_payload(command, f"[ERROR]: command execution failed: {exc}")
 
     payload = {
         "command": command,

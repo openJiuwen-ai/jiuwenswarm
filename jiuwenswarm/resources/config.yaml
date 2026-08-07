@@ -833,8 +833,8 @@ execution_guard:
 
   # 断路器：检测工具重复/交替/无进展循环，critical 级会强制结束当次回答
   circuit_breaker:
-    # 总开关。断路器会主动中断 agent（force-finish），默认关闭，需显式开启
-    enabled: false
+    # 总开关。默认开启（2026-08-02 Git OOM：此前 false 导致下方阈值均未生效）
+    enabled: true
     # 相同工具+参数重复达到该次数时告警（仅日志，不中断）
     warning_threshold: 10
     # Ping-Pong 两工具交替且无进展达到该次数时中断
@@ -843,6 +843,10 @@ execution_guard:
     global_breaker_threshold: 30
     # 未知/错误工具连续调用达到该次数时停止重试并中断
     unknown_tool_threshold: 10
+    # 工具+参数+结果完全相同重复达到该次数时告警（仅日志）；0 关闭
+    identical_repeat_threshold: 3
+    # 相同失败仍重复到该次数时中断；两阶段避免误伤轮询（如反复查构建状态）；0 关闭
+    identical_repeat_abort_threshold: 5
 
 channels:
   web:
