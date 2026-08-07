@@ -27,7 +27,7 @@ interface DiagramViewerProps extends Omit<HTMLAttributes<HTMLDivElement>, 'child
   exportConfig: DiagramExportConfig;
   toolbarActions?: DiagramToolbarAction[];
   statusText?: string;
-  statusTone?: 'default' | 'danger';
+  statusTone?: 'default' | 'danger' | 'warning';
   feedbackPosition?: 'start' | 'end';
   children: ReactNode;
 }
@@ -180,7 +180,16 @@ export function DiagramViewer({
               {t('diagram.code')}
             </TogglePill>
           </div>
-          {statusText && <span className={clsx('diagram-toolbar-status', statusTone === 'danger' && 'diagram-toolbar-status--error')}>{statusText}</span>}
+          {statusText && (
+            <span
+              className={clsx('diagram-toolbar-status', {
+                'diagram-toolbar-status--error': statusTone === 'danger',
+                'diagram-toolbar-status--warning': statusTone === 'warning',
+              })}
+            >
+              {statusText}
+            </span>
+          )}
           {feedbackPosition === 'start' && feedbackStatus}
         </div>
         <div className="diagram-toolbar-actions">

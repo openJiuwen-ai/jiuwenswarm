@@ -9,6 +9,7 @@ export interface FencedCodeBlock {
 export interface FencedCodeRendererProps {
   code: string;
   complete: boolean;
+  isStreaming: boolean;
 }
 
 export interface FencedCodeAdapter {

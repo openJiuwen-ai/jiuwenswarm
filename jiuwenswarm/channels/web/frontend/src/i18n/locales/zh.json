@@ -2923,7 +2923,7 @@
   },
   "svg": {
     "streaming": "绘制中…",
-    "invalid": "SVG 代码无效",
+    "invalid": "SVG 代码存在异常",
     "previewTitle": "SVG 图片预览"
   },
   "authPrompt": {

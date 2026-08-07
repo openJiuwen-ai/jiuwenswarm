@@ -2933,7 +2933,7 @@
   },
   "svg": {
     "streaming": "Drawing…",
-    "invalid": "Invalid SVG code",
+    "invalid": "SVG code contains errors",
     "previewTitle": "SVG image preview"
   },
   "authPrompt": {

@@ -135,6 +135,10 @@
   color: var(--color-feedback-danger);
 }
 
+.diagram-toolbar-status--warning {
+  color: var(--color-feedback-warning);
+}
+
 .diagram-more {
   position: relative;
   flex: 0 0 auto;
@@ -237,16 +241,19 @@
 /* SVG diagram */
 .svg-diagram__canvas {
   width: 100%;
-  min-height: 280px;
-  max-height: 600px;
-  aspect-ratio: 16 / 9;
+  max-height: 720px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 24px;
+  scrollbar-gutter: stable;
   background: var(--color-surface-elevated);
 }
 
 .svg-diagram__frame {
   display: block;
   width: 100%;
-  height: 100%;
+  height: auto;
   border: 0;
   background: transparent;
 }

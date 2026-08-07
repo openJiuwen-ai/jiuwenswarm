@@ -20,9 +20,11 @@ interface MarkdownRendererProps {
    * 迁入后 #锚点 链接默认不开新页，该开关不再影响行为。
    */
   inPageAnchors?: boolean;
+  isStreaming?: boolean;
 }
 
 const MarkdownContentLinesContext = createContext<string[]>([]);
+const MarkdownStreamingContext = createContext(false);
 
 interface MarkdownLinkPolicy {
   onLinkClick?: MarkdownRendererProps['onLinkClick'];
@@ -70,12 +72,13 @@ type MarkdownPreProps = HTMLAttributes<HTMLPreElement> & { node?: HastElement };
 
 function MarkdownPre({ children, node, ...props }: MarkdownPreProps): JSX.Element {
   const contentLines = useContext(MarkdownContentLinesContext);
+  const isStreaming = useContext(MarkdownStreamingContext);
   const codeBlock = getFencedCodeBlock(children, contentLines, node);
   if (codeBlock) {
     const adapter = getFencedCodeAdapter(codeBlock);
     if (adapter) {
       const Renderer = adapter.Renderer;
-      return <Renderer code={codeBlock.code} complete={codeBlock.complete} />;
+      return <Renderer code={codeBlock.code} complete={codeBlock.complete} isStreaming={isStreaming} />;
     }
   }
 
@@ -96,18 +99,20 @@ const MARKDOWN_COMPONENTS = {
   table: MarkdownTable,
 };
 
-export function MarkdownRenderer({ content, className, testId, onLinkClick, inPageAnchors = false }: MarkdownRendererProps): JSX.Element {
+export function MarkdownRenderer({ content, className, testId, onLinkClick, inPageAnchors = false, isStreaming = false }: MarkdownRendererProps): JSX.Element {
   const markdown = useMemo(() => repairCollapsedGfmTables(unescapeLiteralNewlines(content)), [content]);
   const contentLines = useMemo(() => markdown.split(/\r\n|\n|\r/), [markdown]);
 
   return (
     <div className={className} data-testid={testId}>
       <MarkdownContentLinesContext.Provider value={contentLines}>
-        <MarkdownLinkPolicyContext.Provider value={{ onLinkClick, inPageAnchors }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]} components={MARKDOWN_COMPONENTS}>
-            {markdown}
-          </ReactMarkdown>
-        </MarkdownLinkPolicyContext.Provider>
+        <MarkdownStreamingContext.Provider value={isStreaming}>
+          <MarkdownLinkPolicyContext.Provider value={{ onLinkClick, inPageAnchors }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]} components={MARKDOWN_COMPONENTS}>
+              {markdown}
+            </ReactMarkdown>
+          </MarkdownLinkPolicyContext.Provider>
+        </MarkdownStreamingContext.Provider>
       </MarkdownContentLinesContext.Provider>
     </div>
   );
