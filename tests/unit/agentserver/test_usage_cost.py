@@ -3,9 +3,11 @@ from uuid import uuid4
 import pytest
 
 from jiuwenswarm.server.runtime.usage_cost import (
+    CostLimitExceededError,
     add_session_usage,
     clear_session_cost,
     get_session_cost_summary,
+    raise_if_session_cost_limit_exceeded,
     set_session_cost_limit,
 )
 
@@ -68,6 +70,9 @@ def test_cost_totals_are_derived_from_input_and_output_cost() -> None:
     summary = set_session_cost_limit(session_id, 0.01)
     assert summary["cost_limit_exceeded"] is True
 
+    with pytest.raises(CostLimitExceededError):
+        raise_if_session_cost_limit_exceeded(session_id)
+
 
 def test_explicit_total_cost_takes_precedence_and_limit_can_clear() -> None:
     session_id = _sid()
@@ -87,6 +92,7 @@ def test_explicit_total_cost_takes_precedence_and_limit_can_clear() -> None:
     assert summary["total_cost"] == 0.75
 
     set_session_cost_limit(session_id, 1.0)
+    assert raise_if_session_cost_limit_exceeded(session_id)["cost_limit_exceeded"] is False
     cleared = set_session_cost_limit(session_id, None)
     assert cleared["cost_limit"] is None
     assert get_session_cost_summary(session_id)["cost_limit_exceeded"] is False
