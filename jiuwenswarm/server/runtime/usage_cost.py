@@ -168,6 +168,14 @@ def get_session_cost_summary(session_id: str | None) -> dict[str, Any]:
     }
 
 
+def raise_if_session_cost_limit_exceeded(session_id: str | None) -> dict[str, Any]:
+    """Return the current summary, or raise when the session is already over limit."""
+    summary = get_session_cost_summary(session_id)
+    if bool(summary.get("cost_limit_exceeded")):
+        raise CostLimitExceededError(summary)
+    return summary
+
+
 def clear_session_cost(session_id: str | None) -> None:
     """Clear accumulated cost totals and limits for a finished session."""
     key = _session_key(session_id)

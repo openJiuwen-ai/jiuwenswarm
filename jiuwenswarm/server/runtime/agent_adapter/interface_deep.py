@@ -214,7 +214,7 @@ from jiuwenswarm.server.runtime.session.session_history import append_history_re
 # 时间戳与 live「答完再入列」对齐。按 session 暂存，跨同 session 的并发 stream 共享。
 _pending_goal_objective_history: dict[str, dict[str, Any]] = {}
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
-from jiuwenswarm.server.runtime.usage_cost import CostLimitExceededError
+from jiuwenswarm.server.runtime.usage_cost import CostLimitExceededError, raise_if_session_cost_limit_exceeded
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EVOLUTION_ACCEPT_LABELS,
     EVOLUTION_EXECUTE_LABELS,
@@ -9378,6 +9378,24 @@ class JiuWenSwarmDeepAdapter:
                         is_complete=True,
                     )
                 return
+
+        try:
+            raise_if_session_cost_limit_exceeded(session_id)
+        except CostLimitExceededError as exc:
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.error",
+                    "error": str(exc),
+                    "error_type": "CostLimitExceeded",
+                    "usage": exc.summary,
+                },
+                is_complete=True,
+            )
+            return
+        except Exception:
+            logger.debug("[JiuWenSwarmDeepAdapter] cost-limit preflight failed", exc_info=True)
 
         has_streamed_content = False
         accumulated_text = ""
