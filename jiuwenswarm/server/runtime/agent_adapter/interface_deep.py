@@ -10000,8 +10000,16 @@ class JiuWenSwarmDeepAdapter:
                                 "event_type": "chat.error",
                                 "error": (
                                     "Cost limit exceeded: "
-                                    f"{self._format_cost_value(cost_limit_exceeded_summary.get('total_cost'), currency)} > "
-                                    f"{self._format_cost_value(cost_limit_exceeded_summary.get('cost_limit'), currency)}."
+                                    + self._format_cost_value(
+                                        cost_limit_exceeded_summary.get("total_cost"),
+                                        currency,
+                                    )
+                                    + " > "
+                                    + self._format_cost_value(
+                                        cost_limit_exceeded_summary.get("cost_limit"),
+                                        currency,
+                                    )
+                                    + "."
                                 ),
                                 "error_type": "CostLimitExceeded",
                                 "usage": cost_limit_exceeded_summary,
