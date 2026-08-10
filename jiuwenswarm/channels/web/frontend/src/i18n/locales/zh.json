@@ -624,6 +624,9 @@
   "plan": {
     "toolbarTag": "计划",
     "closeTag": "退出计划模式",
+    "closeTagDisabled": "回答完成或取消后才能退出计划模式",
+    "toolbarUnavailableGoal": "当前已有进行中的目标，暂不可选择计划",
+    "toolbarUnavailableProcessing": "对话进行中，暂不可选择计划",
     "approvalPrompt": "计划已生成，请选择下一步。",
     "executePrompt": "计划已批准，请按计划开始执行。",
     "approvalExecute": "执行",
@@ -637,6 +640,7 @@
     "editTitle": "编辑目标",
     "toolbarTag": "目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
+    "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
     "closeTag": "取消目标",
     "badge": "目标",
     "status": {

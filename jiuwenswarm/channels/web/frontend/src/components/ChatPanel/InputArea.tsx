@@ -630,6 +630,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
   // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
   const planActive = usePlanStore((s) => s.runtimes[activeSessionId ?? '']?.active ?? false);
+  const planPendingExplicitEntry = usePlanStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.pendingExplicitEntry ?? false,
+  );
+  // Plan 已经真正生效：开关打开且至少发出过一条 Plan 消息（pendingExplicitEntry 已被消费）。
+  // 区别于"刚打开开关但还没发消息"的未提交态——后者和 Goal 的 armed 一样可以被对方随手顶替。
+  const planCommitted = planActive && !planPendingExplicitEntry;
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
 
@@ -2335,29 +2341,44 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     <span className="chat-mode-select__label">{t('chat.addFile')}</span>
                   </span>
                 </button>
-                {canUseGoalMenu && (
-                  <button
-                    type="button"
-                    className="chat-mode-select__option"
-                    role="menuitem"
-                    disabled={hasUnfinishedGoal}
-                    title={hasUnfinishedGoal ? t('goal.toolbarUnavailable') : undefined}
-                    onClick={() => {
-                      if (hasUnfinishedGoal) return;
-                      setAttachMenuOpen(false);
-                      if (activeSessionId) {
-                        useGoalStore.getState().setArmed(activeSessionId, true);
-                      }
-                    }}
-                  >
-                    <span className="chat-mode-select__option-main">
-                      <span className="chat-mode-select__icon" aria-hidden="true">
-                        <Target className="w-4 h-4" />
+                {canUseGoalMenu && (() => {
+                  // Goal 和 Plan 互斥：已有真正生效的目标/计划时都不能再选目标。已提交的目标沿用
+                  // 原提示；被"计划已生效"挡住时换一条对应文案，避免误导用户去找目标本身的问题。
+                  const goalDisabled = hasUnfinishedGoal || planCommitted;
+                  const goalDisabledTitle = hasUnfinishedGoal
+                    ? t('goal.toolbarUnavailable')
+                    : planCommitted
+                      ? t('goal.toolbarUnavailablePlan')
+                      : undefined;
+                  return (
+                    <button
+                      type="button"
+                      className="chat-mode-select__option"
+                      role="menuitem"
+                      disabled={goalDisabled}
+                      title={goalDisabledTitle}
+                      onClick={() => {
+                        if (goalDisabled) return;
+                        setAttachMenuOpen(false);
+                        if (activeSessionId) {
+                          // 走到这里 planCommitted 一定是 false（否则上面已 disabled），所以 planActive
+                          // 为 true 时只可能是"刚打开开关、还没发过消息"的未提交态，可以放心顶掉。
+                          if (planActive) {
+                            usePlanStore.getState().setActive(activeSessionId, false);
+                          }
+                          useGoalStore.getState().setArmed(activeSessionId, true);
+                        }
+                      }}
+                    >
+                      <span className="chat-mode-select__option-main">
+                        <span className="chat-mode-select__icon" aria-hidden="true">
+                          <Target className="w-4 h-4" />
+                        </span>
+                        <span className="chat-mode-select__label">{t('goal.toolbarTag')}</span>
                       </span>
-                      <span className="chat-mode-select__label">{t('goal.toolbarTag')}</span>
-                    </span>
-                  </button>
-                )}
+                    </button>
+                  );
+                })()}
                 {personalContextChatAvailable && personalContextMasterEnabled && (
                   <div
                     className="chat-mode-select__option"
@@ -2377,30 +2398,46 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     />
                   </div>
                 )}
-                {canUsePlanMenu && (
-                  <button
-                    type="button"
-                    className="chat-mode-select__option"
-                    role="menuitem"
-                    onClick={() => {
-                      setAttachMenuOpen(false);
-                      if (activeSessionId) {
-                        // explicitEntry：这是用户手动打开开关，下一条 Plan 消息要带
-                        // plan_entry_source，否则会被后端的防重入闸门拦下。
-                        usePlanStore
-                          .getState()
-                          .setActive(activeSessionId, true, { explicitEntry: true });
-                      }
-                    }}
-                  >
-                    <span className="chat-mode-select__option-main">
-                      <span className="chat-mode-select__icon" aria-hidden="true">
-                        <ClipboardList className="w-4 h-4" />
+                {canUsePlanMenu && (() => {
+                  // 对称地：已有未完成目标时不能选计划；对话进行中（isProcessing）时也先禁掉，
+                  // 避免在当前这轮还没结束时又叠加切一次模式。
+                  const planDisabled = hasUnfinishedGoal || isProcessing;
+                  const planDisabledTitle = hasUnfinishedGoal
+                    ? t('plan.toolbarUnavailableGoal')
+                    : isProcessing
+                      ? t('plan.toolbarUnavailableProcessing')
+                      : undefined;
+                  return (
+                    <button
+                      type="button"
+                      className="chat-mode-select__option"
+                      role="menuitem"
+                      disabled={planDisabled}
+                      title={planDisabledTitle}
+                      onClick={() => {
+                        if (planDisabled) return;
+                        setAttachMenuOpen(false);
+                        if (activeSessionId) {
+                          // 走到这里 hasUnfinishedGoal 一定是 false，goalArmed 为 true 时只可能是
+                          // "刚选了目标、还没发消息"的未提交态，顶掉换成 Plan。
+                          useGoalStore.getState().setArmed(activeSessionId, false);
+                          // explicitEntry：这是用户手动打开开关，下一条 Plan 消息要带
+                          // plan_entry_source，否则会被后端的防重入闸门拦下。
+                          usePlanStore
+                            .getState()
+                            .setActive(activeSessionId, true, { explicitEntry: true });
+                        }
+                      }}
+                    >
+                      <span className="chat-mode-select__option-main">
+                        <span className="chat-mode-select__icon" aria-hidden="true">
+                          <ClipboardList className="w-4 h-4" />
+                        </span>
+                        <span className="chat-mode-select__label">{t('plan.toolbarTag')}</span>
                       </span>
-                      <span className="chat-mode-select__label">{t('plan.toolbarTag')}</span>
-                    </span>
-                  </button>
-                )}
+                    </button>
+                  );
+                })()}
               </div>,
               document.body
             )}
@@ -2548,8 +2585,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               <button
                 type="button"
                 className="chat-goal-tag__close"
-                title={t('plan.closeTag')}
+                disabled={isProcessing}
+                title={isProcessing ? t('plan.closeTagDisabled') : t('plan.closeTag')}
                 onClick={() => {
+                  if (isProcessing) return;
                   if (!activeSessionId) return;
                   usePlanStore.getState().setActive(activeSessionId, false);
                 }}

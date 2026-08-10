@@ -1486,6 +1486,15 @@ overflow: hidden;
   background: var(--color-surface-hover);
 }
 
+.chat-goal-tag__close:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-disabled, var(--color-text-secondary));
+}
+
+.chat-goal-tag__close:disabled:hover {
+  background: transparent;
+}
+
 .chat-work-context-row {
   position: relative;
   display: flex;
