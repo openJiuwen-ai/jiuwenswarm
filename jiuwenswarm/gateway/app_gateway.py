@@ -24,7 +24,7 @@ import sys
 import time
 import uuid as uuid_module
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, NamedTuple
 from urllib.parse import urlparse
 
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
@@ -1506,11 +1506,21 @@ def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, Ro
     }
 
 
+class _WebBindSettings(NamedTuple):
+    """Web 监听绑定参数包（G.FNM.03：相关参数具名封装）。"""
+
+    web_host: str
+    web_port: int
+    web_path: str
+    web_dual_protocol: bool
+
+
 async def _run(
     agent_server_url: str,
     web_host: str,
     web_port: int,
     web_path: str,
+    web_dual_protocol: bool = True,
 ) -> None:
     from jiuwenswarm.telemetry.runtime import ProcessTelemetryLifecycle
 
@@ -1522,9 +1532,7 @@ async def _run(
     try:
         restart_requested = await _run_with_telemetry(
             agent_server_url,
-            web_host,
-            web_port,
-            web_path,
+            _WebBindSettings(web_host, web_port, web_path, web_dual_protocol),
             telemetry_lifecycle,
         )
     finally:
@@ -1536,11 +1544,10 @@ async def _run(
 
 async def _run_with_telemetry(
     agent_server_url: str,
-    web_host: str,
-    web_port: int,
-    web_path: str,
+    web_bind: _WebBindSettings,
     telemetry_lifecycle,
 ) -> bool:
+    web_host, web_port, web_path, web_dual_protocol = web_bind
     from jiuwenswarm.common.model_client_extensions import load_extra_model_clients
 
     load_extra_model_clients()
@@ -2054,6 +2061,7 @@ async def _run_with_telemetry(
         host=web_host,
         ws_port=web_port,
         path=web_path,
+        dual_protocol=web_dual_protocol,
     )
     web_channel = WebChannel(web_config, _DummyBus())
 
@@ -3140,6 +3148,8 @@ def main() -> None:
     web_host = args.host or os.getenv("WEB_HOST", "127.0.0.1")
     web_port = args.port or int(os.getenv("WEB_PORT", "19000"))
     web_path = args.web_path or os.getenv("WEB_PATH", "/ws")
+    _dual_raw = os.getenv("WEB_DUAL_PROTOCOL", "1").strip().lower()
+    web_dual_protocol = _dual_raw not in {"0", "false", "no", "off"}
 
     install_async_dump_handler("gateway")
     asyncio.run(
@@ -3148,6 +3158,7 @@ def main() -> None:
             web_host=web_host,
             web_port=web_port,
             web_path=web_path,
+            web_dual_protocol=web_dual_protocol,
         )
     )
 
