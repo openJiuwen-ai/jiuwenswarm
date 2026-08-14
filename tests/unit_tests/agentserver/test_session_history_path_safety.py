@@ -31,6 +31,9 @@ def patched_sessions_root(tmp_path, monkeypatch):
     "a.b.c",
     "good-name",
     "with.dot-and_dash",
+    # Gateway internal sessions use a double-underscore namespace.
+    "__cron__",
+    "__cron__execution_123",
 ])
 def test_legit_id_resolves_to_sessions_dir(patched_sessions_root, session_id):
     p, err = resolve_session_dir(session_id)
@@ -194,6 +197,30 @@ def test_dot_and_dotdot_rejected(patched_sessions_root, session_id):
     p, err = resolve_session_dir(session_id)
     assert p is None, f"LEAK: {session_id!r} resolved to {p}"
     assert err is not None
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    [
+        ".hidden",
+        "-hidden",
+        "hidden.",
+        "hidden-",
+    ],
+)
+def test_reserved_edge_character_rejected(patched_sessions_root, session_id):
+    """Dots and hyphens may occur only inside a session id."""
+    p, err = resolve_session_dir(session_id)
+    assert p is None
+    assert err == "invalid session_id"
+
+
+@pytest.mark.parametrize("session_id", ["_hidden", "hidden_", "__cron__"])
+def test_underscore_edge_character_accepted(patched_sessions_root, session_id):
+    """Leading/trailing underscores are safe and used by internal session ids."""
+    p, err = resolve_session_dir(session_id)
+    assert err is None
+    assert p == (patched_sessions_root / session_id).resolve(strict=False)
 
 
 def test_default_fallback_value_is_accepted(patched_sessions_root):

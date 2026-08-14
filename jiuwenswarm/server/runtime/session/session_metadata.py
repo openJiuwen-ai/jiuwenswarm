@@ -25,6 +25,9 @@ from jiuwenswarm.server.runtime.session.work_mode import (
 logger = logging.getLogger(__name__)
 
 _TEAM_TEMPLATE_SNAPSHOT_FILE = ".team-template-snapshot.json"
+_VALID_SESSION_ID = re.compile(
+    r"^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9_])?$"
+)
 
 # ---------- 异步写入队列(与 session_history 保持一致的模式) ----------
 # (session_id, metadata, sessions_root|None, preserve_pin_fields)
@@ -416,9 +419,7 @@ def _safe_session_subdir(
     stripped = (session_id or "").strip()
     if not stripped or "\x00" in stripped:
         return None
-    from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
-
-    if sanitize_session_id(stripped) != stripped:
+    if _VALID_SESSION_ID.fullmatch(stripped) is None:
         return None
     root = Path(sessions_root) if sessions_root else get_agent_sessions_dir()
     try:
