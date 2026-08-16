@@ -116,7 +116,11 @@ async def test_success_snapshot_and_artifacts() -> None:
     assert snapshot["status"] == "COMPLETED"
     assert snapshot["task"]["session_id"] == "session-A"
     assert snapshot["stages"][0]["stage_status"] == "COMPLETED"
-    assert snapshot["stages"][0]["artifact_refs"] == stage_data["artifact_refs"]
+    artifact = snapshot["stages"][0]["artifact_refs"][0]
+    assert artifact["uri"] == stage_data["artifact_refs"][0]["uri"]
+    assert artifact["name"] == stage_data["artifact_refs"][0]["name"]
+    assert artifact["artifact_id"].startswith("artifact-")
+    assert artifact["evidence_id"] == artifact["artifact_id"]
     assert snapshot["stages"][0]["checkpoint_ref"] == "checkpoint-1"
     json.dumps(snapshot, allow_nan=False)
 
@@ -399,6 +403,50 @@ async def test_malformed_metadata_does_not_raise() -> None:
 
     assert snapshot["task"]["metadata"] == {}
     assert snapshot["stages"][0]["metadata"] == {}
+
+
+async def test_old_artifact_ref_remains_compatible() -> None:
+    rail = StagedTaskLifecycleRail()
+    session = _Session("session-old-artifact")
+
+    await _run_success(
+        rail,
+        session,
+        {"stage_id": "legacy-stage", "artifact_refs": ["file://legacy.txt"]},
+    )
+
+    artifact = rail.get_snapshot(session)["stages"][0]["artifact_refs"][0]
+    assert artifact["uri"] == "file://legacy.txt"
+    assert artifact["artifact_id"].startswith("artifact-")
+    assert artifact["evidence_id"] == artifact["artifact_id"]
+
+
+async def test_new_artifact_provenance_ref_is_normalized_in_snapshot() -> None:
+    rail = StagedTaskLifecycleRail()
+    session = _Session("session-new-artifact")
+
+    await _run_success(
+        rail,
+        session,
+        {
+            "stage_id": "provenance-stage",
+            "artifact_refs": [
+                {
+                    "uri": "file://result.csv",
+                    "artifact_provenance": {
+                        "artifact_id": "artifact-result",
+                        "evidence_id": "evidence-result",
+                        "source": {"type": "generated", "identifier": "run-1"},
+                    },
+                }
+            ],
+        },
+    )
+
+    artifact = rail.get_snapshot(session)["stages"][0]["artifact_refs"][0]
+    assert artifact["artifact_id"] == "artifact-result"
+    assert artifact["evidence_id"] == "evidence-result"
+    assert artifact["source"]["identifier"] == "run-1"
 
 
 def test_real_config_loader_path(monkeypatch, tmp_path) -> None:

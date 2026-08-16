@@ -14,14 +14,15 @@ from typing import Any, TypedDict
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.provenance.artifact import (
+    ArtifactProvenance,
+    normalize_artifact_refs,
+)
 from jiuwenswarm.common.utils import logger, mask_sensitive
 
 
 _STATE_KEY = "jiuwenswarm.staged_task_lifecycle"
 _STAGED_TASK_KEY = "staged_task"
-_MAX_ARTIFACT_REFS = 256
-
-
 class StageStatus(str, Enum):
     """Minimal status vocabulary for a staged task."""
 
@@ -31,13 +32,7 @@ class StageStatus(str, Enum):
     FAILED = "FAILED"
 
 
-class ArtifactRef(TypedDict, total=False):
-    uri: str
-    path: str
-    name: str
-    mime_type: str
-    hash: str
-    metadata: dict[str, Any]
+ArtifactRef = ArtifactProvenance
 
 
 class FailureInfo(TypedDict, total=False):
@@ -135,17 +130,6 @@ def _safe_failure_message(value: Any) -> str:
 
 
 
-def _artifact_refs(value: Any) -> list[dict[str, Any]]:
-    if value is None:
-        return []
-    values = value if isinstance(value, (list, tuple)) else [value]
-    output: list[dict[str, Any]] = []
-    for item in values[:_MAX_ARTIFACT_REFS]:
-        if isinstance(item, str):
-            output.append({"uri": item})
-        elif isinstance(item, dict):
-            output.append(_json_safe(item))
-    return output
 
 
 class StagedTaskLifecycleRail(DeepAgentRail):
@@ -213,7 +197,7 @@ class StagedTaskLifecycleRail(DeepAgentRail):
             )
             stage.setdefault("started_at", _now())
         if "artifact_refs" in staged:
-            stage["artifact_refs"] = _artifact_refs(staged["artifact_refs"])
+            stage["artifact_refs"] = normalize_artifact_refs(staged["artifact_refs"])
         if "checkpoint_ref" in staged:
             stage["checkpoint_ref"] = _json_safe(staged["checkpoint_ref"])
         stage["metadata"] = _merge_metadata(
@@ -253,7 +237,7 @@ class StagedTaskLifecycleRail(DeepAgentRail):
         stage["finished_at"] = _now()
         stage["failure"] = failure
         if "artifact_refs" in staged:
-            stage["artifact_refs"] = _artifact_refs(staged["artifact_refs"])
+            stage["artifact_refs"] = normalize_artifact_refs(staged["artifact_refs"])
         if "checkpoint_ref" in staged:
             stage["checkpoint_ref"] = _json_safe(staged["checkpoint_ref"])
         stage["metadata"] = _merge_metadata(
