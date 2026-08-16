@@ -9086,6 +9086,34 @@ class JiuWenSwarmDeepAdapter:
             if getattr(self, attr_name, None) is not expected_rail:
                 raise RuntimeError(f"required_agent_rail_attr_identity_mismatch:{attr_name}")
 
+    @staticmethod
+    def _build_staged_task_lifecycle_rail() -> Any | None:
+        """Build the optional generic staged-task lifecycle rail."""
+        try:
+            from jiuwenswarm.agents.harness.common.rails.staged_task_lifecycle_rail import (
+                StagedTaskLifecycleRail,
+            )
+
+            return StagedTaskLifecycleRail()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] StagedTaskLifecycleRail create failed: %s",
+                exc,
+            )
+            return None
+
+    def _staged_task_lifecycle_enabled(self, config: dict[str, Any]) -> bool:
+        """Resolve the opt-in staged-task flag without changing old defaults."""
+        raw = config.get("staged_task_lifecycle")
+        if raw is None:
+            raw = self._instance_overrides.get("staged_task_lifecycle", False)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, dict):
+            enabled = raw.get("enabled", False)
+            return enabled if isinstance(enabled, bool) else False
+        return False
+
     def _build_agent_rails(
         self,
         config: dict[str, Any],
@@ -9156,6 +9184,14 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+        if self._staged_task_lifecycle_enabled(config):
+            rail_infos.insert(
+                5,
+                _RailBuildInfo(
+                    "_staged_task_lifecycle_rail",
+                    self._build_staged_task_lifecycle_rail,
+                ),
+            )
 
         # SkillEvolutionRail / TTSERail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
