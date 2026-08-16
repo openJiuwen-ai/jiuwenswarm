@@ -593,8 +593,9 @@ react:
   completion_timeout: null
   max_iterations: 100
   # Stop unattended task-loop runs after repeated empty/near-empty no-tool answers.
+  # This guard is benchmark-gated: enable in the bench overlay config.
   task_loop_no_progress_guard:
-    enabled: true
+    enabled: false
     max_consecutive_empty_answers: 3
     min_answer_chars: 80
   model_name: ${MODEL_NAME}

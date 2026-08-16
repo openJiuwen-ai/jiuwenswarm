@@ -591,7 +591,11 @@ def get_context_engine_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def _merge_context_engine_defaults(context_engine_cfg: dict[str, Any]) -> dict[str, Any]:
-    """Preserve loop compaction defaults when users override context config."""
+    """Preserve loop compaction defaults when users override context config.
+    
+    Guard the reasoning_tool_loop_compact_config merge to prevent injecting
+    processors that don't exist in the pinned openjiuwen version.
+    """
     merged = dict(context_engine_cfg)
     if not bool(merged.get("enabled", True)):
         return merged
@@ -608,6 +612,12 @@ def _merge_context_engine_defaults(context_engine_cfg: dict[str, Any]) -> dict[s
         merged["reasoning_tool_loop_compact_config"] = dict(
             _DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG
         )
+    
+    # If the processor doesn't exist, disable it to prevent ValueError in ContextProcessorRail
+    preset_processors = getattr(ContextProcessorRail, "_PRESET_PROCESSORS", {}) or {}
+    if "ReasoningToolLoopCompactProcessor" not in preset_processors:
+        merged["reasoning_tool_loop_compact_config"]["enabled"] = False
+
     return merged
 
 

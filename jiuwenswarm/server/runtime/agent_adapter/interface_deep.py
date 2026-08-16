@@ -286,6 +286,10 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
     CircuitBreakerConfig,
 )
+from jiuwenswarm.agents.harness.common.rails.no_progress_guard_rail import (
+    NoProgressGuardRail,
+    NoProgressGuardConfig,
+)
 from jiuwenswarm.common.context_window import parse_positive_int, resolve_context_window_tokens
 from jiuwenswarm.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
@@ -641,7 +645,7 @@ _DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG: dict[str, Any] = {
 }
 
 _DEFAULT_TASK_LOOP_NO_PROGRESS_GUARD: dict[str, Any] = {
-    "enabled": True,
+    "enabled": False,
     "max_consecutive_empty_answers": 3,
     "min_answer_chars": 80,
 }
@@ -1394,7 +1398,11 @@ def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[s
 
 
 def _merge_context_engine_defaults(context_engine_cfg: dict[str, Any]) -> dict[str, Any]:
-    """Preserve loop compaction defaults when users override context config."""
+    """Preserve loop compaction defaults when users override context config.
+    
+    Guard the reasoning_tool_loop_compact_config merge to prevent injecting
+    processors that don't exist in the pinned openjiuwen version.
+    """
     merged = dict(context_engine_cfg)
     if not bool(merged.get("enabled", True)):
         return merged
@@ -1411,6 +1419,11 @@ def _merge_context_engine_defaults(context_engine_cfg: dict[str, Any]) -> dict[s
         merged["reasoning_tool_loop_compact_config"] = dict(
             _DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG
         )
+    
+    # If the processor doesn't exist, disable it to prevent ValueError in ContextProcessorRail
+    if not _processor_exists("ReasoningToolLoopCompactProcessor"):
+        merged["reasoning_tool_loop_compact_config"]["enabled"] = False
+    
     return merged
 
 
@@ -1438,6 +1451,21 @@ def _deep_agent_config_supports(field_name: str) -> bool:
     if not is_dataclass(DeepAgentConfig):
         return hasattr(DeepAgentConfig, field_name)
     return field_name in {field.name for field in fields(DeepAgentConfig)}
+
+
+def _processor_exists(processor_name: str) -> bool:
+    """Check if a ContextProcessorRail processor class exists in the installed openjiuwen.
+    
+    This guards against processors that exist in a newer openjiuwen but not in the pinned version.
+    """
+    try:
+        from openjiuwen.harness.context_engineer.context_processor_rail import (
+            ContextProcessorRail,
+        )
+        preset_processors = getattr(ContextProcessorRail, "_PRESET_PROCESSORS", {})
+        return processor_name in preset_processors
+    except Exception:
+        return False
 
 
 def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRail | None:
@@ -8161,6 +8189,36 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
+    def _build_no_progress_guard_rail(self) -> NoProgressGuardRail | None:
+        """Build the no-progress guard rail to stop hung agent loops.
+        
+        This guard tracks consecutive outer-loop iterations that produce no-tool
+        "answer" results with minimal content (the hung-agent pattern). On the
+        penultimate iteration, it injects a steering nudge. On the final iteration,
+        it aborts the outer loop via loop_coordinator.request_abort().
+        
+        Configured via `react.task_loop_no_progress_guard` (enabled: false by default,
+        benchmark-gated).
+        """
+        try:
+            react_cfg = (get_config() or {}).get("react", {})
+            guard_cfg = _task_loop_no_progress_guard_config(react_cfg)
+            if not guard_cfg.get("enabled", False):
+                logger.info("[JiuWenSwarmDeepAdapter] NoProgressGuardRail disabled by config")
+                return None
+
+            config = NoProgressGuardConfig(
+                enabled=guard_cfg["enabled"],
+                max_consecutive_empty_answers=guard_cfg["max_consecutive_empty_answers"],
+                min_answer_chars=guard_cfg["min_answer_chars"],
+            )
+            rail = NoProgressGuardRail(config, language=self._resolve_runtime_language())
+            logger.info("[JiuWenSwarmDeepAdapter] NoProgressGuardRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] NoProgressGuardRail create failed: %s", exc)
+            return None
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -8570,6 +8628,7 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
+            _RailBuildInfo("_no_progress_guard_rail", self._build_no_progress_guard_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             _RailBuildInfo(
