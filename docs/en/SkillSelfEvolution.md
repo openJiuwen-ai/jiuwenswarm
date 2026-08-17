@@ -1,29 +1,29 @@
 # Skill Self-Evolution
 
-## 1. Concept Explanation
+## 1. Overview
 
-### 1.1 Introduction to Skill Self-Evolution
+### 1.1 Introduction to Skill self-evolution
 
-Skill self-evolution is a core feature of JiuwenSwarm based on the openJiuwen evolution framework. It breaks the limitation of fixed capabilities in traditional Agent systems. In traditional systems, once capability definitions are written, they rarely change—tool call errors only generate log entries, and user feedback about misunderstandings doesn't alter future behavior. The capability ceiling is fixed from the day of deployment.
+Skill self-evolution is a core JiuwenSwarm feature built on the openJiuwen evolution framework. It addresses the fixed-capability limitation of traditional Agent systems. In a traditional system, capability definitions rarely change after they are written: tool-call failures may only be logged, and feedback about a misunderstanding may not change the logic used next time. The capability ceiling is effectively fixed from the day of deployment.
 
-JiuwenSwarm's skill self-evolution mechanism uses a built-in evolution signal detection system to continuously monitor execution processes and dialogue content, automatically converting real-world usage issues into improvement inputs for skills. This transforms skills from one-time static documents into living documents that continuously iterate with real usage.
+JiuwenSwarm turns recurring problems and better practices discovered during real use into improvement input for a Skill. This changes a Skill from a one-time static document into a living document that can keep improving through real use. Once experience is saved, it is loaded automatically the next time an Agent uses that Skill; it does not have to be merged into `SKILL.md` immediately.
 
-### 1.2 Core Value
+The current main path does not create experience merely because an error keyword or a single user correction appears. For a Single Agent and an Agent Team's Team Leader, the main Agent considers the evidence from the current task, decides whether the improvement is reusable, and only then decides whether to suggest Skill evolution.
 
-The core value of the skill self-evolution mechanism lies in:
+### 1.2 Core value
 
-- **Lower day-to-day intervention cost**: The agent identifies reusable experience automatically and saves it according to the approval policy
-- **Continuous capability improvement**: Skills become more accurate and reliable with increased usage time
-- **Adaptive to scene changes**: Automatically adjusts and optimizes based on actual usage scenarios
-- **Reduced maintenance costs**: Decreases manual effort for updating and maintaining skills
+The core value of Skill self-evolution includes:
 
-## 2. Usage Methods
+- **Lower day-to-day intervention cost**: The Agent identifies reusable experience and saves it according to the approval policy.
+- **Continuous capability improvement**: Accumulated corrections, prechecks, fallbacks, and verification methods can make a Skill more accurate and reliable over time.
+- **Adaptation to changing scenarios**: Reusable adjustments and optimizations come from actual usage scenarios.
+- **Reduced maintenance cost**: Less manual Skill updating is required, while accumulated experience remains manageable through inspect, simplify, rebuild, and rollback operations.
 
-### 2.1 Self-Evolution Configuration Switch
+## 2. Configuration and Role Differences
 
-Automatic Skill learning is enabled with `react.evolution.skill_evolution`, which defaults to `false`. The Web and TUI configuration pages expose only this switch. When enabled, the system can extract experience automatically, suggest creating Skills, and provide the `/evolve` commands and evolution tools.
+### 2.1 Enable Skill self-evolution
 
-Turning the switch off disables both automatic learning and manual evolution capabilities, but does not prevent explicit use of the general `skill-creator` or `swarmskill-creator` capabilities. Configurations that previously used `enabled`, `auto_scan`, `skill_create`, or the related environment variables do not automatically enable the new switch and must be migrated explicitly.
+`react.evolution.skill_evolution` is the single switch for Skill self-evolution and defaults to `false`. The Web configuration page displays it as **Automatic evolution and retention of local skills**; the TUI exposes the same setting in its Features group.
 
 The minimum configuration is:
 
@@ -34,96 +34,203 @@ react:
     auto_save: false
 ```
 
-`auto_save` is an advanced YAML-only approval option. With `false`, regular evolution results for a Single Agent or Team leader require approval. With `true`, regular evolution results can be saved automatically. Teammates use a fixed automatic-approval policy.
+| Setting | Default | Description |
+| --- | --- | --- |
+| `react.evolution.skill_evolution` | `false` | Enables Skill evolution, automatic Skill-creation suggestions, and the related commands and tools |
+| `react.evolution.auto_save` | `false` | YAML-only advanced setting that controls whether experience submitted by a Single Agent or Team Leader requires user approval |
+| `react.evolution.review_feedback_min_confidence` | `0.7` | Minimum confidence required for a Reviewer Feedback attribution to enter team evolution |
 
-![Enable auto-evolution detection](../assets/images/skill演进_自动检测开关.png)
+Turning off `skill_evolution` disables the related Rails, self-check prompts, evolution tools, and `/evolve` commands. It does not prevent explicit use of the general `skill-creator` or `swarmskill-creator` capabilities.
 
-### 2.2 Automatic Evolution
+During an upgrade, JiuwenSwarm synchronizes the configuration structure with the new template, but it does not translate values from the legacy `enabled`, `auto_scan`, `skill_create`, or related environment variables into `skill_evolution`. If those capabilities were enabled before upgrading, check the configuration after the upgrade and explicitly turn on **Skill self-evolution**.
 
-The system automatically detects evolution signals after each complete conversation ends (in the after_invoke phase). When execution exceptions or user corrections are detected, it generates evolution records.
+![Turn on automatic evolution and retention of local skills](../assets/images/skill演进_开关.png)
 
-The system identifies evolution signals and generates candidate experience automatically. Whether user confirmation is required depends on the role and the `auto_save` setting. By default, `auto_save=false`, so approval is required before regular global experience is written. After experience is saved, it is loaded automatically the next time the Skill is used.
+### 2.2 Role differences
 
-![Auto-trigger](../assets/images/skill演进_自动触发.png)
+| Role | Trigger and approval behavior |
+| --- | --- |
+| Single Agent | Counts non-follow-up task iterations and currently runs a self-check every five eligible iterations by default; `auto_save` controls approval |
+| Team Leader | Runs a self-check after each team task is confirmed complete; approval is also controlled by `auto_save`, and suggestions and approvals are presented to the user |
+| Teammate | Uses a background passive-signal path with fixed automatic saving and does not present the same self-check suggestion or approval interaction |
 
-### 2.3 Reviewer Feedback-Driven Team Evolution
+## 3. Evolution Triggers and Management
 
-For a scheduled team, when Task review fails and `react.evolution.skill_evolution` is enabled, the system attributes the Reviewer Feedback:
+### 3.1 Automatic suggestions from the Agent
 
-- Each failed Task Feedback is independently translated into a structured observation by the attribution model.
-- Skill issue: retain the observation; after all Tasks finish, aggregate observations by Skill and feed them into the existing Team Skill evolution and approval flow.
-- Executor error or unattributed failure: record the failure without changing a Skill.
-- Repeated pattern with no attributable Skill: create a new Team Skill approval after the same reusable pattern is observed across Tasks.
+After the feature is enabled, a Single Agent and Team Leader start self-checks at different times:
 
-Reviewer Feedback does not create or update member-private Skill copies. The unified self-evolution switch is off by default. Team Skill updates and new Skills require approval by default.
+- **Single Agent** counts non-follow-up task iterations and currently checks once after every five eligible iterations by default. Background heartbeat, cron, and follow-up tasks do not count toward the threshold.
+- **Team Leader** does not use the five-iteration threshold. It starts one self-check for the completed team execution whenever a team task is confirmed complete.
 
-### 2.4 Manual Evolution Triggering
+After a self-check starts, the main Agent judges whether the current task contains a reusable update, such as:
 
-If you want to immediately trigger evolution for a specific skill, you can enter:
+- A user correction that also applies to future tasks of the same kind.
+- A missing precheck, parameter description, fallback, or verification step in a Skill.
+- An execution failure that exposes a repeatable gap in the Skill instructions.
 
-```bash
+Temporary environment failures, one-off facts, personal preferences, and unsupported guesses should not produce an evolution suggestion. When the Agent finds a reusable update, it briefly describes the improvement at the end of its normal response and asks whether to start Skill evolution. Otherwise, it does not expose the internal self-check.
+
+![The Agent identifies a reusable improvement and suggests starting evolution](../assets/images/skill演进_Agent自动建议.png)
+
+> **Prerequisites**: Turn on **Skill self-evolution** and make sure the target Skill is installed and visible. With a Single Agent, complete five eligible non-follow-up task iterations. With a Team Leader, complete one team task and have all of its task states confirmed complete.
+
+### 3.2 Reviewer Feedback-driven team evolution
+
+In a scheduled team, when Task review fails and Skill self-evolution is enabled, the system attributes the Reviewer Feedback:
+
+- For a Skill issue, the system retains the observation, aggregates observations by Skill after all Tasks finish, and sends them through the Team Skill evolution flow.
+- For an executor error or unattributed failure, the system records the failure without changing a Skill.
+- When no Skill can be attributed but the same reusable pattern recurs across Tasks, the system starts a new Team Skill approval.
+
+Only attributions that meet `react.evolution.review_feedback_min_confidence` enter this flow. Reviewer Feedback does not create or update member-private Skill copies, and this path does not use the Single Agent five-iteration threshold.
+
+Updates to an existing Team Skill use the Team Leader evolution approval flow and require user approval by default when `auto_save: false`. New Team Skill creation uses a separate creation approval flow.
+
+### 3.3 Start a review with `/evolve`
+
+To review a Skill immediately, enter:
+
+```text
 /evolve <skill_name> [user_intent]
 ```
 
-- `<skill_name>`: Required, the target Skill name.
-- `[user_intent]`: Optional, a description of the user intent / direction to focus on for this evolution; it will be used as part of the review prompt. When omitted, the system scans in the default direction.
+`user_intent` is an optional evolution intent that identifies the issue you want to improve. For example:
 
-For example:
-
-```bash
-/evolve xlsx
-/evolve xlsx improve edge handling of numeric formatting in tables
+```text
+/evolve xlsx add prechecks and recovery guidance before processing merged cells
 ```
 
-The system scans recent dialogue and execution records, generates evolution experience for the skill, and displays the generated results.
+The system reviews the conversation and execution evidence available in the current task, then returns either "no evolution needed" or structured improvement proposals. `/evolve` starts a review; it does not guarantee that experience will be generated or saved.
 
-> **Team Mode Note**: In Team mode, `/evolve` only supports evolving Swarm Skill / Team Skill (kind is `swarm-skill` or `team-skill`); ordinary Skill is not allowed to evolve in Team mode and needs to switch back to normal mode to trigger.
+Automatic suggestions retain their mode-specific subject boundaries: a Single Agent targets regular Skills, while a Team Leader targets Team/Swarm Skills. An explicit `/evolve` command resolves the target's actual kind, so Team mode can manually evolve a regular Skill and normal mode can manually evolve a Team/Swarm Skill. The target must still be installed and visible to the current Agent.
 
-![Manual trigger](../assets/images/skill演进_手动触发.png)
+![Start evolution with the evolve command and generate a proposal for approval](../assets/images/skill演进_命令触发.png)
 
-### 2.5 View Evolution Status
+> **Prerequisites**: Turn on **Skill self-evolution**, make sure the target Skill is installed and visible to the current Single Agent or Team Leader, then enter `/evolve` with the Skill name. To show an approval interaction, also set `auto_save: false`.
 
-To view the pending evolution records for a specific skill, you can enter:
+### 3.4 Approve and save
 
-```bash
-/evolve_list <skill_name> [--sort score]
+For both a Single Agent and Team Leader, `react.evolution.auto_save` applies the same approval rule:
+
+- `auto_save: false`: Validated proposals require user approval before they are written to the experience store.
+- `auto_save: true`: Validated proposals bypass user approval and are saved automatically.
+
+A Teammate uses a fixed automatic-saving policy and does not present an approval interaction based on this `auto_save` value. Saved experience is loaded automatically the next time the Skill is used.
+
+When `auto_save: false`, a Single Agent or Team Leader presents an experience approval entry to the user.
+
+![Skill evolution experience approval entry](../assets/images/skill演进_审批.png)
+
+After expanding the approval content, the user can inspect the structured proposal's `target`, `section`, `reason`, and `content` before deciding whether to approve it.
+
+![Inspect and approve a structured Skill evolution proposal](../assets/images/skill演进_审批详情.png)
+
+### 3.5 Inspect and simplify experience
+
+The preferred way to manage saved experience is through the Web UI. Find the target Skill in the Skill list, then select **View skill experience**.
+
+![Open Skill experience from the Skill list](../assets/images/skill演进_技能经验入口.png)
+
+In the experience editor, you can inspect each entry, edit its content, delete entries, and save the result.
+
+![Inspect and edit saved Skill experience in the Web UI](../assets/images/skill演进_技能经验.png)
+
+You can also use:
+
+```text
+/evolve_list <skill_name>
+/evolve_simplify <skill_name> [user_intent]
 ```
 
-The system lists the pending evolution records and their content summaries for the specified skill.
+`/evolve_list` shows an experience summary for the named Skill. `/evolve_simplify` reviews existing entries and runs the corresponding workflow for merge, refine, or delete suggestions.
 
-![Evolution overview](../assets/images/skill演进_查看和整理经验.png)
+![Inspect and simplify Skill experience with commands](../assets/images/skill演进_查看与整理经验.png)
 
-### 2.6 Manage Evolution Experience
+### 3.6 Rebuild and roll back
 
-Evolution experience is stored in the `evolutions.json` file under the skill directory. **Note**: This file is dynamically generated when evolution is first triggered and may not exist if no evolution has occurred. You can edit this file directly to manage evolution experience:
+Saved experience takes effect on later calls without a rebuild. To merge experience permanently into `SKILL.md`, use:
 
-**Directory location:**
+```text
+/evolve_rebuild <skill_name> [user_intent]
 ```
+
+A rebuild first archives the current Skill and its experience log, then merges the experience into `SKILL.md`. Experience that has been merged is no longer retained as a separate evolution entry.
+
+![Rebuild saved experience into a Skill](../assets/images/skill演进_重建.png)
+
+To inspect available archives or restore a version, use:
+
+```text
+/evolve_rollback <skill_name>
+/evolve_rollback <skill_name> <version>
+/evolve_rollback <skill_name> latest
+```
+
+Without a version, the command lists available archives. With a specific version or `latest`, it restores that archive. The current state is archived before restoration so that it can be rolled back again.
+
+![Inspect and restore Skill rebuild archives](../assets/images/skill演进_回滚.png)
+
+### 3.7 Advanced `evolutions.json` troubleshooting
+
+Experience is stored in `evolutions.json` under the Skill directory. The file is created dynamically when experience is first saved and may not exist when no experience has been saved.
+
+```text
 ~/.jiuwenswarm/agent/workspace/skills/<skill_name>/
-├── SKILL.md           # Skill source document
-├── evolutions.json    # Evolution experience records (dynamically generated)
+├── SKILL.md
+├── evolutions.json    # Created after experience is first saved
 └── ...
 ```
 
-> **In Agent Team mode the path is exactly the same.** There is only one copy of each skill, in the global skill library above; team workspaces and member workspaces hold no `skills/` directory and no copies. Evolution records produced by a team member are therefore written to that very same `evolutions.json` under the global library. Which skills of the library a member can see is decided by its visibility declaration — see the "Team Skills" section of [Agent Team](AgentTeam.md).
+Agent Team uses the same global Skill library, so its experience is stored at the same path. Skill visibility for team members is defined by the team's visibility declaration; see "Team Skills" in [Agent Team](AgentTeam.md).
 
-**Common operations:**
-- Add new records: Append new objects to the `entries` array
-- Modify records: Edit the `change.content` field to update evolution content
-- Delete records: Remove from the array
-- Mark as solidified: Set `applied` to `true` (system will also toggle this during solidification)
+The following is a **read-only example** of the current storage structure:
 
-⚠️ **Important**: Do not modify system-managed fields such as `id`, `source`, `timestamp`, `context`, `section`, `action`, `target`, or `relevant`. These fields are generated and maintained by the system.
+```json
+{
+  "skill_id": "file-operations",
+  "version": "1.0.0",
+  "updated_at": "2026-08-17T10:30:00+00:00",
+  "entries": [
+    {
+      "id": "ev_1234abcd",
+      "source": "user_intent",
+      "timestamp": "2026-08-17T10:30:00+00:00",
+      "context": "Relative file path failed before checking the working directory",
+      "change": {
+        "section": "Troubleshooting",
+        "action": "append",
+        "content": "Check the working directory and candidate paths before reading a relative path.",
+        "target": "body"
+      },
+      "applied": false,
+      "score": 0.6,
+      "usage_stats": {
+        "times_presented": 0,
+        "times_used": 0,
+        "times_positive": 0,
+        "times_negative": 0
+      },
+      "summary": "Add a relative-path precheck"
+    }
+  ]
+}
+```
 
-**Before editing**, consider backing up the file. After editing, the changes take effect automatically in the next conversation.
+- `entries` contains the saved experience records.
+- `change` describes where and how one experience updates the Skill, together with its concrete content.
+- `target` identifies the Skill layer being improved and can be `description`, `body`, or `script`.
 
-## 3. Case Practice: Triggering Code Modifications Through Text Dialogue Fields
+This example is for understanding and troubleshooting, not an interface contract for constructing records manually; the system may add optional fields in later versions. The Web experience editor and evolution commands are the preferred management interfaces. Edit `evolutions.json` directly only for troubleshooting or recovery. Back it up first and validate the JSON afterward. Do not add records manually or rewrite system-managed fields such as `id`, `source`, and `timestamp`.
 
-### 3.1 Scenario Background
+## 4. Example: Add a File-Path Precheck
 
-Suppose we have a simple `file-operations` skill for handling file operations. This skill includes a `read_file` function for reading file content.
+### 4.1 Scenario background
 
-**Initial SKILL.md definition:**
+Suppose we have a simple `file-operations` Skill for handling file operations. It includes a `read_file` function for reading file content.
+
+**Initial `SKILL.md` definition:**
+
 ```markdown
 # file-operations Skill
 
@@ -139,194 +246,131 @@ Suppose we have a simple `file-operations` skill for handling file operations. T
 - Read file: read_file({"file_path": "/path/to/file.txt"})
 ```
 
-### 3.2 Evolution Triggered by Dialogue
+The initial instructions do not require the Agent to check the working directory and candidate paths before reading a relative path.
 
-#### Round 1: Problem Discovery
+### 4.2 Accumulate evidence across the conversation
 
-```
-User: Help me read the test.txt file in the current directory
-Assistant: Sure, I'll read the test.txt file in the current directory for you.
+#### Round 1: Discover the problem
+
+```text
+User: Help me read test.txt from the current directory.
+Assistant: Sure, I will read test.txt from the current directory.
 Tool: file-operations.read_file({
   "file_path": "test.txt"
 })
 Tool Response: Error: File not found: test.txt
-Assistant: Sorry, I can't find the test.txt file. Could you provide the full path?
+Assistant: Sorry, I cannot find test.txt. What is its full path?
 ```
 
-The system detects tool execution failure (`File not found`) and automatically triggers an evolution signal.
+This execution failure can be evidence for an evolution review, but the word `Error` does not necessarily create experience.
 
-#### Round 2: User Provides Full Path
+#### Round 2: The user provides a working path
 
-```
-User: It should be ./test.txt
-Assistant: Sure, I'll read the ./test.txt file for you.
+```text
+User: It should be ./test.txt.
+Assistant: I will read ./test.txt.
 Tool: file-operations.read_file({
   "file_path": "./test.txt"
 })
-Tool Response: This is the content of the test.txt file.
-Assistant: Successfully read the ./test.txt file. Here's the content:
-This is the content of the test.txt file.
+Tool Response: This is the content of test.txt.
+Assistant: Successfully read ./test.txt.
 ```
 
-#### Round 3: User Feedback
-
-```
-User: No, when I just provide the file name, you should automatically look in the current directory without me manually adding ./
-Assistant: Thank you for your feedback. I'll optimize this feature so it automatically looks in the current directory when only a file name is provided.
-```
-
-The system detects user correction feedback ("No") and triggers another evolution signal.
-
-### 3.3 Automatically Generated Evolution Records
-
-The system automatically generates evolution records in the `evolutions.json` file under the `file-operations` skill directory.
-
-### 3.4 Effect After Evolution
-
-When the skill is called again, it automatically loads the evolution experience, and the improved functionality works as follows:
-
-```
-User: Help me read the test.txt file in the current directory
-Assistant: Sure, I'll read the test.txt file in the current directory for you.
-Tool: file-operations.read_file({
-  "file_path": "test.txt"
-})
-Tool Response: This is the content of the test.txt file.
-Assistant: Successfully read the test.txt file. Here's the content:
-This is the content of the test.txt file.
-```
-
-Now, when the user only provides a file name, the system automatically looks in the current directory without requiring the user to manually add the `./` prefix.
-
-## 4. Feature Interpretation: Principles and Mechanisms
-
-### 4.1 Core Components
-
-#### 4.1.1 SkillCallOperator
-
-SkillCallOperator is the core entry point for interaction between JiuwenSwarm and skills, responsible for unified management of skills:
-
-- Reads skill definitions (SKILL.md)
-- Executes skill commands
-- Automatically loads accumulated evolution experiences of skills
-
-When the system detects areas for improvement, these improvements are first stored in `evolutions.json`, and SkillCallOperator merges them before returning them to the Agent.
-
-#### 4.1.2 SkillExperienceOptimizer
-
-SkillExperienceOptimizer is the optimizer that drives the entire skill evolution process:
-
-1. **Receive signals**: Receives exception signals from SignalDetector to understand what problems the current skill is encountering
-2. **Analyze and judge**: Combines dialogue context to determine if the problem is worth recording
-3. **Generate improvements**: Calls LLM to generate specific improvement suggestions
-4. **Execute recording**: Writes generated improvement plans to evolution records
-
-When you use the `/evolve` command, it's SkillExperienceOptimizer working behind the scenes.
-
-#### 4.1.3 SkillEvolutionRail
-
-SkillEvolutionRail is the core manager of the evolution lifecycle, responsible for coordinating various stages of evolution work:
-
-- **Signal scanning**: Calls SignalDetector to extract events that require evolution
-- **Record generation**: Calls LLM to convert signals into executable improvement plans
-- **Storage management**: Maintains reading and writing of `evolutions.json` files
-- **Content solidification**: Merges pending evolution records into the original SKILL.md
-
-It connects SignalDetector, SkillExperienceOptimizer, and SkillCallOperator to form a complete evolution loop.
-
-#### 4.1.4 SignalDetector
-
-SignalDetector is the detector for evolution signals, continuously monitoring for anomalies in dialogue and execution results:
-
-- Listens to every tool execution result, capturing error keywords
-- Captures user correction feedback (such as "no", "should be", etc.)
-- Determines which skill the signal should be attributed to and associates context
-
-SignalDetector works based on rules, does not require calling LLM, and therefore has fast response speed.
-
-### 4.2 Signal Detection Mechanism
-
-#### 4.2.1 Execution Exception Detection
-
-The system automatically detects exceptions in tool execution, including:
-- Tool call timeouts
-- Interface return errors
-- Exception interruptions during code execution
-
-Detection keywords include but are not limited to:
-- General errors: `error`, `exception`, `failed`, `failure`, `timeout`
-- Network-related: `connection error`, `econnrefused`, `enoent`
-- Permission-related: `permission denied`, `command not found`
-
-#### 4.2.2 User Correction Detection
-
-The system identifies user correction feedback, which is often more valuable than error logs:
-
-- Chinese patterns: `不对`, `不是这`, `错 了`, `应该 是`, `你搞错了`, `纠正一下`
-- English patterns: `that's wrong`, `you're wrong`, `should be`, `actually`
-
-### 4.3 Evolution Process
+#### Round 3: The user adds a reusable requirement
 
 ```text
-User chat / tool run
-        │
-        ▼
-┌───────────────────┐
-│  SignalDetector   │  Listens and identifies signals
-│   Detects execution exceptions │
-│   Detects user corrections │
-└────────┬──────────┘
-         │
-         ▼
-┌─────────────────────────────┐
-│    SkillEvolutionRail    │
-│     run_evolution()        │  Extracts evolution signals
-└────────────┬───────────────┘
-             │
-             ▼
-┌─────────────────────────────┐
-│    SkillEvolutionRail    │
-│ generate_and_emit_experience() │  LLM generates evolution records
-└────────────┬───────────────┘
-             │
-             ▼
-┌─────────────────────────────┐
-│      evolutions.json        │  Writes pending solidification records
-│    (Under Skill directory) │
-└────────────┬───────────────┘
-             │
-             ▼ (via /evolve_rebuild or auto-load)
-┌─────────────────────────────┐
-│      rewrite_skill()         │  Merges into SKILL.md
-└─────────────────────────────┘
+User: No, when I provide only a file name, check the current directory first. I should not have to add ./ manually.
+Assistant: Thank you for the feedback. I will check the working directory and candidate paths before reading the file.
 ```
 
-### 4.4 Evolution Record Storage
+This correction further explains the cause of the failure and the behavior that should be reused. During a Single Agent's counted self-check or a Team Leader's team-completion self-check, the main Agent decides whether checking the working directory and candidate paths before reading a relative path applies to future tasks of the same kind; it does not create a record directly from a keyword such as "No."
 
-Evolution records are stored in the `evolutions.json` file under each skill directory:
+### 4.3 Review and save the proposal
 
-```json
-{
-  "skill_id": "<skill_name>",
-  "version": "1.0.0",
-  "updated_at": "2024-01-15T10:30:00Z",
-  "entries": [
-    {
-      "id": "ev_1234abcd",
-      "source": "execution_failure",
-      "timestamp": "2024-01-15T10:30:00Z",
-      "context": "API timeout after 30s",
-      "change": {
-        "section": "Troubleshooting",
-        "action": "append",
-        "content": "## FAQ\n- On API timeout..."
-      },
-      "applied": false
-    }
-  ]
-}
+If the main Agent judges the behavior to be reusable, it asks whether to start evolution for `file-operations`. You can also start the review immediately:
+
+```text
+/evolve file-operations add working-directory and candidate-path prechecks before reading relative paths
 ```
 
-Where:
-- `applied: false` indicates pending solidification status
-- `applied: true` indicates already solidified into SKILL.md
+After the review starts, `evolution_reviewer` examines the current evidence and creates structured proposals only when evolution is justified. Once approved or saved automatically, the proposal is written to the `file-operations` experience store.
+
+### 4.4 Effect after evolution
+
+The next time `file-operations` is used, the Agent loads the experience automatically and follows its precheck guidance:
+
+```text
+User: Help me read test.txt from the current directory.
+Assistant: I will check the working directory first, then read ./test.txt.
+Tool: file-operations.read_file({
+  "file_path": "./test.txt"
+})
+Tool Response: This is the content of test.txt.
+Assistant: Successfully read test.txt.
+```
+
+When the user provides only a file name, the Agent can now follow the saved experience to check the working directory and candidate paths instead of asking the user to add the `./` prefix manually.
+
+## 5. How It Works
+
+### 5.1 Key components
+
+- **`SkillEvolutionRail` / `TeamSkillEvolutionRail`** register the evolution tools and review Subagent and coordinate self-check, submission, and lifecycle behavior.
+- **`evolution_reviewer` Subagent** uses restricted read-only evolution tools to review current evidence, decide whether evolution is needed, and produce structured proposals.
+- **`EvolutionInterruptRail`** handles user approval when human confirmation is required.
+- **`EvolutionStore`** queries, saves, and rebuilds experience data.
+
+### 5.2 Main path for a Single Agent and Team Leader
+
+```text
+Single Agent counted self-check, Team Leader completion self-check, or /evolve
+        |
+        v
+Main Agent judges whether the update is reusable
+        |
+        v
+User confirms starting the review (automatic self-check path)
+        |
+        v
+evolution_reviewer reviews evidence and creates proposals
+        |
+        v
+Proposal validation
+        |
+        +-- auto_save: false --> EvolutionInterruptRail approval
+        +-- auto_save: true  --> automatic save
+                                   |
+                                   v
+                            EvolutionStore
+                                   |
+                                   v
+                            evolutions.json
+```
+
+### 5.3 Teammate compatibility path
+
+A Teammate keeps a shorter passive path instead of the user-facing automatic self-check interaction:
+
+```text
+Passive signal detection -> SkillExperienceOptimizer -> fixed automatic saving
+```
+
+`SkillExperienceOptimizer` remains part of this passive path, but it does not drive the main judgment or proposal workflow for a Single Agent, Team Leader, or `/evolve`.
+
+## 6. Command Reference
+
+| Command | Purpose |
+| --- | --- |
+| `/evolve` | Show pending experience across all visible Skills |
+| `/evolve <skill_name> [user_intent]` | Start a review for the named Skill |
+| `/evolve_list <skill_name>` | Show an experience summary for the named Skill |
+| `/evolve_simplify <skill_name> [user_intent]` | Simplify experience for the named Skill |
+| `/evolve_rebuild <skill_name> [user_intent]` | Rebuild experience into the Skill |
+| `/evolve_rollback <skill_name> [version]` | List restorable versions or restore the Skill to a specified version |
+
+---
+
+## Navigation
+
+- [Back to Documentation Home](../README_EN.md)
+- [Back to Project Home](../../README.md)
