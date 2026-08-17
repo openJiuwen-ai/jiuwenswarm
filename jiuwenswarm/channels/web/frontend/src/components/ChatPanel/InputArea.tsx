@@ -162,7 +162,9 @@ interface InputAreaProps {
   autoFocusKey?: string | null;
   /** 跳转到技能管理页 */
   onNavigateToSkills?: () => void;
-  permissionsEnabled: boolean;
+  permissionsMode?: Permission;
+  /** @deprecated 兼容旧布尔开关；优先用 permissionsMode */
+  permissionsEnabled?: boolean;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** 目标待设置态（"+"菜单选了「目标」）下发送时调用，取代普通 onSubmit/排队逻辑 */
   onSetGoal?: (sessionId: string, objective: string) => void;
@@ -520,6 +522,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     isProcessing,
     autoFocusKey = null,
     onNavigateToSkills,
+    permissionsMode,
     permissionsEnabled,
     onSavePermission,
     onSetGoal,
@@ -2460,7 +2463,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             )}
           </div>
           {!isEnterprise() && (
-            <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+            <PermissionSelector
+              permissionsMode={
+                permissionsMode
+                ?? (permissionsEnabled === false ? 'full_access' : 'auto')
+              }
+              onSavePermission={onSavePermission}
+            />
           )}
 
           {!isTeamMode && <SkillSelector
@@ -2963,16 +2972,16 @@ function ModelSelector({
 
 function PermissionSelector({
   disabled = false,
-  permissionsEnabled,
+  permissionsMode,
   onSavePermission,
 }: {
   disabled?: boolean;
-  permissionsEnabled: boolean;
+  permissionsMode: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
 }) {
   const { t } = useTranslation();
 
-  const permission: Permission = permissionsEnabled ? 'default' : 'full_access';
+  const permission: Permission = permissionsMode;
 
   const [isOpen, setIsOpen] = useState(false);
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
@@ -2999,13 +3008,13 @@ function PermissionSelector({
     if (value === 'full_access') {
       setPendingPermission('full_access');
     } else {
-      onSavePermission({ permissions_enabled: 'true' });
+      onSavePermission({ permissions_mode: value });
     }
   }, [permission, onSavePermission]);
 
   const handleConfirm = useCallback(() => {
     if (pendingPermission) {
-      onSavePermission({ permissions_enabled: 'false' });
+      onSavePermission({ permissions_mode: 'full_access' });
     }
     setPendingPermission(null);
   }, [pendingPermission, onSavePermission]);
