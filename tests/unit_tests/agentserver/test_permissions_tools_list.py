@@ -12,6 +12,7 @@ from jiuwenswarm.common import config
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.agents.harness.common.rails.permissions import permissions_config_rpc
+from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers
 from jiuwenswarm.server import agent_ws_server
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime import tool_catalog
@@ -150,6 +151,13 @@ def test_permissions_tools_list_rpc_and_get_remain_distinct(
     assert list_response.payload["default_level"] == "ask"
     assert list_response.payload["tools"][0]["registered"] is True
 
+    # MR !4679 起 TOOLS_GET 读取 user_permissions.yaml overlay
+    # （config.yaml 的 tools map 已被 mode 制取代）。
+    monkeypatch.setattr(
+        permissions_layers,
+        "get_user_tools_map",
+        lambda: {"bash": "allow"},
+    )
     get_request = AgentRequest(
         request_id="get-1",
         channel_id="web",

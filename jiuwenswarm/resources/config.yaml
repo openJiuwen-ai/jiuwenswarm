@@ -1222,83 +1222,24 @@ channels:
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；
-# permission_mode: normal|strict 决定 severity 映射，见 agentserver/permissions/tiered_policy.py。
-# severity（normal）：LOW/MEDIUM→allow，HIGH/CRITICAL→ask；strict：LOW→allow，MEDIUM/HIGH→ask，CRITICAL→deny。
-# rules[*].action: 可选显式动作 allow|ask|deny；配置后优先于 severity 映射，适合敏感文件读取、
-# 系统控制等不希望随 permission_mode 漂移的规则。
-# 内置参数规则 > 用户 rules；整工具存在则不用 defaults；详见 tiered_policy 模块说明。
-#
-# 三种动作: allow / ask / deny
+# mode: full_access|auto|strict 为产品权限三态（默认 auto）；旧 permission_mode 已并入 mode。
+# 完全访问 = enabled:true + mode:full_access（禁止再用 enabled:false 表示完全访问）。
+# Global 不写顶层 defaults / tools；整工具兜底由 mode preset 注入。
+# 整工具 ask/deny 名单写 user_permissions.yaml（ask_tools / deny_tools）。
+# pattern 规则继续写下方 rules；规则动作 allow / ask / deny。
 #
 # 标准版保留键 agents：按 agent_id 精确分桶的完整 permissions body（不是工具名）。
 # 命中 permissions.agents[id] 时该 Agent 整段替换使用该 body，不与全局字段合并；
 # 未命中使用下方全局段。Gateway/UI 读写全局时会剥离并保留 agents 表。
 # 企业版忽略 yaml agents，只用 Agent template_ref.permissions。
-# 示例（Excel 插件 Agent office-excel 专属策略）：
-#   agents:
-#     office-excel:
-#       enabled: true
-#       schema: tiered_policy
-#       permission_mode: normal
-#       tools: { bash: ask }
 permissions:
-  enabled: false
+  enabled: true
+  mode: auto
   schema: tiered_policy
-  permission_mode: normal
   # 技能级动态授权（Skill overlay）：默认关闭；开启后根 SKILL.md 加载经
   # SkillAuthorizationRail 门禁审批，ACTIVE Grant 参与权限合成。
   skill_authorization:
     enabled: false
-  defaults:
-    '*': allow
-  tools:
-    bash: allow
-    mcp_exec_command: ask
-    create_terminal: ask
-    write: allow
-    write_file: allow
-    edit_file: allow
-    skill_tool: allow
-    read_file: allow
-    skill_complete: allow
-    search_replace: allow
-    ask_user: allow
-    write_memory: allow
-    edit_memory: allow
-    read_memory: allow
-    memory_search: allow
-    memory_get: allow
-    todo_create: allow
-    todo_insert: allow
-    todo_complete: allow
-    todo_remove: allow
-    todo_list: allow
-    coding_memory_write: allow
-    coding_memory_edit: allow
-    coding_memory_read: allow
-    ltm_search: allow
-    ltm_search_summary: allow
-    mem0_profile: allow
-    mem0_search: allow
-    mem0_conclude: allow
-    viking_search: allow
-    viking_read: allow
-    viking_browse: allow
-    viking_remember: allow
-    viking_add_resource: allow
-    web_search: allow
-    mcp_fetch_webpage: allow
-    cron_list_jobs: allow
-    cron_get_job: allow
-    cron_create_job: allow
-    cron_update_job: allow
-    cron_delete_job: allow
-    cron_toggle_job: allow
-    cron_preview_job: allow
-    web_flash: allow
-    cron_flash: allow
-    acp_chat: ask
-    skill_acceleration_exec: ask
 
   rules:
     - id: shell_allow_dir
@@ -1449,7 +1390,13 @@ permissions:
       pattern: re:(?i)(^|[\s;&|()])((cat|type|less|more|head|tail|grep|find|Get-Content|Select-String)\b[^;&|]*(id_rsa|id_ed25519|\.pem\b|\.pfx\b|\.key\b|\.kube/config|\.aws/(credentials|config)|\.npmrc\b|\.env(\.[A-Za-z0-9_-]+)?\b|authorized_keys|\.ssh/))
       severity: HIGH
   owner_scopes: {}
-  deny_guidance_message: ''
+  deny_guidance_message: ""
+
+  # Native 路径层（agent-core FileGuard）。
+  # defaults / workspace 由 mode preset 注入，下列 YAML 轴不生效：
+  #   Auto: 工作目录读写 allow；区外读 allow、写/exec ask
+  #   Strict: 工作目录读 allow；工作目录写与区外访问 ask
+  # trusted_dirs（用户选中的工作目录 / 项目 cwd）运行时按 workspace 轴编译。
   file_guard:
     enabled: true
     defaults:
@@ -1459,18 +1406,13 @@ permissions:
     workspace:
       read: allow
       write: allow
-      exec: allow
-    paths:
-      - path: '**/.ssh/**'
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
-      - path: '**/.env*'
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
+      exec: ask
+    # 敏感路径内置底线见 agent-core builtin_rules.yaml → sensitive_paths（ask|deny）。
+    # 此处仅放产品/组织增量 paths；勿重复内置名单。
+    paths: []
+
+  # Legacy external_directory：仅作兼容；启用上方 Native file_guard 后 "*" 不再驱动路径层。
+  # 新信任目录写入 file_guard.paths（/add-dir），勿再写本键具名 allow。
   external_directory:
     '*': ask
 browser:

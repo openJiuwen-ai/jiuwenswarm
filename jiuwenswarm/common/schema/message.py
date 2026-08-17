@@ -247,6 +247,8 @@ class ReqMethod(Enum):
     PERMISSIONS_WORKSPACE_ENABLE_SET = "permissions.file_guard.workspace.rw_enabled.set"
     PERMISSIONS_WORKSPACE_ACCESS_GET = "permissions.file_guard.workspace.access.get"
     PERMISSIONS_WORKSPACE_ACCESS_SET = "permissions.file_guard.workspace.access.set"
+    PERMISSIONS_MODE_GET = "permissions.mode.get"
+    PERMISSIONS_MODE_SET = "permissions.mode.set"
 
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"

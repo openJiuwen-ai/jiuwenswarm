@@ -379,7 +379,10 @@ from jiuwenswarm.agents.harness.common.memory.config import (
 )
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import TOOL_PERMISSION_CHANNEL_ID
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+    TOOL_PERMISSION_CHANNEL_ID,
+    TOOL_PERMISSION_SESSION_ID,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     get_base_permissions_config,
     get_effective_permissions_config,
@@ -7356,20 +7359,24 @@ class JiuWenSwarmDeepAdapter:
     def _resolve_sys_operation(self) -> SysOperation | None:
         """Create a sys operation.
 
-        是否走沙箱由 ``config.yaml::sandbox.enabled`` 决定（同时要求
-        ``sandbox.url`` / ``sandbox.type`` 已配置）。其他 sandbox 字段
-        (``excluded_commands`` / ``files`` / ``idle_ttl_seconds`` /
-        ``idle_check_interval``) 透传给 ``create_sandbox_sysop_card``,
-        分别写入 ``launcher_config.extra_params`` 与 ``launcher_config`` 上
-        的同名字段。
+        沙箱决策结合产品权限 ``sandbox_intent`` 与 ``sandbox.enabled`` / 可用性：
 
-        注意: 每次都从 ``get_sandbox_endpoint()`` 读最新 sandbox.url/type, 因为
-        ``/sandbox enable`` 会动态写入这两个字段; yuanrong 也会填默认占位 url。
+        - ``optional``（Full Access）：尊重 ``sandbox.enabled``
+        - ``required``（Auto/Strict）：可用则必进沙箱；不可用则 Fail-Open 到宿主机并告警
 
-        副作用: 在 ``self._sys_operation_card`` 保存生成或复用的 SysOperationCard，
-        供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。
+        其他 sandbox 字段 (``excluded_commands`` / ``files`` / ``idle_ttl_seconds`` /
+        ``idle_check_interval``) 透传给 ``create_sandbox_sysop_card``。
+
+        注意: 每次都从 ``get_sandbox_endpoint()`` 读最新 sandbox.url/type。
+
+        副作用: 在 ``self._sys_operation_card`` 保存生成或复用的 SysOperationCard。
         """
         try:
+            from openjiuwen.harness.security import resolve_sandbox
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                get_sandbox_intent,
+            )
+
             endpoint = get_sandbox_endpoint()
             sandbox_type = endpoint.get("type") or None
             # box-server 端口运行时分配且可变, 优先取 runner 本轮存活的 endpoint,
@@ -7390,13 +7397,21 @@ class JiuWenSwarmDeepAdapter:
                         "failed, fall back to config/holder url: %s", exc,
                     )
             runtime = get_sandbox_runtime()
+            intent = get_sandbox_intent()
+            user_enabled = bool(runtime.get("enabled"))
+            available = bool(sandbox_url and sandbox_type)
+            resolve, warning = resolve_sandbox(
+                intent,  # type: ignore[arg-type]
+                enabled=user_enabled,
+                available=available,
+            )
+            if warning:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] sandbox_intent=required but jiuwenbox unavailable; "
+                    "Fail-Open to HOST (sandbox.url/type missing or incomplete)"
+                )
             sysop_card: SysOperationCard | None
-            if runtime.get("enabled") and sandbox_url and sandbox_type:
-                # 走 ``self.`` 而不是 ``JiuWenSwarmDeepAdapter.``——_create_sandbox_
-                # sys_operation 已从 staticmethod 改成 instance method (要透传
-                # ``self._is_code_agent``), 用类名直接调会绕过 MRO 把 Code 子类
-                # 的 override (如果将来需要的话) 静默吃掉, 且 staticmethod 时代
-                # 的 caller 风格不再适用。
+            if resolve == "sandbox":
                 sysop_card = self._create_sandbox_sys_operation(
                     sandbox_url,
                     sandbox_type,
@@ -18974,6 +18989,7 @@ class JiuWenSwarmDeepAdapter:
             params=request.params if isinstance(request.params, dict) else None,
         )
         token_cid = None
+        token_sid = None
         token_perm = None
         token_perm_sid = None
         token_perm_agent = None
@@ -18992,6 +19008,9 @@ class JiuWenSwarmDeepAdapter:
         try:
             self._runtime_cron_tool_context.remember_current_binding()
             token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
+            token_sid = TOOL_PERMISSION_SESSION_ID.set(
+                (request.session_id or session_id or "").strip()
+            )
             token_perm = setup_permission_context(request)
             token_perm_sid = setup_permissions_session_scope(session_id)
             if not is_enterprise():
@@ -19046,6 +19065,10 @@ class JiuWenSwarmDeepAdapter:
             if token_perm_sid is not None:
                 cleanup_steps.append(
                     lambda: reset_permissions_session_scope(token_perm_sid)
+                )
+            if token_sid is not None:
+                cleanup_steps.append(
+                    lambda: TOOL_PERMISSION_SESSION_ID.reset(token_sid)
                 )
             if token_perm is not None:
                 cleanup_steps.append(lambda: cleanup_permission_context(token_perm))
@@ -19325,6 +19348,13 @@ class JiuWenSwarmDeepAdapter:
                     (
                         "permission_session",
                         lambda: reset_permissions_session_scope(token_perm_sid),
+                    )
+                )
+            if token_sid is not None:
+                cleanup_steps.append(
+                    (
+                        "permission_session_id",
+                        lambda: TOOL_PERMISSION_SESSION_ID.reset(token_sid),
                     )
                 )
             if token_perm_agent is not None:
@@ -20123,6 +20153,7 @@ class JiuWenSwarmDeepAdapter:
             params=request.params if isinstance(request.params, dict) else None,
         )
         token_cid = None
+        token_sid = None
         token_perm = None
         token_perm_sid = None
         token_perm_agent = None
@@ -20144,6 +20175,9 @@ class JiuWenSwarmDeepAdapter:
         try:
             self._runtime_cron_tool_context.remember_current_binding()
             token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
+            token_sid = TOOL_PERMISSION_SESSION_ID.set(
+                (request.session_id or session_id or "").strip()
+            )
             token_perm = setup_permission_context(request)
             token_perm_sid = setup_permissions_session_scope(session_id)
             if not is_enterprise():
@@ -21230,6 +21264,13 @@ class JiuWenSwarmDeepAdapter:
                     (
                         "permission_session",
                         lambda: reset_permissions_session_scope(token_perm_sid),
+                    )
+                )
+            if token_sid is not None:
+                cleanup_steps.append(
+                    (
+                        "permission_session_id",
+                        lambda: TOOL_PERMISSION_SESSION_ID.reset(token_sid),
                     )
                 )
             if token_perm_agent is not None:

@@ -32,6 +32,8 @@ from jiuwenswarm.common.config import (
     update_context_engine_enabled_in_config,
     update_memory_forbidden_enabled_in_config,
     update_permissions_enabled_in_config,
+    update_permissions_mode_in_config,
+    get_permissions_mode_from_config,
     get_model_names,
     update_preferred_language_in_config,
     update_swarmflow_enabled_in_config,
@@ -514,6 +516,7 @@ _CLI_CONFIG_YAML_SETTERS: dict[str, Any] = {
     "auto_recap_enabled": update_auto_recap_enabled_in_config,
     "context_engine_enabled": update_context_engine_enabled_in_config,
     "permissions_enabled": update_permissions_enabled_in_config,
+    "permissions_mode": update_permissions_mode_in_config,
     "memory_forbidden_enabled": update_memory_forbidden_enabled_in_config,
     "preferred_language": update_preferred_language_in_config,
     "enable_swarmflow": update_swarmflow_enabled_in_config,
@@ -614,8 +617,11 @@ def _build_config_schema() -> list[dict]:
         # Features
         {"key": "context_engine_enabled", "label": "上下文压缩", "group": "Features",
          "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "permissions_enabled", "label": "权限管控", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
+        {"key": "permissions_mode", "label": "权限模式", "group": "Features",
+         "type": "select", "options": ["auto", "full_access", "strict"],
+         "source": "yaml", "default": "auto"},
+        {"key": "permissions_enabled", "label": "权限管控(兼容)", "group": "Features",
+         "type": "toggle", "source": "yaml", "default": "true"},
         {"key": "memory_forbidden_enabled", "label": "敏感信息过滤", "group": "Features",
          "type": "toggle", "source": "yaml", "default": "false"},
         {"key": "preferred_language", "label": "显示语言", "group": "Features", "type": "select",
@@ -842,8 +848,18 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 "true" if ctx_cfg.get("enabled", False) else "false"
             )
             perm_cfg = raw.get("permissions") or {}
+            try:
+                perm_mode = get_permissions_mode_from_config()
+            except Exception:
+                if perm_cfg.get("enabled") is False:
+                    perm_mode = "full_access"
+                elif str(perm_cfg.get("permission_mode") or "").lower() == "strict":
+                    perm_mode = "strict"
+                else:
+                    perm_mode = "auto"
+            payload["permissions_mode"] = perm_mode
             payload["permissions_enabled"] = (
-                "true" if perm_cfg.get("enabled", False) else "false"
+                "false" if perm_mode == "full_access" else "true"
             )
             mem_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
             payload["memory_forbidden_enabled"] = (
@@ -917,7 +933,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         except Exception:
             payload.setdefault("auto_recap_enabled", "true")
             payload.setdefault("context_engine_enabled", "false")
-            payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("permissions_enabled", "true")
+            payload.setdefault("permissions_mode", "auto")
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("preferred_language", "zh")
         

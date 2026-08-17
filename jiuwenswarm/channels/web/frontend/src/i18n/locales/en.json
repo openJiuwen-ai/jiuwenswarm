@@ -503,13 +503,17 @@
         "singleAgent": "Agent"
       },
       "permission": {
+        "auto": "Default",
+        "autoDesc": "Ask for approval when editing files outside the working directory or running high-risk commands",
         "default": "Default",
-        "defaultDesc": "Always ask when editing external files or accessing the internet",
+        "defaultDesc": "Ask for approval when editing files outside the working directory or running high-risk commands",
         "fullAccess": "Full Access",
         "fullAccessDesc": "Unrestricted access to the internet and any files on your computer",
+        "strict": "Strict Approval",
+        "strictDesc": "Always ask for approval when editing any file, reading files outside the working directory, or running commands",
         "fullAccessWarning": {
           "title": "Warning",
-          "body1": "In full access mode, Jiuwen can edit any file on your computer and run internet-connected commands without your approval.",
+          "body1": "In Full Access mode, Jiuwen can edit any file on your computer and run network-enabled commands without your approval.",
           "body2": "Please evaluate carefully before enabling full access. This significantly increases the risk of data loss, leakage, or unexpected behavior.",
           "cancel": "Cancel",
           "confirm": "Continue Anyway"
