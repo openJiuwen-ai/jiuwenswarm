@@ -218,7 +218,7 @@ async def run_session_kv_cache_lifecycle(
             parent_session_id=parent_session_id or normalized_session_id,
             timeout=action_timeout,
         )
-        # AscendAffinityModelClient owns the whole-action deadline (including
+        # OpenAIModelClient owns the whole-action deadline when kv_cache.mode=affinity (including
         # retries/backoff). Product lifecycle code only selects and forwards
         # the shared budget so timeout ownership remains unambiguous.
         action_result = await action_call
