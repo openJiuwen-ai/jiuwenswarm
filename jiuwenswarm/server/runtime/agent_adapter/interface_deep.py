@@ -3137,6 +3137,26 @@ class JiuWenSwarmDeepAdapter:
             # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
             # (including the no-pending case, where it silently catches up).
             await self._reload_session_adapter_if_stale(sid, adapter)
+            # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
+            # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
+            # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
+            # （全新会话磁盘无历史，warmup 内部会静默跳过）。
+            try:
+                from jiuwenswarm.agents.harness.common.session_ops_service import (
+                    warmup_session_context,
+                )
+
+                await warmup_session_context(
+                    deep_agent=getattr(adapter, "_instance", None),
+                    session_id=sid,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] session context warmup failed: "
+                    "session_id=%s error=%s",
+                    sid,
+                    exc,
+                )
             self._touch_session_adapter(sid)
             # Cold-start cost of a session's first turn, split so a slow one can
             # be attributed to agent assembly vs. interaction startup.
