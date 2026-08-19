@@ -21,6 +21,7 @@ import {
   registerConfirmedTaskCreation,
   type TaskProgressBaseline,
 } from '../features/teamTaskProgressBaseline';
+import { stripPlanSuffix } from '../features/planMode/wireMode';
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
@@ -51,10 +52,15 @@ const DEFAULT_MODE: AgentMode = 'agent';
 
 function normalizeAgentMode(mode: unknown): AgentMode {
   if (typeof mode !== 'string') return DEFAULT_MODE;
-  const normalized = mode.trim().toLowerCase();
-  if (normalized === 'team') return 'team';
+  // 后端 session.mode 可能带 `.plan` 后缀（`agent.plan` / `team.plan.normal` /
+  // `team.plan.code`），先剥掉再归一化。否则 `team.plan.*` 会落进下面的兜底分支
+  // 被误判成单 agent，把团队会话的 runtime mode 覆盖成 agent（setCurrentSession 等
+  // 路径会把归一化结果写回 runtime）。
+  const normalized = stripPlanSuffix(mode.trim().toLowerCase());
+  if (normalized === 'team' || normalized === 'team.code' || normalized === 'code.team') {
+    return 'team';
+  }
   if (normalized === 'auto_harness') return 'auto_harness';
-  // plan / fast 已合并为单一 agent（历史 agent.plan / agent.fast 归一）。
   return 'agent';
 }
 

@@ -51,7 +51,7 @@ import {
   normalizeSubagentActivityEvent,
   normalizeSubagentStatusEvent,
 } from '../features/subagent/subagentNormalizer';
-import { isPlanWireMode, resolvePlanWireMode } from '../features/planMode/wireMode';
+import { isPlanWireMode, resolvePlanWireMode, stripPlanSuffix } from '../features/planMode/wireMode';
 import { normalizeTaskEvent } from '../stores/teamTaskNormalize';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import {
@@ -461,14 +461,37 @@ function resolveInterruptResumeMode(sessionId: string): AgentMode {
 }
 
 /**
+ * 取该会话的 work_mode（`work` / `code`）。
+ *
+ * 与 `getSessionWorkContext` 同一套取值顺序：session → selectedProject →
+ * workspaceStore。这里单独抽出，是因为 team + plan 时 `resolvePlanWireMode`
+ * 要据此区分 `team.plan.normal` / `team.plan.code`，而那个函数不读 store。
+ */
+function getSessionWorkMode(sessionId: string): string | undefined {
+  const sessionStore = useSessionStore.getState();
+  const workspaceStore = useWorkspaceStore.getState();
+  const session =
+    sessionStore.currentSession?.session_id === sessionId
+      ? sessionStore.currentSession
+      : sessionStore.sessions.find((item) => item.session_id === sessionId);
+  const selectedProject = workspaceStore.selectedProject;
+  return session?.work_mode || selectedProject?.work_mode || workspaceStore.workMode;
+}
+
+/**
  * 组合出本次请求要发送的 mode。
  *
  * UI 的 `AgentMode` 只有 agent / team / auto_harness；Plan 是独立开关。所有出站
  * 请求（普通消息、队列重发、interrupt resume）都必须走这里，否则 Plan 状态会被
- * `normalizeAgentMode` 抹平，后端就收不到 `agent.plan`。
+ * `normalizeAgentMode` 抹平，后端就收不到 `agent.plan`。team + plan 时还要带上
+ * work_mode，以便 `resolvePlanWireMode` 路由到 `team.plan.normal` / `team.plan.code`。
  */
 function resolveOutgoingMode(sessionId: string, baseMode: AgentMode | string | undefined): string {
-  return resolvePlanWireMode(baseMode, usePlanStore.getState().isActive(sessionId));
+  return resolvePlanWireMode(
+    baseMode,
+    usePlanStore.getState().isActive(sessionId),
+    getSessionWorkMode(sessionId)
+  );
 }
 
 /**
@@ -763,8 +786,13 @@ interface PendingContextCompressionStart {
 
 function normalizeAgentMode(rawMode: unknown): AgentMode {
   if (typeof rawMode !== 'string') return 'agent';
-  const normalized = rawMode.trim().toLowerCase();
-  if (normalized === 'team') return 'team';
+  // 后端 session.mode 可能带 `.plan` 后缀（`agent.plan` / `team.plan.normal` /
+  // `team.plan.code`），先剥掉后缀再归一化，否则 `team.plan.*` 会落进下面的
+  // 兜底分支被误判成单 agent。
+  const normalized = stripPlanSuffix(rawMode.trim().toLowerCase());
+  if (normalized === 'team' || normalized === 'team.code' || normalized === 'code.team') {
+    return 'team';
+  }
   if (normalized === 'auto_harness') return 'auto_harness';
   return 'agent';
 }
