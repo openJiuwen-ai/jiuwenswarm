@@ -152,7 +152,7 @@ class RailManager:
         # 验证文件夹结构：必须包含 rail.py
         plugin_file = source_path / "rail.py"
         if not plugin_file.exists():
-            raise ValueError(f"扩展文件夹必须包含 rail.py 文件")
+            raise ValueError("扩展文件夹必须包含 rail.py 文件")
 
         # 读取并验证 rail.py 内容
         try:

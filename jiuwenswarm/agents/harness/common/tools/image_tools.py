@@ -495,7 +495,7 @@ async def generate_image(
     original_url = result.get("original_url", "")
 
     response_parts = [
-        f"Image generated successfully!",
+        "Image generated successfully!",
         f"Saved to: {image_path}",
         f"Prompt: {prompt}",
     ]
