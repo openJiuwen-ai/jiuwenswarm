@@ -695,6 +695,12 @@ react:
     auto_save: true           # true = 自演进审批无需用户点击自动通过（内部开关）
     skill_create: false        # true = 注册 SkillCreateRail（单 agent）及 TeamSkillCreateRail（leader）
     skill_base_dir: "agent/skills"  # Skill 根目录
+  # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
+  ttse:
+    enabled: true          # agent 模式是否挂载 TTSERail
+    evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
+    inject_enabled: true    # 是否注入系统 prompt
+    store_path: ""          # 空则落到 workspace/.ttse/bank.json
   a2x_registry:
     base_url: "http://127.0.0.1:8000"
     timeout: 30.0

@@ -78,6 +78,16 @@ from openjiuwen.harness.rails import (
     unconfigure_skill_evolution,
 )
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
+try:
+    from openjiuwen.harness.rails.evolution import (
+        SignalBasedSuccessDetector,
+        TTSEConfig,
+        TTSERail,
+    )
+except ImportError:
+    SignalBasedSuccessDetector = None  # type: ignore[misc, assignment]
+    TTSEConfig = None  # type: ignore[misc, assignment]
+    TTSERail = None  # type: ignore[misc, assignment]
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 # FullCompact 仅用于溢出兜底（413/上下文溢出），日常压缩由 preset 链承担。
@@ -462,6 +472,7 @@ from jiuwenswarm.common.config import (
     get_sandbox_runtime,
     get_sandbox_startup_mode,
     get_skill_create_enabled,
+    get_ttse_enabled,
     resolve_env_vars,
     resolve_string_or_list_config,
 )
@@ -2192,6 +2203,7 @@ class JiuWenSwarmDeepAdapter:
         self._heartbeat_rail: HeartbeatRail | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
+        self._ttse_rail: Any | None = None
         self._pending_auto_rebuild_skills: list[str] = []
         self._auto_rebuild_lock = asyncio.Lock()
         self._auto_rebuild_task: asyncio.Task | None = None
@@ -7087,6 +7099,69 @@ class JiuWenSwarmDeepAdapter:
             skill_evolution_rail = None
         return skill_evolution_rail
 
+    def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
+        """Build TTSERail for FACT/TIP dual-track self-evolution.
+
+        Returns None when agent-core lacks TTSE, construction fails, or
+        the feature is unavailable. Does not register the rail.
+        """
+        if TTSERail is None or TTSEConfig is None or SignalBasedSuccessDetector is None:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSERail unavailable: agent-core missing ttse"
+            )
+            return None
+        try:
+            ttse_cfg = config.get("ttse") or {}
+            if not isinstance(ttse_cfg, dict):
+                ttse_cfg = {}
+            store_path = str(ttse_cfg.get("store_path") or "").strip() or str(
+                get_agent_workspace_dir() / ".ttse" / "bank.json"
+            )
+            ttse_rail = TTSERail(
+                llm=self._model,
+                model=self._default_model_name or config.get("model_name", "gpt-4"),
+                ttse_config=TTSEConfig(
+                    store_path=store_path,
+                    evolve_enabled=ttse_cfg.get("evolve_enabled", True),
+                    inject_enabled=ttse_cfg.get("inject_enabled", True),
+                ),
+                success_detector=SignalBasedSuccessDetector(),
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] TTSERail create success, store_path=%s",
+                store_path,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] TTSERail create failed: %s", exc)
+            ttse_rail = None
+        return ttse_rail
+
+    async def _ensure_ttse_rail_registered(self) -> None:
+        """Build and register TTSERail when missing."""
+        if self._instance is None or self._ttse_rail is not None:
+            return
+        rail = self._build_ttse_rail(self._config_cache)
+        if rail is None:
+            return
+        await self._instance.register_rail(rail)
+        self._ttse_rail = rail
+        logger.info("[JiuWenSwarmDeepAdapter] TTSERail registered for agent mode")
+
+    async def _unconfigure_ttse_rail(self) -> None:
+        """Unregister TTSERail if it is currently mounted."""
+        rail = self._ttse_rail
+        self._ttse_rail = None
+        if self._instance is None or rail is None:
+            return
+        unregister = getattr(self._instance, "unregister_rail", None)
+        if not callable(unregister):
+            return
+        try:
+            await unregister(rail)
+            logger.info("[JiuWenSwarmDeepAdapter] TTSERail unregistered")
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] TTSERail unregister failed: %s", exc)
+
     async def _ensure_active_evolution_rails_registered(self) -> None:
         """Configure, register, and cache single-agent skill evolution rails."""
         if self._instance is None:
@@ -8158,8 +8233,8 @@ class JiuWenSwarmDeepAdapter:
             ),
         ]
 
-        # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
-        # 智能模式下关闭自演进，plan 模式下按配置启用
+        # SkillEvolutionRail / TTSERail 不在冷启动时挂载，由 _update_rails_for_mode
+        # 经 _reconcile_evolution_rails 按配置按需注册/注销
 
         # MemoryRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
 
@@ -8485,6 +8560,13 @@ class JiuWenSwarmDeepAdapter:
                 self._skill_evolution_rail,
                 review_trigger=evolution_triggers["review_trigger"],
                 signal_trigger=evolution_triggers["signal_trigger"],
+            )
+
+        # TTSERail has no update_llm; patch the induction client in place.
+        if self._ttse_rail is not None:
+            self._ttse_rail._ttse_llm = self._model
+            self._ttse_rail._ttse_model = self._default_model_name or config.get(
+                "model_name", "gpt-4"
             )
 
         # Reuse existing SkillUseRail to preserve dynamically loaded skills
@@ -10016,6 +10098,12 @@ class JiuWenSwarmDeepAdapter:
             or self._evolution_interrupt_rail is not None
         ):
             await self._unconfigure_active_evolution_rails()
+
+        if get_ttse_enabled(self._config_cache):
+            if self._ttse_rail is None:
+                await self._ensure_ttse_rail_registered()
+        elif self._ttse_rail is not None:
+            await self._unconfigure_ttse_rail()
 
     @staticmethod
     def _user_interaction_rail_attribute() -> str:
@@ -18448,6 +18536,12 @@ class JiuWenSwarmDeepAdapter:
                 )
                 task.add_done_callback(self._on_evolution_watcher_done)
                 self._evolution_watcher_tasks.add(task)
+            if self._ttse_rail is not None:
+                ttse_task = asyncio.create_task(
+                    self._cleanup_ttse_background_tasks(rid, session_id)
+                )
+                ttse_task.add_done_callback(self._on_evolution_watcher_done)
+                self._evolution_watcher_tasks.add(ttse_task)
             if _debug_logger is not None:
                 if run_failure is not None:
                     _debug_logger.end_run(
@@ -20515,6 +20609,24 @@ class JiuWenSwarmDeepAdapter:
                 await _push_status("end", "hidden", "")
             except Exception:
                 pass
+
+    async def _cleanup_ttse_background_tasks(self, rid: str, session_id: str) -> None:
+        """Wait for TTSE background induction without draining approval events."""
+        rail = self._ttse_rail
+        if rail is None:
+            return
+        try:
+            cleanup = getattr(rail, "cleanup_background_tasks", None)
+            if cleanup is not None:
+                await cleanup()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSE cleanup failed: request_id=%s "
+                "session_id=%s error=%s",
+                rid,
+                session_id,
+                exc,
+            )
 
     def _on_evolution_watcher_done(self, task: asyncio.Task) -> None:
         """Callback when an evolution watcher task completes.

@@ -106,6 +106,23 @@ Skill 自动演进功能通过在配置信息中开启自演进总开关 `react.
 
 修改后在下次对话时会自动加载。
 
+### 2.7 TTSE 双轨自演进（FACT / TIP）
+
+TTSE（Two-Track Self-Evolution）与 Skill 正文演进相互独立：它从对话轨迹归纳环境事实（FACT）与能力选择提示（TIP），注入系统 prompt，**不改 SKILL.md，也没有审批弹窗**。
+
+由 `react.ttse.enabled` 控制，**仅 agent 模式**生效（code / team 不挂载）。默认关闭，避免未评估就产生额外归纳 LLM 成本。
+
+```yaml
+react:
+  ttse:
+    enabled: false          # agent 模式是否挂载 TTSERail
+    evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
+    inject_enabled: true    # 是否注入系统 prompt
+    store_path: ""          # 空则落到 workspace/.ttse/bank.json
+```
+
+规则库默认路径为 agent workspace 下的 `.ttse/bank.json`。
+
 ## 3. 案例实践：通过文字对话字段触发代码修改
 
 ### 3.1 场景背景

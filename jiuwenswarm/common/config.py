@@ -493,6 +493,27 @@ def get_evolution_enabled(config: dict[str, Any] | None) -> bool:
     return get_skill_evolution_enabled(config)
 
 
+def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the TTSE config block from a full yaml or a react-section cache."""
+    if not isinstance(config, dict):
+        return {}
+    react_config = config.get("react")
+    if isinstance(react_config, dict) and isinstance(react_config.get("ttse"), dict):
+        return react_config["ttse"]
+    ttse_config = config.get("ttse")
+    if isinstance(ttse_config, dict):
+        return ttse_config
+    return {}
+
+
+def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether TTSE (FACT/TIP) rail should be mounted.
+
+    Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
+    """
+    return bool(_get_ttse_config(config).get("enabled"))
+
+
 def get_skill_create_enabled(config: dict[str, Any] | None) -> bool:
     raw = get_local_config("SKILL_CREATE")
     env_skill_create = _get_bool_env(None if raw is None else str(raw))

@@ -16,6 +16,7 @@ from jiuwenswarm.common.config import (
     get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
+    get_ttse_enabled,
     migrate_config_from_template,
     replace_teams_in_config,
     resolve_env_vars,
@@ -310,6 +311,28 @@ class TestConfigFunctions:
     )
     def test_evolution_enabled_config_values(self, config, expected):
         assert get_evolution_enabled(config) is expected
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({}, False),
+            ({"react": {"ttse": {"enabled": True}}}, True),
+            ({"react": {"ttse": {"enabled": False}}}, False),
+            ({"ttse": {"enabled": True}}, True),
+            ({"ttse": {"enabled": False}}, False),
+            (
+                {
+                    "react": {"ttse": {"enabled": True}},
+                    "ttse": {"enabled": False},
+                },
+                True,
+            ),
+            ({"react": {"ttse": {"enabled": "true"}}}, True),
+            ({"react": {"ttse": {}}}, False),
+        ],
+    )
+    def test_ttse_enabled_config_values(self, config, expected):
+        assert get_ttse_enabled(config) is expected
 
     @staticmethod
     def test_get_config_raw(temp_config_file: Path):
