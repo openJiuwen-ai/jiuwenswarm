@@ -67,7 +67,7 @@ def run_init(force: bool = False, name: Optional[str] = None) -> int:
         logging.info(f"[jiuwenswarm-init] Workspace: {workspace_path}")
     else:
         workspace_path = get_user_home() / ".jiuwenswarm"
-        logging.info(f"[jiuwenswarm-init] Initializing default workspace")
+        logging.info("[jiuwenswarm-init] Initializing default workspace")
         logging.info(f"[jiuwenswarm-init] Workspace: {workspace_path}")
 
     # 3. Check if instance is running (for named instances, always check)
@@ -90,7 +90,7 @@ def run_init(force: bool = False, name: Optional[str] = None) -> int:
         status = get_default_instance_status()
         if status.running:
             logging.info(f"[jiuwenswarm-init] ERROR: Default instance is running (PID={status.pid or '-'}).")
-            logging.info(f"[jiuwenswarm-init] Stop it first with: jiuwenswarm-start --stop default")
+            logging.info("[jiuwenswarm-init] Stop it first with: jiuwenswarm-start --stop default")
             return 1
 
     # 4. Call init_user_workspace with workspace path
