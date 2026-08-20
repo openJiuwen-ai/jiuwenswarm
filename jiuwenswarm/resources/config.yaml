@@ -1,6 +1,14 @@
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
+# Code Graph on the Code Agent. ``off`` = original tools (grep/read/edit).
+# ``graph`` = find_* retrieval tools. Root / plan / explore never get graph tools.
+code_graph:
+  profile: "off"
+  max_files: 50000
+  max_index_size_mb: 1024
+  query_timeout_seconds: 10
+
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
   enabled: true
