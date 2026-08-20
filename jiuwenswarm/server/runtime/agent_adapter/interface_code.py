@@ -23,6 +23,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
+from openjiuwen.core.retrieval.code_graph.models import CodeGraphConfig
 from openjiuwen.core.runner import Runner as Runner
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
@@ -31,10 +32,15 @@ from openjiuwen.harness.rails import (
     AgentModeRail,
     CodingMemoryRail as _BaseCodingMemoryRail,
     SysOperationRail,
-    LspRail
+    LspRail,
 )
+
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.lsp import InitializeOptions
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+    CodeGraphFlags,
+    resolve_code_graph_flags,
+)
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
@@ -777,6 +783,51 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] SysOperationRail create failed: %s", exc)
             return None
 
+    def _code_graph_flags(self, config_base: dict[str, Any] | None) -> CodeGraphFlags:
+        return resolve_code_graph_flags(config_base)
+
+    def _build_code_graph_config(self, config_base: dict[str, Any] | None) -> CodeGraphConfig:
+        raw = (config_base or {}).get("code_graph") if isinstance(config_base, dict) else {}
+        if not isinstance(raw, dict):
+            raw = {}
+        cache_dir = raw.get("cache_dir")
+        if not cache_dir:
+            # Not set until the agent is built; the cache still must not land in
+            # the user's project_dir when it is.
+            base = getattr(self, "_agent_workspace_dir", None) or self._project_dir or "."
+            cache_dir = str(Path(base) / ".code_graph_cache")
+        return CodeGraphConfig(
+            cache_dir=str(cache_dir),
+            max_files=parse_int(raw.get("max_files"), 50000),
+            max_index_size_mb=parse_int(raw.get("max_index_size_mb"), 1024),
+            query_timeout_seconds=float(raw.get("query_timeout_seconds") or 10),
+        )
+
+    def _subagent_graph_factory_kwargs(
+        self,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Sub-agent create kwargs. Graph lives on Code Agent via profile kwargs."""
+        kwargs: dict[str, Any] = {
+            "auto_create_workspace": False,
+        }
+        if extra:
+            kwargs.update(extra)
+        return kwargs
+
+    def _code_agent_graph_kwargs(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
+        """Profile kwargs for the one sub-agent that owns the graph.
+
+        An off profile carries no index config: building one would resolve a cache
+        directory for an agent that never queries the graph.
+        """
+        flags = self._code_graph_flags(config_base)
+        kwargs: dict[str, Any] = {"code_graph_profile": flags.profile}
+        if not flags.enabled:
+            return kwargs
+        kwargs["code_graph_config"] = self._build_code_graph_config(config_base)
+        return kwargs
+
     def _build_agent_mode_rail(self) -> AgentModeRail | None:
         """构建 CodeAgentModeRail。
 
@@ -1095,7 +1146,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     react_cfg.get("max_iterations", 15),
                 ),
             )
-            explore_spec.factory_kwargs = {"auto_create_workspace": False}
+            explore_spec.factory_kwargs = self._subagent_graph_factory_kwargs()
             subagents.append(explore_spec)
 
         # ── 固定挂载：plan_agent（Code 模式核心子代理，始终启用）──
@@ -1111,8 +1162,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     react_cfg.get("max_iterations", 15),
                 ),
             )
-            plan_spec.factory_kwargs = {"auto_create_workspace": False}
+            plan_spec.factory_kwargs = self._subagent_graph_factory_kwargs()
             subagents.append(plan_spec)
+
+        # Code Graph is a profile on code_agent, not a separate sub-agent.
 
         if isinstance(subagents_cfg, dict):
             # code_agent subagent — 按配置启用
@@ -1125,6 +1178,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     # SysOperationRail is default rail for code_agent;
                     # passing rails overrides defaults, must include it explicitly
                     code_agent_rails = [SysOperationRail(), coding_memory_rail]
+                graph_kwargs = self._code_agent_graph_kwargs(config_base)
                 code_spec = build_code_agent_config(
                     model,
                     workspace=workspace,
@@ -1135,8 +1189,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         code_agent_cfg.get("max_iterations"),
                         react_cfg.get("max_iterations", 15),
                     ),
+                    **graph_kwargs,
                 )
-                code_spec.factory_kwargs = {"auto_create_workspace": False}
+                code_spec.factory_kwargs = self._subagent_graph_factory_kwargs(
+                    code_spec.factory_kwargs,
+                )
                 subagents.append(code_spec)
 
             # browser_agent
