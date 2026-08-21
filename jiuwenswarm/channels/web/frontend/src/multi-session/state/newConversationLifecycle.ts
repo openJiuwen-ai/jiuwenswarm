@@ -18,6 +18,21 @@ interface ConversationRuntimeSettings {
   projectDir?: string | null;
 }
 
+export type NewConversationEntrySettings = Pick<ConversationRuntimeSettings, 'mode' | 'selectedModelName'>;
+
+export function resolveNewConversationEntrySettings(
+  targetMode: AgentMode,
+  defaultModelName: string | null,
+  currentModelName: string | null,
+  pendingSettings?: NewConversationEntrySettings | null,
+): NewConversationEntrySettings {
+  if (pendingSettings) return pendingSettings;
+  return {
+    mode: targetMode,
+    selectedModelName: defaultModelName ?? currentModelName ?? null,
+  };
+}
+
 const locallyCreatedConversations = new Map<string, Session>();
 
 export function createConversationTitle(content: string): string {

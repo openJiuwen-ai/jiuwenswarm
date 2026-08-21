@@ -22,7 +22,6 @@ export function SvgDiagram({ code, complete, isStreaming }: SvgDiagramProps): JS
   const [viewMode, setViewMode] = useState<DiagramViewMode>('image');
   const preview = useMemo(() => getSvgPreview(code), [code]);
   const status = useMemo(() => getSvgMarkupStatus(preview, complete, isStreaming), [complete, isStreaming, preview]);
-  const canExport = status === 'ready' || status === 'previewable';
   const previewMarkup = preview?.markup ?? code;
 
   useEffect(() => {
@@ -44,11 +43,8 @@ export function SvgDiagram({ code, complete, isStreaming }: SvgDiagramProps): JS
       feedbackPosition="start"
       exportConfig={{
         sourceCode: code,
-        sourceFilename: 'diagram.svg',
-        sourceMimeType: 'image/svg+xml;charset=utf-8',
         renderedSvg: previewMarkup,
         imageFilename: 'diagram.png',
-        downloadEnabled: canExport,
       }}
     >
       {viewMode === 'image' ? (

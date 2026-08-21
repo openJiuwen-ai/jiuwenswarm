@@ -44,7 +44,6 @@ function createI18n() {
             image: 'Image',
             code: 'Code',
             moreActions: 'More diagram actions',
-            downloadSource: 'Download source',
             downloadImage: 'Download as image',
             copyCode: 'Copy code',
             copied: 'Copied',
@@ -198,10 +197,18 @@ test('renders SVG markup only inside a sandboxed iframe and falls back to code f
     await act(async () => {
       root.render(createElement(I18nextProvider, { i18n }, createElement(SvgDiagram, { code: '<div>not an SVG</div>', complete: true, isStreaming: false })));
     });
-    assert.ok(container.querySelector('[data-svg-status="invalid"] .svg-diagram__code-view'));
-    assert.ok(container.querySelector('[data-svg-status="invalid"] .diagram-toolbar-status--warning'));
-    assert.equal(container.querySelector('[data-svg-status="invalid"] .diagram-toolbar-status--error'), null);
-    assert.equal(container.querySelector('[data-svg-status="invalid"] iframe'), null);
+    const invalidDiagram = container.querySelector('[data-svg-status="invalid"]');
+    assert.ok(invalidDiagram?.querySelector('.svg-diagram__code-view'));
+    assert.ok(invalidDiagram?.querySelector('.diagram-toolbar-status--warning'));
+    assert.equal(invalidDiagram?.querySelector('.diagram-toolbar-status--error'), null);
+    assert.match(container.textContent, /SVG code contains errors/);
+    assert.equal(invalidDiagram?.querySelector('iframe'), null);
+
+    await act(async () => {
+      invalidDiagram?.querySelector('[aria-label="More diagram actions"]')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(invalidDiagram?.querySelector('[data-variant="download-source"]'), null);
+    assert.equal(invalidDiagram?.querySelector('[data-variant="download-image"]')?.disabled, false);
   } finally {
     if (root) await act(async () => root.unmount());
     restore();

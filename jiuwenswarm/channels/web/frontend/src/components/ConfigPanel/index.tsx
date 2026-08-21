@@ -398,6 +398,9 @@ const PROACTIVE_KEYS = new Set([
 ]);
 // ConfigPanel 暂不展示这些配置；保留后端下发值，并在比较/提交时跳过。
 const HIDDEN_FROM_UI_CONFIG_KEYS = new Set([
+  "a2ui_enabled",
+  "a2ui_generation_enabled",
+  "a2ui_rendering_enabled",
   "proactive_recommendation_tick_interval_minutes",
   "kv_cache_release_enabled",
   "kv_cache_affinity_enabled",
@@ -1122,7 +1125,6 @@ const MODEL_PROVIDER_OPTIONS = [
   "InferenceAffinity",
   "DeepSeek",
 ] as const;
-const REASONING_LEVEL_OPTIONS = ["off", "low", "medium", "high"] as const;
 
 function isOpenAIAccountProvider(provider?: string): boolean {
   return (provider || "").trim().toLowerCase() === OPENAI_ACCOUNT_PROVIDER.toLowerCase();
@@ -2273,9 +2275,9 @@ function MultiModelSection({
                 </div>
               </div>
               {isExpanded && (
-                <div className="border-t border-border px-3 py-2 space-y-2">
+                <div className="border-t border-border px-3 py-2 space-y-2" data-testid="config-panel-model-item-detail">
                   {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
-                    <div key={field} className="flex items-center gap-2 text-xs">
+                    <div key={field} className="flex items-center gap-2 text-xs" data-testid="config-panel-model-item-field" data-variant={field}>
                       <label className="w-28 text-text-muted shrink-0">
                         <ConfigFieldHintLabel
                           label={
@@ -2359,9 +2361,9 @@ function MultiModelSection({
         })}
 
         {addingNew ? (
-          <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 space-y-2">
+          <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 space-y-2" data-testid="config-panel-model-add">
             {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
-              <div key={field} className="flex items-center gap-2 text-xs">
+              <div key={field} className="flex items-center gap-2 text-xs" data-testid="config-panel-model-add-field" data-variant={field}>
                 <label className="w-28 text-text-muted shrink-0">
                   <ConfigFieldHintLabel
                     label={

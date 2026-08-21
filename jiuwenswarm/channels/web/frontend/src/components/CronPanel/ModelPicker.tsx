@@ -12,12 +12,13 @@ interface ModelPickerProps {
 }
 
 // 定时任务抽屉里的"模型"选择器。视觉和交互照搬会话界面输入框工具栏的模型选择器
-// （InputArea.tsx 的 ModelSelector 2117-2260）：同一套 .chat-mode-select pill + portal 下拉、
+// （InputArea.tsx 的 ModelSelector）：同一套 .chat-mode-select pill + portal 下拉、
 // 同一份 ModelProviderIcon 厂商图标，跟同行的 ModeSelector 视觉/交互保持一致。
 // 数据源仍是 sessionStore.availableModels（会话级配置的模型清单），但跟会话那边的 ModelSelector
 // 不同——会话那边是直接绑死 activeSessionId 的 session 级状态，抽屉里需要一个独立于会话的
 // 受控字段（编辑已有任务时展示的是该任务自己存的 model_name，不是当前会话选中的模型），
-// 所以这里照抄样式和交互，不能照搬组件实例。
+// 所以这里照抄样式和交互，不能照搬组件实例。单 Agent 与集群（team）任务均可选模型，
+// 后端执行时统一按 job.model_name 透传给 chat.send。
 export default function ModelPicker({ value, onChange, disabled = false }: ModelPickerProps) {
   const { t } = useTranslation();
   const availableModels = useSessionStore((s) => s.availableModels);

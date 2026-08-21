@@ -4,8 +4,6 @@ import { convertSvgToPng, saveBlob } from './diagramExport';
 
 export interface DiagramExportConfig {
   sourceCode: string;
-  sourceFilename: string;
-  sourceMimeType: string;
   renderedSvg: string;
   imageFilename: string;
   downloadEnabled?: boolean;
@@ -14,7 +12,6 @@ export interface DiagramExportConfig {
 interface DiagramExportActions {
   feedback: string | null;
   copyCode: () => Promise<void>;
-  downloadSource: () => Promise<void>;
   downloadImage: () => Promise<void>;
 }
 
@@ -37,16 +34,6 @@ export function useDiagramExportActions(config: DiagramExportConfig): DiagramExp
     }
   }
 
-  async function downloadSource(): Promise<void> {
-    const source = new Blob([config.sourceCode], { type: config.sourceMimeType });
-    try {
-      const outcome = await saveBlob(source, config.sourceFilename);
-      setFeedback(outcome === 'failed' ? t('diagram.downloadSourceFailed') : null);
-    } catch {
-      setFeedback(t('diagram.downloadSourceFailed'));
-    }
-  }
-
   async function downloadImage(): Promise<void> {
     setFeedback(t('diagram.preparingImage'));
     try {
@@ -58,5 +45,5 @@ export function useDiagramExportActions(config: DiagramExportConfig): DiagramExp
     }
   }
 
-  return { feedback, copyCode, downloadSource, downloadImage };
+  return { feedback, copyCode, downloadImage };
 }

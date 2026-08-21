@@ -162,8 +162,6 @@ export function MermaidDiagram({ code, renderSvg = renderMermaidSvg }: MermaidDi
       statusText={rendered ? undefined : t('mermaid.rendering')}
       exportConfig={{
         sourceCode: code,
-        sourceFilename: 'diagram.mmd',
-        sourceMimeType: 'text/plain;charset=utf-8',
         renderedSvg: renderState.svg,
         imageFilename: 'diagram.png',
         downloadEnabled: rendered,
