@@ -26,7 +26,7 @@ import {
   useSessionStore,
   useWorkspaceStore,
   usePersonalContextStore,
-  resolveEffectiveModel,
+  resolveChatModelSelection,
 } from '../../stores';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
@@ -2591,10 +2591,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               )}
             </button>
           )} */}
-
+          
           <ModelSelector
-            disabled={enterpriseLocked || isTeamMode || isProcessing}
-            lockedToDefault={enterpriseLocked || isTeamMode}
+            disabled={enterpriseLocked || isProcessing || activeSessionId !== NEW_CONVERSATION_ID}
           />
 
           <button
@@ -2876,10 +2875,8 @@ function ComposerSuggestionMenu({
 
 function ModelSelector({
   disabled = false,
-  lockedToDefault = false,
 }: {
   disabled?: boolean;
-  lockedToDefault?: boolean;
 }) {
   const chatAvailableModels = useSessionStore((s) => s.chatAvailableModels);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -2908,14 +2905,12 @@ function ModelSelector({
 
   if (chatAvailableModels.length === 0) return null;
 
-  // 集群模式下 UI 禁止手动改模型（见下方 disabled/tooltip），但显示仍应优先反映
-  // 该会话实际记录的模型（如定时任务在集群模式下显式指定了非默认模型，后端也确实
-  // 按该模型执行——见 bug002 回归），而不是不管三七二十一恒显示全局默认模型；
-  // 从未指定过模型的会话 selectedModelName 本就兜底等于默认模型，行为不变。
-  // 与实际发给后端的 model_name（sessionStore.getEffectiveModelName）复用同一套解析逻辑，
-  // 避免模型改名/改别名后 UI 显示值和实际请求参数走出两份不同的兜底结果（bug003）。
+  // 单 Agent 与集群（team）模式共用同一套解析，展示会话自选模型（含 metadata 恢复值），
+  // 失配时回退默认模型。与实际发给后端的 model_name（sessionStore.getEffectiveModelName）
+  // 复用同一套解析逻辑，避免模型改名/改别名后 UI 显示值和实际请求参数走出两份不同的
+  // 兜底结果（bug003）。
   const selectedModel =
-    resolveEffectiveModel(chatAvailableModels, selectedModelName, defaultModelName) ??
+    resolveChatModelSelection(chatAvailableModels, selectedModelName, defaultModelName) ??
     chatAvailableModels[0];
 
   const handleSelect = (modelKey: string) => {
@@ -2936,7 +2931,7 @@ function ModelSelector({
       <button
         type="button"
         className="chat-mode-select__trigger"
-        title={t(lockedToDefault ? 'chat.modelSelector.clusterLockedTooltip' : 'chat.modelSelector.tooltip')}
+        title={t('chat.modelSelector.tooltip')}
         onClick={() => {
           if (disabled) return;
           if (!isOpen && menuRef.current) {
