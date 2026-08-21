@@ -19,4 +19,5 @@ export { useCronStore, filterJobsForProject, isDefaultProjectId, isWebChannelJob
 export { useSubagentStore } from './subagentStore';
 export type { SubagentRuntime } from './subagentStore';
 export type { SidebarCronJob } from './cronStore';
+export { usePersonalContextStore } from './personalContextStore';
 export type { HarnessStageInfo, HarnessStageStatus } from './harnessStore';

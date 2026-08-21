@@ -18,6 +18,7 @@ import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
+import { PersonalContextPanel } from './components/PersonalContext';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -34,7 +35,7 @@ import {
 } from './features/shareImageExport';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
-import { FEATURE_APP_UPDATER_UI } from './featureFlags';
+import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
 import {
   beginHistoryRestore,
   fetchHistoryPage,
@@ -300,8 +301,8 @@ function AppContent({
   const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
-  const [requestedSettingsModuleId, setRequestedSettingsModuleId] =
-    useState<SettingsModuleTarget | null>(null);
+  const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(false);
+  const [requestedSettingsModuleId, setRequestedSettingsModuleId] = useState<SettingsModuleTarget | null>(null);
   const {
     isMobile,
     conversationSidebarCollapsed,
@@ -357,6 +358,12 @@ function AppContent({
 
   useEffect(() => {
     if (!FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel') {
+      setActiveNav('chat');
+    }
+  }, [activeNav]);
+
+  useEffect(() => {
+    if (!FEATURE_PERSONAL_CONTEXT_UI && (activeNav === 'personalContext' || activeNav === 'personalContextSettings')) {
       setActiveNav('chat');
     }
   }, [activeNav]);
@@ -702,7 +709,12 @@ function AppContent({
     import.meta.env.MODE,
     typeof serverConfig?.runtime_platform === 'string' ? serverConfig.runtime_platform : undefined,
   );
-  const hiddenNavItems = getHiddenNavItemsForPlatform(frontendPlatform);
+  const hiddenNavItems = useMemo<MainNavKey[]>(() => {
+    const base = getHiddenNavItemsForPlatform(frontendPlatform);
+    if (FEATURE_PERSONAL_CONTEXT_UI) return base;
+    // feature 关闭时移除全部个人上下文入口
+    return [...base, 'personalContext', 'personalContextSettings'];
+  }, [frontendPlatform]);
 
   useEffect(() => {
     if (!serverConfig) {
@@ -2677,8 +2689,9 @@ function AppContent({
         setModelSetupGuideStep(2);
       }
       if (nav === 'skills') setHasVisitedSkills(true);
+      if (nav === 'personalContext') setHasVisitedPersonalContext(true);
     },
-    [activeNav, isMobile, modelSetupGuideStep, setTeamAreaExpanded, setToolPanelHidden, t],
+    [activeNav, isMobile, modelSetupGuideStep, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
   );
 
   const skipModelSetupGuide = useCallback(() => {
@@ -3079,6 +3092,12 @@ function AppContent({
         {FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel' && (
           <div className="app-section">
             <UpdatePanel isConnected={isConnected} request={request} />
+          </div>
+        )}
+
+        {FEATURE_PERSONAL_CONTEXT_UI && hasVisitedPersonalContext && (
+          <div className={`app-section ${activeNav === 'personalContext' ? '' : 'is-hidden'}`}>
+            <PersonalContextPanel isConnected={isConnected} isActive={activeNav === 'personalContext'} />
           </div>
         )}
 

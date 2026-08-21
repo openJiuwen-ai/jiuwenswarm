@@ -13,16 +13,43 @@ interface MarkdownRendererProps {
   className?: string;
   testId?: string;
   isStreaming?: boolean;
+  /** 拦截非锚点链接点击。返回 true 表示已处理（阻止默认导航/新开标签）。 */
+  onLinkClick?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => boolean | void;
 }
 
 const MarkdownContentLinesContext = createContext<string[]>([]);
 const MarkdownStreamingContext = createContext(false);
+const MarkdownLinkClickContext = createContext<MarkdownRendererProps['onLinkClick']>(undefined);
 
 function MarkdownLink({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>): JSX.Element {
   const isFragmentLink = href?.startsWith('#');
+  const isExternalLink = /^https?:/i.test(href ?? '');
+  const onLinkClick = useContext(MarkdownLinkClickContext);
+
+  const handleClick = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!href || isFragmentLink || isExternalLink || !onLinkClick) {
+      props.onClick?.(event);
+      return;
+    }
+    const handled = onLinkClick(href, event);
+    if (handled !== false) {
+      event.preventDefault();
+    }
+  };
+
+  // http(s) 链接始终新开标签页（target=_blank），不论是否提供 onLinkClick；
+  // 锚点链接不开新页；内部相对链接：提供 onLinkClick 时交给其拦截（不开新页），
+  // 未提供时保持新开标签（与历史行为一致，避免相对链接在当前页导航破坏 SPA）。
+  const openInNewTab = isExternalLink || (!isFragmentLink && !onLinkClick);
 
   return (
-    <a href={href} target={isFragmentLink ? undefined : '_blank'} rel={isFragmentLink ? undefined : 'noopener noreferrer'} {...props}>
+    <a
+      href={href}
+      target={openInNewTab ? '_blank' : undefined}
+      rel={openInNewTab ? 'noopener noreferrer' : undefined}
+      onClick={handleClick}
+      {...props}
+    >
       {children}
     </a>
   );
@@ -59,7 +86,7 @@ const MARKDOWN_COMPONENTS = {
   table: MarkdownTable,
 };
 
-export function MarkdownRenderer({ content, className, testId, isStreaming = false }: MarkdownRendererProps): JSX.Element {
+export function MarkdownRenderer({ content, className, testId, isStreaming = false, onLinkClick }: MarkdownRendererProps): JSX.Element {
   const markdown = useMemo(() => repairCollapsedGfmTables(unescapeLiteralNewlines(content)), [content]);
   const contentLines = useMemo(() => markdown.split(/\r\n|\n|\r/), [markdown]);
 
@@ -67,9 +94,11 @@ export function MarkdownRenderer({ content, className, testId, isStreaming = fal
     <div className={className} data-testid={testId}>
       <MarkdownContentLinesContext.Provider value={contentLines}>
         <MarkdownStreamingContext.Provider value={isStreaming}>
-          <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} rehypePlugins={MARKDOWN_REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
-            {markdown}
-          </ReactMarkdown>
+          <MarkdownLinkClickContext.Provider value={onLinkClick}>
+            <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} rehypePlugins={MARKDOWN_REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
+              {markdown}
+            </ReactMarkdown>
+          </MarkdownLinkClickContext.Provider>
         </MarkdownStreamingContext.Provider>
       </MarkdownContentLinesContext.Provider>
     </div>

@@ -42,7 +42,8 @@
     "more": "更多",
     "settings": "设置",
     "logs": "日志",
-    "update": "更新"
+    "update": "更新",
+    "personalContext": "我的\n上下文"
   },
   "settingsPanel": {
     "title": "设置",
@@ -52,6 +53,7 @@
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
+      "personalContext": "我的上下文",
       "experimental": "实验功能"
     },
     "feedback": {
@@ -266,43 +268,120 @@
         "title": "浏览器运行方式",
         "description": "选择在前台显示浏览器窗口或以无头模式运行。"
       },
-      "model_name": { "title": "模型名称", "placeholder": "例如：glm-4.7" },
-      "alias": { "title": "自定义别名", "placeholder": "例如：GLM-4.7 生产环境" },
-      "api_base": { "title": "API 地址", "placeholder": "例如：https://api.openai.com/v1" },
-      "api_key": { "title": "API 密钥", "placeholder": "例如：sk-..." },
-      "model_provider": { "title": "模型提供商" },
-      "reasoning_level": { "title": "推理强度" },
-      "embed_api_base": { "title": "API 地址" },
-      "embed_api_key": { "title": "API 密钥" },
-      "embed_model": { "title": "模型名称" },
+      "model_name": {
+        "title": "模型名称",
+        "placeholder": "例如：glm-4.7"
+      },
+      "alias": {
+        "title": "自定义别名",
+        "placeholder": "例如：GLM-4.7 生产环境"
+      },
+      "api_base": {
+        "title": "API 地址",
+        "placeholder": "例如：https://api.openai.com/v1"
+      },
+      "api_key": {
+        "title": "API 密钥",
+        "placeholder": "例如：sk-..."
+      },
+      "model_provider": {
+        "title": "模型提供商"
+      },
+      "reasoning_level": {
+        "title": "推理强度"
+      },
+      "embed_api_base": {
+        "title": "API 地址"
+      },
+      "embed_api_key": {
+        "title": "API 密钥"
+      },
+      "embed_model": {
+        "title": "模型名称"
+      },
       "enable_free_models": {
         "title": "启用免费模型",
         "description": "开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。免费模型来源于 Opencode Zen 网关（https://opencode.ai/zen），由 models.dev 目录（https://models.opencode.ai/api.json）与 Zen 实时模型列表取交集得到（判定标准：输入价格为 0）。"
       },
-      "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
-      "skill_retrieval_enabled": { "title": "技能自动搜索", "description": "控制智能体是否自动检索可用技能" },
-      "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
-      "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
-      "jina_api_key": { "title": "Jina API 密钥" },
-      "bocha_api_key": { "title": "博查 API 密钥" },
-      "perplexity_api_key": { "title": "Perplexity API 密钥" },
-      "serper_api_key": { "title": "Serper API 密钥" },
-      "github_token": { "title": "GitHub 访问令牌" },
-      "vision_api_base": { "title": "API 地址" },
-      "vision_api_key": { "title": "API 密钥" },
-      "vision_model": { "title": "模型名称" },
-      "vision_provider": { "title": "模型提供商" },
-      "audio_api_base": { "title": "API 地址" },
-      "audio_api_key": { "title": "API 密钥" },
-      "audio_model": { "title": "模型名称" },
-      "audio_provider": { "title": "模型提供商" },
-      "video_api_base": { "title": "API 地址" },
-      "video_api_key": { "title": "API 密钥" },
-      "video_model": { "title": "模型名称" },
-      "video_provider": { "title": "模型提供商" },
-      "swarmflow_enabled": { "title": "动态工作流", "description": "控制智能体团队是否启用动态工作流能力" },
-      "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
-      "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
+      "skill_evolution": {
+        "title": "本地技能自动演进与沉淀",
+        "description": "控制本地技能的自动演进和沉淀"
+      },
+      "skill_retrieval_enabled": {
+        "title": "技能自动搜索",
+        "description": "控制智能体是否自动检索可用技能"
+      },
+      "free_search_ddg_enabled": {
+        "title": "DuckDuckGo 搜索",
+        "description": "启用 DuckDuckGo 免费搜索来源。"
+      },
+      "free_search_bing_enabled": {
+        "title": "Bing 搜索",
+        "description": "启用 Bing 免费搜索来源。"
+      },
+      "jina_api_key": {
+        "title": "Jina API 密钥"
+      },
+      "bocha_api_key": {
+        "title": "博查 API 密钥"
+      },
+      "perplexity_api_key": {
+        "title": "Perplexity API 密钥"
+      },
+      "serper_api_key": {
+        "title": "Serper API 密钥"
+      },
+      "github_token": {
+        "title": "GitHub 访问令牌"
+      },
+      "vision_api_base": {
+        "title": "API 地址"
+      },
+      "vision_api_key": {
+        "title": "API 密钥"
+      },
+      "vision_model": {
+        "title": "模型名称"
+      },
+      "vision_provider": {
+        "title": "模型提供商"
+      },
+      "audio_api_base": {
+        "title": "API 地址"
+      },
+      "audio_api_key": {
+        "title": "API 密钥"
+      },
+      "audio_model": {
+        "title": "模型名称"
+      },
+      "audio_provider": {
+        "title": "模型提供商"
+      },
+      "video_api_base": {
+        "title": "API 地址"
+      },
+      "video_api_key": {
+        "title": "API 密钥"
+      },
+      "video_model": {
+        "title": "模型名称"
+      },
+      "video_provider": {
+        "title": "模型提供商"
+      },
+      "swarmflow_enabled": {
+        "title": "动态工作流",
+        "description": "控制智能体团队是否启用动态工作流能力"
+      },
+      "permissions_mode": {
+        "title": "全局权限模式",
+        "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。"
+      },
+      "a2ui_enabled": {
+        "title": "启用 A2UI",
+        "description": "允许将支持的结果渲染成交互式界面。"
+      },
       "external_cli_agent_claude_enabled": {
         "title": "启用 Claude",
         "description": "允许 Team Leader 拉起 Claude Agent。"
@@ -311,7 +390,9 @@
         "title": "Claude 使用内置 CLI",
         "description": "不指定本机 CLI 路径，由 SDK 使用默认查找方式。"
       },
-      "external_cli_agent_claude_cli_path": { "title": "Claude CLI 路径" },
+      "external_cli_agent_claude_cli_path": {
+        "title": "Claude CLI 路径"
+      },
       "external_cli_agent_codex_enabled": {
         "title": "启用 Codex",
         "description": "允许 Team Leader 拉起 Codex Agent；首次启用可能需要安装依赖。"
@@ -320,7 +401,9 @@
         "title": "Codex 使用内置 CLI",
         "description": "不指定本机 CLI 路径，由 SDK 使用默认查找方式。"
       },
-      "external_cli_agent_codex_cli_path": { "title": "Codex CLI 路径" },
+      "external_cli_agent_codex_cli_path": {
+        "title": "Codex CLI 路径"
+      },
       "proactive_recommendation_enabled": {
         "title": "启用主动推荐",
         "description": "允许系统在满足条件时主动发送推荐。"
@@ -1481,6 +1564,252 @@
       "updateDebugConfig": "更新 WS 调试配置失败"
     }
   },
+  "personalContext": {
+    "intro": {
+      "title": "个人上下文，让知识自动交织成网",
+      "subtitle": "把零散的本地文档与网络来源，一键转化为清晰可视的结构化知识大脑。",
+      "stepsTitle": "操作步骤",
+      "step1Title": "第一步：授权渠道，添加多元内容",
+      "step1Desc": "一键授权知识来源渠道，导入本地文件、粘贴网页链接或整合多源文本。",
+      "step2Title": "第二步：自动构建图谱",
+      "step2Desc": "平台将自动完成实体抽取与关系关联，请静候图谱呈现。",
+      "start": "去完成",
+      "featuresTitle": "功能特点",
+      "feature1Title": "结构化提炼·Markdown呈现",
+      "feature1Desc": "自动抽取跨源内容中的核心实体与脉络，精简整理为标准的 Markdown 文档，便于阅读",
+      "feature2Title": "双向关联·一键无缝跳转",
+      "feature2Desc": "智能识别不同节点间的内容互引用，自动建立关联链条，点击即可在相关节点与原文间自由穿梭。",
+      "feature3Title": "任务联动·唤醒图谱上下文",
+      "feature3Desc": "在执行复杂的 AI 任务或对话时，支持直接挂载与调取图谱知识，让输出更精准、上下文更丰富。"
+    },
+    "settings": {
+      "subtitle": "选择个人上下文采用哪种方式采集、整理和生成。",
+      "enable": "采集个人上下文内容",
+      "enableHint": "支持添加个人上下文内容并自动构建图谱。",
+      "strategyProfile": "上下文采集模式",
+      "model": "上下文整理模型",
+      "modelPlaceholder": "请选择整理模型",
+      "modelRequiredFirst": "请先选择整理模型",
+      "title": "上下文",
+      "modelHint": "选择已在 JiuwenSwarm 中配置的模型。"
+    },
+    "authorization": {
+      "title": "内容采集授权",
+      "subtitle": "管理上下文采集服务所需的内容源。",
+      "provider": "名称",
+      "state": "状态",
+      "action": "操作",
+      "authorize": "授权",
+      "reauthorize": "重新授权",
+      "cancelAuth": "取消授权",
+      "authorizing": "授权中…",
+      "stateNotAuthorized": "未授权",
+      "stateAuthorizationRequired": "待授权",
+      "stateAuthorizing": "授权中",
+      "stateAuthorized": "已授权",
+      "stateAuthorizationFailed": "授权失败",
+      "githubHint": "GitHub 使用个人访问令牌（PAT）。授权后即可在「上下文内容」添加 GitHub 采集。",
+      "githubTokenLabel": "GitHub 令牌",
+      "githubTokenPlaceholder": "ghp_xxxxxxxxxxxx",
+      "githubTokenHint": "令牌仅保存在本地浏览器，创建采集服务时用于认证。",
+      "githubTokenRequired": "请输入 GitHub 令牌",
+      "feishuHint": "飞书使用 OAuth 设备授权流程。点击授权后按提示在浏览器完成登录。",
+      "feishuVerifyHint": "请在打开的页面完成飞书授权，授权完成后状态将自动更新。"
+    },
+    "info": {
+      "tabGraph": "上下文图谱",
+      "tabServices": "上下文内容",
+      "refresh": "刷新",
+      "updatedTime": "更新时间",
+      "searchPlaceholder": "搜索你的知识 挖掘其中的关联...",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "fitView": "适配视图",
+      "fetchProgress": "采集进度",
+      "fetchProgressTasks": "采集任务",
+      "noGraph": "暂无上下文图，请先开启并采集",
+      "collecting": "正在采集中，稍候将自动刷新…",
+      "fetchingDisabled": "未开启采集，请在设置页开启「启用个人上下文」",
+      "serviceDisabled": "采集服务已关闭，请在「上下文内容」页开启对应服务的自动采集",
+      "noServices": "暂无采集服务，请在「上下文内容」页添加采集来源",
+      "nodesCount": "节点",
+      "edgesCount": "连线",
+      "notReady": "上下文未就绪",
+      "ready": "上下文已就绪",
+      "publishFailed": "上下文发布失败",
+      "sourceBadge": "来源",
+      "sourceProvider": "采集来源",
+      "sourceType": "来源类型",
+      "sourceLocator": "原始链接",
+      "sourceFirstSeen": "采集时间",
+      "graphTitle": "知识大脑，让知识交织成网",
+      "graphSubtitle": "把零散的本地文档、网络来源、讨论的原文，一键转化为清晰可视的结构化知识大脑",
+      "tabNodes": "知识节点",
+      "tabEdges": "连线",
+      "addKnowledge": "添加知识",
+      "resultUnit": "项结果",
+      "guideDesc": "开启个人上下文，添加内容来源，系统将自动构建知识图谱。",
+      "guideAction": "去完成"
+    },
+    "services": {
+      "addContent": "添加内容",
+      "colName": "内容名称",
+      "colProvider": "内容来源",
+      "colState": "当前状态",
+      "colLastRun": "最近一次采集时间",
+      "colAuto": "自动采集",
+      "autoOn": "开",
+      "autoOff": "关",
+      "autoOnHint": "开启自动采集",
+      "autoOffHint": "关闭自动采集",
+      "colInterval": "采集频率",
+      "colActions": "操作",
+      "stateCollecting": "正在采集",
+      "stateCompleted": "采集完成",
+      "stateFailed": "采集失败",
+      "stateWaiting": "等待采集",
+      "stateStopped": "已停止",
+      "lastRunUnavailable": "后端未返回采集时间",
+      "intervalHour": "每 {{n}} 小时",
+      "intervalDay": "每 {{n}} 天",
+      "actionRunNow": "立即采集",
+      "actionEdit": "编辑",
+      "actionDelete": "删除",
+      "actionRetry": "重试",
+      "actionStop": "停止采集",
+      "deleteConfirm": "确认删除该采集服务？",
+      "intervalSeconds": "采集频率（秒）",
+      "intervalRangeError": "采集频率须大于 0 且不超过 31536000 秒（约 365 天）",
+      "sourceJsonObjectError": "source 必须是 JSON 对象",
+      "sourceJsonInvalidError": "JSON 格式无效",
+      "maxItems": "单次最大条数",
+      "save": "保存",
+      "cancel": "取消",
+      "empty": "暂无采集内容，点击右上角「添加内容」创建",
+      "noContentInCategory": "暂无内容",
+      "runSubmitted": "已提交采集请求",
+      "backToGraph": "返回图谱",
+      "addKnowledge": "添加知识",
+      "collectAll": "全部开始采集",
+      "statSources": "来源",
+      "statKnowledge": "知识数",
+      "statCollecting": "正在采集",
+      "knowledgeSource": "知识来源",
+      "lastRun": "上次采集"
+    },
+    "addContent": {
+      "title": "添加内容",
+      "nameLabel": "采集内容名称",
+      "namePlaceholder": "如 我的知乎收藏",
+      "providerLabel": "内容采集来源",
+      "autoCollectLabel": "自动采集",
+      "autoCollectHint": "开启后按频率自动采集",
+      "timeRangeLabel": "采集时间",
+    "timeRangeWeek": "最近一周",
+    "timeRangeMonth": "最近一个月",
+    "timeRangeQuarter": "最近三个月",
+    "timeRangeCustom": "自定义",
+    "dateRangeTitle": "选择日期范围",
+    "dateRangePlaceholder": "请选择日期范围",
+    "addUrl": "+ 添加",
+    "frequencyLabel": "自动采集频率",
+      "frequencyHour": "每 {{n}} 小时",
+      "frequencyDay": "每 {{n}} 天",
+      "frequencyEvery": "每",
+      "unitHour": "小时",
+      "unitDay": "天",
+      "maxItemsLabel": "单次最多采集条数",
+      "maxItemsPlaceholder": "留空使用默认",
+      "advancedConfig": "高级配置",
+      "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
+      "previousStep": "上一步",
+    "submit": "添加",
+      "notConfigured": "尚未配置个人上下文，请先在设置页开启",
+      "providerUnauthorized": "未授权，请先去设置页授权",
+      "goAuthorize": "去授权",
+      "feishuPlaceholder": "飞书采集下一步单独详细开发",
+      "localFiles": {
+        "rootDirLabel": "本地文件夹路径",
+        "rootDirPlaceholder": "D:/my-notes",
+        "rootDirHint": "须为绝对路径"
+      },
+      "zhihu": {
+        "columnUrlLabel": "知乎专栏地址",
+        "columnUrlPlaceholder": "https://www.zhihu.com/column/c_xxxxxxxxxx",
+        "columnUrlHint": "仅支持 https 知乎专栏地址，路径须为 /column/<专栏id>"
+      },
+      "toutiao": {
+        "profileUrlLabel": "头条主页地址",
+        "profileUrlPlaceholder": "https://www.toutiao.com/c/user/token/<id>",
+        "profileUrlHint": "仅支持 https 头条主页地址，路径须为 /c/user/token/<id>"
+      },
+      "edge": {
+        "profileLabel": "浏览器用户配置",
+        "profileDefault": "默认（Default）",
+        "profilePlaceholder": "Default",
+        "profileHint": "可选，默认 Default",
+        "bookmarksPathLabel": "书签文件路径",
+        "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
+        "foldersLabel": "需采集的书签文件夹",
+        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersHint": "可选，留空采集全部"
+      },
+      "github": {
+        "repoUrlLabel": "GitHub 仓库链接",
+        "repoUrlPlaceholder": "https://github.com/<owner>/<repo>",
+        "repoUrlHint": "或 git@github.com:<owner>/<repo>",
+        "resourcesLabel": "要采集的内容",
+        "readme": "README",
+        "issues": "议题（Issue）",
+        "pullRequests": "拉取请求（Pull Request）",
+        "commits": "提交（Commit）",
+        "code": "代码（Code）",
+        "resourcesRequired": "请至少选择一项采集内容",
+        "tokenFromAuth": "令牌已从设置页授权获取",
+        "tokenMissing": "未找到 GitHub 令牌，请先去设置页授权"
+      },
+      "feishu": {
+        "modeLabel": "飞书内容类型",
+        "mode_account": "账号内容",
+        "mode_wiki_space": "Wiki 空间",
+        "modeHint": "账号内容：采集云文档/任务/日程；知识空间：采集指定知识空间节点",
+        "resourcesLabel": "要采集的账号内容",
+        "resourcesHint": "账号模式下至少选择一项",
+        "resourcesRequired": "请至少选择一项采集内容",
+        "wikiSpaceIdLabel": "Wiki 空间名称",
+        "wikiSpaceIdPlaceholder": "选择要获取内容的飞书 Wiki 空间",
+        "wikiSpaceIdHint": "在飞书知识空间 URL 中获取",
+        "wikiSpaceIdRequired": "请选择飞书 Wiki 空间",
+        "docs": "文档",
+        "tasks": "任务",
+        "calendar": "日历",
+        "calendarTimeLabel": "日历时间段",
+        "calendarTimePlaceholder": "请选择",
+        "docPathLabel": "指定文档（可选）",
+        "docPathPlaceholder": "请输入路径或选择文件",
+        "wikiDirLabel": "Wiki 目录",
+        "wikiDirPlaceholder": "只获取该目录下的内容",
+        "authorizeAfterCreate": "创建后需在设置页授权飞书账号："
+      }
+    },
+    "provider": {
+      "localFiles": "本地文件夹",
+      "github": "GitHub",
+      "feishu": "飞书",
+      "browserBookmarks": "Edge 收藏夹",
+      "zhihuReader": "知乎专栏",
+      "toutiaoReader": "今日头条"
+    },
+    "state": {
+      "CREATED": "已创建",
+      "CONFIGURED": "已配置",
+      "STARTING": "启动中",
+      "RUNNING": "运行中",
+      "STOPPING": "停止中",
+      "STOPPED": "已停止",
+      "FAILED": "失败"
+    }
+  },
   "skills": {
     "title": "技能",
     "subtitle": "管理并安装智能体可用的技能。",
@@ -2104,8 +2433,14 @@
     "title": "智能体管理",
     "subtitle": "创建并管理智能体，快速复用智能体资产",
     "tabsLabel": "智能体管理分类",
-    "tabs": { "catalog": "智能体广场", "mine": "我的智能体" },
-    "source": { "builtin": "官方", "local": "我的" },
+    "tabs": {
+      "catalog": "智能体广场",
+      "mine": "我的智能体"
+    },
+    "source": {
+      "builtin": "官方",
+      "local": "我的"
+    },
     "categoryLabel": "智能体分类",
     "categoryAll": "全部",
     "categoryOther": "其他",
@@ -2146,7 +2481,10 @@
       "createViaChatPrompt": "帮我创建一个xxx专家，擅长xxx",
       "back": "返回"
     },
-    "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作" },
+    "card": {
+      "open": "查看 {{name}} 详情",
+      "actions": "{{name}} 操作"
+    },
     "states": {
       "installed": "已安装",
       "loadError": "智能体列表加载失败，请重试。",
@@ -2703,10 +3041,22 @@
       "cancel": "取消",
       "confirm": "确定"
     },
-    "runtime": { "processing": "处理中" },
-    "deleteDialog": { "title": "删除", "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。" },
-    "notFound": { "title": "对话不存在或已删除", "newConversation": "新建对话" },
-    "errors": { "delete": "删除对话失败", "create": "创建对话失败", "send": "发送消息失败" }
+    "runtime": {
+      "processing": "处理中"
+    },
+    "deleteDialog": {
+      "title": "删除",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+    },
+    "notFound": {
+      "title": "对话不存在或已删除",
+      "newConversation": "新建对话"
+    },
+    "errors": {
+      "delete": "删除对话失败",
+      "create": "创建对话失败",
+      "send": "发送消息失败"
+    }
   },
   "subagent": {
     "title": "Subagents",
@@ -3023,10 +3373,21 @@
       "expired": "已过期"
     },
     "schedule": {
-      "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
-      "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
-      "cron": { "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）" },
-      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成" },
+      "tab": {
+        "interval": "按间隔",
+        "cron": "Cron 表达式",
+        "once": "单次"
+      },
+      "interval": {
+        "label": "每隔",
+        "unit": "分钟回到当前会话"
+      },
+      "cron": {
+        "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）"
+      },
+      "once": {
+        "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成"
+      },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
         "cron": "{{expr}}（{{timezone}}）回到当前会话",
@@ -3058,8 +3419,15 @@
       "titleEdit": "编辑心跳任务",
       "back": "返回"
     },
-    "concurrencyPolicy": { "skip": "跳过（skip）", "queue": "排队（queue）", "replace": "替换（replace）" },
-    "sessionDeletedPolicy": { "disable": "停用任务", "completed": "标记为已完成" },
+    "concurrencyPolicy": {
+      "skip": "跳过（skip）",
+      "queue": "排队（queue）",
+      "replace": "替换（replace）"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "停用任务",
+      "completed": "标记为已完成"
+    },
     "panel": {
       "title": "心跳任务",
       "loading": "加载中…",

@@ -42,7 +42,8 @@
     "more": "More",
     "settings": "Settings",
     "logs": "Logs",
-    "update": "Updates"
+    "update": "Updates",
+    "personalContext": "My Personal\nContext"
   },
   "settingsPanel": {
     "title": "Settings",
@@ -52,6 +53,7 @@
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
+      "personalContext": "Personal Context",
       "experimental": "Experimental"
     },
     "feedback": {
@@ -266,15 +268,37 @@
         "title": "Browser run mode",
         "description": "Show the browser window in the foreground or run in headless mode."
       },
-      "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
-      "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },
-      "api_base": { "title": "API URL", "placeholder": "e.g. https://api.openai.com/v1" },
-      "api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
-      "model_provider": { "title": "Model provider" },
-      "reasoning_level": { "title": "Reasoning level" },
-      "embed_api_base": { "title": "API URL" },
-      "embed_api_key": { "title": "API key" },
-      "embed_model": { "title": "Model name" },
+      "model_name": {
+        "title": "Model name",
+        "placeholder": "e.g. glm-4.7"
+      },
+      "alias": {
+        "title": "Custom alias",
+        "placeholder": "e.g. GLM-4.7 Production"
+      },
+      "api_base": {
+        "title": "API URL",
+        "placeholder": "e.g. https://api.openai.com/v1"
+      },
+      "api_key": {
+        "title": "API key",
+        "placeholder": "e.g. sk-..."
+      },
+      "model_provider": {
+        "title": "Model provider"
+      },
+      "reasoning_level": {
+        "title": "Reasoning level"
+      },
+      "embed_api_base": {
+        "title": "API URL"
+      },
+      "embed_api_key": {
+        "title": "API key"
+      },
+      "embed_model": {
+        "title": "Model name"
+      },
       "enable_free_models": {
         "title": "Enable free models",
         "description": "When enabled, available free models are fetched live. Note that free models may have limitations such as rate limits or restricted context window size. Free models are sourced from the Opencode Zen gateway (https://opencode.ai/zen), obtained by intersecting the models.dev catalog (https://models.opencode.ai/api.json) with the Zen live model list (criterion: input price is 0)."
@@ -291,24 +315,61 @@
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
       },
-      "free_search_bing_enabled": { "title": "Bing search", "description": "Enable the free Bing search source." },
-      "jina_api_key": { "title": "Jina API key" },
-      "bocha_api_key": { "title": "Bocha API key" },
-      "perplexity_api_key": { "title": "Perplexity API key" },
-      "serper_api_key": { "title": "Serper API key" },
-      "github_token": { "title": "GitHub access token" },
-      "vision_api_base": { "title": "API URL" },
-      "vision_api_key": { "title": "API key" },
-      "vision_model": { "title": "Model name" },
-      "vision_provider": { "title": "Model provider" },
-      "audio_api_base": { "title": "API URL" },
-      "audio_api_key": { "title": "API key" },
-      "audio_model": { "title": "Model name" },
-      "audio_provider": { "title": "Model provider" },
-      "video_api_base": { "title": "API URL" },
-      "video_api_key": { "title": "API key" },
-      "video_model": { "title": "Model name" },
-      "video_provider": { "title": "Model provider" },
+      "free_search_bing_enabled": {
+        "title": "Bing search",
+        "description": "Enable the free Bing search source."
+      },
+      "jina_api_key": {
+        "title": "Jina API key"
+      },
+      "bocha_api_key": {
+        "title": "Bocha API key"
+      },
+      "perplexity_api_key": {
+        "title": "Perplexity API key"
+      },
+      "serper_api_key": {
+        "title": "Serper API key"
+      },
+      "github_token": {
+        "title": "GitHub access token"
+      },
+      "vision_api_base": {
+        "title": "API URL"
+      },
+      "vision_api_key": {
+        "title": "API key"
+      },
+      "vision_model": {
+        "title": "Model name"
+      },
+      "vision_provider": {
+        "title": "Model provider"
+      },
+      "audio_api_base": {
+        "title": "API URL"
+      },
+      "audio_api_key": {
+        "title": "API key"
+      },
+      "audio_model": {
+        "title": "Model name"
+      },
+      "audio_provider": {
+        "title": "Model provider"
+      },
+      "video_api_base": {
+        "title": "API URL"
+      },
+      "video_api_key": {
+        "title": "API key"
+      },
+      "video_model": {
+        "title": "Model name"
+      },
+      "video_provider": {
+        "title": "Model provider"
+      },
       "swarmflow_enabled": {
         "title": "Dynamic workflow",
         "description": "Control whether the agent team enables dynamic workflow capabilities."
@@ -317,7 +378,10 @@
         "title": "Global permission mode",
         "description": "Choose the shared guardrail mode for ordinary Agents and Teams."
       },
-      "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
+      "a2ui_enabled": {
+        "title": "Enable A2UI",
+        "description": "Render supported results as interactive interfaces."
+      },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",
         "description": "Allow a Team Leader to spawn a Claude Agent."
@@ -326,7 +390,9 @@
         "title": "Use built-in Claude CLI",
         "description": "Do not specify a local CLI path; let the SDK use its default lookup."
       },
-      "external_cli_agent_claude_cli_path": { "title": "Claude CLI path" },
+      "external_cli_agent_claude_cli_path": {
+        "title": "Claude CLI path"
+      },
       "external_cli_agent_codex_enabled": {
         "title": "Enable Codex",
         "description": "Allow a Team Leader to spawn a Codex Agent; first use may install dependencies."
@@ -335,7 +401,9 @@
         "title": "Use built-in Codex CLI",
         "description": "Do not specify a local CLI path; let the SDK use its default lookup."
       },
-      "external_cli_agent_codex_cli_path": { "title": "Codex CLI path" },
+      "external_cli_agent_codex_cli_path": {
+        "title": "Codex CLI path"
+      },
       "proactive_recommendation_enabled": {
         "title": "Enable proactive recommendations",
         "description": "Allow recommendations to be sent when their conditions are met."
@@ -1496,6 +1564,253 @@
       "updateDebugConfig": "Failed to update WS debug config"
     }
   },
+  "personalContext": {
+    "intro": {
+      "title": "Personal Context — weaving knowledge into a network",
+      "subtitle": "Turn scattered local documents and web sources into a clear, visual, structured knowledge brain in one click.",
+      "stepsTitle": "How it works",
+      "step1Title": "Step 1: Authorize channels, add diverse content",
+      "step1Desc": "Authorize knowledge source channels in one click — import local files, paste web links, or consolidate multi-source text.",
+      "step2Title": "Step 2: Auto-build the graph",
+      "step2Desc": "The platform will automatically extract entities and link relations — please wait for the graph to appear.",
+      "start": "Go set up",
+      "featuresTitle": "Features",
+      "feature1Title": "Structured distillation · Markdown view",
+      "feature1Desc": "Automatically extract core entities and threads across sources, distilled into standard Markdown documents for easy reading.",
+      "feature2Title": "Bidirectional links · seamless navigation",
+      "feature2Desc": "Smart detection of cross-references between nodes builds link chains automatically — click to travel freely between related nodes and original text.",
+      "feature3Title": "Task integration · awaken graph context",
+      "feature3Desc": "When running complex AI tasks or conversations, directly mount and retrieve graph knowledge for more accurate output and richer context."
+    },
+    "settings": {
+      "title": "Context",
+      "subtitle": "Choose how personal context is collected, organized, and generated.",
+      "enable": "Collect Personal Context",
+      "enableHint": "Add personal context content and build a knowledge graph automatically.",
+      "strategyProfile": "Context strategy",
+      "model": "Context Organize Model",
+      "modelPlaceholder": "Please select an organize model",
+      "modelRequiredFirst": "Please select an organize model first",
+      "modelHint": "Select a model configured in JiuwenSwarm."
+    },
+    "authorization": {
+      "title": "Content source authorization",
+      "subtitle": "Manage content sources required by context collection services.",
+      "provider": "Name",
+      "state": "State",
+      "action": "Action",
+      "authorize": "Authorize",
+      "reauthorize": "Re-authorize",
+      "cancelAuth": "Revoke",
+      "authorizing": "Authorizing…",
+      "stateNotAuthorized": "Not authorized",
+      "stateAuthorizationRequired": "Authorization required",
+      "stateAuthorizing": "Authorizing",
+      "stateAuthorized": "Authorized",
+      "stateAuthorizationFailed": "Authorization failed",
+      "githubHint": "GitHub uses a personal access token (PAT). After authorizing you can add GitHub fetch in \"Context content\".",
+      "githubTokenLabel": "GitHub token",
+      "githubTokenPlaceholder": "ghp_xxxxxxxxxxxx",
+      "githubTokenHint": "Token is stored locally in the browser and used to authenticate the fetch service.",
+      "githubTokenRequired": "Please enter a GitHub token",
+      "feishuHint": "Feishu uses an OAuth device flow. After authorizing, complete the login in your browser as prompted.",
+      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically."
+    },
+    "info": {
+      "tabGraph": "Context graph",
+      "tabServices": "Context content",
+      "refresh": "Refresh",
+      "updatedTime": "Updated",
+      "searchPlaceholder": "Search your knowledge, uncover connections...",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "fitView": "Fit view",
+      "fetchProgress": "Fetch progress",
+      "fetchProgressTasks": "Fetch tasks",
+      "noGraph": "No context graph yet. Enable and fetch first.",
+      "collecting": "Fetching, will refresh automatically…",
+      "fetchingDisabled": "Collection is off. Enable \"Enable personal context\" in Context Settings.",
+      "serviceDisabled": "Fetch service is off. Turn it on in the \"Context content\" tab.",
+      "noServices": "No fetch services. Add a source in the \"Context content\" tab.",
+      "nodesCount": "nodes",
+      "edgesCount": "edges",
+      "notReady": "Context not ready",
+      "ready": "Context ready",
+      "publishFailed": "Context publish failed",
+      "sourceBadge": "Source",
+      "sourceProvider": "Provider",
+      "sourceType": "Source type",
+      "sourceLocator": "Original link",
+      "sourceFirstSeen": "Collected",
+      "graphTitle": "Knowledge Brain, Weaving Insights into a Network",
+      "graphSubtitle": "Transform scattered local documents, web sources, and discussions into a clear, visual knowledge brain",
+      "tabNodes": "Nodes",
+      "tabEdges": "Edges",
+      "addKnowledge": "Add Knowledge",
+      "resultUnit": " results",
+      "guideDesc": "Enable personal context, add content sources, and the system will automatically build a knowledge graph.",
+      "guideAction": "Get Started"
+    },
+    "services": {
+      "addContent": "Add content",
+      "colName": "Name",
+      "colProvider": "Source",
+      "colState": "State",
+      "colLastRun": "Last fetch",
+      "colAuto": "Auto",
+      "autoOn": "On",
+      "autoOff": "Off",
+      "autoOnHint": "Enable auto-fetch scheduling",
+      "autoOffHint": "Disable auto-fetch scheduling",
+      "colInterval": "Interval",
+      "colActions": "Actions",
+      "stateCollecting": "Fetching",
+      "stateCompleted": "Completed",
+      "stateFailed": "Failed",
+      "stateWaiting": "Waiting",
+      "stateStopped": "Stopped",
+      "lastRunUnavailable": "Backend did not return fetch time",
+      "intervalHour": "Every {{n}} hour(s)",
+      "intervalDay": "Every {{n}} day(s)",
+      "actionRunNow": "Fetch now",
+      "actionEdit": "Edit",
+      "actionDelete": "Delete",
+      "actionRetry": "Retry",
+      "actionStop": "Stop",
+      "deleteConfirm": "Delete this fetch service?",
+      "intervalSeconds": "Interval (seconds)",
+      "intervalRangeError": "Interval must be > 0 and <= 31536000 seconds (about 365 days)",
+      "sourceJsonObjectError": "source must be a JSON object",
+      "sourceJsonInvalidError": "Invalid JSON",
+      "maxItems": "Max items per run",
+      "save": "Save",
+      "cancel": "Cancel",
+      "empty": "No content yet. Click \"Add content\" at the top right to create one.",
+      "noContentInCategory": "No content",
+      "runSubmitted": "Fetch request submitted",
+      "backToGraph": "Back to Graph",
+      "addKnowledge": "Add Knowledge",
+      "collectAll": "Collect All",
+      "statSources": "Sources",
+      "statKnowledge": "Knowledge",
+      "statCollecting": "Collecting",
+      "knowledgeSource": "Knowledge Source",
+      "lastRun": "Last Run"
+    },
+    "addContent": {
+      "title": "Add content",
+      "nameLabel": "Content name",
+      "namePlaceholder": "e.g. My Zhihu collection",
+      "providerLabel": "Content source",
+      "autoCollectLabel": "Auto fetch",
+      "autoCollectHint": "Fetch automatically at the chosen frequency",
+      "timeRangeLabel": "Time Range",
+    "timeRangeWeek": "Last Week",
+    "timeRangeMonth": "Last Month",
+    "timeRangeQuarter": "Last Quarter",
+    "timeRangeCustom": "Custom",
+    "dateRangeTitle": "Select Date Range",
+    "dateRangePlaceholder": "Select a date range",
+    "addUrl": "+ Add",
+    "frequencyLabel": "Auto fetch frequency",
+      "frequencyHour": "Every {{n}} hour(s)",
+      "frequencyDay": "Every {{n}} day(s)",
+      "frequencyEvery": "Every",
+      "unitHour": "hour(s)",
+      "unitDay": "day(s)",
+      "maxItemsLabel": "Max items per run",
+      "maxItemsPlaceholder": "Leave empty for default",
+      "advancedConfig": "Advanced Settings",
+      "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
+      "previousStep": "Previous",
+    "submit": "Add",
+      "notConfigured": "Personal context is not configured. Enable it in Settings first.",
+      "providerUnauthorized": "Not authorized. Authorize it in Settings first.",
+      "goAuthorize": "Go authorize",
+      "feishuPlaceholder": "Feishu fetch will be developed separately later",
+      "localFiles": {
+        "rootDirLabel": "Local folder path",
+        "rootDirPlaceholder": "D:/my-notes",
+        "rootDirHint": "Must be absolute",
+        "rootDirRequired": "Please enter the local folder path"
+      },
+      "zhihu": {
+        "columnUrlLabel": "Zhihu column URL",
+        "columnUrlPlaceholder": "https://www.zhihu.com/column/c_xxxxxxxxxx",
+        "columnUrlHint": "Only https Zhihu column URLs; path must be /column/<id>"
+      },
+      "toutiao": {
+        "profileUrlLabel": "Toutiao profile URL",
+        "profileUrlPlaceholder": "https://www.toutiao.com/c/user/token/<id>",
+        "profileUrlHint": "Only https Toutiao profile URLs; path must be /c/user/token/<id>"
+      },
+      "edge": {
+        "profileLabel": "Browser profile",
+        "profileDefault": "Default",
+        "profilePlaceholder": "Default",
+        "profileHint": "Optional, defaults to Default",
+        "bookmarksPathLabel": "Bookmarks file path",
+        "bookmarksPathPlaceholder": "Leave empty to use Edge default Bookmarks path",
+        "foldersLabel": "Bookmark folders to fetch",
+        "foldersPlaceholder": "e.g. Bookmarks bar/Tech, comma-separated",
+        "foldersHint": "Optional, leave empty to fetch all"
+      },
+      "github": {
+        "repoUrlLabel": "GitHub repository URL",
+        "repoUrlPlaceholder": "https://github.com/<owner>/<repo>",
+        "repoUrlHint": "or git@github.com:<owner>/<repo>",
+        "resourcesLabel": "Account Content to Collect",
+        "readme": "README",
+        "issues": "Issues",
+        "pullRequests": "Pull Requests",
+        "commits": "Commits",
+        "code": "Code",
+        "resourcesRequired": "Select at least one content type",
+        "tokenFromAuth": "Token obtained from Settings authorization",
+        "tokenMissing": "GitHub token not found. Authorize in Settings first."
+      },
+      "feishu": {
+        "modeLabel": "Feishu Content Type",
+        "mode_account": "Account content",
+        "mode_wiki_space": "Wiki Space",
+        "modeHint": "Account: fetch docs/tasks/calendar; Wiki space: fetch nodes of a specified space",
+        "resourcesLabel": "Content to fetch",
+        "resourcesHint": "Select at least one under account mode",
+        "resourcesRequired": "Select at least one content type",
+        "wikiSpaceIdLabel": "Wiki Space Name",
+        "wikiSpaceIdPlaceholder": "Select Feishu Wiki Space",
+        "wikiSpaceIdHint": "Find it in the Feishu wiki space URL",
+        "wikiSpaceIdRequired": "Please select a Feishu wiki space",
+        "docs": "Documents",
+        "tasks": "Tasks",
+        "calendar": "Calendar",
+        "calendarTimeLabel": "Calendar Time Range",
+        "calendarTimePlaceholder": "Select",
+        "docPathLabel": "Specify Document (Optional)",
+        "docPathPlaceholder": "Enter path or select file",
+        "wikiDirLabel": "Wiki Directory",
+        "wikiDirPlaceholder": "Only fetch content in this directory",
+        "authorizeAfterCreate": "Authorize Feishu account in settings after creation:"
+      }
+    },
+    "provider": {
+      "localFiles": "Local files",
+      "github": "GitHub",
+      "feishu": "Feishu",
+      "browserBookmarks": "Edge bookmarks",
+      "zhihuReader": "Zhihu",
+      "toutiaoReader": "Toutiao"
+    },
+    "state": {
+      "CREATED": "Created",
+      "CONFIGURED": "Configured",
+      "STARTING": "Starting",
+      "RUNNING": "Running",
+      "STOPPING": "Stopping",
+      "STOPPED": "Stopped",
+      "FAILED": "Failed"
+    }
+  },
   "skills": {
     "title": "Skills",
     "subtitle": "Manage and install skills available to the agent.",
@@ -2119,8 +2434,14 @@
     "title": "Agent Management",
     "subtitle": "Create and manage reusable Agent assets",
     "tabsLabel": "Agent management categories",
-    "tabs": { "catalog": "Agent marketplace", "mine": "My Agents" },
-    "source": { "builtin": "Official", "local": "Mine" },
+    "tabs": {
+      "catalog": "Agent marketplace",
+      "mine": "My Agents"
+    },
+    "source": {
+      "builtin": "Official",
+      "local": "Mine"
+    },
     "categoryLabel": "Agent categories",
     "categoryAll": "All",
     "categoryOther": "Other",
@@ -2161,7 +2482,10 @@
       "createViaChatPrompt": "Help me create an xxx Agent who is good at xxx",
       "back": "Back"
     },
-    "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}" },
+    "card": {
+      "open": "Open {{name}} details",
+      "actions": "Actions for {{name}}"
+    },
     "states": {
       "installed": "Installed",
       "loadError": "Unable to load the Agent list. Try again.",
@@ -2718,12 +3042,17 @@
       "cancel": "Cancel",
       "confirm": "Confirm"
     },
-    "runtime": { "processing": "Processing" },
+    "runtime": {
+      "processing": "Processing"
+    },
     "deleteDialog": {
       "title": "Delete",
       "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
     },
-    "notFound": { "title": "Conversation not found or deleted", "newConversation": "New conversation" },
+    "notFound": {
+      "title": "Conversation not found or deleted",
+      "newConversation": "New conversation"
+    },
     "errors": {
       "delete": "Failed to delete conversation",
       "create": "Failed to create conversation",
@@ -3045,10 +3374,21 @@
       "expired": "Expired"
     },
     "schedule": {
-      "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
-      "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)" },
-      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed" },
+      "tab": {
+        "interval": "Interval",
+        "cron": "Cron expression",
+        "once": "Once"
+      },
+      "interval": {
+        "label": "Every",
+        "unit": "minutes, return to this session"
+      },
+      "cron": {
+        "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)"
+      },
+      "once": {
+        "hint": "Pick a date and time; the job fires once at that moment and is then marked completed"
+      },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
         "cron": "{{expr}} ({{timezone}}), return to this session",
@@ -3080,8 +3420,15 @@
       "titleEdit": "Edit heartbeat job",
       "back": "Back"
     },
-    "concurrencyPolicy": { "skip": "Skip", "queue": "Queue", "replace": "Replace" },
-    "sessionDeletedPolicy": { "disable": "Disable job", "completed": "Mark completed" },
+    "concurrencyPolicy": {
+      "skip": "Skip",
+      "queue": "Queue",
+      "replace": "Replace"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "Disable job",
+      "completed": "Mark completed"
+    },
     "panel": {
       "title": "Heartbeat Jobs",
       "loading": "Loading…",

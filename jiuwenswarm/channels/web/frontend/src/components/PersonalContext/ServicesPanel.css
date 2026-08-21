@@ -1,0 +1,573 @@
+﻿/* PersonalContextServicesPanel — 上下文内容子页样式（对齐高保真 04） */
+
+.pc-services {
+  width: 100%;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px 24px 24px;
+  box-sizing: border-box;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pc-services__error {
+  background: rgba(220, 50, 50, 0.08);
+  color: #dc3232;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.pc-services__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+/* ── 顶部头部：返回图谱 + 添加知识 + 添加内容按钮 ── */
+.pc-services__head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.pc-services__head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pc-services__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pc-services__back-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.pc-services__back:hover {
+  color: #1476ff;
+}
+
+.pc-services__head-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #191919;
+  flex: 1;
+}
+
+.pc-services__add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  height: 32px;
+  border: none;
+  border-radius: 999px;
+  background: #191919;
+  color: #ffffff;
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pc-services__add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 统计卡片：来源 / 知识数 / 正在采集 ── */
+.pc-services__stats {
+  display: flex;
+  gap: 16px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.pc-services__stat-card {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 20px;
+  border: 1px solid #dbdbdb;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.pc-services__stat-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #191919;
+}
+
+.pc-services__stat-number {
+  font-size: 24px;
+  font-weight: 600;
+  color: #191919;
+  line-height: 24px;
+}
+
+/* ── 左右级联布局 ── */
+.pc-services__layout {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  min-height: 0;
+  flex: 1;
+}
+
+/* 左侧分类列表 */
+.pc-services__categories {
+  flex: 0 0 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 16px;
+  border: 1px solid #dbdbdb;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.pc-services__categories-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #191919;
+  padding: 4px 16px 12px;
+}
+
+.pc-services__cat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: transparent;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+  border: none;
+  text-align: left;
+}
+
+.pc-services__cat:hover {
+  background: #fafafa;
+}
+
+.pc-services__cat.is-active {
+  background: #f0f7ff;
+}
+
+.pc-services__cat.is-disabled {
+  color: #c2c2c2;
+}
+
+.pc-services__cat-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid #dbdbdb;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.pc-services__cat-icon img {
+  width: 40px;
+  height: 40px;
+  display: block;
+}
+
+.pc-services__cat-name {
+  flex: 1;
+  font-size: 14px;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-services__cat-count {
+  flex: 0 0 auto;
+  min-width: 24px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: #1919190C;
+  color: #191919;
+  font-size: 14px;
+  text-align: center;
+  line-height: 22px;
+}
+
+.pc-services__cat.is-active .pc-services__cat-count {
+  background: #1919190C;
+}
+
+.pc-services__cat-authorize {
+  color: #1476ff;
+  font-size: 14px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.pc-services__cat-authorize:hover {
+  text-decoration: underline;
+}
+
+/* ── 右侧详情面板 ── */
+.pc-services__list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid #dbdbdb;
+  border-radius: 16px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.pc-services__list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 24px;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.pc-services__list-head-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pc-services__list-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid #dbdbdb;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.pc-services__list-icon img {
+  width: 40px;
+  height: 40px;
+  display: block;
+}
+
+.pc-services__list-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #191919;
+}
+
+/* "全部开始采集" pill */
+.pc-services__collect-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #191919;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pc-services__collect-all:hover:not(:disabled) {
+  background: #f0f0f0;
+}
+
+.pc-services__collect-all:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── 内容卡片列表 ── */
+.pc-services__cards {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.pc-services__card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px;
+  border: 1px solid #f0f0f0;
+  border-radius: 16px;
+  background: #ffffff;
+  gap: 12px;
+}
+
+.pc-services__card-head {
+  font-size: 16px;
+  font-weight: 600;
+  color: #191919;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-services__card-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+/* 左：采样周期 */
+.pc-services__card-freq {
+  flex: 0 0 100px;
+  font-size: 12px;
+  color: #808080;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 进度条（正在采集时显示） */
+.pc-services__progress {
+  width: 80px;
+  height: 4px;
+  border-radius: 2px;
+  background: #f0f0f0;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.pc-services__progress-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: #5CB300;
+  transition: width 0.3s ease;
+}
+
+.pc-services__progress-text {
+  font-size: 12px;
+  color: #5CB300;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 中：采集状态（圆环 + 文字 + 进度条 + 百分比） */
+.pc-services__card-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 状态圆点：填充圆（inline-block 确保 background 在 <span> 上生效） */
+.pc-services__status-svg {
+  flex-shrink: 0;
+}
+
+.pc-services__status-svg--pulse {
+  animation: pc-svc-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pc-svc-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pc-services__status-text {
+  font-size: 12px;
+  color: #191919;
+}
+
+.pc-services__status-text--stateCompleted { color: #5CB300; }
+.pc-services__status-text--stateStopped { color: #C2C2C2; }
+.pc-services__status-text--stateFailed { color: #F23030; }
+.pc-services__status-text--stateCollecting { color: #5CB300; }
+.pc-services__status-text--stateWaiting { color: #0BB8B2; }
+
+/* 卡片操作区 */
+.pc-services__card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.pc-services__action-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: #1476ff;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.pc-services__action-link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.pc-services__action-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pc-services__action-link--danger {
+  color: #f23030;
+}
+
+.pc-services__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 24px;
+  flex: 1;
+}
+
+.pc-services__empty-icon {
+  flex-shrink: 0;
+}
+.pc-services__empty-text {
+  font-size: 14px;
+  color: #808080;
+}
+
+.pc-services__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 16px;
+  height: 32px;
+  border: 1px solid #595959;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.pc-services__add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 编辑弹窗 ── */
+.pc-services__modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.pc-services__modal {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 24px;
+  width: 480px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pc-services__modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #191919;
+  margin: 0;
+}
+
+.pc-services__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pc-services__field label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #191919;
+}
+
+.pc-services__input {
+  height: 32px;
+  border: 1px solid #c2c2c2;
+  border-radius: 6px;
+  padding: 0 12px;
+  font-size: 13px;
+  outline: none;
+}
+
+.pc-services__input:focus {
+  border-color: #191919;
+}
+
+.pc-services__textarea {
+  border: 1px solid #c2c2c2;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+  font-family: monospace;
+}
+
+.pc-services__textarea:focus {
+  border-color: #191919;
+}
+
+.pc-services__modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.spin {
+  animation: pc-svc-spin 1s linear infinite;
+}
+
+@keyframes pc-svc-spin {
+  to { transform: rotate(360deg); }
+}

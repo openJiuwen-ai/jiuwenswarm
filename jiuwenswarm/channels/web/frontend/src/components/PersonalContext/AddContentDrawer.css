@@ -1,0 +1,1080 @@
+/* AddContentDrawer — 添加内容抽屉样式（对齐高保真） */
+
+.pc-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(25, 25, 25, 0.4);
+  animation: pc-drawer-fade-in 0.15s ease;
+}
+
+/* 居中弹窗：550px 宽，r16 白底带阴影 */
+.pc-drawer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 550px;
+  max-width: 90vw;
+  max-height: 88vh;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  animation: pc-drawer-pop-in 0.2s ease;
+  overflow: hidden;
+}
+
+.pc-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 12px;
+  flex-shrink: 0;
+}
+
+.pc-drawer__title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: #191919;
+}
+
+.pc-drawer__close {
+  background: transparent;
+  border: none;
+  color: #808080;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.pc-drawer__close:hover {
+  color: #191919;
+  background: #f5f5f5;
+}
+
+.pc-drawer__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pc-drawer__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 24px;
+  border-top: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+
+/* 表单字段 */
+.pc-drawer__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pc-drawer__field--row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pc-drawer__field--inline {
+  flex-direction: column;
+}
+
+.pc-drawer__field-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-drawer__field-label {
+  font-size: 12px;
+  font-weight: 400;
+  color: #191919;
+}
+
+.pc-drawer__field label {
+  font-size: 12px;
+  color: #808080;
+  font-weight: 400;
+}
+
+.pc-drawer__field-hint {
+  font-size: 12px;
+  color: #808080;
+  margin-top: 2px;
+  line-height: 18px;
+}
+
+/* 输入框：r6 描边 #dbdbdb */
+.pc-drawer__input {
+  padding: 6px 10px;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #191919;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+
+.pc-drawer__input:focus {
+  outline: none;
+  border-color: #1476ff;
+}
+
+.pc-drawer__input--narrow {
+  width: 96px;
+}
+
+/* 下拉选择：r6 */
+.pc-drawer__select {
+  padding: 6px 10px;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #191919;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.pc-drawer__select--narrow {
+  width: auto;
+}
+
+.pc-drawer__freq {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-drawer__freq-every {
+  font-size: 14px;
+  color: #808080;
+}
+
+.pc-drawer__link {
+  background: none;
+  border: none;
+  color: #1476ff;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.15s;
+}
+
+.pc-drawer__link:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
+.pc-drawer__placeholder {
+  padding: 12px;
+  border: 1px dashed #dbdbdb;
+  border-radius: 6px;
+  color: #808080;
+  font-size: 12px;
+  text-align: center;
+  background: #fafafa;
+}
+
+.pc-drawer__fields-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+/* 资源选择 — 可删除标签容器 */
+.pc-drawer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid #c2c2c2;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.pc-drawer__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 4px;
+  background: #F5F5F5;
+  color: #191919;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: none;
+}
+
+.pc-drawer__chip:hover {
+  background: #E8E8E8;
+}
+
+.pc-drawer__chip--active {
+  background: #F5F5F5;
+  color: #191919;
+}
+
+.pc-drawer__chip-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: #808080;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pc-drawer__chip-close:hover {
+  color: #191919;
+}
+
+/* 信息提示：r8 #deecff */
+.pc-drawer__info {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #deecff;
+  border: 1px solid #deecff;
+  color: #191919;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.pc-drawer__error {
+  background: rgba(220, 50, 50, 0.08);
+  color: #dc3232;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+
+/* 内容采集来源卡片网格 */
+.pc-drawer__provider-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pc-drawer__provider-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+  position: relative;
+}
+
+.pc-drawer__provider-card:hover:not(:disabled) {
+  background: #f5f5f5;
+}
+
+.pc-drawer__provider-card--active {
+  border-color: #1476ff;
+  background: #deecff;
+}
+
+.pc-drawer__provider-card--disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.pc-drawer__provider-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid #dbdbdb;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.pc-drawer__provider-icon img {
+  width: 32px;
+  height: 32px;
+  display: block;
+}
+
+.pc-drawer__provider-name {
+  flex: 1;
+  font-size: 14px;
+  color: #191919;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pc-drawer__provider-card--disabled .pc-drawer__provider-name {
+  color: #c2c2c2;
+}
+
+.pc-drawer__provider-authorize {
+  color: #1476ff;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.pc-drawer__provider-authorize:hover {
+  text-decoration: underline;
+}
+
+/* 高级配置折叠 */
+.pc-drawer__advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.15s;
+}
+
+.pc-drawer__advanced-toggle:hover {
+  color: #1476ff;
+}
+
+.pc-drawer__advanced-toggle--open svg {
+  transform: rotate(180deg);
+}
+
+.pc-drawer__advanced-toggle svg {
+  transition: transform 0.2s;
+}
+
+.pc-drawer__advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+
+/* 频率单位 pill 按钮 */
+.pc-drawer__freq-pill {
+  padding: 4px 12px;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #595959;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.pc-drawer__freq-pill--active {
+  background: #1476ff;
+  border-color: #1476ff;
+  color: #ffffff;
+}
+
+/* 自定义日期范围 */
+.pc-drawer__date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-drawer__date-sep {
+  font-size: 14px;
+  color: #808080;
+}
+
+
+/* 微调器 [- N +] */
+.pc-drawer__spinner {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #c2c2c2;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+  height: 28px;
+
+  align-self: flex-start;
+}
+
+.pc-drawer__spinner-btn {
+  width: 32px;
+  height: 28px;
+  border: none;
+  background: #ffffff;
+  color: #808080;
+  font-size: 16px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.pc-drawer__spinner-btn:hover {
+  background: #f5f5f5;
+}
+
+.pc-drawer__spinner-btn:active {
+  background: #e8e8e8;
+}
+
+.pc-drawer__spinner-input {
+  width: 104px;
+  height: 28px;
+  border: none;
+  border-left: 1px solid #f0f0f0;
+  border-right: 1px solid #f0f0f0;
+  text-align: center;
+  font-size: 14px;
+  color: #191919;
+  background: #ffffff;
+  outline: none;
+  -moz-appearance: textfield;
+}
+
+.pc-drawer__spinner-input::-webkit-inner-spin-button,
+.pc-drawer__spinner-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* 采集时间下拉 + 自定义箭头 */
+.pc-drawer__time-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-drawer__time-select .pc-drawer__select {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.pc-drawer__time-arrow {
+  font-size: 14px;
+  color: #808080;
+  flex-shrink: 0;
+}
+
+.pc-drawer__spinner--narrow .pc-drawer__spinner-input {
+  width: 104px;
+}
+
+/* 自定义日期选择面板 */
+.pc-drawer__date-picker {
+  margin-top: 8px;
+}
+
+.pc-drawer__date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-drawer__date-input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-drawer__date-input input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #191919;
+  background: #ffffff;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.pc-drawer__date-input input:focus {
+  border-color: #1476ff;
+}
+
+
+
+.pc-drawer__date-sep {
+  font-size: 14px;
+  color: #808080;
+  flex-shrink: 0;
+}
+
+/* 自定义下拉框 */
+.pc-drawer__custom-select {
+  position: relative;
+  width: 100%;
+}
+
+.pc-drawer__select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.pc-drawer__select-trigger:hover {
+  border-color: #1476ff;
+}
+
+.pc-drawer__select-arrow {
+  font-size: 12px;
+  color: #808080;
+  transform: rotate(-90deg);
+  display: inline-block;
+}
+
+.pc-drawer__select-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: #ffffff;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 10;
+  overflow: hidden;
+}
+
+.pc-drawer__select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: #ffffff;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  box-sizing: border-box;
+  transition: background 0.15s;
+}
+
+.pc-drawer__select-option:hover {
+  background: #f5f5f5;
+}
+
+.pc-drawer__select-option--active {
+  color: #1476ff;
+}
+
+.pc-drawer__select-arrow-right {
+  font-size: 14px;
+  color: #808080;
+}
+
+/* 日历面板（自定义日期范围） */
+.pc-drawer__calendar-panel {
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid #dbdbdb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.pc-drawer__date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pc-drawer__date-input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-drawer__date-input input {
+  width: 100%;
+  height: 28px;
+  padding: 0 28px 0 10px;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #191919;
+  background: #ffffff;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.pc-drawer__date-input input:focus {
+  border-color: #1476ff;
+}
+
+.pc-drawer__date-icon {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  pointer-events: none;
+}
+
+.pc-drawer__date-sep {
+  font-size: 14px;
+  color: #808080;
+  flex-shrink: 0;
+}
+
+.pc-drawer__calendar-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.pc-drawer__calendar-confirm {
+  padding: 4px 16px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: #191919;
+  color: #ffffff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+
+/* 飞书内容类型 pill 切换 — 每个独立 r6 */
+.pc-drawer__mode-pills {
+  display: flex;
+  gap: 8px;
+}
+
+.pc-drawer__mode-pill {
+  padding: 0 12px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: #F5F5F5;
+  color: #595959;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  flex: 1;
+  max-width: 120px;
+}
+
+.pc-drawer__mode-pill--active {
+  background: #1476FF;
+  color: #ffffff;
+}
+
+/* + 添加 链接按钮 */
+.pc-drawer__add-url {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 多行输入（+ 添加）列表：飞书 document_ids、Edge 收藏夹文件夹路径 */
+.pc-drawer__multi-input {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.pc-drawer__multi-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pc-drawer__multi-row .pc-drawer__input {
+  flex: 1;
+}
+
+/* 底部按钮 r999 胶囊 — 84px 宽 */
+.pc-drawer__foot-btn {
+  width: 84px;
+  height: 28px;
+  border-radius: 999px;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  padding: 0;
+}
+
+.pc-drawer__foot-btn--secondary {
+  border: 1px solid #595959;
+  background: #ffffff;
+  color: #191919;
+}
+
+.pc-drawer__foot-btn--secondary:hover:not(:disabled) {
+  background: #f5f5f5;
+}
+
+.pc-drawer__foot-btn--secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pc-drawer__foot-btn--primary {
+  border: none;
+  background: #191919;
+  color: #ffffff;
+}
+
+.pc-drawer__foot-btn--primary:hover:not(:disabled) {
+  background: #333333;
+}
+
+.pc-drawer__foot-btn--primary:disabled {
+  background: #f0f0f0;
+  color: #c2c2c2;
+  cursor: not-allowed;
+}
+
+
+/* 多选下拉框 */
+.pc-drawer__multi-select {
+  position: relative;
+  width: 100%;
+}
+
+.pc-drawer__multi-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid #c2c2c2;
+  border-radius: 6px;
+  background: #ffffff;
+  cursor: pointer;
+  box-sizing: border-box;
+  gap: 4px;
+}
+
+.pc-drawer__multi-select-trigger:hover {
+  border-color: #1476ff;
+}
+
+.pc-drawer__multi-select-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.pc-drawer__multi-select-placeholder {
+  font-size: 14px;
+  color: #808080;
+}
+
+.pc-drawer__multi-select-arrow {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #808080;
+  transform: rotate(-90deg);
+  display: inline-block;
+}
+
+.pc-drawer__multi-select-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: #ffffff;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 10;
+  overflow: hidden;
+}
+
+.pc-drawer__multi-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: #ffffff;
+  color: #191919;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  box-sizing: border-box;
+  transition: background 0.15s;
+}
+
+.pc-drawer__multi-select-option:hover {
+  background: #f5f5f5;
+}
+
+.pc-drawer__multi-select-option--active {
+  color: #1476ff;
+}
+
+.pc-drawer__multi-select-check {
+  width: 16px;
+  font-size: 14px;
+  color: #1476ff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.spin {
+  animation: pc-drawer-spin 1s linear infinite;
+}
+
+@keyframes pc-drawer-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pc-drawer-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pc-drawer-pop-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+
+/* 日期范围弹窗 + 触发器 */
+.pc-drawer-overlay--modal {
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.pc-drawer__calendar-modal {
+  width: 600px;
+  max-width: 90vw;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pc-drawer__calendar-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 15px;
+  font-weight: 600;
+  color: #191919;
+}
+
+.pc-drawer__calendar-trigger {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 13px;
+  color: #191919;
+  cursor: pointer;
+}
+
+.pc-drawer__calendar-trigger:hover {
+  border-color: #1476ff;
+}
+
+/* 双月日历 */
+.pc-cal__range-display {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.pc-cal__nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pc-cal__nav-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: #191919;
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 4px;
+}
+
+.pc-cal__nav-btn:hover {
+  background: #f0f0f0;
+}
+
+.pc-cal__months {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.pc-cal__month {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pc-cal__month-title {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #191919;
+}
+
+.pc-cal__weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+}
+
+.pc-cal__weekday {
+  font-size: 11px;
+  color: #808080;
+  padding: 2px 0;
+}
+
+.pc-cal__days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.pc-cal__day {
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  font-size: 12px;
+  color: #191919;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pc-cal__day--off {
+  color: #c2c2c2;
+}
+
+.pc-cal__day:hover {
+  background: #f0f0f0;
+}
+
+.pc-cal__day--start,
+.pc-cal__day--end {
+  background: #1476ff;
+  color: #ffffff;
+}
+
+.pc-cal__day--inrange {
+  background: #deecff;
+  color: #191919;
+  border-radius: 0;
+}
+
+.pc-cal__nav-spacer {
+  width: 24px;
+  flex-shrink: 0;
+}
+
+.pc-cal__range-fields {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.pc-cal__field-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #dbdbdb;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #191919;
+  background: #ffffff;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.pc-cal__field-input:focus {
+  border-color: #1476ff;
+}

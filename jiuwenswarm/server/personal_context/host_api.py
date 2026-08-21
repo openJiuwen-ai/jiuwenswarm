@@ -33,7 +33,7 @@ _PERSONAL_CONTEXT_MODEL_MAX_RETRIES = 2
 def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
     return {
         "collection_enabled": collection_enabled,
-        "agent_use_enabled": False,
+        "agent_use_enabled": True,
         "strategy_profile": "rules",
         "fetch_services": [],
     }
@@ -925,6 +925,30 @@ class PersonalContextHostAPI:
 
         async with self._operation_lock:
             return await self._personal_context.run_fetch(service_id=service_id)
+
+    async def stop_fetch_run(self, service_id: str) -> dict[str, object]:
+        """Stop one service's active fetch run without changing its enabled flag.
+
+        Unlike stop_service (which toggles the scheduled-fetch `enabled` flag),
+        this aborts the in-flight fetch task only — the auto-fetch schedule is
+        preserved. Delegates to the Core's stop_fetch_service.
+        """
+
+        if not isinstance(service_id, str) or not service_id.strip():
+            _raise_host_error("service_id must be a non-empty string")
+        normalized_id = service_id.strip()
+        async with self._operation_lock:
+            try:
+                await self._personal_context.stop_fetch_service(normalized_id)
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                raise _as_host_error(
+                    exc,
+                    "PersonalContext fetch run could not be stopped",
+                    status_name="CONTEXT_PROACTIVE_FETCH_EXECUTION_ERROR",
+                ) from None
+            return {"ok": True}
 
     async def get_graph(
         self,

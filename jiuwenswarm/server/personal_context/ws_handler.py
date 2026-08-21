@@ -47,6 +47,7 @@ PERSONAL_CONTEXT_REQUEST_METHODS = frozenset(
         ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_SERVICE,
         ReqMethod.PERSONAL_CONTEXT_FETCH_RUN_ALL,
         ReqMethod.PERSONAL_CONTEXT_FETCH_RUN_ONE,
+        ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_RUN,
         ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS,
         ReqMethod.PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS,
         ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
@@ -279,6 +280,8 @@ async def _execute(
         return await host.run_fetch()
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_RUN_ONE:
         return await host.run_fetch(service_id=_text(params, "service_id"))
+    if method == ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_RUN:
+        return await host.stop_fetch_run(_text(params, "service_id"))
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS:
         return await host.get_fetch_run_status(
             cast(str | None, params.get("service_id"))
