@@ -92,6 +92,36 @@ export function resolveEffectiveModel(
   );
 }
 
+/**
+ * Resolve the model shown by the chat selector.
+ *
+ * 单 Agent 与集群（team）模式共用同一套解析：都展示会话自选的模型，
+ * 失配时回退默认模型（见 resolveEffectiveModel）。
+ */
+export function resolveChatModelSelection(
+  chatAvailableModels: ModelEntry[],
+  selectedModelName: string | null,
+  defaultModelName: string | null,
+): ModelEntry | null {
+  return resolveEffectiveModel(
+    chatAvailableModels,
+    selectedModelName,
+    defaultModelName,
+  );
+}
+
+/** Resolve a configured display name to the model ID required by backend RPCs. */
+export function resolveConfiguredModelName(
+  availableModels: ModelEntry[],
+  configuredModelName: string | null,
+): string | null {
+  const normalizedName = configuredModelName?.trim();
+  if (!normalizedName) return null;
+  return availableModels.find(
+    (model) => model.alias === normalizedName || model.model_name === normalizedName,
+  )?.model_name ?? null;
+}
+
 const FINAL_EVENT_DUPLICATE_WINDOW_MS = 60_000;
 
 function normalizeExecutionContent(content?: string): string {
@@ -320,7 +350,7 @@ interface SessionState {
   availableModels: ModelEntry[];
   /** 过滤 is_default=true 的模型，供聊天窗口 ModelSelector 使用 */
   chatAvailableModels: ModelEntry[];
-  /** 后端配置的默认模型（alias 优先），供新建会话取用，不受任何会话手动切换模型影响 */
+  /** 后端配置的默认模型 ID，供集群模式和新建会话取用，不受任何会话手动切换模型影响 */
   defaultModelName: string | null;
 
   // B 类 session 级字段
@@ -427,10 +457,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const state = get();
     const runtime = state.runtimes[sessionId];
     if (!runtime) return null;
-    if (runtime.mode === 'team') return state.defaultModelName;
     // 不再原样吐出 runtime.selectedModelName（可能是模型改名后失配的陈旧字符串），
     // 而是走与 UI 显示（ModelSelector）相同的解析逻辑，确保发给后端的 model_name
-    // 参数与界面上显示的模型永远一致（bug003）。
+    // 参数与界面上显示的模型永远指向同一个 entry（bug003）。
+    // 单 Agent 与集群（team）模式统一走同一套解析——集群模式下用户同样可以自选模型，
+    // 后端 team_helpers 会把它透传给未显式配置 per-agent model 的团队成员。
+    //
+    // 注意：这里返回的是 model_name 而非 alias。后端 _model_cache 以 model_name 为
+    // key 查找（包括 Zen 免费模型如 "laguna-s-2.1-free"）；alias 只是展示名（如
+    // "Laguna S 2.1"），后端无法据此解析，会回退到默认模型。
     const resolved = resolveEffectiveModel(
       state.chatAvailableModels,
       runtime.selectedModelName,
@@ -1170,17 +1205,35 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setAvailableModels: (models, activeModel) => {
-    set(() => {
-      const chatModels = models.filter((m) => m.is_default !== false);
-      // 优先使用后端返回的 activeModel（默认模型），其次取第一个；有别名时存别名
+    set((state) => {
+      const defaultModels = models.filter((m) => m.is_default !== false);
+      // 过滤为空时回退到全量列表，保证聊天下拉框始终有可选项（例如用户自配模型
+      // 均未设为 is_default、且关闭了 Opencode Zen 免费模型时，不至于无模型可选）。
+      const chatModels = defaultModels.length > 0 ? defaultModels : models;
+      // 优先使用后端返回的 activeModel（默认模型），其次取第一个；状态统一保存真实
+      // model_name，alias 只用于界面展示。各会话 runtime 的 selectedModelName 不在这里
+      // 重置——单 Agent 和集群会话都是用户自选状态，模型列表刷新（models.updated）不应
+      // 冲掉；陈旧失配的名字由 getEffectiveModelName 走 resolveEffectiveModel 兜底解析。
       const matchedModel = activeModel ? chatModels.find((m) => m.model_name === activeModel) : null;
-      const selected = matchedModel
-        ? (matchedModel.alias || matchedModel.model_name)
-        : (chatModels[0] ? (chatModels[0].alias || chatModels[0].model_name) : null);
+      const selected = (matchedModel ?? chatModels[0])?.model_name ?? null;
       if (selected) {
         try { localStorage.setItem(MODEL_STORAGE_KEY, selected); } catch { /* noop */ }
       }
-      return { availableModels: models, chatAvailableModels: chatModels, defaultModelName: selected };
+      // 默认模型变化时，同步未发送的新建会话（'new'，见 newConversationLifecycle 的
+      // NEW_CONVERSATION_ID；此处用字面量避免循环依赖）的模型选择：仅当其当前选择
+      // 恰为旧默认模型（说明来自默认而非用户手动选择）时才替换为新默认，用户手动
+      // 选择的模型不受影响。已创建的真实会话 runtime 依然不在此处重置。
+      const runtimes = { ...state.runtimes };
+      const pendingNewRuntime = runtimes['new'];
+      if (
+        pendingNewRuntime
+        && selected
+        && state.defaultModelName
+        && pendingNewRuntime.selectedModelName === state.defaultModelName
+      ) {
+        runtimes['new'] = { ...pendingNewRuntime, selectedModelName: selected };
+      }
+      return { availableModels: models, chatAvailableModels: chatModels, defaultModelName: selected, runtimes };
     });
   },
 
