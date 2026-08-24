@@ -24,6 +24,9 @@ import sys
 from typing import Optional
 
 from jiuwenswarm.common.utils import get_user_home, init_user_workspace, get_user_workspace_dir
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (
+    preload_code_graph_grammars,
+)
 from jiuwenswarm.instance_manager import (
     create_bootstrap_env,
     get_default_instance_status,
@@ -141,13 +144,14 @@ def run_init(force: bool = False, name: Optional[str] = None) -> int:
         config = InstanceConfig(name=name, workspace=workspace_path, ports=ports)
         create_bootstrap_env(config)
         logging.info(f"[jiuwenswarm-init] Instance '{name}' initialized successfully.")
+        preload_code_graph_grammars()
         return 0
 
     if target == "cancelled":
         return 1
 
     logging.info(f"[jiuwenswarm-init] initialized: {target}")
-
+    preload_code_graph_grammars()
     return 0
 
 

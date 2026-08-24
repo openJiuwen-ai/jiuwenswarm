@@ -34,11 +34,13 @@ from openjiuwen.harness.rails import (
     SysOperationRail,
     LspRail,
 )
+from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
 
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.lsp import InitializeOptions
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
     CodeGraphFlags,
+    PROFILE_OFF,
     resolve_code_graph_flags,
 )
 from openjiuwen.harness.schema.config import SubAgentConfig
@@ -453,6 +455,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "MemoryForbiddenRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
         "FileSystemRail",  # 别名
+        "CodeGraphProfileRail",
     })
 
     def __init__(self) -> None:
@@ -726,6 +729,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
         ]
 
+        flags = self._code_graph_flags(config_base)
+        if flags.on_root:
+            after_permission.append(
+                _AgentRailBuildSpec(
+                    "_code_graph_profile_rail",
+                    self._build_code_graph_profile_rail,
+                    {"config_base": config_base},
+                )
+            )
+
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
         # 跳过已在固定列表中的 rail，避免重复注册
         mode_config = config_base.get("modes", {}).get("code", {})
@@ -807,7 +820,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Sub-agent create kwargs. Graph lives on Code Agent via profile kwargs."""
+        """Sub-agent create kwargs. Graph hang is chosen by ``code_graph.agent``."""
         kwargs: dict[str, Any] = {
             "auto_create_workspace": False,
         }
@@ -815,16 +828,31 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             kwargs.update(extra)
         return kwargs
 
-    def _code_agent_graph_kwargs(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
-        """Profile kwargs for the one sub-agent that owns the graph.
+    def _build_code_graph_profile_rail(self, config_base: dict[str, Any]) -> CodeGraphProfileRail:
+        """Hang find_* on Root. Eval locate still uses coding_agent.py, not this."""
+        flags = self._code_graph_flags(config_base)
+        rail = CodeGraphProfileRail(
+            flags.profile,
+            config=self._build_code_graph_config(config_base),
+        )
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] CodeGraphProfileRail on Root profile=%s",
+            flags.profile,
+        )
+        return rail
 
-        An off profile carries no index config: building one would resolve a cache
-        directory for an agent that never queries the graph.
+    def _code_agent_graph_kwargs(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
+        """Profile kwargs for code_agent when it owns the graph.
+
+        Product yaml ``agent: root`` keeps this sub-agent on the original tools.
+        An omitted agent key still hangs here (eval / old yaml). An off profile
+        carries no index config: building one would resolve a cache directory
+        for an agent that never queries the graph.
         """
         flags = self._code_graph_flags(config_base)
+        if not flags.on_code_agent:
+            return {"code_graph_profile": PROFILE_OFF}
         kwargs: dict[str, Any] = {"code_graph_profile": flags.profile}
-        if not flags.enabled:
-            return kwargs
         kwargs["code_graph_config"] = self._build_code_graph_config(config_base)
         return kwargs
 
@@ -1165,7 +1193,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             plan_spec.factory_kwargs = self._subagent_graph_factory_kwargs()
             subagents.append(plan_spec)
 
-        # Code Graph is a profile on code_agent, not a separate sub-agent.
+        # Code Graph is a profile, not a separate sub-agent. Root hang is a
+        # rail on this DeepAgent; code_agent hang is factory_kwargs below.
 
         if isinstance(subagents_cfg, dict):
             # code_agent subagent — 按配置启用

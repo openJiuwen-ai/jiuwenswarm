@@ -1852,6 +1852,9 @@ dependencies = [
 a2a = [
     { name = "a2a-sdk", extra = ["http-server"] },
 ]
+code-graph = [
+    { name = "openjiuwen" },
+]
 codex = [
     { name = "openjiuwen", extra = ["codex"] },
 ]
@@ -1996,6 +1999,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0,<3" },
     { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
     { name = "openjiuwen", extras = ["claude"], git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
+    { name = "openjiuwen", extras = ["code-graph"], marker = "extra == 'code-graph'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<2" },
@@ -2046,7 +2050,7 @@ requires-dist = [
     { name = "wecom-aibot-sdk", specifier = ">=1.0.5,<2" },
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
 ]
-provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "codex", "shell-ast", "test"]
+provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "codex", "code-graph", "shell-ast", "test"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2933,8 +2937,8 @@ wheels = [
 
 [[package]]
 name = "openjiuwen"
-version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop#ce21a9b7cfcce28923fba6c47758d60c624b69be" }
+version = "0.1.17"
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop#fd6c478542010576661806af55234aed796c59fb" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },
