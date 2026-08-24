@@ -22,6 +22,9 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     apply_code_graph_profile,
     resolve_code_graph_flags,
 )
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (  # noqa: E402
+    preload_code_graph_grammars,
+)
 from coding_agent import config_dir_name  # noqa: E402
 from trace import summarize_tool_payload  # noqa: E402
 
@@ -66,13 +69,57 @@ def test_unknown_profile_falls_back_to_off() -> None:
     )
 
 
-def test_section_without_a_profile_stays_off() -> None:
-    on = resolve_code_graph_flags({"code_graph": {"enabled": True, "tools": True}})
-    off = resolve_code_graph_flags({"code_graph": {"enabled": False}})
-    missing = resolve_code_graph_flags({"code_graph": {}})
-    assert on.profile == PROFILE_OFF
-    assert off.profile == PROFILE_OFF
-    assert missing.profile == PROFILE_OFF
+def test_missing_agent_hangs_on_code_agent() -> None:
+    flags = resolve_code_graph_flags({"code_graph": {"profile": "graph"}})
+    assert flags.profile == PROFILE_GRAPH
+    assert flags.agent == "code_agent"
+    assert flags.on_code_agent is True
+    assert flags.on_root is False
+
+
+def test_yaml_agent_root_hangs_on_root() -> None:
+    flags = resolve_code_graph_flags(
+        {"code_graph": {"profile": "graph", "agent": "root"}}
+    )
+    assert flags.agent == "root"
+    assert flags.on_root is True
+    assert flags.on_code_agent is False
+
+
+def test_yaml_agent_code_agent_is_explicit() -> None:
+    flags = resolve_code_graph_flags(
+        {"code_graph": {"profile": "graph", "agent": "code_agent"}}
+    )
+    assert flags.agent == "code_agent"
+    assert flags.on_code_agent is True
+
+
+def test_unknown_or_bool_agent_falls_back_to_code_agent() -> None:
+    for spelling in (True, False, "graph_agent", "main"):
+        flags = resolve_code_graph_flags(
+            {"code_graph": {"profile": "graph", "agent": spelling}}
+        )
+        assert flags.agent == "code_agent"
+
+
+def test_off_profile_does_not_hang_even_with_agent_root() -> None:
+    flags = resolve_code_graph_flags(
+        {"code_graph": {"profile": "off", "agent": "root"}}
+    )
+    assert flags.on_root is False
+    assert flags.on_code_agent is False
+    assert flags.agent == "root"
+
+
+def test_overlay_keeps_yaml_agent() -> None:
+    cfg = apply_code_graph_profile(
+        {"code_graph": {"agent": "root"}, "react": {"subagents": {}}},
+        PROFILE_GRAPH,
+    )
+    flags = resolve_code_graph_flags(cfg)
+    assert flags.profile == PROFILE_GRAPH
+    assert flags.agent == "root"
+    assert cfg["react"]["subagents"]["code_agent"]["enabled"] is True
 
 
 def test_profile_overlay_turns_graph_off_and_keeps_code_agent_on() -> None:
@@ -331,6 +378,42 @@ def test_summarize_reads_json_string_arguments() -> None:
         "edit_file", json.dumps({"file_path": "src/user.py"}), {}
     )
     assert edit["file_path"] == "src/user.py"
+
+
+def test_preload_skips_when_language_pack_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.code_graph_setup._language_pack_importable",
+        lambda: False,
+    )
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("must not download grammars when the pack is missing")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.code_graph_setup.subprocess.run",
+        fail_run,
+    )
+    assert preload_code_graph_grammars() is False
+
+
+def test_preload_skips_when_cache_is_already_warm(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.code_graph_setup._language_pack_importable",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.code_graph_setup._parser_already_ready",
+        lambda: True,
+    )
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("must not download grammars when the cache is warm")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.code_graph_setup.subprocess.run",
+        fail_run,
+    )
+    assert preload_code_graph_grammars() is True
 
 
 def test_config_dir_name_labels_the_profile() -> None:

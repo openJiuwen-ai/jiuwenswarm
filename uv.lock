@@ -1852,6 +1852,9 @@ dependencies = [
 a2a = [
     { name = "a2a-sdk", extra = ["http-server"] },
 ]
+code-graph = [
+    { name = "openjiuwen" },
+]
 codex = [
     { name = "openjiuwen", extra = ["codex"] },
 ]
@@ -2046,7 +2049,7 @@ requires-dist = [
     { name = "wecom-aibot-sdk", specifier = ">=1.0.5,<2" },
     { name = "wecom-aibot-sdk", marker = "extra == 'harmony'", specifier = ">=1.0.5" },
 ]
-provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "codex", "shell-ast", "test"]
+provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute", "codex", "code-graph", "shell-ast", "test"]
 
 [package.metadata.requires-dev]
 dev = [

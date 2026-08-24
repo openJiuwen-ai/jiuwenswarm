@@ -7,6 +7,12 @@ Score with ``scripts/eval/run_evaluate.py`` → official ``contextbench.evaluate
 
     UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
         --limit 5 --profile graph --graph-agent root
+
+    UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
+        --instance pallets__flask-5014 \
+        --profile graph --graph-agent root \
+        --max-iterations 10 \
+        --output ./tmp/cb-manual/cfg_b__graph
 """
 
 from __future__ import annotations

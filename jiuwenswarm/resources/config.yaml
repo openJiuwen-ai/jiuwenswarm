@@ -1,10 +1,15 @@
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
-# Code Graph on the Code Agent. ``off`` = original tools (grep/read/edit).
-# ``graph`` = find_* retrieval tools. Root / plan / explore never get graph tools.
+# Code Graph. ``off`` = original tools (grep/read/edit). ``graph`` = find_*.
+# ``uv sync`` does not install tree-sitter-language-pack. Install it yourself;
+# ``jiuwenswarm-init`` / ``jiuwenswarm-start`` download grammars. Query never downloads.
+# ``agent`` is who owns the tools: ``root`` (this template) or ``code_agent``.
+# Omit ``agent`` and the adapter still hangs on ``code_agent`` (eval default).
+# Plan / explore never get graph tools.
 code_graph:
-  profile: "off"
+  profile: "graph"
+  agent: "root"
   max_files: 50000
   max_index_size_mb: 1024
   query_timeout_seconds: 10

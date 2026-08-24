@@ -102,6 +102,7 @@ dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
 tui = ["jiuwenswarm-tui==0.2.4.beta4"]
 distribute = ["openjiuwen[postgres,zmq]"]
 codex = ["openjiuwen[codex]"]
+code-graph = ["openjiuwen[code-graph]"]
 shell-ast = []
 # Same packages as [dependency-groups] test (pip install -e ".[test]")
 test = [
