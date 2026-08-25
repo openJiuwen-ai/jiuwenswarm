@@ -627,3 +627,66 @@ class TeamMonitorHandler(BaseMonitorHandler):
             return None
         finally:
             reset_session_id(token)
+
+    @staticmethod
+    async def get_team_dependencies_from_db(
+        session_id: str,
+        team_name: str,
+    ) -> list[dict[str, Any]] | None:
+        """monitor 不在时直查 ``team.db`` 取任务依赖边（team.tasks.dependencies RPC 用）。
+
+        镜像 ``get_team_snapshot_from_db`` 的 contextvar 模式：绑定 ``session_id`` 上下文
+        后直查 per-session 动态表 ``team_task_dependency_<hash>``。``create_cur_session_tables``
+        已映射 dep 表（agent-core engine.py:753/759），故历史会话的依赖行可读到。
+
+        Args:
+            session_id: 会话 id，用于解析动态 task_dependency 表后缀。
+            team_name: 持久化在 session metadata 中的 team 名。
+
+        Returns:
+            ``[{task_id, depends_on_task_id, resolved}, ...]``，或 None
+            （参数/路径无效、查询失败）。``task_id`` 是下游（被阻塞者），
+            ``depends_on_task_id`` 是上游（阻塞者）。
+        """
+        from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+        from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
+        from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
+        from jiuwenswarm.agents.harness.team.config_loader import resolve_team_sqlite_db_path
+        from jiuwenswarm.common.config import get_config
+
+        sid = str(session_id or "").strip()
+        tname = str(team_name or "").strip()
+        if not sid or not tname:
+            return None
+        db_path = resolve_team_sqlite_db_path(get_config())
+        if db_path is None:
+            return None
+
+        db = get_shared_db(DatabaseConfig(db_type="sqlite", connection_string=str(db_path)))
+        token = set_session_id(sid)
+        try:
+            await db.initialize()
+            # Ensure the per-session dynamic dependency table is mapped (checkfirst);
+            # create_cur_session_tables maps dep_model (agent-core engine.py:753/759).
+            await db.create_cur_session_tables()
+            edges = await db.task.get_team_dependencies(tname) or []
+            return [
+                {
+                    "task_id": e.task_id,
+                    "depends_on_task_id": e.depends_on_task_id,
+                    "resolved": e.resolved,
+                }
+                for e in edges
+            ]
+        except Exception as e:
+            logger.warning(
+                "[TeamMonitorHandler] get_team_dependencies_from_db failed: "
+                "session_id=%s team_name=%s error=%s",
+                sid,
+                tname,
+                e,
+            )
+            return None
+        finally:
+            reset_session_id(token)
