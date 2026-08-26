@@ -20,7 +20,6 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     AgentOSFileTransferError,
     AgentOSRouterClient,
     build_auth_headers_from_token,
-    enforce_agent_file_upload_size,
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
 )
@@ -290,10 +289,38 @@ def test_normalize_agent_file_download_path_requires_absolute_under_home_agentos
     assert traversal.value.code == "BAD_REQUEST"
 
 
-def test_enforce_agent_file_upload_size_limit() -> None:
-    enforce_agent_file_upload_size(b"ok")
+def test_yuanrong_file_upload_http_error_maps_to_file_too_large() -> None:
+    client = YuanrongFrontendAgentClient(
+        frontend_endpoint="http://yuanrong.test:8888",
+        function_version_urn="urn:test:function:1",
+    )
+    with pytest.raises(YuanrongAgentFileError) as exc:
+        client._raise_agent_file_http_error(413, b'{"error":"payload too large"}')  # noqa: SLF001
+    assert exc.value.error_code == "file_too_large"
+    assert exc.value.http_status == 413
+
+
+@pytest.mark.asyncio
+async def test_router_upload_propagates_yuanrong_file_too_large() -> None:
+    router = _make_router_with_runtime()
+    yuanrong: _FakeYuanrong = router._yuanrong  # type: ignore[assignment]
+
+    async def _too_large(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        raise YuanrongAgentFileError(
+            "payload too large",
+            http_status=413,
+            error_code="file_too_large",
+        )
+
+    yuanrong.upload_agent_file = _too_large  # type: ignore[method-assign]
     with pytest.raises(AgentOSFileTransferError) as exc:
-        enforce_agent_file_upload_size(b"x" * (50 * 1024 * 1024 + 1))
+        await router.upload_container_file(
+            user_id="user-1",
+            path="big.pdf",
+            content=b"x" * 1024,
+            session_id="sess-1",
+        )
     assert exc.value.code == "file_too_large"
 
 
