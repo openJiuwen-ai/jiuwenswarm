@@ -16,6 +16,7 @@ from jiuwenswarm.common.config import (
     get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
+    get_ttse_embedding_config,
     get_ttse_enabled,
     migrate_config_from_template,
     replace_teams_in_config,
@@ -333,6 +334,47 @@ class TestConfigFunctions:
     )
     def test_ttse_enabled_config_values(self, config, expected):
         assert get_ttse_enabled(config) is expected
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({}, {}),
+            ({"react": {"ttse": {}}}, {}),
+            ({"react": {"ttse": {"embedding": {"api_key": "k"}}}}, {}),
+            (
+                {
+                    "react": {
+                        "ttse": {
+                            "embedding": {
+                                "api_key": "k",
+                                "base_url": "https://api.example.com/v1",
+                                "model": "bge-m3",
+                            }
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://api.example.com/v1",
+                    "model": "bge-m3",
+                },
+            ),
+            (
+                {
+                    "ttse": {
+                        "embedding": {
+                            "api_key": " k ",
+                            "base_url": " https://x/v1 ",
+                            "model": " m ",
+                        }
+                    }
+                },
+                {"api_key": "k", "base_url": "https://x/v1", "model": "m"},
+            ),
+        ],
+    )
+    def test_ttse_embedding_config_values(self, config, expected):
+        assert get_ttse_embedding_config(config) == expected
 
     @staticmethod
     def test_get_config_raw(temp_config_file: Path):

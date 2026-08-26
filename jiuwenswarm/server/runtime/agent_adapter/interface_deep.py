@@ -472,6 +472,7 @@ from jiuwenswarm.common.config import (
     get_sandbox_runtime,
     get_sandbox_startup_mode,
     get_skill_create_enabled,
+    get_ttse_embedding_config,
     get_ttse_enabled,
     resolve_env_vars,
     resolve_string_or_list_config,
@@ -7111,12 +7112,22 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
         try:
+            from openjiuwen.core.memory.lite.embeddings import OpenAICompatibleEmbeddingProvider
+
             ttse_cfg = config.get("ttse") or {}
             if not isinstance(ttse_cfg, dict):
                 ttse_cfg = {}
             store_path = str(ttse_cfg.get("store_path") or "").strip() or str(
                 get_agent_workspace_dir() / ".ttse" / "bank.json"
             )
+            emb_cfg = get_ttse_embedding_config(config)
+            embedding = None
+            if emb_cfg:
+                embedding = OpenAICompatibleEmbeddingProvider(
+                    api_key=emb_cfg["api_key"],
+                    base_url=emb_cfg["base_url"],
+                    model=emb_cfg["model"],
+                )
             ttse_rail = TTSERail(
                 llm=self._model,
                 model=self._default_model_name or config.get("model_name", "gpt-4"),
@@ -7124,12 +7135,14 @@ class JiuWenSwarmDeepAdapter:
                     store_path=store_path,
                     evolve_enabled=ttse_cfg.get("evolve_enabled", True),
                     inject_enabled=ttse_cfg.get("inject_enabled", True),
+                    embedding=embedding,
                 ),
                 success_detector=SignalBasedSuccessDetector(),
             )
             logger.info(
-                "[JiuWenSwarmDeepAdapter] TTSERail create success, store_path=%s",
+                "[JiuWenSwarmDeepAdapter] TTSERail create success, store_path=%s has_embedding=%s",
                 store_path,
+                embedding is not None,
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] TTSERail create failed: %s", exc)

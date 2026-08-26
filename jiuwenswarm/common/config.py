@@ -514,6 +514,25 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     return bool(_get_ttse_config(config).get("enabled"))
 
 
+def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
+    """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
+
+    Expects ``api_key`` / ``base_url`` / ``model``. Returns an empty dict when
+    the block is missing or any required field is blank after strip (caller
+    should leave embedding disabled and fall back to whole-bank injection).
+    """
+    ttse = _get_ttse_config(config)
+    raw = ttse.get("embedding")
+    if not isinstance(raw, dict):
+        return {}
+    api_key = str(raw.get("api_key") or "").strip()
+    base_url = str(raw.get("base_url") or "").strip()
+    model = str(raw.get("model") or "").strip()
+    if not (api_key and base_url and model):
+        return {}
+    return {"api_key": api_key, "base_url": base_url, "model": model}
+
+
 def get_skill_create_enabled(config: dict[str, Any] | None) -> bool:
     raw = get_local_config("SKILL_CREATE")
     env_skill_create = _get_bool_env(None if raw is None else str(raw))

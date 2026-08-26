@@ -119,9 +119,14 @@ react:
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     store_path: ""          # 空则落到 workspace/.ttse/bank.json
+    # 语义检索 / dedup；api_key、base_url、model 三段齐全时启用 top-K 注入，否则回退整库
+    embedding:
+      api_key: "${MAAS_API_KEY}"
+      base_url: "https://api.modelarts-maas.com/v1"
+      model: "bge-m3"
 ```
 
-规则库默认路径为 agent workspace 下的 `.ttse/bank.json`。
+规则库默认路径为 agent workspace 下的 `.ttse/bank.json`。`embedding` 可选；未配置或字段不全时不调用向量服务，注入整库 FACT/TIP。
 
 ## 3. 案例实践：通过文字对话字段触发代码修改
 

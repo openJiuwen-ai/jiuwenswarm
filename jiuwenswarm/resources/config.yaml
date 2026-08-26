@@ -701,6 +701,11 @@ react:
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     store_path: ""          # 空则落到 workspace/.ttse/bank.json
+    # 语义检索 / dedup；三段齐全时启用 top-K 注入，否则回退整库
+    embedding:
+      api_key: "lhqBVy952vGXQJshDBGvN5wtIbrkGTUzL0Pt-vyDxCuLDPe6wJM5LosjD-Sn0oVsy_GUQx28qpbNVu_dIXG8gw"
+      base_url: "https://api.modelarts-maas.com/v1/embeddings"
+      model: "bge-m3"
   a2x_registry:
     base_url: "http://127.0.0.1:8000"
     timeout: 30.0
