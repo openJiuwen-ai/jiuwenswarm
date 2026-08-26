@@ -103,7 +103,12 @@ def _status_for_transfer_code(code: str) -> int:
         return 400
     if normalized in {"UNAUTHORIZED", "AUTH_REQUIRED"}:
         return 401
-    if normalized in {"FORBIDDEN", "FORBIDDEN_EXTENSION", "FORBIDDEN_PATH"}:
+    if normalized in {
+        "FORBIDDEN",
+        "FORBIDDEN_EXTENSION",
+        "FORBIDDEN_PATH",
+        "USER_MISMATCH",
+    }:
         return 403
     if normalized in {"NOT_FOUND", "INSTANCE_NOT_FOUND", "FILE_NOT_FOUND"}:
         return 404
@@ -122,34 +127,86 @@ def _error_json(*, error: str, code: str | None = None, status_code: int | None 
     return JSONResponse(status_code=status, content=payload)
 
 
-def _auth_headers_from_request(request: Request) -> dict[str, str]:
-    from jiuwenswarm.extensions.agentos.auth.common import (
-        extract_token_from_path_and_headers,
-        headers_to_dict,
-    )
-    from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
-        build_auth_headers_from_mapping,
-        build_auth_headers_from_token,
+def _request_remote(request: Request) -> str:
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip()
+    port = getattr(client, "port", None)
+    if host and port:
+        return f"{host}:{port}"
+    return host
+
+
+class FileApiUserMismatch(Exception):
+    """Request ``user_id`` does not match the IAM identity bound to the token."""
+
+
+def _header_user_id(request: Request) -> str:
+    return str(
+        request.headers.get("x-user-id") or request.headers.get("X-User-Id") or ""
+    ).strip()
+
+
+def _token_identities(request: Request) -> frozenset[str]:
+    """IAM identities bound after ``authenticate_http`` succeeds."""
+    ids: set[str] = set()
+    uid = str(getattr(request.state, "agentos_user_id", "") or "").strip()
+    if uid:
+        ids.add(uid)
+    username = str(getattr(request.state, "agentos_username", "") or "").strip()
+    if username:
+        ids.add(username)
+    return frozenset(ids)
+
+
+def _claimed_user_ids(request: Request, explicit: str | None = None) -> list[str]:
+    claimed: list[str] = []
+    for raw in (
+        explicit,
+        request.query_params.get("user_id"),
+        _header_user_id(request),
+    ):
+        value = str(raw or "").strip()
+        if value and value not in claimed:
+            claimed.append(value)
+    return claimed
+
+
+def _user_mismatch_response() -> JSONResponse:
+    return _error_json(
+        error="user_id 与 token 不匹配",
+        code="USER_MISMATCH",
+        status_code=403,
     )
 
-    header_map = headers_to_dict(request.headers)
-    mapped = build_auth_headers_from_mapping(header_map)
-    if mapped:
-        return mapped
-    path = request.url.path
-    if request.url.query:
-        path = f"{path}?{request.url.query}"
-    return build_auth_headers_from_token(
-        extract_token_from_path_and_headers(path, header_map),
-    )
+
+def _user_id_mismatch_against_token(
+    request: Request, explicit: str | None = None
+) -> JSONResponse | None:
+    """Reject when any claimed ``user_id`` is not the token's user_id or username.
+
+    Skipped when auth is off (no IAM identity on the request). An omitted
+    ``user_id`` is allowed: routing then uses the IAM-bound identity.
+    """
+    identities = _token_identities(request)
+    if not identities:
+        return None
+    for claimed in _claimed_user_ids(request, explicit):
+        if claimed not in identities:
+            return _user_mismatch_response()
+    return None
 
 
 def _resolve_user_id(request: Request, explicit: str | None = None) -> str:
+    denied = _user_id_mismatch_against_token(request, explicit)
+    if denied is not None:
+        raise FileApiUserMismatch()
+    bound = str(getattr(request.state, "agentos_user_id", "") or "").strip()
+    if bound:
+        return bound
     if explicit and str(explicit).strip():
         uid = str(explicit).strip()
     else:
-        header_uid = request.headers.get("x-user-id") or request.headers.get("X-User-Id")
-        uid = str(header_uid or "").strip()
+        uid = _header_user_id(request)
     if uid:
         request.state.agentos_user_id = uid
     return uid
@@ -409,7 +466,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
     from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
         AgentOSFileTransferError,
         AgentOSRouterClient,
-        build_auth_headers_from_mapping,
     )
     from jiuwenswarm.extensions.agentos.auth.common import headers_to_dict
 
@@ -419,11 +475,27 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
 
     prefix = FILE_API_PREFIX
 
+    @app.exception_handler(FileApiUserMismatch)
+    async def _file_api_user_mismatch(
+        _request: Request, _exc: FileApiUserMismatch
+    ) -> JSONResponse:
+        return _user_mismatch_response()
+
     @app.middleware("http")
     async def _file_api_access_log(request: Request, call_next):  # type: ignore[no-untyped-def]
         if not str(request.url.path or "").startswith(prefix):
             return await call_next(request)
         started = time.monotonic()
+        denied = await _authenticate_file_api(request)
+        if denied is not None:
+            status = int(getattr(denied, "status_code", 401) or 401)
+            _log_file_api_done(
+                request,
+                status=status,
+                latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+                error="user_mismatch" if status == 403 else "unauthorized",
+            )
+            return denied
         try:
             response = await call_next(request)
         except Exception as exc:
@@ -440,6 +512,37 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             latency_ms=max(0, int((time.monotonic() - started) * 1000)),
         )
         return response
+
+    async def _authenticate_file_api(request: Request) -> JSONResponse | None:
+        path = str(request.url.path or "")
+        full_path = f"{path}?{request.url.query}" if request.url.query else path
+        result = await client.authenticate_http(
+            path=full_path,
+            headers=headers_to_dict(request.headers),
+            remote=_request_remote(request),
+            channel="file-api",
+            allow_query_token=path != f"{prefix}/download",
+        )
+        if not result.success:
+            error_code = ""
+            if isinstance(result.extensions, dict):
+                error_code = str(result.extensions.get("error_code") or "")
+            return _error_json(
+                error=result.error or "unauthorized",
+                code=error_code or "UNAUTHORIZED",
+                status_code=401,
+            )
+        if client.auth_enabled:
+            iam_uid = str(result.user_id or "").strip()
+            if iam_uid:
+                request.state.agentos_user_id = iam_uid
+            username = ""
+            if isinstance(result.extensions, dict):
+                username = str(result.extensions.get("username") or "").strip()
+            if username:
+                request.state.agentos_username = username
+            return _user_id_mismatch_against_token(request)
+        return None
 
     async def _list_container_dir(
         request: Request,
@@ -467,7 +570,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 max_depth=int(params.max_depth),
                 agent_type=agent_type,
                 session_id=sid,
-                auth_headers=_auth_headers_from_request(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -506,7 +608,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         path = params.path.strip()
         agent_type = params.agent_type if isinstance(params.agent_type, str) else None
 
-        auth = _auth_headers_from_request(request)
         want_json = str(params.response_format or "").strip().lower() == "json"
 
         async def _one_chunk(off: int, lim: int):
@@ -517,7 +618,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 limit=lim,
                 agent_type=agent_type,
                 session_id=sid,
-                auth_headers=auth,
             )
 
         try:
@@ -717,9 +817,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             return _error_json(error="invalid_download_token", code="BAD_REQUEST", status_code=400)
 
         file_path, session_id = location
-        # Do not use _auth_headers_from_request here: when no Authorization
-        # header is present it would promote the *file* token to Bearer auth.
-        auth = build_auth_headers_from_mapping(headers_to_dict(request.headers))
         try:
             first = await client.download_container_file(
                 user_id=uid,
@@ -727,7 +824,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 offset=0,
                 limit=_STREAM_CHUNK,
                 session_id=session_id,
-                auth_headers=auth,
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -759,7 +855,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     offset=offset,
                     limit=_STREAM_CHUNK,
                     session_id=session_id,
-                    auth_headers=auth,
                 )
                 if chunk.data:
                     yield chunk.data
@@ -782,7 +877,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         path = params.path.strip()
         agent_type = params.agent_type if isinstance(params.agent_type, str) else None
 
-        auth = _auth_headers_from_request(request)
         try:
             parts: list[bytes] = []
             off = 0
@@ -794,7 +888,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     limit=_STREAM_CHUNK,
                     agent_type=agent_type,
                     session_id=sid,
-                    auth_headers=auth,
                 )
                 parts.append(chunk.data)
                 if chunk.eof:
@@ -856,7 +949,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 status_code=400,
             )
 
-        auth = _auth_headers_from_request(request)
         ok_files: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
 
@@ -871,7 +963,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     content=content,
                     agent_type=form.agent_type if isinstance(form.agent_type, str) else None,
                     session_id=sid,
-                    auth_headers=auth,
                 )
                 out_path = str(result.get("path") or "")
                 mime, _ = mimetypes.guess_type(filename)
@@ -928,7 +1019,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 content=content.encode("utf-8"),
                 agent_type=agent_type if isinstance(agent_type, str) else None,
                 session_id=sid,
-                auth_headers=_auth_headers_from_request(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -961,7 +1051,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 recursive=bool(params.recursive),
                 agent_type=agent_type,
                 session_id=sid,
-                auth_headers=_auth_headers_from_request(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
