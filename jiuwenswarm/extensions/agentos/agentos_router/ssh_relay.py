@@ -68,6 +68,21 @@ def _is_ssh_connect_retryable(exc: BaseException) -> bool:
     return any(token in text for token in _SSH_CONNECT_RETRYABLE_TEXT_TOKENS)
 
 
+class SshSouthConnectError(Exception):
+    """南向 SSH 连接阶段失败（冷启动重试耗尽或不可重试的连接错误）。
+
+    ``original`` 保留底层异常，供路由层区分两类失败：
+    - 网络不可达类（ConnectionError/Timeout/OSError 等，重试耗尽）→ 死沙箱，
+      需要强制清理（删沙箱 + 注销 + 移除内存 runtime）；
+    - 密钥/认证失败类（no keys、auth refused 等）→ 沙箱可能正常，不清理。
+    会话中继阶段（连接已建立后）的异常不会包装成本类型。
+    """
+
+    def __init__(self, original: BaseException) -> None:
+        self.original = original
+        super().__init__(f"{type(original).__name__}: {original}")
+
+
 def _raise_missing_asyncssh(exc: ImportError) -> None:
     raise RuntimeError(
         "SSH relay requires optional dependency `asyncssh>=2.14.0,<2.24`. "
@@ -204,6 +219,11 @@ class YuanrongSshRelay:
                 instance_id,
             )
             self._write_client_error(session, f"yuanrong ssh relay failed: {exc}")
+            if isinstance(exc, SshSouthConnectError):
+                # 连接阶段失败透出给路由层分类处理（网络不可达 → 强制清理
+                # 死沙箱；密钥/认证失败 → 保留沙箱）。其余异常保持吞掉，
+                # 北向 waiter 已在 finally 中释放。
+                raise
         finally:
             session.exit_code = exit_code
             session.done.set()
@@ -343,11 +363,16 @@ class YuanrongSshRelay:
         *,
         user_id: str = "",
     ) -> int:
-        conn = await self._connect_until_ready(
-            instance_id,
-            user_id=user_id,
-            session_id=str(getattr(session, "session_id", "") or ""),
-        )
+        try:
+            conn = await self._connect_until_ready(
+                instance_id,
+                user_id=user_id,
+                session_id=str(getattr(session, "session_id", "") or ""),
+            )
+        except Exception as exc:
+            # 标记为连接阶段失败：路由层据此区分"网络不可达（清理死沙箱）"
+            # 与"密钥/认证失败（保留沙箱）"。会话中继阶段的异常不受影响。
+            raise SshSouthConnectError(exc) from exc
         try:
             return await self._relay_over_connection(session, conn)
         finally:

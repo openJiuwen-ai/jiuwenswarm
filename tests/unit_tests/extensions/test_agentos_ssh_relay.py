@@ -21,6 +21,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSR
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
     DEFAULT_SSH_USER_TEMPLATE,
+    SshSouthConnectError,
     YuanrongSshRelay,
     YuanrongSshSettings,
     _is_ssh_connect_retryable,
@@ -959,3 +960,178 @@ async def test_unregister_session_cancels_southbound_task() -> None:
                 await session.relay_task
             except asyncio.CancelledError:
                 pass
+
+
+# ---------- S1/S2: southbound connect failure classification & cleanup ----------
+
+
+class ConnectFailsRelay(StubSshRelay):
+    """run() 以 SshSouthConnectError 结束，模拟南向连接阶段失败.
+
+    与真实 YuanrongSshRelay.run 的契约一致：写客户端错误、置 done/exit_code
+    后抛出连接阶段异常，供路由层分类处理。
+    """
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__()
+        self._original = original
+
+    async def run(
+        self,
+        session: Any,
+        instance_id: str,
+        *,
+        user_id: str = "",
+    ) -> int:
+        self.ran.append((session.session_id, instance_id, user_id))
+        session.exit_code = 1
+        session.done.set()
+        raise SshSouthConnectError(self._original)
+
+
+@pytest.mark.asyncio
+async def test_ssh_relay_connect_unreachable_cleans_up_dead_sandbox() -> None:
+    """南向连接网络不可达（重试耗尽）→ 强制清理（删沙箱+注销+移除 runtime）。"""
+    yuanrong = FakeYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = AgentOSRouterClient(
+        yuanrong,
+        registry,
+        agent_manager,
+        ssh_relay=ConnectFailsRelay(
+            ConnectionRefusedError("SSH connection closed")
+        ),
+    )
+    session = _relay_session("ssh_dead")
+    try:
+        response = await client.send_request(
+            _ssh_envelope(session, agent_type="opencode")
+        )
+        assert response.ok  # relay task started; failure reported via session
+        await asyncio.wait_for(session.done.wait(), timeout=5)
+        # cleanup runs after session.done; give the background task a beat
+        await asyncio.sleep(0.05)
+
+        assert session.exit_code == 1
+        assert yuanrong.create_calls == 1
+        assert yuanrong.delete_calls == ["sbx-1"]
+        assert len(registry.unregistered) == 1
+        agents = await agent_manager.list_user_agents("alice")
+        assert agents == []
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ssh_relay_connect_auth_failure_keeps_sandbox() -> None:
+    """密钥/认证失败（不可重试）→ 沙箱可能正常，不清理。"""
+    yuanrong = FakeYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = AgentOSRouterClient(
+        yuanrong,
+        registry,
+        agent_manager,
+        ssh_relay=ConnectFailsRelay(RuntimeError("Permission denied")),
+    )
+    session = _relay_session("ssh_authfail")
+    try:
+        response = await client.send_request(
+            _ssh_envelope(session, agent_type="opencode")
+        )
+        assert response.ok
+        await asyncio.wait_for(session.done.wait(), timeout=5)
+        await asyncio.sleep(0.05)
+
+        assert session.exit_code == 1
+        assert yuanrong.delete_calls == []
+        assert registry.unregistered == []
+        agents = await agent_manager.list_user_agents("alice")
+        assert len(agents) == 1
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_thirdagent_switch_sshd_not_ready_keeps_runtime() -> None:
+    """S2 保守处理：SSH_NOT_READY 不删沙箱，runtime 保留（重连时由 S1 兜底）。"""
+    class _WaitRelay(StubSshRelay):
+        async def wait_until_ready(self, instance_id: str, *, user_id: str = "") -> None:
+            raise ConnectionRefusedError("SSH connection closed")
+
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = AgentOSRouterClient(
+        yuanrong,
+        FakeRegistryClient(),
+        agent_manager,
+        ssh_relay=_WaitRelay(),
+        ssh_channel_endpoint=SshChannelEndpoint(ip="0.0.0.0", port=2222),
+    )
+    try:
+        response = await client.thirdagent_switch(
+            user_id="alice",
+            agent_type="opencode",
+            session_id="sess-1",
+        )
+        assert response["ok"] is False
+        assert response["code"] == "SSH_NOT_READY"
+        assert yuanrong.delete_calls == []
+        agents = await agent_manager.list_user_agents("alice")
+        assert len(agents) == 1
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_relay_run_raises_south_connect_error_on_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """连接重试耗尽 → run() 抛 SshSouthConnectError（保留原始异常）并释放 session。"""
+    import jiuwenswarm.extensions.agentos.agentos_router.ssh_relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "_SSH_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(relay_mod, "_SSH_CONNECT_READY_TIMEOUT_SECONDS", 0.05)
+
+    key_dir = tmp_path / "alice"
+    key_dir.mkdir()
+    (key_dir / "id_ed25519").write_text("k", encoding="utf-8")
+
+    class _FakeAsyncssh:
+        async def connect(self, *args: Any, **kwargs: Any) -> Any:
+            del args, kwargs
+            raise ConnectionRefusedError("SSH connection closed")
+
+    monkeypatch.setattr(relay_mod, "_import_asyncssh", lambda: _FakeAsyncssh())
+    relay = YuanrongSshRelay(
+        YuanrongSshSettings(client_keys_dir=str(tmp_path / "{user_id}")),
+        frontend_endpoint="http://frontend.test:8888",
+    )
+    session = _relay_session("ssh_exhaust")
+    with pytest.raises(SshSouthConnectError) as exc_info:
+        await relay.run(session, "inst-1", user_id="alice")
+
+    assert isinstance(exc_info.value.original, ConnectionRefusedError)
+    assert session.done.is_set()
+    assert session.exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_relay_run_swallows_non_connect_errors() -> None:
+    """会话中继阶段（非连接阶段）异常保持原契约：吞掉并释放 session，不上抛。"""
+    session = _relay_session("ssh_midsession_bug")
+    relay = YuanrongSshRelay(
+        YuanrongSshSettings(),
+        frontend_endpoint="http://127.0.0.1:31220",
+    )
+
+    async def _bug(_session: Any, _instance_id: str, *, user_id: str = "") -> int:
+        del _session, _instance_id, user_id
+        raise RuntimeError("mid-session relay bug")
+
+    relay._relay = _bug  # type: ignore[method-assign]
+    exit_code = await relay.run(session, "inst-1")
+
+    assert exit_code == 1
+    assert session.done.is_set()

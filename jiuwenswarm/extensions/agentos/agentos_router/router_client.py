@@ -53,7 +53,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
 )
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
+    SshSouthConnectError,
     YuanrongSshRelay,
+    _is_ssh_connect_retryable,
     resolve_client_keys_dir,
 )
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
@@ -1644,6 +1646,7 @@ class AgentOSRouterClient(AgentServerClient):
                     sandbox_id=instance_id,
                     instance=instance_id,
                     error=type(exc).__name__,
+                    unreachable=str(_is_ssh_connect_retryable(exc)).lower(),
                 )
                 return {
                     "ok": False,
@@ -1835,6 +1838,27 @@ class AgentOSRouterClient(AgentServerClient):
                 instance_id,
                 user_id=runtime.info.user_id,
             )
+        except SshSouthConnectError as exc:
+            original = exc.original
+            if _is_ssh_connect_retryable(original):
+                await self._cleanup_agent_on_network_failure(
+                    runtime,
+                    reason=f"ssh_south_unreachable:{type(original).__name__}",
+                )
+            else:
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    "ssh.south.cleanup_skip",
+                    user_id=runtime.info.user_id,
+                    session_id=str(relay_session.session_id or ""),
+                    sandbox_id=instance_id,
+                    agent_type=runtime.info.agent_type,
+                    instance=instance_id,
+                    error=type(original).__name__,
+                    reason="non-network connect failure (auth/key/config)",
+                    channel="ssh",
+                )
         finally:
             await self._agent_manager.release(runtime.key)
 
