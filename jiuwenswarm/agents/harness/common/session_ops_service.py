@@ -24,6 +24,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _get_context_processors(react_agent: Any) -> list[tuple[str, Any]] | None:
+    """Return the configured context processors for lifecycle-created contexts.
+
+    Warmup and rewind run outside ``ReActAgent._init_context``.  They must
+    explicitly carry the rail-populated processor chain when they create a
+    context, otherwise the context is cached with no compressor/debug
+    processor and later ReAct calls keep reusing that incomplete object.
+    """
+    config = getattr(react_agent, "_config", None)
+    processors = getattr(config, "context_processors", None)
+    if not isinstance(processors, (list, tuple)) or not processors:
+        return None
+    return list(processors)
+
+
 def _derive_first_prompt(history: list[dict[str, Any]]) -> str:
     for record in history:
         if record.get("role") != "user":
@@ -954,6 +969,7 @@ async def warmup_session_context(
     *,
     deep_agent: "DeepAgent",
     session_id: str,
+    history_before_request_id: str | None = None,
 ) -> bool:
     """Restart-safe restore of context_engine messages from on-disk history.
 
@@ -963,10 +979,12 @@ async def warmup_session_context(
     "能看到历史列表但继续对话失忆"。
 
     在新建 session adapter（``start_interaction`` 之后）调用：若内存 context
-    缺失且磁盘上有历史记录，则将全量 history 转换为 openjiuwen 消息并灌回
-    context_engine。与 ``rewind_session_context`` 的区别：不截断 history、
-    不清理 Session state（agent/workflow 状态已由 checkpointer 在 pre_run
-    恢复）、不强写 checkpointer（消息持久化本就由 history.jsonl 承担）。
+    缺失且磁盘上有历史记录，则将 history 转换为 openjiuwen 消息并灌回
+    context_engine。chat.send 会先落盘当前用户消息再创建 adapter，因此传入
+    ``history_before_request_id`` 时只恢复该请求之前的记录，避免当前消息同时
+    作为历史和实时 query 注入。与 ``rewind_session_context`` 的区别：不改写
+    history、不清理 Session state（agent/workflow 状态已由 checkpointer 在
+    pre_run 恢复）、不强写 checkpointer（消息持久化本就由 history.jsonl 承担）。
     """
     react_agent = getattr(deep_agent, "react_agent", None)
     if react_agent is None:
@@ -991,6 +1009,13 @@ async def warmup_session_context(
     if not isinstance(history_records, list) or not history_records:
         return False
 
+    boundary_request_id = str(history_before_request_id or "").strip()
+    if boundary_request_id:
+        for index, record in enumerate(history_records):
+            if str(record.get("request_id") or "").strip() == boundary_request_id:
+                history_records = history_records[:index]
+                break
+
     context_messages, skipped = _build_context_messages_from_history(history_records)
     if not context_messages:
         logger.info(
@@ -1013,16 +1038,10 @@ async def warmup_session_context(
             return False
 
     try:
-        # processors 挂在 context 上，须随 create_context 传入（同 _init_context），
-        # 否则重建的 context 无法压缩。
-        processors = list(
-            getattr(getattr(react_agent, "_config", None), "context_processors", None)
-            or []
-        )
         await context_engine.create_context(
             session=session,
+            processors=_get_context_processors(react_agent),
             history_messages=context_messages,
-            processors=processors or None,
         )
     except Exception as exc:
         logger.warning("warmup_session_context: create_context failed for %s: %s", session_id, exc)
@@ -1261,15 +1280,10 @@ async def _apply_rewound_context(
     )
 
     try:
-        # 同 warmup_session_context：processors 须随 create_context 传入。
-        processors = list(
-            getattr(getattr(react_agent, "_config", None), "context_processors", None)
-            or []
-        )
         await context_engine.create_context(
             session=session,
+            processors=_get_context_processors(react_agent),
             history_messages=context_messages,
-            processors=processors or None,
         )
     except Exception as exc:
         logger.warning("rewind_session_context: create_context failed for %s: %s", session_id, exc)

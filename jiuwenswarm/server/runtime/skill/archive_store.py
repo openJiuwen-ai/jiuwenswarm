@@ -283,3 +283,94 @@ def touch_version_metadata(skill_dir: Path, version: str) -> None:
     entry["updated_at"] = now
     # 写回 versions 数组中的同一对象引用
     write_versions_index(skill_dir, index)
+
+
+def write_skillhub_first_install_index(
+    skill_dir: Path,
+    *,
+    version: str,
+    asset_id: str,
+    storage_id: str,
+    checksum_sha256: str,
+) -> None:
+    """SkillHub 首次安装：写入唯一产品版本与安装资产身份."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    ver = str(version or "").strip()
+    aid = str(asset_id or "").strip()
+    sid = str(storage_id or "").strip()
+    if not ver or not aid or not sid:
+        raise SkillArchiveError(ERROR_INDEX_CORRUPT, "首次安装索引缺少 version/asset_id/storage_id")
+    index = {
+        "schema_version": SCHEMA_VERSION,
+        "current_version": ver,
+        "installed_asset_id": aid,
+        "versions": [
+            {
+                "version": ver,
+                "storage_id": sid,
+                "source": "skillhub",
+                "checksum_sha256": str(checksum_sha256 or ""),
+                "created_at": now,
+                "updated_at": now,
+            }
+        ],
+        "remote_asset_id": None,
+        "last_published_version": None,
+        "updated_at": now,
+    }
+    write_versions_index(skill_dir, index)
+
+
+def update_publish_remote_metadata(
+    skill_dir: Path,
+    *,
+    remote_asset_id: str,
+    last_published_version: str,
+) -> None:
+    """发布成功后只更新远端发布字段，不改 current_version / installed_asset_id."""
+    index = read_versions_index(skill_dir)
+    if index is None:
+        index = empty_versions_index()
+    else:
+        index = dict(index)
+        index["versions"] = [
+            dict(entry) if isinstance(entry, dict) else entry
+            for entry in (index.get("versions") or [])
+        ]
+    index["remote_asset_id"] = str(remote_asset_id or "").strip() or None
+    index["last_published_version"] = str(last_published_version or "").strip() or None
+    write_versions_index(skill_dir, index)
+
+
+def get_installed_asset_id(skill_dir: Path | None) -> str | None:
+    """读取 ``installed_asset_id``；无索引返回 None."""
+    if skill_dir is None or not skill_dir.is_dir():
+        return None
+    try:
+        index = read_versions_index(skill_dir)
+    except SkillArchiveError:
+        return None
+    if index is None:
+        return None
+    installed = index.get("installed_asset_id")
+    if isinstance(installed, str) and installed.strip():
+        return installed.strip()
+    return None
+
+
+def get_last_published_version(skill_dir: Path | None) -> str | None:
+    """读取 ``last_published_version``；无索引返回 None."""
+    if skill_dir is None or not skill_dir.is_dir():
+        return None
+    try:
+        index = read_versions_index(skill_dir)
+    except SkillArchiveError:
+        return None
+    if index is None:
+        return None
+    last = index.get("last_published_version")
+    if isinstance(last, str) and last.strip():
+        return last.strip()
+    return None

@@ -167,6 +167,57 @@ async def test_prepare_chat_without_mode_restores_locked_session_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prepare_heartbeat_chat_without_mode_restores_locked_team_session() -> None:
+    """A mode-less Heartbeat must re-enter the Session's Team runtime."""
+    agent = MagicMock()
+    manager = MagicMock()
+    manager.get_agent = AsyncMock(return_value=agent)
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = AgentRequest(
+        request_id="heartbeat-team-run",
+        channel_id="web",
+        session_id="heartbeat-team-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "continue the team task"},
+        metadata={
+            "automation": {
+                "kind": "heartbeat",
+                "job_id": "hb-team",
+                "run_id": "heartbeat-team-run",
+            }
+        },
+    )
+
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+            return_value={"mode": "team.work.normal", "work_mode": "work"},
+        ),
+        patch.object(
+            agent_ws_server_module,
+            "_sync_chat_request_metadata",
+            return_value=None,
+        ) as sync_metadata,
+    ):
+        mode, sub_mode, resolved = await server._prepare_code_mode_chat_turn(
+            request, "web"
+        )
+
+    assert (mode, sub_mode, resolved) == ("team", None, agent)
+    assert request.params["mode"] == "team.work.normal"
+    assert request.params["work_mode"] == "work"
+    manager.get_agent.assert_awaited_once_with(
+        channel_id="web",
+        mode="team",
+        project_dir=None,
+        sub_mode=None,
+    )
+    assert sync_metadata.call_args.kwargs["explicit_mode_provided"] is False
+
+
+@pytest.mark.asyncio
 async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -> None:
     """A legacy work session must not inherit TUI's code default on resume."""
     agent = MagicMock()

@@ -38,6 +38,8 @@ _LIFECYCLE_METHODS: tuple[tuple[ReqMethod, str], ...] = (
 )
 
 _CATALOG_METHODS: tuple[ReqMethod, ...] = (
+    ReqMethod.AGENT_GROUPS_LIST,
+    ReqMethod.AGENT_GROUPS_SHOW,
     ReqMethod.AGENT_TEMPLATES_LIST,
     ReqMethod.AGENT_TEMPLATES_SHOW,
     ReqMethod.AGENT_TEMPLATES_FILE_LIST,
@@ -249,7 +251,7 @@ class TestChatSendMountAndGates:
 
 
 class TestPackageCatalogReqMethodRouting:
-    """12 catalog RPCs are stateless; install pending payload; uninstall unloads first."""
+    """Catalog RPCs are stateless; install pending payload; uninstall unloads first."""
 
     def test_catalog_methods_are_stateless_and_forwarded(self) -> None:
         assert not hasattr(ReqMethod, "PLUGIN_PACKAGES_TOGGLE")
@@ -264,6 +266,55 @@ class TestPackageCatalogReqMethodRouting:
             assert value in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
             assert value in CLI_FORWARD_REQ_METHODS
             assert value in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
+        for forwarded in ("agent_groups.list", "agent_groups.show"):
+            assert forwarded in app_web_handlers._FORWARD_REQ_METHODS
+            assert forwarded in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+            assert forwarded in CLI_FORWARD_REQ_METHODS
+            assert forwarded in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
+
+    async def test_agent_group_list_payload(self, monkeypatch) -> None:
+        iface = _iface()
+        expected = [{"name": "technical-proposal-review", "memberCount": 3}]
+        monkeypatch.setattr(
+            iface.package_manager,
+            "list_agent_groups",
+            lambda params: expected if params == {"filter": "builtin"} else [],
+        )
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req(
+                {"filter": "builtin"},
+                method=ReqMethod.AGENT_GROUPS_LIST,
+            ),
+        )
+
+        assert response.ok is True
+        assert response.payload == {"agentGroups": expected}
+
+    async def test_agent_group_show_payload(self, monkeypatch) -> None:
+        iface = _iface()
+        expected = {
+            "name": "technical-proposal-review",
+            "memberCount": 3,
+            "details": "# 技术方案评审专家团",
+        }
+        monkeypatch.setattr(
+            iface.package_manager,
+            "show_agent_group",
+            lambda name: expected if name == "technical-proposal-review" else None,
+        )
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req(
+                {"name": "technical-proposal-review"},
+                method=ReqMethod.AGENT_GROUPS_SHOW,
+            ),
+        )
+
+        assert response.ok is True
+        assert response.payload == {"group": expected}
 
     def test_legacy_plugins_routes_stay_separate(self) -> None:
         iface = _iface()

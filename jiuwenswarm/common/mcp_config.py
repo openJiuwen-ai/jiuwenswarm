@@ -7,7 +7,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -32,6 +34,33 @@ def _resolve_string(value: str, resolver) -> str:
     return _PLACEHOLDER_RE.sub(
         lambda m: resolver(m.group(1)) or m.group(0), value
     )
+
+
+def build_mcp_credential_resolver(name: str) -> Callable[[str], str | None] | None:
+    """Build a ``${VAR}`` resolver for an MCP: ``CredentialStore(name)`` ∪ ``os.environ``.
+
+    Shared by the single-agent and team assembly paths so both resolve
+    placeholders identically. Returns ``None`` when no credentials are stored
+    for ``name`` (placeholders stay literal, matching
+    :func:`build_mcp_server_config`'s default ``credential_resolver=None``).
+    """
+    name = str(name or "").strip()
+    if not name:
+        return None
+    try:
+        store = CredentialStore()
+        stored = store.get_all(name)
+    except Exception:  # noqa: BLE001 — no store / not an MCP → leave as-is
+        return None
+    if not stored:
+        return None
+
+    def resolver(key: str) -> str | None:
+        if key in stored:
+            return stored[key]
+        return os.environ.get(key)
+
+    return resolver
 
 
 def extract_enabled_mcp_server_entries(
@@ -162,11 +191,25 @@ def build_enabled_mcp_server_configs(
     config_base: dict[str, Any],
     *,
     server_id_scope: str | None = None,
+    resolve_credentials: bool = False,
 ) -> list[McpServerConfig]:
-    """Build all enabled MCP server configs, skipping invalid entries."""
+    """Build all enabled MCP server configs, skipping invalid entries.
+
+    When ``resolve_credentials`` is True, ``${VAR}`` placeholders are resolved
+    via :func:`build_mcp_credential_resolver` — used by team assembly so
+    HTTP MCPs stored with placeholder tokens get real credentials, matching
+    the single-agent path.
+    """
     configs: list[McpServerConfig] = []
     for entry in extract_enabled_mcp_server_entries(config_base):
-        cfg = build_mcp_server_config(entry, server_id_scope=server_id_scope)
+        resolver = (
+            build_mcp_credential_resolver(str(entry.get("name", "") or "").strip())
+            if resolve_credentials
+            else None
+        )
+        cfg = build_mcp_server_config(
+            entry, server_id_scope=server_id_scope, credential_resolver=resolver
+        )
         if cfg is not None:
             configs.append(cfg)
     return configs
@@ -429,7 +472,6 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
             def resolver(key: str) -> str | None:  # noqa: B023
                 if key in stored:
                     return stored[key]
-                import os
                 return os.environ.get(key)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[mcp-config] probe resolver build for '%s' failed: %s", n, exc)
@@ -562,6 +604,7 @@ def _safe_id_part(value: str, *, default: str) -> str:
 
 __all__ = [
     "build_enabled_mcp_server_configs",
+    "build_mcp_credential_resolver",
     "build_mcp_server_config",
     "extract_enabled_mcp_server_entries",
     "preflight_mcp_server_reachable",

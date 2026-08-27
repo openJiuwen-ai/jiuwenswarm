@@ -40,6 +40,7 @@ from jiuwenswarm.common.config import (
     update_config,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -295,6 +296,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "plugins.enable",
         "plugins.disable",
         "plugins.reload",
+        "agent_groups.list",
+        "agent_groups.show",
         "agent_templates.list",
         "agent_templates.show",
         "agent_templates.file.list",
@@ -412,6 +415,8 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "plugins.enable",
         "plugins.disable",
         "plugins.reload",
+        "agent_groups.list",
+        "agent_groups.show",
         "agent_templates.list",
         "agent_templates.show",
         "agent_templates.file.list",
@@ -3241,25 +3246,19 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             config = get_config()
             models = get_default_models(config)
             result = []
-            # 显式配置的上下文窗口上限（react.context_engine_config.context_window_tokens）
-            # 优先级高于按模型名解析，与 AgentServer 侧 ContextEngine 行为保持一致
-            cec = (config.get("react", {}) or {}).get("context_engine_config", {}) or {}
-            cw_override = cec.get("context_window_tokens")
-            if not (isinstance(cw_override, int) and cw_override > 0):
-                cw_override = None
             for entry in models:
                 mcc = entry.get("model_client_config", {})
                 mco = entry.get("model_config_obj", {})
                 model_name = mcc.get("model_name", "")
                 # 解析模型的上下文窗口大小
-                context_window_tokens = 0
                 try:
-                    from openjiuwen.core.context_engine.context.context_utils import ContextUtils
-                    context_window_tokens = ContextUtils.resolve_context_max(
+                    context_window_tokens = resolve_context_window_tokens(
                         model_name=model_name,
-                        fallback_context_window_tokens=cw_override,
+                        context_engine_config=(config.get("react", {}) or {}),
+                        model_config_obj=mco,
                     )
                 except Exception:
+                    context_window_tokens = 0
                     logger.debug("Failed to resolve context_window_tokens for model %s", model_name, exc_info=True)
                 result.append({
                     "model_name": model_name,

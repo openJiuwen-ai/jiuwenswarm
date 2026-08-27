@@ -1530,6 +1530,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.wfile.write(raw)
 
     def _handle_file_api_post(self, parsed) -> None:
+        if parsed.path == "/file-api/skills/import":
+            self._handle_skills_import_upload()
+            return
+        if parsed.path == "/file-api/skills/create-from-knowledge":
+            self._handle_skills_create_from_knowledge()
+            return
+
         if _uses_agentos_routing() and parsed.path in {
             "/file-api/rebuild-agent-data",
             "/file-api/file-content",
@@ -1610,6 +1617,52 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         self._write_json(404, {"error": "not_found"})
+
+    def _read_request_body(self) -> bytes:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _handle_skills_import_upload(self) -> None:
+        try:
+            from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+                handle_skills_import_http,
+            )
+        except ImportError as exc:
+            self.log_error("skills import module unavailable: %s", exc)
+            self._write_json(500, {"code": "SKILL_INVALID_PACKAGE", "message": "import 模块不可用", "error": "import 模块不可用"})
+            return
+        content_type = self.headers.get("Content-Type", "")
+        body = self._read_request_body()
+        status, payload = handle_skills_import_http(
+            content_type=content_type,
+            body=body,
+            use_local_manager=True,
+        )
+        self._write_json(status, payload)
+
+    def _handle_skills_create_from_knowledge(self) -> None:
+        try:
+            from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+                handle_skills_create_from_knowledge_http,
+            )
+        except ImportError as exc:
+            self.log_error("skills create-from-knowledge module unavailable: %s", exc)
+            self._write_json(
+                500,
+                {
+                    "code": "SKILL_INVALID_PACKAGE",
+                    "message": "create-from-knowledge 模块不可用",
+                    "error": "create-from-knowledge 模块不可用",
+                },
+            )
+            return
+        content_type = self.headers.get("Content-Type", "")
+        body = self._read_request_body()
+        status, payload = handle_skills_create_from_knowledge_http(
+            content_type=content_type,
+            body=body,
+        )
+        self._write_json(status, payload)
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)

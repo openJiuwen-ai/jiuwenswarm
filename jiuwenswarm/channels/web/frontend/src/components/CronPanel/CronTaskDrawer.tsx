@@ -118,7 +118,7 @@ interface CronTaskDrawerProps {
   projects: ProjectInfo[];
   targetOptions: { value: string; label: string; disabled?: boolean }[];
   // 主动推荐自动维护的 job（proactive-tick-auto）编辑时锁定：只能改执行计划(cron表达式)和时区，
-  // 其余字段（名称/模型/描述/推送频道/启用）由 ConfigPanel/cron_sync 管理，只读展示
+  // 其余字段（名称/模型/描述/推送频道/启用）由 Settings/cron_sync 管理，只读展示
   // （沿用 upstream 提交 59cf6de7 的约束，见 index.tsx handleEditSubmit）
   proactiveLocked?: boolean;
   onClose: () => void;

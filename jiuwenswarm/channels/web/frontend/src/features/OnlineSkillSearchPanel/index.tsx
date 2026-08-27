@@ -4,16 +4,18 @@ import { webRequest } from '../../services/webClient';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { isClawHubOriginInstalled, normalizeSkillNetUrl } from '../../utils/skillNetUrl';
 
-type OnlineSource = 'skillnet' | 'clawhub';
+type OnlineSource = 'skillnet' | 'clawhub' | 'teamskillshub';
 type LoadState = 'idle' | 'loading' | 'success' | 'error';
 
 type OnlineSearchItem = {
   source: OnlineSource;
   name: string;
+  display_name: string;
   description: string;
   identifier: string;
   version: string;
   author: string;
+  is_team_skill: boolean;
   /** ClawHub publisher; required for download when slug is shared by multiple owners. */
   owner_handle?: string;
   native_score?: number;
@@ -27,6 +29,12 @@ const onlineItemKey = (item: OnlineSearchItem) =>
   item.source === 'clawhub' && item.owner_handle
     ? `${item.source}:${item.owner_handle}/${item.identifier}`
     : `${item.source}:${item.identifier}`;
+
+const onlineSourceLabel = (source: OnlineSource) => {
+  if (source === 'skillnet') return 'SkillNet';
+  if (source === 'teamskillshub') return 'SwarmSkillHub';
+  return 'ClawHub';
+};
 
 type OnlineSourceStatus = {
   source: OnlineSource;
@@ -103,7 +111,7 @@ export function OnlineSkillSearchPanel({
   const [installedKeys, setInstalledKeys] = useState<Set<string>>(() => new Set());
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [enabledSources, setEnabledSources] = useState<Set<OnlineSource>>(
-    () => new Set<OnlineSource>(['skillnet', 'clawhub'])
+    () => new Set<OnlineSource>(['clawhub', 'teamskillshub'])
   );
   const requestSequenceRef = useRef(0);
   const installingKeyRef = useRef<string | null>(null);
@@ -147,7 +155,7 @@ export function OnlineSkillSearchPanel({
     setExpandedKey(null);
     void (async () => {
       try {
-        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ q: query, limit: 20 }), { timeoutMs: 45_000 });
+        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ query, limit: 20 }), { timeoutMs: 45_000 });
         if (requestSequence !== requestSequenceRef.current) return;
         setItems(data.items || []);
         setPartial(Boolean(data.partial));
@@ -175,6 +183,12 @@ export function OnlineSkillSearchPanel({
       if (installedKeys.has(key)) return true;
       if (item.source === 'skillnet') {
         return item.identifier ? (installedSkillOrigins?.has(normalizeSkillNetUrl(item.identifier)) ?? false) : (installedSkillNames?.has(item.name) ?? false);
+      }
+      if (item.source === 'teamskillshub') {
+        return Boolean(
+          installedSkillOrigins?.has(normalizeSkillNetUrl(`teamskillshub:${item.identifier}`)) ||
+            installedSkillNames?.has(item.name)
+        );
       }
       // ClawHub：按 owner+slug 精确匹配，避免同名 slug 全部显示已安装
       return isClawHubOriginInstalled(item.identifier, item.owner_handle, installedSkillOrigins);
@@ -233,6 +247,16 @@ export function OnlineSkillSearchPanel({
                 }
                 return;
               }
+              throw new Error(data.detail_key ? t(data.detail_key) : data.detail || t('skills.onlineSearch.installFailed'));
+            }
+            skillName = data.skill?.name || skillName;
+          } else if (item.source === 'teamskillshub') {
+            const data = await webRequest<InstallResponse>(
+              'skills.teamskillshub.install',
+              withSession({ asset_id: item.identifier, force })
+            );
+            throwIfAborted(abortController.signal);
+            if (!data.success) {
               throw new Error(data.detail_key ? t(data.detail_key) : data.detail || t('skills.onlineSearch.installFailed'));
             }
             skillName = data.skill?.name || skillName;
@@ -324,7 +348,7 @@ export function OnlineSkillSearchPanel({
       {sourceStatuses.length > 0 ? (
         <div data-testid='online-skill-search-panel-source-filter' className='mb-3 flex flex-wrap items-center gap-2 text-xs'>
           {sourceStatuses.map(sourceStatus => {
-            const sourceLabel = sourceStatus.source === 'skillnet' ? 'SkillNet' : 'ClawHub';
+            const sourceLabel = onlineSourceLabel(sourceStatus.source);
             const statusLabel = t(`skills.onlineSearch.sourceStatus.${sourceStatus.status}`, { count: sourceStatus.count });
             const detail = sourceStatus.detail_key ? t(sourceStatus.detail_key) : sourceStatus.detail;
             const selected = enabledSources.has(sourceStatus.source);
@@ -382,11 +406,13 @@ export function OnlineSkillSearchPanel({
               const installing = installingKey === key;
               const isSkillNet = item.source === 'skillnet';
               const isExpanded = isSkillNet && expandedKey === key;
-              const avatar = getSkillAvatar(item.name || item.identifier || '?');
+              const displayName = item.display_name || item.name;
+              const sourceLabel = onlineSourceLabel(item.source);
+              const avatar = getSkillAvatar(displayName || item.identifier || '?');
               const installLabel = installing
                 ? isSkillNet
                   ? t('skills.skillNet.installingInProgress')
-                  : t('skills.clawhub.installing')
+                  : t('skills.actions.installing')
                 : isSkillNet
                   ? t('skills.skillNet.installFromResult')
                   : t('skills.actions.install');
@@ -422,9 +448,12 @@ export function OnlineSkillSearchPanel({
                         </div>
                         <div className='min-w-0 flex-1'>
                           <div className='flex min-w-0 items-center gap-2'>
-                            <div data-testid='online-skill-search-panel-item-name' className='min-w-0 truncate text-base font-semibold text-text-strong'>{item.name}</div>
+                            <div data-testid='online-skill-search-panel-item-name' className='min-w-0 truncate text-base font-semibold text-text-strong'>{displayName}</div>
                             <span data-testid='online-skill-search-panel-item-source-badge' data-variant={item.source} className='flex-shrink-0 rounded-full border border-border bg-secondary px-2 py-0.5 text-xs font-normal text-text-muted'>
-                              {isSkillNet ? 'SkillNet' : 'ClawHub'}
+                              {sourceLabel}
+                            </span>
+                            <span data-testid='online-skill-search-panel-item-kind-badge' data-variant={item.is_team_skill ? 'team' : 'individual'} className='flex-shrink-0 rounded-full border border-border bg-secondary px-2 py-0.5 text-xs font-normal text-text-muted'>
+                              {item.is_team_skill ? t('skills.onlineSearch.teamSkill') : t('skills.onlineSearch.nonTeamSkill')}
                             </span>
                           </div>
                           <div data-testid='online-skill-search-panel-item-description' className='mt-1 line-clamp-3 text-sm text-text-muted'>{item.description || t('skills.noDescription')}</div>
@@ -473,9 +502,12 @@ export function OnlineSkillSearchPanel({
                         </div>
                         <div className='min-w-0 flex-1'>
                           <div className='flex min-w-0 items-center gap-2'>
-                            <div data-testid='online-skill-search-panel-item-name' className='min-w-0 truncate text-sm font-semibold text-text-strong'>{item.name}</div>
+                            <div data-testid='online-skill-search-panel-item-name' className='min-w-0 truncate text-sm font-semibold text-text-strong'>{displayName}</div>
                             <span data-testid='online-skill-search-panel-item-source-badge' data-variant={item.source} className='flex-shrink-0 rounded-full border border-border bg-secondary px-2 py-0.5 text-xs font-normal text-text-muted'>
-                              {isSkillNet ? 'SkillNet' : 'ClawHub'}
+                              {sourceLabel}
+                            </span>
+                            <span data-testid='online-skill-search-panel-item-kind-badge' data-variant={item.is_team_skill ? 'team' : 'individual'} className='flex-shrink-0 rounded-full border border-border bg-secondary px-2 py-0.5 text-xs font-normal text-text-muted'>
+                              {item.is_team_skill ? t('skills.onlineSearch.teamSkill') : t('skills.onlineSearch.nonTeamSkill')}
                             </span>
                           </div>
                           <div data-testid='online-skill-search-panel-item-description' className='mt-1 line-clamp-2 text-xs text-text-muted'>{item.description || t('skills.noDescription')}</div>

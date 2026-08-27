@@ -25,8 +25,8 @@ interface SpotlightRect {
 }
 
 const TARGET_SELECTORS: Record<1 | 2, string> = {
-  1: '[data-model-setup-guide-target="more"]',
-  2: '#config-group-model_default',
+  1: '[data-model-setup-guide-target="settings"]',
+  2: '[data-settings-module="models"]',
 };
 
 function toSpotlightRect(target: Element): SpotlightRect {
@@ -370,7 +370,7 @@ export function ModelSetupGuide({
               </button>
             </div>
           ) : (
-            <p className="model-setup-guide__hint" data-testid="model-setup-guide-hint">{t('modelSetupGuide.clickMore')}</p>
+            <p className="model-setup-guide__hint" data-testid="model-setup-guide-hint">{t('modelSetupGuide.clickSettings')}</p>
           )}
           <span className="model-setup-guide__progress" data-testid="model-setup-guide-progress">{t('modelSetupGuide.progress', { current: step, total: 2 })}</span>
         </footer>

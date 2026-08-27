@@ -578,7 +578,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     try {
       const isProactive = jobId === PROACTIVE_AUTO_JOB_ID;
       // proactive 自动维护 job 只允许改 cron_expr 和 timezone；enabled/mode/name/description/
-      // targets/model_name 由 ConfigPanel/cron_sync 管理，不能带，否则会跟 proactive.tick 的
+      // targets/model_name 由 Settings/cron_sync 管理，不能带，否则会跟 proactive.tick 的
       // 调度逻辑冲突（沿用 upstream 提交 e64dcf51/59cf6de7 的约束）。
       const patch = isProactive
         ? { cron_expr: value.cronExpr.trim(), timezone: value.timezone }

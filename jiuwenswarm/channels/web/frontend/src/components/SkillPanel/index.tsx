@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SkillPanel 组件
  *
  * Skills 管理面板
@@ -180,7 +180,7 @@ interface SkillPanelProps {
   isConnected: boolean;
   symphonyEnabled: boolean;
   onSymphonyEnabledChange: (enabled: boolean) => Promise<boolean>;
-  onNavigateToConfig?: () => void;
+  onNavigateToSettings?: () => void;
   /** 当前是否处于激活状态（左边栏选中技能） */
   isActive?: boolean;
 }
@@ -336,7 +336,7 @@ export function SkillPanel({
   isConnected,
   symphonyEnabled,
   onSymphonyEnabledChange,
-  onNavigateToConfig,
+  onNavigateToSettings,
   isActive = false,
 }: SkillPanelProps) {
   const { t, i18n } = useTranslation();
@@ -612,7 +612,7 @@ export function SkillPanel({
       // 后端 PR#5336: skills.swarmskillshub.recommend → POST /api/v1/recommend
       // 支持 category_id、plugin_type、top_k、market_url 参数
       const params = withSession({
-        top_k: 100,
+        top_k: 50,
         market_url: 'http://119.8.233.112:8080',
         ...(category !== 'all' ? { category_id: category } : {}),
       });
@@ -1767,10 +1767,10 @@ export function SkillPanel({
         </div>
       )}
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        <div className="card flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div className="card flex-1 flex flex-col min-h-0 overflow-hidden" style={{ borderRadius: 0 }}>
           {!(activeTab === "my" && selectedSkill) && !(activeTab === "marketplace" && marketplaceSubView === 'detail') && (
           <>
-          <div className="flex items-start justify-between" style={{ paddingLeft: '224px', paddingRight: '224px' }}>
+          <div className="flex items-start justify-between">
           <div>
             <h2 className="text-lg font-semibold">
               {t('skills.title')}
@@ -1818,7 +1818,7 @@ export function SkillPanel({
         </div>
 
         <div className="mt-4 w-full flex items-center justify-between gap-2">
-          <div className="flex-shrink-0 flex items-center gap-8" style={{ paddingLeft: '224px' }}>
+          <div className="flex-shrink-0 flex items-center gap-8">
             <button
               onClick={() => setActiveTab("marketplace")}
               className={`py-2 text-sm border-b-2 ${
@@ -1853,7 +1853,7 @@ export function SkillPanel({
               {t('skills.tabs.skillGraph')}
             </button>
           </div>
-          <div className="flex items-center gap-3 ml-auto" style={{ paddingRight: '224px', width:'796px', justifyContent: 'flex-end' }}>
+          <div className="flex items-center gap-3 ml-auto" style={{ width:'796px', justifyContent: 'flex-end' }}>
             {activeTab === "my" && (
               <>
                 {/* 已发布/未发布筛选 */}
@@ -2064,7 +2064,7 @@ export function SkillPanel({
           <>
           {marketplaceSubView === 'detail' && selectedHubSkill ? (
             /* 广场技能详情页 */
-            <div className="mt-4 flex-1 flex flex-col overflow-y-auto" style={{ paddingLeft: '224px', paddingRight: '224px' }}>
+            <div className="mt-4 flex-1 flex flex-col overflow-y-auto">
               {hubDetailState === "loading" && (
                 <div className="text-sm text-text-muted mb-3">{t('skills.detailLoading')}</div>
               )}
@@ -2166,7 +2166,7 @@ export function SkillPanel({
             </div>
           ) : marketplaceSubView === 'team' ? (
             /* 精选团队技能专页 */
-            <div className="mt-4 flex-1 flex flex-col overflow-y-auto" style={{ paddingLeft: '224px', paddingRight: '224px' }}>
+            <div className="mt-4 flex-1 flex flex-col overflow-y-auto">
               {/* 面包屑 + 返回 */}
               <div className="flex items-center gap-1.5 text-sm text-text-muted mb-4">
                 <button
@@ -2268,7 +2268,7 @@ export function SkillPanel({
           ) : (
             /* 默认列表视图 */
             <>
-              <div className="mt-3 flex items-center gap-2" style={{ paddingLeft: '224px' }}>
+              <div className="mt-3 flex items-center gap-2">
                 {MARKETPLACE_CATEGORIES.map((cat, idx) => (
                   <span key={cat} className="flex items-center gap-2">
                     {idx > 0 && <span className="text-text-muted/40">|</span>}
@@ -2287,12 +2287,12 @@ export function SkillPanel({
               </div>
 
               {hubLoading ? (
-                <div className="mt-4 text-sm text-text-muted" style={{ paddingLeft: '224px' }}>{t('common.loading')}</div>
+                <div className="mt-4 text-sm text-text-muted">{t('common.loading')}</div>
               ) : hubSkills.length === 0 ? (
-                <div className="mt-4 text-sm text-text-muted" style={{ paddingLeft: '224px' }}>{t('skills.noMatches')}</div>
+                <div className="mt-4 text-sm text-text-muted">{t('skills.noMatches')}</div>
               ) : search.trim() ? (
                 /* 搜索结果：全部罗列 */
-                <div className="mt-4 flex-1 min-h-0 overflow-y-auto grid justify-center items-start gap-4 content-start" style={{ gridTemplateColumns: 'repeat(3, 1fr)', paddingLeft: '224px', paddingRight: '224px' }}>
+                <div className="mt-4 flex-1 min-h-0 overflow-y-auto grid justify-center items-start gap-4 content-start" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
                   {hubSkills.map((skill) => {
                     const avatar = getSkillAvatar(skill.name);
                     const displayName = skill.display_name || skill.name;
@@ -2324,7 +2324,7 @@ export function SkillPanel({
                 </div>
               ) : (
                 /* 无搜索词：按 plugin_type 分组展示 */
-                <div className="mt-4 flex-1 min-h-0 overflow-y-auto" style={{ paddingLeft: '224px', paddingRight: '224px' }}>
+                <div className="mt-4 flex-1 min-h-0 overflow-y-auto">
                   {/* 精选团队技能（最多一行，右侧"更多"） */}
                   {teamSkills.length > 0 && (
                     <>
@@ -2504,7 +2504,7 @@ export function SkillPanel({
               </div>
             )}
             {selectedSkill ? (
-              <div className="mt-4 flex-1 flex flex-col overflow-y-auto" style={{ paddingLeft: '224px', paddingRight: '224px' }}>
+              <div className="mt-4 flex-1 flex flex-col overflow-y-auto">
                 {/* 加载/错误状态 */}
                 {detailState === "loading" && (
                   <div className="text-sm text-text-muted mb-3">{t('skills.detailLoading')}</div>
@@ -2943,13 +2943,13 @@ export function SkillPanel({
             ) : (
               <div className="mt-4 flex flex-col flex-1 min-h-0">
                 {listState === "success" && getMySkillsFiltered().length === 0 ? (
-                  <div className="mt-4 text-sm text-text-muted" style={{ paddingLeft: '224px' }}>
+                  <div className="mt-4 text-sm text-text-muted">
                     {mySkillsSubTab === "disabled" ? t('skills.noDisabledSkills') :
                      mySkillsSubTab === "enabled" ? t('skills.noEnabledSkills') :
                      t('skills.noMatches')}
                   </div>
                 ) : (
-                  <div className="mt-4 flex-1 min-h-0 overflow-y-auto grid justify-center items-start gap-4 content-start" style={{ gridTemplateColumns: 'repeat(3, 1fr)', paddingLeft: '224px', paddingRight: '224px' }}>
+                  <div className="mt-4 flex-1 min-h-0 overflow-y-auto grid justify-center items-start gap-4 content-start" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
                     {listState === "loading" && (
                       <div className="col-span-3 flex items-center justify-center h-full text-text-muted">{t('common.loading')}</div>
                     )}
@@ -3101,9 +3101,9 @@ export function SkillPanel({
         open={sourceModalOpen}
         sessionId={sessionId}
         onClose={() => setSourceModalOpen(false)}
-        onNavigateToConfig={() => {
+        onNavigateToSettings={() => {
           setSourceModalOpen(false);
-          onNavigateToConfig?.();
+          onNavigateToSettings?.();
         }}
       />
       <SkillNetSearchModal
@@ -3115,9 +3115,9 @@ export function SkillPanel({
         onInstalled={async () => {
           await fetchSkills();
         }}
-        onNavigateToConfig={() => {
+        onNavigateToSettings={() => {
           setSkillNetModalOpen(false);
-          onNavigateToConfig?.();
+          onNavigateToSettings?.();
         }}
       />
       <ClawHubSearchModal

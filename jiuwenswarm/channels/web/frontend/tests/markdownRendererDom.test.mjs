@@ -238,13 +238,16 @@ test('renders Mermaid through the shared viewer and preserves the code fallback 
   let root;
   try {
     root = createRoot(container);
-    const renderSvg = async () => '<svg viewBox="0 0 120 60"><rect width="120" height="60" /></svg>';
+    const renderSvg = async () => '<svg width="100%" height="100%" viewBox="0 0 120 60" style="max-width: 120px"><rect width="120" height="60" /></svg>';
     await act(async () => {
       root.render(createElement(I18nextProvider, { i18n }, createElement(MermaidDiagram, { code: 'graph TD; A-->B', renderSvg })));
     });
 
     const diagram = container.querySelector('[data-mermaid-status="rendered"]');
-    assert.ok(diagram?.querySelector('.mermaid-svg-wrapper svg'));
+    const renderedSvg = diagram?.querySelector('.mermaid-svg-wrapper svg');
+    assert.ok(renderedSvg);
+    assert.equal(renderedSvg.style.width, '120px');
+    assert.equal(renderedSvg.style.height, '60px');
     assert.equal(diagram.getAttribute('data-markdown-block'), 'wide');
     assert.equal(diagram.querySelector('[aria-label="More diagram actions"]').getAttribute('aria-haspopup'), 'menu');
 

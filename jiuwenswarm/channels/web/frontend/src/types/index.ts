@@ -61,6 +61,8 @@ export type AgentMode =
 export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
 export type Permission = 'default' | 'full_access';
 
+export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
+
 export interface ModelEntry {
   model_name: string;
   api_base: string;
@@ -82,8 +84,41 @@ export interface ModelEntry {
    * 新增条目不带此字段。
    */
   origin_index?: number;
+  /** 服务端厂商预设标识；与 plan 共同定位一次加载周期内的预设。 */
+  vendor_key?: string;
+  /** 服务端返回的套餐分组。前端只透传，不自行推断或持久化生成。 */
+  plan?: ModelPlan;
+  /** OpenAI 兼容接口的端点方言；Anthropic 协议不携带此字段。 */
+  endpoint_profile?: string;
   /** 免费模型标识（如 Opencode Zen 免费模型）。前端据此归入"免费模型"分组；非免费模型不带此字段。 */
   is_free?: boolean;
+  /** AgentOS 备份模型只读标识；此类条目不参与 models.replace_all。 */
+  is_agentos?: boolean;
+}
+
+export interface VendorPreset {
+  vendor_key: string;
+  display_name: string;
+  plan: ModelPlan;
+  client_provider: string;
+  api_base: string;
+  endpoint_profile?: string | null;
+  default_model: string;
+  model_options: string[];
+  icon_key: string;
+  models_endpoint: string | null;
+  models_needs_key: boolean;
+  supports_anthropic: boolean;
+  anthropic_base: string | null;
+  anthropic_client_provider: string | null;
+}
+
+export type VendorPresetMap = Record<ModelPlan, VendorPreset[]>;
+
+export interface VendorFetchModelsResult {
+  models: string[];
+  source: 'remote' | 'preset';
+  reason?: string;
 }
 
 export interface OffloadFileListResponse {
@@ -98,44 +133,4 @@ export interface OffloadFileContentResponse {
   filename: string;
   content: string;
   path: string;
-}
-
-export interface PackageInfo {
-  id: string;
-  extension_name: string;
-  runtime_path: string;
-  config_path: string;
-  created_at: string;
-  activated_at?: string;
-  is_active: boolean;
-  version_label?: string;
-  description?: string;
-}
-
-export interface NativeVersionInfo {
-  id: 'native';
-  extension_name: 'Native Agent';
-  is_active: boolean;
-}
-
-export interface PackagesPayload {
-  packages: PackageInfo[];
-  native_version: NativeVersionInfo;
-  active_package_ids: string[];
-  last_updated?: string;
-}
-
-export interface ActivatePayload {
-  activated_package_id: string;
-  extension_name: string;
-  runtime_path: string;
-  config_path: string;
-  message: string;
-  loaded_resources?: string[];
-}
-
-export interface DeactivatePayload {
-  deactivated_package_id: string;
-  extension_name: string;
-  message: string;
 }

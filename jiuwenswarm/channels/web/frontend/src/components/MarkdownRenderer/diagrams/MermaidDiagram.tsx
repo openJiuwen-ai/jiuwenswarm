@@ -4,7 +4,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { useTranslation } from 'react-i18next';
 import { getSvgNaturalHeight, getSvgNaturalWidth } from '../../../utils/svgDimensions';
 import { DiagramViewer, type DiagramToolbarAction, type DiagramViewMode } from './DiagramViewer';
-import { calculateMermaidCanvasLayout, clampMermaidScale, MERMAID_CANVAS_MIN_HEIGHT, MERMAID_CANVAS_TOP_OFFSET } from './mermaidLayout';
+import { calculateMermaidCanvasLayout, clampMermaidScale, MERMAID_CANVAS_MIN_HEIGHT } from './mermaidLayout';
 import { renderMermaidSvg, type MermaidSvgRenderer } from './mermaidRuntime';
 
 type MermaidRenderState = { status: 'loading'; svg: '' } | { status: 'rendered'; svg: string } | { status: 'error'; svg: '' };
@@ -19,6 +19,26 @@ interface Point {
   y: number;
 }
 
+interface MermaidSvgDimensions {
+  width: number;
+  height: number;
+}
+
+function normalizeMermaidSvgDimensions(svg: SVGSVGElement): MermaidSvgDimensions | null {
+  const width = getSvgNaturalWidth(svg);
+  const height = getSvgNaturalHeight(svg);
+  if (width <= 0 || height <= 0) return null;
+
+  // Mermaid uses width="100%" for several diagram types. The absolute
+  // wrapper has no independent width, so that percentage becomes a
+  // shrink-to-fit size before the viewer applies its own scale. Give every
+  // diagram the same pixel-sized starting box derived from its viewBox.
+  svg.style.width = `${width}px`;
+  svg.style.height = `${height}px`;
+
+  return { width, height };
+}
+
 export function MermaidDiagram({ code, renderSvg = renderMermaidSvg }: MermaidDiagramProps): JSX.Element {
   const { t } = useTranslation();
   const diagramId = `mermaid-${useId().replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -29,7 +49,6 @@ export function MermaidDiagram({ code, renderSvg = renderMermaidSvg }: MermaidDi
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [canvasHeight, setCanvasHeight] = useState(MERMAID_CANVAS_MIN_HEIGHT);
-  const [alignTop, setAlignTop] = useState(false);
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef<Point>({ x: 0, y: 0 });
   const panStartRef = useRef<Point>({ x: 0, y: 0 });
@@ -59,20 +78,22 @@ export function MermaidDiagram({ code, renderSvg = renderMermaidSvg }: MermaidDi
     const svg = canvasRef.current?.querySelector('svg');
     if (!svg) return;
     const renderedSvg = svg;
+    const dimensions = normalizeMermaidSvgDimensions(renderedSvg);
+    if (!dimensions) return;
+    const { width: naturalWidth, height: naturalHeight } = dimensions;
 
     function updateDimensions(): void {
       const layout = calculateMermaidCanvasLayout({
-        naturalHeight: getSvgNaturalHeight(renderedSvg),
-        naturalWidth: getSvgNaturalWidth(renderedSvg),
+        naturalHeight,
+        naturalWidth,
         containerWidth: canvasRef.current?.clientWidth ?? 0,
       });
       if (!layout) return;
 
       setFitScale(layout.fitScale);
-      setScale(layout.fitScale);
+      setScale(layout.displayScale);
       setPan({ x: 0, y: 0 });
       setCanvasHeight(layout.canvasHeight);
-      setAlignTop(layout.alignTop);
     }
 
     updateDimensions();
@@ -140,17 +161,11 @@ export function MermaidDiagram({ code, renderSvg = renderMermaidSvg }: MermaidDi
   }
 
   const panTransform = `translate(${pan.x}px, ${pan.y}px)`;
-  const wrapperStyle: CSSProperties = alignTop
-    ? {
-        top: MERMAID_CANVAS_TOP_OFFSET,
-        transformOrigin: 'top center',
-        transform: `translate(-50%, 0) ${panTransform} scale(${scale})`,
-      }
-    : {
-        top: '50%',
-        transformOrigin: 'center center',
-        transform: `translate(-50%, -50%) ${panTransform} scale(${scale})`,
-      };
+  const wrapperStyle: CSSProperties = {
+    top: '50%',
+    transformOrigin: 'center center',
+    transform: `translate(-50%, -50%) ${panTransform} scale(${scale})`,
+  };
 
   return (
     <DiagramViewer

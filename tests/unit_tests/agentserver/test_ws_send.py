@@ -1,6 +1,7 @@
-import ast
 import asyncio
+import io
 import json
+import tokenize
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -213,15 +214,47 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
     assert foreground_manager.events == ["begin", "end"]
 
 
+@pytest.mark.asyncio
+async def test_team_stream_admission_is_owned_by_actual_round_not_transport():
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    admission = SimpleNamespace(
+        begin_user=AsyncMock(),
+        end_user=AsyncMock(),
+    )
+    server._agent_manager = None
+    server._heartbeat_runtime = SimpleNamespace(admission=admission)
+    server._should_trigger_before_chat_request_hook = lambda request: False
+    server._handle_stream_impl = AsyncMock()
+    request = AgentRequest(
+        request_id="team-persistent-stream",
+        channel_id="web",
+        session_id="team-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "team"},
+        is_stream=True,
+    )
+
+    await server._handle_stream(FakeWebSocket(), request, asyncio.Lock())
+
+    admission.begin_user.assert_not_awaited()
+    admission.end_user.assert_not_awaited()
+
+
 def test_agent_ws_server_has_no_direct_websocket_send_calls():
     path = Path(agent_ws_server.__file__)
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    source = path.read_text(encoding="utf-8")
+    tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     direct_sends = [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "send"
+        token.start[0]
+        for index, token in enumerate(tokens[1:-1], start=1)
+        if token.type == tokenize.NAME
+        and token.string == "send"
+        and tokens[index - 1].type == tokenize.OP
+        and tokens[index - 1].string == "."
+        and tokens[index + 1].type == tokenize.OP
+        and tokens[index + 1].string == "("
     ]
 
     assert direct_sends == []

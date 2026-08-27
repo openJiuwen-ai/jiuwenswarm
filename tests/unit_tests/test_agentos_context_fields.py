@@ -1,33 +1,46 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""AgentOS 备份模型的输入侧上下文窗口字段单测。
+"""模型 context_window 字段单测。
 
 覆盖两类行为：
 1. 配置加载：models.agentos 列表的每个条目进入缓存（带 _source 标记、is_default=False、
    仅 model_name 非空时追加）。支持多个条目（同名/异名皆可）；填写约束为
    (model_name, api_base, api_key) 三元组唯一，故不存在完全相同的两条。
    agentos 只认 list 格式。
-2. 输入侧 max_tokens 别名（用户可读的上下文窗口上限）：
-   - 不进 core 的 ModelRequestConfig.max_tokens（绝不作为输出 token 上限发往厂商）：
-     reasoning_injector._build_model_request_kwargs 在公共出口对 agentos 统一 pop 掉
-     max_tokens，覆盖 build_model_from_entry / config.validate_model / warmup 等所有路径。
-   - 不进 ModelRequestConfig 的 extra（防 base_model_client 经 model_dump 透传给 SDK
-     抛 unexpected keyword argument）：build_model_from_entry 把该值挂到 **Model 普通属性**
-     _agentos_ctx_window（Model 是普通 Python 类，普通属性不进 model_dump）。
-   - 只进 core 的 ContextEngineConfig.context_window_tokens（压缩阈值，不发厂商）：
-     _deep_agent_context_engine_config 的 per-model 覆盖——传了 model 时从选中 Model 的
-     普通属性 _agentos_ctx_window 读（路径 A，精确，同名多条目可区分"选中哪个用哪个的值"）；
-     仅在未传 model 时才从 config agentos 列表按 model_name 反查取首个（路径 B，兜底）。
-     路径 B 不在"传了 model 但读不到值"时启用，防本条目无 max_tokens 时取到同名别的值。
+2. context_window（模型支持的上下文总长度）字段，**每个模型条目均可配**
+   （defaults / agentos / video / audio / vision / image_gen，放各自 model_config_obj）：
+   - 目标落点是 core 的 ModelRequestConfig（供 core 人员加正式字段后从
+     self.model_config.context_window 取值）。
+   - 是否在 jiuwenswarm 出口 pop 由 reasoning_injector.core_has_context_window_field
+     自动适配 core 字段状态，无需人工同步：
+     * core 已加正式字段：context_window 作正式字段，core 自行 exclude 不发厂商、
+       self.model_config.context_window 可读 -> 不 pop，值留给 core。
+   - 出口 pop 不再守 _source=="agentos"：所有条目（含 defaults）一视同仁，
+     过渡期都 pop 防发厂商，core 加字段后都停止 pop。
+   - 不再挂 _agentos_ctx_window 普通属性：旧机制是把该值喂给
+     ContextEngineConfig.context_window_tokens（压缩阈值）的桥接，已拆除（见第 3 类）。
+   - 所有模型条目均生效，AgentOS 的 _source 标记只表示配置来源。
+3. 压缩阈值桥接已拆除：_deep_agent_context_engine_config 不再做 agentos per-model 覆盖，
+   context_window_tokens 只取全局 react.context_engine_config 值（或 None 由 core 兜底），
+   与 defaults 行为一致；签名简化为只接受 react_cfg。
 
 注意：不再有 max_output_tokens（输出侧用户自定义已移除）。输出 token 上限完全由
 core 默认行为决定，agentos 不参与。
 """
 
+from types import SimpleNamespace
+
 import pytest
 
+from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
+from openjiuwen.core.foundation.llm.schema.config import ModelRequestConfig
+from openjiuwen.harness import DeepAgent
 from jiuwenswarm.common.config import get_default_models
-from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
+from jiuwenswarm.common.reasoning_injector import (
+    build_reasoning_model_request_kwargs,
+    core_has_context_window_field,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_context_engine_config,
     build_model_from_entry,
@@ -50,11 +63,11 @@ def _defaults_entry(name: str = "gpt-main") -> dict:
     }
 
 
-def _agentos_block(name: str = "agentos-pro", *, with_max_tokens: bool = True,
-                   max_tokens: int = 131072, api_key: str = "sk-y") -> dict:
+def _agentos_block(name: str = "agentos-pro", *, with_ctx_window: bool = True,
+                   context_window: int = 131072, api_key: str = "sk-y") -> dict:
     mco: dict = {"temperature": 0.95}
-    if with_max_tokens:
-        mco["max_tokens"] = max_tokens
+    if with_ctx_window:
+        mco["context_window"] = context_window
     return {
         "model_client_config": {
             "api_base": "http://y",
@@ -91,7 +104,7 @@ class TestAgentosConfigLoading:
         assert len(agentos) == 1
         assert agentos[0]["is_default"] is False
         assert agentos[0]["model_client_config"]["model_name"] == "agentos-pro"
-        assert agentos[0]["model_config_obj"]["max_tokens"] == 131072
+        assert agentos[0]["model_config_obj"]["context_window"] == 131072
 
     @staticmethod
     def test_agentos_list_multiple_entries():
@@ -143,52 +156,60 @@ class TestAgentosConfigLoading:
         assert defaults and defaults[0]["is_default"] is True
 
 
-class TestAgentosMaxTokensNotInModelRequestConfig:
-    """agentos 的 max_tokens 是输入侧别名，绝不进 core 的 ModelRequestConfig.max_tokens
-    （否则会被误当成输出 token 上限发往厂商）。build_model_from_entry 把它挪到 extra
-    键 _agentos_ctx_window（随 Model 带入缓存），并从输出侧 kwargs pop 掉 max_tokens。"""
+class TestContextWindowPopAdaptsToCoreField:
+    """context_window 的出口行为随 core 的正式字段状态自动适配。"""
 
     @staticmethod
-    def test_agentos_max_tokens_not_set_on_model_request_config():
+    def test_core_context_window_field_detection_matches_core_schema():
+        # CI 可能使用尚未声明正式字段的 agent-core；检测结果应与 schema 一致。
+        expected = "context_window" in ModelRequestConfig.model_fields
+        assert core_has_context_window_field() is expected
+
+    @staticmethod
+    def test_agentos_context_window_adapts_to_core_field():
         entries = get_default_models(_config(agentos=[_agentos_block()]))
         agentos = next(e for e in entries
                        if e.get("model_config_obj", {}).get("_source") == "agentos")
-        model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
-        # 输出侧字段 max_tokens 必须为 None（输入侧值已挪走，不进 ModelRequestConfig）
-        assert model.model_config.max_tokens is None
-        # 输入侧值挂到 Model 普通属性（不进 ModelRequestConfig 的 extra）
-        assert getattr(model, "_agentos_ctx_window", None) == 131072
+        kwargs = build_reasoning_model_request_kwargs(
+            model_client_config={"client_provider": "OpenAI", "api_base": "http://y"},
+            model_config_obj=agentos["model_config_obj"],
+            model_name="agentos-pro",
+        )
+        if core_has_context_window_field():
+            assert kwargs["context_window"] == 131072
+        else:
+            assert "context_window" not in kwargs
+        assert "_source" not in kwargs
 
     @staticmethod
-    def test_agentos_max_tokens_not_in_model_dump():
+    def test_agentos_context_window_in_model_request_config_adapts_to_core_field():
         entries = get_default_models(_config(agentos=[_agentos_block()]))
         agentos = next(e for e in entries
                        if e.get("model_config_obj", {}).get("_source") == "agentos")
         model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
         dump = model.model_config.model_dump()
-        # max_tokens 是声明字段，dump 里必有此键；关键是值必须为 None
-        assert dump.get("max_tokens") is None
-        # _source 是 extra，不应残留
+        if core_has_context_window_field():
+            assert dump["context_window"] == 131072
+        else:
+            assert "context_window" not in dump
         assert "_source" not in dump
-        # _agentos_ctx_window 挂在 Model 普通属性上，绝不进 ModelRequestConfig 的
-        # extra——否则 base_model_client._build_request_params 会经 model_dump
-        # 透传给 SDK，导致 agentos 推理抛 unexpected keyword argument（P1 回归点）。
-        assert "_agentos_ctx_window" not in dump
-        # 双保险：Model 普通属性上有值（输入侧窗口仍可被路径 A 读取）
-        assert getattr(model, "_agentos_ctx_window", None) == 131072
+        assert dump.get("max_tokens") is None
 
     @staticmethod
-    def test_defaults_max_tokens_remains_none():
+    def test_agentos_no_longer_attaches_agentos_ctx_window_attr():
+        # 旧机制（挂 Model._agentos_ctx_window 普通属性喂压缩阈值）已拆除
         entries = get_default_models(_config(agentos=[_agentos_block()]))
-        defaults = next(e for e in entries
-                        if e.get("model_config_obj", {}).get("_source") != "agentos")
-        model = build_model_from_entry(defaults["model_client_config"], defaults["model_config_obj"])
-        assert model.model_config.max_tokens is None
-        # defaults 不带 agentos 普通属性
+        agentos = next(e for e in entries
+                       if e.get("model_config_obj", {}).get("_source") == "agentos")
+        model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
         assert getattr(model, "_agentos_ctx_window", None) is None
 
     @staticmethod
-    def test_source_marker_stripped_by_reasoning_injector():
+    def test_agentos_context_window_popped_when_core_lacks_field(monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: False,
+        )
         entries = get_default_models(_config(agentos=[_agentos_block()]))
         agentos = next(e for e in entries
                        if e.get("model_config_obj", {}).get("_source") == "agentos")
@@ -197,14 +218,98 @@ class TestAgentosMaxTokensNotInModelRequestConfig:
             model_config_obj=agentos["model_config_obj"],
             model_name="agentos-pro",
         )
-        # _source 不应流到 SDK kwargs（_agentos_ctx_window 本就不进 kwargs，改挂 Model 属性）
+        assert "context_window" not in kwargs
         assert "_source" not in kwargs
-        assert "_agentos_ctx_window" not in kwargs
 
     @staticmethod
-    def test_agentos_ctx_window_not_in_model_request_config_dump():
-        # _agentos_ctx_window 不进 ModelRequestConfig（改挂 Model 普通属性），
-        # 故 model_dump 不含它；关键是 max_tokens 仍为 None、_source 不残留。
+    def test_agentos_context_window_not_in_model_request_config_when_core_lacks_field(monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: False,
+        )
+        entries = get_default_models(_config(agentos=[_agentos_block()]))
+        agentos = next(e for e in entries
+                       if e.get("model_config_obj", {}).get("_source") == "agentos")
+        model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
+        dump = model.model_config.model_dump()
+        # 当前本地 core 已有正式字段，模拟过渡期时值会落为 None；旧 core
+        # 则不会包含该字段。
+        assert dump.get("context_window") is None
+        assert "_source" not in dump
+        assert dump.get("max_tokens") is None
+
+    @staticmethod
+    def test_defaults_context_window_also_popped_when_core_lacks_field(monkeypatch):
+        # 守卫不再守 is_agentos：defaults 配的 context_window 过渡期同样被 pop 防发厂商
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: False,
+        )
+        entries = get_default_models(_config(agentos=[_agentos_block()]))
+        defaults = next(e for e in entries
+                        if e.get("model_config_obj", {}).get("_source") != "agentos")
+        mco = defaults["model_config_obj"]
+        assert "_source" not in mco
+        kwargs = build_reasoning_model_request_kwargs(
+            model_client_config={"client_provider": "OpenAI", "api_base": "http://x"},
+            model_config_obj={**mco, "context_window": 999999},  # 模拟 defaults 配 context_window
+            model_name="gpt-main",
+        )
+        # defaults 无 _source 标记，但守卫已不依赖它 -> 过渡期同样 pop
+        assert "context_window" not in kwargs
+
+    @staticmethod
+    def test_defaults_context_window_kept_when_core_has_field(monkeypatch):
+        # core 加字段后，defaults 的 context_window 也停止 pop，留给 core
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: True,
+        )
+        entries = get_default_models(_config(agentos=[_agentos_block()]))
+        defaults = next(e for e in entries
+                        if e.get("model_config_obj", {}).get("_source") != "agentos")
+        mco = defaults["model_config_obj"]
+        kwargs = build_reasoning_model_request_kwargs(
+            model_client_config={"client_provider": "OpenAI", "api_base": "http://x"},
+            model_config_obj={**mco, "context_window": 999999},
+            model_name="gpt-main",
+        )
+        assert kwargs.get("context_window") == 999999
+
+    @staticmethod
+    def test_defaults_context_window_in_model_request_config(monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: True,
+        )
+        entries = get_default_models(_config(agentos=[_agentos_block()]))
+        defaults = next(e for e in entries
+                        if e.get("model_config_obj", {}).get("_source") != "agentos")
+        model = build_model_from_entry(
+            defaults["model_client_config"],
+            {**defaults["model_config_obj"], "context_window": 999999},
+        )
+        assert getattr(model.model_config, "context_window", None) == 999999
+
+    @staticmethod
+    def test_model_request_config_max_tokens_none_for_agentos():
+        # 双保险：agentos 的 ModelRequestConfig.max_tokens 始终 None
+        entries = get_default_models(_config(agentos=[_agentos_block()]))
+        agentos = next(e for e in entries
+                       if e.get("model_config_obj", {}).get("_source") == "agentos")
+        model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
+        assert model.model_config.max_tokens is None
+
+
+class TestContextWindowKeptWhenCoreHasField:
+    """core 加 context_window 正式字段后，所有模型均保留该内部元数据。"""
+
+    @staticmethod
+    def test_agentos_context_window_kept_in_request_kwargs(monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: True,
+        )
         entries = get_default_models(_config(agentos=[_agentos_block()]))
         agentos = next(e for e in entries
                        if e.get("model_config_obj", {}).get("_source") == "agentos")
@@ -213,153 +318,173 @@ class TestAgentosMaxTokensNotInModelRequestConfig:
             model_config_obj=agentos["model_config_obj"],
             model_name="agentos-pro",
         )
-        from openjiuwen.core.foundation.llm.schema.config import ModelRequestConfig
-        mrc = ModelRequestConfig(**kwargs)
-        assert getattr(mrc, "_agentos_ctx_window", None) is None
-        assert getattr(mrc, "_source", None) is None
-        assert mrc.max_tokens is None
-
-
-class TestContextWindowTokensOverride:
-    """_deep_agent_context_engine_config 的 per-model context_window_tokens 覆盖（仅 agentos）。
-
-    路径 A（首选）：传了 model 时，从选中 Model 的普通属性 _agentos_ctx_window 读——精确，同名可区分。
-    路径 B（回退）：仅在未传 model 时，从 config agentos 列表按 model_name 反查（兜底）。
-    """
+        # core 有字段 -> 不 pop，context_window 留给 core 读取
+        assert kwargs.get("context_window") == 131072
+        # _source 内部标记仍 pop（不进 ModelRequestConfig）
+        assert "_source" not in kwargs
 
     @staticmethod
-    def test_legacy_call_unchanged_without_full_config():
+    def test_agentos_context_window_in_model_request_config_when_core_has_field(monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: True,
+        )
+        entries = get_default_models(_config(agentos=[_agentos_block()]))
+        agentos = next(e for e in entries
+                       if e.get("model_config_obj", {}).get("_source") == "agentos")
+        model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
+        # core 有字段时 context_window 留在 ModelRequestConfig 的 extra（core 加正式字段后
+        # 会被提升为正式字段 self.model_config.context_window）
+        dump = model.model_config.model_dump()
+        assert dump.get("context_window") == 131072
+        assert "_source" not in dump
+        assert dump.get("max_tokens") is None
+
+    @staticmethod
+    def test_default_context_window_in_model_request_config_when_core_has_field(monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.reasoning_injector.core_has_context_window_field",
+            lambda: True,
+        )
+        entry = _defaults_entry()
+        entry["model_config_obj"]["context_window"] = 999999
+        model = build_model_from_entry(
+            entry["model_client_config"],
+            entry["model_config_obj"],
+        )
+        dump = model.model_config.model_dump()
+        assert dump.get("context_window") == 999999
+        assert dump.get("max_tokens") is None
+
+
+class TestCompressionBridgeRemoved:
+    """_deep_agent_context_engine_config 已拆除 agentos per-model 覆盖：
+    context_window_tokens 只取全局 react.context_engine_config 值，
+    不再从 Model._agentos_ctx_window / config 反查 max_tokens 覆盖。
+    签名简化为只接受 react_cfg（旧 full_config/model_name/model 参数已删）。"""
+
+    @staticmethod
+    def test_legacy_call_unchanged():
         cfg = _config(react_cw=65536)
         cec = _deep_agent_context_engine_config(cfg["react"])
         assert cec.context_window_tokens == 65536
 
     @staticmethod
-    def test_agentos_match_overrides_context_window_via_model():
-        # 路径 A：传入选中 Model，直接从其普通属性读
+    def test_agentos_no_longer_overrides_context_window_tokens():
+        # 旧路径 A 已拆：即便选中 agentos Model，context_window_tokens 仍取全局值，不被 131072 覆盖
         cfg = _config(agentos=[_agentos_block()], react_cw=65536)
-        entries = get_default_models(cfg)
-        agentos = next(e for e in entries
-                       if e.get("model_config_obj", {}).get("_source") == "agentos")
-        model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="agentos-pro", model=model
-        )
-        # agentos 的 max_tokens(131072) 覆盖了全局 react 基础值 65536
-        assert cec.context_window_tokens == 131072
-
-    @staticmethod
-    def test_agentos_match_overrides_via_pathb_when_no_model():
-        # 路径 B：不传 model，从 config agentos 列表按 model_name 反查
-        cfg = _config(agentos=[_agentos_block()], react_cw=65536)
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="agentos-pro"
-        )
-        assert cec.context_window_tokens == 131072
-
-    @staticmethod
-    def test_defaults_name_not_overridden():
-        # 请求 defaults 的 model_name -> 不匹配 agentos -> 用 react 基础值
-        cfg = _config(agentos=[_agentos_block()], react_cw=65536)
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="gpt-main"
-        )
-        assert cec.context_window_tokens == 65536
-
-    @staticmethod
-    def test_defaults_model_not_overridden_via_extra():
-        # 选中 defaults 的 Model 不带 _agentos_ctx_window extra -> 不覆盖
-        cfg = _config(agentos=[_agentos_block()], react_cw=65536)
-        entries = get_default_models(cfg)
-        defaults = next(e for e in entries
-                        if e.get("model_config_obj", {}).get("_source") != "agentos")
-        model = build_model_from_entry(defaults["model_client_config"], defaults["model_config_obj"])
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="gpt-main", model=model
-        )
+        cec = _deep_agent_context_engine_config(cfg["react"])
         assert cec.context_window_tokens == 65536
 
     @staticmethod
     def test_no_agentos_block_falls_back_to_react():
         cfg = _config(agentos=None, react_cw=65536)
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="anything"
-        )
+        cec = _deep_agent_context_engine_config(cfg["react"])
         assert cec.context_window_tokens == 65536
 
     @staticmethod
-    def test_agentos_without_max_tokens_not_overriding():
-        # agentos 块没配 max_tokens -> Model 不带 _agentos_ctx_window 属性 -> 不覆盖，回退基础值
-        cfg = _config(agentos=[_agentos_block(with_max_tokens=False)], react_cw=65536)
-        entries = get_default_models(cfg)
-        agentos = next(e for e in entries
-                       if e.get("model_config_obj", {}).get("_source") == "agentos")
-        model = build_model_from_entry(agentos["model_client_config"], agentos["model_config_obj"])
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="agentos-pro", model=model
-        )
+    def test_agentos_without_context_window_does_not_change_global():
+        cfg = _config(agentos=[_agentos_block(with_ctx_window=False)], react_cw=65536)
+        cec = _deep_agent_context_engine_config(cfg["react"])
         assert cec.context_window_tokens == 65536
 
     @staticmethod
-    def test_same_name_different_max_tokens_uses_selected():
-        # 核心用例：两条同名 agentos，max_tokens 不同；路径 A 从选中 Model 读，
-        # 能精确"选中哪个用哪个的值"。
-        cfg = _config(agentos=[
-            _agentos_block("dup", max_tokens=131072, api_key="sk-1"),
-            _agentos_block("dup", max_tokens=65536, api_key="sk-2"),
-        ], react_cw=32768)
-        entries = get_default_models(cfg)
-        agentos_entries = [e for e in entries
-                           if e.get("model_config_obj", {}).get("_source") == "agentos"]
-        assert len(agentos_entries) == 2
-        m0 = build_model_from_entry(agentos_entries[0]["model_client_config"],
-                                    agentos_entries[0]["model_config_obj"])
-        m1 = build_model_from_entry(agentos_entries[1]["model_client_config"],
-                                    agentos_entries[1]["model_config_obj"])
-        # 选中 m0 -> 用 m0 的 131072
-        cec0 = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="dup", model=m0
-        )
-        assert cec0.context_window_tokens == 131072
-        # 选中 m1 -> 用 m1 的 65536（而非首个的 131072）
-        cec1 = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="dup", model=m1
-        )
-        assert cec1.context_window_tokens == 65536
+    def test_react_none_yields_none():
+        # react 无 context_engine_config -> context_window_tokens=None（由 core 兜底）
+        cec = _deep_agent_context_engine_config({})
+        assert cec.context_window_tokens is None
 
     @staticmethod
-    def test_same_name_pathb_takes_first_match():
-        # 路径 B（不传 model）同名时取首个匹配——这是路径 B 的已知局限，
-        # 路径 A 存在的意义即在于此。此用例固化路径 B 的兜底行为。
-        cfg = _config(agentos=[
-            _agentos_block("dup", max_tokens=131072, api_key="sk-1"),
-            _agentos_block("dup", max_tokens=65536, api_key="sk-2"),
-        ], react_cw=32768)
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="dup"  # 不传 model -> 路径 B
-        )
-        # 首个匹配是 131072
-        assert cec.context_window_tokens == 131072
+    def test_signature_rejects_legacy_kwargs():
+        # 新签名只接受 react_cfg；旧 full_config/model_name/model 实参应 TypeError
+        cfg = _config(agentos=[_agentos_block()], react_cw=65536)
+        with pytest.raises(TypeError):
+            _deep_agent_context_engine_config(cfg["react"], full_config=cfg)  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            _deep_agent_context_engine_config(cfg["react"], model_name="agentos-pro")  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            _deep_agent_context_engine_config(cfg["react"], model=object())  # type: ignore[call-arg]
+
+
+class TestContextWindowPrecedence:
+    """模型列表与运行时 fallback 共享同一套窗口优先级。"""
 
     @staticmethod
-    def test_model_without_attr_does_not_fallback_to_pathb():
-        # P2 回归：传了 model，但该 Model 无 _agentos_ctx_window 属性（agentos
-        # 未配 max_tokens），且 config 里存在同名带 max_tokens 的 agentos 条目——
-        # 路径 B 不应启用，否则会用别人的值错误覆盖，应保持全局基础值。
-        cfg = _config(agentos=[
-            # 本条目标同名、但没配 max_tokens -> Model 不带 _agentos_ctx_window
-            _agentos_block("dup", with_max_tokens=False, api_key="sk-1"),
-            # 另一条同名、配了 max_tokens=131072（路径 B 若启用会命中它）
-            _agentos_block("dup", max_tokens=131072, api_key="sk-2"),
-        ], react_cw=32768)
-        entries = get_default_models(cfg)
-        agentos_entries = [e for e in entries
-                           if e.get("model_config_obj", {}).get("_source") == "agentos"]
-        # 选中第一条（无 max_tokens）
-        m0 = build_model_from_entry(agentos_entries[0]["model_client_config"],
-                                    agentos_entries[0]["model_config_obj"])
-        assert getattr(m0, "_agentos_ctx_window", None) is None  # 确无属性
-        cec = _deep_agent_context_engine_config(
-            cfg["react"], full_config=cfg, model_name="dup", model=m0
+    def test_selected_model_window_beats_explicit_model_mapping():
+        config = {
+            "react": {
+                "context_engine_config": {
+                    "model_context_window_tokens": {"agentos-pro": 90000},
+                }
+            }
+        }
+        assert resolve_context_window_tokens(
+            "agentos-pro",
+            context_engine_config=config["react"],
+            model_config_obj={"_source": "agentos", "context_window": 131072},
+        ) == 131072
+
+    @staticmethod
+    def test_global_window_beats_selected_model_window():
+        config = {
+            "react": {
+                "context_engine_config": {
+                    "context_window_tokens": 65536,
+                }
+            }
+        }
+        assert resolve_context_window_tokens(
+            "agentos-pro",
+            context_engine_config=config["react"],
+            model_config_obj={"_source": "agentos", "context_window": 131072},
+        ) == 65536
+
+    @staticmethod
+    def test_explicit_mapping_is_used_when_selected_model_window_is_missing():
+        config = {
+            "context_engine_config": {
+                "model_context_window_tokens": {"agentos-pro": 90000},
+            }
+        }
+        assert resolve_context_window_tokens(
+            "agentos-pro",
+            context_engine_config=config,
+            model_config_obj={"_source": "agentos"},
+        ) == 90000
+
+    @staticmethod
+    def test_default_model_window_beats_explicit_model_mapping():
+        config = {
+            "context_engine_config": {
+                "model_context_window_tokens": {"gpt-main": 90000},
+            }
+        }
+        assert resolve_context_window_tokens(
+            "gpt-main",
+            context_engine_config=config,
+            model_config_obj={"context_window": 131072},
+        ) == 131072
+
+    @staticmethod
+    def test_deep_agent_uses_global_before_model_request_window():
+        deep_agent = DeepAgent.__new__(DeepAgent)
+        deep_agent._react_agent = SimpleNamespace(
+            config=SimpleNamespace(
+                model_name="agentos-pro",
+                model_config_obj=ModelRequestConfig(
+                    model="agentos-pro",
+                    context_window=131072,
+                ),
+                context_engine_config=ContextEngineConfig(
+                    context_window_tokens=65536,
+                    model_context_window_tokens={"agentos-pro": 90000},
+                ),
+            )
         )
-        # 路径 B 未启用 -> 不被第二条的 131072 覆盖，保持全局基础值 32768
-        assert cec.context_window_tokens == 32768
+        assert deep_agent._resolve_context_window_tokens() == 65536
+
+        deep_agent._react_agent.config.context_engine_config = ContextEngineConfig(
+            model_context_window_tokens={"agentos-pro": 90000},
+        )
+        expected = 131072 if core_has_context_window_field() else 90000
+        assert deep_agent._resolve_context_window_tokens() == expected

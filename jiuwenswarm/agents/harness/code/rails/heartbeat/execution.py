@@ -87,6 +87,27 @@ class SessionRunAdmission:
             finally:
                 state.user_waiters -= 1
 
+    async def begin_team_user(self, session_id: str) -> None:
+        """Exclusively admit one Team round and keep Heartbeat behind it.
+
+        A Team runner stream can outlive many interaction rounds.  The caller
+        must pair this method with ``end_user`` only after the submitted round
+        reaches a terminal event, not when the transport coroutine returns.
+        """
+        async with self._condition:
+            state = self._state(session_id)
+            state.user_waiters += 1
+            try:
+                await self._condition.wait_for(
+                    lambda: (
+                        self._state(session_id).heartbeat_run_id is None
+                        and self._state(session_id).active_users == 0
+                    )
+                )
+                state.active_users += 1
+            finally:
+                state.user_waiters -= 1
+
     async def end_user(self, session_id: str) -> None:
         async with self._condition:
             state = self._states.get(session_id)

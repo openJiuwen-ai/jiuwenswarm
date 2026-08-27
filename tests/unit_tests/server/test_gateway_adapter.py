@@ -57,6 +57,7 @@ _TEAM_SESSION = {
     "session_id": "sess-team-1",
     "mode": "team",
     "team_name": "dev-team-swarm_sess-team-1",
+    "agent_group_name": "technical-proposal-review",
     "title": "team task",
     "work_mode": "code",
     "delivery_context": {"channel_id": "internal"},
@@ -177,6 +178,7 @@ class TestSessionAdapter:
         assert info["session_id"] == "sess-team-1"
         assert info["mode"] == "team"
         assert info["team_name"] == "dev-team-swarm_sess-team-1"
+        assert info["agent_group_name"] == "technical-proposal-review"
         assert info["work_mode"] == "code"
         # 投影排除内部字段
         assert "delivery_context" not in info

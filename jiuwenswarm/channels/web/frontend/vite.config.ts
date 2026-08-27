@@ -152,7 +152,7 @@ function safeStringify(v: unknown): string {
 
 
 /**
- * file-api 使用的项目根目录，需与后端 get_root_dir() 一致，前端编辑的 HEARTBEAT.md 才会被心跳读到。
+ * file-api 使用的项目根目录，需与后端 get_root_dir() 一致。
  * 优先级：环境变量 > 已存在的用户工作区 ~/.jiuwenswarm > 仓库根。
  */
 function resolveProjectRootDir(): string {

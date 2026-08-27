@@ -28,6 +28,9 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HEARTBEAT_TOOL_NAMES,
 )
 from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
+    BrowserTaskPromptRail,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
@@ -46,6 +49,43 @@ def test_heartbeat_injection_preserves_work_and_code_adapter_initializer_state()
         assert adapter._registered_mcp_servers == {}
         assert adapter._session_selected_mcp == set()
         assert adapter._runtime_state_write_task is None
+
+
+@pytest.mark.asyncio
+async def test_code_runtime_config_accepts_load_aware_browser_prompt_rail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Code requests must not call the removed channel API on the browser rail."""
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._instance = SimpleNamespace(
+        ability_manager=SimpleNamespace(add=lambda _card: None),
+    )
+    adapter._subagent_rail = BrowserTaskPromptRail()
+    adapter._runtime_prompt_rail = None
+    adapter._project_memory_rail = None
+    adapter._agent_workspace_dir = "/tmp"
+
+    async def async_noop(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(adapter, "_seed_runtime_cwd", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)
+    monkeypatch.setattr(adapter, "_update_rails_for_mode", async_noop)
+    monkeypatch.setattr(adapter, "_set_user_interaction_enabled", async_noop)
+    monkeypatch.setattr(adapter, "_update_tools_for_mode", async_noop)
+    monkeypatch.setattr(adapter, "_update_session_tools", async_noop)
+    monkeypatch.setattr(adapter, "_refresh_acp_runtime_tools", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_update_prompt_for_mode", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_register_shared_tool", lambda *_args: None)
+
+    await adapter._update_runtime_config(
+        JiuWenSwarmDeepAdapter._RuntimeConfig(
+            session_id="code-heartbeat-session",
+            mode="agent.code.normal",
+            channel_id="web",
+            workspace="/tmp",
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -143,6 +183,17 @@ async def test_other_heartbeat_is_session_busy_but_current_run_is_excluded() -> 
     assert service.is_session_busy("s1", exclude_run_id="run-a") is False
     assert service.is_session_busy("s1", exclude_run_id="run-b") is True
     await admission.end_heartbeat("s1", "run-a")
+
+
+async def test_team_round_uses_same_atomic_heartbeat_admission() -> None:
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(object(), admission)
+
+    await admission.begin_team_user("team-busy")
+    assert service.is_session_busy("team-busy") is True
+    assert await admission.try_begin_heartbeat("team-busy", "hb-race") is False
+    await admission.end_user("team-busy")
+    assert service.is_session_busy("team-busy") is False
 
 
 def test_retain_agent_transfers_pin_to_current_facade() -> None:

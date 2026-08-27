@@ -131,22 +131,30 @@ test('clamps Mermaid zoom to the supported range', () => {
 test('keeps wide Mermaid diagrams in a usable 280px canvas', () => {
   assert.deepEqual(calculateMermaidCanvasLayout({ naturalWidth: 2400, naturalHeight: 180, containerWidth: 900 }), {
     fitScale: 0.375,
+    displayScale: 0.5,
     canvasHeight: 280,
-    alignTop: false,
+  });
+});
+
+test('lets automatic fit scale below the manual zoom minimum when the canvas is narrow', () => {
+  assert.deepEqual(calculateMermaidCanvasLayout({ naturalWidth: 2400, naturalHeight: 180, containerWidth: 120 }), {
+    fitScale: 0.05,
+    displayScale: 0.5,
+    canvasHeight: 280,
   });
 });
 
 test('lets normal Mermaid diagrams size naturally and caps very tall diagrams', () => {
   assert.deepEqual(calculateMermaidCanvasLayout({ naturalWidth: 800, naturalHeight: 400, containerWidth: 800 }), {
     fitScale: 1,
+    displayScale: 1,
     canvasHeight: 448,
-    alignTop: false,
   });
 
   assert.deepEqual(calculateMermaidCanvasLayout({ naturalWidth: 400, naturalHeight: 4000, containerWidth: 800 }), {
-    fitScale: 0.25,
+    fitScale: 0.138,
+    displayScale: 0.5,
     canvasHeight: 600,
-    alignTop: true,
   });
   assert.equal(calculateMermaidCanvasLayout({ naturalWidth: 0, naturalHeight: 0, containerWidth: 800 }), null);
 });

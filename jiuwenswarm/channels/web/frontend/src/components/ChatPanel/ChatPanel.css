@@ -1,4 +1,4 @@
-/* Input/welcome vertical alignment tuning */
+﻿/* Input/welcome vertical alignment tuning */
 :root {
   --chat-input-textarea-min-height: 96px;
 }
@@ -92,15 +92,21 @@
   border: 0;
   border-radius: 4px;
   background: transparent;
+  /* 与 .share-export-btn 保持同一套配色：img 资源图标本身带底色不受影响，
+     只影响用 currentColor 描边的 lucide 图标（如心跳的 Activity），避免它
+     跟着环境文字色走、和旁边几个图标颜色对不上。 */
+  color: var(--color-text-tertiary);
   cursor: pointer;
 }
 
 .chat-header-icon-btn:hover {
   background: var(--color-action-secondary);
+  color: var(--color-text-primary);
 }
 
 .chat-header-icon-btn--active {
   background: var(--color-action-secondary);
+  color: var(--color-text-primary);
 }
 
 .chat-header-icon-btn:disabled {
@@ -1728,8 +1734,8 @@ overflow: hidden;
 }
 
 .chat-config-icon--settings {
-  -webkit-mask-image: url('../../assets/sidebar/config.svg');
-  mask-image: url('../../assets/sidebar/config.svg');
+  -webkit-mask-image: url('../../assets/settings/navigation/models.svg');
+  mask-image: url('../../assets/settings/navigation/models.svg');
 }
 
 .chat-config-icon--folder {
@@ -2877,6 +2883,20 @@ overflow: hidden;
  * 数值和项目现成 token 对不上，不能照抄 .chat-skill-select__item--selected 那套
  * --color-action-primary，见 ExtensionPickerPanel.tsx 组件头注释。
  */
+
+/* ===== 输入栏"+"菜单「技能」二级面板（从工具条搬进+号菜单，结构与扩展面板一致） ===== */
+.chat-skill-picker {
+  display: flex;
+  flex-direction: column;
+  width: 336px;
+  max-height: 358px;
+  padding: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 14px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-lg);
+  box-sizing: border-box;
+}
 .chat-extension-picker {
   display: flex;
   flex-direction: column;

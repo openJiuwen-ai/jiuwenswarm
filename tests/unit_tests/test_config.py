@@ -421,6 +421,49 @@ react:
         assert get_evolution_auto_save_enabled(migrated) is True
 
     @staticmethod
+    def test_ensure_config_migrated_from_template_adds_missing_keys(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from jiuwenswarm.common.utils import ensure_config_migrated_from_template
+
+        template_path = tmp_path / "template.yaml"
+        workspace_dir = tmp_path / "workspace"
+        config_dir = workspace_dir / "config"
+        config_dir.mkdir(parents=True)
+        user_config_path = config_dir / "config.yaml"
+
+        template_path.write_text(
+            """
+react:
+  answer_chunk_size: 500
+  subagent_runtime:
+    enabled: true
+""",
+            encoding="utf-8",
+        )
+        user_config_path.write_text(
+            """
+react:
+  answer_chunk_size: 300
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            "jiuwenswarm.common.utils._find_config_template_path",
+            lambda: template_path,
+        )
+
+        assert ensure_config_migrated_from_template(workspace_dir) is True
+
+        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        assert migrated["react"]["answer_chunk_size"] == 300
+        assert migrated["react"]["subagent_runtime"]["enabled"] is True
+
+        assert ensure_config_migrated_from_template(workspace_dir) is False
+
+    @staticmethod
     def test_update_skill_retrieval_preserves_existing_hidden_config(
         monkeypatch: pytest.MonkeyPatch,
         temp_config_file: Path,

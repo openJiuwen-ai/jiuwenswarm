@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+import json
+import shutil
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
 
 _TEAM_SKILLS_HUB_ZIP_URL = "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/plugins/demo.zip"
 
@@ -110,6 +112,10 @@ async def test_handle_skills_team_skills_hub_search_maps_response(tmp_path):
                     "display_name": "Demo Skill",
                     "short_desc": "desc",
                     "latest_version": "1.2.3",
+                    "publisher_name": "example-publisher",
+                    "category_name": "Productivity",
+                    "install_count": 42,
+                    "plugin_type": "swarmskill",
                     "update_time": 123,
                 }
             ]
@@ -121,6 +127,11 @@ async def test_handle_skills_team_skills_hub_search_maps_response(tmp_path):
     assert payload["count"] == 1
     assert payload["skills"][0]["asset_id"] == "demo-skill"
     assert payload["skills"][0]["display_name"] == "Demo Skill"
+    assert payload["skills"][0]["version"] == "1.2.3"
+    assert payload["skills"][0]["updated_at"] == 123
+    assert payload["skills"][0]["author"] == "example-publisher"
+    assert payload["skills"][0]["is_team_skill"] is True
+    assert payload["skills"][0]["plugin_type"] == "swarmskill"
 
 
 @pytest.mark.asyncio
@@ -365,6 +376,7 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
 
     async def _fake_get_data(path, **kwargs):  # noqa: ANN001
         assert path == "/api/v1/artifacts/demo-skill"
+        assert kwargs.get("params") is None
         return {
             "download_url": _TEAM_SKILLS_HUB_ZIP_URL,
             "checksum_sha256": "",
@@ -381,7 +393,17 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
     payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
     assert payload["success"] is True
     assert payload["skill"]["name"] == "demo-skill"
-    assert (tmp_path / "skills" / "demo-skill" / "SKILL.md").is_file()
+    dest = tmp_path / "skills" / "demo-skill"
+    assert (dest / "SKILL.md").is_file()
+    assert (dest / ".archive" / "versions" / "index.json").is_file()
+    index = json.loads((dest / ".archive" / "versions" / "index.json").read_text(encoding="utf-8"))
+    assert index["current_version"] == "1.0.0"
+    assert index["installed_asset_id"] == "demo-skill"
+    assert len(index["versions"]) == 1
+    storage_id = index["versions"][0]["storage_id"]
+    assert (dest / ".archive" / "versions" / "content" / storage_id / "SKILL.md").is_file()
+    plugins = manager._state.get("installed_plugins", [])
+    assert plugins and "version" not in plugins[0]
 
 
 @pytest.mark.asyncio
@@ -411,10 +433,49 @@ async def test_handle_skills_team_skills_hub_install_flat_zip_does_not_copy_stag
 
 
 @pytest.mark.asyncio
-async def test_handle_skills_team_skills_hub_install_duplicate_without_force(tmp_path):
+async def test_handle_skills_team_skills_hub_install_idempotent_same_asset(tmp_path):
+    """相同 installed_asset_id 再次安装应直接成功，不请求远端."""
+    from jiuwenswarm.server.runtime.skill.archive_store import write_skillhub_first_install_index
+
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    dest = tmp_path / "skills" / "demo-skill"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: test\n---\nbody\n",
+        encoding="utf-8",
+    )
+    content = dest / ".archive" / "versions" / "content" / "ver-abc"
+    content.mkdir(parents=True)
+    shutil.copy2(dest / "SKILL.md", content / "SKILL.md")
+    write_skillhub_first_install_index(
+        dest,
+        version="1.0.0",
+        asset_id="demo-skill",
+        storage_id="ver-abc",
+        checksum_sha256="abc",
+    )
+
+    async def _should_not_call(*_a, **_k):  # noqa: ANN001
+        raise AssertionError("idempotent install must not hit remote")
+
+    manager.set_mock_get_data(_should_not_call)
+    manager.set_mock_download(_should_not_call)
+
+    payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
+    assert payload["success"] is True
+    assert payload["skill"]["path"] == str(dest)
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_install_name_conflict_even_with_force(tmp_path):
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
     zip_bytes = _build_skill_zip_bytes(skill_name="demo-skill")
-    (tmp_path / "skills" / "demo-skill").mkdir(parents=True, exist_ok=True)
+    local = tmp_path / "skills" / "demo-skill"
+    local.mkdir(parents=True, exist_ok=True)
+    (local / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: local\n---\nbody\n",
+        encoding="utf-8",
+    )
 
     async def _fake_get_data(path, **kwargs):  # noqa: ANN001
         return {
@@ -429,9 +490,101 @@ async def test_handle_skills_team_skills_hub_install_duplicate_without_force(tmp
     manager.set_mock_get_data(_fake_get_data)
     manager.set_mock_download(_fake_download)
 
-    payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill", "force": False})
-    assert payload["success"] is False
-    assert "已安装" in payload["detail"]
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_team_skills_hub_install(
+            {"asset_id": "other-asset", "force": True}
+        )
+    assert exc_info.value.code == "SKILL_NAME_CONFLICT"
+    assert (local / "SKILL.md").read_text(encoding="utf-8").startswith("---\nname: demo-skill")
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_pack_excludes_archive(tmp_path):
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    skill = tmp_path / "skills" / "pack-demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: pack-demo\ndescription: pack me\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (skill / "archive").mkdir()
+    (skill / "archive" / "note.txt").write_text("business", encoding="utf-8")
+    hidden = skill / ".archive" / "versions"
+    hidden.mkdir(parents=True)
+    (hidden / "index.json").write_text("{}", encoding="utf-8")
+
+    payload = await manager.handle_skills_team_skills_hub_pack(
+        {"path": str(skill), "output": str(tmp_path / "out")}
+    )
+    assert payload["success"] is True
+    zip_path = Path(payload["path"])
+    assert zip_path.is_file()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = set(zf.namelist())
+    assert "pack-demo/plugin.yaml" in names
+    assert "pack-demo/pack-demo/SKILL.md" in names
+    assert "pack-demo/pack-demo/archive/note.txt" in names
+    assert not any(n == ".archive" or n.startswith(".archive/") for n in names)
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_publish_writes_remote_metadata(tmp_path, monkeypatch):
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    skill = tmp_path / "skills" / "pub-demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: pub-demo\ndescription: publish me\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    async def _fake_publish_request(**kwargs):  # noqa: ANN001
+        return {"asset_id": "asset-999", "name": "pub-demo", "version": "1.0.0"}
+
+    monkeypatch.setattr(manager, "_teamskills_hub_publish_request", _fake_publish_request)
+
+    payload = await manager.handle_skills_team_skills_hub_publish(
+        {
+            "path": str(skill),
+            "version": "1.0.0",
+            "token": "tok",
+        }
+    )
+    assert payload["success"] is True
+    assert payload["skill_id"] == "asset-999"
+    index = json.loads(
+        (skill / ".archive" / "versions" / "index.json").read_text(encoding="utf-8")
+    )
+    assert index["remote_asset_id"] == "asset-999"
+    assert index["last_published_version"] == "1.0.0"
+    assert index["current_version"] is None
+    assert index["installed_asset_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_skills_team_skills_hub_publish_version_conflict(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.skill.archive_store import update_publish_remote_metadata
+
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    skill = tmp_path / "skills" / "pub-demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: pub-demo\ndescription: publish me\n---\nbody\n",
+        encoding="utf-8",
+    )
+    update_publish_remote_metadata(
+        skill, remote_asset_id="asset-1", last_published_version="1.0.0"
+    )
+
+    async def _should_not_publish(**kwargs):  # noqa: ANN001
+        raise AssertionError("conflict must short-circuit before remote publish")
+
+    monkeypatch.setattr(manager, "_teamskills_hub_publish_request", _should_not_publish)
+
+    with pytest.raises(SkillRpcError) as exc_info:
+        await manager.handle_skills_team_skills_hub_publish(
+            {"path": str(skill), "version": "1.0.0", "token": "tok", "force": False}
+        )
+    assert exc_info.value.code == "SKILL_PUBLISH_VERSION_CONFLICT"
 
 
 @pytest.mark.asyncio

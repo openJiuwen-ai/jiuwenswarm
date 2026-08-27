@@ -353,9 +353,16 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
     model = str(mc.get("model_name") or mc.get("model") or os.getenv("IMAGE_GEN_MODEL_NAME") or "wanx-v1").strip()
     provider = str(mc.get("client_provider") or mc.get("model_provider")
                    or os.getenv("IMAGE_GEN_PROVIDER") or "DashScope").strip()
+    # 新声明下 DashScope 不再是独立 client_provider，而是 OpenAI + endpoint_profile=dashscope。
+    # 兼容旧 IMAGE_GEN_PROVIDER=DashScope：归一为 OpenAI 并补 dashscope profile。
+    # 缺少 endpoint_profile=dashscope 时 OpenAIModelClient 会拒绝生图(方案 8.6)。
+    endpoint_profile = str(mc.get("endpoint_profile") or "").strip().lower()
+    if provider in ("DashScope", "dashscope"):
+        provider = "OpenAI"
+        endpoint_profile = endpoint_profile or "dashscope"
 
     try:
-        model_client_config = ModelClientConfig(
+        _mcc_kwargs: dict[str, Any] = dict(
             client_id="image_gen_client",
             client_provider=provider,
             api_key=api_key,
@@ -364,6 +371,9 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
             ssl_cert=mc.get("ssl_cert"),
             timeout=mc.get("timeout", 1800),
         )
+        if endpoint_profile:
+            _mcc_kwargs["endpoint_profile"] = endpoint_profile
+        model_client_config = ModelClientConfig(**_mcc_kwargs)
 
         model_config = ModelRequestConfig(
             model=model,

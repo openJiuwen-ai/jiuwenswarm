@@ -1,0 +1,16 @@
+<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="48.000000" height="48.000000" fill="none" clip-path="url(#clipPath_32)" customFrame="url(#clipPath_32)">
+	<defs>
+		<clipPath id="clipPath_32">
+			<rect width="48.000000" height="48.000000" x="0.000000" y="0.000000" rx="12.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+	</defs>
+	<rect id="阿里云百炼" width="48.000000" height="48.000000" x="0.000000" y="0.000000" rx="12.000000" fill="rgb(255,255,255)" />
+	<g id="组合 91335139">
+		<path id="矢量 8939" d="M7.11328 14.25L7.11328 33.75L15.5576 28.875L15.5576 19.125L7.11328 14.25Z" fill="rgb(4,35,219)" fill-rule="nonzero" />
+		<path id="矢量 8940" d="M15.5576 19.125L15.5576 28.875L24.0011 24L15.5576 19.125Z" fill="rgb(28,84,228)" fill-rule="nonzero" />
+		<path id="矢量 8941" d="M24.0011 23.9979L15.5576 19.1229L32.4414 9.36719L40.8889 14.2479L24.0011 23.9979Z" fill="rgb(171,155,255)" fill-rule="nonzero" />
+		<path id="矢量 8942" d="M15.5576 19.125L7.11328 14.25L24.0011 4.5L32.4413 9.36931L15.5576 19.125Z" fill="rgb(115,71,255)" fill-rule="nonzero" />
+		<path id="矢量 8943" d="M40.8889 33.75L24.0011 43.5L15.5576 38.625L32.4446 28.875L40.8889 33.75Z" fill="rgb(0,207,202)" fill-rule="nonzero" />
+		<path id="矢量 8944" d="M32.4446 28.875L40.8889 24L40.8889 33.75L32.4446 28.875ZM15.5576 38.625L7.11328 33.75L24.0011 24L32.4446 28.875L15.5576 38.625Z" fill="rgb(0,235,210)" fill-rule="nonzero" />
+	</g>
+</svg>

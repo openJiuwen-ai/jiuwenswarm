@@ -120,6 +120,8 @@ models:
       api_key: ${API_KEY}
       model_name: ${MODEL_NAME}
       client_provider: ${MODEL_PROVIDER}
+      # endpoint_profile：仅 OpenAI 协议生效的端点方言；Anthropic 时忽略。
+      endpoint_profile: ${ENDPOINT_PROFILE:-openai}
       timeout: 1800
       verify_ssl: false
       custom_headers: {}
@@ -161,6 +163,8 @@ models:
       api_key: ${IMAGE_GEN_API_KEY}
       model_name: ${IMAGE_GEN_MODEL_NAME}
       client_provider: ${IMAGE_GEN_PROVIDER}
+      # 多模态生图走 DashScope SDK 需 endpoint_profile=dashscope。
+      endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
       verify_ssl: false
       timeout: 1800
     model_config_obj:

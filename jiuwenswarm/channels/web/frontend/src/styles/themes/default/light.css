@@ -63,6 +63,8 @@
   --color-action-secondary: #f4f4f5;
   --color-action-secondary-rgb: 244, 244, 245;
   --color-action-secondary-text: #3f3f46;
+  --color-button-border: #595959;
+  --color-button-hover: #fafafa;
   --color-brand-secondary: #0d9488;
   --color-tool-tab-active-bg: #ededed;
   --color-tool-tab-hover-bg: #FAFAFA;
@@ -74,6 +76,7 @@
   --color-feedback-success: #16a34a;
   --color-feedback-success-rgb: 22, 163, 74;
   --color-feedback-success-subtle: rgba(22, 163, 74, 0.1);
+  --color-feedback-success-text: #01802b;
   --color-feedback-warning: #d97706;
   --color-feedback-warning-rgb: 217, 119, 6;
   --color-feedback-warning-subtle: rgba(217, 119, 6, 0.1);
@@ -85,7 +88,12 @@
   --color-feedback-info: #2563eb;
   --color-feedback-info-rgb: 37, 99, 235;
   --color-feedback-info-subtle: rgba(59, 130, 246, 0.08);
+  --color-tag-info-text: #0f5ed4;
+  --color-tag-info-surface: #deecff;
+  --color-tag-neutral-text: #191919;
+  --color-tag-neutral-surface: #f5f5f5;
   --color-feedback-success-toast: #d5f2dc;
+  --color-feedback-danger-toast: #fce9e9;
   --color-feedback-success-indicator: #1a991d;
 
   /* Feature accents whose identity is stable across color modes */
@@ -145,8 +153,15 @@
   --color-sidebar-nav-active: #e6e6e6;
   --color-sidebar-nav-active-hover: #dedee0;
   --color-sidebar-action-hover: #e6e6e6;
-  --color-sidebar-more-item-hover: #eaeaeb;
   --color-sidebar-surface: var(--color-surface-shell);
+  --color-settings-nav-surface: #f5f5f5;
+  --color-settings-card-subtle: #fafafa;
+  --color-settings-border: #f0f0f0;
+  --color-settings-text-secondary: #808080;
+  --color-settings-switch-checked: #1476ff;
+  --color-settings-link: #1476ff;
+  --color-settings-status-danger-text: #bf0a1c;
+  --color-settings-status-danger-surface: #fce3e0;
   --color-conversation-active-surface: var(--color-sidebar-nav-active);
   --color-chat-active-group-border: var(--color-chat-group-border);
   --color-chat-active-group-hover: rgba(var(--color-action-secondary-rgb), 0.44);

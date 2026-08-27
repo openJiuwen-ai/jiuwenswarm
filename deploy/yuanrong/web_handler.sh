@@ -75,8 +75,10 @@ web_start_systemd() {
     remote_path=$(exec_on_host "${master_host}" "echo \$PATH" 2>/dev/null | tr -d '\r') || remote_path=""
     remote_ld_lib=$(exec_on_host "${master_host}" "echo \${LD_LIBRARY_PATH:-}" 2>/dev/null | tr -d '\r') || remote_ld_lib=""
 
-    # /ws 代理目标:web server 本机内的 gateway WebChannel
-    local proxy_target="http://127.0.0.1:${web_port_target}"
+    # /ws 代理目标:gateway 的 WebChannel(WEB_HOST)。
+    # 单机场景 WEB_HOST 可设 127.0.0.1 走回环; 多机场景用 ingress VIP / MASTER_NODE_IP 跨机可达。
+    local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
+    local proxy_target="http://${web_host_target}:${web_port_target}"
     # /auth-api 反代目标:control-panel (IAM), 由 check_web_up_dependency 解析
     local iam_target="${DEPLOY_VARS["IAM_AUTH_SERVICE_URL"]}"
     # 一体机模式: WEB_REMOTE_MODE=true 时带 --remote, 前端显示登出按钮
@@ -155,7 +157,8 @@ web_start_nohup() {
     web_bin=$(exec_on_host "${master_host}" "command -v jiuwenswarm-web" 2>/dev/null | tr -d '\r') || true
     [ -n "${web_bin}" ] || error "jiuwenswarm-web not found on ${master_host}; run 'install' first (installs jiuwenswarm whl)"
 
-    local proxy_target="http://127.0.0.1:${web_port_target}"
+    local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
+    local proxy_target="http://${web_host_target}:${web_port_target}"
     # /auth-api 反代目标:control-panel (IAM), 由 check_web_up_dependency 解析
     local iam_target="${DEPLOY_VARS["IAM_AUTH_SERVICE_URL"]}"
     # 一体机模式: WEB_REMOTE_MODE=true 时带 --remote, 前端显示登出按钮

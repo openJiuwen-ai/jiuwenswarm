@@ -92,7 +92,11 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
     get_default_a2ui_config_payload,
     validate_a2ui_config_update,
 )
-from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+from jiuwenswarm.common.reasoning_injector import (
+    build_reasoning_model_request_kwargs,
+    core_has_context_window_field,
+)
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
@@ -540,6 +544,22 @@ def _merge_models_for_replace_all(
                 new_mcc["timeout"] = item["timeout"]
             if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
                 new_entry["alias"] = item["alias"]
+            # vendor_key + plan: persist the exact provider selection identity
+            # into model_client_config (or clear it).
+            if item.get("vendor_key"):
+                new_mcc["vendor_key"] = item["vendor_key"]
+            else:
+                new_mcc.pop("vendor_key", None)
+            if item.get("plan"):
+                new_mcc["plan"] = item["plan"]
+            else:
+                new_mcc.pop("plan", None)
+            # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
+            # 前端透传则落库；不传则清掉(避免残留旧方言)。Anthropic 协议时此字段被 core 忽略。
+            if item.get("endpoint_profile"):
+                new_mcc["endpoint_profile"] = item["endpoint_profile"]
+            else:
+                new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
             # api_key: resolved holds the decrypted plaintext shown to the frontend.
             # Unchanged → keep raw (placeholder or ciphertext); changed → encrypt new value.
@@ -559,6 +579,12 @@ def _merge_models_for_replace_all(
                     "client_provider": item["model_provider"],
                     "timeout": item["timeout"],
                     "verify_ssl": item["verify_ssl"],
+                    # vendor_key + plan identify the exact registry preset so
+                    # the UI can restore the provider selection after reload.
+                    **({"vendor_key": item["vendor_key"]} if item.get("vendor_key") else {}),
+                    **({"plan": item["plan"]} if item.get("plan") else {}),
+                    # endpoint_profile: OpenAI 协议端点方言(透传；Anthropic 时 core 忽略)。
+                    **({"endpoint_profile": item["endpoint_profile"]} if item.get("endpoint_profile") else {}),
                 },
                 "model_config_obj": {
                     "temperature": item["temperature"],
@@ -654,6 +680,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "plugins.enable",
     "plugins.disable",
     "plugins.reload",
+    "agent_groups.list",
+    "agent_groups.show",
     "agent_templates.list",
     "agent_templates.show",
     "agent_templates.file.list",
@@ -783,6 +811,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "plugins.enable",
     "plugins.disable",
     "plugins.reload",
+    "agent_groups.list",
+    "agent_groups.show",
     "agent_templates.list",
     "agent_templates.show",
     "agent_templates.file.list",
@@ -830,21 +860,25 @@ _CONFIG_SET_ENV_MAP = {
     "model": "MODEL_NAME",
     "api_base": "API_BASE",
     "api_key": "API_KEY",
+    "endpoint_profile": "ENDPOINT_PROFILE",
     # video 模型
     "video_api_base": "VIDEO_API_BASE",
     "video_api_key": "VIDEO_API_KEY",
     "video_model": "VIDEO_MODEL_NAME",
     "video_provider": "VIDEO_PROVIDER",
+    "video_endpoint_profile": "VIDEO_ENDPOINT_PROFILE",
     # audio 模型
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",
     "audio_model": "AUDIO_MODEL_NAME",
     "audio_provider": "AUDIO_PROVIDER",
+    "audio_endpoint_profile": "AUDIO_ENDPOINT_PROFILE",
     # vision 模型
     "vision_api_base": "VISION_API_BASE",
     "vision_api_key": "VISION_API_KEY",
     "vision_model": "VISION_MODEL_NAME",
     "vision_provider": "VISION_PROVIDER",
+    "vision_endpoint_profile": "VISION_ENDPOINT_PROFILE",
     # 其他
     "email_address": "EMAIL_ADDRESS",
     "email_token": "EMAIL_TOKEN",
@@ -2204,15 +2238,22 @@ def _resolve_model_config_obj_for_validate(model_name: str, params: dict[str, An
                 obj = entry.get("model_config_obj")
                 if isinstance(obj, dict):
                     model_config_obj = dict(obj)
-                # AgentOS 备份模型的 mco 含 _source=="agentos" 标记（由
-                # get_default_models 注入）。其 max_tokens 是输入侧上下文窗口
-                # 别名（-> ContextEngineConfig.context_window_tokens，压缩阈值，
-                # 不发厂商），不得进入输出侧的 ModelRequestConfig.max_tokens
-                # （否则会被当输出上限发给厂商）。_source 标记本身由
-                # reasoning_injector._build_model_request_kwargs 统一 pop，
-                # 这里只需清 max_tokens。
-                if model_config_obj.get("_source") == "agentos":
-                    model_config_obj.pop("max_tokens", None)
+                # context_window（模型支持的上下文总长度）可配在任意模型条目的
+                # model_config_obj 里（defaults / agentos / video / audio / vision /
+                # image_gen 均可），供 core 从 ModelRequestConfig 取值。是否在出口
+                # 清掉取决于 core 是否已把 context_window 加为 ModelRequestConfig
+                # 正式字段（见 reasoning_injector.core_has_context_window_field）：
+                # - core 未加字段（过渡期）：context_window 进 extra 会被
+                #   base_model_client 经 model_dump 透传给厂商 SDK 报 unexpected
+                #   keyword argument -> 需清。
+                # - core 已加字段：context_window 作正式字段，core 自行 exclude
+                #   不发厂商、可读 -> 不清（否则切掉 core 想读的值）。
+                # 不再守 _source=="agentos"：所有条目一视同仁，defaults 配了
+                # context_window 同样需要过渡期清防发厂商。_source 标记本身由
+                # reasoning_injector._build_model_request_kwargs 统一 pop；此处与
+                # 公共出口同口径，覆盖绕过 build_model_from_entry 的 validate 路径。
+                if not core_has_context_window_field():
+                    model_config_obj.pop("context_window", None)
                 logger.info(
                     "[config.validate_model] loaded model_config_obj for '%s' "
                     "(matched_by=%s): %s",
@@ -2989,6 +3030,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             is_default = bool(item.get("is_default", False))
             alias = str(item.get("alias") or "").strip()
             reasoning_level = str(item.get("reasoning_level") or "").strip()
+            vendor_key = str(item.get("vendor_key") or "").strip() or None
+            plan = str(item.get("plan") or "").strip() or None
+            if plan:
+                from jiuwenswarm.common.model_vendor_registry import PlanKind
+
+                try:
+                    plan = PlanKind(plan).value
+                except ValueError as exc:
+                    raise _ConfigBadRequest(
+                        f"models[{idx}].plan must be one of: token_plan, coding_plan, custom_api"
+                    ) from exc
+                if not vendor_key:
+                    raise _ConfigBadRequest(f"models[{idx}].vendor_key is required when plan is set")
 
             if alias:
                 if alias in aliases_seen:
@@ -3008,6 +3062,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "alias": alias,
                 "reasoning_level": reasoning_level,
                 "origin_index": origin_index,
+                # vendor_key is an opaque hint
+                # selector; not validated (the selector only ever emits keys
+                # present in jiuwenswarm.common.model_vendor_registry). It is
+                # persisted so the UI can match a configured entry back to its
+                # preset for icon display / re-selection. Not required.
+                "vendor_key": vendor_key,
+                # plan is the other half of the provider-selection identity.
+                # Older entries may have vendor_key only; do not infer a plan.
+                "plan": plan,
+                # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...);
+                # opaque passthrough, not validated. Anthropic 协议时 core 忽略此字段。
+                "endpoint_profile": str(item.get("endpoint_profile") or "").strip() or None,
             })
 
         # alias 与其他条目的 model_name 冲突校验
@@ -3120,11 +3186,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         api_base = api_base.rstrip("/")
 
         verify_ssl = bool(params.get("verify_ssl", False))
+        endpoint_profile = str(params.get("endpoint_profile") or "").strip() or None
 
         model_config_obj = _resolve_model_config_obj_for_validate(model, params)
 
         reasoning_mcc = {
             "client_provider": model_provider,
+            "endpoint_profile": endpoint_profile,
             "api_base": api_base,
         }
         model_request_config = ModelRequestConfig(
@@ -3142,6 +3210,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         model_client_config = ModelClientConfig(
             client_id="config-validate",
             client_provider=model_provider,
+            endpoint_profile=endpoint_profile,
             api_key=api_key,
             api_base=api_base,
             timeout=25.0,
@@ -3232,25 +3301,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             models = get_default_models(config)
             result = []
             active_model = ""
-            # 显式配置的上下文窗口上限（react.context_engine_config.context_window_tokens）
-            # 优先级高于按模型名解析，与 AgentServer 侧 ContextEngine 行为保持一致
-            cec = (config.get("react", {}) or {}).get("context_engine_config", {}) or {}
-            cw_override = cec.get("context_window_tokens")
-            if not (isinstance(cw_override, int) and cw_override > 0):
-                cw_override = None
             for idx, entry in enumerate(models):
                 mcc = entry.get("model_client_config", {})
                 mco = entry.get("model_config_obj", {})
                 is_default = entry.get("is_default", False)
                 model_name = mcc.get("model_name", "")
-                context_window_tokens = 0
                 try:
-                    from openjiuwen.core.context_engine.context.context_utils import ContextUtils
-                    context_window_tokens = ContextUtils.resolve_context_max(
+                    context_window_tokens = resolve_context_window_tokens(
                         model_name=model_name,
-                        fallback_context_window_tokens=cw_override,
+                        context_engine_config=(config.get("react", {}) or {}),
+                        model_config_obj=mco,
                     )
                 except Exception:
+                    context_window_tokens = 0
                     logger.debug(
                         "Failed to resolve context_window_tokens for model %s",
                         model_name,
@@ -3271,6 +3334,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "alias": entry.get("alias", ""),
                     "origin_index": idx,
                     "context_window_tokens": context_window_tokens,
+                    "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
+                    "plan": mcc.get("plan") or entry.get("plan") or "",
+                    "endpoint_profile": mcc.get("endpoint_profile") or "",
                 })
             # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
             # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
@@ -3477,6 +3543,155 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         else:
             channels = []
         await channel.send_response(ws, req_id, ok=True, payload={"channels": channels})
+
+    # ── vendors.* handlers ──────────────
+
+    async def _vendors_list(ws, req_id, params, session_id):
+        """返回按 plan 分组的厂商预设列表(供前端 Tab+厂商卡片渲染)。
+
+        纯数据,读 ``jiuwenswarm.common.model_vendor_registry``,无副作用。
+        """
+        del params, session_id
+        try:
+            from jiuwenswarm.common.model_vendor_registry import to_frontend_payload
+            await channel.send_response(
+                ws, req_id, ok=True,
+                payload={"vendors": to_frontend_payload()},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[vendors.list] %s", exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+
+    async def _vendors_fetch_models(ws, req_id, params, session_id):
+        """按厂商预设拉取远端可用模型列表(供前端"拉取最新"按钮)。
+
+        params: {vendor_key, plan, api_key?}。按预设的 ``models_needs_key``
+        决定是否带 Authorization;失败/无端点优雅回退预设列表,永不报错。
+        """
+        del session_id
+        if not isinstance(params, dict):
+            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
+            return
+        vendor_key = str(params.get("vendor_key") or "").strip()
+        plan_raw = str(params.get("plan") or "").strip()
+        api_key = str(params.get("api_key") or "").strip()
+        try:
+            from jiuwenswarm.common.model_vendor_registry import (
+                PlanKind,
+                get_preset,
+            )
+
+            def _fetch_remote_sync(
+                endpoint: str, hdrs: dict[str, str]
+            ) -> tuple[list[str], str]:
+                """同步拉取并解析 /models(在线程池里跑,不阻塞事件循环)。
+
+                成功返回 ``(模型 ID 列表, "")``;任何失败(网络/状态码非 200/
+                解析失败/空)返回 ``([], 原因)``。原因透传给前端,写进回退响应的
+                ``reason`` 字段,便于联调时区分鉴权失败/端点问题/限流/网络异常,
+                而非笼统的"拉取失败"。永不抛异常。
+                """
+                import httpx  # noqa: PLC0415
+                from openjiuwen.extensions.external_provider.openai_auth.openai_account_models import (
+                    parse_openai_account_model_ids,
+                )
+                try:
+                    resp = httpx.get(endpoint, headers=hdrs, timeout=12.0)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[vendors.fetch_models] http error: %s", exc)
+                    return [], f"remote fetch error: {type(exc).__name__}"
+                if resp.status_code != 200:
+                    # 401/403 = key 错或鉴权方式不符(如 maas 需华为签名);
+                    # 429 = 限流;5xx = 上游故障。把状态码透传给前端。
+                    return [], f"remote returned HTTP {resp.status_code}"
+                try:
+                    payload_json = resp.json()
+                except ValueError:
+                    return [], "remote returned non-JSON body"
+                if not isinstance(payload_json, dict):
+                    return [], "remote returned unexpected body shape"
+                try:
+                    ids = parse_openai_account_model_ids(payload_json)
+                except Exception:  # noqa: BLE001
+                    return [], "remote payload parse failed"
+                if not ids:
+                    return [], "remote returned empty model list"
+                return ids, ""
+
+            try:
+                plan = PlanKind(plan_raw)
+            except ValueError:
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error=f"invalid plan: {plan_raw}",
+                    code="BAD_REQUEST",
+                )
+                return
+
+            preset = get_preset(vendor_key, plan)
+            if preset is None:
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error=f"unknown vendor/plan: {vendor_key}/{plan_raw}",
+                    code="BAD_REQUEST",
+                )
+                return
+
+            # 无远端端点(Maas 等) -> 直接回退预设
+            if not preset.models_endpoint:
+                await channel.send_response(
+                    ws, req_id, ok=True,
+                    payload={
+                        "models": list(preset.model_options),
+                        "source": "preset",
+                        "reason": "no remote models endpoint",
+                    },
+                )
+                return
+
+            headers: dict[str, str] = {"Accept": "application/json"}
+            if preset.models_needs_key:
+                if not api_key:
+                    # 需 key 但未提供 -> 回退预设
+                    await channel.send_response(
+                        ws, req_id, ok=True,
+                        payload={
+                            "models": list(preset.model_options),
+                            "source": "preset",
+                            "reason": "api_key required for fetch",
+                        },
+                    )
+                    return
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            # 同步 httpx.get 通过 asyncio.to_thread 卸载到线程池,避免阻塞事件循环
+            # (与同文件 _openai_account_*_payload / _updater_* 的 to_thread 模式一致)。
+            remote_ids, remote_reason = await asyncio.to_thread(
+                _fetch_remote_sync, preset.models_endpoint, headers,
+            )
+
+            if remote_ids:
+                await channel.send_response(
+                    ws, req_id, ok=True,
+                    payload={"models": remote_ids, "source": "remote"},
+                )
+                return
+
+            # 远端失败/空 -> 回退预设。把远端状态码/原因透传给前端,联调时能
+            # 分辨是鉴权失败(key 错 / 需厂商专属签名)、限流、还是端点不可达,
+            # 而非笼统的"拉取报错"。注意:仍回 source="preset" + ok=True,保证
+            # 拉取失败不阻塞前端选模型,只是可见地说明为何回退。
+            await channel.send_response(
+                ws, req_id, ok=True,
+                payload={
+                    "models": list(preset.model_options),
+                    "source": "preset",
+                    "reason": remote_reason or "remote fetch failed or empty",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[vendors.fetch_models] %s", exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _openai_account_auth_status(ws, req_id, params, session_id):
         del params, session_id
@@ -5974,6 +6189,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
     _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL, _models_replace_all)
     _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
+
+    # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
+    # 直接走本地 handler。
+    channel.register_method("vendors.list", _vendors_list)
+    channel.register_method("vendors.fetch_models", _vendors_fetch_models)
     channel.register_method("channel.get", _channel_get)
     channel.register_method("openai_account.auth.status", _openai_account_auth_status)
     channel.register_method("openai_account.auth.start_login", _openai_account_auth_start_login)

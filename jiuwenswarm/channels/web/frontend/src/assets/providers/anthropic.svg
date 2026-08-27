@@ -1,0 +1,9 @@
+<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="48.000000" height="48.000000" fill="none" clip-path="url(#clipPath_25)" customFrame="url(#clipPath_25)">
+	<defs>
+		<clipPath id="clipPath_25">
+			<rect width="48.000000" height="48.000000" x="0.000000" y="0.000000" rx="12.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+	</defs>
+	<rect id="Anthropic" width="48.000000" height="48.000000" x="0.000000" y="0.000000" rx="12.000000" fill="rgb(240,239,234)" />
+	<path id="合并" d="M4.5 37.6478L15.3811 10.3477L21.6211 10.3477L32.5022 37.6478L26.4181 37.6478L24.1928 31.9148L12.8094 31.9148L10.584 37.6478L4.5 37.6478ZM26.6519 10.3477L32.6189 10.3477L43.5 37.6478L37.533 37.6478L26.6519 10.3477ZM18.5011 17.2507L14.7774 26.8448L22.2249 26.8448L18.5011 17.2507Z" fill="rgb(0,0,0)" fill-rule="evenodd" />
+</svg>

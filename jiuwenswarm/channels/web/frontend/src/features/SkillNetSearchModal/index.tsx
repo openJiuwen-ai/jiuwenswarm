@@ -142,8 +142,8 @@ interface SkillNetSearchModalProps {
   viewMode?: "list" | "grid";
   onClose: () => void;
   onInstalled?: (skillName: string) => void | Promise<void>;
-  /** 点击文案中的「配置页面」时：关闭弹窗并切换到应用内配置页 */
-  onNavigateToConfig?: () => void;
+  /** 点击文案中的「智能体设置」时：关闭弹窗并切换到设置页 */
+  onNavigateToSettings?: () => void;
 }
 
 export function SkillNetSearchModal({
@@ -156,7 +156,7 @@ export function SkillNetSearchModal({
   viewMode = "list",
   onClose,
   onInstalled,
-  onNavigateToConfig,
+  onNavigateToSettings,
 }: SkillNetSearchModalProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -950,13 +950,13 @@ export function SkillNetSearchModal({
                 <Trans
                   i18nKey="skills.skillNet.usageNotice2"
                   components={{
-                    configLink: (
+                    settingsLink: (
                       <button
                         type="button"
-                        data-testid="skill-net-search-modal-config-page-link"
-                        aria-label={t("skills.skillNet.configPageLinkAria")}
+                        data-testid="skill-net-search-modal-settings-page-link"
+                        aria-label={t("skills.skillNet.settingsPageLinkAria")}
                         className="inline p-0 m-0 align-baseline border-0 bg-transparent cursor-pointer font-medium text-accent underline decoration-accent/35 underline-offset-2 hover:text-accent-hover hover:decoration-accent/60"
-                        onClick={() => onNavigateToConfig?.()}
+                        onClick={() => onNavigateToSettings?.()}
                       />
                     ),
                   }}

@@ -1,0 +1,39 @@
+.ui-switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-muted);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+.ui-switch > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-inverse);
+  box-shadow: var(--effect-shadow-sm);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.ui-switch--checked {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary);
+}
+.ui-switch--checked > span {
+  transform: translateX(18px);
+}
+.ui-switch:focus-visible {
+  outline: none;
+  box-shadow: var(--effect-focus-ring);
+}
+.ui-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}

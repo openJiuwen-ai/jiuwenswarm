@@ -189,6 +189,49 @@ def test_editing_alias_only_keeps_other_placeholders_intact():
     assert out[0]["alias"] == "openai-flagship"
 
 
+def test_vendor_key_round_trips_without_disturbing_placeholders():
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+    parsed = [{
+        "model_name": "openai/gpt-5.6-terra",
+        "api_base": "https://openrouter.ai/api/v1",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "router",
+        "origin_index": 0,
+        "vendor_key": "openrouter",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_client_config"]["vendor_key"] == "openrouter"
+    assert out[0]["model_client_config"]["api_key"] == "${API_KEY}"
+
+
+def test_new_vendor_model_persists_vendor_key():
+    parsed = [{
+        "model_name": "openai/gpt-5.6-terra",
+        "api_base": "https://openrouter.ai/api/v1",
+        "api_key": "sk-new",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "router",
+        "origin_index": None,
+        "vendor_key": "openrouter",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [], [], crypto=_StubCrypto())
+
+    assert out[0]["model_client_config"]["vendor_key"] == "openrouter"
+
+
 def test_changing_api_key_encrypts_new_value_and_drops_placeholder():
     raw = _raw_entry_with_placeholder()
     resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
@@ -226,6 +269,8 @@ def test_new_entry_without_origin_index_uses_payload_verbatim():
         "is_default": True,
         "alias": "claude",
         "origin_index": None,
+        "vendor_key": "anthropic",
+        "plan": "custom_api",
     }]
 
     out = _merge_models_for_replace_all(parsed, [], [], crypto=_StubCrypto())
@@ -234,7 +279,42 @@ def test_new_entry_without_origin_index_uses_payload_verbatim():
     assert mcc["model_name"] == "claude-opus-4-7"
     assert mcc["api_key"] == "enc:sk-new"
     assert mcc["verify_ssl"] is True
+    assert mcc["vendor_key"] == "anthropic"
+    assert mcc["plan"] == "custom_api"
     assert out[0]["alias"] == "claude"
+
+
+def test_existing_entry_updates_and_clears_exact_vendor_identity():
+    raw = _raw_entry_with_placeholder()
+    raw["model_client_config"].update({"vendor_key": "alibaba", "plan": "token_plan"})
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "vendor_key": "alibaba",
+        "plan": "coding_plan",
+    }]
+
+    updated = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+    assert updated[0]["model_client_config"]["vendor_key"] == "alibaba"
+    assert updated[0]["model_client_config"]["plan"] == "coding_plan"
+
+    cleared = _merge_models_for_replace_all(
+        [{**parsed[0], "vendor_key": None, "plan": None}],
+        [raw],
+        [resolved],
+        crypto=_StubCrypto(),
+    )
+    assert "vendor_key" not in cleared[0]["model_client_config"]
+    assert "plan" not in cleared[0]["model_client_config"]
 
 
 def test_origin_index_out_of_range_falls_back_to_new_entry():

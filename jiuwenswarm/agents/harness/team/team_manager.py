@@ -10,8 +10,8 @@ import logging
 import re
 import time
 import weakref
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 from openjiuwen.agent_teams.agent.team_agent import TeamAgent
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
@@ -27,6 +27,12 @@ from openjiuwen.harness.rails import (
     TeamSkillEvolutionRail,
 )
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
+from jiuwenswarm.common.cron_team_completion import (
+    _cron_solo_harness_end_pending,
+    apply_cron_team_round_event,
+    cron_team_round_should_end,
+    new_cron_team_round_state,
+)
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
@@ -90,6 +96,7 @@ _TEAM_STREAM_EXIT_GRACE_TIMEOUT_SEC = 1.5
 # event emitted by a long-running team session.
 TEAM_EVENT_QUEUE_MAXSIZE = 64
 _WAITER_PUT_RECHECK_TIMEOUT_SEC = 0.1
+_TEAM_ROUND_FINAL_GRACE_SECONDS = 2.0
 
 
 def _safe_payload_preview(payload: Any) -> str:
@@ -198,6 +205,20 @@ class TeamRailMountContext:
     team_workspace: TeamWorkspaceInfo
 
 
+@dataclass
+class _ActiveTeamRound:
+    """Process-local ownership for one submitted Team interaction round."""
+
+    request_id: str
+    release_admission: Callable[[], Awaitable[None]] | None = None
+    defer_terminal_release: bool = False
+    terminal_armed: bool = False
+    completion_state: dict[str, Any] = field(
+        default_factory=new_cron_team_round_state
+    )
+    completion_task: asyncio.Task | None = None
+
+
 def _make_team_rail_mount_context(
     *,
     agent: Any,
@@ -290,6 +311,14 @@ class TeamManager:
         self._pending_team_names: dict[str, str] = {}
         # session_id → list of (request_id, asyncio.Queue) waiters
         self._pending_waiters: dict[str, list[tuple[str, asyncio.Queue]]] = {}
+        # A bounded automated round temporarily owns event delivery for the
+        # session. The original browser waiter stays registered for later
+        # interactive rounds, while this round is delivered exactly once.
+        self._exclusive_waiters: dict[str, str] = {}
+        # Team runner streams are deliberately persistent.  This registry
+        # describes the single actual round admitted for a Session and owns
+        # its admission release until terminal/cancel cleanup.
+        self._active_rounds: dict[str, _ActiveTeamRound] = {}
         # session_id → cron team round completion state. Lifetime-coupled to
         # _pending_waiters: set by _try_finish_cron_team_stream, popped by the
         # finisher coroutines once the cron stream ends.
@@ -348,12 +377,31 @@ class TeamManager:
         """Return whether there are pending waiters for the given session."""
         return bool(self._pending_waiters.get(session_id))
 
-    def add_waiter(self, session_id: str, request_id: str, queue: asyncio.Queue) -> None:
+    def has_interactive_waiter(self, session_id: str) -> bool:
+        """Return whether a non-automation consumer owns the persistent stream."""
+        exclusive_request_id = self._exclusive_waiters.get(session_id)
+        return any(
+            request_id != exclusive_request_id
+            for request_id, _queue in self._pending_waiters.get(session_id, ())
+        )
+
+    def add_waiter(
+        self,
+        session_id: str,
+        request_id: str,
+        queue: asyncio.Queue,
+        *,
+        exclusive: bool = False,
+    ) -> None:
         """Register a waiter queue for a session's event stream."""
         self._pending_waiters.setdefault(session_id, []).append((request_id, queue))
+        if exclusive:
+            self._exclusive_waiters[session_id] = request_id
 
     def remove_waiter(self, session_id: str, request_id: str) -> None:
         """Remove a waiter by request_id; clean up empty lists."""
+        if self._exclusive_waiters.get(session_id) == request_id:
+            self._exclusive_waiters.pop(session_id, None)
         waiters = self._pending_waiters.get(session_id)
         if waiters is None:
             return
@@ -370,7 +418,37 @@ class TeamManager:
         producer notice that ``remove_waiter`` detached a disconnected client
         instead of remaining blocked forever on that orphaned queue.
         """
+        event_type = str(event.get("event_type") or "")
+        terminal = (
+            event_type == "chat.processing_status"
+            and event.get("is_processing") is False
+            and event.get("is_complete") is True
+        )
+        current_round = self._active_rounds.get(session_id)
+        if terminal and current_round is not None and not current_round.terminal_armed:
+            # A persistent Runner stream can emit duplicate terminal frames
+            # after the previous round has released.  A follow-up round is not
+            # allowed to accept a terminal until that stream has produced at
+            # least one event for the newly submitted interaction.  Dropping
+            # the stale control frame also keeps it out of the new exclusive
+            # waiter.
+            logger.debug(
+                "[TeamManager] ignored unarmed terminal: session_id=%s request_id=%s",
+                session_id,
+                current_round.request_id,
+            )
+            return
+        if not terminal and current_round is not None:
+            current_round.terminal_armed = True
+
         waiters = list(self._pending_waiters.get(session_id, ()))
+        exclusive_request_id = self._exclusive_waiters.get(session_id)
+        if exclusive_request_id is not None:
+            waiters = [
+                (request_id, queue)
+                for request_id, queue in waiters
+                if request_id == exclusive_request_id
+            ]
 
         async def _put_to_waiter(
             request_id: str,
@@ -402,6 +480,183 @@ class TeamManager:
             _put_to_waiter(request_id, queue)
             for request_id, queue in waiters
         ))
+
+        # Deliver the terminal frame before releasing admission.  This keeps a
+        # new user/Heartbeat round from installing a waiter in the middle of
+        # the previous round's final broadcast.
+        if terminal:
+            await self.finish_round(session_id)
+        elif current_round is not None and not current_round.defer_terminal_release:
+            self._observe_interactive_round_event(
+                session_id,
+                current_round,
+                event,
+            )
+
+    def _observe_interactive_round_event(
+        self,
+        session_id: str,
+        current_round: _ActiveTeamRound,
+        event: dict[str, Any],
+    ) -> None:
+        """Synthesize a terminal for supported final-only Team runtimes."""
+        apply_cron_team_round_event(current_round.completion_state, event)
+        should_end = cron_team_round_should_end(current_round.completion_state)
+        pending_task = current_round.completion_task
+        if not should_end:
+            if pending_task is not None and not pending_task.done():
+                pending_task.cancel()
+            current_round.completion_task = None
+            return
+        if pending_task is not None and not pending_task.done():
+            return
+        grace_seconds = (
+            _TEAM_ROUND_FINAL_GRACE_SECONDS
+            if _cron_solo_harness_end_pending(current_round.completion_state)
+            else 0.0
+        )
+        current_round.completion_task = asyncio.create_task(
+            self._finish_interactive_round_after_grace(
+                session_id,
+                current_round.request_id,
+                grace_seconds,
+            ),
+            name=f"team-round-final-{session_id}",
+        )
+
+    async def _finish_interactive_round_after_grace(
+        self,
+        session_id: str,
+        request_id: str,
+        grace_seconds: float,
+    ) -> None:
+        """Finish the same round only if no delegation event invalidated its final."""
+        if grace_seconds > 0:
+            await asyncio.sleep(grace_seconds)
+        current = self._active_rounds.get(session_id)
+        if current is None or current.request_id != request_id:
+            return
+        current.completion_task = None
+        if current.defer_terminal_release:
+            return
+        if not cron_team_round_should_end(current.completion_state):
+            return
+        await self.broadcast_event(
+            session_id,
+            {
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "request_id": request_id,
+                "is_processing": False,
+                "is_complete": True,
+            },
+        )
+
+    def begin_round(
+        self,
+        session_id: str,
+        request_id: str,
+        *,
+        release_admission: Callable[[], Awaitable[None]] | None = None,
+        defer_terminal_release: bool = False,
+        terminal_armed: bool = False,
+    ) -> None:
+        """Bind the one admitted interaction round to its request."""
+        current = self._active_rounds.get(session_id)
+        if current is not None:
+            raise RuntimeError(
+                f"team round already active for session {session_id}: "
+                f"{current.request_id}"
+            )
+        self._active_rounds[session_id] = _ActiveTeamRound(
+            request_id=request_id,
+            release_admission=release_admission,
+            defer_terminal_release=defer_terminal_release,
+            terminal_armed=terminal_armed,
+        )
+
+    async def finish_round(self, session_id: str) -> None:
+        """Finish the current round on a runtime terminal event."""
+        current = self._active_rounds.get(session_id)
+        if current is None or current.defer_terminal_release:
+            return
+        await self.release_round(session_id, current.request_id)
+
+    async def release_round(self, session_id: str, request_id: str) -> bool:
+        """Idempotently release one round and its admission lease."""
+        current = self._active_rounds.get(session_id)
+        if current is None or current.request_id != request_id:
+            return False
+        self._active_rounds.pop(session_id, None)
+        completion_task = current.completion_task
+        if (
+            completion_task is not None
+            and completion_task is not asyncio.current_task()
+            and not completion_task.done()
+        ):
+            completion_task.cancel()
+        if current.release_admission is not None:
+            await current.release_admission()
+        return True
+
+    async def release_current_round(self, session_id: str) -> bool:
+        """Release whichever round owns a stream that has just terminated."""
+        current = self._active_rounds.get(session_id)
+        if current is None:
+            return False
+        return await self.release_round(session_id, current.request_id)
+
+    def is_round_active(self, session_id: str) -> bool:
+        """Return whether a Team round, rather than its transport, is active."""
+        return session_id in self._active_rounds
+
+    def is_round_owner(self, session_id: str, request_id: str) -> bool:
+        current = self._active_rounds.get(session_id)
+        return current is not None and current.request_id == request_id
+
+    async def abort_round(self, session_id: str, request_id: str) -> bool:
+        """Stop a cancelled automated round before releasing its ownership.
+
+        Agent-core exposes runtime stop rather than a per-interaction abort.
+        Stopping preserves persisted Team state; a later request cold-recovers
+        the runtime and cannot receive ghost output from the cancelled round.
+        Every local object bound to the stopped runtime must be detached as
+        well; in particular, a running TeamMonitorHandler cannot be reused
+        after cold recovery because it still listens to the old TeamAgent.
+        """
+        async with self._get_lifecycle_lock(session_id):
+            if not self.is_round_owner(session_id, request_id):
+                return False
+            team_name = self._resolve_session_team_name(session_id)
+            if team_name:
+                try:
+                    await Runner.stop_agent_team(
+                        team_name=team_name,
+                        session_id=session_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Cancelling the local consumer below is the mandatory
+                    # fallback: it closes the active Runner generator even if the
+                    # public pool stop reports a transient teardown error.
+                    logger.warning(
+                        "[TeamManager] heartbeat round stop failed; cancelling stream: "
+                        "session_id=%s request_id=%s error=%s",
+                        session_id,
+                        request_id,
+                        exc,
+                    )
+            # Runner.stop_agent_team removes the runtime from the pool.  Mirror the
+            # normal terminal cleanup path so a later cold recovery creates fresh
+            # stream/monitor/rail bindings instead of retaining objects attached to
+            # the stopped TeamAgent.  This also cancels the local stream when the
+            # Runner stop above failed, preserving the no-ghost fallback.
+            await self._cleanup_runtime_locals(session_id)
+            await self._stop_runner_team_agent_transport(session_id)
+            self.clear_active_runtime(session_id)
+            self.clear_pending_runtime(session_id)
+            self._clear_terminal_session_markers(session_id)
+            await self.release_round(session_id, request_id)
+            return True
 
     # --- seen_team_events tracking ---
     # A session enters "team" mode once any team-building event (team.member,
@@ -665,6 +920,9 @@ class TeamManager:
                             k: v for k, v in mcc.items()
                             if k not in ("model_name", "api_key", "api_base", "client_provider") and v is not None
                         },
+                        # 新声明下方言由 endpoint_profile 表达(client_provider 多数为 OpenAI)。
+                        # 同时透传 profile 供下游需要区分 DeepSeek/DashScope 等方言时使用。
+                        "endpoint_profile": mcc.get("endpoint_profile", ""),
                         "request": request_config,
                     },
                 )
@@ -1978,6 +2236,7 @@ class TeamManager:
         )
         self.clear_active_runtime(session_id)
         self.clear_pending_runtime(session_id)
+        await self.release_current_round(session_id)
         # These round/session markers live on the process-wide TeamManager.
         # TUI disconnect cancels the async event generator before its normal
         # tail can clear them, so terminal runtime cleanup must own the
@@ -2055,6 +2314,7 @@ class TeamManager:
                 or self.is_runtime_pending(session_id)
             )
             if not has_stream_task and not has_team_runtime:
+                await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
                 return False
             logger.info(
@@ -2141,6 +2401,7 @@ class TeamManager:
                 or self.is_runtime_pending(session_id)
             )
             if not has_stream_task and not has_team_runtime:
+                await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
                 return False
 
@@ -2199,6 +2460,7 @@ class TeamManager:
                 or self.is_runtime_pending(session_id)
             )
             if not has_stream_task and not has_team_runtime:
+                await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
                 return False
 
@@ -2246,6 +2508,7 @@ class TeamManager:
 
             self.clear_active_runtime(session_id)
             self.clear_pending_runtime(session_id)
+            await self.release_current_round(session_id)
             self._clear_terminal_session_markers(session_id)
 
         logger.info(

@@ -29,6 +29,7 @@ parse_dotenv_early("jiuwenswarm-agentserver")
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.utils import (
+    ensure_config_migrated_from_template,
     ensure_default_builtin_skills,
     get_env_file,
     get_root_dir,
@@ -56,6 +57,9 @@ mcp_builtins_missing = not _mcp_builtins_dir.is_dir()
 if config_missing or workspace_migration_needed or mcp_builtins_missing:
     prepare_workspace(overwrite=False)
 
+# 每次启动合并模板新增配置项（保留用户已有值）
+ensure_config_migrated_from_template()
+
 # 幂等地补齐默认内置技能（对已有工作区也生效，新增默认技能时自动安装）
 ensure_default_builtin_skills()
 
@@ -64,6 +68,33 @@ if _logging_yaml.exists():
     from openjiuwen.core.common.logging.log_config import configure_log
     configure_log(str(_logging_yaml))
 else:
+    # Inject openjiuwen log_path to user dir ~/.jiuwenswarm/logs/ so agentcore
+    # logs land beside jiuwenswarm's own logs, independent of process cwd.
+    # openjiuwen reads HOME (sandbox: /root), not JIUWENSWARM_HOME, so resolve
+    # the root ourselves and inject an absolute log_path. Failure falls back
+    # to the original degraded logging below without blocking startup.
+    try:
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+
+        _oj_home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
+        _oj_log_dir = f"{_oj_home}/.jiuwenswarm/logs/"
+        configure_log_config({
+            "backend": "default",
+            "level": "INFO",
+            "log_path": _oj_log_dir,
+            "log_file": "run/jiuwen.log",
+            "output": ["console", "file"],
+            "structured_output_format": "json",
+            "interface_log_file": "interface/jiuwen_interface.log",
+            "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+            "performance_log_file": "performance/jiuwen_performance.log",
+        })
+    # Startup must never block on logging config; degraded logging follows.
+    except Exception as _log_cfg_exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "openjiuwen log config failed; using degraded logging: %s", _log_cfg_exc
+        )
+
     for _lg in LogManager.get_all_loggers().values():
         _lg.set_level(logging.CRITICAL)
 

@@ -5,8 +5,8 @@ import teamAvatar3 from '../assets/Team-3.svg';
 import teamAvatar4 from '../assets/Team-4.svg';
 import teamAvatar5 from '../assets/Team-5.svg';
 import teamAvatar6 from '../assets/Team-6.svg';
-import claudeCodeAvatar from '../assets/providers/anthropic.png';
-import codexAvatar from '../assets/providers/openai.png';
+import claudeCodeAvatar from '../assets/providers/anthropic.svg';
+import codexAvatar from '../assets/providers/openai.svg';
 
 const TEAM_MEMBER_AVATARS = [
   teamAvatar2,

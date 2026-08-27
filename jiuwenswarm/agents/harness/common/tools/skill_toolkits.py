@@ -15,9 +15,9 @@ from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 logger = logging.getLogger(__name__)
 
 _AUTO_SOURCE = "auto"
-_DEFAULT_SOURCE = "skillnet"
-_SEARCHABLE_SOURCES = {"skillnet", "clawhub", "teamskillshub", "builtin"}
-_SUPPORTED_SOURCES = {"skillnet", "clawhub", "teamskillshub", "builtin"}
+_DEFAULT_SOURCE = _AUTO_SOURCE
+_SEARCHABLE_SOURCES = {"clawhub", "teamskillshub", "builtin"}
+_SUPPORTED_SOURCES = {"clawhub", "teamskillshub", "builtin"}
 # identifier 对模型是统一字段；这里根据其形态推断底层来源。
 _INSTALL_SOURCE_BY_TARGET: tuple[tuple[str, str], ...] = (
     (r"^https?://", "skillnet"),
@@ -385,7 +385,7 @@ class SkillToolkit:
     async def search_skill(
         self, query: str, source: str = _DEFAULT_SOURCE, limit: int = 10
     ) -> dict[str, Any]:
-        """Search skills from SkillNet, ClawHub, and/or TeamSkillsHub with a unified response."""
+        """Search skills from enabled online sources and the builtin catalog."""
         try:
             normalized_source = self._normalize_source(source)
             query = str(query or "").strip()
@@ -563,7 +563,7 @@ class SkillToolkit:
                     "detail": (
                         "source is required; "
                         "must be one of: "
-                        "'skillnet', 'clawhub', "
+                        "'clawhub', "
                         "'teamskillshub', or 'builtin'"
                     ),
                 }
@@ -575,7 +575,7 @@ class SkillToolkit:
                     "installed": False,
                     "detail": (
                         "source must be explicitly set "
-                        "to 'skillnet', 'clawhub', "
+                        "to 'clawhub', "
                         "'teamskillshub', or 'builtin'"
                     ),
                 }
@@ -798,10 +798,10 @@ class SkillToolkit:
             make_tool(
                 name="search_skill",
                 description=(
-                    "Search skills that can be installed. The default source is SkillNet; "
-                    "use source='auto' to search SkillNet, ClawHub, TeamSkillsHub, and "
-                    "built-in skills in one call. Combine related requirements into one "
-                    "query. Results include the identifier and source required by install_skill."
+                    "Search installable skills from ClawHub, TeamSkillsHub, "
+                    "and builtin directory. Use the returned identifier with install_skill "
+                    "(ClawHub slug, TeamSkillsHub asset_id, or skill name "
+                    "when source is builtin)."
                 ),
                 input_params={
                     "type": "object",
@@ -815,18 +815,13 @@ class SkillToolkit:
                         },
                         "source": {
                             "type": "string",
-                            "enum": [
-                                "auto",
-                                "skillnet",
-                                "clawhub",
-                                "teamskillshub",
-                                "builtin",
-                            ],
+                            "enum": ["auto", "clawhub", "teamskillshub", "builtin"],
                             "description": (
-                                "Where to search. Defaults to skillnet; use auto to search "
-                                "all available sources in one call."
+                                "Skill source to search. Defaults to auto. "
+                                "Use auto to search all sources including builtin. "
+                                "Use builtin to search locally available builtin skills."
                             ),
-                            "default": "skillnet",
+                            "default": "auto",
                         },
                         "limit": {
                             "type": "integer",
@@ -853,7 +848,7 @@ class SkillToolkit:
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["skillnet", "clawhub", "teamskillshub", "builtin"],
+                            "enum": ["clawhub", "teamskillshub", "builtin"],
                             "description": (
                                 "Explicit source matching search_skill items, or 'builtin' "
                                 "for locally available skills that don't need online search. "

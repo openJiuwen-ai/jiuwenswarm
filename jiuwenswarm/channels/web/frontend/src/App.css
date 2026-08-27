@@ -109,8 +109,7 @@
 .app-restart-modal {
   position: fixed;
   inset: 0;
-  /* 需高于所有浮层（含 .icon-rail-more-panel z-index:1200、.advanced-config-panel z-index:1300、
-     全局最高的 2000），否则模态的毛玻璃遮罩会被这些不带 backdrop-filter 的浮层盖住。 */
+  /* 需高于全局其它浮层，否则模态的毛玻璃遮罩会被不带 backdrop-filter 的浮层盖住。 */
   z-index: 2100;
   display: flex;
   align-items: center;

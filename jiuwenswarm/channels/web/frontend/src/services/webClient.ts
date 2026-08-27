@@ -96,10 +96,6 @@ class WebClient {
     return this.state;
   }
 
-  getInflightCount(): number {
-    return this.pending.size;
-  }
-
   onStateChange(handler: StateHandler): () => void {
     this.stateHandlers.add(handler);
     return () => {

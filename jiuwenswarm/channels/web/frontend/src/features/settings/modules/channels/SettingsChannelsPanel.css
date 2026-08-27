@@ -1,0 +1,338 @@
+.settings-channels-panel {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-channels-panel__fetch-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  color: var(--color-feedback-danger);
+  border: 1px solid var(--color-border-danger);
+  border-radius: var(--radius-lg);
+  background: var(--color-feedback-danger-subtle);
+}
+
+.settings-channels-panel__error-toast {
+  position: fixed;
+  z-index: 100;
+  top: 20px;
+  left: 50%;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 9px 14px;
+  color: var(--color-feedback-danger-text);
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-md);
+  background: var(--color-feedback-danger);
+  box-shadow: var(--effect-shadow-lg);
+  transform: translateX(-50%);
+}
+
+.settings-channels-panel__channel-list,
+.settings-channels-panel__skeleton {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+}
+
+.settings-channels-panel__skeleton > div {
+  height: 80px;
+  background: var(--color-settings-card-subtle);
+}
+
+.settings-channels-panel__skeleton > div + div,
+.settings-channels-panel__channel-card + .settings-channels-panel__channel-card {
+  border-top: 1px solid var(--color-settings-border);
+}
+
+.settings-channels-panel__channel-card {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-height: 80px;
+  gap: 20px;
+  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-channels-panel__channel-card--configured {
+  display: block;
+  min-height: 0;
+}
+
+.settings-channels-panel__channel-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.settings-channels-panel__channel-label {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.settings-channels-panel__channel-details {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: baseline;
+  margin-top: 2px;
+  gap: 12px;
+}
+
+.settings-channels-panel__channel-description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-settings-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-channels-panel__configuration-guide {
+  flex: 0 0 auto;
+  color: var(--color-settings-link);
+  font-size: 14px;
+  line-height: 22px;
+  text-decoration: none;
+}
+
+.settings-channels-panel__configuration-guide:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-channels-panel__configuration-guide:focus-visible {
+  border-radius: 2px;
+  outline: none;
+  box-shadow: var(--effect-focus-ring);
+}
+
+.settings-channels-panel__channel-id,
+.settings-channels-panel__channel-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.settings-page .ui-button.settings-channels-panel__configure-button {
+  width: auto;
+  min-width: 84px;
+  height: 28px;
+  min-height: 28px;
+  padding: 4px 16px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  border: 1px solid var(--color-button-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-card);
+}
+
+.settings-page .ui-button.settings-channels-panel__configure-button:hover:not(:disabled) {
+  border-color: var(--color-button-border);
+  background: var(--color-button-hover);
+}
+
+.settings-channels-panel__accounts {
+  display: grid;
+  min-width: 0;
+  margin-top: 22px;
+  gap: 16px;
+}
+
+.settings-channels-panel__account-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  min-height: 72px;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: var(--color-settings-card-subtle);
+}
+
+.settings-channels-panel__account-logo,
+.settings-channels-panel__dialog-logo {
+  box-sizing: border-box;
+  display: block;
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+}
+
+.settings-channels-panel__dialog-logo {
+  width: 36px;
+  height: 36px;
+}
+
+.settings-channels-panel__account-copy {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-channels-panel__account-copy strong {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-channels-panel__account-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-page .ui-button.settings-channels-panel__account-action {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 8px;
+  color: var(--color-text-primary);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+}
+
+.settings-page .ui-button.settings-channels-panel__account-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.settings-page .ui-button.settings-channels-panel__account-action:hover:not(:disabled) {
+  background: var(--color-sidebar-nav-hover);
+}
+
+.settings-page .ui-button.settings-channels-panel__account-action--danger:hover:not(:disabled) {
+  color: var(--color-feedback-danger);
+  background: var(--color-feedback-danger-subtle);
+}
+
+.settings-page .ui-button.settings-channels-panel__add-configuration {
+  width: fit-content;
+  min-height: 22px;
+  padding: 0;
+  color: var(--color-settings-link);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-page .ui-button.settings-channels-panel__add-configuration:hover:not(:disabled) {
+  color: var(--color-settings-link);
+  background: transparent;
+}
+
+.ui-dialog.settings-channel-dialog-surface {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.settings-channel-dialog .form-dialog__body {
+  min-height: 240px;
+  max-height: min(600px, calc(100vh - 220px));
+}
+
+.settings-channel-form__hint {
+  margin-bottom: 16px;
+  padding: 9px 12px;
+  color: var(--color-settings-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  border-radius: var(--radius-md);
+  background: var(--color-feedback-info-subtle);
+}
+
+.settings-channel-form__warning {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-feedback-warning);
+}
+
+.settings-channel-form__warning p {
+  margin: 0;
+}
+
+.settings-channel-form__fields {
+  display: grid;
+  gap: 18px;
+}
+
+.settings-channel-form__fields .form-item__heading {
+  margin-bottom: 6px;
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+.settings-channel-form__fields .ui-input-wrap,
+.settings-channel-form__fields .ui-input,
+.settings-channel-form__fields .ui-select,
+.settings-channel-form__fields .ui-textarea {
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .settings-channels-panel__channel-card {
+    gap: 16px;
+    padding: 16px;
+  }
+
+  .settings-channels-panel__channel-details {
+    flex-wrap: wrap;
+    column-gap: 8px;
+  }
+
+  .settings-channels-panel__account-card {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .settings-channels-panel__account-logo {
+    width: 36px;
+    height: 36px;
+  }
+
+  .settings-channels-panel__account-card {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .settings-channels-panel__account-actions {
+    grid-column: 1 / -1;
+  }
+}

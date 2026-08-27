@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import io
+import textwrap
 import threading
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -21,13 +24,80 @@ def _source(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
+def _parse_imports_without_recursion(source: str) -> ast.Module:
+    """Parse import statements individually for old CPython versions.
+
+    CPython 3.11.8 and earlier can fail while constructing the AST of a large
+    module, even when the source is valid.  The import statements are small
+    independent units, so parsing those units separately preserves the static
+    check without exercising that interpreter limit.
+    """
+    lines = source.splitlines(keepends=True)
+    body: list[ast.stmt] = []
+    statement_start = True
+    import_start_line: int | None = None
+    import_start_column = 0
+    bracket_depth = 0
+
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if import_start_line is not None:
+            if token.type == tokenize.OP:
+                if token.string in "([{":
+                    bracket_depth += 1
+                elif token.string in ")]}":
+                    bracket_depth -= 1
+            if token.type == tokenize.NEWLINE and bracket_depth == 0:
+                first_line = lines[import_start_line - 1][import_start_column:]
+                continuation = "".join(lines[import_start_line : token.end[0]])
+                snippet = textwrap.dedent(
+                    first_line + continuation
+                ).strip()
+                body.extend(ast.parse(snippet).body)
+                import_start_line = None
+                statement_start = True
+            continue
+
+        if token.type in {
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.NL,
+            tokenize.COMMENT,
+        }:
+            continue
+        if token.type == tokenize.NEWLINE:
+            statement_start = True
+            continue
+        if token.type == tokenize.OP:
+            if token.string in "([{":
+                bracket_depth += 1
+            elif token.string in ")]}":
+                bracket_depth -= 1
+            if token.string in {":", ";"} and bracket_depth == 0:
+                statement_start = True
+                continue
+        if (
+            statement_start
+            and token.type == tokenize.NAME
+            and token.string in {"from", "import"}
+        ):
+            import_start_line = token.start[0]
+            import_start_column = token.start[1]
+            bracket_depth = 0
+            statement_start = False
+            continue
+        statement_start = False
+
+    return ast.Module(body=body, type_ignores=[])
+
+
 def _parse(source: str) -> ast.Module:
     """在全新线程中执行 ast.parse，规避 CPython gh-106905。
 
     Python 3.11.8 之前的版本存在已知 bug：调用点递归较深时（pytest 下约
     110 层），大文件 AST 构造会触发内部递归上限，且错误路径漏减计数器，
     最终把正常解析报成 ``SystemError: AST constructor recursion depth
-    mismatch``。新线程从接近 0 的递归深度开始，可稳定避开该内部上限。
+    mismatch``。新线程从接近 0 的递归深度开始；若文件仍触发该错误，则
+    逐条解析 import 语句作为兼容回退。
     """
     outcome: dict[str, object] = {}
 
@@ -42,6 +112,10 @@ def _parse(source: str) -> ast.Module:
     worker.join()
     error = outcome.get("error")
     if isinstance(error, BaseException):
+        if isinstance(error, SystemError) and "AST constructor recursion depth mismatch" in str(
+            error
+        ):
+            return _parse_imports_without_recursion(source)
         raise error
     tree = outcome.get("tree")
     assert isinstance(tree, ast.Module)

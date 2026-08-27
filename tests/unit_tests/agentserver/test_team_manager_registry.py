@@ -1039,6 +1039,12 @@ async def test_finalize_runtime_cleanup_releases_session_markers(
     manager.mark_workflow_completed(session_id)
     manager.setdefault_cron_completion(session_id, {"round_id": 1})
     getattr(manager, "_pending_team_evolution_watcher_sessions").add(session_id)
+    release_admission = AsyncMock()
+    manager.begin_round(
+        session_id,
+        "req-terminal-cleanup",
+        release_admission=release_admission,
+    )
 
     async def fake_cleanup(
         _session_id: str,
@@ -1057,6 +1063,8 @@ async def test_finalize_runtime_cleanup_releases_session_markers(
     assert manager.has_seen_team_events(session_id) is False
     assert manager.is_workflow_completed(session_id) is False
     assert manager.get_cron_completion(session_id) is None
+    assert manager.is_round_active(session_id) is False
+    release_admission.assert_awaited_once()
     assert session_id not in getattr(
         manager,
         "_pending_team_evolution_watcher_sessions",

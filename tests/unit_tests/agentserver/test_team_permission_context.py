@@ -94,6 +94,48 @@ async def test_team_branch_resets_permission_channel_id_after_request(
 
 
 @pytest.mark.anyio
+async def test_team_branch_binds_heartbeat_service_without_changing_stream_contract(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = object()
+    adapter = _make_adapter()
+    adapter._heartbeat_service = service
+    observed: list[object | None] = []
+
+    async def _fake_stream(_request, _inputs, _agent):
+        observed.append(team_helpers._TEAM_HEARTBEAT_SERVICE.get())
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(team_helpers, "process_team_message_stream", _fake_stream)
+
+    await _drain(adapter, _team_request())
+
+    assert observed == [service]
+    assert team_helpers._TEAM_HEARTBEAT_SERVICE.get() is None
+
+
+@pytest.mark.anyio
+async def test_team_setup_failure_does_not_leak_heartbeat_service() -> None:
+    inherited_service = object()
+    request_service = object()
+    adapter = _make_adapter()
+    adapter._heartbeat_service = request_service
+
+    def _raise_runtime_state_error(**_kwargs: Any) -> None:
+        raise RuntimeError("runtime state setup failed")
+
+    adapter._write_runtime_state = _raise_runtime_state_error
+    inherited_token = team_helpers.bind_team_heartbeat_service(inherited_service)
+    try:
+        with pytest.raises(RuntimeError, match="runtime state setup failed"):
+            await _drain(adapter, _team_request())
+        assert team_helpers._TEAM_HEARTBEAT_SERVICE.get() is inherited_service
+    finally:
+        team_helpers.reset_team_heartbeat_service(inherited_token)
+
+
+@pytest.mark.anyio
 async def test_team_background_task_keeps_binding_after_request_ends(
     monkeypatch: pytest.MonkeyPatch,
 ):

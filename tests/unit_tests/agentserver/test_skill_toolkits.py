@@ -1,14 +1,42 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.recommendation.situation_report import (
     _format_skills_for_llm,
 )
+
+
+def test_agent_default_search_never_queries_skillnet(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    toolkit = SkillToolkit(manager)
+    queried: list[str] = []
+
+    monkeypatch.setattr(toolkit, "_search_builtin_skills", lambda *_args: [])
+
+    async def _search_clawhub(_params):
+        queried.append("clawhub")
+        return {"success": True, "skills": []}
+
+    async def _search_team_skills_hub(_params):
+        queried.append("teamskillshub")
+        return {"success": True, "skills": []}
+
+    async def _unexpected_skillnet_search(_params):
+        raise AssertionError("agent must not query SkillNet")
+
+    monkeypatch.setattr(manager, "handle_skills_clawhub_search", _search_clawhub)
+    monkeypatch.setattr(manager, "handle_skills_team_skills_hub_search", _search_team_skills_hub)
+    monkeypatch.setattr(manager, "handle_skills_skillnet_search", _unexpected_skillnet_search)
+
+    result = asyncio.run(toolkit.search_skill("pdf"))
+
+    assert result["success"] is True
+    assert result["source"] == "auto"
+    assert queried == ["clawhub", "teamskillshub"]
 
 
 def test_uninstall_skill_removes_local_skill_without_plugin_record(

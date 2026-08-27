@@ -37,6 +37,7 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.schema.blueprint import TransportSpec
 from openjiuwen.agent_teams.schema.team import TeamMemberSpec, TeamRole
+from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
 from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
@@ -47,7 +48,10 @@ from jiuwenswarm.agents.swarm.context import (
 from jiuwenswarm.agents.swarm.registry import register_swarm_providers
 from jiuwenswarm.agents.harness.observability_runtime import get_trajectory_span_processor
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
+from jiuwenswarm.common.mcp_config import (
+    build_enabled_mcp_server_configs,
+    preflight_mcp_server_reachable,
+)
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -329,6 +333,7 @@ def enrich_team_spec_for_swarm(
     mcp_configs = build_enabled_mcp_server_configs(
         config,
         server_id_scope=f"team:{spec.team_name}",
+        resolve_credentials=True,
     )
 
     for role in _MEMBER_ROLES:
@@ -363,4 +368,58 @@ def enrich_team_spec_for_swarm(
     )
 
 
-__all__ = ["enrich_team_spec_for_swarm"]
+async def preflight_team_mcps(spec: Any) -> list[str]:
+    """Probe each member's MCPs; drop unreachable ones and degrade state.
+
+    Run after :func:`enrich_team_spec_for_swarm` so one bad MCP can't cancel
+    the whole team via openjiuwen's fail-fast ``_register_pending_mcps`` raise.
+    Probes each unique ``server_id`` once (leader and teammate typically share
+    configs); unreachable MCPs are removed from every member's ``mcps`` list
+    and degraded to ``state=disconnected`` in state.json. Returns the names of
+    dropped MCPs. Never raises — a probe failure is a verdict, not an exception.
+    """
+    dropped: list[str] = []
+    # Verdict cache keyed by server_id (or name fallback): True = keep,
+    # False = drop. Leader and teammate typically share the same McpServerConfig
+    # (same server_id), so probe once and apply the verdict to every role.
+    verdict: dict[str, bool] = {}
+    for role in _MEMBER_ROLES:
+        member = spec.agents.get(role) if isinstance(spec.agents, dict) else None
+        if member is None or not getattr(member, "mcps", None):
+            continue
+        kept: list[McpServerConfig] = []
+        for cfg in member.mcps:
+            name = str(getattr(cfg, "server_name", "") or "").strip()
+            sid = str(getattr(cfg, "server_id", "") or "").strip()
+            key = sid or name
+            if key in verdict:
+                # Already probed (shared config across roles) — reuse verdict.
+                if verdict[key]:
+                    kept.append(cfg)
+                continue
+            ok, reason = await preflight_mcp_server_reachable(cfg)
+            if ok:
+                verdict[key] = True
+                kept.append(cfg)
+                continue
+            verdict[key] = False
+            dropped.append(name)
+            logger.warning(
+                "[swarm.assembly] team MCP '%s' preflight failed, dropping "
+                "from member '%s': %s",
+                name, role, reason,
+            )
+            if name:
+                try:
+                    from jiuwenswarm.server.runtime.mcp.state_store import set_mcp_state
+                    set_mcp_state(name, state="disconnected")
+                except Exception as degr_exc:  # noqa: BLE001 — degrade is best-effort
+                    logger.debug(
+                        "[swarm.assembly] state degrade for '%s' failed: %s",
+                        name, degr_exc,
+                    )
+        spec.agents[role] = member.model_copy(update={"mcps": kept})
+    return dropped
+
+
+__all__ = ["enrich_team_spec_for_swarm", "preflight_team_mcps"]

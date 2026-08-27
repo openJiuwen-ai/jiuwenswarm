@@ -1268,6 +1268,53 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
     return result
 
 
+def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """读取 models.agentos 备份模型列表，返回带标记的条目。
+
+    与 ``get_default_models`` 的 defaults 条目并列、同等可选可切换，但：
+    - ``is_default`` 始终为 ``False``：绝不抢启动主对话默认（``_create_model``
+      选默认时只取 ``is_default=True`` 的条目作为 ``self._model``）。
+    - ``model_config_obj._source = "agentos"``：仅供前端 ``is_agentos`` 置灰只读
+      展示用。``context_window``（模型支持的上下文总长度）每个模型条目均可配
+      （defaults / agentos / video / audio / vision / image_gen 均可），放进 core 的
+      ``ModelRequestConfig`` 供 core 人员取值。是否在 jiuwenswarm 出口 pop 由
+      ``reasoning_injector.core_has_context_window_field`` 自动适配 core 字段状态：
+      core 未加 context_window 正式字段时 pop 防发厂商，加字段后停止 pop 留给 core。
+
+    仅当 ``models.agentos`` 是 list 且每条 ``model_client_config.model_name`` 非空
+    （即用户已手动在 config.yaml 填入凭证）时才追加；非 list 视为未配置返回空。
+    config.yaml 模板不预置 agentos 字段，需用户手动添加——此函数即"运行时检测
+    config.yaml 是否有 agentos 字段"的落点。
+    """
+    if config is None:
+        config = get_config()
+    models = config.get("models", {})
+    agentos_raw = models.get("agentos")
+    agentos_list = agentos_raw if isinstance(agentos_raw, list) else []
+    entries: list[dict[str, Any]] = []
+    for agentos_block in agentos_list:
+        if not isinstance(agentos_block, dict):
+            continue
+        mcc = agentos_block.get("model_client_config")
+        if not (isinstance(mcc, dict) and mcc.get("model_name")):
+            # model_name 为空 = 该条未配置，跳过不入缓存
+            continue
+        agentos_entry = deepcopy(agentos_block)
+        agentos_entry["is_default"] = False
+        # _source 注入到 model_config_obj 内部，仅供前端 is_agentos 置灰只读展示
+        # （不再参与 context_window 出口判断——所有条目一视同仁）。context_window
+        # 每个模型条目均可配，随之进入 kwargs，是否由 reasoning_injector
+        # _build_model_request_kwargs 公共出口 pop 取决于 core 是否已把 context_window
+        # 加为 ModelRequestConfig 正式字段（core_has_context_window_field 自动适配）：
+        # core 未加字段时 pop 防发厂商，加字段后停止 pop，context_window 留在
+        # ModelRequestConfig 供 core 读取。
+        agentos_mco = agentos_entry.setdefault("model_config_obj", {})
+        if isinstance(agentos_mco, dict):
+            agentos_mco["_source"] = "agentos"
+        entries.append(agentos_entry)
+    return entries
+
+
 def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """获取默认模型列表，兼容新旧格式。
 
@@ -1281,37 +1328,14 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     # 新格式：已有 defaults 列表
     if "defaults" in models and isinstance(models["defaults"], list) and models["defaults"]:
         entries = _decrypt_model_entries(models["defaults"])
-        # AgentOS 备份模型：作为额外条目进入缓存（可在 models.list 中按名切换），
-        # 但绝不抢主对话——故显式置 is_default=False（覆盖 _infer_is_default 的"组内唯一=默认"推断）。
-        # 仅在 model_name 非空（即用户已在 YAML 填入凭证）时追加，并打 _source 标记供下游识别。
-        # 列表语义：models.agentos 是列表，可配多个备份模型（同名/异名皆可，填写约束为
-        # (model_name, api_base, api_key) 三元组唯一）。非 list 视为未配置。
-        agentos_raw = models.get("agentos")
-        agentos_list = agentos_raw if isinstance(agentos_raw, list) else []
-        for agentos_block in agentos_list:
-            if not isinstance(agentos_block, dict):
-                continue
-            mcc = agentos_block.get("model_client_config")
-            if not (isinstance(mcc, dict) and mcc.get("model_name")):
-                continue
-            agentos_entry = deepcopy(agentos_block)
-            agentos_entry["is_default"] = False
-            # _source 注入到 model_config_obj 内部，使其经
-            # build_reasoning_model_request_kwargs -> _model_config_to_dict
-            # 展开后进入 kwargs，供 build_model_from_entry 识别该条目为 agentos，
-            # 进而把其 max_tokens（输入侧别名）从 ModelRequestConfig 的输出侧
-            # kwargs 里挪到 extra 键 _agentos_ctx_window（随选中 Model 带入缓存，
-            # 供 _deep_agent_context_engine_config 从选中条目精确取值），绝不作为
-            # 输出上限发往厂商。
-            agentos_mco = agentos_entry.setdefault("model_config_obj", {})
-            if isinstance(agentos_mco, dict):
-                agentos_mco["_source"] = "agentos"
-            entries.append(agentos_entry)
+        entries.extend(get_agentos_models(config))
         return entries
 
     # 旧格式：单个 default 对象 → 包装为列表
     if "default" in models and isinstance(models["default"], dict):
-        return _decrypt_model_entries([models["default"]])
+        entries = _decrypt_model_entries([models["default"]])
+        entries.extend(get_agentos_models(config))
+        return entries
 
     # 回退：从环境变量构造（env var 已在 resolve_env_vars 中解密）
     alias = os.getenv("MODEL_ALIAS", "")
@@ -1321,6 +1345,8 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
             "api_key": os.getenv("API_KEY", ""),
             "model_name": os.getenv("MODEL_NAME", ""),
             "client_provider": os.getenv("MODEL_PROVIDER", ""),
+            # endpoint_profile：仅 OpenAI 协议生效的端点方言；Anthropic 时忽略。
+            "endpoint_profile": os.getenv("ENDPOINT_PROFILE", "") or "",
             "custom_headers": _parse_custom_headers(os.getenv("CUSTOM_HEADERS", None)),
             "timeout": 1800,
             "verify_ssl": False,
@@ -1329,7 +1355,9 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     }
     if alias:
         entry["alias"] = alias
-    return [entry]
+    entries = [entry]
+    entries.extend(get_agentos_models(config))
+    return entries
 
 
 def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
@@ -1408,6 +1436,7 @@ def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
                     "api_key": "${API_KEY}",
                     "model_name": "${MODEL_NAME}",
                     "client_provider": "${MODEL_PROVIDER}",
+                    "endpoint_profile": "${ENDPOINT_PROFILE:-openai}",
                 },
                 "model_config_obj": {"temperature": 0.95},
                 "is_default": True,

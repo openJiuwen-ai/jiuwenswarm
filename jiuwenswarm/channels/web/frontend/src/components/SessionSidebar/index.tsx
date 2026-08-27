@@ -1,25 +1,19 @@
 /**
  * SessionSidebar Component
  *
- * Redesigned sidebar with logo, navigation, and advanced config panel.
+ * Redesigned sidebar with logo and navigation.
  */
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
-import ChannelIcon from '../../assets/sidebar/channel.svg?react';
-import PluginIcon from '../../assets/sidebar/plugin.svg?react';
-import ConfigIcon from '../../assets/sidebar/config.svg?react';
-import WebIcon from '../../assets/sidebar/web.svg?react';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
 import logoIcon from '/logo.svg';
-import AdvancedConfigIcon from '../../assets/sidebar/advanced-config-new.svg?react';
+import SettingsIcon from '../../assets/settings/app-navigation/settings.svg?react';
 import UpdateIcon from '../../assets/sidebar/advanced-config.svg?react';
 import WorkIcon from '../../assets/工作.svg?react';
 import SkillDesignIcon from '../../assets/技能.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
-import MoreDesignIcon from '../../assets/更多.svg?react';
-import { webRequest } from '../../services/webClient';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 
 type MainNavKey = SidebarNavKey | 'connectorMarket';
@@ -27,12 +21,9 @@ type MainNavKey = SidebarNavKey | 'connectorMarket';
 interface SessionSidebarProps {
   activeNav: MainNavKey;
   onNavigate: (nav: MainNavKey) => void;
-  appVersion: string;
-  isConnected: boolean;
   onNewSession?: () => void;
   showNewSession?: boolean;
   hiddenNavItems?: MainNavKey[];
-  onMorePanelOpenChange?: (open: boolean) => void;
 }
 
 interface NavItem {
@@ -61,122 +52,21 @@ const connectorMarketNavIcon = (
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
-  { key: 'channels', labelKey: 'nav.channels', icon: <ChannelIcon aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
-];
-
-const moreNavItems: NavItem[] = [
-  { key: 'configpanel', labelKey: 'nav.config', icon: <ConfigIcon aria-hidden /> },
-  { key: 'extensions', labelKey: 'nav.extensions', icon: <PluginIcon aria-hidden /> },
-  { key: 'browserpanel', labelKey: 'nav.browser', icon: <WebIcon aria-hidden /> },
+  { key: 'settings', labelKey: 'nav.settings', icon: <SettingsIcon aria-hidden /> },
   { key: 'updatepanel', labelKey: 'nav.update', icon: <UpdateIcon aria-hidden /> },
 ];
-
-// Advanced Config Panel Component
-function AdvancedConfigPanel({
-  isOpen,
-  onClose,
-  appVersion,
-  isConnected,
-  buttonRef,
-}: {
-  isOpen: boolean;
-  onClose: () => void;
-  appVersion: string;
-  isConnected: boolean;
-  buttonRef: React.RefObject<HTMLButtonElement>;
-}) {
-  const { i18n, t } = useTranslation();
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (
-        panelRef.current &&
-        !panelRef.current.contains(event.target as Node) &&
-        buttonRef.current &&
-        !buttonRef.current.contains(event.target as Node)
-      ) {
-        onClose();
-      }
-    }
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen, onClose, buttonRef]);
-
-  const handleLanguageChange = (lang: 'zh' | 'en') => {
-    i18n.changeLanguage(lang);
-    void webRequest('locale.set_conf', { preferred_language: lang }).catch(() => {});
-  };
-
-  const isZh = i18n.language.startsWith('zh');
-
-  if (!isOpen) return null;
-
-  return (
-    <div ref={panelRef} className="advanced-config-panel" data-testid="session-sidebar-advanced-config-panel">
-      <div className="config-row" data-testid="session-sidebar-config-row-connection">
-        <span className="config-row__label" data-testid="session-sidebar-config-row-connection-label">{t('sessionSidebar.connectionStatus')}</span>
-        <div className={`connection-status ${isConnected ? 'connection-status--connected' : 'connection-status--disconnected'}`} data-testid="session-sidebar-connection-status" data-variant={isConnected ? 'connected' : 'disconnected'}>
-          <span className="connection-status__dot" />
-          <span className="connection-status__text">
-            {isConnected ? t('connection.connected') : t('connection.disconnected')}
-          </span>
-        </div>
-      </div>
-
-      {appVersion && (
-        <div className="config-row" data-testid="session-sidebar-config-row-version">
-          <span className="config-row__label">{t('sessionSidebar.version')}</span>
-          <span className="config-row__value">{appVersion}</span>
-        </div>
-      )}
-
-      <div className="config-row" data-testid="session-sidebar-config-row-language">
-        <span className="config-row__label">{t('sessionSidebar.language')}</span>
-        <div className="segmented-control" data-testid="session-sidebar-language-segmented">
-          <button
-            className={`segmented-control__btn ${isZh ? 'segmented-control__btn--active' : ''}`}
-            onClick={() => handleLanguageChange('zh')}
-            aria-pressed={isZh}
-            data-testid="session-sidebar-language-zh"
-          >
-            中
-          </button>
-          <button
-            className={`segmented-control__btn ${!isZh ? 'segmented-control__btn--active' : ''}`}
-            onClick={() => handleLanguageChange('en')}
-            aria-pressed={!isZh}
-            data-testid="session-sidebar-language-en"
-          >
-            En
-          </button>
-        </div>
-      </div>
-
-    </div>
-  );
-}
 
 export function SessionSidebar({
   activeNav,
   onNavigate,
-  appVersion,
-  isConnected,
   onNewSession,
   showNewSession = true,
   hiddenNavItems = [],
-  onMorePanelOpenChange,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
-  const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
-  const settingsRef = useRef<HTMLButtonElement>(null);
 
   const handleNewSession = useCallback(() => {
     onNavigate('chat');
@@ -185,40 +75,16 @@ export function SessionSidebar({
     }
   }, [onNavigate, onNewSession]);
 
-  const toggleAdvancedConfig = () => {
-    setAdvancedConfigOpen(!advancedConfigOpen);
-  };
-
-  const handleMoreClick = () => {
-    if (!isMoreActive) {
-      const defaultMoreNav = visibleMoreNavItems[0]?.key;
-      if (defaultMoreNav) {
-        onNavigate(defaultMoreNav);
-      }
-    }
-  };
-
   const handleNavClick = (nav: MainNavKey) => {
-    onNavigate(nav);
-  };
-
-  const handleMoreNavClick = (nav: MainNavKey) => {
     onNavigate(nav);
   };
 
   const getNavItemLabel = (item: NavItem) => t(item.labelKey);
   const visibleMainNavItems = mainNavItems.filter((item) => !hiddenNavItems.includes(item.key));
-  const visibleMoreNavItems = moreNavItems.filter((item) => !hiddenNavItems.includes(item.key));
-  const isMoreActive = visibleMoreNavItems.some((item) => item.key === activeNav);
   // 定时任务（cron）是"任务"区内与会话同级的视图，没有独立的导航图标，
   // 因此进入定时任务时"任务"导航项也应保持选中态
   const isNavItemActive = (item: NavItem) =>
     activeNav === item.key || (item.key === 'chat' && activeNav === 'cron');
-
-  useLayoutEffect(() => {
-    onMorePanelOpenChange?.(isMoreActive);
-    return () => onMorePanelOpenChange?.(false);
-  }, [isMoreActive, onMorePanelOpenChange]);
 
   return (
     <aside className="sidebar sidebar--icon-rail" data-testid="session-sidebar-rail">
@@ -246,69 +112,14 @@ export function SessionSidebar({
           onClick={() => handleNavClick(item.key)}
           data-testid="session-sidebar-nav-item"
           data-variant={item.key}
+          data-model-setup-guide-target={item.key === 'settings' ? 'settings' : undefined}
         >
           <span className="icon-rail-nav-item__icon">{item.icon}</span>
           <span className="icon-rail-nav-item__label">{getNavItemLabel(item)}</span>
         </button>
       ))}
 
-      {visibleMoreNavItems.length > 0 && (
-        <>
-          <button
-            className={`icon-rail-nav-item${isMoreActive ? ' icon-rail-nav-item--active' : ''}`}
-            onClick={handleMoreClick}
-            aria-expanded={isMoreActive}
-            data-model-setup-guide-target="more"
-            data-testid="session-sidebar-more-trigger"
-          >
-            <span className="icon-rail-nav-item__icon">
-              <MoreDesignIcon aria-hidden />
-            </span>
-            <span className="icon-rail-nav-item__label">{t('nav.more')}</span>
-          </button>
-          {isMoreActive && (
-            <div className="icon-rail-more-panel" data-testid="session-sidebar-more-panel">
-              <div className="icon-rail-more-panel__title" data-testid="session-sidebar-more-panel-title">{t('sessionSidebar.moreSettings')}</div>
-              <nav className="icon-rail-more-panel__list" aria-label={t('sessionSidebar.moreSettings')} data-testid="session-sidebar-more-nav">
-                {visibleMoreNavItems.map((item) => (
-                  <button
-                    key={item.key}
-                    className={`icon-rail-more-panel__item${activeNav === item.key ? ' icon-rail-more-panel__item--active' : ''}`}
-                    onClick={() => handleMoreNavClick(item.key)}
-                    data-testid="session-sidebar-more-nav-item"
-                    data-variant={item.key}
-                  >
-                    <span className="icon-rail-more-panel__icon">{item.icon}</span>
-                    <span className="icon-rail-more-panel__text">{getNavItemLabel(item)}</span>
-                  </button>
-                ))}
-              </nav>
-            </div>
-          )}
-        </>
-      )}
-
       <div className="icon-rail-spacer" />
-
-      <button
-        ref={settingsRef}
-        className="icon-rail-nav-item icon-rail-settings-button"
-        onClick={toggleAdvancedConfig}
-        aria-label={t('sessionSidebar.moreSettings')}
-        data-testid="session-sidebar-advanced-config-trigger"
-      >
-        <span className="icon-rail-nav-item__icon">
-          <AdvancedConfigIcon aria-hidden width="16" height="16" />
-        </span>
-      </button>
-
-      <AdvancedConfigPanel
-        isOpen={advancedConfigOpen}
-        onClose={() => setAdvancedConfigOpen(false)}
-        appVersion={appVersion}
-        isConnected={isConnected}
-        buttonRef={settingsRef}
-      />
     </aside>
   );
 }

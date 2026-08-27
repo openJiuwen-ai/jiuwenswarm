@@ -426,60 +426,86 @@ async function prepareImagesForExport(node: HTMLElement): Promise<() => void> {
   };
 }
 
-interface SvgSnapshot {
+interface MermaidExportSnapshot {
   svg: SVGSVGElement;
   width: string | null;
   height: string | null;
-  styleWidth: string;
-  styleHeight: string;
-  styleMaxWidth: string;
+  svgStyle: string;
+  canvas: HTMLElement;
+  canvasStyle: string;
+  wrapper: HTMLElement;
+  wrapperStyle: string;
 }
 
 /**
- * Scales down any Mermaid SVG that is wider than its container so the full
- * diagram fits inside the share image without being clipped horizontally.
- * Returns a cleanup function that restores the original attributes/styles.
+ * Flattens the interactive Mermaid viewport into normal-flow export markup.
+ * The live viewer intentionally keeps a bounded canvas and transforms an
+ * absolutely positioned wrapper. That transform is not part of the SVG's
+ * layout, so leaving it in the share document lets tall diagrams paint over
+ * the following message. Preserve the live rendered scale, fit wide diagrams
+ * to the export column, and give the canvas the diagram's actual height.
  */
 function fitMermaidDiagramsForExport(node: HTMLElement): () => void {
   const svgs = Array.from(node.querySelectorAll<SVGSVGElement>('.share-image-document .mermaid-canvas svg'));
-  const snapshots: SvgSnapshot[] = [];
+  const snapshots: MermaidExportSnapshot[] = [];
 
   for (const svg of svgs) {
     const naturalWidth = getSvgNaturalWidth(svg);
     const naturalHeight = getSvgNaturalHeight(svg);
     if (naturalWidth <= 0 || naturalHeight <= 0) continue;
 
-    const container = svg.closest<HTMLElement>('.mermaid-canvas') ?? svg.parentElement;
-    const containerWidth = container?.clientWidth ?? 0;
-    if (containerWidth <= 0 || naturalWidth <= containerWidth) continue;
+    const canvas = svg.closest<HTMLElement>('.mermaid-canvas');
+    const wrapper = svg.closest<HTMLElement>('.mermaid-svg-wrapper') ?? svg.parentElement;
+    if (!canvas || !wrapper) continue;
 
-    const ratio = containerWidth / naturalWidth;
+    const renderedWidth = svg.getBoundingClientRect().width || naturalWidth;
+    const exportWidth = Math.min(renderedWidth, canvas.clientWidth || renderedWidth);
+    const ratio = exportWidth / naturalWidth;
+    const exportHeight = naturalHeight * ratio;
     snapshots.push({
       svg,
       width: svg.getAttribute('width'),
       height: svg.getAttribute('height'),
-      styleWidth: svg.style.width,
-      styleHeight: svg.style.height,
-      styleMaxWidth: svg.style.maxWidth,
+      svgStyle: svg.getAttribute('style') ?? '',
+      canvas,
+      canvasStyle: canvas.getAttribute('style') ?? '',
+      wrapper,
+      wrapperStyle: wrapper.getAttribute('style') ?? '',
     });
 
-    svg.setAttribute('width', String(containerWidth));
-    svg.setAttribute('height', String(naturalHeight * ratio));
-    svg.style.width = `${containerWidth}px`;
-    svg.style.height = `${naturalHeight * ratio}px`;
+    svg.setAttribute('width', String(exportWidth));
+    svg.setAttribute('height', String(exportHeight));
+    svg.style.width = `${exportWidth}px`;
+    svg.style.height = `${exportHeight}px`;
     svg.style.maxWidth = 'none';
+
+    // Keep the live viewport's breathing room, but make the diagram part of
+    // normal flow so the next message starts after the full SVG.
+    canvas.style.height = `${exportHeight + 48}px`;
+    wrapper.style.position = 'static';
+    wrapper.style.left = 'auto';
+    wrapper.style.top = 'auto';
+    wrapper.style.width = '100%';
+    wrapper.style.height = '100%';
+    wrapper.style.display = 'flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.justifyContent = 'center';
+    wrapper.style.transform = 'none';
   }
 
   return () => {
     for (const snapshot of snapshots) {
-      const { svg, width, height, styleWidth, styleHeight, styleMaxWidth } = snapshot;
+      const { svg, width, height, svgStyle, canvas, canvasStyle, wrapper, wrapperStyle } = snapshot;
       if (width === null) svg.removeAttribute('width');
       else svg.setAttribute('width', width);
       if (height === null) svg.removeAttribute('height');
       else svg.setAttribute('height', height);
-      svg.style.width = styleWidth;
-      svg.style.height = styleHeight;
-      svg.style.maxWidth = styleMaxWidth;
+      if (svgStyle) svg.setAttribute('style', svgStyle);
+      else svg.removeAttribute('style');
+      if (canvasStyle) canvas.setAttribute('style', canvasStyle);
+      else canvas.removeAttribute('style');
+      if (wrapperStyle) wrapper.setAttribute('style', wrapperStyle);
+      else wrapper.removeAttribute('style');
     }
   };
 }
@@ -542,8 +568,9 @@ export async function exportShareImageNode(node: HTMLElement): Promise<Blob> {
     await waitForMermaidDiagrams(node);
     await nextFrame();
 
-    // Scale down wide Mermaid diagrams so they are not clipped in the exported
-    // image. The export DOM must remain mounted until the SVG markup is built.
+    // Flatten Mermaid's interactive viewport so tall diagrams cannot overlap
+    // the following content. The export DOM must remain mounted until the SVG
+    // markup is built.
     restoreMermaidDiagrams = fitMermaidDiagramsForExport(node);
     await nextFrame();
 

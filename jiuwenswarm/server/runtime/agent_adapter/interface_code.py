@@ -731,13 +731,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         agent_card = AgentCard(name=self._agent_name, id=_AGENT_CARD_ID)
         context_engine_config = _deep_agent_context_engine_config(
             config,
-            full_config=config_base,
-            model_name=getattr(
-                getattr(model, "model_config", None),
-                "model_name",
-                "",
-            ),
-            model=model,
         )
         logger.info(
             "[JiuwenSwarmCodeAdapter] ContextEngineConfig resolved: "
@@ -2090,12 +2083,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 project_dir=runtime_config.project_dir or self._project_dir,
             )
             self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
-        from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
-            BrowserTaskPromptRail,
-        )
-
-        if isinstance(self._subagent_rail, BrowserTaskPromptRail):
-            self._subagent_rail.set_channel(resolved_channel)
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
             self._eternal_conversation_enabled = runtime_config.eternal_conversation_enabled

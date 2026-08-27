@@ -4,6 +4,7 @@
 
 import type { SkillTreePath } from './skillTree';
 import type { BeamSearchProgress } from './beamSearch';
+import type { HeartbeatAutomationMetadata } from './heartbeat';
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
@@ -100,6 +101,13 @@ export interface Message {
   commandName?: string;
   commandInput?: string;
   commandOutput?: string;
+  /**
+   * Heartbeat 自动轮的身份标记。后端在自动触发时把 metadata.automation 随实时事件 payload
+   * 下发，并随 user/assistant 历史落盘。前端按 run_id 为每轮建独立 user/assistant/error 消息
+   * （见 heartbeatAutomation.ts），避免覆盖上一条普通回答。刷新/切会话后历史恢复也读同一个
+   * 字段重新盖章，保证实时与历史共用同一识别逻辑。对齐「心跳任务前端开发与接口规格说明2」§7-§9。
+   */
+  automation?: HeartbeatAutomationMetadata;
 }
 
 export interface ToolCall {

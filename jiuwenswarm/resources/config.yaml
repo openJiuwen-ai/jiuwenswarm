@@ -5,7 +5,7 @@ preferred_language: zh
 # true：只向模型暴露 direct 工具和 tool_search，其他工具按需搜索；
 # false：不挂载 ProgressiveToolRail，未显式声明 exposure 的工具按 direct 暴露。
 # ToolCard 自己显式声明的 exposure 优先级更高。
-progressive_tool_enabled: false
+progressive_tool_enabled: true
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
@@ -248,6 +248,13 @@ models:
         api_key: ${API_KEY}
         model_name: ${MODEL_NAME}
         client_provider: ${MODEL_PROVIDER}
+        # endpoint_profile：仅 OpenAI 协议(client_provider=OpenAI)生效的端点方言。
+        #   openai(官方/默认)、deepseek、openrouter、siliconflow、dashscope、
+        #   openai_compatible(KV释放/亲和)、ollama、lmstudio、vllm、sglang。
+        #   client_provider=Anthropic 时此字段被忽略。
+        #   若用 ${MODEL_PROVIDER}=DeepSeek/SiliconFlow/DashScope/OpenRouter 等旧别名，
+        #   core 内部会归一，但方言更稳妥的做法是这里显式填 endpoint_profile。
+        endpoint_profile: ${ENDPOINT_PROFILE:-openai}
         # HTTP 请求超时（秒）。需严格 > stream_first_chunk_timeout，确保先触发应用层流超时（可被 ModelAnomalyDetectionRail 重试）
         timeout: 360
         # 流式：等待首个分片的最大时间（秒）。放宽以兼容 reasoning/思考模型思考期的静默
@@ -258,6 +265,19 @@ models:
         custom_headers: {}
       model_config_obj:
         temperature: 0.95
+        # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
+        # defaults / agentos / video / audio / vision / image_gen 均可填）。
+        # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
+        # ModelRequestConfig 取值（core 侧加 context_window 正式字段后读取）。
+        # "模型侧不会感知" = 不发往厂商，由 jiuwenswarm 出口按 core 字段状态自动适配
+        # （reasoning_injector.core_has_context_window_field）：core 未把 context_window
+        # 加为 ModelRequestConfig 正式字段时，它进 extra 会被 base_model_client 经
+        # model_dump 透传给厂商 SDK 报 unexpected keyword argument，故此时 jiuwenswarm
+        # 公共出口对 context_window 统一 pop 防发厂商；core 加正式字段后
+        # （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
+        # jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
+        # 不填 = core 按模型名查表 / 兜底 200000。
+        # context_window: 131072
       is_default: true
   video:
       model_client_config:
@@ -265,6 +285,8 @@ models:
         api_key: ${VIDEO_API_KEY}
         model_name: ${VIDEO_MODEL_NAME}
         client_provider: ${VIDEO_PROVIDER}
+        # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
+        endpoint_profile: ${VIDEO_ENDPOINT_PROFILE:-openai_compatible}
         timeout: 1800
         verify_ssl: true
       model_config_obj:
@@ -275,6 +297,8 @@ models:
         api_key: ${AUDIO_API_KEY}
         model_name: ${AUDIO_MODEL_NAME}
         client_provider: ${AUDIO_PROVIDER}
+        # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
+        endpoint_profile: ${AUDIO_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
       model_config_obj:
@@ -285,6 +309,8 @@ models:
         api_key: ${VISION_API_KEY}
         model_name: ${VISION_MODEL_NAME}
         client_provider: ${VISION_PROVIDER}
+        # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
+        endpoint_profile: ${VISION_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
       model_config_obj:
@@ -295,6 +321,9 @@ models:
         api_key: ${IMAGE_GEN_API_KEY}
         model_name: ${IMAGE_GEN_MODEL_NAME}
         client_provider: ${IMAGE_GEN_PROVIDER}
+        # 多模态生成(生图)走 DashScope SDK 必须带 endpoint_profile=dashscope，
+        # 否则 OpenAIModelClient 拒绝该操作。client_provider 仍为 OpenAI。
+        endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
         verify_ssl: true
         timeout: 1800
       model_config_obj:
@@ -307,23 +336,30 @@ models:
   # 可配多条备份模型。填写约束：(model_name, api_base, api_key) 三元组唯一，
   # 即不存在完全相同的两条；同名（base 或 key 不同）可共存，靠缓存
   # {model_name}#{index} 区分。
-  # max_tokens：输入侧上下文窗口上限，映射到 core 的 ContextEngineConfig.context_window_tokens
-  #   （上下文压缩阈值，不发往厂商）。仅作用于选中的 agentos 条目，不影响 defaults：
-  #   build_model_from_entry 会把它的值挪到 ModelRequestConfig 的 extra 键
-  #   _agentos_ctx_window（随选中 Model 带入缓存），并从输出侧 kwargs 里 pop 掉，
-  #   绝不作为输出 token 上限发往厂商。_deep_agent_context_engine_config 从选中
-  #   Model 读该 extra 做覆盖，因此同名条目也能精确"选中哪个用哪个的 max_tokens"。
-  agentos:
-    - model_client_config:
-        api_base: ""
-        api_key: ""
-        model_name: ""
-        client_provider: ""
-        verify_ssl: true
-        timeout: 1800
-      model_config_obj:
-        temperature: 0.95
-        max_tokens: 131072
+  # context_window：模型支持的上下文总长度（tokens）。每个模型条目均可配
+  #   （defaults / agentos / video / audio / vision / image_gen 均可填，
+  #   放在各自 model_config_obj 段下，与 timeout 同为每模型可配项）。
+  #   经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 人员
+  #   从 ModelRequestConfig 取值（core 侧加 context_window 正式字段后读取）。
+  #   "模型侧不会感知" = 不发往厂商，由 jiuwenswarm 出口按 core 字段状态自动适配
+  #   （reasoning_injector.core_has_context_window_field）：core 未把 context_window
+  #   加为 ModelRequestConfig 正式字段时，它进 extra 会被 base_model_client 经
+  #   model_dump 透传给厂商 SDK 报 unexpected keyword argument，故此时 jiuwenswarm
+  #   公共出口对 context_window 统一 pop 防发厂商；core 加正式字段后
+  #   （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
+  #   jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
+  #   不填 = core 按模型名查表 / 兜底 200000。
+  # agentos:
+  #   - model_client_config:
+  #       api_base: ""
+  #       api_key: ""
+  #       model_name: ""
+  #       client_provider: ""
+  #       verify_ssl: true
+  #       timeout: 1800
+  #     model_config_obj:
+  #       temperature: 0.95
+  #       context_window: 131072
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:
@@ -539,8 +575,12 @@ react:
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
     enable_openrouter_model_context_window_tokens: true # 从 OpenRouter 拉取模型的上下文窗口大小；false 时按内置模型表解析
-    # 显式覆盖上下文窗口 token 上限（正整数）；注释掉或留空则按模型自动解析
+    # 显式覆盖上下文窗口 token 上限（正整数），优先级最高，会覆盖当前模型的 context_window；
+    # 注释掉或留空则按当前模型的 context_window / 显式映射 / 自动解析
     # context_window_tokens: 131072
+    # 可选的模型名到上下文窗口映射；优先级低于全局值和当前模型的 context_window
+    # model_context_window_tokens:
+    #   some-model: 131072
     enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
 
     enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭

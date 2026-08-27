@@ -972,7 +972,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             # with built-in dict + 200000 fallback (never returns 0)
             raw_total_tokens = ContextUtils.resolve_context_max(
                 model_name=model_name,
-                fallback_context_window_tokens=getattr(context, "_context_window_tokens", None),
+                fallback_context_window_tokens=(
+                    getattr(context, "_context_window_tokens", None)
+                    or getattr(context, "_model_context_window_tokens_override", None)
+                ),
                 model_context_window_tokens=getattr(context, "_model_context_window_tokens", None),
             )
 

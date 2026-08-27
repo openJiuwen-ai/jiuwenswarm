@@ -19,7 +19,7 @@
   pointer-events: none;
 }
 
-[data-model-setup-guide-target='more'][aria-describedby^='model-setup-guide-description-'] {
+[data-model-setup-guide-target='settings'][aria-describedby^='model-setup-guide-description-'] {
   outline: none;
   box-shadow: none;
 }
@@ -237,7 +237,7 @@
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
   outline: none;
-  background: var(--color-surface);
+  background: var(--color-surface-card);
   box-shadow: none;
   color: var(--color-text-primary);
   text-align: left;
@@ -263,7 +263,7 @@
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
   overflow: hidden;
-  background: var(--color-surface);
+  background: var(--color-surface-card);
 }
 
 .model-setup-guide__choice--primary {

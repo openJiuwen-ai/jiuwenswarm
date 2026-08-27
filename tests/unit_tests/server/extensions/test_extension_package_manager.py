@@ -27,6 +27,78 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def _seed_valid_agent_group(
+    workspace: Path,
+    package_id: str,
+    *,
+    under: str,
+) -> Path:
+    package = workspace / "plugins" / AGENT_GROUPS / under / package_id
+    package.mkdir(parents=True)
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": package_id,
+                "package_type": "agent_group",
+                "instruction": "Leader 负责汇总，reviewer 负责独立复核。",
+                "agents": ["leader", "reviewer"],
+                "skills": ["shared-review"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    leader = package / "agents" / "leader"
+    leader.mkdir(parents=True)
+    (leader / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "agent_template",
+                "name": "评审主席",
+                "description": "负责组织评审并汇总结论",
+                "persona": {"dir": "."},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (leader / "AGENT.md").write_text("# 评审主席\n", encoding="utf-8")
+
+    reviewer = package / "agents" / "reviewer"
+    persona = reviewer / "persona"
+    persona.mkdir(parents=True)
+    (reviewer / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "agent_template",
+                "name": "风险复核专家",
+                "description": "负责独立风险复核",
+                "persona": {"dir": "./persona"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (persona / "reviewer.md").write_text("# 风险复核专家\n", encoding="utf-8")
+
+    skill = package / "skills" / "shared-review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: 共享评审规范\n"
+        "description: 统一证据、风险和建议的输出结构\n"
+        "---\n\n"
+        "# 共享评审规范\n",
+        encoding="utf-8",
+    )
+    (package / "README.md").write_text(
+        f"# {package_id}\n\n用于验证专家团详情接口。\n",
+        encoding="utf-8",
+    )
+    return package
+
+
 class TestPrepareWorkspaceAndMarketplace:
     """Lazy-install disk: prepare does not seed; marketplace is installed source of truth."""
 
@@ -100,6 +172,91 @@ class TestPrepareWorkspaceAndMarketplace:
 
 
 class TestAgentGroupResolution:
+    def test_list_agent_groups_returns_only_loadable_selection_cards(
+        self,
+        extension_workspace: Path,
+    ) -> None:
+        _seed_valid_agent_group(
+            extension_workspace,
+            "local-review",
+            under="local",
+        )
+        _seed_valid_agent_group(
+            extension_workspace,
+            "builtin-review",
+            under="built_in",
+        )
+        invalid = (
+            extension_workspace
+            / "plugins"
+            / AGENT_GROUPS
+            / "local"
+            / "invalid-group"
+        )
+        invalid.mkdir(parents=True)
+        (invalid / "manifest.json").write_text("{}", encoding="utf-8")
+
+        cards = catalog.list_agent_groups()
+
+        assert [card["name"] for card in cards] == [
+            "builtin-review",
+            "local-review",
+        ]
+        built_in = cards[0]
+        assert built_in["name"] == "builtin-review"
+        assert built_in["source"] == "builtin"
+        assert built_in["memberCount"] == 2
+        assert [member["id"] for member in built_in["members"]] == [
+            "leader",
+            "reviewer",
+        ]
+        assert built_in["members"][0]["role"] == "leader"
+        assert built_in["members"][1]["role"] == "member"
+        assert built_in["skills"] == [
+            {
+                "id": "shared-review",
+                "displayName": {"zh": "共享评审规范", "en": "共享评审规范"},
+                "displayDescription": {
+                    "zh": "统一证据、风险和建议的输出结构",
+                    "en": "统一证据、风险和建议的输出结构",
+                },
+            }
+        ]
+        assert str(extension_workspace) not in json.dumps(cards, ensure_ascii=False)
+        assert [card["name"] for card in catalog.list_agent_groups({"filter": "local"})] == [
+            "local-review"
+        ]
+        assert [
+            card["name"] for card in catalog.list_agent_groups({"filter": "builtin"})
+        ] == ["builtin-review"]
+
+    def test_show_agent_group_returns_readme_detail_without_mcp_contract(
+        self,
+        extension_workspace: Path,
+    ) -> None:
+        _seed_valid_agent_group(
+            extension_workspace,
+            "local-review",
+            under="local",
+        )
+
+        card = catalog.show_agent_group("local-review")
+
+        assert card is not None
+        assert card["name"] == "local-review"
+        assert card["source"] == "local"
+        assert card["memberCount"] == 2
+        assert card["details"].startswith("# local-review")
+        assert "mcps" not in card
+        assert "connection_state" not in card
+        assert "path" not in json.dumps(card, ensure_ascii=False)
+
+    def test_show_agent_group_returns_none_when_missing(
+        self,
+        extension_workspace: Path,
+    ) -> None:
+        assert catalog.show_agent_group("missing-group") is None
+
     def test_resolve_local_agent_group(
         self,
         extension_workspace: Path,
@@ -151,6 +308,8 @@ class TestAgentGroupResolution:
 
         with pytest.raises(ValueError, match="package conflict"):
             catalog.resolve_agent_group_dir("duplicate")
+        with pytest.raises(ValueError, match="package conflict"):
+            catalog.list_agent_groups()
 
 
 class TestCreateInstallUninstall:

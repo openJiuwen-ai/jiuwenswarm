@@ -2634,7 +2634,7 @@ class AgentWebSocketServer:
             request.req_method is not None
             and request.req_method.value.startswith(
                 ("skills.", "skilldev.", "plugins.", "symphony.",
-                 "agent_templates.", "plugin_packages.")
+                 "agent_groups.", "agent_templates.", "plugin_packages.")
             )
         )
 
@@ -2726,7 +2726,17 @@ class AgentWebSocketServer:
                 else None
             )
             if isinstance(stored_session_mode, str) and stored_session_mode.strip():
-                params[_SESSION_PREVIOUS_MODE_KEY] = stored_session_mode.strip()
+                stored_session_mode = stored_session_mode.strip()
+                params[_SESSION_PREVIOUS_MODE_KEY] = stored_session_mode
+                if not explicit_mode_provided:
+                    # Internal Heartbeat requests are ordinary CHAT_SENDs and
+                    # intentionally omit ``mode``.  Runtime selection must
+                    # therefore inherit the Session's locked canonical mode;
+                    # otherwise the generic resolver falls back to ``agent``
+                    # and a Team Heartbeat silently runs through the wrong
+                    # adapter.  Keep ``explicit_mode_provided`` false: this is
+                    # inheritance, not a client-requested mode transition.
+                    params["mode"] = stored_session_mode
             if isinstance(stored_work_mode, str) and stored_work_mode.strip().lower() in {
                 "code",
                 "work",
@@ -3106,7 +3116,10 @@ class AgentWebSocketServer:
             await self._record_kvc_chat_started(request)
         if foreground:
             await manager.begin_foreground_chat()
-        admitted = request.req_method in _CODE_MODE_SYNC_METHODS
+        admitted = (
+            request.req_method in _CODE_MODE_SYNC_METHODS
+            and not is_team_params(request.params)
+        )
         session_id = request.session_id or "default"
         if admitted:
             await self._heartbeat_runtime.admission.begin_user(session_id)
@@ -3219,7 +3232,10 @@ class AgentWebSocketServer:
             await self._record_kvc_chat_started(request)
         if foreground:
             await manager.begin_foreground_chat()
-        admitted = request.req_method in _CODE_MODE_SYNC_METHODS
+        admitted = (
+            request.req_method in _CODE_MODE_SYNC_METHODS
+            and not is_team_params(request.params)
+        )
         session_id = request.session_id or "default"
         if admitted:
             await self._heartbeat_runtime.admission.begin_user(session_id)

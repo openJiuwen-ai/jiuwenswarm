@@ -1053,6 +1053,159 @@ def list_agent_templates(params: dict | None = None) -> list[dict]:
     return _apply_list_source_filter(cards, params)
 
 
+def list_agent_groups(params: dict | None = None) -> list[dict]:
+    """List valid AgentGroups that can be selected when a Team is created.
+
+    AgentGroups have no install lifecycle.  The response deliberately exposes
+    only display metadata and stable IDs; package paths and prompt contents stay
+    server-side.  Every returned group has passed the same strict loader used by
+    Team assembly, so the Web UI cannot offer a package that will immediately
+    fail when selected.
+    """
+    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+
+    roots: list[tuple[str, Path | None]] = [
+        ("local", _local_root(_AGENT_GROUP_KIND)),
+        ("built_in", _built_in_root(_AGENT_GROUP_KIND)),
+        ("resources", _resources_root(_AGENT_GROUP_KIND)),
+    ]
+    candidates: dict[str, list[tuple[str, Path]]] = {}
+    for source, root in roots:
+        if root is None or not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir(), key=lambda item: item.name):
+            if entry.name.startswith(".") or not entry.is_dir():
+                continue
+            try:
+                candidate = _package_dir_if_present(root, entry.name)
+            except ValueError:
+                logger.warning(
+                    "Skipping unsafe agent_group package entry: %s",
+                    entry,
+                    exc_info=True,
+                )
+                continue
+            if candidate is not None:
+                candidates.setdefault(entry.name, []).append((source, candidate))
+
+    conflicts = {
+        name: matches for name, matches in candidates.items() if len(matches) > 1
+    }
+    if conflicts:
+        name, matches = min(conflicts.items())
+        sources = ", ".join(source for source, _ in matches)
+        raise ValueError(
+            f"agent_group package conflict: {name} exists in {sources}"
+        )
+
+    requested_source = params.get("filter") if isinstance(params, dict) else None
+    cards: list[dict] = []
+    for package_id, matches in sorted(candidates.items()):
+        source, package_dir = next(iter(matches))
+        api_source = "local" if source == "local" else "builtin"
+        if requested_source in {"local", "builtin"} and api_source != requested_source:
+            continue
+        try:
+            card = _build_agent_group_card(
+                package_dir,
+                source=api_source,
+                load_package=load_agent_group_package,
+            )
+        except (OSError, ValueError):
+            logger.warning(
+                "Skipping unloadable agent_group package: %s",
+                package_dir,
+                exc_info=True,
+            )
+            continue
+        cards.append(card)
+    return cards
+
+
+def _build_agent_group_card(
+    package_dir: Path,
+    *,
+    source: str,
+    load_package: Any,
+    include_details: bool = False,
+) -> dict:
+    """Build the public AgentGroup card without leaking paths or prompts.
+
+    AgentGroup MCP configuration is intentionally not part of the Web contract
+    in this release.  Only members and Skills are exposed for selection and
+    inspection.
+    """
+    manifest = _read_package_manifest(package_dir)
+    if manifest is None:
+        raise ValueError(
+            f"agent_group package missing/corrupt manifest.json: {package_dir.name}"
+        )
+    templates = load_package(package_dir)
+    members = [
+        {
+            "id": member_id,
+            "displayName": _i18n(template.agent_card.name, member_id),
+            "displayDescription": _i18n(template.agent_card.description),
+            "role": "leader" if member_id == "leader" else "member",
+        }
+        for member_id, template in templates.items()
+    ]
+
+    skill_dirs: dict[str, Path] = {}
+    for template in templates.values():
+        for skill in template.skills:
+            skill_dir = Path(skill.dir)
+            skill_dirs.setdefault(skill_dir.name, skill_dir)
+    skills: list[dict] = []
+    for skill_id, skill_dir in sorted(skill_dirs.items()):
+        metadata = _parse_skill_frontmatter(skill_dir / "SKILL.md")
+        skills.append(
+            {
+                "id": skill_id,
+                "displayName": _i18n(metadata.get("name"), skill_id),
+                "displayDescription": _i18n(metadata.get("description")),
+            }
+        )
+
+    card: dict[str, Any] = {
+        "name": str(manifest.get("name") or package_dir.name),
+        "source": source,
+        "memberCount": len(members),
+        "members": members,
+        "skills": skills,
+    }
+    if include_details:
+        card["details"] = _read_readme_details(package_dir)
+    return card
+
+
+def show_agent_group(name: str) -> dict | None:
+    """Return one valid AgentGroup detail card, or ``None`` when absent."""
+    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+
+    resolved = _resolve_show_package_dir(
+        name,
+        kind_label="agent_group",
+        local_root=_local_root(_AGENT_GROUP_KIND),
+        built_in_root=_built_in_root(_AGENT_GROUP_KIND),
+        resources_root=_resources_root(_AGENT_GROUP_KIND),
+    )
+    if resolved is None:
+        return None
+    _, source = resolved
+    # Reuse the runtime resolver so built_in/resources conflicts and manifest
+    # identity checks have exactly the same semantics as Team assembly.
+    package_dir = resolve_agent_group_dir(name)
+    # Keep show as strict as Team assembly and list: a corrupt/unloadable group
+    # must never be presented as selectable detail data.
+    return _build_agent_group_card(
+        package_dir,
+        source=source,
+        load_package=load_agent_group_package,
+        include_details=True,
+    )
+
+
 def list_plugin_packages(params: dict | None = None) -> list[dict]:
     """List plugin cards from resources shelf + user local/."""
     market = _marketplace_index(read_plugin_marketplace_entries())

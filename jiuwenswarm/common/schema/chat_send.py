@@ -37,7 +37,8 @@ class ChatSendParams(TypedDict, total=False):
     - content: 用户消息正文（主字段，保留 /skill 等标记原样）
     - query: DEPRECATED. 历史双发字段，将逐步迁移到 content。
             参见 PLAN_chat_send_params_standardization.md §3.3-2。
-    - skills: 用户选中的 skill 名列表（当前为 prompt 提示语义，非强制生效）。
+    - skills: 用户选中的 skill 名列表；单 Agent 作为 prompt 提示，
+              普通 Team 同时更新 Team 级 Skill 可见性，专家团不允许额外选择。
     - mode: 运行模式（agent.plan / agent.fast / code.normal / team 等）
     - attachments: 附件列表（@file 等）
     - files: 文件更新字典（传统字段，逐步迁出到 attachments）
@@ -62,9 +63,15 @@ class ChatSendParams(TypedDict, total=False):
     """用户选中的 skill 名列表（可选）。
 
     - 来源：TUI/web 前端从 content 提取（如 /doc /review）或 UI 选择器。
-    - 语义：当前为 prompt 提示（塞入 user_message_context["skills_to_use"]），
-            模型可见但非强制。真正强制生效需 A3 阶段（SkillSelectionRail）。
-    - 空列表或缺失：不指定 skill，agent 自主判断。
+    - 单 Agent：作为 prompt 提示（塞入 user_message_context["skills_to_use"]）。
+    - 普通 Team（未绑定专家团）：同时作为 Team 级 Skill 选择，写入团队可见性配置，
+            Leader 和成员的 Skill rail 都会合成该选择。
+    - 普通 Team 中缺失字段：保持已有 Team Skill 选择；显式 ``[]``：
+            清除 Team 级显式选择并恢复默认继承全库。
+    - 普通 Team 中非空列表：每项必须是已安装、未禁用的 Skill 目录名；
+            否则在 Team 运行前返回 ``chat.error``。
+    - 本次选择或会话已绑定专家团：非空列表返回 ``chat.error``；
+            缺失或 ``[]`` 不修改专家团 Skill 配置，包内声明的 Skill 正常保留。
     - 创建/修改 Skill：固定传 ``["skill-creator"]``（所有 Skill Creator 的统一入口）。
     """
 
@@ -172,7 +179,11 @@ class ChatSendParams(TypedDict, total=False):
     """Desired expert package name for this turn ("" clears)."""
 
     agent_group_name: NotRequired[str]
-    """AgentGroup package selected for the Team session (non-empty, immutable)."""
+    """AgentGroup selected for the Team session (non-empty, immutable).
+
+    Mutually exclusive with a non-empty ``skills`` selection, including when
+    the AgentGroup is inherited from session metadata on a later request.
+    """
 
     plugin_names: NotRequired[list[str]]
     """Desired plugin package names for this turn ([] clears all)."""

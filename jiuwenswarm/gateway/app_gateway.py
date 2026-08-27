@@ -48,6 +48,7 @@ from jiuwenswarm.common.security.ws_origin import get_header_value
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.utils import (
+    ensure_config_migrated_from_template,
     ensure_default_builtin_skills,
     get_cron_jobs_path,
     get_env_file,
@@ -76,6 +77,9 @@ mcp_builtins_missing = not _mcp_builtins_dir.is_dir()
 
 if config_missing or workspace_migration_needed or mcp_builtins_missing:
     prepare_workspace(overwrite=False)
+
+# 每次启动合并模板新增配置项（保留用户已有值）
+ensure_config_migrated_from_template()
 
 # 幂等地补齐默认内置技能（对已有工作区也生效，新增默认技能时自动安装）
 ensure_default_builtin_skills()
