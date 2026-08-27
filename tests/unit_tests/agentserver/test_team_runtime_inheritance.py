@@ -588,7 +588,7 @@ def test_build_member_rails_env_skill_create_does_not_override_canonical_config(
         ),
     )
 
-    assert not any(isinstance(rail, _FakeTeamSkillCreateRail) for rail in rails)
+    assert any(isinstance(rail, _FakeTeamSkillCreateRail) for rail in rails)
 
 
 # --------------------------------------------------------------------------
