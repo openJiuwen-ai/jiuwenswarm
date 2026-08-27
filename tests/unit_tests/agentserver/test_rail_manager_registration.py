@@ -28,7 +28,7 @@ class _FakeAgent:
 
 def _fresh_manager() -> RailManager:
     """绕过单例，拿到干净状态的 RailManager。"""
-    mgr = RailManager.__new__(RailManager)
+    mgr = object.__new__(RailManager)
     mgr._extensions = {}
     mgr._registered_rails = set()
     mgr._agent_instance = None
