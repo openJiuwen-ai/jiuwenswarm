@@ -443,7 +443,8 @@ gateway:
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: <<GATEWAY_SESSION_MAP_SCOPE>>
 
-  # Cron 作业定义持久化。AgentOS 一体机模板默认 etcd；可用 CRON_STORE_BACKEND=file 覆盖。
+  # Cron 作业定义持久化。与 agent_client.type 无关，不随 agentos_router 自动切换。
+  # file（单节点，默认）| etcd（一体机主备）：一体机模板默认 etcd，可用 CRON_STORE_BACKEND=file 覆盖。
   # ETCD_ENDPOINTS 留空时由 check_handler 从 config.yaml etcd_nodes 填充。
   cron:
     store_backend: <<CRON_STORE_BACKEND>>

@@ -24,7 +24,7 @@ from jiuwenswarm.gateway.cron.models import (
     validate_cron_model,
 )
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 
 
 def _serialize_mutation(method):
@@ -43,7 +43,7 @@ class CronController:
 
     _instance: ClassVar[CronController | None] = None
 
-    def __init__(self, *, store: CronJobStore, scheduler: CronSchedulerService) -> None:
+    def __init__(self, *, store: CronJobStoreBackend, scheduler: CronSchedulerService) -> None:
         self._store = store
         self._scheduler = scheduler
         if not hasattr(scheduler, "_lifecycle_mutation_lock"):
@@ -68,7 +68,7 @@ class CronController:
     def get_instance(
         cls,
         *,
-        store: CronJobStore | None = None,
+        store: CronJobStoreBackend | None = None,
         scheduler: CronSchedulerService | None = None,
     ) -> CronController:
         """Return the singleton instance.
