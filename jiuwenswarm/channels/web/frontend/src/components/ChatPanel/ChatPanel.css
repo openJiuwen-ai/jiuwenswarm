@@ -92,15 +92,21 @@
   border: 0;
   border-radius: 4px;
   background: transparent;
+  /* 与 .share-export-btn 保持同一套配色：img 资源图标本身带底色不受影响，
+     只影响用 currentColor 描边的 lucide 图标（如心跳的 Activity），避免它
+     跟着环境文字色走、和旁边几个图标颜色对不上。 */
+  color: var(--color-text-tertiary);
   cursor: pointer;
 }
 
 .chat-header-icon-btn:hover {
   background: var(--color-action-secondary);
+  color: var(--color-text-primary);
 }
 
 .chat-header-icon-btn--active {
   background: var(--color-action-secondary);
+  color: var(--color-text-primary);
 }
 
 .chat-header-icon-btn:disabled {

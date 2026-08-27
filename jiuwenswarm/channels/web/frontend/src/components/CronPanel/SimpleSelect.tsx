@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 import { useClickOutside } from './useClickOutside';
 
 interface SimpleSelectOption {
   value: string;
-  label: string;
+  /** 一般是纯文本；也接受 ReactNode（如带状态图标的选项），string 本身就是合法 ReactNode，不影响现有调用方 */
+  label: ReactNode;
   disabled?: boolean;
 }
 
