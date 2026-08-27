@@ -14,6 +14,7 @@ import {
   isSearchTool,
   isToolRunning,
   isWriteTool,
+  isCodeGraphTool,
   renderToolBranch,
   renderToolTitle,
   summarizeToolArguments,
@@ -74,6 +75,11 @@ export function compactToolTitle(tool: ToolCallDisplay): string {
   if (isRunTool(tool.name)) {
     return `${compactActionLabel(`${running ? "Running" : "Ran"} command`)} (${TOOL_EXPAND_HINT})`;
   }
+  if (isCodeGraphTool(tool.name)) {
+    const target = summarizeToolArguments(tool.name, args);
+    const action = `${running ? "Querying" : "Queried"} ${toolDisplayName(tool).toLowerCase()}`;
+    return `${compactActionLabel(target ? `${action} ${target}` : action)} (${TOOL_EXPAND_HINT})`;
+  }
   if (isMcpTool(tool.name)) {
     return `${compactActionLabel(
       `${running ? "Querying" : "Queried"} ${toolDisplayName(tool)
@@ -104,6 +110,9 @@ export function compactToolHint(tool: ToolCallDisplay): string | undefined {
     return getStringArg(args, "url") ?? tool.summary;
   }
   if (isSearchTool(tool.name) || isGlobTool(tool.name)) {
+    return summarizeToolArguments(tool.name, args) ?? tool.summary;
+  }
+  if (isCodeGraphTool(tool.name)) {
     return summarizeToolArguments(tool.name, args) ?? tool.summary;
   }
   if (isMcpTool(tool.name)) {

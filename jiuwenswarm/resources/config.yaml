@@ -7,12 +7,18 @@ preferred_language: zh
 # ``agent`` is who owns the tools: ``root`` (this template) or ``code_agent``.
 # Omit ``agent`` and the adapter still hangs on ``code_agent`` (eval default).
 # Plan / explore never get graph tools.
+# Only these knobs are user-facing. File + source-byte caps decide whether
+# a repo is indexed. RSS / disk caps stop a build that is already too big.
+# An admitted repo waits until the graph is ready; time is not a cap.
+# Do not set cache_dir to a machine-specific absolute path; omit it and the
+# cache lives under the agent workspace as ``.code_graph_cache``.
 code_graph:
-  profile: "graph"
+  profile: "off"   # off = original grep/read/edit; graph = find_*
   agent: "root"
-  max_files: 50000
-  max_index_size_mb: 1024
-  query_timeout_seconds: 10
+  max_files: 5000
+  max_source_bytes: 41943040   # 40MB
+  max_build_rss_mb: 4096       # process RAM
+  max_cache_size_mb: 2048      # checkpoint disk
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:

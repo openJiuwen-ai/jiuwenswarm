@@ -35,6 +35,18 @@ def test_missing_code_graph_section_is_the_original_agent() -> None:
     assert flags.enabled is False
 
 
+def test_product_template_defaults_code_graph_off() -> None:
+    import yaml
+
+    path = REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["code_graph"]["profile"] == PROFILE_OFF
+    flags = resolve_code_graph_flags(data)
+    assert flags.enabled is False
+    assert flags.on_root is False
+    assert flags.on_code_agent is False
+
+
 def test_profile_is_read_from_config() -> None:
     flags = resolve_code_graph_flags({"code_graph": {"profile": "graph"}})
     assert flags.profile == PROFILE_GRAPH
@@ -423,3 +435,93 @@ def test_config_dir_name_labels_the_profile() -> None:
         config_dir_name(profile=PROFILE_GRAPH, prefix="pre-ab")
         == "cfg_pre-ab__graph"
     )
+
+
+def _graph_yaml(**overrides: object) -> dict:
+    raw = {
+        "profile": "graph",
+        "agent": "root",
+        "max_files": 2000,
+        "max_source_bytes": 16777216,
+        "max_build_rss_mb": 4096,
+        "max_cache_size_mb": 2048,
+    }
+    raw.update(overrides)
+    return {"code_graph": raw}
+
+
+def test_code_graph_reload_skips_when_knobs_unchanged() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    cfg = _graph_yaml()
+    adapter._remember_code_graph_reload_fingerprint(cfg)
+    assert adapter._sync_code_graph_rail_for_reload(cfg) is None
+
+
+def test_code_graph_reload_rebuilds_when_max_files_changes() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._remember_code_graph_reload_fingerprint(_graph_yaml())
+    rail = adapter._sync_code_graph_rail_for_reload(_graph_yaml(max_files=4000))
+    assert rail is not None
+    assert rail.config.max_files == 4000
+    assert adapter._code_graph_needs_warmup is True
+
+
+def test_code_graph_reload_rebuilds_when_rss_cap_changes() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._remember_code_graph_reload_fingerprint(_graph_yaml())
+    rail = adapter._sync_code_graph_rail_for_reload(_graph_yaml(max_build_rss_mb=2048))
+    assert rail is not None
+    assert rail.config.max_build_rss_mb == 2048
+
+
+def test_code_graph_reload_turns_graph_off() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._remember_code_graph_reload_fingerprint(_graph_yaml())
+    rail = adapter._sync_code_graph_rail_for_reload(_graph_yaml(profile="off"))
+    assert rail is not None
+    assert rail.profile.value == PROFILE_OFF
+    assert adapter._code_graph_needs_warmup is False
+
+
+def test_code_graph_cache_dir_is_absolute_under_agent_workspace(tmp_path: Path) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    workspace = tmp_path / "agent-ws"
+    project = tmp_path / "user-project"
+    adapter._agent_workspace_dir = str(workspace)
+    adapter._project_dir = str(project)
+    cfg = adapter._build_code_graph_config(_graph_yaml())
+    assert Path(cfg.cache_dir).is_absolute()
+    assert Path(cfg.cache_dir) == (workspace / ".code_graph_cache").resolve()
+    assert str(project) not in cfg.cache_dir
+
+
+def test_code_graph_relative_cache_dir_follows_workspace(tmp_path: Path) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    workspace = tmp_path / "agent-ws"
+    adapter._agent_workspace_dir = str(workspace)
+    cfg = adapter._build_code_graph_config(_graph_yaml(cache_dir="graphs"))
+    assert Path(cfg.cache_dir) == (workspace / "graphs").resolve()

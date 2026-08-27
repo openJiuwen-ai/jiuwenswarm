@@ -98,6 +98,30 @@ class TestGatewayUrl:
         assert url.endswith("/tui")
 
 
+class TestNamedInstanceEnv:
+    @staticmethod
+    def test_named_instance_sets_gateway_port(tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".jiuwenswarm").mkdir(parents=True)
+        workspace = tmp_path / "instances" / "codegraph"
+        workspace.mkdir(parents=True)
+        (workspace / ".env").write_text("GATEWAY_PORT=20001\n", encoding="utf-8")
+        (home / ".jiuwenswarm" / "instances.yaml").write_text(
+            "instances:\n  codegraph:\n    workspace: "
+            + str(workspace)
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("JIUWENSWARM_HOME", str(home))
+        monkeypatch.delenv("GATEWAY_PORT", raising=False)
+        from jiuwenswarm.dotenv_early import load_named_instance_env
+
+        loaded = load_named_instance_env("codegraph")
+        assert loaded is not None
+        assert os.environ["GATEWAY_PORT"] == "20001"
+        assert _build_default_gateway_url() == "ws://127.0.0.1:20001/tui"
+
+
 class TestSessionId:
     @staticmethod
     def test_generated_id_format():

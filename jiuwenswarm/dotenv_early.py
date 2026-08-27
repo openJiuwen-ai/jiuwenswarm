@@ -174,11 +174,20 @@ def parse_dotenv_early(component_name: str = "jiuwenswarm") -> Path | None:
 
     elif name_value is not None:
         # --name: load instance bootstrap .env
-        result = _load_bootstrap_by_name_early(name_value, component_name)
+        result = load_named_instance_env(name_value, component_name)
 
     # Store result for get_parsed_dotenv()
     _parsed_dotenv = result
     return result
+
+
+def load_named_instance_env(name: str, component_name: str = "jiuwenswarm") -> Path | None:
+    """Load a named instance's bootstrap .env into os.environ.
+
+    Public wrapper so CLI chat can resolve GATEWAY_PORT after argparse, not
+    only from the early sys.argv scan.
+    """
+    return _load_bootstrap_by_name_early(name, component_name)
 
 
 def _load_bootstrap_by_name_early(name: str, component_name: str) -> Path | None:

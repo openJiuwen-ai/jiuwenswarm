@@ -12,6 +12,19 @@ export type MemoryWarning = {
   message: string;
 };
 
+export type CodeGraphStatus = {
+  present?: boolean;
+  state?: string;
+  repo_id?: string | null;
+  generation_id?: string | number | null;
+  dirty_paths?: unknown;
+  dirty_unknown?: boolean;
+  reader_count?: number;
+  estimated_bytes?: number;
+  limit_exceeded?: boolean;
+  message?: string;
+};
+
 export type StatusPayload = {
   version: string;
   session_id: string;
@@ -24,7 +37,44 @@ export type StatusPayload = {
   config_path: string;
   settings_sources: string[];
   memory_warnings: MemoryWarning[];
+  code_graph?: CodeGraphStatus;
 };
+
+function formatEstimatedBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Rows for TUI /status. `incomplete` is always no: the product never publishes a partial graph. */
+export function formatCodeGraphStatusLines(
+  graph: CodeGraphStatus | undefined,
+): { label: string; value: string }[] {
+  const state = graph?.state || (graph?.present ? "unknown" : "absent");
+  const dirtyPaths = Array.isArray(graph?.dirty_paths) ? graph.dirty_paths : [];
+  const dirty =
+    graph?.dirty_unknown === true ? `${dirtyPaths.length}+unknown` : String(dirtyPaths.length);
+  const estimated =
+    typeof graph?.estimated_bytes === "number" ? formatEstimatedBytes(graph.estimated_bytes) : "—";
+  const generation =
+    graph?.generation_id === null || graph?.generation_id === undefined || graph?.generation_id === ""
+      ? "—"
+      : String(graph.generation_id);
+  const repo = typeof graph?.repo_id === "string" && graph.repo_id ? graph.repo_id : "—";
+  const items = [
+    { label: "state", value: state },
+    { label: "generation_id", value: generation },
+    { label: "estimated", value: estimated },
+    { label: "dirty", value: dirty },
+    { label: "incomplete", value: "no" },
+    { label: "repo_id", value: repo },
+  ];
+  if (graph?.limit_exceeded || graph?.message) {
+    items.push({ label: "limit", value: String(graph.message || "limit exceeded") });
+  }
+  return items;
+}
 
 function showOverview(ctx: import("../types.js").CommandContext, payload: StatusPayload): void {
   ctx.addItem(
@@ -91,6 +141,14 @@ function showOverview(ctx: import("../types.js").CommandContext, payload: Status
       }),
     );
   }
+
+  ctx.addItem(
+    addInfo(ctx.sessionId, "Code Graph", "i", {
+      view: "kv",
+      title: "Status — Code Graph",
+      items: formatCodeGraphStatusLines(payload.code_graph),
+    }),
+  );
 }
 
 function showUsage(ctx: import("../types.js").CommandContext, summary: SessionUsageSummary): void {

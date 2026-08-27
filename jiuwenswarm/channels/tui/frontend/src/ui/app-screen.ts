@@ -54,6 +54,7 @@ import {
   type SessionMeta,
 } from "../core/commands/builtins/resume.js";
 import type { ConfigItemSchema } from "../core/commands/builtins/config.js";
+import { formatCodeGraphStatusLines } from "../core/commands/builtins/status.js";
 import type { McpListItem, McpListPayload } from "../core/commands/builtins/mcp.js";
 import { buildModeAutocompleteItems } from "../core/commands/builtins/mode.js";
 import { MemoryViewController, type MemoryViewTab } from "./memory-view.js";
@@ -8558,6 +8559,15 @@ export class AppScreen implements Component, Focusable {
     const warnings = payload.memory_warnings ?? [];
     for (const w of warnings) {
       items.push({ value: "__display__", label: `⚠ memory: ${w.message}`, description: "" });
+    }
+
+    items.push({ value: "__display__", label: "Code Graph", description: "" });
+    for (const row of formatCodeGraphStatusLines(payload.code_graph)) {
+      items.push({
+        value: "__display__",
+        label: `  ${row.label}: ${row.value}`,
+        description: "",
+      });
     }
 
     return items;

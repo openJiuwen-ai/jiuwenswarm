@@ -242,6 +242,67 @@ def test_resolve_request_project_dir_falls_back_to_cwd_for_legacy_clients():
     assert agent_ws_server_module.resolve_request_project_dir(request) == "/tmp/params"
 
 
+def test_resolve_status_graph_workspace_ignores_trusted_dirs():
+    request = AgentRequest(
+        request_id="req-status",
+        channel_id="tui",
+        params={
+            "project_dir": "/tmp/project",
+            "cwd": "/tmp/cwd",
+            "trusted_dirs": ["/tmp/trusted"],
+        },
+    )
+
+    assert agent_ws_server_module.resolve_status_graph_workspace(request) == "/tmp/project"
+
+
+def test_resolve_status_graph_workspace_prefers_cwd_over_trusted_dirs():
+    request = AgentRequest(
+        request_id="req-status",
+        channel_id="tui",
+        params={"cwd": "/tmp/cwd", "trusted_dirs": ["/tmp/trusted"]},
+    )
+
+    assert agent_ws_server_module.resolve_status_graph_workspace(request) == "/tmp/cwd"
+
+
+def test_status_code_graph_absent_when_profile_off(monkeypatch):
+    called = {"stats": 0}
+
+    class _Mgr:
+        def stats(self, workspace):
+            called["stats"] += 1
+            return {"present": True, "state": "ready", "generation_id": 3}
+
+    monkeypatch.setattr(
+        "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
+        lambda: _Mgr(),
+    )
+    payload = agent_ws_server_module.resolve_status_code_graph(
+        {"code_graph": {"profile": "off", "agent": "root"}},
+        "/tmp/project",
+    )
+    assert payload == {"present": False, "state": "absent"}
+    assert called["stats"] == 0
+
+
+def test_status_code_graph_reads_manager_when_profile_graph(monkeypatch):
+    class _Mgr:
+        def stats(self, workspace):
+            return {"present": True, "state": "ready", "repo_id": "abc", "workspace": workspace}
+
+    monkeypatch.setattr(
+        "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
+        lambda: _Mgr(),
+    )
+    payload = agent_ws_server_module.resolve_status_code_graph(
+        {"code_graph": {"profile": "graph", "agent": "root"}},
+        "/tmp/project",
+    )
+    assert payload["state"] == "ready"
+    assert payload["workspace"] == "/tmp/project"
+
+
 def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
