@@ -741,6 +741,10 @@ gateway:
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: per_chat_bot
 
+  # Cron 作业定义持久化，默认本地文件。etcd 仅 AgentOS 一体机模板配置。
+  cron:
+    store_backend: ${CRON_STORE_BACKEND:-file}
+
   # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
   # type: websocket（默认） | yuanrong（直接函数调用） | agentos_router（AgentOS 扩展）
   agent_client:

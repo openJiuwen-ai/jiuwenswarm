@@ -530,7 +530,7 @@ class TestCronJobLazyMigration:
 
         # mock _build_cron_project_lookup 验证不被调用
         with patch(
-            "jiuwenswarm.gateway.cron.store._build_cron_project_lookup"
+            "jiuwenswarm.gateway.cron.cron_job_mutations.build_cron_project_lookup"
         ) as mock_lookup:
             jobs = await store.list_jobs()
             mock_lookup.assert_not_called()

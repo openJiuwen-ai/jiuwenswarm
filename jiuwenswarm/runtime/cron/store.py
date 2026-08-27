@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, TypeVar
@@ -124,6 +124,8 @@ class CronJobStore:
       整个 read-modify-write 在双层锁内完成，避免 lost update。
     """
 
+    supports_watch = False
+
     def __init__(
         self,
         path: Path | None = None,
@@ -137,6 +139,20 @@ class CronJobStore:
     @property
     def path(self) -> Path:
         return self._path
+
+    def _file_revision(self) -> int:
+        try:
+            stat = self._path.stat()
+            return (
+                (int(stat.st_mtime_ns) << 40)
+                ^ (int(stat.st_ctime_ns) << 16)
+                ^ int(stat.st_size)
+            )
+        except OSError:
+            return 0
+
+    async def get_revision(self) -> int:
+        return self._file_revision()
 
     def _call_under_file_lock(self, fn: Callable[[], _T]) -> _T:
         """在伴生 ``cron_jobs.json.lock`` 上拿跨进程锁后执行 fn（不被原子 replace 覆盖）。
@@ -602,3 +618,13 @@ class CronJobStore:
         if not out:
             raise ValueError("targets is required")
         return out
+
+    async def watch(self, callback: Callable[[], Awaitable[None]]) -> None:
+        del callback
+        raise NotImplementedError("FileCronJobStore does not support etcd watch")
+
+    async def aclose(self) -> None:
+        return None
+
+
+FileCronJobStore = CronJobStore
