@@ -2,6 +2,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Rewrite pred.jsonl and run official ContextBench evaluate.
 
+Requires a ContextBench checkout (``CONTEXTBENCH_ROOT`` / ``--contextbench-root``).
+
     UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_evaluate.py \
         --pred docs/ai/experiments-contextbench/runs/run01-contextbench-verified/cfg_b__graph/raw
 """
@@ -17,16 +19,17 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-JIUWEN_ROOT = SCRIPT_DIR.parents[1]
-GRAPH_ROOT = JIUWEN_ROOT.parent
-CONTEXTBENCH_ROOT = GRAPH_ROOT / "reconstruct_tmp" / "ContextBench"
-DEFAULT_GOLD = CONTEXTBENCH_ROOT / "data" / "contextbench_verified.parquet"
 
-for path in (SCRIPT_DIR, CONTEXTBENCH_ROOT):
+for path in (SCRIPT_DIR,):
     text = str(path)
     if text not in sys.path:
         sys.path.insert(0, text)
 
+from eval_paths import (  # noqa: E402
+    prepend_contextbench,
+    resolve_contextbench_parquet,
+    resolve_contextbench_root,
+)
 from trajectory import contextbench_record  # noqa: E402
 
 
@@ -83,15 +86,21 @@ def write_pred_jsonl(records: list[dict[str, Any]], dest: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Official ContextBench score")
     parser.add_argument("--pred", type=Path, required=True)
-    parser.add_argument("--gold", type=Path, default=DEFAULT_GOLD)
+    parser.add_argument("--gold", type=Path, default=None)
+    parser.add_argument(
+        "--contextbench-root",
+        type=Path,
+        default=None,
+        help="ContextBench checkout (or set CONTEXTBENCH_ROOT).",
+    )
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--cache", type=Path, default=None)
     args = parser.parse_args()
-    if not CONTEXTBENCH_ROOT.is_dir():
-        raise SystemExit(f"ContextBench checkout missing: {CONTEXTBENCH_ROOT}")
-    gold = args.gold.expanduser().resolve()
-    if not gold.is_file():
-        raise SystemExit(f"gold parquet not found: {gold}")
+    contextbench_root = resolve_contextbench_root(
+        args.contextbench_root, parquet=args.gold
+    )
+    prepend_contextbench(contextbench_root)
+    gold = resolve_contextbench_parquet(args.gold, root=contextbench_root)
     records, raw_dir = load_raw_records(args.pred)
     if not records:
         raise SystemExit(f"no trajectories in {args.pred}")
@@ -116,10 +125,10 @@ def main() -> None:
     print(" ".join(cmd), flush=True)
     env = dict(os.environ)
     env["PYTHONPATH"] = (
-        str(CONTEXTBENCH_ROOT)
+        str(contextbench_root)
         + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     )
-    completed = subprocess.run(cmd, cwd=str(CONTEXTBENCH_ROOT), env=env, check=False)
+    completed = subprocess.run(cmd, cwd=str(contextbench_root), env=env, check=False)
     _drop_editloc(out, records)
     print(
         "NOTE: EditLoc is not reportable. Official evaluate.py falls back to "

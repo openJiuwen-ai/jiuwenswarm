@@ -1073,6 +1073,10 @@ async def _run_chat(
     *,
     supports_user_interaction: bool = False,
 ) -> int:
+    if getattr(args, "name", None) and not getattr(args, "gateway_url", None):
+        from jiuwenswarm.dotenv_early import load_named_instance_env
+
+        load_named_instance_env(args.name)
     gateway_url = args.gateway_url or _build_default_gateway_url()
 
     client = GatewayClient(gateway_url)

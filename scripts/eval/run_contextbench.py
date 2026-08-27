@@ -5,6 +5,9 @@
 This is a retrieval exam: locate + declare context. It is not SWE resolved.
 Score with ``scripts/eval/run_evaluate.py`` → official ``contextbench.evaluate``.
 
+Point the runner at a ContextBench checkout (``CONTEXTBENCH_ROOT`` or
+``--contextbench-root``). A sibling ``../ContextBench`` also works.
+
     UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
         --limit 5 --profile graph --graph-agent root
 
@@ -31,14 +34,8 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 JIUWEN_ROOT = SCRIPT_DIR.parents[1]
-GRAPH_ROOT = JIUWEN_ROOT.parent
-CONTEXTBENCH_ROOT = GRAPH_ROOT / "reconstruct_tmp" / "ContextBench"
-DEFAULT_PARQUET = CONTEXTBENCH_ROOT / "data" / "contextbench_verified.parquet"
-DEFAULT_OUTPUT = (
-    JIUWEN_ROOT / "docs" / "ai" / "experiments-contextbench" / "runs" / "scratch-contextbench"
-)
 
-for path in (SCRIPT_DIR, JIUWEN_ROOT, CONTEXTBENCH_ROOT):
+for path in (SCRIPT_DIR, JIUWEN_ROOT):
     text = str(path)
     if text not in sys.path:
         sys.path.insert(0, text)
@@ -47,6 +44,12 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     PROFILE_GRAPH,
     PROFILE_OFF,
     resolve_profile,
+)
+from eval_paths import (  # noqa: E402
+    DEFAULT_OUTPUT,
+    prepend_contextbench,
+    resolve_contextbench_parquet,
+    resolve_contextbench_root,
 )
 from local_openjiuwen import (  # noqa: E402
     assert_engine_matches_branch,
@@ -210,22 +213,8 @@ Rules:
 """
 
 
-def resolve_parquet(explicit: Path | None) -> Path:
-    if explicit is not None:
-        path = explicit.expanduser().resolve()
-        if not path.is_file():
-            raise SystemExit(f"parquet not found: {path}")
-        return path
-    env = os.environ.get("CONTEXTBENCH_PARQUET", "").strip()
-    candidates = [Path(env).expanduser()] if env else []
-    candidates.append(DEFAULT_PARQUET)
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
-    raise SystemExit(
-        "contextbench_verified.parquet not found. Pass --parquet PATH or set "
-        "CONTEXTBENCH_PARQUET."
-    )
+def resolve_parquet(explicit: Path | None, *, root: Path) -> Path:
+    return resolve_contextbench_parquet(explicit, root=root)
 
 
 def load_verified_rows(parquet_path: Path, limit: int) -> list[dict[str, Any]]:
@@ -375,6 +364,13 @@ def _aggregate_pred(output_dir: Path) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ContextBench locate runner")
     parser.add_argument("--parquet", type=Path, default=None)
+    parser.add_argument(
+        "--contextbench-root",
+        type=Path,
+        default=None,
+        help="ContextBench checkout (or set CONTEXTBENCH_ROOT). "
+        "Sibling ../ContextBench also works.",
+    )
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--instance", default="", help="Comma-separated instance ids")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -606,7 +602,11 @@ async def async_main() -> None:
     args = parse_args()
     load_eval_dotenv(args.dotenv)
     assert_engine_matches_branch()
-    parquet = resolve_parquet(args.parquet)
+    contextbench_root = resolve_contextbench_root(
+        args.contextbench_root, parquet=args.parquet
+    )
+    prepend_contextbench(contextbench_root)
+    parquet = resolve_parquet(args.parquet, root=contextbench_root)
     profile = resolve_profile(args.profile)
     graph_agent = resolve_graph_agent(profile, args.graph_agent)
     rows = load_verified_rows(parquet, 0)
@@ -629,6 +629,7 @@ async def async_main() -> None:
         {
             "benchmark": "contextbench",
             "parquet": str(parquet),
+            "contextbench_root": str(contextbench_root),
             "limit": args.limit,
             "instances": [record_id(row) for row in rows],
             "profile": profile,

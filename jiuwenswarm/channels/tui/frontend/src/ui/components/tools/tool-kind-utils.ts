@@ -13,6 +13,9 @@ export function summarizeToolArguments(name: string, args: unknown): string | un
   }
   const obj = args as Record<string, unknown>;
   const normalized = name.toLowerCase();
+  if (isCodeGraphTool(name)) {
+    return summarizeCodeGraphArguments(name, obj);
+  }
   if (normalized.includes("read") || normalized.includes("view")) {
     return summarizePath(obj.path ?? obj.file_path ?? obj.file);
   }
@@ -153,6 +156,41 @@ export function isSearchTool(name: string): boolean {
     normalized === "mcp_free_search" ||
     normalized === "mcp_paid_search"
   );
+}
+
+const CODE_GRAPH_TOOLS = new Set([
+  "resolve_symbol",
+  "find_code_symbols",
+  "search_source_text",
+  "inspect_code_structure",
+  "read_symbol",
+  "read_code",
+  "find_callers",
+  "find_callees",
+  "find_importers",
+  "find_base_classes",
+  "find_subclasses",
+  "trace_call_paths",
+]);
+
+export function isCodeGraphTool(name: string): boolean {
+  return CODE_GRAPH_TOOLS.has(name.toLowerCase());
+}
+
+export function summarizeCodeGraphArguments(
+  name: string,
+  args: Record<string, unknown>,
+): string | undefined {
+  const primary =
+    getStringArg(args, "name", "query", "symbol_id", "file", "path", "parent_symbol") ??
+    (typeof args.symbol_id === "string" ? args.symbol_id : undefined);
+  const direction = getStringArg(args, "direction");
+  const short = primary ? summarize(primary, 56) : undefined;
+  if (name.toLowerCase() === "trace_call_paths" && direction && short) {
+    return `${short} ${direction}`;
+  }
+  if (name.toLowerCase() === "trace_call_paths" && direction) return direction;
+  return short;
 }
 
 export function isFetchTool(name: string): boolean {

@@ -499,6 +499,45 @@ def resolve_request_project_dir(request: AgentRequest) -> str | None:
     return None
 
 
+def resolve_status_graph_workspace(request: AgentRequest) -> str:
+    """Workspace whose Code Graph /status should describe.
+
+    Prefer the stable project identity, then cwd. Do not use trusted_dirs[0]:
+    extra trusted folders are allowlisted paths, not the graph root.
+    """
+    params = request.params or {}
+    metadata = request.metadata or {}
+    for value in (
+        params.get("project_dir"),
+        metadata.get("project_dir") if isinstance(metadata, dict) else None,
+        params.get("cwd"),
+        metadata.get("cwd") if isinstance(metadata, dict) else None,
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return os.getcwd()
+
+
+def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, object]:
+    """Code Graph block for ``/status``.
+
+    ``profile: off`` reports ``absent`` so Status does not show a leftover graph.
+    The in-memory entry and disk checkpoint stay put; turning ``graph`` back on
+    can restore without a full rebuild.
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import resolve_code_graph_flags
+
+    flags = resolve_code_graph_flags(config if isinstance(config, dict) else None)
+    if not flags.enabled:
+        return {"present": False, "state": "absent"}
+    try:
+        from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+
+        return get_code_graph_manager().stats(workspace)
+    except Exception:  # noqa: BLE001 — status must still return
+        return {"present": False, "state": "absent"}
+
+
 def _sync_chat_request_metadata(
     request: AgentRequest,
     project_dir: str | None,
@@ -7769,6 +7808,9 @@ class AgentWebSocketServer:
                     )
                     memory_warnings = []
 
+                graph_workspace = resolve_status_graph_workspace(request)
+                code_graph_status = resolve_status_code_graph(config, graph_workspace)
+
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
@@ -7785,6 +7827,7 @@ class AgentWebSocketServer:
                         "config_path": config_path,
                         "settings_sources": settings_sources,
                         "memory_warnings": memory_warnings,
+                        "code_graph": code_graph_status,
                     },
                 )
         except Exception as e:  # noqa: BLE001

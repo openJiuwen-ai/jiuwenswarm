@@ -17,6 +17,8 @@ ENV/
 .coverage.*
 coverage.xml
 htmlcov/
+report/
+report.html
 
 # Node.js / Frontend
 **/node_modules/

@@ -1,0 +1,39 @@
+---
+description: Maintain local docs/ai knowledge base and handoff across sessions
+alwaysApply: true
+---
+
+# Personal knowledge base (`docs/ai/`)
+
+This repo has a **local** Cursor development knowledge base at `docs/ai/` (gitignored). Official shareable docs stay in `docs/zh/`.
+
+This Cursor-local memory is separate from any external cross-project/long-term KB. Do not redirect or replace `docs/ai/` with the external KB.
+
+## Cold start (every new Cursor chat that touches this project)
+
+1. Read `docs/ai/HANDOFF.md`
+2. Read `docs/ai/META/phases.md` and `docs/ai/META/preferences.md`
+3. Read the active topic under the current phase (`INDEX.md`, `QA.md`)
+
+## Auto-record
+
+Write/update `docs/ai/` when any of these happen:
+
+- Milestone conclusion (design, investigation, implementation chunk)
+- User corrects architecture/preferences/口径
+- User asks a project-development “I don’t understand / need to review later” question → append current topic `QA.md`
+- Important pitfall or decision, especially evolution between approaches/runs
+- Phase change → update `META/phases.md` + refresh `HANDOFF.md`
+- Long Cursor session ending or context about to compact → flush first
+
+## Structure rules
+
+- Use phase dirs: `00-pre-dev/`, `01-dev/`, `02-post-dev/`, `experiments/`
+- Per topic/run: `SUMMARY.md`, `EVOLUTION.md`, `QA.md` as needed
+- Experiments: use the project’s established evaluation convention and preserve evaluate output
+- Keep code in normal repo paths; keep local development records and result artifacts in `docs/ai/`
+
+## Handoff
+
+After meaningful progress, ensure `docs/ai/HANDOFF.md` lets a new Cursor Agent continue the development process without this chat’s context.
+

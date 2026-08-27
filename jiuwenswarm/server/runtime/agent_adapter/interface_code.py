@@ -476,6 +476,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._is_code_agent: bool = True
         self._runtime_language_override: str | None = None
         self._force_english_runtime_prompt: bool = True
+        self._code_graph_profile_rail: CodeGraphProfileRail | None = None
+        self._code_graph_reload_fingerprint: tuple[Any, ...] | None = None
+        self._code_graph_needs_warmup: bool = False
+        self._code_agent_rail = None
+        self._code_plan_approval_rail = None
 
     # ─── Language override ────────────────────────
 
@@ -610,7 +615,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=False,
             completion_timeout=resolve_task_loop_completion_timeout(config),
+            code_graph_config=self._build_code_graph_config(config_base),
         )
+        self._remember_code_graph_reload_fingerprint(config_base)
 
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，
         # 主事件循环在初始化的十几秒里保持响应，esc 的 cancel 不再堵队列、后端能尽快停。
@@ -672,6 +679,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         logger.info("[JiuwenSwarmCodeAdapter] 初始化完成: agent_name=%s", self._agent_name)
 
         await self.load_user_rails()
+        self._schedule_code_graph_warmup()
 
     # ─── Rails 构建 ──────────────────────────
 
@@ -799,21 +807,119 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     def _code_graph_flags(self, config_base: dict[str, Any] | None) -> CodeGraphFlags:
         return resolve_code_graph_flags(config_base)
 
+    def _resolve_code_graph_cache_dir(self, raw_cache: object) -> str:
+        """Absolute checkpoint dir. Relative values follow the agent workspace.
+
+        Never a process-cwd relative path: that would write different places on
+        another machine or after a chdir. Omit yaml ``cache_dir`` unless you
+        need a shared disk; do not put a machine-specific home path in yaml.
+        """
+        workspace = getattr(self, "_agent_workspace_dir", None) or getattr(
+            self, "_project_dir", None
+        )
+        if raw_cache:
+            path = Path(str(raw_cache)).expanduser()
+            if not path.is_absolute():
+                base = Path(workspace) if workspace else Path.cwd()
+                path = base / path
+            return str(path.resolve())
+        base = Path(workspace) if workspace else Path.cwd()
+        return str((base / ".code_graph_cache").resolve())
+
     def _build_code_graph_config(self, config_base: dict[str, Any] | None) -> CodeGraphConfig:
         raw = (config_base or {}).get("code_graph") if isinstance(config_base, dict) else {}
         if not isinstance(raw, dict):
             raw = {}
-        cache_dir = raw.get("cache_dir")
-        if not cache_dir:
-            # Not set until the agent is built; the cache still must not land in
-            # the user's project_dir when it is.
-            base = getattr(self, "_agent_workspace_dir", None) or self._project_dir or "."
-            cache_dir = str(Path(base) / ".code_graph_cache")
+        defaults = CodeGraphConfig()
+        cache_dir = self._resolve_code_graph_cache_dir(raw.get("cache_dir"))
         return CodeGraphConfig(
-            cache_dir=str(cache_dir),
-            max_files=parse_int(raw.get("max_files"), 50000),
-            max_index_size_mb=parse_int(raw.get("max_index_size_mb"), 1024),
-            query_timeout_seconds=float(raw.get("query_timeout_seconds") or 10),
+            cache_dir=cache_dir,
+            max_files=parse_int(raw.get("max_files"), defaults.max_files),
+            max_source_bytes=parse_int(raw.get("max_source_bytes"), defaults.max_source_bytes),
+            max_build_rss_mb=parse_int(raw.get("max_build_rss_mb"), defaults.max_build_rss_mb),
+            max_cache_size_mb=parse_int(raw.get("max_cache_size_mb"), defaults.max_cache_size_mb or 2048),
+        )
+
+    def _code_graph_reload_key(self, config_base: dict[str, Any] | None) -> tuple[Any, ...]:
+        """User-facing knobs that must remount the live rail when they change."""
+        flags = self._code_graph_flags(config_base)
+        cfg = self._build_code_graph_config(config_base)
+        return (
+            flags.profile,
+            flags.on_root,
+            flags.on_code_agent,
+            cfg.max_files,
+            cfg.max_source_bytes,
+            cfg.max_build_rss_mb,
+            cfg.max_cache_size_mb,
+            cfg.cache_dir,
+        )
+
+    def _remember_code_graph_reload_fingerprint(self, config_base: dict[str, Any] | None) -> None:
+        self._code_graph_reload_fingerprint = self._code_graph_reload_key(config_base)
+
+    def _sync_code_graph_rail_for_reload(
+        self,
+        config_base: dict[str, Any] | None,
+    ) -> CodeGraphProfileRail | None:
+        """Rebuild the Root graph rail when yaml changed. None keeps the live rail.
+
+        DeepAgent.configure only cycles rails whose type is in the new list.
+        Returning a rail — including ``profile=off`` — retires the old one.
+        """
+        fingerprint = self._code_graph_reload_key(config_base)
+        if fingerprint == self._code_graph_reload_fingerprint:
+            return None
+        self._code_graph_reload_fingerprint = fingerprint
+        flags = self._code_graph_flags(config_base)
+        if flags.on_root:
+            rail = self._build_code_graph_profile_rail(config_base or {})
+        else:
+            rail = CodeGraphProfileRail(PROFILE_OFF)
+        self._code_graph_profile_rail = rail
+        self._code_graph_needs_warmup = flags.enabled
+        inst = getattr(self, "_instance", None)
+        deep_config = getattr(inst, "deep_config", None) if inst is not None else None
+        if deep_config is not None:
+            deep_config.code_graph_config = self._build_code_graph_config(config_base)
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] Code Graph config hot-reloaded profile=%s on_root=%s",
+            flags.profile,
+            flags.on_root,
+        )
+        return rail
+
+    def _schedule_code_graph_warmup(self) -> None:
+        """Build as soon as the coding session has a project. Do not block start."""
+        config_base = getattr(self, "_config_base_cache", None) or get_config()
+        flags = self._code_graph_flags(config_base)
+        if not flags.enabled:
+            return
+        root = self._project_dir or self._workspace_dir
+        if not root:
+            return
+        cfg = self._build_code_graph_config(config_base)
+        inst = getattr(self, "_instance", None)
+        deep_config = getattr(inst, "deep_config", None) if inst is not None else None
+        if deep_config is not None:
+            deep_config.code_graph_config = cfg
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _warm() -> None:
+            try:
+                from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+
+                await get_code_graph_manager(cfg).ensure_fresh(str(root), cfg)
+            except Exception as exc:  # noqa: BLE001 — first find_* still retries
+                logger.warning("[JiuwenSwarmCodeAdapter] Code Graph warmup failed: %s", exc)
+
+        loop.create_task(_warm())
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] Code Graph warmup scheduled for %s",
+            root,
         )
 
     def _subagent_graph_factory_kwargs(
@@ -1346,6 +1452,28 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] PlanApprovalInterruptRail create failed: %s", exc)
             return None
 
+    def _make_deep_agent_config(self, **kwargs: Any) -> Any:
+        """Keep ``code_graph_config`` on the live DeepAgent across hot reload."""
+        deep_cfg = super()._make_deep_agent_config(**kwargs)
+        config_base = kwargs.get("config_base") or getattr(self, "_config_base_cache", None)
+        deep_cfg.code_graph_config = self._build_code_graph_config(config_base)
+        return deep_cfg
+
+    async def reload_agent_config(
+        self,
+        config_base: dict[str, Any] | None = None,
+        env_overrides: dict[str, Any] | None = None,
+        target_session_id: str | None = None,
+    ) -> None:
+        await super().reload_agent_config(
+            config_base,
+            env_overrides,
+            target_session_id=target_session_id,
+        )
+        if self._code_graph_needs_warmup:
+            self._code_graph_needs_warmup = False
+            self._schedule_code_graph_warmup()
+
     def _get_current_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any] | None = None
     ) -> list[Any]:
@@ -1360,6 +1488,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             rails_list.append(self._code_agent_rail)
         if self._code_plan_approval_rail is not None:
             rails_list.append(self._code_plan_approval_rail)
+        snapshot = config_base if isinstance(config_base, dict) else getattr(
+            self, "_config_base_cache", None
+        )
+        graph_rail = self._sync_code_graph_rail_for_reload(snapshot)
+        if graph_rail is not None:
+            rails_list.append(graph_rail)
         return rails_list
 
     # ─── Runtime config ──────────────────────────

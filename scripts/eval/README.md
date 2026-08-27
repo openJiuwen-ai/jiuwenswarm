@@ -14,7 +14,18 @@ Pair both repos on `feat/code-graph`. Scripts prepend `../agent-core`.
 `jiuwenswarm-init` / `jiuwenswarm-start` download grammars. Query paths never
 download.
 
-Gold: `../reconstruct_tmp/ContextBench/data/contextbench_verified.parquet`.
+Gold parquet and the official scorer live in a **ContextBench checkout**, which
+is not part of this repo. Point the runner at it with one of:
+
+```bash
+export CONTEXTBENCH_ROOT=/path/to/ContextBench
+# or clone it as a sibling of jiuwenswarm:
+#   ../ContextBench
+# or pass --contextbench-root / --parquet
+```
+
+Do **not** assume `reconstruct_tmp/ContextBench` exists; that was a local
+layout on one machine. `CONTEXTBENCH_PARQUET` still overrides the gold file.
 
 Main table: File / Symbol / Span / AUC. Do not report EditLoc. `--limit 5` is
 smoke, not Verified 500.
@@ -52,6 +63,7 @@ Default `--output` is `docs/ai/experiments-contextbench/runs/scratch-contextbenc
 Numbered experiments must pass `--output` so they do not overwrite each other.
 
 ```bash
+export CONTEXTBENCH_ROOT=/path/to/ContextBench   # required unless ../ContextBench exists
 UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
   --limit 5 --profile off
 UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
