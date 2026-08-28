@@ -18,7 +18,7 @@ uv pip install tree-sitter-language-pack
 
 ## 如何打开
 
-源码 Web / 桌面 GUI：左侧 **更多 → 配置信息 → 其他配置 → Code Graph**。`检索档位` 选 `graph` 即打开。同一页可改挂载点和建图上限。保存后新开一轮对话生效。
+源码 Web / 桌面 GUI：左侧 **更多 → 配置信息 → 其他配置 → Code Graph**。`检索档位` 选 `graph` 即打开。同一页可改挂载点和建图上限。保存后当前 Code 对话的下一回合即可用图（off→graph 会立刻挂 `find_*` 并藏 grep）。挂载点改到 `code_agent` 时会自动打开该子代理；若当前会话是在 Root 上开的，新开一轮对话更稳。
 
 安全配置里的工具表会列出 `find_*` / `resolve_symbol` 等图工具，方便单独设 allow / ask / deny；`profile: off` 时这些工具不会挂上。
 
@@ -26,12 +26,12 @@ uv pip install tree-sitter-language-pack
 
 ```yaml
 code_graph:
-  profile: "graph"   # off = 原版工具；graph = find_* 检索
-  agent: "root"      # root（产品 yaml 默认）或 code_agent
+  profile: "graph"   # off 或 graph
+  agent: "root"      # root 或 code_agent（产品 yaml 默认 root）
   max_files: 5000
-  max_source_bytes: 41943040   # 40MB
-  max_build_rss_mb: 4096       # 进程内存
-  max_cache_size_mb: 2048      # 索引磁盘
+  max_source_bytes: 40MB
+  max_build_rss_mb: 4096
+  max_cache_size_mb: 2048
 ```
 
 文件数和源码体积决定这个仓能不能进图。内存和磁盘是建图/更新过程中的硬停：测到真实占用超了就立刻停、清图、恢复 grep。进了上限的仓会等到**新图**建完，不会因为时间到了就放弃。符号数、边数、估算字节不是停图条件。
@@ -44,7 +44,7 @@ code_graph:
 
 `profile` 只接受 `off` 或 `graph`；其它值当作 `off`。
 
-`agent` 只接受 `root` 或 `code_agent`。产品模板默认是 `root`：只把 `profile` 改成 `graph` 即可，不必打开 `code_agent`。配置里没有写 `agent` 时，仍挂在 `code_agent` 上（和此前评测默认一致）。挂在 `code_agent` 时需要 `react.subagents.code_agent.enabled: true`。
+`agent` 只接受 `root` 或 `code_agent`。产品模板默认是 `root`：只把 `profile` 改成 `graph` 即可，不必打开 `code_agent`。配置里没有写 `agent` 时，仍挂在 `code_agent` 上（和此前评测默认一致）。选了 `code_agent` 会自动打开该子代理，不必再开一次 `react.subagents.code_agent`。
 
 ## 打开后能做什么
 

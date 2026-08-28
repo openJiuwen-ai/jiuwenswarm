@@ -41,7 +41,10 @@ from openjiuwen.harness.lsp import InitializeOptions
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
     CodeGraphFlags,
     PROFILE_OFF,
+    admit_code_graph_workspace,
+    parse_source_volume_to_bytes,
     resolve_code_graph_flags,
+    rewrite_code_graph_limit_message,
 )
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
@@ -479,6 +482,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._code_graph_profile_rail: CodeGraphProfileRail | None = None
         self._code_graph_reload_fingerprint: tuple[Any, ...] | None = None
         self._code_graph_needs_warmup: bool = False
+        self._code_graph_rail_needs_apply: bool = False
         self._code_agent_rail = None
         self._code_plan_approval_rail = None
 
@@ -542,15 +546,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._project_dir = self._instance_overrides.get(
             "project_dir", config.get("project_dir")
         )
-        # _workspace_dir: 项目上下文路径，用于 Workspace(root_path)、LspTool 等需要项目目录的组件。
+        # _workspace_dir: 用户项目路径，给 LspTool / CodeAgentRail 等需要仓根的组件。
         # 优先使用 project_dir（LspTool sandbox 校验需要）。
         self._workspace_dir = (
             self._project_dir
             or config.get("workspace_dir")
             or str(get_agent_workspace_dir())
         )
-        # _agent_workspace_dir: agent 数据存储路径，始终指向系统 workspace，
-        # 用于 coding_memory、todo文件等不应写入用户项目目录的数据。
+        # _agent_workspace_dir: agent 自己的产物根（AGENT.md / memory.db / history）。
+        # 不要和用户仓重合，否则会话会把工作区文件写进 project_dir 并弄脏图。
         self._agent_workspace_dir = str(get_agent_workspace_dir())
         self._permission_workspace_root = self._resolve_permission_workspace_root()
         self._platform_trusted_root = Path(get_agent_workspace_dir()).resolve(
@@ -587,7 +591,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         configured_subagents = configured_subagents or []
 
         workspace = Workspace(
-            root_path=self._workspace_dir or "./",
+            root_path=self._agent_workspace_dir or "./",
             language=self._resolve_runtime_language(),
         )
         _set_workspace_coding_memory_directory(
@@ -597,6 +601,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             description="Coding Agent 记忆模块",
         )
 
+        project_root = self._project_dir or self._workspace_dir
         self._instance = create_deep_agent(
             model=model,
             card=agent_card,
@@ -614,6 +619,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             context_engine_config=_deep_agent_context_engine_config(config),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=False,
+            cwd=project_root,
+            project_root=project_root,
             completion_timeout=resolve_task_loop_completion_timeout(config),
             code_graph_config=self._build_code_graph_config(config_base),
         )
@@ -643,28 +650,27 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             None,
             lambda: asyncio.run(self._instance.ensure_initialized()),
         )
-        # 修正 .agent_history 写入路径：openjiuwen 文件工具默认将
-        # .agent_history 写到 Workspace.root_path（即项目目录），
-        # 这里覆写为 agent 系统 workspace，避免污染用户项目目录。
+        # 文件工具默认把 .agent_history 写到 Workspace.root_path。
+        # 上面已把 root 指到 agent workspace；这里再覆写一次，避免热更新改回去。
         for rail in getattr(self._instance, '_registered_rails', []):
             for tool in getattr(rail, 'tools', []) or []:
                 if hasattr(tool, '_workspace_path'):
                     setattr(tool, '_workspace_path', self._agent_workspace_dir)
-        initial_workspace = self._project_dir or str(
+        initial_project = self._project_dir or str(
             get_default_project_session_workspace_dir()
         )
-        self._seed_runtime_cwd(initial_workspace, workspace=initial_workspace)
+        self._seed_runtime_cwd(initial_project, workspace=self._agent_workspace_dir)
 
         setattr(self._instance, "_jiuwenswarm_adapter_mode", "code")
         setattr(
             self._instance,
             "_jiuwenswarm_code_project_dir",
-            initial_workspace,
+            initial_project,
         )
         setattr(
             self._instance,
             "_jiuwenswarm_project_dir",
-            initial_workspace,
+            initial_project,
         )
 
         # code 模式不传: vision_model_config, audio_model_config
@@ -835,7 +841,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         return CodeGraphConfig(
             cache_dir=cache_dir,
             max_files=parse_int(raw.get("max_files"), defaults.max_files),
-            max_source_bytes=parse_int(raw.get("max_source_bytes"), defaults.max_source_bytes),
+            max_source_bytes=parse_source_volume_to_bytes(
+                raw.get("max_source_bytes"), defaults.max_source_bytes
+            ),
             max_build_rss_mb=parse_int(raw.get("max_build_rss_mb"), defaults.max_build_rss_mb),
             max_cache_size_mb=parse_int(raw.get("max_cache_size_mb"), defaults.max_cache_size_mb or 2048),
         )
@@ -868,16 +876,31 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         Returning a rail — including ``profile=off`` — retires the old one.
         """
         fingerprint = self._code_graph_reload_key(config_base)
+        flags = self._code_graph_flags(config_base)
         if fingerprint == self._code_graph_reload_fingerprint:
+            # ``configure()`` always runs ``_hot_reload_tools``. grep/glob are
+            # in ``config.tools``, so a hidden grep is added back. find_* stay
+            # (``reorder_tools`` keeps extras). create already remembered this
+            # fingerprint, so a later lazy reload would skip apply and leave
+            # both grep and the graph on the next turn. Off create never hung
+            # a rail, so ``_code_graph_profile_rail`` may still be None here —
+            # build it so apply has something to register. Do not put this
+            # rail in ``rails`` or it inits in the middle of skill/context.
+            if flags.on_root:
+                self._code_graph_rail_needs_apply = True
+                if self._code_graph_profile_rail is None:
+                    self._code_graph_profile_rail = self._build_code_graph_profile_rail(
+                        config_base or {}
+                    )
             return None
         self._code_graph_reload_fingerprint = fingerprint
-        flags = self._code_graph_flags(config_base)
         if flags.on_root:
             rail = self._build_code_graph_profile_rail(config_base or {})
         else:
             rail = CodeGraphProfileRail(PROFILE_OFF)
         self._code_graph_profile_rail = rail
         self._code_graph_needs_warmup = flags.enabled
+        self._code_graph_rail_needs_apply = True
         inst = getattr(self, "_instance", None)
         deep_config = getattr(inst, "deep_config", None) if inst is not None else None
         if deep_config is not None:
@@ -923,6 +946,63 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             root,
         )
 
+    def _schedule_code_graph_warmup_if_stale(self) -> None:
+        """session.create 时若仓已脏或已超限，立刻再 walk，不要等 find_*。"""
+        config_base = getattr(self, "_config_base_cache", None) or get_config()
+        flags = self._code_graph_flags(config_base)
+        if not flags.enabled:
+            return
+        root = str(self._project_dir or self._workspace_dir or "").strip()
+        if not root:
+            return
+        cfg = self._build_code_graph_config(config_base)
+        over = admit_code_graph_workspace(root, cfg)
+        if over is not None:
+            rail = getattr(self, "_code_graph_profile_rail", None)
+            abandon = getattr(rail, "abandon_graph", None) if rail is not None else None
+            inst = getattr(self, "_instance", None)
+            if callable(abandon) and inst is not None:
+                abandon(
+                    inst,
+                    reason=rewrite_code_graph_limit_message(str(over)),
+                )
+            self._schedule_code_graph_warmup()
+            return
+        try:
+            from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+
+            stats = get_code_graph_manager(cfg).stats(root, config=cfg)
+        except Exception:  # noqa: BLE001 — session create must still return
+            return
+        if not isinstance(stats, dict):
+            return
+        state = str(stats.get("state") or "")
+        if state in {"stale", "absent", "unavailable"} or stats.get("limit_exceeded"):
+            self._schedule_code_graph_warmup()
+
+    def _seed_runtime_cwd(
+        self, cwd: str | None = None, workspace: str | None = None
+    ) -> None:
+        """cwd / project_root 是用户仓；workspace 是 agent 产物根。
+
+        沙箱同时允许 ``get_workspace()`` / ``get_project_root()`` / ``get_cwd()``，
+        所以把 AGENT.md 挪出项目不会挡住对用户仓的读写。
+        """
+        from openjiuwen.core.sys_operation.cwd import init_cwd
+
+        agent_workspace = str(
+            getattr(self, "_agent_workspace_dir", None) or workspace or ""
+        ).strip()
+        project = str(getattr(self, "_project_dir", None) or "").strip()
+        runtime_cwd = str(cwd or "").strip()
+        if not runtime_cwd or not os.path.isdir(runtime_cwd):
+            runtime_cwd = project
+        if not runtime_cwd or not os.path.isdir(runtime_cwd):
+            runtime_cwd = agent_workspace or os.getcwd()
+        project_root = project if project and os.path.isdir(project) else runtime_cwd
+        workspace_root = agent_workspace or workspace or project_root
+        init_cwd(runtime_cwd, project_root=project_root, workspace=workspace_root)
+
     def _abandon_graph_after_warmup(self, exc: Exception) -> None:
         """Over-limit warmup must drop find_* now, not after the first graph call."""
         from openjiuwen.core.retrieval.code_graph.errors import CodeGraphLimitExceeded
@@ -939,7 +1019,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         abandon = getattr(rail, "abandon_graph", None) if rail is not None else None
         if inst is None or not callable(abandon):
             return
-        abandon(inst, reason=str(exc))
+        abandon(inst, reason=rewrite_code_graph_limit_message(str(exc)))
 
     def _subagent_graph_factory_kwargs(
         self,
@@ -954,17 +1034,167 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         return kwargs
 
     def _build_code_graph_profile_rail(self, config_base: dict[str, Any]) -> CodeGraphProfileRail:
-        """Hang find_* on Root. Eval locate still uses coding_agent.py, not this."""
+        """Hang find_* on Root. ``code_agent`` hang stays on the sub-agent."""
         flags = self._code_graph_flags(config_base)
+        profile = flags.profile if flags.on_root else PROFILE_OFF
         rail = CodeGraphProfileRail(
-            flags.profile,
+            profile,
             config=self._build_code_graph_config(config_base),
         )
         logger.info(
-            "[JiuwenSwarmCodeAdapter] CodeGraphProfileRail on Root profile=%s",
-            flags.profile,
+            "[JiuwenSwarmCodeAdapter] CodeGraphProfileRail on Root profile=%s on_root=%s",
+            profile,
+            flags.on_root,
         )
         return rail
+
+    async def _apply_code_graph_rail_now(self) -> None:
+        """Hang the GRAPH rail last so the next turn's tool table has find_*.
+
+        ``configure()`` queues rails and sets ``_initialized=False``. The next
+        ``ensure_initialized`` re-inits pending skill/context rails. If this
+        method inits the graph rail *before* that cycle, those rails can wipe
+        ``CODE_GRAPH``. ``configure`` also re-adds grep from ``config.tools``
+        even when find_* are already on the table. Call ``ensure_initialized``
+        first, then this method: unregister every graph rail (including this
+        one if pending-init already ran) and ``register_rail`` so ``init()``
+        is the last word — hide grep again, keep find_*, restore
+        ``CODE_GRAPH``. Off create still omits this rail.
+        """
+        inst = getattr(self, "_instance", None)
+        rail = getattr(self, "_code_graph_profile_rail", None)
+        if inst is None:
+            return
+        if rail is None:
+            config_base = getattr(self, "_config_base_cache", None)
+            snapshot = config_base if isinstance(config_base, dict) else {}
+            flags = self._code_graph_flags(snapshot)
+            if not flags.on_root:
+                return
+            rail = self._build_code_graph_profile_rail(snapshot)
+            self._code_graph_profile_rail = rail
+        find = getattr(inst, "find_rails_by_type", None)
+        unregister = getattr(inst, "unregister_rail", None)
+        register = getattr(inst, "register_rail", None)
+        if not callable(find) or not callable(unregister) or not callable(register):
+            return
+        for old in list(find((CodeGraphProfileRail,))):
+            await unregister(old)
+        remove_pending = getattr(inst, "remove_pending_rail", None)
+        if callable(remove_pending):
+            remove_pending(rail)
+        await register(rail)
+        self._conceal_grep_if_graph_live(inst, rail)
+        self._abandon_graph_if_limit_exceeded(rail)
+        tools = getattr(rail, "_tools", None) or []
+        hidden = getattr(rail, "_hidden_search", None) or []
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] Code Graph rail applied profile=%s "
+            "tools=%d hidden_search=%d",
+            getattr(getattr(rail, "profile", None), "value", rail.profile),
+            len(tools),
+            len(hidden),
+        )
+        if not tools and not hidden:
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] Code Graph rail applied but find_* "
+                "were not registered; the model will not see the graph"
+            )
+
+    def _conceal_grep_if_graph_live(self, inst: Any, rail: Any = None) -> None:
+        """Hide grep/glob when find_* are already on the table.
+
+        ``configure()`` puts grep back from ``config.tools``. Rail ``init``
+        skips hide when find_* already exist, so ``_tools`` stays empty.
+        Off create still omits this rail. Do not change GrepTool / agent-core.
+        """
+        if inst is None:
+            return
+        flags = self._code_graph_flags(getattr(self, "_config_base_cache", None))
+        if not flags.on_root or not flags.enabled:
+            return
+        if rail is None:
+            rail = getattr(self, "_code_graph_profile_rail", None)
+        if rail is None:
+            find = getattr(inst, "find_rails_by_type", None)
+            if callable(find):
+                found = find((CodeGraphProfileRail,))
+                rail = found[0] if found else None
+        manager = getattr(inst, "ability_manager", None)
+        if manager is None:
+            return
+        has_graph = False
+        getter = getattr(manager, "get", None)
+        listed = getattr(manager, "list", None)
+        for name in ("resolve_symbol", "find_code_symbols", "search_source_text"):
+            if callable(getter) and getter(name) is not None:
+                has_graph = True
+                break
+            if callable(listed) and any(
+                getattr(item, "name", "") == name for item in (listed() or [])
+            ):
+                has_graph = True
+                break
+        if not has_graph:
+            return
+        from openjiuwen.harness.rails.code_graph_profile_rail import (
+            _hide_text_search_tools,
+        )
+
+        hidden = _hide_text_search_tools(inst)
+        if not hidden:
+            return
+        if rail is not None:
+            previous = list(getattr(rail, "_hidden_search", None) or [])
+            seen = {getattr(card, "name", None) for card, _ in previous}
+            for pair in hidden:
+                name = getattr(pair[0], "name", None)
+                if name not in seen:
+                    previous.append(pair)
+                    seen.add(name)
+            rail._hidden_search = previous
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] Code Graph concealed %d search tools "
+            "while find_* were live",
+            len(hidden),
+        )
+
+    def _abandon_graph_if_limit_exceeded(self, rail: Any) -> None:
+        """If this project is already over cap, drop find_* again after hanging GRAPH.
+
+        ``register_rail`` always attaches find_* and hides grep. Lowering a cap
+        on a repo that already had a graph leaves ``limit_exceeded`` on the
+        entry; the next chat must not still see find_*. Warmup is async and
+        loses the race. Do not call this on every ``chat.send``.
+        """
+        workspace = str(getattr(self, "_project_dir", None) or "").strip()
+        abandon = getattr(rail, "abandon_graph", None)
+        if not workspace or not callable(abandon):
+            return
+        try:
+            from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+
+            cfg = self._build_code_graph_config(getattr(self, "_config_base_cache", None))
+            stats = get_code_graph_manager(cfg).stats(workspace, config=cfg)
+        except Exception:  # noqa: BLE001 — hanging the rail already succeeded
+            return
+        if not isinstance(stats, dict):
+            return
+        if not (stats.get("limit_exceeded") or str(stats.get("state") or "") == "unavailable"):
+            return
+        inst = getattr(self, "_instance", None)
+        abandon(
+            inst,
+            reason=rewrite_code_graph_limit_message(
+                str(stats.get("message") or "UNAVAILABLE")
+            ),
+        )
+        logger.info(
+            "[JiuwenSwarmCodeAdapter] Code Graph over limit after apply; "
+            "find_* dropped workspace=%s state=%s",
+            workspace,
+            stats.get("state"),
+        )
 
     def _code_agent_graph_kwargs(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
         """Profile kwargs for code_agent when it owns the graph.
@@ -1239,7 +1469,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Build subagents for code mode, including the built-in status-line setup agent.
 
         explore_agent / plan_agent 固定挂载（Code 模式核心子代理）。
-        code_agent / browser_agent 按配置启用。
+        code_agent 按配置启用；图工具挂在 code_agent 上时自动打开，不必再开一次子代理开关。
+        browser_agent 按配置启用。
 
         每个 spec 都带上主 Agent 的 ``sys_operation``：子 Agent 必须和父 Agent 处在
         同一个文件系统边界里。若留空，``DeepAgent.create_subagent`` 会给子 Agent
@@ -1321,35 +1552,39 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # Code Graph is a profile, not a separate sub-agent. Root hang is a
         # rail on this DeepAgent; code_agent hang is factory_kwargs below.
 
-        if isinstance(subagents_cfg, dict):
-            # code_agent subagent — 按配置启用
-            code_agent_cfg = subagents_cfg.get("code_agent")
-            if self._is_subagent_enabled(code_agent_cfg):
-                code_agent_rails = None
-                # 复用主 Agent 已构建的 CodingMemoryRail
-                coding_memory_rail = self._coding_memory_rail
-                if coding_memory_rail is not None:
-                    # SysOperationRail is default rail for code_agent;
-                    # passing rails overrides defaults, must include it explicitly
-                    code_agent_rails = [SysOperationRail(), coding_memory_rail]
-                graph_kwargs = self._code_agent_graph_kwargs(config_base)
-                code_spec = build_code_agent_config(
-                    model,
-                    workspace=workspace,
-                    sys_operation=sys_operation,
-                    language=resolved_language,
-                    rails=code_agent_rails,
-                    max_iterations=parse_int(
-                        code_agent_cfg.get("max_iterations"),
-                        react_cfg.get("max_iterations", 15),
-                    ),
-                    **graph_kwargs,
-                )
-                code_spec.factory_kwargs = self._subagent_graph_factory_kwargs(
-                    code_spec.factory_kwargs,
-                )
-                subagents.append(code_spec)
+        flags = self._code_graph_flags(config_base)
+        code_agent_cfg = (
+            subagents_cfg.get("code_agent") if isinstance(subagents_cfg, dict) else None
+        )
+        if self._is_subagent_enabled(code_agent_cfg) or flags.on_code_agent:
+            if not isinstance(code_agent_cfg, dict):
+                code_agent_cfg = {}
+            code_agent_rails = None
+            # 复用主 Agent 已构建的 CodingMemoryRail
+            coding_memory_rail = self._coding_memory_rail
+            if coding_memory_rail is not None:
+                # SysOperationRail is default rail for code_agent;
+                # passing rails overrides defaults, must include it explicitly
+                code_agent_rails = [SysOperationRail(), coding_memory_rail]
+            graph_kwargs = self._code_agent_graph_kwargs(config_base)
+            code_spec = build_code_agent_config(
+                model,
+                workspace=workspace,
+                sys_operation=sys_operation,
+                language=resolved_language,
+                rails=code_agent_rails,
+                max_iterations=parse_int(
+                    code_agent_cfg.get("max_iterations"),
+                    react_cfg.get("max_iterations", 15),
+                ),
+                **graph_kwargs,
+            )
+            code_spec.factory_kwargs = self._subagent_graph_factory_kwargs(
+                code_spec.factory_kwargs,
+            )
+            subagents.append(code_spec)
 
+        if isinstance(subagents_cfg, dict):
             # browser_agent
             browser_agent_cfg = subagents_cfg.get("browser_agent")
 
@@ -1476,6 +1711,22 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         deep_cfg = super()._make_deep_agent_config(**kwargs)
         config_base = kwargs.get("config_base") or getattr(self, "_config_base_cache", None)
         deep_cfg.code_graph_config = self._build_code_graph_config(config_base)
+        agent_ws = str(getattr(self, "_agent_workspace_dir", "") or "").strip()
+        project = str(
+            getattr(self, "_project_dir", None) or self._workspace_dir or ""
+        ).strip()
+        if agent_ws and getattr(deep_cfg, "workspace", None) is not None:
+            deep_cfg.workspace.root_path = agent_ws
+            _set_workspace_coding_memory_directory(
+                deep_cfg.workspace,
+                project_dir=project or agent_ws,
+                agent_workspace_dir=agent_ws,
+                description="Coding Agent 记忆模块",
+            )
+        if project:
+            deep_cfg.cwd = project
+            deep_cfg.project_root = project
+        deep_cfg.auto_create_workspace = False
         return deep_cfg
 
     async def reload_agent_config(
@@ -1489,9 +1740,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             env_overrides,
             target_session_id=target_session_id,
         )
+        if self._code_graph_rail_needs_apply:
+            # ``configure()`` flipped ``_initialized`` so pending skill/context
+            # rails re-init here, in the same order as create. Graph must hang
+            # *after* that or find_* never reach the next LLM tool table.
+            inst = getattr(self, "_instance", None)
+            ensure_initialized = getattr(inst, "ensure_initialized", None)
+            if callable(ensure_initialized):
+                await ensure_initialized()
+            await self._apply_code_graph_rail_now()
+            self._code_graph_rail_needs_apply = False
         if self._code_graph_needs_warmup:
             self._code_graph_needs_warmup = False
             self._schedule_code_graph_warmup()
+        else:
+            self._schedule_code_graph_warmup_if_stale()
 
     def _get_current_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any] | None = None
@@ -1517,19 +1780,34 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     # ─── Runtime config ──────────────────────────
 
+    async def configure_session_runtime(
+        self,
+        *,
+        session_id: str,
+        channel_id: str,
+        mode: str,
+        project_dir: str | None = None,
+    ) -> None:
+        await super().configure_session_runtime(
+            session_id=session_id,
+            channel_id=channel_id,
+            mode=mode,
+            project_dir=project_dir,
+        )
+        self._schedule_code_graph_warmup_if_stale()
+
     async def _update_runtime_config(self, runtime_config: "JiuWenSwarmDeepAdapter._RuntimeConfig") -> None:
         """Code 模式 runtime config: ProjectMemoryRail 语言同步 + rail 模式切换."""
         if self._instance is None:
             raise RuntimeError("JiuwenSwarmCodeAdapter 未初始化，请先调用 create_instance()")
 
-        project_workspace = (
-            runtime_config.workspace
-            or runtime_config.project_dir
+        project_dir = (
+            runtime_config.project_dir
             or self._project_dir
             or str(get_default_project_session_workspace_dir(runtime_config.session_id))
         )
-        task_cwd = runtime_config.cwd or project_workspace
-        self._seed_runtime_cwd(task_cwd, workspace=project_workspace)
+        task_cwd = runtime_config.cwd or project_dir
+        self._seed_runtime_cwd(task_cwd, workspace=self._agent_workspace_dir)
         resolved_language = self._resolve_runtime_language()
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
@@ -1612,6 +1890,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 self._instance.ability_manager.add(tool.card)
         except ImportError:
             pass
+        self._conceal_grep_if_graph_live(self._instance)
 
     # ─── Tools 构建 ──────────────────────────
 
@@ -1865,7 +2144,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             "channel_id": channel_id,
         }
         initial_workspace = self._project_dir or self._workspace_dir
-        self._seed_runtime_cwd(initial_workspace, workspace=initial_workspace)
+        self._seed_runtime_cwd(initial_workspace, workspace=self._agent_workspace_dir)
 
         model = self._create_model(config_base)
         deep_config = getattr(agent, "deep_config", None)

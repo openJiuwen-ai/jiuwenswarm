@@ -308,6 +308,84 @@ def test_status_code_graph_reads_manager_when_profile_graph(monkeypatch):
     assert seen["max_files"] == 50
 
 
+def test_status_code_graph_limit_exceeded_reports_unavailable(monkeypatch):
+    class _Mgr:
+        def stats(self, workspace, config=None):
+            return {
+                "present": True,
+                "state": "stale",
+                "limit_exceeded": True,
+                "generation_id": None,
+                "message": "max_files is 4, cap is 3",
+            }
+
+    monkeypatch.setattr(
+        "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
+        lambda _cfg=None: _Mgr(),
+    )
+    payload = agent_ws_server_module.resolve_status_code_graph(
+        {"code_graph": {"profile": "graph", "agent": "root"}},
+        "/tmp/project",
+    )
+    assert payload["state"] == "unavailable"
+    assert payload["limit_exceeded"] is True
+    assert "max_files" in str(payload.get("message") or "")
+
+
+def test_status_code_graph_rewrites_rss_message_to_mb(monkeypatch):
+    class _Mgr:
+        def stats(self, workspace, config=None):
+            return {
+                "present": True,
+                "state": "unavailable",
+                "limit_exceeded": True,
+                "message": (
+                    "Code Graph limit exceeded: max_build_rss_mb is 151748608, "
+                    "cap is 1048576."
+                ),
+            }
+
+    monkeypatch.setattr(
+        "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
+        lambda _cfg=None: _Mgr(),
+    )
+    payload = agent_ws_server_module.resolve_status_code_graph(
+        {"code_graph": {"profile": "graph", "agent": "root"}},
+        "/tmp/project",
+    )
+    assert payload["state"] == "unavailable"
+    assert "151748608" not in str(payload.get("message") or "")
+    assert "max_build_rss_mb is 144.7, cap is 1" in str(payload.get("message") or "")
+
+
+def test_status_code_graph_stale_over_max_files_reports_unavailable(tmp_path, monkeypatch):
+    (tmp_path / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("b = 1\n", encoding="utf-8")
+
+    class _Mgr:
+        def stats(self, workspace, config=None):
+            return {
+                "present": True,
+                "state": "stale",
+                "generation_id": 1,
+            }
+
+        async def ensure_fresh(self, workspace, config=None):
+            return None
+
+    monkeypatch.setattr(
+        "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
+        lambda _cfg=None: _Mgr(),
+    )
+    payload = agent_ws_server_module.resolve_status_code_graph(
+        {"code_graph": {"profile": "graph", "agent": "root", "max_files": 1}},
+        str(tmp_path),
+    )
+    assert payload["state"] == "unavailable"
+    assert payload["limit_exceeded"] is True
+    assert "max_files" in str(payload.get("message") or "")
+
+
 def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 

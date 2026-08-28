@@ -1,0 +1,70 @@
+{
+  "split": "contextbench_lite",
+  "official_n": 500,
+  "benches_run": {
+    "Verified": 1,
+    "Pro": 0,
+    "Poly": 0,
+    "Multi": 0
+  },
+  "resolved_by_bench": {
+    "Verified": [
+      "pallets__flask-5014",
+      "psf__requests-1142",
+      "pytest-dev__pytest-10081",
+      "scikit-learn__scikit-learn-25232"
+    ]
+  },
+  "pass_at_1": {
+    "Verified": {
+      "resolved": 4,
+      "n_run": 1,
+      "n_official": 174,
+      "rate_run": 4.0,
+      "rate_official": null,
+      "harness": "swebench eval verified"
+    },
+    "Pro": {
+      "resolved": null,
+      "n_run": 0,
+      "n_official": 54,
+      "rate_run": null,
+      "rate_official": null,
+      "harness": "swe-bench-pro",
+      "note": "no rows in this collect"
+    },
+    "Poly": {
+      "resolved": null,
+      "n_run": 0,
+      "n_official": 116,
+      "rate_run": null,
+      "rate_official": null,
+      "harness": "swe-polybench",
+      "note": "no rows in this collect"
+    },
+    "Multi": {
+      "resolved": null,
+      "n_run": 0,
+      "n_official": 156,
+      "rate_run": null,
+      "rate_official": null,
+      "harness": "multi-swe-bench",
+      "note": "no rows in this collect"
+    },
+    "Overall": {
+      "resolved": 4,
+      "n_run": 1,
+      "n_scored": 1,
+      "n_official": 500,
+      "rate_run": null,
+      "rate_scored": 4.0,
+      "rate_official": null,
+      "missing_harnesses": [
+        "Pro",
+        "Poly",
+        "Multi"
+      ],
+      "harness": "native per bench"
+    }
+  }
+}

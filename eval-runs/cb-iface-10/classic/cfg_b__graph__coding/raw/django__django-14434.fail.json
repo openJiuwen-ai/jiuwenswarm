@@ -1,0 +1,5 @@
+{
+  "instance_id": "django__django-14434",
+  "error": "checkout failed for https://github.com/django/django.git@5e04e84d67da8163f365e9f5fcd169e2630e2873",
+  "model_patch": ""
+}

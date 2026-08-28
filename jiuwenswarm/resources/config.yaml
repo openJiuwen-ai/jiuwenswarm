@@ -1,7 +1,7 @@
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
-# Code Graph. ``off`` = original tools (grep/read/edit). ``graph`` = find_*.
+# Code Graph. ``off`` closes it; ``graph`` indexes symbols and calls.
 # ``uv sync`` does not install tree-sitter-language-pack. Install it yourself;
 # ``jiuwenswarm-init`` / ``jiuwenswarm-start`` download grammars. Query never downloads.
 # ``agent`` is who owns the tools: ``root`` (this template) or ``code_agent``.
@@ -13,12 +13,12 @@ preferred_language: zh
 # Do not set cache_dir to a machine-specific absolute path; omit it and the
 # cache lives under the agent workspace as ``.code_graph_cache``.
 code_graph:
-  profile: "off"   # off = original grep/read/edit; graph = find_*
+  profile: "off"
   agent: "root"
   max_files: 5000
-  max_source_bytes: 41943040   # 40MB
-  max_build_rss_mb: 4096       # process RAM
-  max_cache_size_mb: 2048      # checkpoint disk
+  max_source_bytes: 40MB
+  max_build_rss_mb: 4096
+  max_cache_size_mb: 2048
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:

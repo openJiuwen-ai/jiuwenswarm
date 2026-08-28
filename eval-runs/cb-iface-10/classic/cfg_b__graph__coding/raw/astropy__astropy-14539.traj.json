@@ -1,0 +1,837 @@
+{
+  "instance_id": "astropy__astropy-14539",
+  "traj_data": {
+    "pred_steps": [
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 333,
+              "end": 385
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 1339,
+              "end": 1493
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 1222,
+              "end": 1261
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/fitsrec.py"
+        ],
+        "spans": {
+          "astropy/io/fits/fitsrec.py": [
+            {
+              "start": 788,
+              "end": 850
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/fitsrec.py"
+        ],
+        "spans": {
+          "astropy/io/fits/fitsrec.py": [
+            {
+              "start": 1028,
+              "end": 1066
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/fitsrec.py"
+        ],
+        "spans": {
+          "astropy/io/fits/fitsrec.py": [
+            {
+              "start": 684,
+              "end": 741
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 424,
+              "end": 473
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 466,
+              "end": 485
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 548,
+              "end": 587
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 559,
+              "end": 780
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 995,
+              "end": 1150
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 1285,
+              "end": 1327
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 2046,
+              "end": 2105
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/hdu/table.py"
+        ],
+        "spans": {
+          "astropy/io/fits/hdu/table.py": [
+            {
+              "start": 171,
+              "end": 212
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 1445,
+              "end": 1490
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 1,
+              "end": 50
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 28,
+              "end": 40
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 1445,
+              "end": 1465
+            }
+          ]
+        },
+        "symbols": {}
+      }
+    ],
+    "pred_files": [
+      "astropy/io/fits/diff.py"
+    ],
+    "pred_spans": {
+      "astropy/io/fits/diff.py": [
+        {
+          "start": 30,
+          "end": 31
+        }
+      ]
+    },
+    "pred_symbols": {},
+    "tool_symbols": {},
+    "utilized_source": "declared",
+    "retrieved_hits": [
+      {
+        "files": [
+          "astropy/io/fits/convenience.py"
+        ],
+        "spans": {
+          "astropy/io/fits/convenience.py": [
+            {
+              "start": 832,
+              "end": 938
+            },
+            {
+              "start": 1,
+              "end": 1173
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/convenience.py": [
+            "printdiff",
+            "convenience"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/convenience.py",
+          "astropy/io/fits/diff.py",
+          "astropy/io/fits/scripts/fitsdiff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 198,
+              "end": 450
+            },
+            {
+              "start": 97,
+              "end": 120
+            },
+            {
+              "start": 382,
+              "end": 450
+            },
+            {
+              "start": 58,
+              "end": 195
+            },
+            {
+              "start": 338,
+              "end": 380
+            },
+            {
+              "start": 1,
+              "end": 1578
+            },
+            {
+              "start": 1344,
+              "end": 1488
+            }
+          ],
+          "astropy/io/fits/scripts/fitsdiff.py": [
+            {
+              "start": 1,
+              "end": 429
+            },
+            {
+              "start": 362,
+              "end": 428
+            }
+          ],
+          "astropy/io/fits/convenience.py": [
+            {
+              "start": 832,
+              "end": 938
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/diff.py": [
+            "FITSDiff",
+            "fromdiff",
+            "_report",
+            "_BaseDiff",
+            "_diff",
+            "diff",
+            "_diff"
+          ],
+          "astropy/io/fits/scripts/fitsdiff.py": [
+            "fitsdiff",
+            "main"
+          ],
+          "astropy/io/fits/convenience.py": [
+            "printdiff"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py",
+          "astropy/io/fits/fitsrec.py",
+          "astropy/io/fits/hdu/table.py"
+        ],
+        "spans": {
+          "astropy/io/fits/fitsrec.py": [
+            {
+              "start": 1033,
+              "end": 1061
+            },
+            {
+              "start": 793,
+              "end": 845
+            }
+          ],
+          "astropy/io/fits/hdu/table.py": [
+            {
+              "start": 176,
+              "end": 207
+            },
+            {
+              "start": 1270,
+              "end": 1340
+            },
+            {
+              "start": 542,
+              "end": 569
+            },
+            {
+              "start": 58,
+              "end": 261
+            },
+            {
+              "start": 870,
+              "end": 1543
+            }
+          ],
+          "astropy/io/fits/column.py": [
+            {
+              "start": 2051,
+              "end": 2100
+            },
+            {
+              "start": 471,
+              "end": 480
+            },
+            {
+              "start": 429,
+              "end": 468
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/fitsrec.py": [
+            "_get_raw_data",
+            "_convert_p"
+          ],
+          "astropy/io/fits/hdu/table.py": [
+            "_get_tbdata",
+            "_dump_data",
+            "_prewriteto",
+            "_TableLikeHDU",
+            "BinTableHDU"
+          ],
+          "astropy/io/fits/column.py": [
+            "_VLF",
+            "_FormatQ",
+            "_FormatP"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/fitsrec.py",
+          "astropy/io/fits/hdu/groups.py"
+        ],
+        "spans": {
+          "astropy/io/fits/fitsrec.py": [
+            {
+              "start": 230,
+              "end": 268
+            },
+            {
+              "start": 195,
+              "end": 228
+            },
+            {
+              "start": 508,
+              "end": 545
+            },
+            {
+              "start": 689,
+              "end": 736
+            }
+          ],
+          "astropy/io/fits/hdu/groups.py": [
+            {
+              "start": 86,
+              "end": 267
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/fitsrec.py": [
+            "__array_finalize__",
+            "__reduce__",
+            "__getitem__",
+            "field"
+          ],
+          "astropy/io/fits/hdu/groups.py": [
+            "GroupData"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 249,
+              "end": 288
+            },
+            {
+              "start": 483,
+              "end": 550
+            },
+            {
+              "start": 967,
+              "end": 992
+            },
+            {
+              "start": 344,
+              "end": 405
+            },
+            {
+              "start": 291,
+              "end": 341
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/column.py": [
+            "_BaseColumnFormat",
+            "ColumnAttribute",
+            "_convert_format",
+            "_AsciiColumnFormat",
+            "_ColumnFormat"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 553,
+              "end": 1434
+            },
+            {
+              "start": 1,
+              "end": 2752
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/column.py": [
+            "Column",
+            "column"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 967,
+              "end": 992
+            },
+            {
+              "start": 300,
+              "end": 315
+            },
+            {
+              "start": 291,
+              "end": 341
+            },
+            {
+              "start": 1290,
+              "end": 1322
+            },
+            {
+              "start": 1325,
+              "end": 1365
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/column.py": [
+            "_convert_format",
+            "__new__",
+            "_ColumnFormat",
+            "_determine_formats",
+            "_guess_format"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 300,
+              "end": 315
+            },
+            {
+              "start": 291,
+              "end": 341
+            },
+            {
+              "start": 344,
+              "end": 405
+            },
+            {
+              "start": 429,
+              "end": 468
+            },
+            {
+              "start": 361,
+              "end": 372
+            },
+            {
+              "start": 249,
+              "end": 288
+            },
+            {
+              "start": 393,
+              "end": 405
+            },
+            {
+              "start": 1,
+              "end": 2752
+            },
+            {
+              "start": 1367,
+              "end": 1434
+            },
+            {
+              "start": 408,
+              "end": 423
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/column.py": [
+            "__new__",
+            "_ColumnFormat",
+            "_AsciiColumnFormat",
+            "_FormatP",
+            "__new__",
+            "_BaseColumnFormat",
+            "canonical",
+            "column",
+            "_convert_to_valid_data_type",
+            "_FormatX"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/column.py"
+        ],
+        "spans": {
+          "astropy/io/fits/column.py": [
+            {
+              "start": 1565,
+              "end": 1614
+            },
+            {
+              "start": 995,
+              "end": 1287
+            },
+            {
+              "start": 2283,
+              "end": 2354
+            },
+            {
+              "start": 559,
+              "end": 726
+            },
+            {
+              "start": 2578,
+              "end": 2634
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/column.py": [
+            "_init_from_table",
+            "_verify_keywords",
+            "_parse_ascii_tformat",
+            "__init__",
+            "_parse_tdisp_format"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/fitsrec.py",
+          "astropy/io/fits/hdu/table.py"
+        ],
+        "spans": {
+          "astropy/io/fits/hdu/table.py": [
+            {
+              "start": 176,
+              "end": 207
+            },
+            {
+              "start": 58,
+              "end": 261
+            },
+            {
+              "start": 1270,
+              "end": 1340
+            },
+            {
+              "start": 1,
+              "end": 1613
+            },
+            {
+              "start": 870,
+              "end": 1543
+            },
+            {
+              "start": 1369,
+              "end": 1510
+            },
+            {
+              "start": 542,
+              "end": 569
+            },
+            {
+              "start": 232,
+              "end": 235
+            }
+          ],
+          "astropy/io/fits/fitsrec.py": [
+            {
+              "start": 689,
+              "end": 736
+            },
+            {
+              "start": 1033,
+              "end": 1061
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/hdu/table.py": [
+            "_get_tbdata",
+            "_TableLikeHDU",
+            "_dump_data",
+            "table",
+            "BinTableHDU",
+            "_load_data",
+            "_prewriteto",
+            "_update_load_data"
+          ],
+          "astropy/io/fits/fitsrec.py": [
+            "field",
+            "_get_raw_data"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 1490,
+              "end": 1554
+            },
+            {
+              "start": 1227,
+              "end": 1554
+            },
+            {
+              "start": 617,
+              "end": 652
+            },
+            {
+              "start": 1344,
+              "end": 1488
+            },
+            {
+              "start": 1194,
+              "end": 1224
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/diff.py": [
+            "_report",
+            "TableDataDiff",
+            "_report",
+            "_diff",
+            "_report"
+          ]
+        }
+      },
+      {
+        "files": [
+          "astropy/io/fits/diff.py"
+        ],
+        "spans": {
+          "astropy/io/fits/diff.py": [
+            {
+              "start": 1228,
+              "end": 1555
+            },
+            {
+              "start": 1345,
+              "end": 1489
+            },
+            {
+              "start": 1491,
+              "end": 1555
+            },
+            {
+              "start": 1,
+              "end": 1579
+            },
+            {
+              "start": 930,
+              "end": 971
+            }
+          ]
+        },
+        "symbols": {
+          "astropy/io/fits/diff.py": [
+            "TableDataDiff",
+            "_diff",
+            "_report",
+            "diff",
+            "_report"
+          ]
+        }
+      }
+    ]
+  },
+  "model_patch": "diff --git a/astropy/io/fits/diff.py b/astropy/io/fits/diff.py\nindex 100cdf1b8..772344a00 100644\n--- a/astropy/io/fits/diff.py\n+++ b/astropy/io/fits/diff.py\n@@ -28,6 +28,7 @@ from astropy.utils.diff import (\n from astropy.utils.misc import NOT_OVERWRITING_MSG\n \n from .card import BLANK_CARD, Card\n+from .column import _FormatP\n \n # HDUList is used in one of the doctests\n from .hdu.hdulist import HDUList, fitsopen  # pylint: disable=W0611\n@@ -1449,7 +1450,7 @@ class TableDataDiff(_BaseDiff):\n                 arrb.dtype, np.floating\n             ):\n                 diffs = where_not_allclose(arra, arrb, rtol=self.rtol, atol=self.atol)\n-            elif \"P\" in col.format:\n+            elif isinstance(col.format, _FormatP):\n                 diffs = (\n                     [\n                         idx\n",
+  "usage": {
+    "prompt_tokens": 1123427,
+    "completion_tokens": 11652
+  },
+  "output": "The patch is complete. Here's a summary:\n\n**Root cause:** In `TableDataDiff._diff` (line 1452), `\"P\" in col.format` was checking whether the character \"P\" appears in the string representation of the column format object. For VLA columns, `col.format` is a `_FormatP` or `_FormatQ` instance whose string value is the descriptor format (e.g., `\"2i4\"` or `\"2i8\"`), not the column format string like `\"QD\"`. So `\"P\" in col.format` was always `False`, causing VLA columns to fall through to the `else` branch which does `np.where(arra != arrb)` — an element-wise `!=` comparison that doesn't work correctly on object arrays containing variable-length arrays.\n\n**Fix:** Changed the condition to `isinstance(col.format, _FormatP)`, which correctly identifies both P-format and Q-format VLA columns because `_FormatQ` inherits from `_FormatP`.\n\n<PATCH_CONTEXT>\nFile: astropy/io/fits/diff.py\nLines: 30-31, 1448-1462\n</PATCH_CONTEXT>"
+}

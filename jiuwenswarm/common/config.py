@@ -665,6 +665,13 @@ def update_code_graph_in_config(updates: dict[str, Any]) -> None:
         data["code_graph"] = {}
     section = data["code_graph"]
     _merge_config_dict(section, updates)
+    from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+        enable_code_agent_subagent,
+        resolve_code_graph_flags,
+    )
+
+    if resolve_code_graph_flags(data).on_code_agent:
+        enable_code_agent_subagent(data)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 

@@ -33,13 +33,10 @@ for _path in (_EVAL_DIR, _JIUWEN_ROOT):
     if text not in sys.path:
         sys.path.insert(0, text)
 
-from local_openjiuwen import (  # noqa: E402
+from eval_env import (  # noqa: E402
     load_eval_dotenv,
-    prepend_local_agent_core,
     require_code_graph,
 )
-
-prepend_local_agent_core()
 
 from openjiuwen.core.foundation.llm import init_model  # noqa: E402
 from openjiuwen.core.foundation.llm.model import Model  # noqa: E402
@@ -62,7 +59,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     resolve_code_graph_flags,
     resolve_profile,
 )
-from trace import EvalTrace  # noqa: E402
+from trajectory import EvalTrace  # noqa: E402
 
 try:
     from openjiuwen.core.retrieval.code_graph.models import CodeGraphConfig

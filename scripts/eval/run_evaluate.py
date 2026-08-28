@@ -4,7 +4,7 @@
 
 Requires a ContextBench checkout (``CONTEXTBENCH_ROOT`` / ``--contextbench-root``).
 
-    UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_evaluate.py \
+    uv run --extra code-graph --with pyarrow python scripts/eval/run_evaluate.py \
         --pred docs/ai/experiments-contextbench/runs/run01-contextbench-verified/cfg_b__graph/raw
 """
 
@@ -25,7 +25,7 @@ for path in (SCRIPT_DIR,):
     if text not in sys.path:
         sys.path.insert(0, text)
 
-from eval_paths import (  # noqa: E402
+from eval_env import (  # noqa: E402
     prepend_contextbench,
     resolve_contextbench_parquet,
     resolve_contextbench_root,

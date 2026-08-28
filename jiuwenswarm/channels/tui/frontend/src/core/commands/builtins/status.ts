@@ -47,11 +47,13 @@ function formatEstimatedBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Rows for TUI /status. `incomplete` is always no: the product never publishes a partial graph. */
 export function formatCodeGraphStatusLines(
   graph: CodeGraphStatus | undefined,
 ): { label: string; value: string }[] {
-  const state = graph?.state || (graph?.present ? "unknown" : "absent");
+  const state =
+    graph?.limit_exceeded === true
+      ? "unavailable"
+      : graph?.state || (graph?.present ? "unknown" : "absent");
   const dirtyPaths = Array.isArray(graph?.dirty_paths) ? graph.dirty_paths : [];
   const dirty =
     graph?.dirty_unknown === true ? `${dirtyPaths.length}+unknown` : String(dirtyPaths.length);
@@ -67,11 +69,13 @@ export function formatCodeGraphStatusLines(
     { label: "generation_id", value: generation },
     { label: "estimated", value: estimated },
     { label: "dirty", value: dirty },
-    { label: "incomplete", value: "no" },
     { label: "repo_id", value: repo },
   ];
   if (graph?.limit_exceeded || graph?.message) {
     items.push({ label: "limit", value: String(graph.message || "limit exceeded") });
+  }
+  if (state === "building") {
+    items.push({ label: "note", value: "index in progress; graph tools not ready yet" });
   }
   return items;
 }

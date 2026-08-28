@@ -1406,3 +1406,108 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
     assert patch["project_id"] == "user-proj-1"
     assert patch["work_mode"] == "code"
     assert patch["_agentos_project_binding_verified"] is True
+
+
+def test_tui_config_schema_exposes_code_graph_group():
+    schema = tui_connect_module._build_config_schema()
+    keys = {item["key"] for item in schema}
+    assert {
+        "code_graph_profile",
+        "code_graph_agent",
+        "code_graph_max_files",
+        "code_graph_max_source_bytes",
+        "code_graph_max_build_rss_mb",
+        "code_graph_max_cache_size_mb",
+    }.issubset(keys)
+    profile = next(item for item in schema if item["key"] == "code_graph_profile")
+    assert profile["group"] == "Code Graph"
+    assert profile["options"] == ["off", "graph"]
+    assert profile["default"] == "off"
+    assert profile["source"] == "yaml"
+    agent = next(item for item in schema if item["key"] == "code_graph_agent")
+    assert agent["options"] == ["root", "code_agent"]
+    assert agent["default"] == "root"
+    volume = next(item for item in schema if item["key"] == "code_graph_max_source_bytes")
+    assert volume["default"] == "40"
+    assert "MB" in volume["label"]
+
+
+@pytest.mark.asyncio
+async def test_tui_config_get_flattens_code_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = FakeGatewayServer()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    monkeypatch.setattr(
+        tui_connect_module,
+        "get_config_raw",
+        lambda: {
+            "code_graph": {
+                "profile": "graph",
+                "agent": "root",
+                "max_files": 12,
+                "max_source_bytes": 41943040,
+                "max_build_rss_mb": 256,
+                "max_cache_size_mb": 128,
+            }
+        },
+    )
+
+    await server.local_handlers["/tui"]["config.get"](object(), "req-cg-get", {}, "sess-cg")
+
+    payload = server.responses[-1]["payload"]
+    assert payload["code_graph_profile"] == "graph"
+    assert payload["code_graph_agent"] == "root"
+    assert payload["code_graph_max_files"] == "12"
+    assert payload["code_graph_max_source_bytes"] == "40"
+    assert any(item["key"] == "code_graph_profile" for item in payload["schema"])
+
+
+@pytest.mark.asyncio
+async def test_tui_config_set_writes_code_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    server = FakeGatewayServer()
+    recorded: list[dict] = []
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    class _Registry:
+        @classmethod
+        def get_instance(cls):
+            return cls()
+
+        def get_crypto_provider(self):
+            return None
+
+    monkeypatch.setattr("jiuwenswarm.extensions.ExtensionRegistry", _Registry)
+    monkeypatch.setattr(
+        tui_connect_module,
+        "update_code_graph_in_config",
+        lambda updates: recorded.append(updates),
+    )
+
+    await server.local_handlers["/tui"]["config.set"](
+        object(),
+        "req-cg-set",
+        {
+            "code_graph_profile": "graph",
+            "code_graph_agent": "root",
+            "code_graph_max_files": "100",
+        },
+        "sess-cg",
+    )
+
+    assert recorded == [{"profile": "graph", "agent": "root", "max_files": 100}]
+    assert server.responses[-1]["ok"] is True
+    assert "code_graph_profile" in server.responses[-1]["payload"]["updated"]

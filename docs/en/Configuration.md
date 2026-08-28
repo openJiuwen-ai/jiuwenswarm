@@ -356,10 +356,10 @@ The system automatically identifies and filters the following types of sensitive
 
 | UI field | Config key | Default | Role |
 | --- | --- | --- | --- |
-| **Profile** | `code_graph.profile` | `off` | `off`: original grep / read / edit. `graph`: mount `find_*` and hide grep / glob when the graph is complete |
-| **Mount point** | `code_graph.agent` | `root` (product template) | `root` mounts on the main chat; `code_agent` mounts on the subagent |
-| **Max files** | `code_graph.max_files` | `5000` | Over this, do not index; restore grep |
-| **Max source bytes** | `code_graph.max_source_bytes` | `41943040` | Source-volume cap |
+| **Profile** | `code_graph.profile` | `off` | `off`: disabled. `graph`: symbols and calls |
+| **Mount point** | `code_graph.agent` | `root` (product template) | `root` mounts on the main chat; `code_agent` mounts on the subagent (opens it automatically) |
+| **Max files** | `code_graph.max_files` | `5000` | Over this, do not index |
+| **Max source volume (MB)** | `code_graph.max_source_bytes` | UI `40`, yaml `40MB` | Source-volume cap; accepts `40` / `40MB` / `1GB` |
 | **Build RSS cap (MB)** | `code_graph.max_build_rss_mb` | `4096` | Hard stop during build |
 | **Index disk cap (MB)** | `code_graph.max_cache_size_mb` | `2048` | Hard stop for on-disk index |
 

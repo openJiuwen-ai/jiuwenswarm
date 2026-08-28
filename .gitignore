@@ -54,6 +54,7 @@ developerID_application.cer
 # IDE / Editor
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 .DS_Store

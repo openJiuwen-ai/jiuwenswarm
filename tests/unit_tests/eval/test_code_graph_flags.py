@@ -12,22 +12,23 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
-from local_openjiuwen import prepend_local_agent_core  # noqa: E402
-
-prepend_local_agent_core(verbose=False)
-
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa: E402
     PROFILE_GRAPH,
     PROFILE_OFF,
+    admit_code_graph_workspace,
     apply_code_graph_profile,
+    enable_code_agent_subagent,
+    format_source_volume_for_yaml,
+    parse_source_volume_to_bytes,
     product_code_graph_config,
     resolve_code_graph_flags,
+    rewrite_code_graph_limit_message,
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (  # noqa: E402
     preload_code_graph_grammars,
 )
 from coding_agent import config_dir_name  # noqa: E402
-from trace import summarize_tool_payload  # noqa: E402
+from trajectory import summarize_tool_payload  # noqa: E402
 
 
 def test_product_code_graph_config_reads_live_caps() -> None:
@@ -322,7 +323,7 @@ def test_summarize_submit_keeps_the_packet_shape_not_its_body() -> None:
 
 
 def test_trace_totals_count_find_tools_not_grep() -> None:
-    from trace import EvalTrace
+    from trajectory import EvalTrace
 
     trace = EvalTrace(repo_root="/tmp/repo")
     for name in ("find_callers", "submit_code_context", "grep"):
@@ -335,7 +336,7 @@ def test_trace_totals_count_find_tools_not_grep() -> None:
 
 
 def test_trace_totals_carry_the_process_metrics() -> None:
-    from trace import EvalTrace
+    from trajectory import EvalTrace
 
     trace = EvalTrace(repo_root="/tmp/repo")
     trace.tool_events.extend(
@@ -360,7 +361,7 @@ def test_trace_totals_carry_the_process_metrics() -> None:
 
 
 def test_trace_adopts_one_next_action_without_dropping_the_rest() -> None:
-    from trace import process_metrics
+    from trajectory import process_metrics
 
     metrics = process_metrics(
         [
@@ -456,7 +457,8 @@ def _graph_yaml(**overrides: object) -> dict:
     return {"code_graph": raw}
 
 
-def test_code_graph_reload_skips_when_knobs_unchanged() -> None:
+def test_code_graph_reload_fingerprint_match_on_root_still_needs_apply() -> None:
+    """create already remembered the fingerprint; configure still restores grep."""
     from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
         JiuwenSwarmCodeAdapter,
     )
@@ -465,6 +467,8 @@ def test_code_graph_reload_skips_when_knobs_unchanged() -> None:
     cfg = _graph_yaml()
     adapter._remember_code_graph_reload_fingerprint(cfg)
     assert adapter._sync_code_graph_rail_for_reload(cfg) is None
+    assert adapter._code_graph_rail_needs_apply is True
+    assert adapter._code_graph_profile_rail is not None
 
 
 def test_code_graph_reload_rebuilds_when_max_files_changes() -> None:
@@ -478,6 +482,7 @@ def test_code_graph_reload_rebuilds_when_max_files_changes() -> None:
     assert rail is not None
     assert rail.config.max_files == 4000
     assert adapter._code_graph_needs_warmup is True
+    assert adapter._code_graph_rail_needs_apply is True
 
 
 def test_code_graph_reload_rebuilds_when_rss_cap_changes() -> None:
@@ -503,6 +508,406 @@ def test_code_graph_reload_turns_graph_off() -> None:
     assert rail is not None
     assert rail.profile.value == PROFILE_OFF
     assert adapter._code_graph_needs_warmup is False
+    assert adapter._code_graph_rail_needs_apply is True
+
+
+def test_root_rail_stays_off_when_graph_hangs_on_code_agent() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    rail = adapter._build_code_graph_profile_rail(
+        {"code_graph": {"profile": "graph", "agent": "code_agent"}}
+    )
+    assert rail.profile.value == PROFILE_OFF
+
+
+def test_root_rail_is_graph_when_hang_is_root() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    rail = adapter._build_code_graph_profile_rail(_graph_yaml())
+    assert rail.profile.value == PROFILE_GRAPH
+
+
+def test_off_create_does_not_hang_code_graph_rail() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    specs = adapter._build_profile_rail_specs(
+        {},
+        {"code_graph": {"profile": "off", "agent": "root"}},
+        mode="code",
+    )
+    names = [spec.attr_name for spec in specs.after_permission]
+    assert "_code_graph_profile_rail" not in names
+
+
+def test_graph_on_root_create_hangs_code_graph_rail() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    specs = adapter._build_profile_rail_specs({}, _graph_yaml(), mode="code")
+    names = [spec.attr_name for spec in specs.after_permission]
+    assert "_code_graph_profile_rail" in names
+
+
+def test_apply_code_graph_rail_now_inits_the_swapped_rail() -> None:
+    import asyncio
+
+    from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    old = CodeGraphProfileRail(PROFILE_OFF)
+    new = CodeGraphProfileRail(PROFILE_GRAPH)
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._code_graph_profile_rail = new
+
+    class _FakeDeep:
+        def __init__(self) -> None:
+            self.registered = [old]
+            self.pending = [new]
+            self.unregistered: list[object] = []
+            self.register_calls: list[object] = []
+
+        def find_rails_by_type(self, types: tuple[type, ...]) -> list[object]:
+            return [rail for rail in (*self.pending, *self.registered) if isinstance(rail, types)]
+
+        async def unregister_rail(self, rail: object) -> None:
+            self.unregistered.append(rail)
+            self.registered = [item for item in self.registered if item is not rail]
+
+        def remove_pending_rail(self, rail: object) -> None:
+            self.pending = [item for item in self.pending if item is not rail]
+
+        def is_registered_rail(self, rail: object) -> bool:
+            return rail in self.registered
+
+        async def register_rail(self, rail: object) -> None:
+            self.register_calls.append(rail)
+            self.registered.append(rail)
+
+    fake = _FakeDeep()
+    adapter._instance = fake
+    asyncio.run(adapter._apply_code_graph_rail_now())
+    assert old in fake.unregistered
+    assert fake.pending == []
+    assert fake.register_calls == [new]
+    assert new in fake.registered
+
+
+def test_apply_code_graph_rail_now_rehangs_when_already_registered() -> None:
+    """Pending-init during ensure_initialized must not skip the final graph hang."""
+    import asyncio
+
+    from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    rail = CodeGraphProfileRail(PROFILE_GRAPH)
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._code_graph_profile_rail = rail
+
+    class _FakeDeep:
+        def __init__(self) -> None:
+            self.registered = [rail]
+            self.pending: list[object] = []
+            self.unregistered: list[object] = []
+            self.register_calls: list[object] = []
+
+        def find_rails_by_type(self, types: tuple[type, ...]) -> list[object]:
+            return [item for item in self.registered if isinstance(item, types)]
+
+        async def unregister_rail(self, item: object) -> None:
+            self.unregistered.append(item)
+            self.registered = [r for r in self.registered if r is not item]
+
+        def remove_pending_rail(self, item: object) -> None:
+            self.pending = [r for r in self.pending if r is not item]
+
+        def is_registered_rail(self, item: object) -> bool:
+            return item in self.registered
+
+        async def register_rail(self, item: object) -> None:
+            self.register_calls.append(item)
+            self.registered.append(item)
+
+    fake = _FakeDeep()
+    adapter._instance = fake
+    asyncio.run(adapter._apply_code_graph_rail_now())
+    assert fake.unregistered == [rail]
+    assert fake.register_calls == [rail]
+    assert rail in fake.registered
+
+
+def test_apply_code_graph_rail_abandons_when_project_already_over_limit(monkeypatch) -> None:
+    import asyncio
+
+    from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    abandoned: list[str] = []
+
+    class _Rail(CodeGraphProfileRail):
+        def abandon_graph(self, agent=None, *, reason: str = "") -> None:
+            abandoned.append(reason)
+
+    rail = _Rail(PROFILE_GRAPH)
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._code_graph_profile_rail = rail
+    adapter._project_dir = "/tmp/over-limit-repo"
+
+    class _FakeDeep:
+        def __init__(self) -> None:
+            self.registered: list[object] = []
+            self.pending: list[object] = []
+
+        def find_rails_by_type(self, types: tuple[type, ...]) -> list[object]:
+            return []
+
+        async def unregister_rail(self, item: object) -> None:
+            return None
+
+        def remove_pending_rail(self, item: object) -> None:
+            return None
+
+        async def register_rail(self, item: object) -> None:
+            self.registered.append(item)
+
+    class _Mgr:
+        def stats(self, workspace, config=None):
+            return {
+                "state": "stale",
+                "limit_exceeded": True,
+                "message": "max_files is 4, cap is 3",
+            }
+
+    adapter._instance = _FakeDeep()
+    monkeypatch.setattr(
+        "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
+        lambda _cfg=None: _Mgr(),
+    )
+    asyncio.run(adapter._apply_code_graph_rail_now())
+    assert abandoned
+    assert "max_files" in abandoned[0]
+
+
+def test_code_graph_reload_fingerprint_match_off_does_not_reapply() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    cfg = _graph_yaml(profile="off")
+    adapter._remember_code_graph_reload_fingerprint(cfg)
+    assert adapter._sync_code_graph_rail_for_reload(cfg) is None
+    assert adapter._code_graph_rail_needs_apply is False
+
+
+def test_apply_builds_missing_rail_when_off_session_switches_on() -> None:
+    import asyncio
+
+    from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._code_graph_profile_rail = None
+    adapter._config_base_cache = _graph_yaml()
+
+    class _FakeDeep:
+        def __init__(self) -> None:
+            self.registered: list[object] = []
+            self.pending: list[object] = []
+            self.register_calls: list[object] = []
+
+        def find_rails_by_type(self, types: tuple[type, ...]) -> list[object]:
+            return [item for item in self.registered if isinstance(item, types)]
+
+        async def unregister_rail(self, item: object) -> None:
+            self.registered = [rail for rail in self.registered if rail is not item]
+
+        def remove_pending_rail(self, item: object) -> None:
+            self.pending = [rail for rail in self.pending if rail is not item]
+
+        async def register_rail(self, item: object) -> None:
+            self.register_calls.append(item)
+            self.registered.append(item)
+
+    fake = _FakeDeep()
+    adapter._instance = fake
+    asyncio.run(adapter._apply_code_graph_rail_now())
+    assert adapter._code_graph_profile_rail is not None
+    assert isinstance(adapter._code_graph_profile_rail, CodeGraphProfileRail)
+    assert fake.register_calls == [adapter._code_graph_profile_rail]
+
+
+def test_conceal_hides_grep_when_find_already_registered() -> None:
+    from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    class _Card:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.id = name
+
+    class _Mgr:
+        def __init__(self) -> None:
+            self.tools = {
+                "resolve_symbol": _Card("resolve_symbol"),
+                "grep": _Card("grep"),
+                "glob": _Card("glob"),
+            }
+
+        def get(self, name: str):
+            return self.tools.get(name)
+
+        def remove_ability(self, name: str) -> None:
+            self.tools.pop(name, None)
+
+        def list(self):
+            return list(self.tools.values())
+
+    rail = CodeGraphProfileRail(PROFILE_GRAPH)
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._code_graph_profile_rail = rail
+    adapter._config_base_cache = _graph_yaml()
+
+    class _FakeDeep:
+        def __init__(self) -> None:
+            self.ability_manager = _Mgr()
+
+        def find_rails_by_type(self, types: tuple[type, ...]) -> list[object]:
+            return [rail]
+
+    fake = _FakeDeep()
+    adapter._conceal_grep_if_graph_live(fake, rail)
+    assert fake.ability_manager.get("grep") is None
+    assert fake.ability_manager.get("glob") is None
+    assert fake.ability_manager.get("resolve_symbol") is not None
+
+
+def test_reload_applies_graph_rail_after_ensure_initialized() -> None:
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    rail = CodeGraphProfileRail(PROFILE_GRAPH)
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._code_graph_profile_rail = rail
+    adapter._code_graph_rail_needs_apply = True
+    adapter._code_graph_needs_warmup = False
+    order: list[str] = []
+
+    class _FakeDeep:
+        def __init__(self) -> None:
+            self.registered = [rail]
+            self.pending: list[object] = []
+
+        async def ensure_initialized(self) -> None:
+            order.append("ensure")
+
+        def find_rails_by_type(self, types: tuple[type, ...]) -> list[object]:
+            return [item for item in self.registered if isinstance(item, types)]
+
+        async def unregister_rail(self, item: object) -> None:
+            order.append("unregister")
+            self.registered = [r for r in self.registered if r is not item]
+
+        def remove_pending_rail(self, item: object) -> None:
+            return None
+
+        async def register_rail(self, item: object) -> None:
+            order.append("register")
+            self.registered.append(item)
+
+    adapter._instance = _FakeDeep()
+
+    async def _super_reload(*_args: object, **_kwargs: object) -> None:
+        order.append("super")
+
+    with patch.object(JiuWenSwarmDeepAdapter, "reload_agent_config", new=AsyncMock(side_effect=_super_reload)):
+        asyncio.run(adapter.reload_agent_config({"code_graph": {"profile": "graph"}}))
+    assert order == ["super", "ensure", "unregister", "register"]
+    assert adapter._code_graph_rail_needs_apply is False
+
+
+def test_enable_code_agent_subagent_writes_enabled_true() -> None:
+    cfg: dict = {}
+    enable_code_agent_subagent(cfg)
+    assert cfg["react"]["subagents"]["code_agent"]["enabled"] is True
+
+
+def test_graph_on_code_agent_builds_subagent_even_when_yaml_disabled(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._project_dir = str(tmp_path)
+    adapter._coding_memory_rail = None
+    adapter._sys_operation = MagicMock()
+    with patch.object(adapter, "_browser_runtime_enabled", return_value=False):
+        subagents, _ = adapter._build_configured_subagents(
+            MagicMock(),
+            {"subagents": {"code_agent": {"enabled": False}}, "max_iterations": 15},
+            {"code_graph": {"profile": "graph", "agent": "code_agent"}},
+        )
+    names = [spec.agent_card.name for spec in subagents]
+    assert "code_agent" in names
+
+
+def test_graph_on_root_does_not_force_code_agent_subagent(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock, patch
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._project_dir = str(tmp_path)
+    adapter._coding_memory_rail = None
+    adapter._sys_operation = MagicMock()
+    with patch.object(adapter, "_browser_runtime_enabled", return_value=False):
+        subagents, _ = adapter._build_configured_subagents(
+            MagicMock(),
+            {"subagents": {"code_agent": {"enabled": False}}, "max_iterations": 15},
+            {"code_graph": {"profile": "graph", "agent": "root"}},
+        )
+    names = [spec.agent_card.name for spec in subagents]
+    assert "code_agent" not in names
 
 
 def test_code_graph_cache_dir_is_absolute_under_agent_workspace(tmp_path: Path) -> None:
@@ -531,3 +936,75 @@ def test_code_graph_relative_cache_dir_follows_workspace(tmp_path: Path) -> None
     adapter._agent_workspace_dir = str(workspace)
     cfg = adapter._build_code_graph_config(_graph_yaml(cache_dir="graphs"))
     assert Path(cfg.cache_dir) == (workspace / "graphs").resolve()
+
+
+def test_rewrite_rss_limit_message_uses_mb_not_bytes() -> None:
+    raw = (
+        "Code Graph limit exceeded: max_build_rss_mb is 151748608, cap is 1048576. "
+        "This repository is too large to index."
+    )
+    text = rewrite_code_graph_limit_message(raw)
+    assert "151748608" not in text
+    assert "1048576" not in text
+    assert "max_build_rss_mb is 144.7, cap is 1" in text
+
+
+def test_rewrite_disk_limit_message_uses_mb_not_bytes() -> None:
+    raw = "max_cache_size_mb is 2097152, cap is 1048576"
+    assert rewrite_code_graph_limit_message(raw) == "max_cache_size_mb is 2, cap is 1"
+
+
+def test_rewrite_max_files_message_is_unchanged() -> None:
+    raw = "max_files is 4, cap is 3"
+    assert rewrite_code_graph_limit_message(raw) == raw
+
+
+def test_parse_source_volume_accepts_mb_and_legacy_bytes() -> None:
+    assert parse_source_volume_to_bytes("40MB") == 41943040
+    assert parse_source_volume_to_bytes("40") == 41943040
+    assert parse_source_volume_to_bytes(40) == 41943040
+    assert parse_source_volume_to_bytes(41943040) == 41943040
+    assert parse_source_volume_to_bytes("1GB") == 1073741824
+    assert format_source_volume_for_yaml(41943040) == "40MB"
+    assert format_source_volume_for_yaml(1073741824) == "1GB"
+
+
+def test_product_config_reads_40mb_yaml() -> None:
+    cfg = product_code_graph_config({"code_graph": {"max_source_bytes": "40MB"}})
+    assert cfg.max_source_bytes == 41943040
+
+
+def test_admit_code_graph_workspace_refuses_over_max_files(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("b = 1\n", encoding="utf-8")
+    cfg = product_code_graph_config({"code_graph": {"profile": "graph", "max_files": 1}})
+    over = admit_code_graph_workspace(str(tmp_path), cfg)
+    assert over is not None
+    assert getattr(over, "limit", "") == "max_files"
+
+
+def test_code_adapter_seeds_agent_workspace_not_project(tmp_path: Path, monkeypatch) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    project = tmp_path / "user-project"
+    agent_ws = tmp_path / "agent-ws"
+    project.mkdir()
+    agent_ws.mkdir()
+    seen: dict[str, str | None] = {}
+
+    def _fake_init_cwd(cwd, project_root=None, *, workspace=None, team_workspace=None):
+        seen["cwd"] = cwd
+        seen["project_root"] = project_root
+        seen["workspace"] = workspace
+
+    monkeypatch.setattr("openjiuwen.core.sys_operation.cwd.init_cwd", _fake_init_cwd)
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._project_dir = str(project)
+    adapter._workspace_dir = str(project)
+    adapter._agent_workspace_dir = str(agent_ws)
+    adapter._seed_runtime_cwd(str(project), workspace=str(project))
+    assert seen["cwd"] == str(project)
+    assert seen["project_root"] == str(project)
+    assert seen["workspace"] == str(agent_ws)

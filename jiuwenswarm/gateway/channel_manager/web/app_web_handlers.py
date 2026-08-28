@@ -115,6 +115,12 @@ from jiuwenswarm.common.work_mode import (
     is_default_project_id,
 )
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+    DEFAULT_MAX_SOURCE_BYTES,
+    format_source_volume_for_panel,
+    format_source_volume_for_yaml,
+    parse_source_volume_to_bytes,
+)
 from jiuwenswarm.symphony.skill_retrieval.taxonomy_config import (
     coerce_root_categories_value,
     root_categories_to_text,
@@ -604,6 +610,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "acp.tool_response",
     "team.delete",
     "command.goal",
+    "command.status",
     "chat.send",
     "chat.interrupt",
     "chat.resume",
@@ -705,6 +712,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "team.session.bind",
     "team.delete",
     "command.goal",
+    "command.status",
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
@@ -951,15 +959,17 @@ _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SKILL_RETRIEVAL_CONFIG_KEYS = tuple(_SKILL_RETRIEVAL_CONFIG_SPECS.keys())
 _CODE_GRAPH_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "code_graph_profile": (("profile",), "code_graph_profile", "off"),
-    "code_graph_agent": (("agent",), "code_graph_agent", "code_agent"),
+    "code_graph_agent": (("agent",), "code_graph_agent", "root"),
     "code_graph_max_files": (("max_files",), "int", 5000),
-    "code_graph_max_source_bytes": (("max_source_bytes",), "int", 41943040),
+    "code_graph_max_source_bytes": (("max_source_bytes",), "code_graph_source_volume", DEFAULT_MAX_SOURCE_BYTES),
     "code_graph_max_build_rss_mb": (("max_build_rss_mb",), "int", 4096),
     "code_graph_max_cache_size_mb": (("max_cache_size_mb",), "int", 2048),
 }
 _CODE_GRAPH_CONFIG_KEYS = tuple(_CODE_GRAPH_CONFIG_SPECS.keys())
 _CODE_GRAPH_PROFILES = frozenset({"off", "graph"})
 _CODE_GRAPH_AGENTS = frozenset({"root", "code_agent"})
+_format_source_volume_for_panel = format_source_volume_for_panel
+_parse_source_volume_to_bytes = parse_source_volume_to_bytes
 
 
 def _coerce_config_panel_value(value: Any, value_type: str, default: Any) -> Any:
@@ -989,10 +999,12 @@ def _coerce_config_panel_value(value: Any, value_type: str, default: Any) -> Any
         return coerce_root_categories_value(value, allow_path=False) or ""
     if value_type == "code_graph_profile":
         text = str(value if value is not None else default).strip().lower()
-        return text if text in _CODE_GRAPH_PROFILES else "off"
+        return text if text in _CODE_GRAPH_PROFILES else default
     if value_type == "code_graph_agent":
         text = str(value if value is not None else default).strip().lower()
-        return text if text in _CODE_GRAPH_AGENTS else "code_agent"
+        return text if text in _CODE_GRAPH_AGENTS else default
+    if value_type == "code_graph_source_volume":
+        return _parse_source_volume_to_bytes(value, default)
     return str(value if value is not None else default)
 
 
@@ -1051,6 +1063,10 @@ def _flatten_code_graph_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in _CODE_GRAPH_CONFIG_SPECS.items():
         value = _get_nested_config_value(section, path, default)
+        if value_type == "code_graph_source_volume":
+            n_bytes = parse_source_volume_to_bytes(value, default)
+            flat[key] = format_source_volume_for_panel(n_bytes)
+            continue
         coerced = _coerce_config_panel_value(value, value_type, default)
         flat[key] = str(coerced)
     return flat
@@ -1270,6 +1286,8 @@ def _build_code_graph_config_update(params: dict[str, Any]) -> dict[str, Any]:
         if key not in params:
             continue
         value = _coerce_config_panel_value(params[key], value_type, default)
+        if value_type == "code_graph_source_volume":
+            value = format_source_volume_for_yaml(value)
         _set_nested_config_value(updates, path, value)
     return updates
 
