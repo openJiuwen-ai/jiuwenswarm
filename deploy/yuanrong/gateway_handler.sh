@@ -253,10 +253,40 @@ gateway_start_nohup() {
     error "Gateway process failed to start on ${master_host}, check /tmp/jiuwenswarm-gateway.log"
 }
 
+# ===== ingress master 判定可靠性 =====
+# /usr/local/bin/agentos-check-ingress-master 若被删除，调用会失败（command not found）并被误判为
+# “不持有 vip”，导致 gateway 安装/停止被静默跳过。check-ingress-master.sh 与 deploy.sh 同仓在打包时
+# 组装到 ${SCRIPT_DIR}/../check-ingress-master.sh，缺失时先恢复脚本再判定，逻辑与 gateway_start_systemd 一致。
+gateway_ensure_check_script() {
+    local check_script="/usr/local/bin/agentos-check-ingress-master"
+    local master_host
+    master_host=$(get_local_ip)
+
+    # 用 test -x 而非 test -f：脚本被删除或丢失可执行位都应触发恢复
+    if exec_on_host "${master_host}" "test -x '${check_script}'" 2>/dev/null; then
+        return 0
+    fi
+
+    local check_src="${SCRIPT_DIR}/../check-ingress-master.sh"
+    if [ ! -f "${check_src}" ]; then
+        error "check-ingress-master.sh not found at ${check_src}; cannot determine ingress vip ownership"
+    fi
+
+    info "check-ingress-master missing on ${master_host}, restoring from ${check_src}..."
+    copy_to_host "${master_host}" "${check_src}" "${check_script}"
+    exec_on_host "${master_host}" "chmod +x '${check_script}'"
+}
+
+# 本机是否持有 ingress vip；返回 0 表示持有（先确保 check 脚本存在再判定）。
+gateway_is_ingress_master() {
+    gateway_ensure_check_script
+    /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1
+}
+
 gateway_deploy_process() {
     # gateway 跟随 ingress_virtual_ip：仅在本机持有 VIP 时部署/启动 gateway，否则跳过。
     # 不依赖 master_nodes / CLUSTER_HOSTS[0]（可能有多个 master_nodes，且其 IP 与 VIP 不同）。
-    if ! /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1; then
+    if ! gateway_is_ingress_master; then
         warning "Local host does not hold ingress vip, skip gateway deploy process."
         return 0
     fi
@@ -329,7 +359,7 @@ gateway_stop_nohup() {
 
 gateway_undeploy_process() {
     # 与 up 对称：gateway 跟随 ingress_virtual_ip，仅在本机持有 VIP 时停止本机 gateway。
-    if ! /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1; then
+    if ! gateway_is_ingress_master; then
         warning "Local host does not hold ingress vip, skip stopping jiuwenswarm-gateway."
         return 0
     fi
