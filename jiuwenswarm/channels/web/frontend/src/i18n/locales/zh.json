@@ -887,7 +887,7 @@
       "codeGraphProfile": "检索档位",
       "codeGraphAgent": "挂载点",
       "codeGraphMaxFiles": "最大文件数",
-      "codeGraphMaxSourceBytes": "最大源码字节",
+      "codeGraphMaxSourceBytes": "最大源码体积（MB）",
       "codeGraphMaxBuildRssMb": "建图内存上限（MB）",
       "codeGraphMaxCacheSizeMb": "索引磁盘上限（MB）"
     },
@@ -942,16 +942,16 @@
       "teamPersona": "角色人设与职责描述，影响该成员的行为风格与分工。",
       "teamPromptHint": "额外提示词片段，会注入该成员的系统提示中。",
       "teamAgentKey": "绑定到「多 Agent 配置」中已有 Agent 的名称（name）。",
-      "codeGraphProfile": "off：原来的 grep / read / edit。graph：挂 find_*，能完整建图时藏 grep / glob。",
-      "codeGraphAgent": "root：挂在主对话。code_agent：挂在子代理（需打开 code_agent）。",
-      "codeGraphMaxFiles": "超过这个文件数就不建图，恢复 grep，并提示抬上限。",
-      "codeGraphMaxSourceBytes": "源码总字节上限。超过则不建图。",
-      "codeGraphMaxBuildRssMb": "建图过程内存硬停（MB）。超了就清图并恢复 grep。",
-      "codeGraphMaxCacheSizeMb": "索引磁盘上限（MB）。超了就清旧仓或恢复 grep。"
+      "codeGraphProfile": "off：关闭。graph：按符号与调用关系。",
+      "codeGraphAgent": "root：挂在主对话。code_agent：挂在子代理（会自动打开 code_agent）。",
+      "codeGraphMaxFiles": "超过这个文件数就不建图，并提示抬上限。",
+      "codeGraphMaxSourceBytes": "源码体积上限，单位 MB（1024 进制，与 yaml 字节一致）。可填 40、40MB 或 1GB。超过则不建图。",
+      "codeGraphMaxBuildRssMb": "建图过程内存硬停（MB）。超了就清图。",
+      "codeGraphMaxCacheSizeMb": "索引磁盘上限（MB）。超了就清旧仓。"
     },
     "codeGraph": {
-      "profileOff": "off（原版工具）",
-      "profileGraph": "graph（find_*）",
+      "profileOff": "off",
+      "profileGraph": "graph",
       "agentRoot": "root（主对话）",
       "agentCodeAgent": "code_agent（子代理）"
     },

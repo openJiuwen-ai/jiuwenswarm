@@ -1,0 +1,49 @@
+{
+  "benchmark": "contextbench",
+  "parquet": "/Users/mmmmroy/Downloads/huawei/graph/reconstruct_tmp/ContextBench/data/contextbench_verified.parquet",
+  "selected_csv": "/Users/mmmmroy/Downloads/huawei/graph/reconstruct_tmp/ContextBench/data/selected_500_instances.csv",
+  "contextbench_root": "/Users/mmmmroy/Downloads/huawei/graph/reconstruct_tmp/ContextBench",
+  "swe_root": null,
+  "swe_dataset": null,
+  "swe_split": null,
+  "include_hints": null,
+  "limit": 0,
+  "offset": 0,
+  "full": false,
+  "official_n": 174,
+  "cb_benches": [
+    "Verified"
+  ],
+  "cb_slice_n": {
+    "Verified": 174
+  },
+  "instances": [
+    "scikit-learn__scikit-learn-25232"
+  ],
+  "instance_benches": {
+    "scikit-learn__scikit-learn-25232": "Verified"
+  },
+  "profile": "graph",
+  "retrieval_interface": "classic",
+  "pair": "jiuwenswarm=feat/contextbench_code_graph@85f4b6e02 openjiuwen=/Users/mmmmroy/Downloads/huawei/graph/agent-core/openjiuwen/__init__.py code_graph=yes code_graph=yes",
+  "openjiuwen": "openjiuwen=/Users/mmmmroy/Downloads/huawei/graph/agent-core/openjiuwen/__init__.py code_graph=yes",
+  "model": {
+    "MODEL_PROVIDER": "OpenAI",
+    "MODEL_NAME": "deepseek/deepseek-v4-pro",
+    "MODEL_MAX_TOKENS": "",
+    "API_BASE": "https://openrouter.ai/api/v1"
+  },
+  "task_mode": "coding",
+  "product_defaults": false,
+  "leaderboard_eligible": false,
+  "report_editloc": true,
+  "protocol": "find-on-root",
+  "graph_agent": "root",
+  "root_hidden_tools": [
+    "grep",
+    "glob",
+    "task_tool"
+  ],
+  "code_agent_hidden_tools": [],
+  "written_at": "2026-09-09T17:04:57+0100"
+}

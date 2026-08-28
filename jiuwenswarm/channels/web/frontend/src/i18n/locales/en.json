@@ -887,7 +887,7 @@
       "codeGraphProfile": "Profile",
       "codeGraphAgent": "Mount point",
       "codeGraphMaxFiles": "Max files",
-      "codeGraphMaxSourceBytes": "Max source bytes",
+      "codeGraphMaxSourceBytes": "Max source volume (MB)",
       "codeGraphMaxBuildRssMb": "Build RSS cap (MB)",
       "codeGraphMaxCacheSizeMb": "Index disk cap (MB)"
     },
@@ -942,16 +942,16 @@
       "teamPersona": "Role persona and responsibilities; shapes behavior and division of labor.",
       "teamPromptHint": "Extra prompt fragment injected into this member's system prompt.",
       "teamAgentKey": "Name of an existing Agent from Multi-Agent Configuration.",
-      "codeGraphProfile": "off: original grep / read / edit. graph: mount find_* and hide grep / glob when the graph is complete.",
-      "codeGraphAgent": "root: mount on the main chat. code_agent: mount on the subagent (code_agent must be enabled).",
-      "codeGraphMaxFiles": "Repos over this file count are not indexed; grep is restored.",
-      "codeGraphMaxSourceBytes": "Total source-byte cap. Over it, the repo is not indexed.",
-      "codeGraphMaxBuildRssMb": "Hard stop for build RSS (MB). Over it, drop the graph and restore grep.",
-      "codeGraphMaxCacheSizeMb": "Index disk cap (MB). Over it, evict older caches or restore grep."
+      "codeGraphProfile": "off: disabled. graph: symbols and calls.",
+      "codeGraphAgent": "root: mount on the main chat. code_agent: mount on the subagent (opens code_agent automatically).",
+      "codeGraphMaxFiles": "Repos over this file count are not indexed.",
+      "codeGraphMaxSourceBytes": "Source-volume cap in MB (1024-based, same as yaml bytes). Accepts 40, 40MB, or 1GB. Over it, the repo is not indexed.",
+      "codeGraphMaxBuildRssMb": "Hard stop for build RSS (MB). Over it, drop the graph.",
+      "codeGraphMaxCacheSizeMb": "Index disk cap (MB). Over it, evict older caches."
     },
     "codeGraph": {
-      "profileOff": "off (original tools)",
-      "profileGraph": "graph (find_*)",
+      "profileOff": "off",
+      "profileGraph": "graph",
       "agentRoot": "root (main chat)",
       "agentCodeAgent": "code_agent (subagent)"
     },

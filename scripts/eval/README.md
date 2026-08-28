@@ -9,10 +9,10 @@ The product exposes two profiles:
 - `off` — original coding tools (grep / read / edit). No graph.
 - `graph` — find_* retrieval tools. Who owns them is `--graph-agent`.
 
-Pair both repos on `feat/code-graph`. Scripts prepend `../agent-core`.
-`uv sync` does not install `tree-sitter-language-pack`. Install it yourself;
-`jiuwenswarm-init` / `jiuwenswarm-start` download grammars. Query paths never
-download.
+`pyproject.toml` pins `openjiuwen` to `openJiuwen/agent-core` `agent_os_code_search`.
+`uv sync --extra code-graph` installs that branch. `uv sync` does not install
+`tree-sitter-language-pack`. Install it yourself; `jiuwenswarm-init` /
+`jiuwenswarm-start` download grammars. Query paths never download.
 
 Gold parquet and the official scorer live in a **ContextBench checkout**, which
 is not part of this repo. Point the runner at it with one of:
@@ -55,19 +55,18 @@ Files:
 - `run_contextbench.py` — read parquet, run instances, write `raw/`
 - `run_evaluate.py` — rewrite pred.jsonl and call official `contextbench.evaluate`
 - `coding_agent.py` — assemble the product agent without the WebSocket server
-- `trajectory.py` / `trace.py` — MiniSWE trajectory + per-tool telemetry
-- `local_openjiuwen.py` — prepend `../agent-core` and load `resources/.env`
-- `install_local_agent_core.sh` — editable install for the product / TUI
+- `trajectory.py` — official ContextBench trajectory + per-tool counts (`*.trace.json`)
+- `eval_env.py` — ContextBench paths, project `.env`, pinned-engine check
 
 Default `--output` is `docs/ai/experiments-contextbench/runs/scratch-contextbench`.
 Numbered experiments must pass `--output` so they do not overwrite each other.
 
 ```bash
 export CONTEXTBENCH_ROOT=/path/to/ContextBench   # required unless ../ContextBench exists
-UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
+uv run --extra code-graph --with pyarrow python scripts/eval/run_contextbench.py \
   --limit 5 --profile off
-UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
+uv run --extra code-graph --with pyarrow python scripts/eval/run_contextbench.py \
   --limit 5 --profile graph --graph-agent root
-UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_evaluate.py \
+uv run --extra code-graph --with pyarrow python scripts/eval/run_evaluate.py \
   --pred docs/ai/experiments-contextbench/runs/<run>/cfg_b__graph/raw
 ```

@@ -1,0 +1,267 @@
+{
+  "instance_id": "scikit-learn__scikit-learn-25232",
+  "traj_data": {
+    "pred_steps": [
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 54,
+              "end": 93
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 93,
+              "end": 200
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 200,
+              "end": 300
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 300,
+              "end": 370
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 565,
+              "end": 641
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_base.py"
+        ],
+        "spans": {
+          "sklearn/impute/_base.py": [
+            {
+              "start": 275,
+              "end": 304
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 116,
+              "end": 165
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {},
+        "symbols": {}
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 295,
+              "end": 344
+            }
+          ]
+        },
+        "symbols": {}
+      }
+    ],
+    "pred_files": [
+      "sklearn/impute/_iterative.py"
+    ],
+    "pred_spans": {
+      "sklearn/impute/_iterative.py": [
+        {
+          "start": 115,
+          "end": 130
+        }
+      ]
+    },
+    "pred_symbols": {},
+    "tool_symbols": {},
+    "utilized_source": "declared",
+    "retrieved_hits": [
+      {
+        "files": [
+          "sklearn/impute/__init__.py",
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 54,
+              "end": 889
+            },
+            {
+              "start": 671,
+              "end": 791
+            },
+            {
+              "start": 793,
+              "end": 845
+            }
+          ],
+          "sklearn/impute/__init__.py": [
+            {
+              "start": 1,
+              "end": 25
+            },
+            {
+              "start": 16,
+              "end": 24
+            }
+          ]
+        },
+        "symbols": {
+          "sklearn/impute/_iterative.py": [
+            "IterativeImputer",
+            "fit_transform",
+            "transform"
+          ],
+          "sklearn/impute/__init__.py": [
+            "__init__",
+            "__getattr__"
+          ]
+        }
+      },
+      {
+        "files": [
+          "sklearn/impute/_iterative.py"
+        ],
+        "spans": {
+          "sklearn/impute/_iterative.py": [
+            {
+              "start": 565,
+              "end": 636
+            },
+            {
+              "start": 793,
+              "end": 845
+            },
+            {
+              "start": 671,
+              "end": 791
+            },
+            {
+              "start": 54,
+              "end": 889
+            },
+            {
+              "start": 1,
+              "end": 890
+            }
+          ]
+        },
+        "symbols": {
+          "sklearn/impute/_iterative.py": [
+            "_initial_imputation",
+            "transform",
+            "fit_transform",
+            "IterativeImputer",
+            "_iterative"
+          ]
+        }
+      },
+      {
+        "files": [
+          "sklearn/impute/_base.py"
+        ],
+        "spans": {
+          "sklearn/impute/_base.py": [
+            {
+              "start": 363,
+              "end": 433
+            },
+            {
+              "start": 280,
+              "end": 299
+            },
+            {
+              "start": 435,
+              "end": 475
+            },
+            {
+              "start": 142,
+              "end": 715
+            },
+            {
+              "start": 477,
+              "end": 533
+            }
+          ]
+        },
+        "symbols": {
+          "sklearn/impute/_base.py": [
+            "fit",
+            "__init__",
+            "_sparse_fit",
+            "SimpleImputer",
+            "_dense_fit"
+          ]
+        }
+      }
+    ]
+  },
+  "model_patch": "diff --git a/sklearn/impute/_iterative.py b/sklearn/impute/_iterative.py\nindex 1d918bc0c..a122bc524 100644\n--- a/sklearn/impute/_iterative.py\n+++ b/sklearn/impute/_iterative.py\n@@ -117,6 +117,12 @@ class IterativeImputer(_BaseImputer):\n         Which strategy to use to initialize the missing values. Same as the\n         `strategy` parameter in :class:`~sklearn.impute.SimpleImputer`.\n \n+    fill_value : str or numerical value, default=None\n+        When `strategy == \"constant\"`, `fill_value` is used to replace all\n+        occurrences of missing_values. For numerical data, if left to the\n+        default, `fill_value` will be 0 when imputing numerical data and\n+        ``\"missing_value\"`` for strings or object data types.\n+\n     imputation_order : {'ascending', 'descending', 'roman', 'arabic', \\\n             'random'}, default='ascending'\n         The order in which the features will be imputed. Possible values:\n@@ -281,6 +287,7 @@ class IterativeImputer(_BaseImputer):\n         \"initial_strategy\": [\n             StrOptions({\"mean\", \"median\", \"most_frequent\", \"constant\"})\n         ],\n+        \"fill_value\": \"no_validation\",  # any object is valid\n         \"imputation_order\": [\n             StrOptions({\"ascending\", \"descending\", \"roman\", \"arabic\", \"random\"})\n         ],\n@@ -309,6 +316,7 @@ class IterativeImputer(_BaseImputer):\n         random_state=None,\n         add_indicator=False,\n         keep_empty_features=False,\n+        fill_value=None,\n     ):\n         super().__init__(\n             missing_values=missing_values,\n@@ -328,6 +336,7 @@ class IterativeImputer(_BaseImputer):\n         self.max_value = max_value\n         self.verbose = verbose\n         self.random_state = random_state\n+        self.fill_value = fill_value\n \n     def _impute_one_feature(\n         self,\n@@ -613,6 +622,7 @@ class IterativeImputer(_BaseImputer):\n             self.initial_imputer_ = SimpleImputer(\n                 missing_values=self.missing_values,\n                 strategy=self.initial_strategy,\n+                fill_value=self.fill_value,\n                 keep_empty_features=self.keep_empty_features,\n             )\n             X_filled = self.initial_imputer_.fit_transform(X)\n",
+  "usage": {
+    "prompt_tokens": 559538,
+    "completion_tokens": 5457
+  },
+  "output": "The patch is complete. Here's a summary:\n\n1. Added `fill_value` parameter to the docstring (after `initial_strategy`)\n2. Added `\"fill_value\": \"no_validation\"` to `_parameter_constraints`\n3. Added `fill_value=None` parameter to `__init__` and stored as `self.fill_value`\n4. Passed `fill_value=self.fill_value` to `SimpleImputer` in `_initial_imputation`\n\nAll four changes are in a single file: `sklearn/impute/_iterative.py`.\n\n<PATCH_CONTEXT>\nFile: sklearn/impute/_iterative.py\nLines: 115-130, 281-292, 294-345, 612-628\n</PATCH_CONTEXT>"
+}

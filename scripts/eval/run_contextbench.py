@@ -8,10 +8,10 @@ Score with ``scripts/eval/run_evaluate.py`` → official ``contextbench.evaluate
 Point the runner at a ContextBench checkout (``CONTEXTBENCH_ROOT`` or
 ``--contextbench-root``). A sibling ``../ContextBench`` also works.
 
-    UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
+    uv run --extra code-graph --with pyarrow python scripts/eval/run_contextbench.py \
         --limit 5 --profile graph --graph-agent root
 
-    UV_NO_SYNC=1 uv run --with pyarrow python scripts/eval/run_contextbench.py \
+    uv run --extra code-graph --with pyarrow python scripts/eval/run_contextbench.py \
         --instance pallets__flask-5014 \
         --profile graph --graph-agent root \
         --max-iterations 10 \
@@ -45,22 +45,17 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     PROFILE_OFF,
     resolve_profile,
 )
-from eval_paths import (  # noqa: E402
+from eval_env import (  # noqa: E402
     DEFAULT_OUTPUT,
-    prepend_contextbench,
-    resolve_contextbench_parquet,
-    resolve_contextbench_root,
-)
-from local_openjiuwen import (  # noqa: E402
     assert_engine_matches_branch,
     describe_eval_pair,
     describe_openjiuwen,
     load_eval_dotenv,
-    prepend_local_agent_core,
+    prepend_contextbench,
+    resolve_contextbench_parquet,
+    resolve_contextbench_root,
 )
 from trajectory import contextbench_record  # noqa: E402
-
-prepend_local_agent_core()
 
 from coding_agent import (  # noqa: E402
     CONTEXTBENCH_CODE_HIDDEN_TOOLS,

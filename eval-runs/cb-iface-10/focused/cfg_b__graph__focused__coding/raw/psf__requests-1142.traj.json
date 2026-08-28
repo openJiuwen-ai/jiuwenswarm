@@ -1,0 +1,127 @@
+{
+  "instance_id": "psf__requests-1142",
+  "traj_data": {
+    "pred_steps": [
+      {
+        "files": [
+          "requests/models.py"
+        ],
+        "spans": {
+          "requests/models.py": [
+            {
+              "start": 386,
+              "end": 400
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "requests/models.py"
+        ],
+        "spans": {
+          "requests/models.py": [
+            {
+              "start": 387,
+              "end": 398
+            }
+          ]
+        },
+        "symbols": {}
+      },
+      {
+        "files": [
+          "requests/models.py"
+        ],
+        "spans": {
+          "requests/models.py": [
+            {
+              "start": 387,
+              "end": 400
+            }
+          ]
+        },
+        "symbols": {}
+      }
+    ],
+    "pred_files": [
+      "requests/models.py"
+    ],
+    "pred_spans": {
+      "requests/models.py": [
+        {
+          "start": 388,
+          "end": 395
+        }
+      ]
+    },
+    "pred_symbols": {},
+    "tool_symbols": {},
+    "utilized_source": "declared",
+    "retrieved_hits": [
+      {
+        "files": [
+          "requests/__init__.py"
+        ],
+        "spans": {
+          "requests/__init__.py": [
+            {
+              "start": 1,
+              "end": 72
+            }
+          ]
+        },
+        "symbols": {
+          "requests/__init__.py": [
+            "__init__"
+          ]
+        }
+      },
+      {
+        "files": [
+          "requests/models.py"
+        ],
+        "spans": {
+          "requests/models.py": [
+            {
+              "start": 388,
+              "end": 395
+            },
+            {
+              "start": 332,
+              "end": 386
+            },
+            {
+              "start": 234,
+              "end": 429
+            },
+            {
+              "start": 397,
+              "end": 411
+            },
+            {
+              "start": 1,
+              "end": 658
+            }
+          ]
+        },
+        "symbols": {
+          "requests/models.py": [
+            "prepare_content_length",
+            "prepare_body",
+            "PreparedRequest",
+            "prepare_auth",
+            "models"
+          ]
+        }
+      }
+    ]
+  },
+  "model_patch": "diff --git a/requests/models.py b/requests/models.py\nindex 99260453..f79c2d27 100644\n--- a/requests/models.py\n+++ b/requests/models.py\n@@ -386,13 +386,14 @@ class PreparedRequest(RequestEncodingMixin, RequestHooksMixin):\n         self.body = body\n \n     def prepare_content_length(self, body):\n-        self.headers['Content-Length'] = '0'\n-        if hasattr(body, 'seek') and hasattr(body, 'tell'):\n-            body.seek(0, 2)\n-            self.headers['Content-Length'] = str(body.tell())\n-            body.seek(0, 0)\n-        elif body is not None:\n-            self.headers['Content-Length'] = str(len(body))\n+        if body is not None:\n+            self.headers['Content-Length'] = '0'\n+            if hasattr(body, 'seek') and hasattr(body, 'tell'):\n+                body.seek(0, 2)\n+                self.headers['Content-Length'] = str(body.tell())\n+                body.seek(0, 0)\n+            else:\n+                self.headers['Content-Length'] = str(len(body))\n \n     def prepare_auth(self, auth):\n         \"\"\"Prepares the given HTTP auth data.\"\"\"\n",
+  "usage": {
+    "prompt_tokens": 285634,
+    "completion_tokens": 3790
+  },
+  "output": "The fix is clean and correct. Here's a summary of the change:\n\n**Problem:** `prepare_content_length` always set `Content-Length: 0` on line 389 before checking if body was None. For GET requests (and any request without a body), `body` is `None`, so the header was always set to `'0'`.\n\n**Fix:** Wrapped the entire method body in `if body is not None:`, so `Content-Length` is only set when there's actually a body to measure. This means GET requests with no data will no longer have a `Content-Length` header.\n\n<PATCH_CONTEXT>\nFile: requests/models.py\nLines: 388-395\n</PATCH_CONTEXT>"
+}
