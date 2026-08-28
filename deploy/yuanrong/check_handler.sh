@@ -56,6 +56,26 @@ except Exception:
     fi
 }
 
+# 读取 config.yaml 的 etcd_nodes（空格分隔 IP）。供 ETCD_ENDPOINTS 留空时拼 client URL。
+_etcd_nodes() {
+    local config_file="${HOME:-/root}/.agentos/deploy/config.yaml"
+    [ -f "${config_file}" ] || return 1
+    local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" nodes=""
+    if command -v "${py}" >/dev/null 2>&1 && "${py}" -c 'import yaml' >/dev/null 2>&1; then
+        nodes=$("${py}" -c '
+import sys, yaml
+try:
+    with open(sys.argv[1]) as f:
+        cfg = yaml.safe_load(f)
+    nodes = (cfg or {}).get("cluster", {}).get("etcd_nodes", []) or []
+    print(" ".join(str(n).strip() for n in nodes if str(n).strip()), end="")
+except Exception:
+    print("", end="")
+' "${config_file}" 2>/dev/null)
+    fi
+    echo "${nodes}"
+}
+
 check_cmds() {
     for cmd in python3 jq; do
         check_cmd ${cmd}
@@ -174,6 +194,26 @@ check_gateway_up_dependency() {
     if [ -z "${DEPLOY_VARS["WEB_PORT"]:-}" ]; then
         DEPLOY_VARS["WEB_PORT"]="19000"
         warning "WEB_PORT not set, using default: 19000"
+    fi
+
+    # ETCD_ENDPOINTS 留空时从 config.yaml etcd_nodes 拼 http://ip:32379,...
+    # 端口与 agentos etcd.sh / scripts/config.py 的 client port 一致（YR_ETCD_CLIENT_PORT）。
+    # 不写回 .env.custom，与 GATEWAY_HOST 相同：文件留空，启动时填 DEPLOY_VARS 再渲染模板。
+    if [ -z "${DEPLOY_VARS["ETCD_ENDPOINTS"]:-}" ]; then
+        local etcd_port="${YR_ETCD_CLIENT_PORT:-32379}"
+        local etcd_nodes etcd_endpoints="" node
+        etcd_nodes=$(_etcd_nodes || true)
+        for node in ${etcd_nodes}; do
+            echo "${node}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || continue
+            [ -n "${etcd_endpoints}" ] && etcd_endpoints="${etcd_endpoints},"
+            etcd_endpoints="${etcd_endpoints}http://${node}:${etcd_port}"
+        done
+        if [ -n "${etcd_endpoints}" ]; then
+            DEPLOY_VARS["ETCD_ENDPOINTS"]="${etcd_endpoints}"
+            info "ETCD_ENDPOINTS defaulted from config.yaml etcd_nodes: ${etcd_endpoints}"
+        elif [ "${DEPLOY_VARS["CRON_STORE_BACKEND"]:-etcd}" = "etcd" ]; then
+            error "ETCD_ENDPOINTS is empty and no etcd_nodes in ~/.agentos/deploy/config.yaml"
+        fi
     fi
 
     # AgentOS IAM：空则默认 http://MASTER_NODE_IP:8090（与 registry/frontend 同 host 约定）。
