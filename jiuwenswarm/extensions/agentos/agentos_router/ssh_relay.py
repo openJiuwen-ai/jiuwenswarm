@@ -6,7 +6,7 @@ Bridges a northbound ``SshRelaySession`` (accepted by the gateway
 ``SshChannel`` as an interactive shell) to the YuanRong frontend SSH
 endpoint::
 
-    ssh -p 2222 'yr:instance:<instance_id>'@<frontend-host>
+    ssh -p 2222 'yr:instance:<instance_id>:port=2222'@<frontend-host>
 
 Client private keys are loaded from ``client_keys_dir`` (default
 ``/root/.ssh``).
@@ -30,7 +30,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
 logger = logging.getLogger(__name__)
 
 DEFAULT_SSH_PORT = 2222
-DEFAULT_SSH_USER_TEMPLATE = "yr:instance:{instance}"
+DEFAULT_SSH_USER_TEMPLATE = "yr:instance:{instance}:port=2222"
 DEFAULT_CLIENT_KEYS_DIR = "/root/.ssh"
 _RELAY_BUFFER_SIZE = 32768
 _USER_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")

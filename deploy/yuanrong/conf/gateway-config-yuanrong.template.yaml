@@ -497,11 +497,11 @@ gateway:
       # 本机 nodeIP，供 POST /api/nodes/{node}/heartbeat
       node: <<MASTER_NODE_IP>>
     # SSH 南向接入 YuanRong 实例（配合 channels.ssh 北向使用）：
-    # ssh -p <port> 'yr:instance:<instance_id>'@<frontend-host>
+    # ssh -p <port> 'yr:instance:<instance_id>:port=2222'@<frontend-host>
     # 主机取自 agent_client.frontend_endpoint；<instance_id> 为 create agent 返回的实例 id。
     ssh:
       port: 2222
-      user_template: "yr:instance:{instance}"
+      user_template: "yr:instance:{instance}:port=2222"
       connect_timeout_s: 30
     # agentos_router.load_router_config 不会解析 ${VAR}，部署时用 <<>> 替换进 yaml。
     # 部署脚本空值默认 http://<<MASTER_NODE_IP>>:8090；可用 AGENTOS_AUTH_SERVICE_URL 覆盖。
@@ -671,7 +671,7 @@ channels:
   ssh:
     # SSH channel -> MessageHandler（北向）；南向经 gateway.agent_client
     # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
-    # 以 yr:instance:<instance_id> 中继到 frontend）。
+    # 以 yr:instance:<instance_id>:port=2222 中继到 frontend）。
     # 启用前请安装可选依赖: pip install "jiuwenswarm[ssh]" 或 uv sync --extra ssh
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。

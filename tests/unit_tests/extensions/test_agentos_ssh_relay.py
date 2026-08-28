@@ -118,7 +118,7 @@ def test_backend_username_uses_yr_instance_template() -> None:
     )
     assert (
         relay.backend_username("inst-42")
-        == "yr:instance:inst-42"
+        == "yr:instance:inst-42:port=2222"
     )
     assert relay.backend_host == "frontend.yuanrong.test"
     assert relay.backend_port == 2222
