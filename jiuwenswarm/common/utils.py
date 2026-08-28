@@ -1596,6 +1596,38 @@ def _print_console_progress(message: str) -> None:
         print(escaped)
 
 
+def mcp_builtins_needs_upgrade(workspace_dir: Optional[Path] = None) -> bool:
+    """True 当已安装的 mcp_builtins 版本落后于随包 seed zip 版本。
+
+    给启动门控用：只判 ``mcp_builtins_missing`` 会让已装旧版的用户重启也
+    进不去 ``prepare_workspace``，版本升级逻辑（``_ensure_mcp_builtins`` 内
+    ``seed_version != local_version``）形同虚设。本函数补这个缺口——
+    本地 index.json 的 version 严格落后于 seed zip 的 version 时返回 True。
+
+    无 seed zip / 读不到版本 / 本地无 index.json（已被 missing 判断覆盖）
+    一律返回 False，不触发多余解压。
+    """
+    package_root = _find_package_root()
+    if not package_root:
+        return False
+    seed = _find_mcp_builtins_seed(package_root / "resources" / "agent" / "workspace")
+    if seed is None:
+        return False
+    seed_version = _read_zip_index_version(seed)
+    if not seed_version:
+        return False
+    if workspace_dir is None:
+        workspace_dir = get_user_workspace_dir()
+    local_idx = Path(workspace_dir) / "agent" / "workspace" / "mcp" / "mcp_builtins" / "index.json"
+    if not local_idx.is_file():
+        return False  # 目录缺失走 missing 分支，这里不重复触发
+    try:
+        local_version = str(json.loads(local_idx.read_text(encoding="utf-8")).get("version", "")).strip() or None
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(local_version) and local_version != seed_version
+
+
 def _ensure_mcp_builtins(
     template_agent_workspace: Path,
     mcp_builtins_dir: Path,
