@@ -2088,27 +2088,29 @@ def _mcp_name_in_config_yaml(name: str) -> bool:
                for s in get_config_yaml_mcp_servers())
 
 
-def upsert_mcp_server(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Upsert a TUI-managed MCP, routing by source: update in place if the
-    name already lives in config.yaml (legacy stock) or state.json (TUI-
-    created / web-connected); otherwise create new in state.json.
+def upsert_mcp_server(
+    server: dict[str, Any], *, state: str = "connected"
+) -> tuple[dict[str, Any], bool]:
+    """Upsert a TUI-managed MCP by source: config.yaml (legacy stock) is
+    updated in place; otherwise the record is created/updated in state.json.
 
-    TUI ``add``/``update`` lands here. New MCPs always go to state.json
-    (``enabled`` defaults to the payload's ``enabled``, True for TUI add) —
-    config.yaml is no longer a creation target, only legacy stock edited
-    in place. Returns ``(entry, created)``. Raises ``ValueError`` if no name.
+    ``state`` defaults to ``connected``; the command.mcp add/update handlers
+    pass ``"connecting"`` so a live-connect probe can validate reachability
+    before the record is flipped to ``connected``. Returns ``(entry, created)``.
+    Raises ``ValueError`` if no name.
     """
     name = str(server.get("name", "")).strip()
     if not name:
         raise ValueError("MCP server name is required")
-    # Legacy stock in config.yaml: update in place (keeps its source).
+    # config.yaml entries carry no connection_state (treated as live when
+    # present), so ``state`` only routes through to state.json.
     if _mcp_name_in_config_yaml(name):
         return upsert_mcp_server_in_config(server)
     # Else state.json is the creation/update home for TUI MCPs.
     from jiuwenswarm.server.runtime.mcp.state_store import upsert_mcp_record
     prior = _mcp_name_in_state(name)
     enabled = bool(server.get("enabled", True)) if "enabled" in server else None
-    rec = upsert_mcp_record(name, server, state="connected",
+    rec = upsert_mcp_record(name, server, state=state,
                             integration_type=_integration_type_for(server),
                             enabled=enabled)
     # Shape a config-like entry for the response (carries enabled through).
