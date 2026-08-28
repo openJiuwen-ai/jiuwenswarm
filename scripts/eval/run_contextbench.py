@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -253,11 +254,38 @@ def base_commit(row: dict[str, Any]) -> str:
     return str(row.get("base_commit") or row.get("commit") or "").strip()
 
 
-def _worktree_dir_for(url: str, commit: str) -> Path:
-    from contextbench.core.repo import _normalize_url
+_GIT_TIMEOUT_SECONDS = 30
 
+
+def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            exc.stdout or "",
+            exc.stderr or f"git timed out after {_GIT_TIMEOUT_SECONDS}s",
+        )
+
+
+def _worktree_url_key(url: str) -> str:
+    """Directory-safe clone key. Same shape as ContextBench worktree folders."""
+    text = re.sub(r"^https?://", "", url.strip())
+    text = re.sub(r"^git@", "", text).replace(":", "/").rstrip("/")
+    text = text.replace("/", "__").replace(".git", "")
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text) or "repo"
+
+
+def _worktree_dir_for(url: str, commit: str) -> Path:
     tmp_root = os.environ.get("CONTEXTBENCH_TMP_ROOT") or tempfile.gettempdir()
-    return Path(tmp_root) / "contextbench_worktrees" / _normalize_url(url) / commit
+    return Path(tmp_root) / "contextbench_worktrees" / _worktree_url_key(url) / commit
 
 
 def _repair_stale_worktree(url: str, commit: str, cache_dir: Path) -> None:
@@ -270,41 +298,21 @@ def _repair_stale_worktree(url: str, commit: str, cache_dir: Path) -> None:
     worktree = _worktree_dir_for(url, commit)
     if not worktree.is_dir():
         return
-    head = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    head = _run_git(["git", "-C", str(worktree), "rev-parse", "HEAD"])
     if head.returncode == 0 and head.stdout.strip() == commit:
         return
-    reset = subprocess.run(
-        ["git", "-C", str(worktree), "checkout", "--detach", "--force", commit],
-        capture_output=True,
-        text=True,
-        check=False,
+    reset = _run_git(
+        ["git", "-C", str(worktree), "checkout", "--detach", "--force", commit]
     )
     if reset.returncode == 0:
         print(f"repaired stale worktree {worktree} -> {commit}", flush=True)
         return
-    from contextbench.core.repo import _normalize_url
-
-    base = cache_dir / _normalize_url(url)
-    subprocess.run(
-        ["git", "-C", str(base), "worktree", "remove", "--force", str(worktree)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    base = cache_dir / _worktree_url_key(url)
+    _run_git(["git", "-C", str(base), "worktree", "remove", "--force", str(worktree)])
     if worktree.is_dir():
         shutil.rmtree(worktree, ignore_errors=True)
     if base.is_dir():
-        subprocess.run(
-            ["git", "-C", str(base), "worktree", "prune"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        _run_git(["git", "-C", str(base), "worktree", "prune"])
     print(f"removed stale worktree {worktree}", flush=True)
 
 

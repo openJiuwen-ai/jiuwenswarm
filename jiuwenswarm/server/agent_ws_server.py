@@ -560,6 +560,9 @@ def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, 
         return {"present": False, "state": "absent"}
 
 
+_code_graph_fresh_tasks: set[asyncio.Task[Any]] = set()
+
+
 def _kick_code_graph_ensure_fresh(manager: object, workspace: str, cfg: object) -> None:
     """Let the manager record ``limit_error`` after ``/status`` already walked."""
     ensure_fresh = getattr(manager, "ensure_fresh", None)
@@ -576,7 +579,9 @@ def _kick_code_graph_ensure_fresh(manager: object, workspace: str, cfg: object) 
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(_warm())
+    task = loop.create_task(_warm())
+    _code_graph_fresh_tasks.add(task)
+    task.add_done_callback(_code_graph_fresh_tasks.discard)
 
 
 def _sync_chat_request_metadata(
