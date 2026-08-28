@@ -525,7 +525,10 @@ def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, 
     The in-memory entry and disk checkpoint stay put; turning ``graph`` back on
     can restore without a full rebuild.
     """
-    from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import resolve_code_graph_flags
+    from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+        product_code_graph_config,
+        resolve_code_graph_flags,
+    )
 
     flags = resolve_code_graph_flags(config if isinstance(config, dict) else None)
     if not flags.enabled:
@@ -533,7 +536,8 @@ def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, 
     try:
         from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
 
-        return get_code_graph_manager().stats(workspace)
+        cfg = product_code_graph_config(config if isinstance(config, dict) else None)
+        return get_code_graph_manager(cfg).stats(workspace, config=cfg)
     except Exception:  # noqa: BLE001 — status must still return
         return {"present": False, "state": "absent"}
 

@@ -18,7 +18,11 @@ uv pip install tree-sitter-language-pack
 
 ## 如何打开
 
-编辑产品配置（仓库内默认文件：`jiuwenswarm/resources/config.yaml`；本机运行常见路径：`~/.jiuwenswarm/config/config.yaml`）：
+源码 Web / 桌面 GUI：左侧 **更多 → 配置信息 → 其他配置 → Code Graph**。`检索档位` 选 `graph` 即打开。同一页可改挂载点和建图上限。保存后新开一轮对话生效。
+
+安全配置里的工具表会列出 `find_*` / `resolve_symbol` 等图工具，方便单独设 allow / ask / deny；`profile: off` 时这些工具不会挂上。
+
+也可以直接编辑产品配置（仓库内默认文件：`jiuwenswarm/resources/config.yaml`；本机运行常见路径：`~/.jiuwenswarm/config/config.yaml`）：
 
 ```yaml
 code_graph:
@@ -34,7 +38,7 @@ code_graph:
 
 超过文件数或源码字节，或内存/磁盘不够：先丢掉**本仓旧图**。还不够时，再按创建时间从旧到新丢掉别的仓；有窗口正在读或正在建的不删。清完仍不够，才恢复 grep，并提示抬对应上限。保存配置后热更新：抬了上限会重新建图；没抬就一直用 grep。同一 `project_dir` 的多个对话共用这一张当前图。
 
-同一 `project_dir` 的对话共享一份图。IDE / Shell 改文件由 watcher + 查询前校验追上。`/status` 用同一套 token：磁盘已经变了但还没刷新时显示 `stale`，不把旧图当成最新。版本目录、依赖目录、覆盖率报告、打包产物、前端构建缓存等通用生成目录默认不进索引。手册类文本（`.md` / `.rst` / `.txt`）默认不进索引；`search_source_text` 仍检索函数正文。单个文件超过 1MB 会跳过该文件。
+同一 `project_dir` 的对话共享一份图。`write_file` / `edit_file` 落盘后立刻刷新并只保留当前 checkpoint（`active.json` 的 `updated_at` 跟着这次写入走）。IDE / Shell 改文件由 watcher + 查询前校验追上。`/status` 用同一套 token：磁盘已经变了但还没刷新时显示 `stale`，不把旧图当成最新。版本目录、依赖目录、覆盖率报告、打包产物、前端构建缓存等通用生成目录默认不进索引。手册类文本（`.md` / `.rst` / `.txt`）默认不进索引；`search_source_text` 仍检索函数正文。单个文件超过 1MB 会跳过该文件。
 
 实例配置（`~/.jiuwenswarm-instances/<name>/config/config.yaml`）只在 `jiuwenswarm-init` 时从仓库模板拷一次。之后改仓库模板不会自动覆盖已有实例；要对齐上限需要手改，或 `jiuwenswarm-init -f --name <name>`。
 

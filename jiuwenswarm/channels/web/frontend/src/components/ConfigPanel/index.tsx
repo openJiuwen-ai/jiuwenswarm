@@ -10,6 +10,7 @@ import {
   Loader2,
   LogOut,
   Music2,
+  Network,
   RefreshCw,
   SquareTerminal,
   Workflow,
@@ -484,6 +485,24 @@ const SYMPHONY_KEYS = new Set([
   ...SYMPHONY_BOOLEAN_KEYS,
   ...SKILL_RETRIEVAL_KEYS,
 ]);
+const CODE_GRAPH_SELECT_OPTIONS: Record<string, { value: string; labelKey: string }[]> = {
+  code_graph_profile: [
+    { value: "off", labelKey: "config.codeGraph.profileOff" },
+    { value: "graph", labelKey: "config.codeGraph.profileGraph" },
+  ],
+  code_graph_agent: [
+    { value: "root", labelKey: "config.codeGraph.agentRoot" },
+    { value: "code_agent", labelKey: "config.codeGraph.agentCodeAgent" },
+  ],
+};
+const CODE_GRAPH_KEYS = new Set([
+  "code_graph_profile",
+  "code_graph_agent",
+  "code_graph_max_files",
+  "code_graph_max_source_bytes",
+  "code_graph_max_build_rss_mb",
+  "code_graph_max_cache_size_mb",
+]);
 const PROACTIVE_BOOLEAN_KEYS = new Set(["proactive_recommendation_enabled"]);
 const PROACTIVE_KEYS = new Set([
   ...PROACTIVE_BOOLEAN_KEYS,
@@ -519,6 +538,7 @@ function classifyKey(key: string): string {
   if (SWARMFLOW_KEYS.has(key)) return "swarmflow";
   if (EXTERNAL_CLI_AGENT_KEYS.has(key)) return "external_cli_agents";
   if (SYMPHONY_KEYS.has(key)) return "symphony";
+  if (CODE_GRAPH_KEYS.has(key)) return "code_graph";
   if (PROACTIVE_KEYS.has(key)) return "proactive";
   if (key === "context_engine_enabled") return "context_engine";
   if (key === "kv_cache_release_enabled" || key === "kv_cache_affinity_enabled") return "kv_cache_affinity";
@@ -640,6 +660,9 @@ function getGroupIcon(tag: string) {
   if (tag === "symphony") {
     return <Music2 className="w-3.5 h-3.5" strokeWidth={1.8} />;
   }
+  if (tag === "code_graph") {
+    return <Network className="w-3.5 h-3.5" strokeWidth={1.8} />;
+  }
   if (tag === "skill_retrieval") {
     return (
       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
@@ -680,6 +703,7 @@ function getGroupToneClass(tag: string): string {
   if (tag === "a2ui") return "text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20";
   if (tag === "swarmflow") return "text-blue-500 bg-blue-500/10 border-blue-500/20";
   if (tag === "symphony") return "text-amber-500 bg-amber-500/10 border-amber-500/20";
+  if (tag === "code_graph") return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
   if (tag === "skill_retrieval") return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
   if (tag === "proactive") return "text-sky-500 bg-sky-500/10 border-sky-500/20";
   if (tag === "email") return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
@@ -865,6 +889,7 @@ function getGroupMeta(t: (key: string) => string): Record<string, { label: strin
     swarmflow: { label: t('config.groups.swarmflow.label'), order: 10.2, hint: t('config.groups.swarmflow.hint') },
     external_cli_agents: { label: t('config.groups.externalCliAgents.label'), order: 10.3, hint: t('config.groups.externalCliAgents.hint') },
     symphony: { label: t('config.groups.symphony.label'), order: 10.4, hint: t('config.groups.symphony.hint') },
+    code_graph: { label: t('config.groups.codeGraph.label'), order: 8.2, hint: t('config.groups.codeGraph.hint') },
     skill_retrieval: { label: t('config.groups.skillRetrieval.label'), order: 10.5, hint: t('config.groups.skillRetrieval.hint') },
     proactive: { label: t('config.groups.proactive.label'), order: 10.6, hint: t('config.groups.proactive.hint') },
     memory: { label: t('config.groups.memory.label'), order: 11, hint: t('config.groups.memory.hint') },
@@ -900,6 +925,12 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   skills: "config.keys.agentSkills",
   symphony_enabled: "config.keys.symphonyEnabled",
   symphony_dynamic_graph_enabled: "config.keys.symphonyDynamicGraphEnabled",
+  code_graph_profile: "config.keys.codeGraphProfile",
+  code_graph_agent: "config.keys.codeGraphAgent",
+  code_graph_max_files: "config.keys.codeGraphMaxFiles",
+  code_graph_max_source_bytes: "config.keys.codeGraphMaxSourceBytes",
+  code_graph_max_build_rss_mb: "config.keys.codeGraphMaxBuildRssMb",
+  code_graph_max_cache_size_mb: "config.keys.codeGraphMaxCacheSizeMb",
   skill_retrieval_enabled: "config.keys.skillRetrievalEnabled",
   skill_retrieval_build_branching_factor: "config.keys.skillRetrievalBuildBranchingFactor",
   skill_retrieval_build_max_depth: "config.keys.skillRetrievalBuildMaxDepth",
@@ -968,6 +999,12 @@ const KEY_LABEL_HINT_I18N: Record<string, string> = {
   persona: "config.keyHelp.teamPersona",
   prompt_hint: "config.keyHelp.teamPromptHint",
   agent_key: "config.keyHelp.teamAgentKey",
+  code_graph_profile: "config.keyHelp.codeGraphProfile",
+  code_graph_agent: "config.keyHelp.codeGraphAgent",
+  code_graph_max_files: "config.keyHelp.codeGraphMaxFiles",
+  code_graph_max_source_bytes: "config.keyHelp.codeGraphMaxSourceBytes",
+  code_graph_max_build_rss_mb: "config.keyHelp.codeGraphMaxBuildRssMb",
+  code_graph_max_cache_size_mb: "config.keyHelp.codeGraphMaxCacheSizeMb",
 };
 
 /** 组内字段排序优先级，数字越小越靠前 */
@@ -977,6 +1014,12 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   free_search_bing_enabled: 1,
   symphony_enabled: 0,
   symphony_dynamic_graph_enabled: 1,
+  code_graph_profile: 0,
+  code_graph_agent: 1,
+  code_graph_max_files: 2,
+  code_graph_max_source_bytes: 3,
+  code_graph_max_build_rss_mb: 4,
+  code_graph_max_cache_size_mb: 5,
   skill_retrieval_enabled: 2,
   proactive_recommendation_enabled: 0,
   proactive_recommendation_max_recommend_per_day: 2,
@@ -1437,6 +1480,25 @@ function GroupSection({
                                 <option value="OpenRouter">OpenRouter</option>
                               </>
                             )}
+                          </select>
+                        </div>
+                      </div>
+                    ) : CODE_GRAPH_SELECT_OPTIONS[key] ? (
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex w-3 justify-center shrink-0 text-transparent" aria-hidden="true">*</span>
+                        <div className="flex-1">
+                          <select
+                            value={draftValues[key] ?? value}
+                            onChange={(e) => onChange(key, e.target.value)}
+                            data-testid="config-panel-group-section-field-code-graph-select"
+                            data-variant={key}
+                            className="w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent"
+                          >
+                            {CODE_GRAPH_SELECT_OPTIONS[key].map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {t(option.labelKey)}
+                              </option>
+                            ))}
                           </select>
                         </div>
                       </div>

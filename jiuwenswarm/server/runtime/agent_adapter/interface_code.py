@@ -915,12 +915,31 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 await get_code_graph_manager(cfg).ensure_fresh(str(root), cfg)
             except Exception as exc:  # noqa: BLE001 — first find_* still retries
                 logger.warning("[JiuwenSwarmCodeAdapter] Code Graph warmup failed: %s", exc)
+                self._abandon_graph_after_warmup(exc)
 
         loop.create_task(_warm())
         logger.info(
             "[JiuwenSwarmCodeAdapter] Code Graph warmup scheduled for %s",
             root,
         )
+
+    def _abandon_graph_after_warmup(self, exc: Exception) -> None:
+        """Over-limit warmup must drop find_* now, not after the first graph call."""
+        from openjiuwen.core.retrieval.code_graph.errors import CodeGraphLimitExceeded
+
+        if not isinstance(exc, CodeGraphLimitExceeded):
+            return
+        inst = getattr(self, "_instance", None)
+        rail = getattr(self, "_code_graph_profile_rail", None)
+        if rail is None and inst is not None:
+            find = getattr(inst, "find_rails_by_type", None)
+            if callable(find):
+                found = find((CodeGraphProfileRail,))
+                rail = found[0] if found else None
+        abandon = getattr(rail, "abandon_graph", None) if rail is not None else None
+        if inst is None or not callable(abandon):
+            return
+        abandon(inst, reason=str(exc))
 
     def _subagent_graph_factory_kwargs(
         self,

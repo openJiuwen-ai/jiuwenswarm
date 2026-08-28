@@ -991,6 +991,20 @@ permissions:
     write_file: allow
     edit_file: allow
     search_replace: allow
+    # Code Graph 产品工具；profile: off 时不会挂上，但安全表要能看见
+    resolve_symbol: allow
+    find_code_symbols: allow
+    search_source_text: allow
+    inspect_code_structure: allow
+    read_symbol: allow
+    read_code: allow
+    find_callers: allow
+    find_callees: allow
+    find_importers: allow
+    find_base_classes: allow
+    find_subclasses: allow
+    trace_call_paths: allow
+    select_code_context: allow
     # ask_user 只向用户提问，不修改系统，自动放行避免权限中断阻塞问题选项呈现
     ask_user: allow
     write_memory: allow

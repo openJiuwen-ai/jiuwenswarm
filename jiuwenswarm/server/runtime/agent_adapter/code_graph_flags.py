@@ -68,6 +68,30 @@ def resolve_agent(value: Any, *, default: str = AGENT_CODE) -> str:
     return default
 
 
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def product_code_graph_config(config_base: dict[str, Any] | None) -> Any:
+    """Live yaml caps for ``/status`` and manager lookups. Cache path is not needed."""
+    from openjiuwen.core.retrieval.code_graph.models import CodeGraphConfig
+
+    raw = (config_base or {}).get("code_graph") if isinstance(config_base, dict) else None
+    if not isinstance(raw, dict):
+        raw = {}
+    defaults = CodeGraphConfig()
+    return CodeGraphConfig(
+        cache_dir=None,
+        max_files=_as_int(raw.get("max_files"), defaults.max_files),
+        max_source_bytes=_as_int(raw.get("max_source_bytes"), defaults.max_source_bytes),
+        max_build_rss_mb=_as_int(raw.get("max_build_rss_mb"), defaults.max_build_rss_mb),
+        max_cache_size_mb=_as_int(raw.get("max_cache_size_mb"), defaults.max_cache_size_mb or 2048),
+    )
+
+
 def resolve_code_graph_flags(config_base: dict[str, Any] | None) -> CodeGraphFlags:
     raw = (config_base or {}).get("code_graph") if isinstance(config_base, dict) else None
     if not isinstance(raw, dict):

@@ -16,7 +16,7 @@ The configuration panel is organized into three tabs:
 
 - **Model**: Default chat model, video/audio/vision models, Embedding configuration (see [2. Model Configuration](#2-model-configuration))
 - **Security**: Tool security guardrails, sensitive-info filtering (see [7. Tool Security Guardrails](#7-tool-security-guardrails))
-- **Other**: Third-party services, self-evolution, context compression, skill symphony, etc.
+- **Other**: Third-party services, self-evolution, context compression, Code Graph, skill symphony, etc.
 
 > 💡 **Tip**: Model configuration (`api_base`, `api_key`, `model`, `model_provider`) is required; all other configurations are optional.
 
@@ -347,6 +347,23 @@ The system automatically identifies and filters the following types of sensitive
 | **Passwords / Keys** | Various passwords, API keys, etc. | password123, sk-xxxx |
 
 > 📖 For details on the memory system, see the [Memory](Memory.md) documentation.
+
+---
+
+## 8.5 Code Graph
+
+**Other → Code Graph** maps to the `code_graph` YAML section. Use this panel to turn graph retrieval on or off without editing YAML by hand.
+
+| UI field | Config key | Default | Role |
+| --- | --- | --- | --- |
+| **Profile** | `code_graph.profile` | `off` | `off`: original grep / read / edit. `graph`: mount `find_*` and hide grep / glob when the graph is complete |
+| **Mount point** | `code_graph.agent` | `root` (product template) | `root` mounts on the main chat; `code_agent` mounts on the subagent |
+| **Max files** | `code_graph.max_files` | `5000` | Over this, do not index; restore grep |
+| **Max source bytes** | `code_graph.max_source_bytes` | `41943040` | Source-volume cap |
+| **Build RSS cap (MB)** | `code_graph.max_build_rss_mb` | `4096` | Hard stop during build |
+| **Index disk cap (MB)** | `code_graph.max_cache_size_mb` | `2048` | Hard stop for on-disk index |
+
+With `profile: off` the graph stays idle. The Security tools table lists `resolve_symbol`, `find_callers`, and the other graph tools so you can set allow / ask / deny. See [Code Graph](../zh/CodeGraph.md).
 
 ---
 

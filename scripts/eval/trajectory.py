@@ -500,6 +500,16 @@ def _spans_to_steps(
     return steps
 
 
+def _steps_without_names(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy steps but drop symbol names so evaluate.py stays on the span path."""
+    cleaned: list[dict[str, Any]] = []
+    for raw in steps or []:
+        item = dict(raw)
+        item["symbols"] = {}
+        cleaned.append(item)
+    return cleaned
+
+
 def to_contextbench_traj_data(
     steps: list[dict[str, Any]],
     *,
@@ -525,7 +535,9 @@ def to_contextbench_traj_data(
     final = to_traj_data(utilized)
     official["pred_files"] = final["pred_files"]
     official["pred_spans"] = final["pred_spans"]
-    official["pred_symbols"] = final["pred_symbols"]
+    official["pred_symbols"] = {}
+    official["pred_steps"] = _steps_without_names(official["pred_steps"])
+    official["tool_symbols"] = final["pred_symbols"]
     official["utilized_source"] = utilized_source
     official["retrieved_hits"] = to_traj_data(hits)["pred_steps"]
     return official
@@ -644,20 +656,22 @@ def normalize_traj_data(traj_data: dict[str, Any], repo_root: str) -> dict[str, 
     elif final_files or final_spans:
         normalized_steps["pred_files"] = final_files or list(final_spans)
         normalized_steps["pred_spans"] = final_spans
-    for key in ("utilized_source", "retrieved_hits", "pred_symbols"):
+    for key in ("utilized_source", "retrieved_hits", "tool_symbols"):
         if key in traj_data and key not in normalized_steps:
             normalized_steps[key] = traj_data[key]
-    if "pred_symbols" in traj_data:
-        symbols: dict[str, list[str]] = {}
-        for path, names in (traj_data.get("pred_symbols") or {}).items():
+    tool_symbols: dict[str, list[str]] = {}
+    for source in (traj_data.get("tool_symbols"), traj_data.get("pred_symbols")):
+        for path, names in (source or {}).items():
             rel = resolve_repo_path(str(path), repo_root)
             if not rel:
                 continue
-            symbols.setdefault(rel, [])
+            tool_symbols.setdefault(rel, [])
             for name in names or []:
-                if name not in symbols[rel]:
-                    symbols[rel].append(name)
-        normalized_steps["pred_symbols"] = symbols
+                if name not in tool_symbols[rel]:
+                    tool_symbols[rel].append(name)
+    if tool_symbols:
+        normalized_steps["tool_symbols"] = tool_symbols
+    normalized_steps["pred_symbols"] = {}
     return normalized_steps
 
 
@@ -671,15 +685,15 @@ def contextbench_record(raw: dict[str, Any], *, repo_root: str = "") -> dict[str
             "pred_steps": list(traj.get("pred_steps") or []),
             "pred_files": list(traj.get("pred_files") or []),
             "pred_spans": dict(traj.get("pred_spans") or {}),
-            "pred_symbols": dict(traj.get("pred_symbols") or {}),
+            "pred_symbols": {},
         }
     out = {
         "instance_id": str(raw.get("instance_id") or raw.get("original_inst_id") or "").strip(),
         "traj_data": {
-            "pred_steps": list(traj.get("pred_steps") or []),
+            "pred_steps": _steps_without_names(list(traj.get("pred_steps") or [])),
             "pred_files": list(traj.get("pred_files") or []),
             "pred_spans": dict(traj.get("pred_spans") or {}),
-            "pred_symbols": dict(traj.get("pred_symbols") or {}),
+            "pred_symbols": {},
         },
         # Empty patch is required by the official schema. evaluate.py will
         # then fall back to gold ``patch`` for EditLoc — run_evaluate.py

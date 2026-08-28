@@ -1950,6 +1950,76 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     }
 
 
+def test_config_panel_flatten_reads_code_graph_knobs():
+    raw = {
+        "code_graph": {
+            "profile": "graph",
+            "agent": "root",
+            "max_files": 12,
+            "max_source_bytes": 4096,
+            "max_build_rss_mb": 256,
+            "max_cache_size_mb": 128,
+        }
+    }
+
+    flat = app_web_handlers._flatten_code_graph_for_config_panel(raw)
+
+    assert flat == {
+        "code_graph_profile": "graph",
+        "code_graph_agent": "root",
+        "code_graph_max_files": "12",
+        "code_graph_max_source_bytes": "4096",
+        "code_graph_max_build_rss_mb": "256",
+        "code_graph_max_cache_size_mb": "128",
+    }
+
+
+def test_config_panel_flatten_code_graph_defaults_and_unknown_values():
+    flat = app_web_handlers._flatten_code_graph_for_config_panel(
+        {"code_graph": {"profile": "retropus", "agent": "nope"}}
+    )
+
+    assert flat["code_graph_profile"] == "off"
+    assert flat["code_graph_agent"] == "code_agent"
+    assert flat["code_graph_max_files"] == "5000"
+
+
+@pytest.mark.asyncio
+async def test_config_set_routes_code_graph_payload_to_config_helper(monkeypatch):
+    channel = FakeWebChannel()
+    recorded: list[dict] = []
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.get_config",
+        lambda: {"code_graph": {}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_code_graph_in_config",
+        lambda updates: recorded.append(updates),
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-code-graph",
+        {
+            "code_graph_profile": "graph",
+            "code_graph_agent": "root",
+            "code_graph_max_files": "100",
+        },
+        "sess-code-graph",
+    )
+
+    assert recorded == [{"profile": "graph", "agent": "root", "max_files": 100}]
+    assert channel.responses[-1]["ok"] is True
+    assert "code_graph_profile" in channel.responses[-1]["payload"]["updated"]
+
+
 def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
     skill_graph_methods = {
         "skills.graph.build",
