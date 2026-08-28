@@ -56,6 +56,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     PROFILE_OFF,
     CodeGraphFlags,
     apply_code_graph_profile,
+    product_code_graph_config,
     resolve_code_graph_flags,
     resolve_profile,
 )
@@ -266,19 +267,13 @@ def _graph_config(
         else {}
     )
     resolved_cache = cache_dir or raw.get("cache_dir") or (work / ".code_graph_cache")
+    product = product_code_graph_config(config_base)
     return CodeGraphConfig(
         cache_dir=str(Path(resolved_cache).expanduser().resolve()),
-        max_files=int(
-            raw.get("max_files") or os.getenv("CODE_GRAPH_MAX_FILES", "50000")
-        ),
-        max_index_size_mb=int(
-            raw.get("max_index_size_mb")
-            or os.getenv("CODE_GRAPH_MAX_INDEX_SIZE_MB", "1024")
-        ),
-        query_timeout_seconds=float(
-            raw.get("query_timeout_seconds")
-            or os.getenv("CODE_GRAPH_QUERY_TIMEOUT", "10")
-        ),
+        max_files=product.max_files,
+        max_source_bytes=product.max_source_bytes,
+        max_build_rss_mb=product.max_build_rss_mb,
+        max_cache_size_mb=product.max_cache_size_mb,
     )
 
 

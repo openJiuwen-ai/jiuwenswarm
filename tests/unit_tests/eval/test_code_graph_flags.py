@@ -36,6 +36,33 @@ def test_product_code_graph_config_reads_live_caps() -> None:
     assert cfg.max_files == 50
 
 
+def test_product_code_graph_config_keeps_zero_cache_cap() -> None:
+    cfg = product_code_graph_config({"code_graph": {"max_cache_size_mb": 0}})
+    assert cfg.max_cache_size_mb == 0
+
+
+def test_eval_graph_config_uses_product_fields(tmp_path: Path) -> None:
+    from coding_agent import _graph_config
+
+    cfg = _graph_config(
+        {
+            "code_graph": {
+                "max_files": 12,
+                "max_source_bytes": "8MB",
+                "max_build_rss_mb": 512,
+                "max_cache_size_mb": 256,
+            }
+        },
+        tmp_path,
+        tmp_path / "cache",
+    )
+    assert cfg.max_files == 12
+    assert cfg.max_source_bytes == 8 * 1024 * 1024
+    assert cfg.max_build_rss_mb == 512
+    assert cfg.max_cache_size_mb == 256
+    assert Path(cfg.cache_dir) == (tmp_path / "cache").resolve()
+
+
 def test_missing_code_graph_section_is_the_original_agent() -> None:
     flags = resolve_code_graph_flags({})
     assert flags.profile == PROFILE_OFF

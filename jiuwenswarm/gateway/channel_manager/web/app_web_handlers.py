@@ -116,10 +116,9 @@ from jiuwenswarm.common.work_mode import (
 )
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
-    DEFAULT_MAX_SOURCE_BYTES,
-    format_source_volume_for_panel,
-    format_source_volume_for_yaml,
-    parse_source_volume_to_bytes,
+    CODE_GRAPH_PANEL_KEYS as _CODE_GRAPH_CONFIG_KEYS,
+    build_code_graph_config_update as _build_code_graph_config_update,
+    flatten_code_graph_for_config_panel as _flatten_code_graph_for_config_panel,
 )
 from jiuwenswarm.symphony.skill_retrieval.taxonomy_config import (
     coerce_root_categories_value,
@@ -957,19 +956,6 @@ _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_retrieve_max_exposure_depth": (("retrieve", "max_exposure_depth"), "int", 1),
 }
 _SKILL_RETRIEVAL_CONFIG_KEYS = tuple(_SKILL_RETRIEVAL_CONFIG_SPECS.keys())
-_CODE_GRAPH_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "code_graph_profile": (("profile",), "code_graph_profile", "off"),
-    "code_graph_agent": (("agent",), "code_graph_agent", "root"),
-    "code_graph_max_files": (("max_files",), "int", 5000),
-    "code_graph_max_source_bytes": (("max_source_bytes",), "code_graph_source_volume", DEFAULT_MAX_SOURCE_BYTES),
-    "code_graph_max_build_rss_mb": (("max_build_rss_mb",), "int", 4096),
-    "code_graph_max_cache_size_mb": (("max_cache_size_mb",), "int", 2048),
-}
-_CODE_GRAPH_CONFIG_KEYS = tuple(_CODE_GRAPH_CONFIG_SPECS.keys())
-_CODE_GRAPH_PROFILES = frozenset({"off", "graph"})
-_CODE_GRAPH_AGENTS = frozenset({"root", "code_agent"})
-_format_source_volume_for_panel = format_source_volume_for_panel
-_parse_source_volume_to_bytes = parse_source_volume_to_bytes
 
 
 def _coerce_config_panel_value(value: Any, value_type: str, default: Any) -> Any:
@@ -997,14 +983,6 @@ def _coerce_config_panel_value(value: Any, value_type: str, default: Any) -> Any
             return default
     if value_type == "root_categories":
         return coerce_root_categories_value(value, allow_path=False) or ""
-    if value_type == "code_graph_profile":
-        text = str(value if value is not None else default).strip().lower()
-        return text if text in _CODE_GRAPH_PROFILES else default
-    if value_type == "code_graph_agent":
-        text = str(value if value is not None else default).strip().lower()
-        return text if text in _CODE_GRAPH_AGENTS else default
-    if value_type == "code_graph_source_volume":
-        return _parse_source_volume_to_bytes(value, default)
     return str(value if value is not None else default)
 
 
@@ -1055,20 +1033,6 @@ def _flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, 
             flat[key] = root_categories_to_text(value)
         else:
             flat[key] = str(value)
-    return flat
-
-
-def _flatten_code_graph_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    section = raw.get("code_graph") if isinstance(raw.get("code_graph"), dict) else {}
-    flat: dict[str, str] = {}
-    for key, (path, value_type, default) in _CODE_GRAPH_CONFIG_SPECS.items():
-        value = _get_nested_config_value(section, path, default)
-        if value_type == "code_graph_source_volume":
-            n_bytes = parse_source_volume_to_bytes(value, default)
-            flat[key] = format_source_volume_for_panel(n_bytes)
-            continue
-        coerced = _coerce_config_panel_value(value, value_type, default)
-        flat[key] = str(coerced)
     return flat
 
 
@@ -1276,18 +1240,6 @@ def _build_skill_retrieval_config_update(params: dict[str, Any]) -> dict[str, An
         if key not in params:
             continue
         value = _coerce_config_panel_value(params[key], value_type, default)
-        _set_nested_config_value(updates, path, value)
-    return updates
-
-
-def _build_code_graph_config_update(params: dict[str, Any]) -> dict[str, Any]:
-    updates: dict[str, Any] = {}
-    for key, (path, value_type, default) in _CODE_GRAPH_CONFIG_SPECS.items():
-        if key not in params:
-            continue
-        value = _coerce_config_panel_value(params[key], value_type, default)
-        if value_type == "code_graph_source_volume":
-            value = format_source_volume_for_yaml(value)
         _set_nested_config_value(updates, path, value)
     return updates
 

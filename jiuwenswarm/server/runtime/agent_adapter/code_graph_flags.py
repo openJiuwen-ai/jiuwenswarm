@@ -96,6 +96,17 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _cache_size_mb(value: Any, default: int | None) -> int | None:
+    """Keep ``0`` as a real cap. ``None`` falls back to ``default`` or 2048."""
+    fallback = 2048 if default is None else default
+    if value is None or value == "":
+        return fallback
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def parse_source_volume_to_bytes(value: Any, default: int = DEFAULT_MAX_SOURCE_BYTES) -> int:
     """Panel ``40`` / yaml ``40MB`` / legacy ``41943040`` → engine bytes.
 
@@ -174,7 +185,7 @@ def product_code_graph_config(config_base: dict[str, Any] | None) -> Any:
             raw.get("max_source_bytes"), defaults.max_source_bytes
         ),
         max_build_rss_mb=_as_int(raw.get("max_build_rss_mb"), defaults.max_build_rss_mb),
-        max_cache_size_mb=_as_int(raw.get("max_cache_size_mb"), defaults.max_cache_size_mb or 2048),
+        max_cache_size_mb=_cache_size_mb(raw.get("max_cache_size_mb"), defaults.max_cache_size_mb),
     )
 
 
@@ -228,14 +239,20 @@ def admit_code_graph_workspace(workspace: str, config: Any) -> Any | None:
         return None
     try:
         from openjiuwen.core.retrieval.code_graph.errors import CodeGraphLimitExceeded
-        from openjiuwen.core.retrieval.code_graph.indexing.builder import (
-            _admit_source_files,
-            _iter_source_files,
-        )
+        from openjiuwen.core.retrieval.code_graph.indexing import builder as graph_builder
     except Exception:  # noqa: BLE001 — status / session create must still return
         return None
+    # Same walk ``build_index`` uses. Prefer a public name if the engine adds one.
+    admit = getattr(graph_builder, "admit_source_files", None) or getattr(
+        graph_builder, "_admit_source_files", None
+    )
+    iterate = getattr(graph_builder, "iter_source_files", None) or getattr(
+        graph_builder, "_iter_source_files", None
+    )
+    if not callable(admit) or not callable(iterate):
+        return None
     try:
-        _admit_source_files(list(_iter_source_files(Path(root), config)), config)
+        admit(list(iterate(Path(root), config)), config)
     except CodeGraphLimitExceeded as exc:
         return exc
     except Exception:  # noqa: BLE001
@@ -288,3 +305,83 @@ def apply_code_graph_profile(
     react["subagents"] = subagents
     cfg["react"] = react
     return cfg
+
+
+# TUI and Web config panels share these yaml keys. Keep the mapping here so
+# the two channels do not import each other.
+CODE_GRAPH_PANEL_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
+    "code_graph_profile": (("profile",), "code_graph_profile", PROFILE_OFF),
+    "code_graph_agent": (("agent",), "code_graph_agent", AGENT_ROOT),
+    "code_graph_max_files": (("max_files",), "int", 5000),
+    "code_graph_max_source_bytes": (
+        ("max_source_bytes",),
+        "code_graph_source_volume",
+        DEFAULT_MAX_SOURCE_BYTES,
+    ),
+    "code_graph_max_build_rss_mb": (("max_build_rss_mb",), "int", 4096),
+    "code_graph_max_cache_size_mb": (("max_cache_size_mb",), "int", 2048),
+}
+CODE_GRAPH_PANEL_KEYS = tuple(CODE_GRAPH_PANEL_SPECS.keys())
+
+
+def _panel_section_value(section: dict[str, Any], path: tuple[str, ...], default: Any) -> Any:
+    current: Any = section
+    for key in path:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key, default)
+    return current
+
+
+def _panel_set_value(target: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    current = target
+    for key in path[:-1]:
+        nxt = current.get(key)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            current[key] = nxt
+        current = nxt
+    current[path[-1]] = value
+
+
+def _coerce_code_graph_panel_value(value: Any, value_type: str, default: Any) -> Any:
+    if value_type == "int":
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return default
+    if value_type == "code_graph_profile":
+        text = str(value if value is not None else default).strip().lower()
+        return text if text in VALID_PROFILES else default
+    if value_type == "code_graph_agent":
+        text = str(value if value is not None else default).strip().lower()
+        return text if text in VALID_AGENTS else default
+    if value_type == "code_graph_source_volume":
+        return parse_source_volume_to_bytes(value, default)
+    return str(value if value is not None else default)
+
+
+def flatten_code_graph_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
+    section = raw.get("code_graph") if isinstance(raw.get("code_graph"), dict) else {}
+    flat: dict[str, str] = {}
+    for key, (path, value_type, default) in CODE_GRAPH_PANEL_SPECS.items():
+        value = _panel_section_value(section, path, default)
+        if value_type == "code_graph_source_volume":
+            flat[key] = format_source_volume_for_panel(
+                parse_source_volume_to_bytes(value, default)
+            )
+            continue
+        flat[key] = str(_coerce_code_graph_panel_value(value, value_type, default))
+    return flat
+
+
+def build_code_graph_config_update(params: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    for key, (path, value_type, default) in CODE_GRAPH_PANEL_SPECS.items():
+        if key not in params:
+            continue
+        value = _coerce_code_graph_panel_value(params[key], value_type, default)
+        if value_type == "code_graph_source_volume":
+            value = format_source_volume_for_yaml(value)
+        _panel_set_value(updates, path, value)
+    return updates

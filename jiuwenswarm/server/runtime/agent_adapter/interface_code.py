@@ -483,6 +483,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._code_graph_reload_fingerprint: tuple[Any, ...] | None = None
         self._code_graph_needs_warmup: bool = False
         self._code_graph_rail_needs_apply: bool = False
+        self._code_graph_warmup_task: asyncio.Task[Any] | None = None
         self._code_agent_rail = None
         self._code_plan_approval_rail = None
 
@@ -845,7 +846,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 raw.get("max_source_bytes"), defaults.max_source_bytes
             ),
             max_build_rss_mb=parse_int(raw.get("max_build_rss_mb"), defaults.max_build_rss_mb),
-            max_cache_size_mb=parse_int(raw.get("max_cache_size_mb"), defaults.max_cache_size_mb or 2048),
+            max_cache_size_mb=parse_int(
+                raw.get("max_cache_size_mb"),
+                defaults.max_cache_size_mb if defaults.max_cache_size_mb is not None else 2048,
+            ),
         )
 
     def _code_graph_reload_key(self, config_base: dict[str, Any] | None) -> tuple[Any, ...]:
@@ -940,7 +944,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 logger.warning("[JiuwenSwarmCodeAdapter] Code Graph warmup failed: %s", exc)
                 self._abandon_graph_after_warmup(exc)
 
-        loop.create_task(_warm())
+        task = loop.create_task(_warm())
+        self._code_graph_warmup_task = task
         logger.info(
             "[JiuwenSwarmCodeAdapter] Code Graph warmup scheduled for %s",
             root,
@@ -1145,19 +1150,31 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         if not hidden:
             return
         if rail is not None:
-            previous = list(getattr(rail, "_hidden_search", None) or [])
-            seen = {getattr(card, "name", None) for card, _ in previous}
-            for pair in hidden:
-                name = getattr(pair[0], "name", None)
-                if name not in seen:
-                    previous.append(pair)
-                    seen.add(name)
-            rail._hidden_search = previous
+            self._stash_hidden_search(rail, hidden)
         logger.info(
             "[JiuwenSwarmCodeAdapter] Code Graph concealed %d search tools "
             "while find_* were live",
             len(hidden),
         )
+
+    @staticmethod
+    def _stash_hidden_search(rail: Any, hidden: list[Any]) -> None:
+        """Keep grep/glob so UNAVAILABLE can restore them.
+
+        Prefer a public rail hook if the engine adds one.
+        """
+        stash = getattr(rail, "stash_hidden_search", None)
+        if callable(stash):
+            stash(hidden)
+            return
+        previous = list(getattr(rail, "_hidden_search", None) or [])
+        seen = {getattr(card, "name", None) for card, _ in previous}
+        for pair in hidden:
+            name = getattr(pair[0], "name", None)
+            if name not in seen:
+                previous.append(pair)
+                seen.add(name)
+        setattr(rail, "_hidden_search", previous)
 
     def _abandon_graph_if_limit_exceeded(self, rail: Any) -> None:
         """If this project is already over cap, drop find_* again after hanging GRAPH.
@@ -1708,15 +1725,22 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _make_deep_agent_config(self, **kwargs: Any) -> Any:
         """Keep ``code_graph_config`` on the live DeepAgent across hot reload."""
-        deep_cfg = super()._make_deep_agent_config(**kwargs)
-        config_base = kwargs.get("config_base") or getattr(self, "_config_base_cache", None)
-        deep_cfg.code_graph_config = self._build_code_graph_config(config_base)
         agent_ws = str(getattr(self, "_agent_workspace_dir", "") or "").strip()
         project = str(
             getattr(self, "_project_dir", None) or self._workspace_dir or ""
         ).strip()
+        saved_workspace = self._workspace_dir
+        if agent_ws:
+            # Parent builds Workspace(root_path=self._workspace_dir) and
+            # passes that object to subagents. Set it before super().
+            self._workspace_dir = agent_ws
+        try:
+            deep_cfg = super()._make_deep_agent_config(**kwargs)
+        finally:
+            self._workspace_dir = saved_workspace
+        config_base = kwargs.get("config_base") or getattr(self, "_config_base_cache", None)
+        deep_cfg.code_graph_config = self._build_code_graph_config(config_base)
         if agent_ws and getattr(deep_cfg, "workspace", None) is not None:
-            deep_cfg.workspace.root_path = agent_ws
             _set_workspace_coding_memory_directory(
                 deep_cfg.workspace,
                 project_dir=project or agent_ws,

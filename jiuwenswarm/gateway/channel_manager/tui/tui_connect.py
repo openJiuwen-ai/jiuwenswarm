@@ -860,11 +860,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         payload["app_version"] = __version__
         try:
             raw = get_config_raw()
-            from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-                _flatten_code_graph_for_config_panel,
+            from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+                flatten_code_graph_for_config_panel,
             )
 
-            payload.update(_flatten_code_graph_for_config_panel(raw))
+            payload.update(flatten_code_graph_for_config_panel(raw))
             for key, val in payload.items():
                 from jiuwenswarm.extensions import ExtensionRegistry
 
@@ -1066,16 +1066,16 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     "[cli config.set] 写回 config.yaml 失败 %s: %s", param_key, e
                 )
 
-        from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-            _CODE_GRAPH_CONFIG_KEYS,
-            _build_code_graph_config_update,
+        from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+            CODE_GRAPH_PANEL_KEYS,
+            build_code_graph_config_update,
         )
 
-        code_graph_updates = _build_code_graph_config_update(params)
+        code_graph_updates = build_code_graph_config_update(params)
         if code_graph_updates:
             try:
                 update_code_graph_in_config(code_graph_updates)
-                yaml_updated.extend(k for k in _CODE_GRAPH_CONFIG_KEYS if k in params)
+                yaml_updated.extend(k for k in CODE_GRAPH_PANEL_KEYS if k in params)
             except Exception as e:
                 logger.warning("[cli config.set] 写回 code_graph 失败: %s", e)
 
