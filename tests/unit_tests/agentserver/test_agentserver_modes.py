@@ -270,7 +270,7 @@ def test_status_code_graph_absent_when_profile_off(monkeypatch):
     called = {"stats": 0}
 
     class _Mgr:
-        def stats(self, workspace):
+        def stats(self, workspace, config=None):
             called["stats"] += 1
             return {"present": True, "state": "ready", "generation_id": 3}
 
@@ -287,20 +287,25 @@ def test_status_code_graph_absent_when_profile_off(monkeypatch):
 
 
 def test_status_code_graph_reads_manager_when_profile_graph(monkeypatch):
+    seen: dict = {}
+
     class _Mgr:
-        def stats(self, workspace):
+        def stats(self, workspace, config=None):
+            seen["workspace"] = workspace
+            seen["max_files"] = getattr(config, "max_files", None)
             return {"present": True, "state": "ready", "repo_id": "abc", "workspace": workspace}
 
     monkeypatch.setattr(
         "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
-        lambda: _Mgr(),
+        lambda _cfg=None: _Mgr(),
     )
     payload = agent_ws_server_module.resolve_status_code_graph(
-        {"code_graph": {"profile": "graph", "agent": "root"}},
+        {"code_graph": {"profile": "graph", "agent": "root", "max_files": 50}},
         "/tmp/project",
     )
     assert payload["state"] == "ready"
     assert payload["workspace"] == "/tmp/project"
+    assert seen["max_files"] == 50
 
 
 def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):

@@ -325,6 +325,28 @@ def test_normalize_uses_sibling_dir_hint(tmp_path: Path) -> None:
     assert traj["pred_spans"]["pkg/frames/__init__.py"] == [{"start": 17, "end": 17}]
 
 
+def test_normalize_moves_pred_symbols_off_official_field(tmp_path: Path) -> None:
+    _touch(tmp_path, "pkg/frames/altaz.py")
+    traj = normalize_traj_data(
+        {
+            "pred_steps": [
+                {
+                    "files": ["pkg/frames/altaz.py"],
+                    "spans": {"pkg/frames/altaz.py": [{"start": 46, "end": 80}]},
+                    "symbols": {"pkg/frames/altaz.py": ["AltAz"]},
+                }
+            ],
+            "pred_files": ["pkg/frames/altaz.py"],
+            "pred_spans": {"pkg/frames/altaz.py": [{"start": 46, "end": 80}]},
+            "pred_symbols": {"pkg/frames/altaz.py": ["AltAz"]},
+        },
+        str(tmp_path),
+    )
+    assert traj["pred_symbols"] == {}
+    assert traj["tool_symbols"] == {"pkg/frames/altaz.py": ["AltAz"]}
+    assert traj["pred_spans"]["pkg/frames/altaz.py"] == [{"start": 46, "end": 80}]
+
+
 def test_read_code_uses_start_and_end() -> None:
     step = extract_step(
         "read_code",
@@ -473,13 +495,39 @@ def test_to_contextbench_traj_data_declared_commit() -> None:
                 "tool": "submit_code_context",
                 "files": ["src/auth.py"],
                 "spans": {"src/auth.py": [{"start": 10, "end": 18}]},
-                "symbols": {},
+                "symbols": {"src/auth.py": ["AuthBackend"]},
             },
         ]
     )
     assert traj["pred_files"] == ["src/auth.py"]
     assert traj["pred_spans"]["src/auth.py"] == [{"start": 10, "end": 18}]
     assert traj["utilized_source"] == "declared"
+    assert traj["pred_symbols"] == {}
+    assert traj["tool_symbols"] == {"src/auth.py": ["AuthBackend"]}
+
+
+def test_submit_names_do_not_enter_official_pred_symbols() -> None:
+    recorder = TrajectoryRecorder(repo_root="/repo")
+    recorder.record(
+        "submit_code_context",
+        {"summary": "primary class"},
+        {
+            "locations": [
+                {
+                    "file": "src/auth.py",
+                    "start_line": 10,
+                    "end_line": 18,
+                    "name": "AuthBackend",
+                    "symbol_id": "src/auth.py::AuthBackend",
+                }
+            ]
+        },
+    )
+    traj = recorder.traj_data()
+    assert traj["pred_files"] == ["src/auth.py"]
+    assert traj["pred_spans"]["src/auth.py"] == [{"start": 10, "end": 18}]
+    assert traj["pred_symbols"] == {}
+    assert "AuthBackend" in (traj.get("tool_symbols") or {}).get("src/auth.py", [])
 
 
 def test_as_payload_map_accepts_list_evidence() -> None:
@@ -531,4 +579,28 @@ def test_contextbench_record_strips_output_and_keeps_schema() -> None:
     assert record["instance_id"] == "org__repo-1"
     assert record["traj_data"]["pred_files"] == ["a.py"]
     assert "output" not in record
+
+
+def test_contextbench_record_drops_tool_names_from_official_symbols() -> None:
+    record = contextbench_record(
+        {
+            "instance_id": "org__repo-1",
+            "traj_data": {
+                "pred_steps": [
+                    {
+                        "files": ["a.py"],
+                        "spans": {"a.py": [{"start": 1, "end": 2}]},
+                        "symbols": {"a.py": ["Foo"]},
+                    }
+                ],
+                "pred_files": ["a.py"],
+                "pred_spans": {"a.py": [{"start": 1, "end": 2}]},
+                "pred_symbols": {"a.py": ["Foo"]},
+            },
+            "model_patch": "",
+        }
+    )
+    assert record["traj_data"]["pred_symbols"] == {}
+    assert record["traj_data"]["pred_spans"]["a.py"] == [{"start": 1, "end": 2}]
+    assert record["traj_data"]["pred_steps"][0]["symbols"] == {}
 

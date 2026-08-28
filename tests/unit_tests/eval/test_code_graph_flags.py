@@ -20,6 +20,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     PROFILE_GRAPH,
     PROFILE_OFF,
     apply_code_graph_profile,
+    product_code_graph_config,
     resolve_code_graph_flags,
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (  # noqa: E402
@@ -27,6 +28,11 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (  # noqa:
 )
 from coding_agent import config_dir_name  # noqa: E402
 from trace import summarize_tool_payload  # noqa: E402
+
+
+def test_product_code_graph_config_reads_live_caps() -> None:
+    cfg = product_code_graph_config({"code_graph": {"profile": "graph", "max_files": 50}})
+    assert cfg.max_files == 50
 
 
 def test_missing_code_graph_section_is_the_original_agent() -> None:

@@ -883,7 +883,13 @@
       "proactiveEnabled": "Enable proactive recommendation",
       "proactiveTickInterval": "Check interval (minutes)",
       "proactiveMaxPerDay": "Daily recommendation limit",
-      "proactiveMaxRounds": "Max rounds per check"
+      "proactiveMaxRounds": "Max rounds per check",
+      "codeGraphProfile": "Profile",
+      "codeGraphAgent": "Mount point",
+      "codeGraphMaxFiles": "Max files",
+      "codeGraphMaxSourceBytes": "Max source bytes",
+      "codeGraphMaxBuildRssMb": "Build RSS cap (MB)",
+      "codeGraphMaxCacheSizeMb": "Index disk cap (MB)"
     },
     "defaults": {
       "teamLeaderDisplayName": "Team Leader",
@@ -935,7 +941,19 @@
       "teamMemberName": "Internal member ID: must start with a lowercase letter, then lowercase letters, digits, or hyphens.",
       "teamPersona": "Role persona and responsibilities; shapes behavior and division of labor.",
       "teamPromptHint": "Extra prompt fragment injected into this member's system prompt.",
-      "teamAgentKey": "Name of an existing Agent from Multi-Agent Configuration."
+      "teamAgentKey": "Name of an existing Agent from Multi-Agent Configuration.",
+      "codeGraphProfile": "off: original grep / read / edit. graph: mount find_* and hide grep / glob when the graph is complete.",
+      "codeGraphAgent": "root: mount on the main chat. code_agent: mount on the subagent (code_agent must be enabled).",
+      "codeGraphMaxFiles": "Repos over this file count are not indexed; grep is restored.",
+      "codeGraphMaxSourceBytes": "Total source-byte cap. Over it, the repo is not indexed.",
+      "codeGraphMaxBuildRssMb": "Hard stop for build RSS (MB). Over it, drop the graph and restore grep.",
+      "codeGraphMaxCacheSizeMb": "Index disk cap (MB). Over it, evict older caches or restore grep."
+    },
+    "codeGraph": {
+      "profileOff": "off (original tools)",
+      "profileGraph": "graph (find_*)",
+      "agentRoot": "root (main chat)",
+      "agentCodeAgent": "code_agent (subagent)"
     },
     "hideValue": "Hide value",
     "showValue": "Show value",
@@ -1127,6 +1145,10 @@
       "symphony": {
         "label": "Skill Symphony",
         "hint": "Control Skill Symphony"
+      },
+      "codeGraph": {
+        "label": "Code Graph",
+        "hint": "Code-graph retrieval: on/off, mount point, and build caps"
       },
       "skillRetrieval": {
         "label": "Skill Symphony",
