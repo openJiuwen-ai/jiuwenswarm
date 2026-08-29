@@ -1,6 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
+import io
 import json
+import urllib.error
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +12,7 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     YuanrongAgentApiError,
     YuanrongAgentFileError,
+    YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
 )
 
@@ -299,6 +302,65 @@ async def test_create_sandbox_raises_clear_timeout_error():
                 workspace="/home/hhc/workspaceA",
                 runtime_spec=_INLINE_RUNTIME_SPEC,
             )
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_timeout_error_is_distinguishable_subclass():
+    """超时抛 YuanrongAgentTimeoutError 子类，调用方可据此做幂等回查。"""
+    client = YuanrongFrontendAgentClientProbe(
+        frontend_endpoint="http://127.0.0.1:8080",
+        function_version_urn="urn:test:function:1",
+        agent_timeout_s=12.0,
+    )
+    await client.connect("http://127.0.0.1:8080")
+
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=TimeoutError("timed out"),
+    ):
+        with pytest.raises(YuanrongAgentTimeoutError, match="request timeout"):
+            await client.create_sandbox(
+                namespace="dev",
+                name="agent-001",
+                workspace="/home/hhc/workspaceA",
+                runtime_spec=_INLINE_RUNTIME_SPEC,
+            )
+
+
+@pytest.mark.asyncio
+async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgentClientProbe):
+    """幂等删除：实例已不存在（404）视为删除成功。"""
+    await client.connect("http://127.0.0.1:8080")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            404,
+            "Not Found",
+            None,
+            io.BytesIO(b'{"code":404,"message":"instance not found"}'),
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        await client.delete_sandbox("0b6c6322-dead-beef-8000-00000000bb0b")
+
+
+@pytest.mark.asyncio
+async def test_delete_sandbox_still_raises_on_server_error(client: YuanrongFrontendAgentClientProbe):
+    await client.connect("http://127.0.0.1:8080")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            500,
+            "Internal Server Error",
+            None,
+            io.BytesIO(b'{"code":500,"message":"boom"}'),
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="agent API failed"):
+            await client.delete_sandbox("0b6c6322-dead-beef-8000-00000000bb0b")
 
 
 @pytest.mark.asyncio

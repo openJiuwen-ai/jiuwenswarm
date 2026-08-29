@@ -77,6 +77,10 @@ class YuanrongAgentApiError(RuntimeError):
     """Raised when YuanRong /api/agent returns a non-success response."""
 
 
+class YuanrongAgentTimeoutError(YuanrongAgentApiError):
+    """请求已发出但等待响应超时（请求可能已在服务端生效，调用方需按幂等处理）。"""
+
+
 @dataclass(frozen=True)
 class AgentFileDownloadChunk:
     """One chunk from GET /api/agent/:instanceId/files/download."""
@@ -949,7 +953,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 str(err),
             )
             if raise_on_timeout and self._is_timeout_error(err):
-                raise YuanrongAgentApiError(
+                raise YuanrongAgentTimeoutError(
                     f"request timeout after {resolved_timeout}s: "
                     f"url={req.full_url}, error={err}"
                 ) from err

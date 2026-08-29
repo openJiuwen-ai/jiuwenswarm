@@ -4,7 +4,6 @@
 Wraps the appliance registry HTTP API (httpx keep-alive):
 - images: launch-spec / list
 - instances: register / update / list / unregister
-- nodes: heartbeat
 
 When ``RegistryConfig.endpoint`` is empty the client stays local-only so
 AgentOS can boot without a live registry process.
@@ -39,7 +38,7 @@ class RegistryConfig:
     """Gateway → registry connection settings.
 
     ``endpoint`` empty → local stub (no HTTP). ``node`` is this machine's
-    nodeIP used for ``POST /api/nodes/{node}/heartbeat``.
+    nodeIP written into registered instances.
     """
 
     endpoint: str = ""
@@ -111,26 +110,19 @@ class InstanceRecord:
         )
 
 
-@dataclass(frozen=True)
-class HeartbeatResult:
-    node: str
-    state: str = ""
-    ttl_seconds: int | None = None
-    expires_at: float | None = None
-    raw: dict[str, Any] = field(default_factory=dict)
+def compute_backoff_delay(
+    attempt: int,
+    *,
+    initial_delay: float = 1.0,
+    multiplier: float = 2.0,
+    max_delay: float = 30.0,
+) -> float:
+    """第 *attempt* 次失败后的指数退避间隔。
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> HeartbeatResult:
-        payload = dict(data or {})
-        ttl = payload.get("ttl_seconds")
-        expires = payload.get("expires_at")
-        return cls(
-            node=str(payload.get("node") or "").strip(),
-            state=str(payload.get("state") or "").strip(),
-            ttl_seconds=int(ttl) if ttl is not None else None,
-            expires_at=float(expires) if expires is not None else None,
-            raw=payload,
-        )
+    ``initial_delay * multiplier ** (attempt - 1)``，封顶 ``max_delay``。
+    """
+    exponent = max(0, int(attempt) - 1)
+    return min(initial_delay * (multiplier**exponent), max_delay)
 
 
 @dataclass(frozen=True)
@@ -527,37 +519,6 @@ class RegistryClient:
             return {"service_id": sid, "deleted": False}
         return data if isinstance(data, dict) else {"service_id": sid, "deleted": True}
 
-    async def report_node_heartbeat(
-        self,
-        node: str | None = None,
-        *,
-        status: Any = None,
-    ) -> HeartbeatResult:
-        """``POST /api/nodes/{node}/heartbeat`` — covers all instances on node."""
-        node_ip = str(node if node is not None else self.node or "").strip()
-        if not node_ip:
-            raise RegistryValidationError(
-                "node is required for heartbeat",
-                status_code=400,
-                payload=None,
-            )
-        body: dict[str, Any] | None = None
-        if status is not None:
-            body = {"status": status}
-        if not self.enabled:
-            return HeartbeatResult(
-                node=node_ip,
-                state="healthy",
-                ttl_seconds=90,
-                raw={"source": "local_stub"},
-            )
-        data = await self._request_json(
-            "POST",
-            f"api/nodes/{_encode(node_ip)}/heartbeat",
-            json=body,
-        )
-        return HeartbeatResult.from_dict(data)
-
     # ── Compatibility helpers used by AgentOSRouterClient ─────────────────
 
     async def get_image_info(self, image_name: str) -> ImageInfo:
@@ -771,18 +732,6 @@ class RegistryClient:
             status=str(info.metadata.get("registry_status") or "运行").strip(),
         )
 
-    async def report_heartbeat(self, agent_id: str) -> None:
-        """Compatibility shim: node-level heartbeat (``agent_id`` ignored)."""
-        del agent_id
-        if not self.node and not self.enabled:
-            return
-        if not self.node:
-            logger.warning(
-                "[RegistryClient] report_heartbeat skipped: registry.node is empty"
-            )
-            return
-        await self.report_node_heartbeat(self.node)
-
     async def close(self) -> None:
         self._registered_agents.clear()
         self._agent_service_ids.clear()
@@ -802,7 +751,7 @@ class RegistryClient:
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http is None:
             timeout = httpx.Timeout(self._config.request_timeout_s)
-            # Keep-alive for heartbeat cadence; limits leave connection open.
+            # Keep-alive connection pool for the periodic instance writes.
             self._http = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=timeout,

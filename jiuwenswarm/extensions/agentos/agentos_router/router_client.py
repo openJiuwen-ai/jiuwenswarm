@@ -49,6 +49,12 @@ from jiuwenswarm.extensions.agentos.agentos_router.models import (
 )
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryClient,
+    RegistryConflictError,
+    RegistryConnectionError,
+    RegistryError,
+    RegistryNotFoundError,
+    RegistryValidationError,
+    compute_backoff_delay,
     instance_service_id,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
@@ -64,7 +70,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     AgentFileDownloadChunk,
     AgentRuntimeSpec,
+    YuanrongAgentApiError,
     YuanrongAgentFileError,
+    YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
@@ -158,6 +166,14 @@ _DISCONNECT_CLEANUP_MAX_ATTEMPTS = 3
 # pop_if_idle 的固定 idle 宽限（秒）：真正的安全守卫是连接数==0 + task_count==0
 # + READY，宽限只需覆盖 release 的 touch 落地竞态，秒级即可。
 _DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS = 1.0
+
+# 注册中心写操作的指数退避重试：初始 1s、倍率 2、上限 30s。
+# 连接类错误（RegistryConnectionError / 5xx）按此退避重试直至成功、agent 被
+# 删除、或退避达到封顶 30s（此时记 error 视为本轮注册中心不可恢复）；409 冲突
+# 单次重试（幂等 upsert 覆盖）；语义错误（4xx）快速失败。注册是后台任务。
+_REGISTRY_BACKOFF_INITIAL_SECONDS = 1.0
+_REGISTRY_BACKOFF_MULTIPLIER = 2.0
+_REGISTRY_BACKOFF_MAX_SECONDS = 30.0
 
 
 def _is_agent_network_error(exc: BaseException) -> bool:
@@ -2071,13 +2087,34 @@ class AgentOSRouterClient(AgentServerClient):
                 }
 
         started = time.monotonic()
-        sandbox = await self._yuanrong.create_sandbox(
-            namespace=self._yuanrong.agent_namespace,
-            name=f"{agent_info.user_id}+{agent_info.agent_type}",
-            workspace=workspace,
-            runtime_spec=runtime_spec,
-            env_vars=env_vars,
-        )
+
+        async def _create_sandbox_once():
+            return await self._yuanrong.create_sandbox(
+                namespace=self._yuanrong.agent_namespace,
+                name=f"{agent_info.user_id}+{agent_info.agent_type}",
+                workspace=workspace,
+                runtime_spec=runtime_spec,
+                env_vars=env_vars,
+            )
+
+        try:
+            sandbox = await _create_sandbox_once()
+        except YuanrongAgentTimeoutError:
+            # create 超时（请求可能已生效而响应丢失的半成功状态）：以相同参数
+            # 重试一次做幂等回查。name 由 user_id+agent_type
+            # 确定性派生，即实例标识——首次请求未达则正常新建；已创建则按
+            # 同名幂等复用，不产生第二个实例。二次仍失败则按原语义上抛
+            # （runtime 标 FAILED，防双创建）。
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "sandbox.create.reconcile",
+                user_id=agent_info.user_id,
+                session_id=str(agent_info.metadata.get("session_id") or ""),
+                agent_type=agent_info.agent_type,
+                reason="create_timeout",
+            )
+            sandbox = await _create_sandbox_once()
         latency_ms = max(0, int((time.monotonic() - started) * 1000))
         instance_id = sandbox.sandbox_id
         agent_info.sandbox_id = instance_id
@@ -2150,7 +2187,27 @@ class AgentOSRouterClient(AgentServerClient):
             )
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
-            await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
+            try:
+                await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
+            except Exception:
+                # YuanRong 删除失败不阻断后续清理：继续移除
+                # 内存 runtime 并注销注册中心，避免残留僵尸 runtime / 注册条目；
+                # 孤儿沙箱按 best_effort 语义交由手工 / 后续对账兜底。
+                logger.exception(
+                    format_agentos(
+                        "sandbox.delete.fail",
+                        user_id=agent_info.user_id,
+                        session_id=str(agent_info.metadata.get("session_id") or ""),
+                        sandbox_id=str(agent_info.sandbox_id or ""),
+                        agent_type=agent_info.agent_type,
+                        instance=str(agent_info.sandbox_id or ""),
+                        error="yuanrong_delete_failed",
+                    ),
+                    extra=agentos_extra(
+                        session_id=str(agent_info.metadata.get("session_id") or ""),
+                        sandbox_id=str(agent_info.sandbox_id or ""),
+                    ),
+                )
         await self._agent_manager.delete_agent(
             agent_info.user_id,
             agent_info.agent_type,
@@ -2280,69 +2337,165 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_info.agent_type,
         )
 
-    async def _register_agent(self, agent_info: AgentInfo) -> None:
-        # 网络失败清理（delete_agent 强制路径）可能先于本后台任务执行：注册前
-        # 确认内存 runtime 仍存在（强制删除会 pop 掉 runtime），避免清理注销后
-        # 又把僵尸 instance 条目写回注册中心。
+    async def _call_registry_with_backoff(
+        self,
+        event: str,
+        operation: Callable[[], Awaitable[Any]],
+        *,
+        agent_info: AgentInfo,
+        ok_fields: dict[str, Any] | None = None,
+    ) -> bool:
+        """注册中心写操作 + 指数退避重试。
+
+        - ``RegistryConnectionError``（网络抖动 / 临时不可用 / 超时）及其它
+          5xx ``RegistryHTTPError``：按指数退避（初始 1s、倍率 2、上限 30s）
+          重试，直至成功或 agent 已被删除；一旦退避达到封顶 30s（注册中心在
+          本轮请求周期内持续不可恢复）则记 error 后放弃本轮；
+        - ``RegistryConflictError``（409）：``instance_service_id`` 为幂等
+          upsert，409 通常为并发写冲突，立即重试一次以最新数据覆盖；
+        - ``RegistryValidationError`` / ``RegistryNotFoundError``：语义错误，
+          快速失败不重试。
+
+        每次尝试前确认内存 runtime 仍存在：网络失败清理可能已删除该 agent，
+        此时终止重试，避免把已清理的实例写回注册中心。
+        """
+        user_id = agent_info.user_id
+        agent_type = agent_info.agent_type
+        sandbox_id = str(agent_info.sandbox_id or "")
         session_id = str(agent_info.metadata.get("session_id") or "")
         key_values: dict[str, Any] | None = None
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
-        live = await self._agent_manager.get_agent(
-            agent_info.user_id,
-            agent_info.agent_type,
-            key_values=key_values,
-        )
-        if live is None:
-            logger.info(
-                "[AgentOSRouter] registry register skipped (agent already "
-                "cleaned up): user_id=%s session_id=%s sandbox_id=%s agent_type=%s",
-                agent_info.user_id,
-                session_id,
-                str(agent_info.sandbox_id or ""),
-                agent_info.agent_type,
+        fields = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "sandbox_id": sandbox_id,
+            "agent_type": agent_type,
+            "instance": sandbox_id,
+        }
+        attempt = 0
+        conflict_retried = False
+        while True:
+            live = await self._agent_manager.get_agent(
+                user_id, agent_type, key_values=key_values
             )
-            return
-        try:
-            await self._registry.register_agent(agent_info)
-        except Exception:
-            logger.exception(
-                "[AgentOSRouter] async registry registration failed: agent_id=%s",
-                agent_info.agent_id,
+            if live is None:
+                log_agentos(logger, logging.INFO, f"{event}.skip_deleted", **fields)
+                return False
+            attempt += 1
+            try:
+                await operation()
+            except RegistryConflictError as exc:
+                if conflict_retried:
+                    log_agentos(
+                        logger,
+                        logging.WARNING,
+                        f"{event}.fail",
+                        error=str(exc),
+                        reason="conflict_persisted",
+                        **fields,
+                    )
+                    return False
+                conflict_retried = True
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    f"{event}.retry",
+                    attempt=attempt,
+                    error="conflict",
+                    **fields,
+                )
+                continue
+            except (RegistryValidationError, RegistryNotFoundError) as exc:
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    f"{event}.fail",
+                    error=str(exc),
+                    reason="non_retryable",
+                    **fields,
+                )
+                return False
+            except RegistryError as exc:
+                delay = compute_backoff_delay(
+                    attempt,
+                    initial_delay=_REGISTRY_BACKOFF_INITIAL_SECONDS,
+                    multiplier=_REGISTRY_BACKOFF_MULTIPLIER,
+                    max_delay=_REGISTRY_BACKOFF_MAX_SECONDS,
+                )
+                if delay >= _REGISTRY_BACKOFF_MAX_SECONDS:
+                    # 退避已达到封顶 30s：注册中心在本轮请求周期内持续不可恢复，
+                    # 不再继续尝试，记 error 后放弃本轮注册/更新。
+                    log_agentos(
+                        logger,
+                        logging.ERROR,
+                        f"{event}.unrecoverable",
+                        attempt=attempt,
+                        error=type(exc).__name__,
+                        sleep=f"{delay:.1f}s",
+                        **fields,
+                    )
+                    return False
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    f"{event}.retry",
+                    attempt=attempt,
+                    error=type(exc).__name__,
+                    sleep=f"{delay:.1f}s",
+                    **fields,
+                )
+                await asyncio.sleep(delay)
+                continue
+            log_agentos(
+                logger,
+                logging.INFO,
+                f"{event}.ok",
+                attempt=attempt,
+                **{**fields, **(ok_fields or {})},
             )
-            return
+            return True
 
-        # 创建后查询 YuanRong 获取 node_ip / sandbox_ip，更新注册中心 instance
-        # 的 placement 字段（node + address），供调度/路由使用。
+    async def _register_agent(self, agent_info: AgentInfo) -> None:
+        # 网络失败清理（delete_agent 强制路径）可能先于本后台任务执行：注册前
+        # 确认内存 runtime 仍存在（强制删除会 pop 掉 runtime），避免清理注销后
+        # 又把僵尸 instance 条目写回注册中心。
         try:
+            if not await self._call_registry_with_backoff(
+                "registry.register",
+                lambda: self._registry.register_agent(agent_info),
+                agent_info=agent_info,
+            ):
+                return
+
+            # 创建后查询 YuanRong 获取 node_ip / sandbox_ip，更新注册中心 instance
+            # 的 placement 字段（node + address）与 instance_id，供调度/路由使用。
             instance_info = await self._yuanrong.get_agent_info(
                 agent_info.sandbox_id
             )
             node_ip = str(instance_info.get("node_ip") or "").strip()
             sandbox_ip = str(instance_info.get("sandbox_ip") or "").strip()
-            if node_ip or sandbox_ip:
-                service_id = instance_service_id(
-                    agent_info.user_id, agent_info.agent_type
-                )
-                await self._registry.update_instance(
+            if not (node_ip or sandbox_ip):
+                return
+            service_id = instance_service_id(
+                agent_info.user_id, agent_info.agent_type
+            )
+            await self._call_registry_with_backoff(
+                "registry.instance",
+                lambda: self._registry.update_instance(
                     service_id,
                     node=node_ip or None,
                     address=sandbox_ip or None,
                     instance_id=str(agent_info.sandbox_id or "").strip() or None,
-                )
-                log_agentos(
-                    logger,
-                    logging.INFO,
-                    "registry.instance.ok",
-                    user_id=agent_info.user_id,
-                    session_id=str(agent_info.metadata.get("session_id") or ""),
-                    sandbox_id=str(agent_info.sandbox_id or ""),
-                    agent_type=agent_info.agent_type,
-                    instance=str(agent_info.sandbox_id or ""),
-                    service_id=service_id,
-                    node=node_ip,
-                    address=sandbox_ip,
-                )
+                ),
+                agent_info=agent_info,
+                ok_fields={
+                    "service_id": service_id,
+                    "node": node_ip,
+                    "address": sandbox_ip,
+                    "instance_id": str(agent_info.sandbox_id or ""),
+                },
+            )
         except Exception:
             logger.exception(
                 format_agentos(

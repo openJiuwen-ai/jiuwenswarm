@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,6 +27,11 @@ from jiuwenswarm.extensions.agentos.agentos_router.models import (
     AgentStatus,
     ImageInfo,
 )
+from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+    RegistryConflictError,
+    RegistryConnectionError,
+    RegistryValidationError,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     USER_DIRECTORY_ENV_KEY,
     AgentOSRouterClient,
@@ -33,7 +39,11 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     _is_agent_network_error,
     _is_ws_connect_retryable,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import SandboxInfo
+from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    SandboxInfo,
+    YuanrongAgentApiError,
+    YuanrongAgentTimeoutError,
+)
 
 
 def _ssh_channel(
@@ -1345,6 +1355,278 @@ async def test_chat_after_connect_warmup_reuses_sandbox() -> None:
     assert yuanrong.create_calls == 1
     assert yuanrong.send_calls == 1
     assert len(yuanrong.ws_connect_uris) == 1
+    await client.shutdown()
+
+
+class FlakyRegistryClient(FakeRegistryClient):
+    """register_agent 前若干次抛指定异常，之后成功。"""
+
+    def __init__(self, failures: list[BaseException]) -> None:
+        super().__init__()
+        self.failures = list(failures)
+        self.register_calls = 0
+
+    async def register_agent(self, agent_info: AgentInfo) -> None:
+        self.register_calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        await super().register_agent(agent_info)
+
+
+async def _seed_ready_runtime(agent_manager: AgentManager) -> AgentInfo:
+    """在 manager 中放一个 READY runtime，模拟 _create_agent 已完成。"""
+
+    async def _creator(info: AgentInfo) -> AgentInfo:
+        info.sandbox_id = "sbx-1"
+        return info
+
+    await agent_manager.get_or_create_agent(
+        "u1", "jiuwenswarm", creator=_creator
+    )
+    return AgentInfo(
+        user_id="u1",
+        agent_type="jiuwenswarm",
+        sandbox_id="sbx-1",
+        status=AgentStatus.READY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_register_agent_retries_connection_error_until_success() -> None:
+    """连接类错误按指数退避持续重试，恢复后注册 + placement 更新收敛。"""
+    registry = FlakyRegistryClient(
+        [RegistryConnectionError("boom"), RegistryConnectionError("boom")]
+    )
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+
+    with patch(
+        "jiuwenswarm.extensions.agentos.agentos_router.router_client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        await client._register_agent(info)
+
+    assert registry.register_calls == 3
+    assert len(registry.registered) == 1
+    # placement 更新（FakeYuanRongClient.get_agent_info 返回 node/sandbox ip）
+    assert len(registry.updated_instances) == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_register_agent_conflict_retries_once() -> None:
+    """409 冲突立即重试一次（幂等 upsert 覆盖），不进入退避。"""
+    registry = FlakyRegistryClient(
+        [RegistryConflictError("conflict", status_code=409, payload=None)]
+    )
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+
+    await client._register_agent(info)
+
+    assert registry.register_calls == 2
+    assert len(registry.registered) == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_register_agent_validation_fails_fast() -> None:
+    """语义错误快速失败：不重试、不做 placement 更新。"""
+    registry = FlakyRegistryClient(
+        [RegistryValidationError("bad payload", status_code=400, payload=None)]
+    )
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+
+    await client._register_agent(info)
+
+    assert registry.register_calls == 1
+    assert registry.registered == []
+    assert registry.updated_instances == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_register_agent_stops_when_agent_deleted_mid_retry() -> None:
+    """退避重试期间 agent 被删除：终止重试，不把已清理实例写回注册中心。"""
+    registry = FlakyRegistryClient([RegistryConnectionError("boom")])
+    agent_manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+    info = await _seed_ready_runtime(agent_manager)
+
+    release = asyncio.Event()
+    first_attempt_seen = asyncio.Event()
+    original_register = registry.register_agent
+
+    async def _register_once(agent_info: AgentInfo) -> None:
+        first_attempt_seen.set()
+        await original_register(agent_info)
+
+    registry.register_agent = _register_once  # type: ignore[method-assign]
+
+    async def _gated_sleep(delay: float) -> None:
+        await release.wait()
+
+    with patch(
+        "jiuwenswarm.extensions.agentos.agentos_router.router_client.asyncio.sleep",
+        new=_gated_sleep,
+    ):
+        task = asyncio.create_task(client._register_agent(info))
+        await first_attempt_seen.wait()
+        # 重试等待期间 agent 被强制清理（内存 runtime 移除）
+        await agent_manager.delete_agent("u1", "jiuwenswarm")
+        release.set()
+        await task
+
+    assert registry.register_calls == 1
+    assert registry.registered == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_register_agent_gives_up_at_backoff_cap() -> None:
+    """连接类错误退避达到 30s 封顶后不再重试：视为注册中心本轮不可恢复并放弃。"""
+    # 退避序列 1s,2s,4s,8s,16s；下一次尝试（attempt=6）的退避即达 30s 封顶 → 放弃。
+    registry = FlakyRegistryClient(
+        [RegistryConnectionError("boom") for _ in range(10)]
+    )
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    client = _router_client(FakeYuanRongClient(), registry, agent_manager)
+
+    with patch(
+        "jiuwenswarm.extensions.agentos.agentos_router.router_client.asyncio.sleep",
+        new=AsyncMock(),
+    ):
+        await client._register_agent(info)
+
+    # 共 5 次退避重试 + 第 6 次达封顶后放弃，不再追加尝试；未成功注册、无 placement 更新。
+    assert registry.register_calls == 6
+    assert registry.registered == []
+    assert registry.updated_instances == []
+    await client.shutdown()
+
+
+# ── YuanRong 删除幂等 + 强制清理不被中断（issue #3497 §7.3） ────────────────
+
+
+class FailingDeleteYuanRongClient(FakeYuanRongClient):
+    async def delete_sandbox(self, sandbox_id: str) -> None:
+        self.delete_calls.append(sandbox_id)
+        raise YuanrongAgentApiError(
+            "agent API failed: http_status=500, code=500, message='boom'"
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_survives_yuanrong_delete_failure() -> None:
+    """强制删除路径：YuanRong 删除失败不阻断内存 runtime 移除与注册中心注销。"""
+    yuanrong = FailingDeleteYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    await client.send_request(_envelope())
+    agents = await agent_manager.list_user_agents("u1")
+    assert agents[0].info.sandbox_id == "sbx-1"
+    agent_id = agents[0].info.agent_id
+
+    assert await client.delete_agent("u1", "jiuwenswarm") is True
+
+    assert yuanrong.delete_calls == ["sbx-1"]
+    assert await agent_manager.list_user_agents("u1") == []
+    assert registry.unregistered == [
+        {"agent_id": agent_id, "user_id": "u1", "agent_type": "jiuwenswarm"}
+    ]
+    await client.shutdown()
+
+
+# ── create 超时幂等回查（issue #3497 §7.2） ────────────────────────────────
+
+
+class TimeoutOnceYuanRongClient(FakeYuanRongClient):
+    """首次 create 抛超时（半成功模拟），重试（同名幂等回查）成功。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempt_payloads: list[dict[str, Any]] = []
+
+    async def create_sandbox(
+        self,
+        *,
+        namespace: str,
+        name: str,
+        workspace: str,
+        runtime_spec: dict[str, Any],
+        env_vars: dict[str, str] | None = None,
+        mounts: list[dict[str, Any]] | None = None,
+    ) -> SandboxInfo:
+        self.attempt_payloads.append(
+            {"namespace": namespace, "name": name, "workspace": workspace}
+        )
+        if len(self.attempt_payloads) == 1:
+            raise YuanrongAgentTimeoutError("request timeout after 300s")
+        return await super().create_sandbox(
+            namespace=namespace,
+            name=name,
+            workspace=workspace,
+            runtime_spec=runtime_spec,
+            env_vars=env_vars,
+            mounts=mounts,
+        )
+
+
+class AlwaysTimeoutYuanRongClient(FakeYuanRongClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.create_attempts = 0
+
+    async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
+        self.create_attempts += 1
+        raise YuanrongAgentTimeoutError("request timeout after 300s")
+
+
+@pytest.mark.asyncio
+async def test_create_agent_reconciles_after_create_timeout() -> None:
+    """create 超时后以相同参数（同名幂等）回查重试一次，成功后 agent READY。"""
+    yuanrong = TimeoutOnceYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    response = await client.send_request(_envelope())
+
+    assert response.ok
+    # 两次尝试：首次超时 + 一次幂等回查，参数（name 等）完全一致
+    assert len(yuanrong.attempt_payloads) == 2
+    assert (
+        yuanrong.attempt_payloads[0]["name"]
+        == yuanrong.attempt_payloads[1]["name"]
+        == "u1+jiuwenswarm"
+    )
+    agents = await agent_manager.list_user_agents("u1")
+    assert agents[0].info.status is AgentStatus.READY
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_double_timeout_fails_without_further_retries() -> None:
+    """回查重试仍超时：creator 原始异常上抛（owner 路径既有语义），
+    runtime 标 FAILED（防双创建），不再第三次尝试。"""
+    yuanrong = AlwaysTimeoutYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    with pytest.raises(YuanrongAgentTimeoutError):
+        await client.send_request(_envelope())
+
+    assert yuanrong.create_attempts == 2
+    agents = await agent_manager.list_user_agents("u1")
+    assert agents[0].info.status is AgentStatus.FAILED
     await client.shutdown()
 
 

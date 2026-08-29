@@ -14,6 +14,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryConfig,
     RegistryConflictError,
     RegistryNotFoundError,
+    compute_backoff_delay,
     instance_service_id,
     resolve_instance_kind,
 )
@@ -34,6 +35,22 @@ def test_resolve_instance_kind() -> None:
     assert resolve_instance_kind("custom-agent") == "三方"
     assert resolve_instance_kind("jiuwenswarm") == "九问"
     assert resolve_instance_kind("jiuwen-report") == "九问"
+
+
+def test_compute_backoff_delay_exponential() -> None:
+    # attempt 1 → 1s；attempt 2 → 2s；attempt 3 → 4s；attempt 4 → 8s
+    assert compute_backoff_delay(1) == 1.0
+    # attempt 10 → base 512s，封顶为 30s
+    assert compute_backoff_delay(2) == 2.0
+    assert compute_backoff_delay(3) == 4.0
+    assert compute_backoff_delay(4) == 8.0
+    assert compute_backoff_delay(10) == 30.0
+    assert compute_backoff_delay(100) == 30.0
+    # 自定义参数生效
+    assert compute_backoff_delay(4, initial_delay=1.0, multiplier=2.0, max_delay=16.0) == 8.0
+    assert compute_backoff_delay(10, max_delay=8.0) == 8.0
+    # attempt <= 1 时按 0 处理
+    assert compute_backoff_delay(0) == 1.0
 
 
 @pytest.mark.asyncio
@@ -163,18 +180,6 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                 json={"service_id": sid, "dataset": "default", "deleted": existed},
             )
 
-        if method == "POST" and path.endswith("/heartbeat"):
-            node = path.split("/")[-2]
-            return httpx.Response(
-                200,
-                json={
-                    "node": node,
-                    "state": "healthy",
-                    "ttl_seconds": 90,
-                    "expires_at": 1751800000.0,
-                },
-            )
-
         if method == "GET" and path.endswith("/missing/launch-spec"):
             return httpx.Response(404, json={"detail": "image not found"})
 
@@ -182,7 +187,7 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
 
 
 @pytest.mark.asyncio
-async def test_http_launch_spec_register_update_heartbeat() -> None:
+async def test_http_launch_spec_register_update_roundtrip() -> None:
     transport = _FakeRegistryTransport()
     client = RegistryClient(
         RegistryConfig(
@@ -245,11 +250,6 @@ async def test_http_launch_spec_register_update_heartbeat() -> None:
     )
     assert updated.node == "192.168.0.20"
     assert updated.address == "10.244.3.9:4096"
-
-    hb = await client.report_node_heartbeat()
-    assert hb.node == "192.168.0.12"
-    assert hb.state == "healthy"
-    assert hb.ttl_seconds == 90
 
     deleted = await client.unregister_instance(sid)
     assert deleted["deleted"] is True
