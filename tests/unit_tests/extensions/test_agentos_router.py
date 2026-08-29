@@ -267,10 +267,22 @@ class FakeRegistryClient:
         )
 
     async def update_instance(
-        self, service_id: str, *, node: str | None = None, address: str | None = None
+        self,
+        service_id: str,
+        *,
+        node: str | None = None,
+        address: str | None = None,
+        instance_id: str | None = None,
+        status: str | None = None,
     ) -> None:
         self.updated_instances.append(
-            {"service_id": service_id, "node": node, "address": address}
+            {
+                "service_id": service_id,
+                "node": node,
+                "address": address,
+                "instance_id": instance_id,
+                "status": status,
+            }
         )
 
     async def close(self) -> None:

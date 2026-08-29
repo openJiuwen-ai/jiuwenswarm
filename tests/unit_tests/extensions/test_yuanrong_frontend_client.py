@@ -230,6 +230,16 @@ async def test_create_and_delete_sandbox_calls_agent_api(client: YuanrongFronten
     assert delete_body is None
 
 
+@pytest.mark.asyncio
+async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgentClientProbe):
+    await client.connect("http://127.0.0.1:8080")
+    client._do_agent_delete = lambda instance_id: (  # noqa: ARG005
+        404,
+        '{"code":404,"message":"not found"}',
+    )
+    await client.delete_sandbox("already-gone")
+
+
 _INLINE_RUNTIME_SPEC = {
     "runtime": "python3.11",
     "rootfs": {"imageurl": "yr-docker-runtime:v0"},

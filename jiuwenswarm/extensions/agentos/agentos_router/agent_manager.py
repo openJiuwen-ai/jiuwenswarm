@@ -480,6 +480,10 @@ class AgentManager:
         async with self._runtimes_lock:
             return list(self._runtimes.keys())
 
+    async def list_all_agents(self) -> list[AgentRuntime]:
+        async with self._runtimes_lock:
+            return [runtime.snapshot() for runtime in self._runtimes.values()]
+
     async def list_user_agents(self, user_id: str) -> list[AgentRuntime]:
         normalized_user_id = str(user_id or "").strip()
         async with self._runtimes_lock:

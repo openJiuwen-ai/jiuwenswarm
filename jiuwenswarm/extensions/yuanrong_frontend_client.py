@@ -308,6 +308,12 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             self._do_agent_delete,
             normalized_sandbox_id,
         )
+        if self._agent_api_not_found(status, body):
+            logger.info(
+                "[YuanrongFrontendAgentClient] delete_sandbox: already gone instance_id=%s",
+                normalized_sandbox_id,
+            )
+            return
         self._parse_agent_api_response(body, status)
         logger.info(
             "[YuanrongFrontendAgentClient] delete_sandbox: instance_id=%s",
@@ -900,6 +906,18 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 f"agent API failed: http_status={status}, code={code}, message={message!r}"
             )
         return parsed
+
+    @staticmethod
+    def _agent_api_not_found(status: int, body: str) -> bool:
+        if int(status) == 404:
+            return True
+        try:
+            parsed = json.loads(body) if body else {}
+        except Exception:
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        return parsed.get("code") in (404, "404")
 
     def _urlopen_request(
         self,

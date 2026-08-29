@@ -3,7 +3,7 @@
 
 Wraps the appliance registry HTTP API (httpx keep-alive):
 - images: launch-spec / list
-- instances: register / update / unregister (write-only for gateway)
+- instances: register / update / list / unregister
 - nodes: heartbeat
 
 When ``RegistryConfig.endpoint`` is empty the client stays local-only so
@@ -87,6 +87,7 @@ class InstanceRecord:
     framework_version: str = ""
     node: str = ""
     address: str = ""
+    instance_id: str = ""
     user: str = ""
     status: str = ""
     dataset: str = ""
@@ -102,6 +103,7 @@ class InstanceRecord:
             framework_version=str(payload.get("framework_version") or "").strip(),
             node=str(payload.get("node") or "").strip(),
             address=str(payload.get("address") or "").strip(),
+            instance_id=str(payload.get("instance_id") or "").strip(),
             user=str(payload.get("user") or "").strip(),
             status=str(payload.get("status") or "").strip(),
             dataset=str(payload.get("dataset") or "").strip(),
@@ -221,6 +223,31 @@ def resolve_instance_kind(framework: str) -> str:
     if name in _JIUWEN_FRAMEWORKS or name.startswith("jiuwen"):
         return KIND_JIUWEN
     return KIND_THIRD_PARTY
+
+
+def _instance_matches(
+    record: InstanceRecord,
+    *,
+    node: str | None = None,
+    framework: str | None = None,
+    kind: str | None = None,
+    user: str | None = None,
+    include_unhealthy: bool = False,
+) -> bool:
+    if node is not None and str(node).strip() and record.node != str(node).strip():
+        return False
+    fw = str(framework).strip() if framework is not None else ""
+    if fw and record.framework != fw:
+        return False
+    kind_val = str(kind).strip() if kind is not None else ""
+    if kind_val and record.kind != kind_val:
+        return False
+    user_val = str(user).strip() if user is not None else ""
+    if user_val and record.user != user_val:
+        return False
+    if not include_unhealthy and record.status and record.status != "运行":
+        return False
+    return True
 
 
 def _optional_int(value: Any) -> int | None:
@@ -369,6 +396,7 @@ class RegistryClient:
         node: str,
         address: str,
         user: str,
+        instance_id: str = "",
     ) -> InstanceRecord:
         """``POST /api/instances`` — idempotent upsert by ``service_id``."""
         body = {
@@ -378,6 +406,7 @@ class RegistryClient:
             "framework_version": str(framework_version or "").strip(),
             "node": str(node or "").strip(),
             "address": str(address or "").strip(),
+            "instance_id": str(instance_id or "").strip(),
             "user": str(user or "").strip(),
         }
         if not body["service_id"] or not body["framework"] or not body["user"]:
@@ -397,8 +426,10 @@ class RegistryClient:
         *,
         node: str | None = None,
         address: str | None = None,
+        instance_id: str | None = None,
+        status: str | None = None,
     ) -> InstanceRecord:
-        """``PATCH /api/instances/{service_id}`` — update placement fields."""
+        """``PATCH /api/instances/{service_id}`` — update placement / instance_id / status."""
         sid = str(service_id or "").strip()
         if not sid:
             raise RegistryValidationError(
@@ -409,15 +440,19 @@ class RegistryClient:
             body["node"] = str(node).strip()
         if address is not None:
             body["address"] = str(address).strip()
+        if instance_id is not None:
+            body["instance_id"] = str(instance_id).strip()
+        if status is not None:
+            body["status"] = str(status).strip()
         if not body:
             raise RegistryValidationError(
-                "at least one of node/address is required",
+                "at least one of node/address/instance_id/status is required",
                 status_code=400,
                 payload=None,
             )
         if not self.enabled:
             return InstanceRecord.from_dict(
-                {"service_id": sid, **body, "status": "运行"}
+                {"service_id": sid, **body, "status": body.get("status") or "运行"}
             )
         data = await self._request_json(
             "PATCH",
@@ -426,8 +461,59 @@ class RegistryClient:
         )
         return InstanceRecord.from_dict(data)
 
+    async def list_instances(
+        self,
+        *,
+        node: str | None = None,
+        include_unhealthy: bool = False,
+        framework: str | None = None,
+        kind: str | None = None,
+        user: str | None = None,
+    ) -> list[InstanceRecord]:
+        """``GET /api/instances`` — list rows, optionally filtered."""
+        if not self.enabled:
+            records = [
+                self._instance_record_from_agent(info)
+                for info in self._registered_agents.values()
+            ]
+            matched: list[InstanceRecord] = []
+            for record in records:
+                if _instance_matches(
+                    record,
+                    node=node,
+                    framework=framework,
+                    kind=kind,
+                    user=user,
+                    include_unhealthy=include_unhealthy,
+                ):
+                    matched.append(record)
+            return matched
+        params: dict[str, Any] = {}
+        if include_unhealthy:
+            params["include_unhealthy"] = "true"
+        if node is not None and str(node).strip():
+            params["node"] = str(node).strip()
+        if framework is not None and str(framework).strip():
+            params["framework"] = str(framework).strip()
+        if kind is not None and str(kind).strip():
+            params["kind"] = str(kind).strip()
+        if user is not None and str(user).strip():
+            params["user"] = str(user).strip()
+        data = await self._request_json(
+            "GET",
+            "api/instances",
+            params=params or None,
+            expect_list=True,
+        )
+        items = data if isinstance(data, list) else []
+        return [
+            InstanceRecord.from_dict(item)
+            for item in items
+            if isinstance(item, dict)
+        ]
+
     async def unregister_instance(self, service_id: str) -> dict[str, Any]:
-        """``DELETE /api/instances/{service_id}`` (idempotent)."""
+        """``DELETE /api/instances/{service_id}`` (idempotent; missing is success)."""
         sid = str(service_id or "").strip()
         if not sid:
             raise RegistryValidationError(
@@ -435,7 +521,10 @@ class RegistryClient:
             )
         if not self.enabled:
             return {"service_id": sid, "dataset": "default", "deleted": True}
-        data = await self._request_json("DELETE", f"api/instances/{_encode(sid)}")
+        try:
+            data = await self._request_json("DELETE", f"api/instances/{_encode(sid)}")
+        except RegistryNotFoundError:
+            return {"service_id": sid, "deleted": False}
         return data if isinstance(data, dict) else {"service_id": sid, "deleted": True}
 
     async def report_node_heartbeat(
@@ -585,10 +674,18 @@ class RegistryClient:
             or self.node
             or ""
         ).strip()
+        instance_id = str(
+            info.sandbox_id
+            or info.metadata.get("instance_id")
+            or sandbox_meta.get("instance_id")
+            or ""
+        ).strip()
+        # Registry rejects empty address. Placement IP is patched after
+        # YuanRong get_agent_info; until then reuse instance_id.
         address = str(
             info.metadata.get("address")
             or sandbox_meta.get("address")
-            or info.sandbox_id
+            or instance_id
             or ""
         ).strip()
         kind = str(info.metadata.get("kind") or resolve_instance_kind(framework)).strip()
@@ -601,6 +698,7 @@ class RegistryClient:
                 framework_version=framework_version,
                 node=node,
                 address=address,
+                instance_id=instance_id,
                 user=user,
             )
             info.metadata["service_id"] = record.service_id
@@ -648,6 +746,30 @@ class RegistryClient:
             return
         if self.enabled:
             await self.unregister_instance(service_id)
+
+    def _instance_record_from_agent(self, info: AgentInfo) -> InstanceRecord:
+        user = str(info.user_id or "").strip()
+        framework = str(info.agent_type or "").strip()
+        sandbox_meta = info.metadata.get("sandbox")
+        if not isinstance(sandbox_meta, dict):
+            sandbox_meta = {}
+        return InstanceRecord(
+            service_id=instance_service_id(user, framework),
+            kind=str(info.metadata.get("kind") or resolve_instance_kind(framework)).strip(),
+            framework=framework,
+            framework_version=str(info.metadata.get("framework_version") or "default").strip(),
+            node=str(
+                info.metadata.get("node") or sandbox_meta.get("node") or self.node or ""
+            ).strip(),
+            address=str(
+                info.metadata.get("address") or sandbox_meta.get("address") or ""
+            ).strip(),
+            instance_id=str(
+                info.sandbox_id or info.metadata.get("instance_id") or ""
+            ).strip(),
+            user=user,
+            status=str(info.metadata.get("registry_status") or "运行").strip(),
+        )
 
     async def report_heartbeat(self, agent_id: str) -> None:
         """Compatibility shim: node-level heartbeat (``agent_id`` ignored)."""

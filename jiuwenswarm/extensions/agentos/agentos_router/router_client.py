@@ -51,6 +51,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryClient,
     instance_service_id,
 )
+from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
+    cleanup_stale_sandboxes,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
     SshSouthConnectError,
@@ -391,6 +394,7 @@ class AgentOSRouterClient(AgentServerClient):
         )
         self._connect_warmup_enabled = bool(connect_warmup_enabled)
         self._idle_reaper_task: asyncio.Task[None] | None = None
+        self._stale_cleanup_task: asyncio.Task[None] | None = None
         self._server_ready = False
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
@@ -1045,6 +1049,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._closed = False
         self._server_ready = True
         self._ensure_idle_reaper_task()
+        self._ensure_stale_cleanup_task()
 
     async def disconnect(self) -> None:
         if self._closed:
@@ -1052,6 +1057,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._closed = True
         self._server_ready = False
         await self._stop_idle_reaper_task()
+        await self._stop_stale_cleanup_task()
         # 取消所有挂起的延迟清理任务
         for task in self._pending_cleanups.values():
             if not task.done():
@@ -1942,6 +1948,39 @@ class AgentOSRouterClient(AgentServerClient):
         except asyncio.CancelledError:
             pass
 
+    def _ensure_stale_cleanup_task(self) -> None:
+        if self._closed or not getattr(self._registry, "enabled", False):
+            return
+        if self._stale_cleanup_task is not None and not self._stale_cleanup_task.done():
+            return
+        self._stale_cleanup_task = asyncio.create_task(
+            self._startup_cleanup_sandboxes(),
+            name="agentos-startup-sandbox-cleanup",
+        )
+
+    async def _stop_stale_cleanup_task(self) -> None:
+        task = self._stale_cleanup_task
+        self._stale_cleanup_task = None
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _startup_cleanup_sandboxes(self) -> None:
+        try:
+            await cleanup_stale_sandboxes(
+                yuanrong=self._yuanrong,
+                registry=self._registry,
+                agent_manager=self._agent_manager,
+                is_closed=lambda: self._closed,
+            )
+        except Exception:  # noqa: BLE001 - startup cleanup must not take down connect()
+            logger.exception("[AgentOSRouter] startup sandbox cleanup failed")
+
     async def _idle_reaper_loop(self) -> None:
         while not self._closed:
             await asyncio.sleep(self._sandbox_idle_check_interval_seconds)
@@ -2289,6 +2328,7 @@ class AgentOSRouterClient(AgentServerClient):
                     service_id,
                     node=node_ip or None,
                     address=sandbox_ip or None,
+                    instance_id=str(agent_info.sandbox_id or "").strip() or None,
                 )
                 log_agentos(
                     logger,

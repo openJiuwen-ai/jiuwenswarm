@@ -132,6 +132,15 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                 ],
             )
 
+        if method == "GET" and path.rstrip("/").endswith("/api/instances"):
+            records = list(self._instances.values())
+            if params.get("include_unhealthy") not in ("true", "1", "True"):
+                records = [row for row in records if row.get("status") == "运行"]
+            node = params.get("node")
+            if node:
+                records = [row for row in records if row.get("node") == node]
+            return httpx.Response(200, json=records)
+
         if method == "POST" and path.rstrip("/").endswith("/api/instances"):
             assert body is not None
             record = {**body, "dataset": "default", "status": "运行"}
@@ -214,6 +223,22 @@ async def test_http_launch_spec_register_update_heartbeat() -> None:
     )
     assert record.status == "运行"
     assert record.service_id == sid
+    assert record.instance_id == ""
+
+    record = await client.register_instance(
+        service_id=sid,
+        kind="三方",
+        framework="opencode",
+        framework_version="v0.2.0",
+        node="192.168.0.12",
+        address="10.244.1.7:4096",
+        instance_id="yr-instance-1",
+        user="user-01",
+    )
+    assert record.instance_id == "yr-instance-1"
+
+    listed = await client.list_instances(include_unhealthy=True)
+    assert [row.instance_id for row in listed] == ["yr-instance-1"]
 
     updated = await client.update_instance(
         sid, node="192.168.0.20", address="10.244.3.9:4096"
@@ -291,9 +316,33 @@ async def test_http_register_agent_maps_fields() -> None:
     assert post[2]["kind"] == "三方"
     assert post[2]["node"] == "192.168.0.12"
     assert post[2]["address"] == "10.244.1.7:4096"
+    assert post[2]["instance_id"] == "sbx-1"
     await client.unregister_agent(agent.agent_id)
     delete = next(call for call in transport.calls if call[0] == "DELETE")
     assert delete[1].endswith(f"/api/instances/{instance_service_id('user-01', 'opencode')}")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_register_agent_address_falls_back_to_instance_id() -> None:
+    transport = _FakeRegistryTransport()
+    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client._http = httpx.AsyncClient(  # noqa: SLF001
+        base_url="http://registry.test/",
+        transport=transport,
+        timeout=5.0,
+    )
+    agent = AgentInfo(
+        user_id="user-02",
+        agent_type="jiuwenswarm",
+        sandbox_id="sbx-pending-ip",
+        status=AgentStatus.READY,
+    )
+    await client.register_agent(agent)
+    post = next(call for call in transport.calls if call[0] == "POST")
+    assert post[2] is not None
+    assert post[2]["instance_id"] == "sbx-pending-ip"
+    assert post[2]["address"] == "sbx-pending-ip"
     await client.close()
 
 
@@ -341,4 +390,39 @@ async def test_http_errors_mapped() -> None:
         await client.get_launch_spec("missing")
     with pytest.raises(RegistryConflictError):
         await client._request_json("DELETE", "api/images/busy/v1")  # noqa: SLF001
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_instance_missing_is_success() -> None:
+    class _NotFoundDelete(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"detail": "not found"})
+
+    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client._http = httpx.AsyncClient(  # noqa: SLF001
+        base_url="http://registry.test/",
+        transport=_NotFoundDelete(),
+        timeout=5.0,
+    )
+    result = await client.unregister_instance("generic_deadbeef")
+    assert result["deleted"] is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_stub_list_instances_includes_instance_id() -> None:
+    client = RegistryClient(RegistryConfig())
+    agent = AgentInfo(
+        user_id="u1",
+        agent_type="opencode",
+        sandbox_id="sbx-local",
+        status=AgentStatus.READY,
+        metadata={"node": "10.0.0.1", "address": "10.0.0.8:1"},
+    )
+    await client.register_agent(agent)
+    rows = await client.list_instances(include_unhealthy=True)
+    assert len(rows) == 1
+    assert rows[0].instance_id == "sbx-local"
+    assert rows[0].user == "u1"
     await client.close()
