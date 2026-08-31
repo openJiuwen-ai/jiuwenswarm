@@ -774,6 +774,13 @@ class AgentOSRouterClient(AgentServerClient):
         Must not raise: handshake / connection.ack already succeeded. Chat
         still goes through get_or_create_agent, so a failed warmup only
         means the first request pays the cold-start cost.
+
+        A thrown create is stored as FAILED and never auto-retried (anti
+        double-create). Idle reaper / delayed cleanup only pop READY
+        runtimes, so a leftover FAILED would make every later chat raise
+        AgentCreateFailed until process restart. Drop only FAILED here so
+        chat can cold-start; leave READY if create succeeded and only
+        instance WS warmup failed.
         """
         if self._closed:
             return
@@ -798,6 +805,16 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_type,
                 exc_info=True,
             )
+            try:
+                existing = await self._agent_manager.get_agent(user_id, agent_type)
+                if existing is not None and existing.is_failed():
+                    await self._agent_manager.delete_agent(user_id, agent_type)
+            except Exception:
+                logger.debug(
+                    "[AgentOSRouter] warmup cleanup delete failed: user=%s",
+                    user_id,
+                    exc_info=True,
+                )
             return
         if self._closed:
             return

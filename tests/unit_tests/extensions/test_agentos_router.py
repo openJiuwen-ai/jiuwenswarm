@@ -1333,12 +1333,74 @@ async def test_connect_warmup_failure_does_not_raise() -> None:
             raise RuntimeError("create failed")
 
     yuanrong = FailingYuanRongClient()
-    client = _router_client(yuanrong)
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, agent_manager=agent_manager)
 
     await client._on_channel_event(_channel_event("u1", "connected", "tui"))
     await _await_warmup(client, "u1")
 
     assert yuanrong.create_calls == 0
+    assert await agent_manager.get_agent("u1", "jiuwenswarm") is None
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chat_after_failed_warmup_create_retries() -> None:
+    """Warmup create failure must not pin a FAILED runtime that blocks chat."""
+
+    class FailOnceYuanRong(FakeYuanRongClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self._fail_next = True
+
+        async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
+            if self._fail_next:
+                self._fail_next = False
+                raise RuntimeError("create failed")
+            return await super().create_sandbox(**kwargs)
+
+    yuanrong = FailOnceYuanRong()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, agent_manager=agent_manager)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    await _await_warmup(client, "u1")
+    leftover = await agent_manager.get_agent("u1", "jiuwenswarm")
+    assert leftover is None
+
+    response = await client.send_request(_envelope())
+    assert response.ok
+    assert yuanrong.create_calls == 1
+    runtime = await agent_manager.get_agent("u1", "jiuwenswarm")
+    assert runtime is not None
+    assert runtime.is_ready()
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_warmup_ws_failure_keeps_ready_runtime() -> None:
+    """Instance WS warmup failure must not delete a successfully created sandbox."""
+
+    class FailingWsClient(FakeAgentWsClient):
+        async def connect(self, uri: str) -> None:
+            raise RuntimeError("ws failed")
+
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        agent_manager=agent_manager,
+        ws_client_factory=lambda: FailingWsClient(yuanrong),
+    )
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    await _await_warmup(client, "u1")
+
+    runtime = await agent_manager.get_agent("u1", "jiuwenswarm")
+    assert runtime is not None
+    assert runtime.is_ready()
+    assert runtime.info.sandbox_id == "sbx-1"
+    assert yuanrong.create_calls == 1
     await client.shutdown()
 
 
