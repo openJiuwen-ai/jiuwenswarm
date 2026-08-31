@@ -2406,6 +2406,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
         "personal_context.fetch.delete_service",
         "personal_context.fetch.patch_service",
         "personal_context.fetch.start_service",
+        "personal_context.fetch.stop_run",
         "personal_context.fetch.stop_service",
         "personal_context.fetch.run_all",
         "personal_context.fetch.run_one",
@@ -2431,7 +2432,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
 
     assert forwarded == methods
     assert no_local == methods
-    assert len(methods) == 24
+    assert len(methods) == 25
 
 
 # =====================================================================
