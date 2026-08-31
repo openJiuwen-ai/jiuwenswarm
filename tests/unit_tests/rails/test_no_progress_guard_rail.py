@@ -58,7 +58,7 @@ def test_rail_initialization(enabled_config):
     assert rail.language == "en"
 
 
-def test_rail_initialization_with_chinese():
+def test_rail_initialization_with_chinese(enabled_config):
     """Test NoProgressGuardRail with Chinese language."""
     rail = NoProgressGuardRail(enabled_config, language="cn")
     assert rail.language == "cn"
