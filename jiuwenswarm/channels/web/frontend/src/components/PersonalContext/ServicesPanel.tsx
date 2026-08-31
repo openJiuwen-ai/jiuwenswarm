@@ -32,7 +32,7 @@ import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg
 import zhihuIcon from '../../assets/settings/channels/zhihu.svg';
 import toutiaoIcon from '../../assets/settings/channels/toutiao.svg';
 import feishuIcon from '../../assets/settings/channels/feishu.svg';
-import githubIcon from '../../assets/settings/channels/github.svg';
+import githubIcon from '../../assets/settings/channels/GitHub.svg';
 import './ServicesPanel.css';
 
 const POLL_INTERVAL_MS = 5000;
@@ -60,6 +60,7 @@ export function PersonalContextServicesPanel({
   const { t } = useTranslation();
   const {
     config,
+    graph,
     status,
     loadingServices,
     pendingWrites,
@@ -221,7 +222,7 @@ export function PersonalContextServicesPanel({
           </div>
           <div className="pc-services__stat-card">
             <span className="pc-services__stat-label">{t('personalContext.services.statKnowledge')}</span>
-            <span className="pc-services__stat-number">{status?.total_pages ?? 0}</span>
+            <span className="pc-services__stat-number">{graph?.nodes.length ?? 0}</span>
           </div>
           <div className="pc-services__stat-card">
             <span className="pc-services__stat-label">{t('personalContext.services.statCollecting')}</span>

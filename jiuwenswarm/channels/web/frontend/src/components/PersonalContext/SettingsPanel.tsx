@@ -19,7 +19,7 @@ import { STRATEGY_OPTIONS } from '../../services/personalContextApi';
 import type { StrategyProfile } from '../../services/personalContextApi';
 import './SettingsPanel.css';
 import feishuLogo from '../../assets/settings/channels/feishu.svg';
-import githubLogo from '../../assets/settings/channels/github.svg';
+import githubLogo from '../../assets/settings/channels/GitHub.svg';
 const STRATEGY_LABELS: Record<StrategyProfile, string> = {
   agent: '智能体处理',
   balanced: '大模型处理',

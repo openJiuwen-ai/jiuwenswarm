@@ -44,10 +44,6 @@ interface PersonalContextGraphPanelProps {
 
 type Transform = { x: number; y: number; scale: number };
 
-// 颜色常量（对齐高保真 Context Graph）
-const GRAPH_NODE_DEFAULT = '#33bcf2';
-const GRAPH_NODE_HIGHLIGHT = '#ff8821';
-const GRAPH_NODE_DIMMED = '#a5acff';
 // 连线按类型分色：归属（contains，蓝色）更重要；提及（黄色）
 const GRAPH_EDGE_BELONG = '#1476FF';
 const GRAPH_EDGE_MENTION = '#F5A623';

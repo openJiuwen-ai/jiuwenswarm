@@ -1035,7 +1035,11 @@ class PersonalContextHostAPI:
             if self._config is None:
                 raw = _read_yaml(self._config_path)
                 if raw is None:
-                    return
+                    # First deployment: persist a default config so the
+                    # settings page opens with collection ON by default.
+                    raw = _initial_stored_config(collection_enabled=True)
+                    payload = _serialize_config(raw)
+                    _publish_yaml(self._config_path, payload)
                 stored, config = _prepare_stored_config(raw)
                 try:
                     await self._personal_context.set_configuration(config)
