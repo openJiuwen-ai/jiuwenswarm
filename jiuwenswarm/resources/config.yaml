@@ -1604,14 +1604,32 @@ modes:
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
 
-# ── flash 轻量模式开关 ──────────────────────────────────────────
-# flash 是独立 mode（单轮 ReAct、裁剪 rail 白名单、关闭 task loop 与技能自
-# 演进）。行为定义（rail 白名单 / react 覆盖）硬编码在 JiuwenSwarmFlashAdapter
-# 类常量，不在此配置——这里只控制「是否对普通 agent 对话注入 flash」。
-# 触发点在 mode 解析层（resolve_agent_request_mode）：置 true 时，所有归一到
-# agent 的对话请求被改写为 flash mode（无需前端发 mode=flash，配置即触发）；
-# code / team 路径不受影响。置 false（默认）时维持原 agent 行为。
-#   enabled: false（默认）— 普通对话走 DeepAdapter（全量 rail + task loop）。
-#   enabled: true        — 普通对话注入 flash，走 FlashAdapter facade。
 flash:
   enabled: false
+
+# ── 模型路由（model_routing rail）──────────────────────────────
+# 任务驱动的多模型路由：按任务类型/难度从能力表选模型，支持主动健康检查。
+# 能力表来源：优先 routing_state/models.json（sidecar 模式，relay 落盘），
+# 回退 config.yaml::models.defaults（stock 模式）。
+model_routing:
+  # 总开关：true 启用模型路由，false 禁用
+  enabled: false
+  # apply: true = 真切换模型（set_llm）；false = 仅推荐不切换
+  apply: true
+  # stats_path: 自定义统计文件路径；空则用默认 ~/.jiuwenswarm/config/routing_state/model_routing_list.json
+  stats_path: ""
+  health_check:
+    enabled: true
+    # 健康检查间隔（秒），TTL 缓存过期后重新检查
+    interval_seconds: 180
+    # 单次健康检查超时（秒）
+    timeout_seconds: 10
+    # 并发检查轮次
+    max_rounds: 1
+    # 连续失败次数达到此值后标记为不健康
+    max_consecutive_failures: 2
+    # 连续成功次数达到此值后恢复为健康
+    recovery_consecutive_successes: 1
+    # 健康检查使用的 prompt
+    health_check_prompt: "hi"
+    max_tokens: 1

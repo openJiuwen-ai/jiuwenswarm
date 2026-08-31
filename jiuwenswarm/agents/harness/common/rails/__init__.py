@@ -23,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskU
 from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import MultimodalImageRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import TaskExecutionRail
+from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import ModelRoutingRail
 from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail import ContextOverflowRecoveryRail
 from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
 from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
@@ -45,4 +46,5 @@ __all__ = [
     "NotifyingLLMRetryRail",
     "DeepResearchExecutionRail",
     "DisabledToolsRail",
+    "ModelRoutingRail",
 ]

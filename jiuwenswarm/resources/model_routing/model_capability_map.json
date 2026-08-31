@@ -1,0 +1,362 @@
+{
+  "vendor_map": [
+    {
+      "prefix": "chatglm",
+      "group": "GLM",
+      "provider": "zhipu"
+    },
+    {
+      "prefix": "glm",
+      "group": "GLM",
+      "provider": "zhipu"
+    },
+    {
+      "prefix": "qwen",
+      "group": "Qwen",
+      "provider": "alibaba"
+    },
+    {
+      "prefix": "deepseek",
+      "group": "DeepSeek",
+      "provider": "deepseek"
+    },
+    {
+      "prefix": "claude",
+      "group": "Claude",
+      "provider": "anthropic"
+    },
+    {
+      "prefix": "gemini",
+      "group": "Gemini",
+      "provider": "google"
+    },
+    {
+      "prefix": "mixtral",
+      "group": "Mixtral",
+      "provider": "mistral"
+    },
+    {
+      "prefix": "mistral",
+      "group": "Mistral",
+      "provider": "mistral"
+    },
+    {
+      "prefix": "llama",
+      "group": "Llama",
+      "provider": "meta"
+    },
+    {
+      "prefix": "baichuan",
+      "group": "Baichuan",
+      "provider": "baichuan"
+    },
+    {
+      "prefix": "moonshot",
+      "group": "Kimi",
+      "provider": "moonshot"
+    },
+    {
+      "prefix": "kimi",
+      "group": "Kimi",
+      "provider": "moonshot"
+    },
+    {
+      "prefix": "doubao",
+      "group": "Doubao",
+      "provider": "bytedance"
+    },
+    {
+      "prefix": "seed",
+      "group": "Seed",
+      "provider": "bytedance"
+    },
+    {
+      "prefix": "ernie",
+      "group": "ERNIE",
+      "provider": "baidu"
+    },
+    {
+      "prefix": "spark",
+      "group": "Spark",
+      "provider": "iflytek"
+    },
+    {
+      "prefix": "hunyuan",
+      "group": "Hunyuan",
+      "provider": "tencent"
+    },
+    {
+      "prefix": "mimo",
+      "group": "MiMo",
+      "provider": "xiaomi"
+    },
+    {
+      "prefix": "gpt",
+      "group": "GPT",
+      "provider": "openai"
+    },
+    {
+      "prefix": "o3",
+      "group": "GPT",
+      "provider": "openai"
+    },
+    {
+      "prefix": "o1",
+      "group": "GPT",
+      "provider": "openai"
+    },
+    {
+      "prefix": "yi",
+      "group": "Yi",
+      "provider": "01ai"
+    }
+  ],
+  "models": {
+    "glm-5.2": {
+      "model_score": 60
+    },
+    "glm-5.1": {
+      "model_score": 50
+    },
+    "glm-5": {
+      "model_score": 40
+    },
+    "deepseek-v3.2": {
+      "model_score": 25
+    },
+    "kimi-k3": {
+      "model_score": 57
+    },
+    "gpt-5.6-sol": {
+      "model_score": 56
+    },
+    "claude-opus-4.8": {
+      "model_score": 56
+    },
+    "grok-4.5": {
+      "model_score": 54
+    },
+    "claude-opus-4.7": {
+      "model_score": 54
+    },
+    "gpt-5.5": {
+      "model_score": 53
+    },
+    "claude-sonnet-5": {
+      "model_score": 53
+    },
+    "gpt-5.4": {
+      "model_score": 51
+    },
+    "gemini-3.5-flash": {
+      "model_score": 50
+    },
+    "gpt-5.6-terra": {
+      "model_score": 49
+    },
+    "claude-sonnet-4.6": {
+      "model_score": 47
+    },
+    "gpt-5.6-luna": {
+      "model_score": 46
+    },
+    "gemini-3.1-pro-preview": {
+      "model_score": 46
+    },
+    "qwen3.7-max": {
+      "model_score": 46
+    },
+    "minimax-m3": {
+      "model_score": 44
+    },
+    "gpt-5.3-codex": {
+      "model_score": 44
+    },
+    "gpt-5.2": {
+      "model_score": 42
+    },
+    "kimi-k2.7-code": {
+      "model_score": 42
+    },
+    "deepseek-v4-pro": {
+      "model_score": 41
+    },
+    "mimo-v2-pro": {
+      "model_score": 40
+    },
+    "gpt-5.2-codex": {
+      "model_score": 40
+    },
+    "qwen3.6-max-preview": {
+      "model_score": 40
+    },
+    "gpt-5.4-mini": {
+      "model_score": 40
+    },
+    "qwen3.6-plus": {
+      "model_score": 40
+    },
+    "gemini-3-pro-preview": {
+      "model_score": 40
+    },
+    "qwen3.7-plus": {
+      "model_score": 39
+    },
+    "claude-opus-4.6": {
+      "model_score": 38
+    },
+    "gpt-5.4-nano": {
+      "model_score": 38
+    },
+    "minimax-m2.7": {
+      "model_score": 38
+    },
+    "glm-5-turbo": {
+      "model_score": 38
+    },
+    "grok-4.3": {
+      "model_score": 38
+    },
+    "deepseek-v4-flash": {
+      "model_score": 37
+    },
+    "mimo-v2.5": {
+      "model_score": 37
+    },
+    "gpt-5.1": {
+      "model_score": 37
+    },
+    "mimo-v2-omni-0327": {
+      "model_score": 36
+    },
+    "gpt-5-codex": {
+      "model_score": 36
+    },
+    "kimi-k2.6": {
+      "model_score": 35
+    },
+    "claude-opus-4.5": {
+      "model_score": 35
+    },
+    "mimo-v2-omni": {
+      "model_score": 35
+    },
+    "gpt-5.1-codex": {
+      "model_score": 35
+    },
+    "gpt-5": {
+      "model_score": 35
+    },
+    "glm-5v-turbo": {
+      "model_score": 34
+    },
+    "minimax-m2.5": {
+      "model_score": 34
+    },
+    "grok-4": {
+      "model_score": 33
+    },
+    "kimi-k2-thinking": {
+      "model_score": 33
+    },
+    "o3-pro": {
+      "model_score": 33
+    },
+    "qwen3.5-397b-a17b": {
+      "model_score": 32
+    },
+    "qwen3-max-thinking": {
+      "model_score": 32
+    },
+    "minimax-m2.1": {
+      "model_score": 31
+    },
+    "qwen3.5-omni-plus": {
+      "model_score": 31
+    },
+    "gpt-5.1-codex-mini": {
+      "model_score": 31
+    },
+    "qwen3.6-27b": {
+      "model_score": 30
+    },
+    "o3": {
+      "model_score": 30
+    },
+    "step-3.7-flash": {
+      "model_score": 30
+    },
+    "mistral-medium-3.5": {
+      "model_score": 30
+    },
+    "gpt-5.5-instant": {
+      "model_score": 29
+    },
+    "claude-4.5-sonnet": {
+      "model_score": 29
+    },
+    "kimi-k2.5": {
+      "model_score": 29
+    },
+    "qwen3.5-27b": {
+      "model_score": 29
+    },
+    "mimo-v2.5-pro": {
+      "model_score": 28
+    },
+    "claude-4.1-opus": {
+      "model_score": 28
+    },
+    "qwen3.5-122b-a10b": {
+      "model_score": 28
+    },
+    "minimax-m2": {
+      "model_score": 28
+    },
+    "gemini-3-flash": {
+      "model_score": 27
+    },
+    "glm-4.7": {
+      "model_score": 27
+    },
+    "step-3.5-flash-2603": {
+      "model_score": 26
+    },
+    "doubao-seed-code": {
+      "model_score": 26
+    },
+    "gemini-2.5-pro": {
+      "model_score": 26
+    },
+    "o4-mini": {
+      "model_score": 26
+    },
+    "step-3.5-flash": {
+      "model_score": 26
+    },
+    "mimo-v2-flash": {
+      "model_score": 25
+    },
+    "gpt-5-mini": {
+      "model_score": 25
+    },
+    "claude-4-opus": {
+      "model_score": 25
+    },
+    "claude-4-sonnet": {
+      "model_score": 25
+    },
+    "gemini-3.1-flash-lite": {
+      "model_score": 25
+    },
+    "qwen3.6-35b-a3b": {
+      "model_score": 24
+    },
+    "claude-4.5-haiku": {
+      "model_score": 24
+    },
+    "qwen3.5-35b-a3b": {
+      "model_score": 24
+    }
+  }
+}
