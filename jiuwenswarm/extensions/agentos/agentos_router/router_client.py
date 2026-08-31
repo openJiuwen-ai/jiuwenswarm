@@ -62,6 +62,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
 )
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
+    DEFAULT_SSH_PORT,
     SshSouthConnectError,
     YuanrongSshRelay,
     _is_ssh_connect_retryable,
@@ -70,6 +71,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     AgentFileDownloadChunk,
     AgentRuntimeSpec,
+    DEFAULT_RUNTIME_PROBE_SETTINGS,
+    DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    RuntimeProbeSettings,
     YuanrongAgentApiError,
     YuanrongAgentFileError,
     YuanrongAgentTimeoutError,
@@ -104,8 +108,8 @@ _CONNECT_WARMUP_CHANNELS = frozenset(
     {ChannelType.WEB.value, ChannelType.CLI.value}
 )
 
-# create_sandbox 返回后 agentserver 仍在进程内启动；YuanRong WS 代理此时会回
-# HTTP 502。在 deadline 内重试，避免首条 chat 立刻空失败（TUI "Worked for 0s"）。
+# create 后先 GET 等到 status=running（端口探针成功），再连 WS。
+# 探针刚过时代理仍可能 502，故保留 deadline 内重试。
 _WS_CONNECT_READY_TIMEOUT_SECONDS = 60.0
 _WS_CONNECT_RETRY_INTERVAL_SECONDS = 1.0
 _WS_CONNECT_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
@@ -335,6 +339,58 @@ def build_inline_runtime_spec(image_info: ImageInfo) -> AgentRuntimeSpec:
     return dict(raw_spec)  # type: ignore[return-value]
 
 
+def _third_agent_ssh_probe_port(ssh_relay: YuanrongSshRelay | None) -> int:
+    """YuanRong SSH 南向端口（默认 2222），用作 3rdagent startup 探针。"""
+    if ssh_relay is not None:
+        try:
+            port = int(getattr(ssh_relay, "backend_port", 0) or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port > 0:
+            return port
+    return DEFAULT_SSH_PORT
+
+
+def _resolve_third_agent_probe_settings(
+    probe_settings: RuntimeProbeSettings | None,
+) -> RuntimeProbeSettings:
+    """Use gateway/env probe timings when customized; else 3rdagent defaults.
+
+    ``gateway.agentos.probes`` / ``AGENTOS_PROBE_*`` load into the same
+    ``RuntimeProbeSettings`` as builtin. Unchanged TCP timings keep
+    ``DEFAULT_THIRD_AGENT_PROBE_SETTINGS`` (delay 2 / failure 8).
+    """
+    if probe_settings is None:
+        return DEFAULT_THIRD_AGENT_PROBE_SETTINGS
+    if probe_settings.same_tcp_timings(DEFAULT_RUNTIME_PROBE_SETTINGS):
+        return DEFAULT_THIRD_AGENT_PROBE_SETTINGS
+    return probe_settings
+
+
+def _with_default_third_agent_probes(
+    runtime_spec: Mapping[str, Any],
+    *,
+    ssh_port: int,
+    probe_settings: RuntimeProbeSettings | None = None,
+) -> dict[str, Any]:
+    """Registry 未带 probes 时补 startup+liveness TCP（默认端口 2222）。
+
+    未改 gateway/env 探针时序时：startup delay 2 / period 3 / timeout 2 /
+    failure 8；liveness timeout 2 / failure 3。yaml 或 AGENTOS_PROBE_* 相对
+    builtin 默认值有改动时改用配置值。
+    """
+    spec = dict(runtime_spec)
+    probes = spec.get("probes")
+    if isinstance(probes, Mapping) and any(
+        isinstance(probes.get(key), Mapping) and probes.get(key)
+        for key in ("startup", "liveness", "readiness")
+    ):
+        return spec
+    settings = _resolve_third_agent_probe_settings(probe_settings)
+    spec["probes"] = settings.tcp_probes(int(ssh_port), with_liveness=True)
+    return spec
+
+
 def resolve_agent_workspace(user_id: str, *, workspace_root: str | None = None) -> str:
     """Resolve host workspace bind path for one agent user.
 
@@ -388,6 +444,7 @@ class AgentOSRouterClient(AgentServerClient):
         connect_warmup_enabled: bool = True,
         auth_client: AgentOSAuthenticator | None = None,
         ws_client_factory: Callable[[], WebSocketAgentServerClient] | None = None,
+        probe_settings: RuntimeProbeSettings | None = None,
     ) -> None:
         self._yuanrong = yuanrong
         self._registry = registry
@@ -409,6 +466,7 @@ class AgentOSRouterClient(AgentServerClient):
             disconnect_cleanup_timeout_seconds
         )
         self._connect_warmup_enabled = bool(connect_warmup_enabled)
+        self._probe_settings = probe_settings or DEFAULT_RUNTIME_PROBE_SETTINGS
         self._idle_reaper_task: asyncio.Task[None] | None = None
         self._stale_cleanup_task: asyncio.Task[None] | None = None
         self._server_ready = False
@@ -1239,10 +1297,42 @@ class AgentOSRouterClient(AgentServerClient):
                 )
                 await asyncio.sleep(sleep_for)
 
+    async def _wait_yuanrong_running(
+        self,
+        instance_id: str,
+        *,
+        user_id: str = "",
+        session_id: str = "",
+        agent_type: str = "",
+    ) -> None:
+        """GET /api/agent/:id until YuanRong reports ``status=running``.
+
+        Create 端口探针成功后实例才 running；在此之前连 WS/SSH 会失败。
+        Test doubles without ``wait_until_running`` fall back to one GET.
+        """
+        waiter = getattr(self._yuanrong, "wait_until_running", None)
+        if not callable(waiter):
+            getter = getattr(self._yuanrong, "get_agent_info", None)
+            if callable(getter):
+                await getter(instance_id)
+            return
+        log_agentos(
+            logger,
+            logging.DEBUG,
+            "agent.instance.wait_running",
+            user_id=user_id,
+            session_id=session_id,
+            sandbox_id=instance_id,
+            agent_type=agent_type,
+            instance=instance_id,
+        )
+        await waiter(instance_id)
+
     async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:
         """获取（或建立）到该 agent instance 的 WS 直连，不走 invoke 链路.
 
-        冷启动时 create 返回早于 agentserver listen：对可重试错误做就绪等待。
+        create 后先 GET 等到 status=running（端口探针成功），再连 WS。
+        冷启动代理仍可能 502：对可重试错误做就绪等待。
         同一 instance 的并发首连合并到一个 Future，避免多路同时打 502。
         """
         info = runtime.info
@@ -1277,6 +1367,12 @@ class AgentOSRouterClient(AgentServerClient):
             return await asyncio.shield(inflight)
 
         try:
+            await self._wait_yuanrong_running(
+                instance_id,
+                user_id=str(info.user_id or ""),
+                session_id=str(info.metadata.get("session_id") or ""),
+                agent_type=str(info.agent_type or ""),
+            )
             client = await self._connect_ws_until_ready(
                 instance_id=instance_id,
                 agent_port=agent_port,
@@ -1673,7 +1769,14 @@ class AgentOSRouterClient(AgentServerClient):
                     "code": "INTERNAL_ERROR",
                 }
             try:
-                # create 返回不代表 sshd 已听端口；等南向 SSH 通了再让客户端连。
+                # create 返回不代表端口探针已成功；先等 GET status=running，
+                # 再探测南向 SSH，避免 sshd 未听端口时立刻掐连接。
+                await self._wait_yuanrong_running(
+                    instance_id,
+                    user_id=uid,
+                    session_id=session_id,
+                    agent_type=normalized,
+                )
                 await ssh_relay.wait_until_ready(instance_id, user_id=uid)
             except Exception as exc:
                 log_agentos(
@@ -2075,6 +2178,7 @@ class AgentOSRouterClient(AgentServerClient):
                     "user": "agentos",
                 },
                 "cmds": [["sh", "-c", f"exec jiuwenswarm-agentserver --port {port}"]],
+                "probes": self._probe_settings.tcp_probes(port, with_liveness=True),
                 "cpu": int(os.environ.get("AGENTOS_BUILTIN_AGENT_CPU", "2000")),
                 "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096"))
             }
@@ -2088,7 +2192,11 @@ class AgentOSRouterClient(AgentServerClient):
             extra_metadata: dict[str, Any] = {"agent_port": port}
         else:
             image_info = await self._registry.get_image_info(agent_info.agent_type)
-            runtime_spec = build_inline_runtime_spec(image_info)
+            runtime_spec = _with_default_third_agent_probes(
+                build_inline_runtime_spec(image_info),
+                ssh_port=_third_agent_ssh_probe_port(self._ssh_relay),
+                probe_settings=self._probe_settings,
+            )
             env_raw = image_info.metadata.get("env_vars")
             env_vars = (
                 {str(k): str(v) for k, v in dict(env_raw).items()}
@@ -2096,12 +2204,10 @@ class AgentOSRouterClient(AgentServerClient):
                 else None
             )
             extra_metadata = {"image_info": dict(image_info.metadata)}
-            # 3rdagent 走 SSH，不连 agentserver WS；create 的 rootfs 不传 ports。
-            rootfs = runtime_spec.get("rootfs")
-            if isinstance(rootfs, dict) and "ports" in rootfs:
-                runtime_spec["rootfs"] = {
-                    key: value for key, value in rootfs.items() if key != "ports"
-                }
+            # 3rdagent 走 SSH：registry 未带 probes 时补 startup+liveness
+            # TCP:2222（gateway.agentos.ssh.port）。未改探针配置时用
+            # delay=2/failure=8；gateway.agentos.probes / AGENTOS_PROBE_*
+            # 有改动时与 builtin 共用配置。已有 probes 原样透传。
 
         started = time.monotonic()
 

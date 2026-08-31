@@ -21,6 +21,10 @@ from jiuwenswarm.extensions.agentos.agentos_router.config import (
     agentos_router_selected,
     load_router_config,
 )
+from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    RuntimeProbeSettings,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.extension import AgentOSRouter
 from jiuwenswarm.extensions.agentos.agentos_router.models import (
     AgentInfo,
@@ -38,8 +42,11 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     resolve_agent_workspace,
     _is_agent_network_error,
     _is_ws_connect_retryable,
+    _third_agent_ssh_probe_port,
+    _with_default_third_agent_probes,
 )
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    DEFAULT_RUNTIME_PROBE_SETTINGS,
     SandboxInfo,
     YuanrongAgentApiError,
     YuanrongAgentTimeoutError,
@@ -67,6 +74,8 @@ class FakeYuanRongClient:
         self.config: dict[str, Any] = {}
         self.push_handler = None
         self.ws_connect_uris: list[str] = []
+        self.wait_running_calls: list[str] = []
+        self.get_info_statuses: list[str] = []
 
     async def connect(self, uri: str) -> None:
         del uri
@@ -104,7 +113,22 @@ class FakeYuanRongClient:
         self.delete_calls.append(sandbox_id)
 
     async def get_agent_info(self, instance_id: str) -> dict:
-        return {"instance_id": instance_id, "node_ip": "127.0.0.1", "sandbox_ip": "127.0.0.1"}
+        status = "running"
+        if self.get_info_statuses:
+            status = self.get_info_statuses.pop(0)
+        return {
+            "instance_id": instance_id,
+            "status": status,
+            "node_ip": "127.0.0.1",
+            "sandbox_ip": "127.0.0.1",
+        }
+
+    async def wait_until_running(self, instance_id: str) -> dict:
+        self.wait_running_calls.append(instance_id)
+        while True:
+            info = await self.get_agent_info(instance_id)
+            if str(info.get("status") or "").lower() in {"", "running"}:
+                return info
 
     async def send_request(
         self,
@@ -338,8 +362,20 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     assert spec["sandbox_type"] == "supervisor"
     assert spec["runtime"] == "python3.11"
     fixed_port = "18092"
-    # rootfs 不再声明 ports，agentserver 使用固定端口 18092
-    assert "ports" not in spec["rootfs"]
+    assert spec["probes"] == {
+        "startup": {
+            "tcpSocket": {"port": int(fixed_port)},
+            "initialDelaySeconds": 3,
+            "periodSeconds": 3,
+            "timeoutSeconds": 2,
+            "failureThreshold": 6,
+        },
+        "liveness": {
+            "tcpSocket": {"port": int(fixed_port)},
+            "timeoutSeconds": 2,
+            "failureThreshold": 3,
+        },
+    }
     assert spec["cmds"] == [
         ["sh", "-c", f"exec jiuwenswarm-agentserver --port {fixed_port}"]
     ]
@@ -358,6 +394,7 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
         "ws://yuanrong.test:8888/serverless/v1/ws"
         f"?instance=sbx-1&tenant_id=default&port={fixed_port}"
     ]
+    assert yuanrong.wait_running_calls == ["sbx-1"]
     # Agent is registered with the registry (fire-and-forget background task).
     assert len(registry.registered) == 1
     assert registry.registered[0].agent_type == "jiuwenswarm"
@@ -372,6 +409,96 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     assert envelope.channel_context["sandbox_id"] == "sbx-1"
 
     await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_builtin_create_honors_probe_settings() -> None:
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        AgentManager(),
+        probe_settings=RuntimeProbeSettings(
+            startup_initial_delay_seconds=5,
+            startup_period_seconds=4,
+            startup_timeout_seconds=1,
+            startup_failure_threshold=8,
+            liveness_timeout_seconds=3,
+            liveness_failure_threshold=5,
+        ),
+    )
+    try:
+        await client.send_request(_envelope())
+        await asyncio.sleep(0.05)
+        assert yuanrong.create_payloads[0]["runtime_spec"]["probes"] == {
+            "startup": {
+                "tcpSocket": {"port": 18092},
+                "initialDelaySeconds": 5,
+                "periodSeconds": 4,
+                "timeoutSeconds": 1,
+                "failureThreshold": 8,
+            },
+            "liveness": {
+                "tcpSocket": {"port": 18092},
+                "timeoutSeconds": 3,
+                "failureThreshold": 5,
+            },
+        }
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_third_party_create_honors_probe_settings() -> None:
+    yuanrong = FakeYuanRongClient()
+    custom = RuntimeProbeSettings(
+        startup_initial_delay_seconds=5,
+        startup_period_seconds=4,
+        startup_timeout_seconds=1,
+        startup_failure_threshold=8,
+        liveness_timeout_seconds=3,
+        liveness_failure_threshold=5,
+    )
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        AgentManager(),
+        probe_settings=custom,
+    )
+    try:
+        await client.send_request(_envelope(agent_type="opencode"))
+        assert yuanrong.create_payloads[0]["runtime_spec"]["probes"] == {
+            "startup": {
+                "tcpSocket": {"port": 2222},
+                "initialDelaySeconds": 5,
+                "periodSeconds": 4,
+                "timeoutSeconds": 1,
+                "failureThreshold": 8,
+            },
+            "liveness": {
+                "tcpSocket": {"port": 2222},
+                "timeoutSeconds": 3,
+                "failureThreshold": 5,
+            },
+        }
+    finally:
+        await client.shutdown()
+
+
+def test_with_default_third_agent_probes_keeps_third_defaults_when_unconfigured() -> None:
+    spec = {"rootfs": {"ports": ["tcp:22"]}}
+    injected = _with_default_third_agent_probes(
+        spec, ssh_port=2222, probe_settings=DEFAULT_RUNTIME_PROBE_SETTINGS
+    )
+    assert injected["probes"]["startup"]["initialDelaySeconds"] == 2
+    assert injected["probes"]["startup"]["failureThreshold"] == 8
+
+    custom = RuntimeProbeSettings(startup_failure_threshold=10)
+    overridden = _with_default_third_agent_probes(
+        spec, ssh_port=2222, probe_settings=custom
+    )
+    assert overridden["probes"]["startup"]["failureThreshold"] == 10
+    assert overridden["probes"]["startup"]["initialDelaySeconds"] == 3
 
 
 def test_is_ws_connect_retryable_for_cold_start_proxy_errors() -> None:
@@ -403,6 +530,21 @@ async def test_get_ws_client_retries_http_502_until_ready(monkeypatch) -> None:
     assert yuanrong.send_calls == 1
     assert len(yuanrong.ws_connect_uris) == 1
     assert sum(c.connect_attempts for c in FlakyAgentWsClient.instances) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_ws_client_waits_until_yuanrong_status_running() -> None:
+    """连 WS 前先 GET 等到 YuanRong status=running。"""
+    yuanrong = FakeYuanRongClient()
+    yuanrong.get_info_statuses = ["creating", "running"]
+    client = _router_client(yuanrong)
+
+    response = await client.send_request(_envelope())
+    await client.shutdown()
+
+    assert response.ok
+    assert yuanrong.wait_running_calls == ["sbx-1"]
+    assert yuanrong.ws_connect_uris
 
 
 @pytest.mark.asyncio
@@ -511,7 +653,21 @@ async def test_third_party_type_creates_via_yuanrong(agentos_workspace_root: str
     }
     assert USER_DIRECTORY_ENV_KEY not in yuanrong.create_payloads[0]["env_vars"]
     spec = yuanrong.create_payloads[0]["runtime_spec"]
-    assert "ports" not in spec["rootfs"]
+    assert spec["rootfs"]["ports"] == ["tcp:22"]
+    assert spec["probes"] == {
+        "startup": {
+            "tcpSocket": {"port": 2222},
+            "initialDelaySeconds": 2,
+            "periodSeconds": 3,
+            "timeoutSeconds": 2,
+            "failureThreshold": 8,
+        },
+        "liveness": {
+            "tcpSocket": {"port": 2222},
+            "timeoutSeconds": 2,
+            "failureThreshold": 3,
+        },
+    }
     assert yuanrong.send_calls == 0
     assert yuanrong.ws_connect_uris == []
     agents = await agent_manager.list_user_agents("u1")
@@ -521,6 +677,29 @@ async def test_third_party_type_creates_via_yuanrong(agentos_workspace_root: str
     assert agents[0].info.metadata["workspace"] == str(
         Path(agentos_workspace_root) / "u1"
     )
+
+
+@pytest.mark.asyncio
+async def test_third_party_keeps_registry_probes() -> None:
+    class RegistryWithProbes(FakeRegistryClient):
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            info = await super().get_image_info(image_name)
+            spec = dict(info.metadata["runtime_spec"])
+            spec["probes"] = {
+                "startup": {"tcpSocket": {"port": 22}, "initialDelaySeconds": 9},
+            }
+            info.metadata["runtime_spec"] = spec
+            return info
+
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong, RegistryWithProbes(), AgentManager())
+    try:
+        await client.send_request(_envelope(agent_type="opencode"))
+        assert yuanrong.create_payloads[0]["runtime_spec"]["probes"] == {
+            "startup": {"tcpSocket": {"port": 22}, "initialDelaySeconds": 9},
+        }
+    finally:
+        await client.shutdown()
 
 
 @pytest.mark.asyncio
@@ -556,7 +735,21 @@ async def test_agent_switch_creates_without_forwarding_chat() -> None:
         "TRACE_ID": "switch-trace",
         "ENABLE_FLAG": "True",
     }
-    assert "ports" not in yuanrong.create_payloads[0]["runtime_spec"]["rootfs"]
+    assert yuanrong.create_payloads[0]["runtime_spec"]["rootfs"]["ports"] == ["tcp:22"]
+    assert yuanrong.create_payloads[0]["runtime_spec"]["probes"] == {
+        "startup": {
+            "tcpSocket": {"port": 2222},
+            "initialDelaySeconds": 2,
+            "periodSeconds": 3,
+            "timeoutSeconds": 2,
+            "failureThreshold": 8,
+        },
+        "liveness": {
+            "tcpSocket": {"port": 2222},
+            "timeoutSeconds": 2,
+            "failureThreshold": 3,
+        },
+    }
     agents = await agent_manager.list_user_agents("u1")
     assert len(agents) == 1
     assert agents[0].info.agent_type == "opencode"
@@ -836,6 +1029,8 @@ class StubSshRelay:
         self.failures: list[str] = []
         self.started = asyncio.Event()
         self.finish = asyncio.Event()
+        # Match YuanrongSshRelay: 3rdagent create reads this for the TCP probe.
+        self.backend_port = 2222
 
     def fail_session(self, session: StubRelaySession, message: str) -> None:
         self.failures.append(message)
@@ -855,6 +1050,15 @@ class StubSshRelay:
         await self.finish.wait()
         session.exit_code = 0
         session.done.set()
+
+
+def test_third_agent_ssh_probe_port_falls_back_without_backend_port() -> None:
+    assert _third_agent_ssh_probe_port(None) == 2222
+    assert _third_agent_ssh_probe_port(object()) == 2222
+    assert _third_agent_ssh_probe_port(SimpleNamespace(backend_port=2200)) == 2200
+    assert _third_agent_ssh_probe_port(SimpleNamespace(backend_port=0)) == 2222
+    assert _third_agent_ssh_probe_port(SimpleNamespace(backend_port="bad")) == 2222
+    assert _third_agent_ssh_probe_port(StubSshRelay()) == 2222
 
 
 @pytest.mark.asyncio
@@ -1880,6 +2084,202 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
         ).sandbox_idle_timeout_seconds
         == 0.0
     )
+
+
+def test_load_router_config_probe_knobs(monkeypatch) -> None:
+    base_agent_client = {
+        "type": "agentos_router",
+        "frontend_endpoint": "http://yuanrong.test",
+        "function_version_urn": "urn:test",
+    }
+    for name in (
+        "AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS",
+        "AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS",
+        "AGENTOS_PROBE_STARTUP_INITIAL_DELAY_SECONDS",
+        "AGENTOS_PROBE_STARTUP_PERIOD_SECONDS",
+        "AGENTOS_PROBE_STARTUP_TIMEOUT_SECONDS",
+        "AGENTOS_PROBE_STARTUP_FAILURE_THRESHOLD",
+        "AGENTOS_PROBE_LIVENESS_TIMEOUT_SECONDS",
+        "AGENTOS_PROBE_LIVENESS_FAILURE_THRESHOLD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    defaults = load_router_config({"gateway": {"agent_client": base_agent_client}})
+    assert defaults.probes.startup_initial_delay_seconds == 3
+    assert defaults.probes.startup_period_seconds == 3
+    assert defaults.probes.startup_timeout_seconds == 2
+    assert defaults.probes.startup_failure_threshold == 6
+    assert defaults.probes.liveness_timeout_seconds == 2
+    assert defaults.probes.liveness_failure_threshold == 3
+    assert defaults.probes.wait_running_timeout_seconds == 60.0
+    assert defaults.probes.wait_running_interval_seconds == 1.0
+
+    loaded = load_router_config(
+        {
+            "gateway": {
+                "agent_client": base_agent_client,
+                "agentos": {
+                    "wait_running_timeout_seconds": 90,
+                    "wait_running_interval_seconds": 2.5,
+                    "probes": {
+                        "startup": {
+                            "initial_delay_seconds": 5,
+                            "period_seconds": 4,
+                            "timeout_seconds": 1,
+                            "failure_threshold": 8,
+                        },
+                        "liveness": {
+                            "timeout_seconds": 3,
+                            "failure_threshold": 5,
+                        },
+                    },
+                },
+            }
+        }
+    )
+    assert loaded.probes.startup_initial_delay_seconds == 5
+    assert loaded.probes.startup_period_seconds == 4
+    assert loaded.probes.startup_timeout_seconds == 1
+    assert loaded.probes.startup_failure_threshold == 8
+    assert loaded.probes.liveness_timeout_seconds == 3
+    assert loaded.probes.liveness_failure_threshold == 5
+    assert loaded.probes.wait_running_timeout_seconds == 90.0
+    assert loaded.probes.wait_running_interval_seconds == 2.5
+
+    monkeypatch.setenv("AGENTOS_PROBE_STARTUP_INITIAL_DELAY_SECONDS", "7")
+    monkeypatch.setenv("AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS", "0.5")
+    env_loaded = load_router_config(
+        {
+            "gateway": {
+                "agent_client": base_agent_client,
+                "agentos": {
+                    "wait_running_timeout_seconds": 90,
+                    "wait_running_interval_seconds": 2.5,
+                    "probes": {"startup": {"initial_delay_seconds": 5}},
+                },
+            }
+        }
+    )
+    assert env_loaded.probes.startup_initial_delay_seconds == 7
+    assert env_loaded.probes.wait_running_timeout_seconds == 45.0
+    assert env_loaded.probes.wait_running_interval_seconds == 0.5
+
+    monkeypatch.delenv("AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS", raising=False)
+
+    with pytest.raises(ValueError, match="failure_threshold"):
+        load_router_config(
+            {
+                "gateway": {
+                    "agent_client": base_agent_client,
+                    "agentos": {
+                        "probes": {"startup": {"failure_threshold": 0}},
+                    },
+                }
+            }
+        )
+
+    with pytest.raises(ValueError, match="wait_running_interval_seconds"):
+        load_router_config(
+            {
+                "gateway": {
+                    "agent_client": base_agent_client,
+                    "agentos": {"wait_running_interval_seconds": 0},
+                }
+            }
+        )
+
+
+def test_load_router_config_clamps_wait_running_below_probe_budget(
+    monkeypatch,
+) -> None:
+    """GET wait shorter than startup probe budget is warned and raised."""
+    base_agent_client = {
+        "type": "agentos_router",
+        "frontend_endpoint": "http://yuanrong.test",
+        "function_version_urn": "urn:test",
+    }
+    for name in (
+        "AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS",
+        "AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS",
+        "AGENTOS_PROBE_STARTUP_INITIAL_DELAY_SECONDS",
+        "AGENTOS_PROBE_STARTUP_PERIOD_SECONDS",
+        "AGENTOS_PROBE_STARTUP_TIMEOUT_SECONDS",
+        "AGENTOS_PROBE_STARTUP_FAILURE_THRESHOLD",
+        "AGENTOS_PROBE_LIVENESS_TIMEOUT_SECONDS",
+        "AGENTOS_PROBE_LIVENESS_FAILURE_THRESHOLD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    third_budget = DEFAULT_THIRD_AGENT_PROBE_SETTINGS.startup_budget_seconds()
+    assert third_budget == 26.0
+    log_path = "jiuwenswarm.extensions.agentos.agentos_router.config.log_agentos"
+
+    with patch(log_path) as logged:
+        too_small = load_router_config(
+            {
+                "gateway": {
+                    "agent_client": base_agent_client,
+                    "agentos": {"wait_running_timeout_seconds": 10},
+                }
+            }
+        )
+    assert too_small.probes.wait_running_timeout_seconds == third_budget
+    assert logged.call_count == 1
+    assert logged.call_args.args[2] == "config.wait_running.clamp"
+
+    with patch(log_path) as logged:
+        builtin_heavier = load_router_config(
+            {
+                "gateway": {
+                    "agent_client": base_agent_client,
+                    "agentos": {
+                        "wait_running_timeout_seconds": 20,
+                        "probes": {
+                            "startup": {
+                                "initial_delay_seconds": 3,
+                                "period_seconds": 3,
+                                "failure_threshold": 12,
+                            }
+                        },
+                    },
+                }
+            }
+        )
+    # builtin 3+3*12=39 > 3rdagent 26
+    assert builtin_heavier.probes.wait_running_timeout_seconds == 39.0
+    assert logged.call_count == 1
+
+    with patch(log_path) as logged:
+        customized_light = load_router_config(
+            {
+                "gateway": {
+                    "agent_client": base_agent_client,
+                    "agentos": {
+                        "wait_running_timeout_seconds": 10,
+                        "probes": {
+                            "startup": {"failure_threshold": 4},
+                        },
+                    },
+                }
+            }
+        )
+    # yaml 已改 TCP 时序：3rdagent 共用配置，预算 3+3*4=15，不再抬到 26
+    assert customized_light.probes.wait_running_timeout_seconds == 15.0
+    assert logged.call_count == 1
+
+    with patch(log_path) as logged:
+        ample = load_router_config(
+            {
+                "gateway": {
+                    "agent_client": base_agent_client,
+                    "agentos": {"wait_running_timeout_seconds": 45},
+                }
+            }
+        )
+    assert ample.probes.wait_running_timeout_seconds == 45.0
+    logged.assert_not_called()
 
 
 @pytest.mark.asyncio

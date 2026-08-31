@@ -35,6 +35,211 @@ logger = logging.getLogger(__name__)
 # YuanRong POST /files/mkdir ``mode``: 3-4 octal digits (e.g. 755 / 0700).
 _MKDIR_MODE_RE = re.compile(r"^[0-7]{3,4}$")
 
+# POST /api/agent is async: create returns instance_id before startup probes
+# succeed. GET /api/agent/:id reports status; ``running`` means the probed
+# port is accepting connections (then WS/SSH may connect).
+_AGENT_RUNNING_STATUS = "running"
+_AGENT_RUNNING_TIMEOUT_SECONDS = 60.0
+_AGENT_RUNNING_RETRY_INTERVAL_SECONDS = 1.0
+_AGENT_FAILED_STATUSES = frozenset(
+    {"failed", "error", "deleted", "stopped", "killed"}
+)
+
+
+@dataclass(frozen=True)
+class RuntimeProbeSettings:
+    """TCP probe timings and GET wait knobs (YuanRong camelCase).
+
+    Startup/liveness override via ``gateway.agentos.probes`` /
+    ``AGENTOS_PROBE_*``. GET wait override via
+    ``gateway.agentos.wait_running_{timeout,interval}_seconds`` /
+    ``AGENTOS_WAIT_RUNNING_*`` (see ``load_router_config``).
+    """
+
+    startup_initial_delay_seconds: int = 3
+    startup_period_seconds: int = 3
+    startup_timeout_seconds: int = 2
+    startup_failure_threshold: int = 6
+    liveness_timeout_seconds: int = 2
+    liveness_failure_threshold: int = 3
+    wait_running_timeout_seconds: float = 60.0
+    wait_running_interval_seconds: float = 1.0
+
+    def startup_budget_seconds(self) -> float:
+        """Worst-case startup TCP probe window before ``status=running``.
+
+        ``initialDelaySeconds + periodSeconds * failureThreshold``.
+        Liveness runs after the instance is already running and is not part
+        of the GET wait.
+        """
+        return float(
+            int(self.startup_initial_delay_seconds)
+            + int(self.startup_period_seconds)
+            * int(self.startup_failure_threshold)
+        )
+
+    def same_tcp_timings(self, other: RuntimeProbeSettings) -> bool:
+        """True when startup/liveness knobs match (GET wait knobs ignored)."""
+        return (
+            int(self.startup_initial_delay_seconds)
+            == int(other.startup_initial_delay_seconds)
+            and int(self.startup_period_seconds)
+            == int(other.startup_period_seconds)
+            and int(self.startup_timeout_seconds)
+            == int(other.startup_timeout_seconds)
+            and int(self.startup_failure_threshold)
+            == int(other.startup_failure_threshold)
+            and int(self.liveness_timeout_seconds)
+            == int(other.liveness_timeout_seconds)
+            and int(self.liveness_failure_threshold)
+            == int(other.liveness_failure_threshold)
+        )
+
+    def startup_tcp(self, port: int) -> dict[str, Any]:
+        return {
+            "tcpSocket": {"port": int(port)},
+            "initialDelaySeconds": int(self.startup_initial_delay_seconds),
+            "periodSeconds": int(self.startup_period_seconds),
+            "timeoutSeconds": int(self.startup_timeout_seconds),
+            "failureThreshold": int(self.startup_failure_threshold),
+        }
+
+    def liveness_tcp(self, port: int) -> dict[str, Any]:
+        return {
+            "tcpSocket": {"port": int(port)},
+            "timeoutSeconds": int(self.liveness_timeout_seconds),
+            "failureThreshold": int(self.liveness_failure_threshold),
+        }
+
+    def tcp_probes(self, port: int, *, with_liveness: bool = False) -> dict[str, Any]:
+        probes: dict[str, Any] = {"startup": self.startup_tcp(port)}
+        if with_liveness:
+            probes["liveness"] = self.liveness_tcp(port)
+        return probes
+
+
+DEFAULT_RUNTIME_PROBE_SETTINGS = RuntimeProbeSettings()
+DEFAULT_THIRD_AGENT_PROBE_SETTINGS = RuntimeProbeSettings(
+    startup_initial_delay_seconds=2,
+    startup_period_seconds=3,
+    startup_timeout_seconds=2,
+    startup_failure_threshold=8,
+    liveness_timeout_seconds=2,
+    liveness_failure_threshold=3,
+)
+
+
+def _normalize_port_probe(value: Any) -> dict[str, Any] | None:
+    """Normalize a TCP port label to ``{"port": int, "protocol": "tcp"}``."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, Mapping):
+        raw_port = value.get("port")
+        if raw_port is None and isinstance(value.get("tcpSocket"), Mapping):
+            raw_port = value["tcpSocket"].get("port")
+        protocol = str(value.get("protocol") or "tcp").strip().lower() or "tcp"
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            return None
+        if port <= 0:
+            return None
+        return {"port": port, "protocol": protocol}
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if value <= 0:
+            return None
+        return {"port": int(value), "protocol": "tcp"}
+    text = str(value).strip()
+    if not text:
+        return None
+    protocol = "tcp"
+    port_str = text
+    if ":" in text:
+        proto, port_str = text.split(":", 1)
+        protocol = proto.strip().lower() or "tcp"
+        port_str = port_str.strip()
+    try:
+        port = int(port_str)
+    except ValueError:
+        return None
+    if port <= 0:
+        return None
+    return {"port": port, "protocol": protocol}
+
+
+def _port_probe_from_ports(ports: Any) -> dict[str, Any] | None:
+    """Build a port label from ``rootfs.ports`` such as ``tcp:18092``."""
+    if not isinstance(ports, list) or not ports:
+        return None
+    return _normalize_port_probe(ports[0])
+
+
+def _startup_tcp_probe(
+    port: int, settings: RuntimeProbeSettings | None = None
+) -> dict[str, Any]:
+    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).startup_tcp(port)
+
+
+def _liveness_tcp_probe(
+    port: int, settings: RuntimeProbeSettings | None = None
+) -> dict[str, Any]:
+    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).liveness_tcp(port)
+
+
+def _normalize_probes(value: Any) -> dict[str, Any] | None:
+    """Keep ``startup`` / ``liveness`` / ``readiness`` objects if present."""
+    if not isinstance(value, Mapping) or not value:
+        return None
+    probes: dict[str, Any] = {}
+    for key in ("startup", "liveness", "readiness"):
+        item = value.get(key)
+        if isinstance(item, Mapping) and item:
+            probes[key] = dict(item)
+    return probes or None
+
+
+def _probes_from_port(
+    port: int,
+    *,
+    with_liveness: bool = False,
+    settings: RuntimeProbeSettings | None = None,
+) -> dict[str, Any]:
+    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).tcp_probes(
+        port, with_liveness=with_liveness
+    )
+
+
+def _probes_from_ports(
+    ports: Any, settings: RuntimeProbeSettings | None = None
+) -> dict[str, Any] | None:
+    """Startup TCP probe from ``rootfs.ports`` (e.g. ``tcp:22``)."""
+    probe = _port_probe_from_ports(ports)
+    if probe is None:
+        return None
+    return _probes_from_port(int(probe["port"]), settings=settings)
+
+
+def _instance_status(instance: Mapping[str, Any] | None) -> str:
+    if not isinstance(instance, Mapping):
+        return ""
+    return str(instance.get("status") or instance.get("state") or "").strip().lower()
+
+
+def _is_agent_running(instance: Mapping[str, Any] | None) -> bool:
+    """True only when GET explicitly reports ``status=running``.
+
+    A non-empty instance without ``status`` (partial body with only
+    ``instance_id`` / ``node_ip``, or a Legacy GET that omitted the field)
+    is **not** ready. ``wait_until_running`` keeps polling until status is
+    ``running``, a failed status, or timeout — otherwise a mid-probe GET
+    would skip the startup probe wait and WS/SSH would connect too early.
+    """
+    if not isinstance(instance, Mapping) or not instance:
+        return False
+    return _instance_status(instance) == _AGENT_RUNNING_STATUS
+
 
 class AgentMount(TypedDict, total=False):
     """Bind mount for POST /api/agent ``mounts``."""
@@ -62,6 +267,7 @@ class AgentRuntimeSpec(TypedDict, total=False):
     memory: int
     code_path: str
     cmds: list[list[str]]
+    probes: dict[str, Any]
 
 
 @dataclass
@@ -121,6 +327,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         agent_timeout_s: float = 300.0,
         agent_namespace: str = "default",
         session_ttl_s: int = 900,
+        probe_settings: RuntimeProbeSettings | None = None,
+        wait_running_timeout_s: float | None = None,
+        wait_running_interval_s: float | None = None,
     ) -> None:
         self._frontend_endpoint = (frontend_endpoint or "").rstrip("/")
         self._function_version_urn = (function_version_urn or "").strip()
@@ -128,6 +337,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         self._invoke_timeout_s = float(invoke_timeout_s)
         self._agent_timeout_s = float(agent_timeout_s)
         self._agent_namespace = str(agent_namespace or "default").strip() or "default"
+        self._probe_settings = probe_settings or DEFAULT_RUNTIME_PROBE_SETTINGS
+        # None keeps reading the module constants at call time (unit tests
+        # monkeypatch ``_AGENT_RUNNING_TIMEOUT_SECONDS``).
+        self._wait_running_timeout_s = wait_running_timeout_s
+        self._wait_running_interval_s = wait_running_interval_s
         # yuanrong X-Instance-Session.sessionTTL，单位：秒；0 = 立即解绑。
         # 默认 900s（15 分钟），保证会话对实例的亲和性，避免每次调用重建实例。
         self._session_ttl_s = max(int(session_ttl_s), 0)
@@ -178,8 +392,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         self._server_ready = False
         logger.info("[YuanrongFrontendAgentClient] disconnected")
 
-    @staticmethod
     def _normalize_runtime_spec(
+        self,
         runtime_spec: AgentRuntimeSpec | Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         """Normalize inline ``runtime_spec`` for POST /api/agent."""
@@ -218,6 +432,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         cmds = runtime_spec.get("cmds")
         if isinstance(cmds, list) and cmds:
             normalized["cmds"] = cmds
+        probes = _normalize_probes(runtime_spec.get("probes"))
+        if probes is None:
+            legacy = _normalize_port_probe(
+                runtime_spec.get("port_probe")
+            ) or _port_probe_from_ports(rootfs.get("ports"))
+            if legacy is not None:
+                probes = _probes_from_port(
+                    int(legacy["port"]), settings=self._probe_settings
+                )
+        if probes is not None:
+            normalized["probes"] = probes
         return normalized
 
     async def create_sandbox(
@@ -237,6 +462,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         - ``namespace`` / ``name`` / ``workspace`` / ``runtime_spec``: required
         - ``runtime_spec.runtime`` + ``runtime_spec.rootfs.imageurl``: required
         - ``env_vars`` / ``mounts``: optional
+        - ``runtime_spec.probes``: optional startup / liveness probes
+          (Frontend marks ``running`` after startup succeeds)
         - does not send ``urn`` (inline takes priority over registered)
         """
         self._ensure_connected()
@@ -328,7 +555,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         """Query agent instance info via GET /api/agent/:instanceId.
 
         Returns the ``instance`` dict (contains node_ip, sandbox_ip,
-        sandbox_type, rootfs, workspace, env_vars, etc.).
+        sandbox_type, rootfs, workspace, env_vars, status, etc.).
         """
         self._ensure_connected()
         normalized_id = str(instance_id or "").strip()
@@ -337,7 +564,89 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         status, body = await asyncio.to_thread(self._do_agent_get, normalized_id)
         parsed = self._parse_agent_api_response(body, status)
         instance = parsed.get("instance")
-        return instance if isinstance(instance, dict) else {}
+        if not isinstance(instance, dict):
+            instance = {}
+        else:
+            instance = dict(instance)
+        top_status = str(parsed.get("status") or parsed.get("state") or "").strip()
+        if top_status and not str(instance.get("status") or "").strip():
+            instance["status"] = top_status
+        return instance
+
+    async def wait_until_running(self, instance_id: str) -> dict[str, Any]:
+        """Poll GET /api/agent/:id until ``status`` is explicitly ``running``.
+
+        Create is asynchronous: the port probe completes after POST returns
+        ``instance_id``. Connect WS/SSH only after this method succeeds.
+
+        Missing ``status`` is not treated as ready: keep polling. Only an
+        explicit ``running`` (or a failed status / timeout) ends the loop.
+        """
+        normalized_id = str(instance_id or "").strip()
+        if not normalized_id:
+            raise ValueError("instance_id is required to wait for running")
+        timeout_s = (
+            _AGENT_RUNNING_TIMEOUT_SECONDS
+            if self._wait_running_timeout_s is None
+            else float(self._wait_running_timeout_s)
+        )
+        interval_s = (
+            _AGENT_RUNNING_RETRY_INTERVAL_SECONDS
+            if self._wait_running_interval_s is None
+            else float(self._wait_running_interval_s)
+        )
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        attempt = 0
+        last_error: BaseException | None = None
+        last_status = ""
+        while True:
+            attempt += 1
+            instance: dict[str, Any] = {}
+            try:
+                instance = await self.get_agent_info(normalized_id)
+                last_error = None
+            except YuanrongAgentApiError as exc:
+                last_error = exc
+            status = _instance_status(instance)
+            last_status = status
+            if status in _AGENT_FAILED_STATUSES:
+                raise YuanrongAgentApiError(
+                    f"agent instance failed: instance_id={normalized_id}, "
+                    f"status={status}"
+                )
+            if _is_agent_running(instance):
+                if attempt > 1:
+                    logger.info(
+                        "[YuanrongFrontendAgentClient] instance running after GET poll: "
+                        "instance_id=%s attempt=%s status=%s",
+                        normalized_id,
+                        attempt,
+                        status or _AGENT_RUNNING_STATUS,
+                    )
+                return instance
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                detail = (
+                    str(last_error)
+                    if last_error is not None
+                    else f"status={last_status or 'empty'}"
+                )
+                raise YuanrongAgentApiError(
+                    f"agent instance not running after "
+                    f"{timeout_s:.0f}s: "
+                    f"instance_id={normalized_id}, last={detail}"
+                )
+            sleep_for = min(interval_s, remaining)
+            logger.debug(
+                "[YuanrongFrontendAgentClient] GET not running yet: "
+                "instance_id=%s attempt=%s status=%s sleep=%.1fs last_error=%s",
+                normalized_id,
+                attempt,
+                status or "empty",
+                sleep_for,
+                type(last_error).__name__ if last_error is not None else "-",
+            )
+            await asyncio.sleep(sleep_for)
 
     async def upload_agent_file(
         self,

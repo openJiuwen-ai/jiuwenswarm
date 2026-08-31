@@ -9,12 +9,47 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.extensions import yuanrong_frontend_client as yuanrong_mod
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    DEFAULT_RUNTIME_PROBE_SETTINGS,
+    DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    RuntimeProbeSettings,
     YuanrongAgentApiError,
     YuanrongAgentFileError,
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
+    _is_agent_running,
 )
+
+_CREATE_INSTANCE_ID = "0b6c6322-6533-4901-8000-00000000bb0b"
+
+
+def _fake_agent_get_urlopen(
+    req,
+    timeout=0,
+    *,
+    requests: list[tuple[str, str, bytes | None]] | None = None,
+    get_bodies: list[bytes] | None = None,
+):
+    """Mock urlopen for GET /api/agent/:id (and ignore timeout)."""
+    del timeout
+    body = req.data
+    if requests is not None:
+        requests.append((req.method, req.full_url, body))
+    resp = MagicMock()
+    resp.status = 200
+    if req.method == "GET" and "/api/agent/" in req.full_url:
+        remaining = get_bodies if get_bodies is not None else []
+        if not remaining:
+            resp.status = 404
+            resp.read.return_value = b'{"code":404,"message":"instance not found"}'
+        else:
+            resp.read.return_value = remaining.pop(0)
+    else:
+        resp.read.return_value = b"{}"
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
 
 
 class YuanrongFrontendAgentClientProbe(YuanrongFrontendAgentClient):
@@ -212,6 +247,15 @@ async def test_create_and_delete_sandbox_calls_agent_api(client: YuanrongFronten
             },
             "cpu": 600,
             "memory": 512,
+            "probes": {
+                "startup": {
+                    "tcpSocket": {"port": 22},
+                    "initialDelaySeconds": 3,
+                    "periodSeconds": 3,
+                    "timeoutSeconds": 2,
+                    "failureThreshold": 6,
+                },
+            },
         },
         "env_vars": {"userid": "u-9f3a", "TRACE_ID": "ver-1"},
         "mounts": [
@@ -241,6 +285,60 @@ async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgen
         '{"code":404,"message":"not found"}',
     )
     await client.delete_sandbox("already-gone")
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_sends_runtime_spec_probes(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+    requests: list[tuple[str, str, bytes | None]] = []
+    probes = {
+        "startup": {
+            "tcpSocket": {"port": 18092},
+            "initialDelaySeconds": 3,
+            "periodSeconds": 3,
+            "timeoutSeconds": 2,
+            "failureThreshold": 6,
+        },
+        "liveness": {
+            "tcpSocket": {"port": 18092},
+            "timeoutSeconds": 2,
+            "failureThreshold": 3,
+        },
+    }
+
+    def fake_urlopen(req, timeout=0):
+        requests.append((req.method, req.full_url, req.data))
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = (
+            b'{"code":200,"instance_id":"0b6c6322-6533-4901-8000-00000000bb0b"}'
+        )
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        await client.create_sandbox(
+            namespace="default",
+            name="my-agent",
+            workspace="/home/hhc/workspaceA",
+            runtime_spec={
+                "runtime": "python3.11",
+                "rootfs": {"imageurl": "jiuwenswarm-agent-runtime:latest"},
+                "cmds": [["sh", "-c", "jiuwenswarm-agentserver --port 18092"]],
+                "probes": probes,
+            },
+        )
+
+    payload = json.loads(requests[0][2].decode("utf-8"))
+    assert payload["runtime_spec"]["probes"] == probes
+    assert payload["runtime_spec"]["cmds"] == [
+        ["sh", "-c", "jiuwenswarm-agentserver --port 18092"]
+    ]
+    assert "port_probe" not in payload
+    assert "probes" not in payload
 
 
 _INLINE_RUNTIME_SPEC = {
@@ -383,6 +481,217 @@ async def test_create_sandbox_raises_on_agent_api_error(client: YuanrongFrontend
                 workspace="/home/hhc/workspaceA",
                 runtime_spec=_INLINE_RUNTIME_SPEC,
             )
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_polls_get_until_status_running(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await client.connect("http://127.0.0.1:8080")
+    requests: list[tuple[str, str, bytes | None]] = []
+    get_bodies = [
+        b'{"code":404,"message":"instance not found or not running"}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"creating"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running","node_ip":"10.0.0.1"}}',
+    ]
+
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(yuanrong_mod.asyncio, "sleep", instant_sleep)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req, timeout, requests=requests, get_bodies=get_bodies
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        instance = await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+    assert instance["status"] == "running"
+    assert instance["node_ip"] == "10.0.0.1"
+    get_calls = [item for item in requests if item[0] == "GET"]
+    assert len(get_calls) == 3
+    assert all(
+        item[1] == f"http://127.0.0.1:8080/api/agent/{_CREATE_INSTANCE_ID}"
+        for item in get_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_times_out_when_never_running(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await client.connect("http://127.0.0.1:8080")
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_RETRY_INTERVAL_SECONDS", 0.01)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(req, timeout, get_bodies=[])
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="not running after"):
+            await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_raises_on_failed_status(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req,
+            timeout,
+            get_bodies=[
+                b'{"code":200,"instance":{"instance_id":"'
+                + _CREATE_INSTANCE_ID.encode()
+                + b'","status":"failed"}}'
+            ],
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="agent instance failed"):
+            await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+
+def test_startup_budget_seconds_matches_delay_plus_period_times_failure():
+    assert DEFAULT_RUNTIME_PROBE_SETTINGS.startup_budget_seconds() == 21.0
+    assert DEFAULT_THIRD_AGENT_PROBE_SETTINGS.startup_budget_seconds() == 26.0
+    assert (
+        RuntimeProbeSettings(
+            startup_initial_delay_seconds=3,
+            startup_period_seconds=3,
+            startup_failure_threshold=12,
+        ).startup_budget_seconds()
+        == 39.0
+    )
+
+
+def test_is_agent_running_requires_explicit_running_when_status_present():
+    """Only ``status=running`` is connectable; missing status is not ready."""
+    assert _is_agent_running(None) is False
+    assert _is_agent_running({}) is False
+    assert _is_agent_running({"status": "creating"}) is False
+    assert _is_agent_running({"status": "scheduling"}) is False
+    assert _is_agent_running({"status": "ready"}) is False
+    assert _is_agent_running({"status": "running"}) is True
+    assert _is_agent_running({"instance_id": "x", "status": "creating"}) is False
+    assert _is_agent_running({"instance_id": "x"}) is False
+    assert _is_agent_running({"instance_id": "x", "node_ip": "10.0.0.1"}) is False
+    assert _is_agent_running({"instance_id": "x", "state": ""}) is False
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_keeps_polling_when_status_missing(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Partial GET (instance_id, no status) must not skip the probe wait."""
+    await client.connect("http://127.0.0.1:8080")
+    requests: list[tuple[str, str, bytes | None]] = []
+    get_bodies = [
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","node_ip":"10.0.0.1"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"creating"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running","node_ip":"10.0.0.1"}}',
+    ]
+
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(yuanrong_mod.asyncio, "sleep", instant_sleep)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req, timeout, requests=requests, get_bodies=get_bodies
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        instance = await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+    assert instance["status"] == "running"
+    get_calls = [item for item in requests if item[0] == "GET"]
+    assert len(get_calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_times_out_when_status_never_present(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Legacy / partial GET that never sends status must not return ready."""
+    await client.connect("http://127.0.0.1:8080")
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_RETRY_INTERVAL_SECONDS", 0.01)
+    partial = (
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","node_ip":"10.0.0.1"}}'
+    )
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(req, timeout, get_bodies=[partial])
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="not running after"):
+            await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+
+def test_create_sandbox_derives_probes_from_ports():
+    probes = yuanrong_mod._probes_from_ports(["tcp:22"])
+    assert probes == {
+        "startup": {
+            "tcpSocket": {"port": 22},
+            "initialDelaySeconds": 3,
+            "periodSeconds": 3,
+            "timeoutSeconds": 2,
+            "failureThreshold": 6,
+        },
+    }
+    assert yuanrong_mod._normalize_probes(
+        {
+            "startup": {"tcpSocket": {"port": 18092}, "initialDelaySeconds": 5},
+            "liveness": {"tcpSocket": {"port": 18092}},
+        }
+    ) == {
+        "startup": {"tcpSocket": {"port": 18092}, "initialDelaySeconds": 5},
+        "liveness": {"tcpSocket": {"port": 18092}},
+    }
+
+
+def test_create_sandbox_derives_probes_from_custom_settings():
+    settings = RuntimeProbeSettings(
+        startup_initial_delay_seconds=5,
+        startup_period_seconds=4,
+        startup_timeout_seconds=1,
+        startup_failure_threshold=8,
+    )
+    probes = yuanrong_mod._probes_from_ports(["tcp:22"], settings)
+    assert probes == {
+        "startup": {
+            "tcpSocket": {"port": 22},
+            "initialDelaySeconds": 5,
+            "periodSeconds": 4,
+            "timeoutSeconds": 1,
+            "failureThreshold": 8,
+        },
+    }
 
 
 @pytest.mark.asyncio
