@@ -1971,6 +1971,13 @@ async def process_team_message_stream(
                     session_id,
                     rid,
                 )
+                # 续跑(interact 路径,非 _consume_stream_with_query 重启)时:waiter 已注册
+                # (:1966 add_waiter)、monitor_handler 从上一轮续存(同 session;结尾快照对续跑
+                # 有效=它续存),此处广播当前任务板→relay 累加器续跑起点即展示历史任务,后续 live
+                # team.task 事件继续覆盖,结尾快照定稿。monitor_handler None 时 no-op(:994)。
+                # 与结尾快照同机制(_broadcast_team_state_snapshot→_broadcast_event→waiter→relay),
+                # onTask 按 taskId 去重,幂等。
+                await _broadcast_team_state_snapshot(channel_id, session_id)
 
             # Control continuations reuse the waiter that was active before
             # delivery. Other follow-ups already own the current request queue.
