@@ -56,8 +56,10 @@ except Exception:
     fi
 }
 
-# 读取 config.yaml 的 etcd_nodes（空格分隔 IP）。供 ETCD_ENDPOINTS 留空时拼 client URL。
-_etcd_nodes() {
+# 读取 config.yaml cluster.<key>（空格分隔 IP）。key 为 cluster 下的配置项名，
+# 如 etcd_nodes / master_nodes；读不到时输出空串。config 文件缺失返回 1。
+_cluster_nodes() {
+    local key="${1:?key is required}"
     local config_file="${HOME:-/root}/.agentos/deploy/config.yaml"
     [ -f "${config_file}" ] || return 1
     local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" nodes=""
@@ -67,13 +69,25 @@ import sys, yaml
 try:
     with open(sys.argv[1]) as f:
         cfg = yaml.safe_load(f)
-    nodes = (cfg or {}).get("cluster", {}).get("etcd_nodes", []) or []
+    key = sys.argv[2]
+    nodes = (cfg or {}).get("cluster", {}).get(key, []) or []
     print(" ".join(str(n).strip() for n in nodes if str(n).strip()), end="")
 except Exception:
     print("", end="")
-' "${config_file}" 2>/dev/null)
+' "${config_file}" "${key}" 2>/dev/null)
     fi
     echo "${nodes}"
+}
+
+# 读取 config.yaml 的 etcd_nodes（空格分隔 IP）。供 ETCD_ENDPOINTS 留空时拼 client URL。
+_etcd_nodes() {
+    _cluster_nodes etcd_nodes
+}
+
+# 读取 config.yaml 的 master_nodes（空格分隔 IP）。gateway 部署跟随 master_nodes：
+# 本机属于 master_nodes 即安装 systemd 服务（含 ExecStartPre VIP 拦截），启动时再判定持有 VIP。
+_master_nodes() {
+    _cluster_nodes master_nodes
 }
 
 check_cmds() {

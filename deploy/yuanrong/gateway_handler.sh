@@ -253,41 +253,40 @@ gateway_start_nohup() {
     error "Gateway process failed to start on ${master_host}, check /tmp/jiuwenswarm-gateway.log"
 }
 
-# ===== ingress master 判定可靠性 =====
-# /usr/local/bin/agentos-check-ingress-master 若被删除，调用会失败（command not found）并被误判为
-# “不持有 vip”，导致 gateway 安装/停止被静默跳过。check-ingress-master.sh 与 deploy.sh 同仓在打包时
-# 组装到 ${SCRIPT_DIR}/../check-ingress-master.sh，缺失时先恢复脚本再判定，逻辑与 gateway_start_systemd 一致。
-gateway_ensure_check_script() {
-    local check_script="/usr/local/bin/agentos-check-ingress-master"
-    local master_host
-    master_host=$(get_local_ip)
-
-    # 用 test -x 而非 test -f：脚本被删除或丢失可执行位都应触发恢复
-    if exec_on_host "${master_host}" "test -x '${check_script}'" 2>/dev/null; then
+# 本机是否属于 config.yaml 的 cluster.master_nodes；返回 0 表示属于。
+# 部署层据此安装 gateway（含 ExecStartPre VIP 拦截），启动时再判定是否持有 VIP。
+# 无 master_nodes 配置视为单机模式：本机即 master 节点（向后兼容）。
+gateway_is_master_node() {
+    local nodes
+    nodes=$(_master_nodes || true)
+    if [ -z "${nodes}" ]; then
+        warning "master_nodes not configured in ~/.agentos/deploy/config.yaml, treating local host as master (single-node compat)."
         return 0
     fi
 
-    local check_src="${SCRIPT_DIR}/../check-ingress-master.sh"
-    if [ ! -f "${check_src}" ]; then
-        error "check-ingress-master.sh not found at ${check_src}; cannot determine ingress vip ownership"
-    fi
-
-    info "check-ingress-master missing on ${master_host}, restoring from ${check_src}..."
-    copy_to_host "${master_host}" "${check_src}" "${check_script}"
-    exec_on_host "${master_host}" "chmod +x '${check_script}'"
-}
-
-# 本机是否持有 ingress vip；返回 0 表示持有（先确保 check 脚本存在再判定）。
-gateway_is_ingress_master() {
-    gateway_ensure_check_script
-    /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1
+    local local_ips local_ip master_node
+    local_ips=$(hostname -I 2>/dev/null || echo "")
+    for local_ip in ${local_ips}; do
+        for master_node in ${nodes}; do
+            if [ "${master_node}" = "${local_ip}" ]; then
+                return 0
+            fi
+        done
+    done
+    # 单机通配：master_nodes 含 127.0.0.1 / 0.0.0.0 视为匹配本机
+    for master_node in ${nodes}; do
+        if [ "${master_node}" = "127.0.0.1" ] || [ "${master_node}" = "0.0.0.0" ]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 gateway_deploy_process() {
-    # gateway 跟随 ingress_virtual_ip：仅在本机持有 VIP 时部署/启动 gateway，否则跳过。
-    # 不依赖 master_nodes / CLUSTER_HOSTS[0]（可能有多个 master_nodes，且其 IP 与 VIP 不同）。
-    if ! gateway_is_ingress_master; then
-        warning "Local host does not hold ingress vip, skip gateway deploy process."
+    # gateway 部署跟随 master_nodes：本机属于 master_nodes 即安装 systemd 服务，
+    # 不区分 VIP 持有；启动时由系统单元的 ExecStartPre (= check-ingress-master) 判定是否持有 VIP。
+    if ! gateway_is_master_node; then
+        warning "Local host is not in config.yaml cluster.master_nodes, skip gateway deploy process."
         return 0
     fi
 
@@ -358,9 +357,9 @@ gateway_stop_nohup() {
 }
 
 gateway_undeploy_process() {
-    # 与 up 对称：gateway 跟随 ingress_virtual_ip，仅在本机持有 VIP 时停止本机 gateway。
-    if ! gateway_is_ingress_master; then
-        warning "Local host does not hold ingress vip, skip stopping jiuwenswarm-gateway."
+    # 与 up 对称：gateway 部署跟随 master_nodes，仅对本机属于 master_nodes 停止 gateway。
+    if ! gateway_is_master_node; then
+        warning "Local host is not in config.yaml cluster.master_nodes, skip stopping jiuwenswarm-gateway."
         return 0
     fi
 
