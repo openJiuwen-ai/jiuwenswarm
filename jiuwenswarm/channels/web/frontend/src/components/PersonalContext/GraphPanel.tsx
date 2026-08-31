@@ -114,6 +114,14 @@ function truncate(value: string, limit: number): string {
   return value.length > limit ? `${value.slice(0, limit - 1)}...` : value;
 }
 
+/** 取节点的文件名（path/label 的最后一段）；取不到返回空串，调用方据此决定是否显示。 */
+function nodeFileName(node: { label?: string; path?: string }): string {
+  const raw = (node.path && node.path.trim()) || (node.label && node.label.trim()) || '';
+  if (!raw) return '';
+  const segs = raw.split(/[\\/]+/).map((s) => s.trim()).filter(Boolean);
+  return segs.length ? segs[segs.length - 1] : '';
+}
+
 /** 按层级递减的节点半径：根(depth=1)最大，每深一层缩小 3，下限 12。 */
 function nodeRadius(depth: number): number {
   return Math.max(12, 25 - depth * 3);
@@ -626,18 +634,22 @@ export function PersonalContextGraphPanel({
         const highlighted = Boolean(focusId && (focused || relatedNodeIds.has(n.id)) && !selected);
         const dimmed = Boolean(focusId && !focused && !relatedNodeIds.has(n.id));
         const displayRadius = selected ? radius + 2 : radius;
-        labels.push({
-          text: truncate(ctxNode.label || ctxNode.path, 26),
-          x: transform.x + n.x * transform.scale,
-          y: transform.y + (n.y + displayRadius) * transform.scale + 5,
-          font: `${selected ? 700 : highlighted || hovered ? 600 : 400} ${selected ? 13 : 12}px Inter, system-ui, sans-serif`,
-          fillStyle: dimmed
-            ? GRAPH_LABEL_DIMMED
-            : selected || highlighted || hovered
-              ? GRAPH_LABEL_ACTIVE
-              : GRAPH_LABEL_DEFAULT,
-          dimmed,
-        });
+        // 只显示文件名（path/label 最后一段）；子节点取不到文件名则不显示标签
+        const fileName = nodeFileName(ctxNode);
+        if (fileName) {
+          labels.push({
+            text: truncate(fileName, 26),
+            x: transform.x + n.x * transform.scale,
+            y: transform.y + (n.y + displayRadius) * transform.scale + 5,
+            font: `${selected ? 700 : highlighted || hovered ? 600 : 400} ${selected ? 13 : 12}px Inter, system-ui, sans-serif`,
+            fillStyle: dimmed
+              ? GRAPH_LABEL_DIMMED
+              : selected || highlighted || hovered
+                ? GRAPH_LABEL_ACTIVE
+                : GRAPH_LABEL_DEFAULT,
+            dimmed,
+          });
+        }
       });
 
       // 标签（屏幕坐标，不缩放）— 中间层
