@@ -99,6 +99,7 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_default_project_session_workspace_dir,
 )
+from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
 
 logger = logging.getLogger(__name__)
 
@@ -1387,13 +1388,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         if self._instance is None:
             raise RuntimeError("JiuwenSwarmCodeAdapter 未初始化，请先调用 create_instance()")
 
-        project_workspace = (
-            runtime_config.workspace
-            or runtime_config.project_dir
-            or self._project_dir
-            or str(get_default_project_session_workspace_dir(runtime_config.session_id))
+        runtime_paths = resolve_runtime_workspace_paths(
+            internal_workspace_dir=self._agent_workspace_dir,
+            project_dir=runtime_config.project_dir or self._project_dir,
+            workspace_dir=runtime_config.workspace,
+            cwd=runtime_config.cwd,
+            session_id=runtime_config.session_id,
+            task_name=runtime_config.task_name,
+            bind_request=True,
         )
-        task_cwd = runtime_config.cwd or project_workspace
+        project_workspace = str(runtime_paths.runtime_workspace_root)
+        task_cwd = str(runtime_paths.cwd)
+        deep_config = getattr(self._instance, "deep_config", None)
+        if deep_config is not None:
+            deep_config.cwd = task_cwd
+            deep_config.project_root = str(runtime_paths.project_root)
         self._seed_runtime_cwd(task_cwd, workspace=project_workspace)
         # Same CwdState rebind contract as deep adapter: interaction round tasks
         # do not inherit request-task init_cwd.
@@ -1438,6 +1447,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 project_dir=runtime_config.project_dir or self._project_dir,
                 # Agent data root (skills/memory/todo), not project context.
                 workspace_dir=self._agent_workspace_dir,
+                task_workspace_root=project_workspace if runtime_paths.is_projectless else None,
+                task_work_dir=str(runtime_paths.work_dir) if runtime_paths.work_dir else None,
+                task_outputs_dir=str(runtime_paths.outputs_dir) if runtime_paths.outputs_dir else None,
+            )
+            self._runtime_prompt_rail.set_execution_paths(
+                cwd=task_cwd,
+                project_root=str(runtime_paths.project_root),
+                workspace=project_workspace,
             )
             self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
             self._runtime_prompt_rail.set_request_system_prompt(

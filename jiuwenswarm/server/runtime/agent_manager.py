@@ -1565,7 +1565,7 @@ class AgentManager:
         params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
         mode_full = params.get("mode", "agent")
         mode = str(mode_full).split(".")[0] if mode_full else "agent"
-        workspace_dir = params.get("workspace_dir")
+        project_dir = params.get("project_dir")
 
         bound_skill_dirs = disk_only_evolution_skill_dirs(params)
         skill_dirs_token = None
@@ -1577,7 +1577,7 @@ class AgentManager:
             existing = self.get_agent_nowait(
                 channel_id,
                 mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if existing is not None:
                 return await existing.process_message(request)
@@ -1683,11 +1683,7 @@ class AgentManager:
         mode_full = self._resolve_request_mode(request, params)
         mode, sub_mode, _canonical = resolve_agent_request_mode(mode_full)
         agent_mode = "agent" if mode == "auto_harness" else mode
-        project_dir = (
-            params.get("project_dir")
-            or params.get("workspace_dir")
-            or params.get("cwd")
-        )
+        project_dir = params.get("project_dir")
         if isinstance(project_dir, str):
             project_dir = project_dir.strip() or None
         else:

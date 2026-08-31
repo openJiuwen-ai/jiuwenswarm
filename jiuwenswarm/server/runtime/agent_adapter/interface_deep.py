@@ -712,6 +712,7 @@ from jiuwenswarm.common.utils import (
     load_yaml_dict,
     resolve_shipped_template_config_path,
 )
+from jiuwenswarm.common.runtime_workspace import resolve_runtime_workspace_paths
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
@@ -12773,9 +12774,19 @@ class JiuWenSwarmDeepAdapter:
         cwd: str | None = None
         workspace: str | None = None
         project_dir: str | None = None
+        task_name: str | None = None
         supports_user_interaction: bool = True
         interactive_ask: bool = False
         request_system_prompt: str | None = None
+
+    @staticmethod
+    def _is_projectless_agent_mode(mode: str | None) -> bool:
+        return str(mode or "").strip().lower().split(".", 1)[0] in {
+            "agent",
+            "auto_harness",
+            "plan",
+            "fast",
+        }
 
     @staticmethod
     def _extract_request_system_prompt(request: AgentRequest | None) -> str | None:
@@ -12788,6 +12799,34 @@ class JiuWenSwarmDeepAdapter:
             if value:
                 return value
         return None
+
+    @staticmethod
+    def _extract_task_request_text(value: Any) -> str | None:
+        if isinstance(value, dict):
+            for key in ("content", "text", "query", "message"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    @staticmethod
+    def _resolve_request_task_name(request: AgentRequest, inputs: dict[str, Any]) -> str | None:
+        params = request.params if isinstance(request.params, dict) else {}
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        for source in (params, inputs, metadata):
+            for key in ("task_name", "title"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for source in (params, metadata):
+            for key in ("query", "content", "message"):
+                candidate = JiuWenSwarmDeepAdapter._extract_task_request_text(source.get(key))
+                if candidate is not None:
+                    return candidate
+        return JiuWenSwarmDeepAdapter._extract_task_request_text(inputs.get("query"))
 
     @staticmethod
     def _extract_request_interactive_ask(request: AgentRequest | None) -> bool:
@@ -12893,13 +12932,17 @@ class JiuWenSwarmDeepAdapter:
             runtime_config: Per-request runtime parameters for this turn.
             stage_timer: Timer marked at each stage boundary.
         """
-        task_workspace = (
-            runtime_config.workspace
-            or runtime_config.project_dir
-            or self._project_dir
-            or str(get_default_project_session_workspace_dir(runtime_config.session_id))
+        runtime_paths = resolve_runtime_workspace_paths(
+            internal_workspace_dir=self._workspace_dir,
+            project_dir=runtime_config.project_dir or self._project_dir,
+            workspace_dir=runtime_config.workspace,
+            cwd=runtime_config.cwd,
+            session_id=runtime_config.session_id,
+            task_name=runtime_config.task_name,
+            bind_request=bind_request,
         )
-        task_cwd = runtime_config.cwd or task_workspace
+        task_workspace = str(runtime_paths.runtime_workspace_root)
+        task_cwd = str(runtime_paths.cwd)
         self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
         # Persist paths on StreamEventRail so the interaction round task can
         # rebind openjiuwen CwdState (request-task init_cwd does not propagate).
@@ -12935,6 +12978,14 @@ class JiuWenSwarmDeepAdapter:
                 cwd=task_cwd,
                 project_dir=runtime_config.project_dir or self._project_dir,
                 workspace_dir=self._workspace_dir,
+                task_workspace_root=task_workspace if runtime_paths.is_projectless else None,
+                task_work_dir=str(runtime_paths.work_dir) if runtime_paths.work_dir else None,
+                task_outputs_dir=str(runtime_paths.outputs_dir) if runtime_paths.outputs_dir else None,
+            )
+            self._runtime_prompt_rail.set_execution_paths(
+                cwd=task_cwd,
+                project_root=str(runtime_paths.project_root),
+                workspace=task_workspace,
             )
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
@@ -19057,6 +19108,7 @@ class JiuWenSwarmDeepAdapter:
                     cwd=inputs.get("cwd"),
                     workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
+                    task_name=self._resolve_request_task_name(request, inputs),
                     supports_user_interaction=inputs.get(
                         "supports_user_interaction", True
                     ),

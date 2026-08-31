@@ -89,7 +89,11 @@ def send_error_wire(
 
 
 # 请求形态的helper
-def resolve_request_project_dir(request: AgentRequest) -> str | None:
+def resolve_request_project_dir(
+    request: AgentRequest,
+    *,
+    include_legacy_fallbacks: bool = True,
+) -> str | None:
     """Resolve the stable project identity for agent construction.
 
     New clients send ``project_dir`` separately from dynamic ``cwd``. Keep
@@ -103,6 +107,8 @@ def resolve_request_project_dir(request: AgentRequest) -> str | None:
     metadata_project_dir = metadata.get("project_dir") if isinstance(metadata, dict) else None
     if isinstance(metadata_project_dir, str) and metadata_project_dir.strip():
         return metadata_project_dir.strip()
+    if not include_legacy_fallbacks:
+        return None
     workspace_dir = params.get("workspace_dir")
     if isinstance(workspace_dir, str) and workspace_dir.strip():
         return workspace_dir.strip()

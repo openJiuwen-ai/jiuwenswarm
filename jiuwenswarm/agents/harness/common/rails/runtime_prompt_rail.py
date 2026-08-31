@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from typing import Any
 import yaml
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.core.sys_operation.cwd import init_cwd
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
@@ -60,6 +62,17 @@ class RuntimePromptRail(DeepAgentRail):
         self._cwd: str | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str | None = None
+        self._task_workspace_root: str | None = None
+        self._task_work_dir: str | None = None
+        self._task_outputs_dir: str | None = None
+        self._execution_cwd: str | None = None
+        self._execution_project_root: str | None = None
+        self._execution_workspace: str | None = None
+        self._execution_paths_revision = 0
+        self._bound_execution_paths_revision: ContextVar[int] = ContextVar(
+            "runtime_prompt_bound_execution_paths_revision",
+            default=-1,
+        )
         self._model_name: str = ""
         self._mode: str = ""
         self._session_id: str | None = None
@@ -107,6 +120,9 @@ class RuntimePromptRail(DeepAgentRail):
         cwd: str | None = None,
         project_dir: str | None = None,
         workspace_dir: str | None = None,
+        task_workspace_root: str | None = None,
+        task_work_dir: str | None = None,
+        task_outputs_dir: str | None = None,
     ) -> None:
         """Per-request stable project identity, dynamic cwd and own workspace.
 
@@ -128,10 +144,43 @@ class RuntimePromptRail(DeepAgentRail):
             if isinstance(workspace_dir, str) and workspace_dir.strip()
             else None
         )
+        self._task_workspace_root = str(task_workspace_root or "").strip() or None
+        self._task_work_dir = str(task_work_dir or "").strip() or None
+        self._task_outputs_dir = str(task_outputs_dir or "").strip() or None
 
     def set_model_name(self, model_name: str) -> None:
         """per-request 更新模型名称，作为文件读取失败时的兜底。"""
         self._model_name = model_name or ""
+
+    def set_execution_paths(
+        self,
+        *,
+        cwd: str,
+        project_root: str,
+        workspace: str,
+    ) -> None:
+        """Bind request paths in the task that executes an Agent/Code round."""
+        execution_paths = (cwd, project_root, workspace)
+        if execution_paths == (
+            self._execution_cwd,
+            self._execution_project_root,
+            self._execution_workspace,
+        ):
+            return
+        self._execution_cwd, self._execution_project_root, self._execution_workspace = execution_paths
+        self._execution_paths_revision += 1
+
+    def _bind_execution_paths(self) -> None:
+        if not all((self._execution_cwd, self._execution_project_root, self._execution_workspace)):
+            return
+        if self._bound_execution_paths_revision.get() == self._execution_paths_revision:
+            return
+        init_cwd(
+            self._execution_cwd,
+            project_root=self._execution_project_root,
+            workspace=self._execution_workspace,
+        )
+        self._bound_execution_paths_revision.set(self._execution_paths_revision)
 
     def set_mode(self, mode: str) -> None:
         """per-request 更新运行模式，作为文件读取失败时的兜底。"""
@@ -295,7 +344,11 @@ class RuntimePromptRail(DeepAgentRail):
             return "code.normal"
         return configured_mode
 
+    async def before_invoke(self, ctx: AgentCallbackContext) -> None:
+        self._bind_execution_paths()
+
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        self._bind_execution_paths()
         if not self.system_prompt_builder:
             return
 
@@ -308,8 +361,34 @@ class RuntimePromptRail(DeepAgentRail):
             "tui_current_project_policy",
             "trusted_dirs_policy",
             "request_system_prompt",
+            "directory_boundaries",
         ):
             self.system_prompt_builder.remove_section(name)
+
+        if self._task_workspace_root and self._task_work_dir and self._task_outputs_dir:
+            if not self._force_english and self._language == "cn":
+                directory_content = (
+                    "# 目录与文件操作边界\n\n## 当前任务目录\n\n"
+                    f"- 当前任务根目录：`{self._task_workspace_root}`\n"
+                    f"- 临时工作目录：`{self._task_work_dir}`\n"
+                    f"- 最终产物目录：`{self._task_outputs_dir}`\n\n"
+                    "- 相对路径以临时工作目录为基准。\n"
+                    "- 中间文件放入临时工作目录，最终报告、导出文件和其他交付物放入最终产物目录。"
+                )
+            else:
+                directory_content = (
+                    "# Directory and File-Operation Boundaries\n\n## Current Task Directories\n\n"
+                    f"- Current task root: `{self._task_workspace_root}`\n"
+                    f"- Temporary working directory: `{self._task_work_dir}`\n"
+                    f"- Final deliverables directory: `{self._task_outputs_dir}`\n\n"
+                    "- Resolve relative paths against the temporary working directory.\n"
+                    "- Put intermediate files in the temporary working directory and final deliverables in the final deliverables directory."
+                )
+            self.system_prompt_builder.add_section(PromptSection(
+                name="directory_boundaries",
+                content={"cn": directory_content, "en": directory_content},
+                priority=89,
+            ))
 
         # ── time ──
         # Inject real date values (day-level precision only, not HH:MM) to avoid
