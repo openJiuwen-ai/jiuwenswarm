@@ -4287,7 +4287,9 @@ def test_build_context_processor_rail_does_not_add_reasoning_loop_when_context_d
     )
 
     assert isinstance(rail, FakeContextProcessorRail)
-    assert rail.processors is None
+    assert rail.processors == [
+        ("SymphonyRetrievalCompactProcessor", SymphonyRetrievalCompactProcessorConfig())
+    ]
 
 
 def test_task_loop_no_progress_guard_config_defaults_and_overrides():
