@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT_DIR = Path(__file__).resolve().parents[3] / "scripts" / "eval"
 REPO_ROOT = SCRIPT_DIR.parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -469,6 +471,132 @@ def test_config_dir_name_labels_the_profile() -> None:
         config_dir_name(profile=PROFILE_GRAPH, prefix="pre-ab")
         == "cfg_pre-ab__graph"
     )
+    assert (
+        config_dir_name(profile=PROFILE_GRAPH, task_mode="coding")
+        == "cfg_b__graph__coding"
+    )
+
+
+def test_task_mode_hidden_tools_and_capture_patch(tmp_path: Path) -> None:
+    from run_contextbench import (
+        capture_patch,
+        code_agent_hidden_tools,
+        has_patch_context,
+        resolve_task_mode,
+        root_hidden_tools,
+    )
+    from trajectory import contextbench_record
+
+    assert resolve_task_mode("locate") == "locate"
+    assert resolve_task_mode("coding") == "coding"
+    assert "edit_file" in root_hidden_tools(
+        profile="graph", graph_agent="root", task_mode="locate"
+    )
+    assert "edit_file" not in root_hidden_tools(
+        profile="graph", graph_agent="root", task_mode="coding"
+    )
+    assert "bash" not in root_hidden_tools(
+        profile="graph", graph_agent="root", task_mode="coding"
+    )
+    assert "edit_file" not in code_agent_hidden_tools(
+        profile="graph", graph_agent="code_agent", task_mode="coding"
+    )
+    assert has_patch_context(["<PATCH_CONTEXT>\nFile: a.py\nLines: 1-2\n</PATCH_CONTEXT>"])
+    assert not has_patch_context(["no block"])
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    (repo / "a.py").write_text("x = 2\n", encoding="utf-8")
+    patch = capture_patch(str(repo))
+    assert "x = 2" in patch
+    record = contextbench_record(
+        {
+            "instance_id": "demo",
+            "model_patch": patch,
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            "traj_data": {"pred_files": [], "pred_spans": {}, "pred_steps": []},
+        }
+    )
+    assert record["model_patch"] == patch
+    assert record["usage"]["prompt_tokens"] == 3
+
+
+def test_repair_resets_dirty_worktree_when_head_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from run_contextbench import _repair_stale_worktree, _worktree_dir_for, _worktree_url_key
+
+    monkeypatch.setenv("CONTEXTBENCH_TMP_ROOT", str(tmp_path))
+    url = "https://example.com/demo"
+    repo = tmp_path / "seed"
+    repo.mkdir()
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    worktree = _worktree_dir_for(url, commit)
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "clone", str(repo), str(worktree)],
+        check=True,
+        capture_output=True,
+    )
+    (worktree / "a.py").write_text("x = 9\n", encoding="utf-8")
+    (worktree / "extra.py").write_text("y = 1\n", encoding="utf-8")
+    cache = tmp_path / "cache" / _worktree_url_key(url)
+    cache.mkdir(parents=True)
+    _repair_stale_worktree(url, commit, cache)
+    assert (worktree / "a.py").read_text(encoding="utf-8") == "x = 1\n"
+    assert not (worktree / "extra.py").exists()
+
+
+def test_drop_editloc_strips_empty_patch_only(tmp_path: Path) -> None:
+    from run_evaluate import _drop_editloc, _patch_id_sets
+
+    records = [
+        {"instance_id": "with-patch", "model_patch": "diff --git a"},
+        {"instance_id": "empty-patch", "model_patch": ""},
+    ]
+    empty_ids, real_ids = _patch_id_sets(records)
+    assert empty_ids == {"empty-patch"}
+    assert real_ids == {"with-patch"}
+    dest = tmp_path / "eval.jsonl"
+    dest.write_text(
+        json.dumps({"instance_id": "with-patch", "editloc": {"recall": 1.0}})
+        + "\n"
+        + json.dumps({"instance_id": "empty-patch", "editloc": {"recall": 0.9}})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert _drop_editloc(dest, empty_ids) == 1
+    rows = [
+        json.loads(line)
+        for line in dest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    by_id = {row["instance_id"]: row for row in rows}
+    assert by_id["with-patch"]["editloc"]["recall"] == 1.0
+    assert "editloc" not in by_id["empty-patch"]
+    assert by_id["empty-patch"]["editloc_omitted"] == "empty_model_patch_would_use_gold"
 
 
 def _graph_yaml(**overrides: object) -> dict:
