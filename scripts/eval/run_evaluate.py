@@ -5,7 +5,7 @@
 Requires a ContextBench checkout (``CONTEXTBENCH_ROOT`` / ``--contextbench-root``).
 
     uv run --extra code-graph --with pyarrow python scripts/eval/run_evaluate.py \
-        --pred docs/ai/experiments-contextbench/runs/run01-contextbench-verified/cfg_b__graph/raw
+        --pred docs/ai/experiments/03-contextbench-before-productization/runs/run01-contextbench-verified/cfg_b__graph/raw
 """
 
 from __future__ import annotations
@@ -129,34 +129,68 @@ def main() -> None:
         + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     )
     completed = subprocess.run(cmd, cwd=str(contextbench_root), env=env, check=False)
-    _drop_editloc(out, records)
-    print(
-        "NOTE: EditLoc is not reportable. Official evaluate.py falls back to "
-        "gold `patch` when model_patch is empty; this pipeline is locate-only.",
-        file=sys.stderr,
-        flush=True,
-    )
-    print(
-        "NOTE: This is a locate-only graph ablation, not a ContextBench "
-        "leaderboard run. Do not compare File Cov to MiniSWE / Prometheus.",
-        file=sys.stderr,
-        flush=True,
-    )
+    empty_ids, real_ids = _patch_id_sets(records)
+    stripped = _drop_editloc(out, empty_ids)
+    if empty_ids and real_ids:
+        print(
+            f"NOTE: stripped EditLoc on {stripped} empty-patch instance(s); "
+            "remaining EditLoc uses the agent diff. Do not micro-average the "
+            "two kinds together. Pass@1 still needs a SWE Docker harness.",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif real_ids:
+        print(
+            "NOTE: model_patch is present. EditLoc is scored against the "
+            "agent diff. Pass@1 still needs a SWE Docker harness.",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(
+            "NOTE: EditLoc is not reportable. Official evaluate.py falls back to "
+            "gold `patch` when model_patch is empty; this pipeline is locate-only.",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "NOTE: This is a locate-only graph ablation, not a ContextBench "
+            "leaderboard run. Do not compare File Cov to MiniSWE / Prometheus.",
+            file=sys.stderr,
+            flush=True,
+        )
     raise SystemExit(completed.returncode)
 
 
-def _drop_editloc(eval_path: Path, records: list[dict[str, Any]]) -> None:
-    """Strip EditLoc so gold-vs-gold scores cannot be copied into a report."""
-    if not eval_path.is_file():
-        return
-    has_real_patch = any(str(item.get("model_patch") or "").strip() for item in records)
-    if has_real_patch:
-        return
+def _patch_id_sets(records: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
+    empty_ids: set[str] = set()
+    real_ids: set[str] = set()
+    for item in records:
+        iid = str(item.get("instance_id") or "").strip()
+        if not iid:
+            continue
+        if str(item.get("model_patch") or "").strip():
+            real_ids.add(iid)
+        else:
+            empty_ids.add(iid)
+    return empty_ids, real_ids
+
+
+def _drop_editloc(eval_path: Path, empty_ids: set[str]) -> int:
+    """Strip EditLoc on empty-patch rows so gold-vs-gold cannot enter a report.
+
+    Official evaluate.py falls back to gold ``patch`` when ``model_patch`` is
+    empty. A mixed run must drop those rows one by one; keeping them would
+    lift the micro EditLoc average.
+    """
+    if not eval_path.is_file() or not empty_ids:
+        return 0
     rewritten: list[dict[str, Any]] = []
+    stripped = 0
     try:
         lines = eval_path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return
+        return 0
     for line in lines:
         if not line.strip():
             continue
@@ -166,12 +200,16 @@ def _drop_editloc(eval_path: Path, records: list[dict[str, Any]]) -> None:
             rewritten.append({"raw": line})
             continue
         if isinstance(row, dict):
-            row.pop("editloc", None)
-            row["editloc_omitted"] = "empty_model_patch_would_use_gold"
+            iid = str(row.get("instance_id") or "").strip()
+            if iid in empty_ids and "editloc" in row:
+                row.pop("editloc", None)
+                row["editloc_omitted"] = "empty_model_patch_would_use_gold"
+                stripped += 1
         rewritten.append(row)
     with eval_path.open("w", encoding="utf-8") as handle:
         for row in rewritten:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return stripped
 
 
 if __name__ == "__main__":

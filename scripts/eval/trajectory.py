@@ -698,9 +698,9 @@ def contextbench_record(raw: dict[str, Any], *, repo_root: str = "") -> dict[str
             "pred_spans": dict(traj.get("pred_spans") or {}),
             "pred_symbols": {},
         },
-        # Empty patch is required by the official schema. evaluate.py will
-        # then fall back to gold ``patch`` for EditLoc — run_evaluate.py
-        # drops that metric so we never report gold-vs-gold.
+        # Locate exam writes "". Coding exam writes the agent git diff.
+        # evaluate.py falls back to gold ``patch`` only when this is empty;
+        # run_evaluate.py then drops EditLoc so we never report gold-vs-gold.
         "model_patch": raw.get("model_patch") or "",
     }
     if isinstance(raw.get("usage"), dict) and raw["usage"]:
