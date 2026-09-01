@@ -49,9 +49,31 @@ const connectorMarketNavIcon = (
   </svg>
 );
 
+// "个人上下文"导航图标——文档/知识库隐喻，内联 SVG 避免引入缺失的图标资源。
+const personalContextNavIcon = (
+  <svg viewBox="0 0 16 16" width="16" height="16" fill="none">
+    <path
+      fillRule="evenodd"
+      d="M12 3C13.1046 3 14 3.89543 14 5C14 6.10457 13.1046 7 12 7L2 7C2 7 2.99999 6 2.99999 5C2.99999 4 2 3 2 3L12 3Z"
+      stroke="currentColor"
+      strokeLinejoin="round"
+      strokeWidth={1}
+    />
+    <path
+      fillRule="evenodd"
+      d="M10 0C11.1046 0 12 0.89543 12 2C12 3.10457 11.1046 4 10 4L0 4C0 4 0.999991 3 0.999991 2C0.999992 1 0 0 0 0L10 0Z"
+      stroke="currentColor"
+      strokeLinejoin="round"
+      strokeWidth={1}
+      transform="matrix(-1,0,0,1,14,9)"
+    />
+  </svg>
+);
+
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
+  { key: 'personalContext', labelKey: 'nav.personalContext', icon: personalContextNavIcon },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },

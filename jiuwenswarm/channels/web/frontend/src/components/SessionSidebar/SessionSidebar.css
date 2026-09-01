@@ -87,14 +87,14 @@
 
 .icon-rail-nav-item__label {
   max-width: 44px;
-  overflow: hidden;
   color: inherit;
   font-size: 10px;
   font-weight: 500;
   line-height: 1.15;
   text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .icon-rail-nav-item {

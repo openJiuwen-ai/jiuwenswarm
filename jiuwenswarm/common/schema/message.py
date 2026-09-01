@@ -258,6 +258,7 @@ class ReqMethod(Enum):
     PERSONAL_CONTEXT_FETCH_STOP_SERVICE = "personal_context.fetch.stop_service"
     PERSONAL_CONTEXT_FETCH_RUN_ALL = "personal_context.fetch.run_all"
     PERSONAL_CONTEXT_FETCH_RUN_ONE = "personal_context.fetch.run_one"
+    PERSONAL_CONTEXT_FETCH_STOP_RUN = "personal_context.fetch.stop_run"
     PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS = "personal_context.fetch.get_run_status"
     PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS = (
         "personal_context.fetch.get_authorization_status"

@@ -1,0 +1,797 @@
+/* PersonalContextGraphPanel — 图谱子页样式（对齐高保真 09 Context Graph） */
+
+.pc-graph {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #ffffff;
+  gap: 12px;
+  padding: 16px 24px 16px;
+}
+
+/* 顶部工具栏：标题 + 副标题（左），刷新 + 添加知识（右） */
+.pc-graph__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* 工具栏左侧信息区 */
+.pc-graph__toolbar-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pc-graph__toolbar-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: #191919;
+  line-height: 36px;
+  margin: 0;
+}
+
+.pc-graph__toolbar-subtitle {
+  font-size: 14px;
+  font-weight: 400;
+  color: #777777;
+  line-height: 22px;
+  margin: 4px 0 0;
+}
+
+.pc-graph__error {
+  background: rgba(220, 50, 50, 0.1);
+  color: #dc3232;
+  border-bottom: 1px solid rgba(220, 50, 50, 0.3);
+  padding: 8px 16px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* 统计 + 过滤芯片行 */
+.pc-graph__stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.pc-graph__stat {
+  font-size: 12px;
+  color: #808080;
+}
+
+.pc-graph__updated {
+  font-size: 12px;
+  color: #808080;
+}
+
+/* 操作按钮组 */
+.pc-graph__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 刷新按钮：图标+文字 r999 */
+.pc-graph__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #191919;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 4px 8px;
+  transition: background 0.15s;
+}
+
+.pc-graph__refresh:hover {
+  background: #f5f5f5;
+  border-radius: 999px;
+}
+
+/* 添加知识按钮：黑色填充 r999 */
+.pc-graph__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  border-radius: 999px;
+  background: #191919;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 6px 16px;
+  transition: opacity 0.15s;
+}
+
+.pc-graph__add:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.pc-graph__add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 搜索框：r8 描边 #c2c2c2 */
+.pc-graph__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid #c2c2c2;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #c2c2c2;
+}
+
+.pc-graph__search-input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 12px;
+  width: 200px;
+  color: #191919;
+}
+
+.pc-graph__search-input::placeholder {
+  color: #808080;
+}
+
+/* 过滤芯片：r99 描边 #e6e6e6 */
+.pc-graph__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border: 1px solid #e6e6e6;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #191919;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.pc-graph__chip:hover {
+  background: #f5f5f5;
+}
+
+.pc-graph__chip--active {
+  border-color: #191919;
+  background: #191919;
+  color: #ffffff;
+}
+
+.pc-graph__chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 主区域：左侧面板 + 画布 + 右侧详情 */
+.pc-graph__main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+  overflow: hidden;
+}
+
+/* 侧边面板：r16 白底带阴影 */
+.pc-graph__tree {
+  width: 296px;
+  background: #ffffff;
+  border-radius: 16px;
+  overflow: hidden;
+  padding: 12px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 固定头部：页签 + 搜索框，不随内容滚动 */
+.pc-graph__tree-header {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 可滚动内容区 */
+.pc-graph__tree-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 侧边面板页签 */
+.pc-graph__tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.pc-graph__tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #191919;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pc-graph__tab:hover {
+  background: #f5f5f5;
+}
+
+.pc-graph__tab--active {
+  background: #f0f0f0;
+}
+
+.pc-graph__tab-count {
+  font-size: 18px;
+  font-weight: 600;
+  color: #191919;
+}
+
+.pc-graph__tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pc-graph__tree-item {
+  list-style: none;
+}
+
+/* 单行：折叠三角 + 图标 + 名称 */
+.pc-graph__tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: #191919;
+  transition: background 0.12s ease;
+}
+
+.pc-graph__tree-row:hover {
+  background: #f5f5f5;
+}
+
+.pc-graph__tree-row--active {
+  background: #f0f0f0;
+  font-weight: 500;
+}
+
+.pc-graph__tree-row--hit {
+  color: #2ea043;
+  font-weight: 500;
+}
+
+/* 折叠三角占位 */
+.pc-graph__tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: #808080;
+}
+
+.pc-graph__tree-chevron {
+  transition: transform 0.15s ease;
+}
+
+.pc-graph__tree-chevron--open {
+  transform: rotate(90deg);
+}
+
+.pc-graph__tree-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #ff9600;
+}
+
+.pc-graph__tree-dot--dir {
+  background: #33bcf2;
+}
+
+.pc-graph__tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 画布区域：r16 白底 */
+.pc-graph__canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  position: relative;
+  background: #ffffff;
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.pc-graph__canvas {
+  flex: 1;
+  min-height: 0;
+  display: block;
+  cursor: grab;
+}
+
+.pc-graph__canvas:active {
+  cursor: grabbing;
+}
+
+.pc-graph__empty--overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+}
+
+/* 详情面板 */
+.pc-graph__detail {
+  width: 420px;
+  background: #ffffff;
+  border-radius: 16px;
+  overflow: hidden;
+  padding: 16px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+}
+
+/* 关闭按钮：右上角浮动 */
+.pc-graph__detail-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #191919;
+  z-index: 2;
+  padding: 0;
+}
+
+.pc-graph__detail-close:hover {
+  background: #f5f5f5;
+}
+
+/* 节点名称：16px semibold */
+.pc-graph__detail-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: #191919;
+  line-height: 24px;
+  margin: 0;
+  padding-right: 32px;
+  word-break: break-word;
+}
+
+/* 采集来源标签：12px semibold */
+.pc-graph__detail-source {
+  font-size: 12px;
+  font-weight: 600;
+  color: #191919;
+  line-height: 18px;
+  padding: 2px 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+/* 采集来源标签组 */
+.pc-graph__detail-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 分割线 */
+.pc-graph__detail-divider {
+  height: 0;
+  border: none;
+  border-top: 1px solid #dbdbdb;
+  margin: 4px 0;
+}
+
+/* 详细内容：可滚动 */
+.pc-graph__detail-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 旧类名兼容 */
+.pc-graph__detail-head,
+.pc-graph__detail-title {
+  display: none;
+}
+
+.pc-graph__empty {
+  color: #808080;
+  font-size: 14px;
+  text-align: center;
+  padding: 32px 8px;
+}
+
+/* 来源详情卡片 */
+.pc-graph__source-card {
+  padding: 12px 14px;
+  border: 1px solid #f0f0f0;
+  border-radius: 12px;
+  background: #fafafa;
+  font-size: 12px;
+}
+
+.pc-graph__source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.pc-graph__source-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #191919;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.pc-graph__source-close {
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  color: #808080;
+  padding: 0 4px;
+}
+
+.pc-graph__source-title {
+  font-weight: 600;
+  color: #191919;
+  margin-bottom: 8px;
+  word-break: break-word;
+  font-size: 14px;
+}
+
+.pc-graph__source-meta {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.pc-graph__source-meta > div {
+  display: flex;
+  gap: 8px;
+}
+
+.pc-graph__source-meta dt {
+  color: #808080;
+  flex-shrink: 0;
+  min-width: 64px;
+}
+
+.pc-graph__source-meta dd {
+  margin: 0;
+  color: #191919;
+  word-break: break-all;
+}
+
+.pc-graph__source-link {
+  color: #1476ff;
+  text-decoration: none;
+}
+
+.pc-graph__source-link:hover {
+  text-decoration: underline;
+}
+
+.spin {
+  animation: pc-spin 1s linear infinite;
+}
+
+@keyframes pc-spin {
+  to { transform: rotate(360deg); }
+}
+
+
+/* ── 「添加知识」按钮（黑色填充 r999） ─────────── */
+.pc-graph__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  border-radius: 999px;
+  background: #191919;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 6px 16px;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.pc-graph__add:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.pc-graph__add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── 搜索区：搜索框 + 结果计数 + 结果卡片 ─────── */
+.pc-graph__search-wrap {
+  display: none;
+}
+
+.pc-graph__search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #808080;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.pc-graph__search-clear:hover {
+  color: #191919;
+}
+
+/* 搜索结果计数行 */
+.pc-graph__search-meta {
+  display: flex;
+  align-items: center;
+  height: 18px;
+}
+
+.pc-graph__search-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: #191919;
+  line-height: 18px;
+}
+
+/* 搜索结果列表 */
+.pc-graph__search-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+/* 单个结果卡片：r8 描边 #dbdbdb */
+.pc-graph__search-card {
+  border: 1px solid #dbdbdb;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+/* 卡片头：34px 高，#fafafa 底，chevron + 标题 + 命中数 */
+.pc-graph__search-card-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  padding: 0 8px;
+  background: #fafafa;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.pc-graph__search-card-head:hover {
+  background: #f5f5f5;
+}
+
+.pc-graph__chevron--open {
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+  color: #808080;
+  flex-shrink: 0;
+}
+
+.pc-graph__chevron--closed {
+  transform: rotate(-90deg);
+  transition: transform 0.15s ease;
+  color: #808080;
+  flex-shrink: 0;
+}
+
+.pc-graph__search-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #191919;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 18px;
+}
+
+.pc-graph__search-card-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: #808080;
+  flex-shrink: 0;
+  line-height: 18px;
+}
+
+/* 卡片正文：snippet 文本，#ffebd1 高亮匹配 */
+.pc-graph__search-card-body {
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #808080;
+  line-height: 18px;
+  cursor: pointer;
+  max-height: 160px;
+  overflow-y: auto;
+  word-break: break-word;
+}
+
+.pc-graph__search-card-body:hover {
+  background: #fafafa;
+}
+
+.pc-graph__search-hit {
+  background: #ffebd1;
+  color: #191919;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ── 文件树：对齐高保真图标样式 ────────────────── */
+
+.pc-graph__tree-item {
+  list-style: none;
+}
+
+/* 树行基础：r8，左侧图标 + 名称，右侧收起按钮 */
+.pc-graph__tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: #191919;
+  transition: background 0.12s ease;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+}
+
+.pc-graph__tree-row:hover {
+  background: #f5f5f5;
+}
+
+.pc-graph__tree-row--active {
+  background: #f0f0f0;
+  font-weight: 500;
+}
+
+/* 文件夹行：semibold */
+.pc-graph__tree-row--dir .pc-graph__tree-name {
+  font-weight: 600;
+}
+
+/* 搜索命中高亮 */
+.pc-graph__tree-row--hit {
+  color: #1476ff;
+}
+
+/* 左侧图标容器 */
+.pc-graph__tree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.pc-graph__tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+/* 右侧收起/展开按钮 */
+.pc-graph__tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: #191919;
+}
+
+/* 旧类名兼容（已废弃，保留以防引用） */
+.pc-graph__tree-dot,
+.pc-graph__tree-dot--dir,
+.pc-graph__tree-chevron,
+.pc-graph__tree-chevron--open,
+.pc-graph__tree-leaf,
+.pc-graph__tree-leaf--active,
+.pc-graph__tree-leaf--hit,
+.pc-graph__tree-dir,
+.pc-graph__search--disabled {
+  display: none;
+}
+
+/* 旧搜索结果下拉（已废弃，保留以防引用） */
+.pc-graph__search-results,
+.pc-graph__search-result,
+.pc-graph__search-result-title,
+.pc-graph__search-result-snippet {
+  display: none;
+}
+
