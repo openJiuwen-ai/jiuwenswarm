@@ -984,6 +984,43 @@ function getFileExtension(name: string): string {
   return parts[parts.length - 1].toUpperCase();
 }
 
+
+function isInlineImageFile(mimeType: string | undefined, name: string): boolean {
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  const mt = (mimeType || '').toLowerCase();
+  return mt.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp'].includes(ext);
+}
+
+function isInlineVideoFile(mimeType: string | undefined, name: string): boolean {
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  const mt = (mimeType || '').toLowerCase();
+  return mt.startsWith('video/') || ['mp4', 'avi', 'mov', 'mkv', 'webm', 'm4v'].includes(ext);
+}
+
+function inlineMediaUrl(downloadUrl: string): string {
+  try {
+    const url = new URL(downloadUrl, window.location.origin);
+    url.searchParams.set('inline', '1');
+    return url.pathname + url.search;
+  } catch {
+    const joiner = downloadUrl.includes('?') ? '&' : '?';
+    return `${downloadUrl}${joiner}inline=1`;
+  }
+}
+
+/** Prefer workspace path for durable inline preview; token URLs can fail after reload. */
+function resolveInlineMediaSrc(file: FileDownloadItem): string | null {
+  const path = file.path?.trim();
+  if (path) {
+    return `/file-api/raw-file?path=${encodeURIComponent(path)}`;
+  }
+  const downloadUrl = file.download_url?.trim();
+  if (downloadUrl) {
+    return inlineMediaUrl(downloadUrl);
+  }
+  return null;
+}
+
 function FileDownloadList({
   files,
   className,
@@ -1003,8 +1040,16 @@ function FileDownloadList({
   useEffect(() => {
     let cancelled = false;
     files.forEach((file, index) => {
-      if (!file.download_url) return;
-      fetch(file.download_url, { method: 'HEAD' })
+      // Path-backed files remain previewable via /file-api/raw-file even when
+      // the signed download token is stale; only mark download as expired.
+      const probeUrl = file.download_url?.trim();
+      if (!probeUrl) {
+        if (!file.path?.trim() && !cancelled) {
+          setExpiredSet((prev) => new Set(prev).add(index));
+        }
+        return;
+      }
+      fetch(probeUrl, { method: 'HEAD' })
         .then((res) => {
           if (!cancelled && !res.ok) {
             setExpiredSet((prev) => new Set(prev).add(index));
@@ -1032,12 +1077,17 @@ function FileDownloadList({
   }, [files]);
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
-    if (expiredSet.has(index) || !file.download_url) return;
+    const path = file.path?.trim();
+    const downloadUrl = file.download_url?.trim();
+    const href = (!expiredSet.has(index) && downloadUrl)
+      ? downloadUrl
+      : (path ? `/file-api/raw-file?path=${encodeURIComponent(path)}` : '');
+    if (!href) return;
 
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
       const outcome = await executeDesktopSave(() =>
-        pywebviewApi.download_file!(file.download_url, file.name || 'download')
+        pywebviewApi.download_file!(href, file.name || 'download')
       );
       if (outcome === 'failed') {
         window.alert(t('artifacts.downloadFailed', { name: file.name }));
@@ -1045,7 +1095,7 @@ function FileDownloadList({
       return;
     }
     const link = document.createElement('a');
-    link.href = file.download_url;
+    link.href = href;
     link.download = file.name || '';
     document.body.appendChild(link);
     link.click();
@@ -1103,15 +1153,40 @@ function FileDownloadList({
     className={clsx('mt-2 space-y-2', className)}>
       {files.map((file, index) => {
         const ext = getFileExtension(file.name);
-        const expired = expiredSet.has(index);
+        const hasPath = Boolean(file.path?.trim());
+        // Fully unusable only when token probe failed and there is no path fallback.
+        const expired = expiredSet.has(index) && !hasPath;
+        const downloadExpired = expiredSet.has(index) && !hasPath;
+        const mediaSrc = resolveInlineMediaSrc(file);
+        const showImage = Boolean(mediaSrc) && isInlineImageFile(file.mime_type, file.name);
+        const showVideo = Boolean(mediaSrc) && isInlineVideoFile(file.mime_type, file.name);
         const isSkill = isSkillPackageFile(file);
         const displayName = isSkill ? skillPackageDisplayName(file) : file.name;
         const downloadToken = resolveFileDownloadToken(file);
         const isSaving = savingIndex === index;
         const isSaved = savedIndex.has(index);
         return (
+          <div key={`${file.name}-${index}`} className="space-y-2">
+            {showImage && mediaSrc && (
+              <img
+                src={mediaSrc}
+                alt={file.name}
+                className="chat-msg-media-image max-h-80 w-auto cursor-pointer"
+                data-testid="chat-inline-image"
+                onClick={() => onPreview?.(index)}
+              />
+            )}
+            {showVideo && mediaSrc && (
+              <video
+                controls
+                preload="metadata"
+                className="chat-msg-media-image max-h-80 w-full"
+                data-testid="chat-inline-video"
+              >
+                <source src={mediaSrc} type={file.mime_type || 'video/mp4'} />
+              </video>
+            )}
           <div
-            key={`${file.name}-${index}`}
             data-testid="chat-panel-file-download-item"
             data-variant={file.name}
             className={clsx(
@@ -1157,7 +1232,7 @@ function FileDownloadList({
                     </span>
                   )}
                   <span className="text-xs text-text-muted" data-testid="chat-panel-file-download-size">{formatFileSize(file.size)}</span>
-                  {expired && (
+                  {downloadExpired && (
                     <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-mono font-medium text-danger bg-danger/10 leading-none" data-testid="chat-panel-file-download-expired">
                       {t('chatUi.fileExpired')}
                     </span>
@@ -1196,11 +1271,11 @@ function FileDownloadList({
                 data-testid="chat-panel-file-download-btn"
                 className={clsx(
                   'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center  ',
-                  expired
+                  (!file.path?.trim() && downloadExpired)
                     ? 'text-text-muted/40'
                     : 'text-text-muted hover:text-accent hover:bg-accent-subtle'
                 )}
-                disabled={expired}
+                disabled={!file.path?.trim() && downloadExpired}
                 onClick={(event) => {
                   event.stopPropagation();
                   void handleDownload(file, index);
@@ -1208,7 +1283,7 @@ function FileDownloadList({
                 title={t('artifacts.download')}
                 aria-label={t('artifacts.download')}
               >
-                {expired ? (
+                {(!file.path?.trim() && downloadExpired) ? (
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                   </svg>
@@ -1219,6 +1294,7 @@ function FileDownloadList({
                 )}
               </button>
             )}
+          </div>
           </div>
         );
       })}

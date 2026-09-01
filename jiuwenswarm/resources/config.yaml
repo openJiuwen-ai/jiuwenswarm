@@ -342,6 +342,18 @@ models:
         timeout: 1800
       model_config_obj:
         temperature: 0.95
+  # Text-to-video. When unset, falls back to models.image_gen credentials
+  # (same DashScope / provider API) with default model wan2.6-t2v.
+  video_gen:
+      model_client_config:
+        api_base: ${VIDEO_GEN_API_BASE}
+        api_key: ${VIDEO_GEN_API_KEY}
+        model_name: ${VIDEO_GEN_MODEL_NAME}
+        client_provider: ${VIDEO_GEN_PROVIDER}
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.95
   # ---- AgentOS 备份模型（可选，不预置；需手动添加）----
   # 此处不预置任何 agentos 条目：jiuwenswarm-init 生成的 config.yaml 不含 agentos 字段。
   # 如需启用备份模型，请手动在 config.yaml 添加 models.agentos 列表段（见文档）。

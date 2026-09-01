@@ -20,6 +20,7 @@ _VERB_BY_TOOL: dict[str, str] = {
     "write": "写入", "write_file": "写入", "write_text_file": "写入",
     "create": "写入", "create_file": "写入", "write_memory": "写入",
     "coding_memory_write": "写入", "upload_file": "上传", "send_file_to_user": "发送文件",
+    "generate_image": "生成图片", "generate_video": "生成视频",
     "read": "读取", "read_file": "读取", "read_text_file": "读取", "view": "读取",
     "read_memory": "读取", "memory_get": "读取", "coding_memory_read": "读取",
     "read_mcp_resource": "读取",

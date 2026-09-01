@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import asyncio
+import os
 import importlib
 import json
 import threading
@@ -1152,6 +1153,118 @@ def test_media_capability_config_uses_multimodal_hot_reload_scope():
     for env_key in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS:
         change_set = app_web_handlers._ConfigChangeSet({env_key: "true"}, [])
         assert change_set.reload_scopes == {"multimodal"}
+
+
+@pytest.mark.parametrize(
+    ("param_key", "env_key"),
+    [
+        ("video_gen_api_base", "VIDEO_GEN_API_BASE"),
+        ("video_gen_api_key", "VIDEO_GEN_API_KEY"),
+        ("video_gen_model", "VIDEO_GEN_MODEL_NAME"),
+        ("video_gen_provider", "VIDEO_GEN_PROVIDER"),
+    ],
+)
+def test_video_gen_keys_are_settable_from_config_panel(param_key, env_key):
+    """video_gen must be readable/writable via config.get / config.set."""
+    assert app_web_handlers._CONFIG_SET_ENV_MAP.get(param_key) == env_key
+    assert param_key in app_web_handlers.CONFIG_KEYS
+
+
+@pytest.mark.parametrize(
+    "env_key",
+    [
+        "VIDEO_GEN_API_BASE",
+        "VIDEO_GEN_API_KEY",
+        "VIDEO_GEN_MODEL_NAME",
+        "VIDEO_GEN_PROVIDER",
+    ],
+)
+def test_video_gen_keys_trigger_multimodal_reload(env_key):
+    """Saving video_gen config must yield the multimodal reload scope."""
+    assert env_key in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+    change = app_web_handlers._ConfigChangeSet(env_updates={env_key: "x"}, yaml_updated=[])
+    assert change.reload_scopes == {"multimodal"}
+
+
+@pytest.mark.asyncio
+async def test_config_set_persists_video_gen_keys_to_env_file(tmp_path, monkeypatch):
+    """VIDEO_GEN_* written by config.set must land in .env and read back via config.get."""
+    env_file = tmp_path / ".env"
+    env_file.write_text('API_KEY="existing"\n', encoding="utf-8")
+    monkeypatch.setattr(app_web_handlers, "_ENV_FILE", env_file)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {"defaults": []}})
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        lambda: type(
+            "Registry",
+            (),
+            {"get_crypto_provider": lambda self: None},
+        )(),
+    )
+    for env_key in ("VIDEO_GEN_API_BASE", "VIDEO_GEN_API_KEY", "VIDEO_GEN_MODEL_NAME", "VIDEO_GEN_PROVIDER"):
+        monkeypatch.setenv(env_key, "")
+
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.set"](
+        object(),
+        "req-set",
+        {
+            "video_gen_api_base": "https://dashscope.aliyuncs.com/api/v1",
+            "video_gen_api_key": "sk-video-gen",
+            "video_gen_model": "wan2.6-t2v",
+            "video_gen_provider": "DashScope",
+        },
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    updated = channel.responses[-1]["payload"]["updated"]
+    assert set(updated) == {
+        "video_gen_api_base",
+        "video_gen_api_key",
+        "video_gen_model",
+        "video_gen_provider",
+    }
+
+    written = env_file.read_text(encoding="utf-8")
+    assert 'VIDEO_GEN_API_KEY="sk-video-gen"' in written
+    assert 'VIDEO_GEN_PROVIDER="DashScope"' in written
+    assert 'API_KEY="existing"' in written
+    assert os.environ["VIDEO_GEN_API_KEY"] == "sk-video-gen"
+
+    await channel.methods["config.get"](object(), "req-get", {}, "sess-1")
+    payload = channel.responses[-1]["payload"]
+    assert payload["video_gen_model"] == "wan2.6-t2v"
+    assert payload["video_gen_provider"] == "DashScope"
+
+
+@pytest.mark.asyncio
+async def test_config_set_rejects_unknown_video_gen_provider(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(app_web_handlers, "_ENV_FILE", env_file)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {"defaults": []}})
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        lambda: type(
+            "Registry",
+            (),
+            {"get_crypto_provider": lambda self: None},
+        )(),
+    )
+
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.set"](
+        object(), "req-set", {"video_gen_provider": "NotAProvider"}, "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
 
 
 def test_media_capability_provider_identity_has_exact_env_contract():

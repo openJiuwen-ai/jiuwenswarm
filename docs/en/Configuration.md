@@ -33,12 +33,13 @@ JiuwenSwarm supports multiple model types to meet diverse scenario requirements:
 | Model Type       | Purpose                                                                 | Capability Requirements                                                                 | Required |
 | ---------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------- |
 | **Default Model** | Core dialogue model; handles text chat, task planning, tool calling, etc | Must support **Function Calling** and multi-turn dialogue                                 | ✅ Yes    |
-| **Video Model**   | Video understanding and analysis; supports video Q&A, scene detection    | Must support **video understanding** and process video input                             | ⭕ No     |
+| **Video Vision Model** | Video understanding and analysis; supports video Q&A, scene detection | Must support **video understanding** and process video input                             | ⭕ No     |
 | **Audio Model**   | Speech recognition and processing; supports ASR, audio content analysis   | Must support **speech recognition / audio understanding**                                 | ⭕ No     |
 | **Vision Model**  | Image understanding and analysis; supports image Q&A, OCR, captioning    | Must support **image understanding** and process image input                              | ⭕ No     |
 | **Image Generation Model** | Generate images from text descriptions; supports AI painting, image creation | Must support **image generation** and create images from text | ⭕ No     |
+| **Video Generation Model** | Generate videos from text descriptions; supports text-to-video | Must support **video generation** and create videos from text | ⭕ No     |
 
-> 💡 **Tip**: The default model is essential for system operation and must be configured correctly. Video, audio, vision, and image generation models are optional; configure them only when multimodal capabilities are needed. The image generation model is not shown in the frontend configuration panel yet; configure it via the main config (`models.image_gen`) or environment variables (`IMAGE_GEN_API_BASE`, etc.).
+> 💡 **Tip**: The default model is essential for system operation and must be configured correctly. Video vision, audio, vision, image generation, and video generation models are optional; configure them only when multimodal capabilities are needed. The image generation model is not shown in the frontend configuration panel yet; configure it via the main config (`models.image_gen`) or environment variables (`IMAGE_GEN_API_BASE`, etc.).
 
 ### 2.2 Configuration Fields
 
@@ -49,7 +50,7 @@ Each model type supports the following parameters:
 | `api_base`       | `api_base`                  | Base URL for model API        | Use the provider's API endpoint; **do not include `/chat/completions`**; appended automatically |
 | `api_key`        | `api_key`                   | Model API key                | Obtained from the model provider; keep confidential                                           |
 | `model`          | `model_name`                | Model identifier             | Use exact model ID such as `gpt-4o`, `claude-3-opus`, `deepseek-chat`                                         |
-| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
+| `model_provider` | `client_provider`           | Model protocol/provider type that determines request format and auth | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter`, `OpenAIAccount` for API format adaptation; video/audio/vision models currently support `OpenAI` only, and the video generation model currently supports `DashScope` only |
 
 > 💡 **Field Mapping**: The frontend panel uses `model` / `model_provider` as display field names; when saved to `config.yaml` they are mapped to backend fields `model_name` / `client_provider`. Both refer to the same thing, only the naming in the config file differs.
 
@@ -114,7 +115,7 @@ The first item in the list is the default model; you can drag to reorder or clic
 
 Once video, audio, or vision models are configured, JiuwenSwarm enables corresponding multimodal features automatically. Below are application scenarios for each model type:
 
-#### Video Model
+#### Video Vision Model
 
 Using **GLM-4.6V-Flash11** video understanding API as an example:
 

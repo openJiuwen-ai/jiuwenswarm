@@ -10,7 +10,8 @@ elements, each self-gated by the config source and filtered against the swarm
 * ``swarm.skill_retrieval`` — agentic installed skill tree retrieval tools.
 * ``swarm.user_todos`` — the personal todo tool.
 * ``swarm.video`` — the video-understanding tool (``models.video`` gated).
-* ``swarm.image_gen`` — the image-generation tool (``IMAGE_GEN_API_KEY`` gated).
+* ``swarm.image_gen`` — image/video generation tools (``IMAGE_GEN_API_KEY`` /
+  ``VIDEO_GEN_API_KEY`` gated; video falls back to image_gen credentials).
 * ``swarm.xiaoyi_phone`` — the xiaoyi phone tools (channel-switch gated).
 * ``swarm.code_extra_tools`` — code-mode-exclusive ``acp_chat``.
 
@@ -40,6 +41,7 @@ from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
+    apply_video_gen_model_config_from_yaml,
     apply_video_model_config_from_yaml,
     apply_vision_model_config_from_yaml,
     complete_multimodal_model_configured,
@@ -54,7 +56,10 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
 from jiuwenswarm.agents.harness.common.tools.user_todo_tool import get_decorated_tools
-from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
+from jiuwenswarm.agents.harness.common.tools.video_tools import (
+    generate_video,
+    video_understanding,
+)
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     add_collection,
     call_phone,
@@ -416,11 +421,18 @@ def _build_video_tools(ctx: SwarmBuildContext) -> list[Any]:
 
 
 def _build_image_gen_tools(ctx: SwarmBuildContext) -> list[Any]:
-    """Build the image-generation tool when ``models.image_gen`` is configured."""
-    apply_image_gen_model_config_from_yaml(ctx.config or {})
-    if not os.getenv("IMAGE_GEN_API_KEY"):
+    """Build image/video generation tools when media-gen credentials exist."""
+    config = ctx.config or {}
+    apply_image_gen_model_config_from_yaml(config)
+    apply_video_gen_model_config_from_yaml(config)
+    tools: list[Any] = []
+    if os.getenv("IMAGE_GEN_API_KEY"):
+        tools.append(generate_image)
+    if os.getenv("VIDEO_GEN_API_KEY"):
+        tools.append(generate_video)
+    if not tools:
         return []
-    return _mark_stateless([generate_image])
+    return _mark_stateless(tools)
 
 
 def _build_xiaoyi_phone_tools(ctx: SwarmBuildContext) -> list[Any]:
@@ -523,10 +535,13 @@ def build_video_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[An
 @harness_element(
     kind=ElementKind.TOOL,
     name=IMAGE_GEN,
-    description="Image-generation tool (built only when IMAGE_GEN_API_KEY is set).",
+    description=(
+        "Image/video generation tools (built when IMAGE_GEN_API_KEY or "
+        "VIDEO_GEN_API_KEY is set; video falls back to image_gen credentials)."
+    ),
 )
 def build_image_gen_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
-    """Build the whitelist-filtered image-generation tools."""
+    """Build the whitelist-filtered image/video generation tools."""
     return _filter_whitelist(_build_image_gen_tools(ctx))
 
 

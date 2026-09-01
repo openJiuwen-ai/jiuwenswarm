@@ -298,12 +298,16 @@ from jiuwenswarm.server.utils.stream_utils import (
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
+    apply_video_gen_model_config_from_yaml,
     apply_video_model_config_from_yaml,
     apply_vision_model_config_from_yaml,
     complete_multimodal_model_configured,
     multimodal_model_enabled,
 )
-from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
+from jiuwenswarm.agents.harness.common.tools.video_tools import (
+    generate_video,
+    video_understanding,
+)
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 
 from jiuwenswarm.agents.harness.common.tools import (
@@ -314,6 +318,10 @@ from jiuwenswarm.agents.harness.common.tools import (
     is_skill_retrieval_enabled,
     skill_sources_from_manager,
     SymphonyToolkit,
+)
+from jiuwenswarm.agents.harness.common.tools.send_file_to_user import (
+    bind_active_send_file_toolkit,
+    clear_active_send_file_toolkit,
 )
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
@@ -1467,6 +1475,7 @@ class JiuWenSwarmDeepAdapter:
         self._audio_tools_registered: bool = False
         self._video_tool_registered: bool = False
         self._image_gen_tool_registered: bool = False
+        self._video_gen_tool_registered: bool = False
         self._model: Model | None = None
         self._model_client_config: ModelClientConfig | None = None
         self._model_request_config: ModelRequestConfig | None = None
@@ -1551,6 +1560,7 @@ class JiuWenSwarmDeepAdapter:
         self._audio_model_config: AudioModelConfig | None = None
         self._video_model_config: bool = False
         self._image_gen_model_config: bool = False
+        self._video_gen_model_config: bool = False
         self._vision_tools: list[Any] = []
         self._audio_tools: list[Any] = []
         self._instance_overrides: dict[str, Any] = {}
@@ -4377,6 +4387,17 @@ class JiuWenSwarmDeepAdapter:
             return False
         return True
 
+    @staticmethod
+    def _build_video_gen_model_config(
+        config_base: dict[str, Any],
+    ) -> bool:
+        """Build video generation config; falls back to image_gen credentials."""
+        apply_video_gen_model_config_from_yaml(config_base)
+        if not os.getenv("VIDEO_GEN_API_KEY"):
+            logger.info("[JiuWenSwarmDeepAdapter] video_gen tool skipped: incomplete config")
+            return False
+        return True
+
     def _iter_runtime_audio_tools(self, agent_id: str | None) -> list[Any]:
         """Return audio tools only while the audio capability is enabled."""
         if self._audio_model_config is None:
@@ -4398,6 +4419,7 @@ class JiuWenSwarmDeepAdapter:
         self._audio_model_config = self._build_audio_model_config(config_base)
         self._video_model_config = self._build_video_model_config(config_base)
         self._image_gen_model_config = self._build_image_gen_model_config(config_base)
+        self._video_gen_model_config = self._build_video_gen_model_config(config_base)
 
         for tool in self._vision_tools:
             tool.vision_model_config = self._vision_model_config
@@ -4878,6 +4900,14 @@ class JiuWenSwarmDeepAdapter:
             enabled=bool(self._image_gen_model_config),
             create_fn=lambda: mark_stateless([generate_image]),
             warn_label="generate_image tool",
+        )
+
+        _, self._video_gen_tool_registered = self._sync_tool_group(
+            current_tools=mark_stateless([generate_video]),
+            registered=self._video_gen_tool_registered,
+            enabled=bool(self._video_gen_model_config),
+            create_fn=lambda: mark_stateless([generate_video]),
+            warn_label="generate_video tool",
         )
 
     def _sync_paid_search_tool_for_runtime(self) -> None:
@@ -7619,6 +7649,19 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
 
+        # generate_video tool: video_gen config, falling back to image_gen credentials
+        self._video_gen_tool_registered = False
+        if self._video_gen_model_config:
+            try:
+                self._register_shared_tool(generate_video)
+                tool_cards.append(generate_video.card)
+                self._video_gen_tool_registered = True
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] generate_video tool registration failed: %s",
+                    exc,
+                )
+
         # 小艺手机端工具：由 channels.xiaoyi.phone_tools_enabled 控制
         config_base = get_config()
         xiaoyi_phone_tools_enabled = (
@@ -8841,6 +8884,11 @@ class JiuWenSwarmDeepAdapter:
                     user_id=_CRON_TOOL_USER_ID.get(),
                     project_dir=self._project_dir,
                 )
+            bind_active_send_file_toolkit(self._send_file_toolkit)
+        else:
+            # Avoid leaving a prior request's session toolkit registered when
+            # this request does not enable send_file (misdelivery risk).
+            clear_active_send_file_toolkit(session_id=session_id)
 
     def _refresh_acp_runtime_tools(
         self,

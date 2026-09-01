@@ -149,6 +149,10 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "VISION_ENABLED",
     "AUDIO_ENABLED",
     "VIDEO_ENABLED",
+    "VIDEO_GEN_PROVIDER",
+    "VIDEO_GEN_MODEL_NAME",
+    "VIDEO_GEN_API_BASE",
+    "VIDEO_GEN_API_KEY",
 }
 
 
@@ -961,7 +965,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
-# default 模型 + video/audio/vision 多模型
+# default 模型 + video/audio/vision/video_gen 多模型
 _CONFIG_SET_ENV_MAP = {
     # default 模型（主对话）
     "model_provider": "MODEL_PROVIDER",
@@ -969,7 +973,7 @@ _CONFIG_SET_ENV_MAP = {
     "api_base": "API_BASE",
     "api_key": "API_KEY",
     "endpoint_profile": "ENDPOINT_PROFILE",
-    # video 模型
+    # video vision 模型（视频理解）
     "video_api_base": "VIDEO_API_BASE",
     "video_api_key": "VIDEO_API_KEY",
     "video_model": "VIDEO_MODEL_NAME",
@@ -996,6 +1000,11 @@ _CONFIG_SET_ENV_MAP = {
     "vision_vendor_key": "VISION_VENDOR_KEY",
     "vision_plan": "VISION_PLAN",
     "vision_enabled": "VISION_ENABLED",
+    # video_gen model (text-to-video)
+    "video_gen_api_base": "VIDEO_GEN_API_BASE",
+    "video_gen_api_key": "VIDEO_GEN_API_KEY",
+    "video_gen_model": "VIDEO_GEN_MODEL_NAME",
+    "video_gen_provider": "VIDEO_GEN_PROVIDER",
     # 其他
     "email_address": "EMAIL_ADDRESS",
     "email_token": "EMAIL_TOKEN",

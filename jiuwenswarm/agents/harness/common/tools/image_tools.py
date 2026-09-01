@@ -339,6 +339,7 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
     # 与主链路（apply_image_gen_model_config_from_yaml）同源：直接读 config.yaml
     # 的 models.image_gen.model_client_config，避免与主链路配置脱节。
     from jiuwenswarm.common.config import get_config
+
     mc = _get_model_config(get_config() or {}, "image_gen")
     api_key = str(mc.get("api_key") or os.getenv("IMAGE_GEN_API_KEY") or os.getenv("API_KEY") or "").strip()
     api_base = str(
@@ -503,6 +504,23 @@ async def generate_image(
         response_parts.append(f"Revised prompt: {revised_prompt}")
     if original_url:
         response_parts.append(f"Original URL: {original_url}")
+
+    try:
+        from jiuwenswarm.agents.harness.common.tools.send_file_to_user import (
+            deliver_file_to_user,
+        )
+
+        delivery = await deliver_file_to_user(image_path)
+        if delivery:
+            response_parts.append(f"Delivered to user: {delivery}")
+    except Exception as deliver_err:
+        logger.warning(
+            "[generate_image] auto chat.file delivery failed: %s", deliver_err
+        )
+        response_parts.append(
+            "Note: image was saved but automatic delivery failed; "
+            "use send_file_to_user with the saved path if needed."
+        )
 
     return "\n".join(response_parts)
 
