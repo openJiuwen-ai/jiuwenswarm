@@ -108,12 +108,24 @@ def subagent_enabled(config_base: dict[str, Any], name: str, default: bool = Fal
     return spec.get("enabled") is True
 
 
-def config_dir_name(*, profile: str = "off", prefix: str = "") -> str:
+TASK_MODE_LOCATE = "locate"
+TASK_MODE_CODING = "coding"
+PROMPT_MODE_LOCATE = "locate"
+PROMPT_MODE_PRODUCT = "product"
+
+
+def config_dir_name(
+    *, profile: str = "off", prefix: str = "", task_mode: str = TASK_MODE_LOCATE
+) -> str:
     """Folder name that states the profile, e.g. ``cfg_b__graph``."""
     resolved = (profile or "off").strip().lower()
     head = f"cfg_{prefix}" if prefix else "cfg_b"
     tag = "graph-off" if resolved == "off" else resolved
-    return f"{head}__{tag}"
+    name = f"{head}__{tag}"
+    mode = (task_mode or TASK_MODE_LOCATE).strip().lower()
+    if mode == TASK_MODE_CODING:
+        name += "__coding"
+    return name
 
 
 def cfg_paths(run_root: Path, name: str) -> dict[str, Path]:
@@ -208,6 +220,17 @@ CONTEXTBENCH_CODE_HIDDEN_TOOLS = (
     "edit_file",
     "write_file",
 )
+# Coding exam: graph on Root. Keep edit/bash so the agent can patch.
+CODING_FIND_HIDDEN_TOOLS = (
+    "grep",
+    "glob",
+    "task_tool",
+)
+# Coding exam: graph on code_agent. Keep edit/bash; hide text search only.
+CODING_CODE_HIDDEN_TOOLS = (
+    "grep",
+    "glob",
+)
 
 
 class EvalHideGrepRail(DeepAgentRail):
@@ -282,10 +305,11 @@ def _code_agent_profile_kwargs(
     graph_config: Any,
     *,
     inject_builtin_plan_agents: bool = True,
+    prompt_mode: str = PROMPT_MODE_LOCATE,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "code_graph_profile": flags.profile,
-        "code_graph_prompt_mode": "locate",
+        "code_graph_prompt_mode": prompt_mode,
     }
     if flags.enabled:
         kwargs["code_graph_config"] = graph_config
@@ -333,12 +357,15 @@ def create_coding_agent(
     cache_dir: str | Path | None = None,
     config_base: dict[str, Any] | None = None,
     code_agent_system_prompt: str | None = None,
+    prompt_mode: str = PROMPT_MODE_LOCATE,
+    extra_hide_on_code_agent: tuple[str, ...] | None = None,
 ) -> CodingAgentHandle:
     """Create the UI Single Coding Agent with an in-memory profile overlay.
 
     ``off`` is the original product agent (no graph). ``graph`` gives
-    ``code_agent`` the find_* tools. ContextBench uses locate-exam prompts;
-    the product TUI uses the product prompt.
+    ``code_agent`` the find_* tools. ``prompt_mode=locate`` hangs
+    ``submit_code_context`` (retrieval exam). ``prompt_mode=product`` is
+    the coding exam: locate then edit, no submit tool.
     """
     repo = Path(repo_root).expanduser().resolve()
     if not repo.is_dir():
@@ -416,7 +443,10 @@ def create_coding_agent(
         # Locate exam: hide bash/grep on CA whenever it owns graph tools.
         # Leaving bash (run12 baseline+CA) let a subagent `git checkout` and
         # poison the shared worktree for the next instance.
-        code_hide = CONTEXTBENCH_CODE_HIDDEN_TOOLS if graph_on_code_agent else ()
+        if extra_hide_on_code_agent is not None:
+            code_hide = extra_hide_on_code_agent
+        else:
+            code_hide = CONTEXTBENCH_CODE_HIDDEN_TOOLS if graph_on_code_agent else ()
         spec = build_code_agent_config(
             model,
             workspace=str(repo),
@@ -432,6 +462,7 @@ def create_coding_agent(
                 flags,
                 graph_config,
                 inject_builtin_plan_agents=not graph_on_code_agent,
+                prompt_mode=prompt_mode,
             ),
         )
         spec.factory_kwargs = {**graph_kwargs, **(spec.factory_kwargs or {})}
@@ -476,7 +507,7 @@ def create_coding_agent(
                 CodeGraphProfileRail(
                     flags.profile,
                     config=graph_config,
-                    prompt_mode="locate",
+                    prompt_mode=prompt_mode,
                 ),
             )
     import inspect

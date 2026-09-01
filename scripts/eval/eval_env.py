@@ -26,7 +26,7 @@ from pathlib import Path
 _EVAL_DIR = Path(__file__).resolve().parent
 JIUWEN_ROOT = _EVAL_DIR.parents[1]
 DEFAULT_OUTPUT = (
-    JIUWEN_ROOT / "docs" / "ai" / "experiments-contextbench" / "runs" / "scratch-contextbench"
+    JIUWEN_ROOT / "docs" / "ai" / "experiments" / "03-contextbench-before-productization" / "runs" / "scratch-contextbench"
 )
 GOLD_PARQUET_NAME = "contextbench_verified.parquet"
 
