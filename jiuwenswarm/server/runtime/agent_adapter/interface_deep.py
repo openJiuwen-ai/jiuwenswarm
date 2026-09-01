@@ -616,9 +616,9 @@ def _permission_user_text_for_request(request: AgentRequest) -> str:
 
 logger = logging.getLogger(__name__)
 
+
 def _diag_auth_headers(cfg: Any) -> str:
     """Diagnostic snapshot of cfg.auth_headers (value prefix + length only).
-
     Prints each header value's first 15 chars + total length, so logs reveal
     whether a token was injected (e.g. ``Authorization[len=42]: Bearer ghp_abc``)
     or left empty/placeholder (``Authorization[len=8]: Bearer ``). The full
@@ -1459,9 +1459,6 @@ def _processor_exists(processor_name: str) -> bool:
     This guards against processors that exist in a newer openjiuwen but not in the pinned version.
     """
     try:
-        from openjiuwen.harness.context_engineer.context_processor_rail import (
-            ContextProcessorRail,
-        )
         preset_processors = getattr(ContextProcessorRail, "_PRESET_PROCESSORS", {})
         return processor_name in preset_processors
     except Exception:
