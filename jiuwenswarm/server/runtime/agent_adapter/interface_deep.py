@@ -647,7 +647,7 @@ _DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG: dict[str, Any] = {
 _DEFAULT_TASK_LOOP_NO_PROGRESS_GUARD: dict[str, Any] = {
     "enabled": False,
     "max_consecutive_empty_answers": 3,
-    "min_answer_chars": 80,
+    "min_answer_chars": 20,
 }
 
 _PERSISTENT_CHECKPOINTER_LOCK: asyncio.Lock | None = None

@@ -33,7 +33,7 @@ def test_config_defaults():
     config = NoProgressGuardConfig()
     assert config.enabled is False
     assert config.max_consecutive_empty_answers == 3
-    assert config.min_answer_chars == 80
+    assert config.min_answer_chars == 20
     assert config.steering_nudge_threshold == 2
 
 

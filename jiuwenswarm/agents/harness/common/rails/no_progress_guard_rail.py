@@ -31,7 +31,7 @@ class NoProgressGuardConfig:
 
     enabled: bool = False
     max_consecutive_empty_answers: int = 3
-    min_answer_chars: int = 80
+    min_answer_chars: int = 20
     steering_nudge_threshold: int = 2  # Nudge on the (max-1)th empty iteration
 
 

@@ -4353,7 +4353,7 @@ def test_task_loop_no_progress_guard_config_defaults_and_overrides():
     assert interface_deep_module._task_loop_no_progress_guard_config({}) == {
         "enabled": False,
         "max_consecutive_empty_answers": 3,
-        "min_answer_chars": 80,
+        "min_answer_chars": 20,
     }
 
     assert interface_deep_module._task_loop_no_progress_guard_config(
@@ -4361,7 +4361,7 @@ def test_task_loop_no_progress_guard_config_defaults_and_overrides():
     ) == {
         "enabled": False,
         "max_consecutive_empty_answers": 3,
-        "min_answer_chars": 80,
+        "min_answer_chars": 20,
     }
 
     assert interface_deep_module._task_loop_no_progress_guard_config(
