@@ -125,6 +125,57 @@ def _path_bash_status(language: str, path: Optional[str]) -> str:
     return f"可用，路径 `{path}`" if language == "cn" else f"available at `{path}`"
 
 
+def _tool_routing_prompt(
+    language: str,
+    *,
+    bash_available: bool = True,
+    powershell_available: bool = True,
+) -> str:
+    """Return the shared command-tool routing contract."""
+    if language == "cn":
+        if bash_available:
+            posix_rule = (
+                "- 普通 POSIX 命令、Bash 脚本、`grep`、`find`、`sed`、`awk`、`mkdir -p` 使用 `bash`；"
+                "`bash` 工具本身已经固定了 Shell，不需要 `shell_type`。"
+            )
+        else:
+            posix_rule = (
+                "- 当前未检测到可用 Bash；不要直接使用 POSIX 命令，改用可用的 Windows Shell 或专用工具。"
+            )
+        windows_rule = (
+            "- PowerShell cmdlet、Windows 原生路径、注册表、服务和 `$env:` 变量使用 `powershell`。"
+            if powershell_available
+            else "- 当前未检测到 PowerShell；Windows 原生命令使用可用的 `cmd`。"
+        )
+        return f"""工具与 Shell 选择：
+- 文件读取、搜索和编辑优先使用 `read_file`、`grep`、`glob`、`edit_file`、`write_file` 等专用工具，不要为了这些操作调用 Shell。
+{posix_rule}
+{windows_rule}
+- 只有在需要显式参数化 Shell、后台启动或当前没有合适的专用 Shell 工具时，才使用 `mcp_exec_command`。
+- 调用 `mcp_exec_command` 时必须同时提供 `command` 和 `shell_type`；`shell_type` 只能是 `bash`、`powershell`、`cmd`、`sh`，禁止省略，也禁止使用 `auto`。
+- 不要在 Bash 中包裹 PowerShell，也不要在 PowerShell 中拼接 Bash 语法。"""
+
+    if bash_available:
+        posix_rule = (
+            "- Use `bash` for ordinary POSIX commands, Bash scripts, `grep`, `find`, `sed`, `awk`, "
+            "and `mkdir -p`; the `bash` tool already fixes the Shell and does not need `shell_type`."
+        )
+    else:
+        posix_rule = "- Bash is unavailable; do not issue raw POSIX commands. Use an available Windows Shell or a dedicated tool."
+    windows_rule = (
+        "- Use `powershell` for PowerShell cmdlets, Windows-native paths, registry, services, and `$env:` variables."
+        if powershell_available
+        else "- PowerShell is unavailable; use the available `cmd` tool for Windows-native commands."
+    )
+    return f"""Tool and Shell selection:
+- Prefer dedicated tools such as `read_file`, `grep`, `glob`, `edit_file`, and `write_file` for file reads, searches, and edits instead of invoking a Shell.
+{posix_rule}
+{windows_rule}
+- Use `mcp_exec_command` only when explicit Shell parameterization, background execution, or a dedicated Shell tool is unavailable.
+- Every `mcp_exec_command` call must provide both `command` and `shell_type`; `shell_type` must be `bash`, `powershell`, `cmd`, or `sh`. Do not omit it or use `auto`.
+- Do not wrap PowerShell in Bash or mix Bash syntax into PowerShell."""
+
+
 def build_shell_environment_prompt(language: str, os_type: str) -> str:
     """Return shell capability and selection guidance for the current host."""
     path_bash = shutil.which("bash")
@@ -143,7 +194,7 @@ Shell 选择规则：
 - Windows 且 Git Bash 不可用、PATH bash 也不可用或只是 WSL stub 时，不要使用 POSIX 命令；优先使用 PowerShell 或 cmd。
 - PowerShell cmdlet 不要包在 bash 里执行，应直接使用 PowerShell。
 - 安装 Python 依赖时，使用 `python -m pip install` 而非 `pip install`，确保依赖安装到与执行脚本相同的 Python 环境中。
-- 使用与当前平台匹配的命令和路径语法。"""
+{_tool_routing_prompt(language, bash_available=bool(git_bash or (path_bash and not _is_wsl_bash_path(path_bash))), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""
         return f"""Shell capabilities:
 - PowerShell: {_status(language, powershell)}
 - Git Bash: {_status(language, git_bash)}
@@ -154,7 +205,9 @@ Shell selection rules:
 - On Windows, when Git Bash is unavailable and PATH bash is unavailable or only a WSL stub, do not use POSIX commands; prefer PowerShell or cmd.
 - Do not wrap PowerShell cmdlets in bash; invoke PowerShell directly.
 - When installing Python dependencies, use `python -m pip install` instead of `pip install` to ensure packages are installed into the same Python environment that will execute the scripts.
-- Use command and path syntax that matches the current platform."""
+- Use command and path syntax that matches the current platform.
+
+{_tool_routing_prompt(language, bash_available=bool(git_bash or (path_bash and not _is_wsl_bash_path(path_bash))), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""
 
     shell_path = shutil.which("bash") or shutil.which("sh")
     if language == "cn":
@@ -163,10 +216,14 @@ Shell selection rules:
 
 Shell 选择规则：
 - Linux/macOS 使用 bash/sh 风格命令；bash/sh 不可用时，使用当前平台实际可用的 Shell 或专用工具。
-- 使用与当前平台匹配的命令和路径语法。"""
+- 使用与当前平台匹配的命令和路径语法。
+
+{_tool_routing_prompt(language, bash_available=bool(shutil.which("bash")), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""
     return f"""Shell capabilities:
 - Bash/sh: {_status(language, shell_path)}
 
 Shell selection rules:
 - On Linux/macOS, use bash/sh-style commands; if bash/sh is unavailable, use the Shell actually available on the platform or a dedicated tool.
-- Use command and path syntax that matches the current platform."""
+- Use command and path syntax that matches the current platform.
+
+{_tool_routing_prompt(language, bash_available=bool(shutil.which("bash")), powershell_available=bool(shutil.which("pwsh") or shutil.which("powershell")))}"""

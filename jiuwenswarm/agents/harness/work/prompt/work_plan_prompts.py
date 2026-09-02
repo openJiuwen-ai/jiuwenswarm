@@ -65,7 +65,7 @@ WORK_ENTER_PLAN_MODE_INSTRUCTIONS_CN = """
 ### 可用工具
 - 只读文件工具：read_file、grep、list_files、glob
 - 联网工具：网页搜索、网页抓取
-- 只读命令：bash（仅限查看类命令）
+- 只读命令：bash（POSIX）或 powershell（Windows 原生语法，仅限查看类命令）
 - 计划文件写入：write_file、edit_file（只能写当前计划文件）
 - 交互工具：ask_user
 - 结束规划：exit_plan_mode
@@ -74,7 +74,7 @@ WORK_ENTER_PLAN_MODE_INSTRUCTIONS_CN = """
 - 不要修改计划文件以外的任何文件
 - 不要发送消息或文件、创建定时任务、安装卸载技能
 - 不要调用任何会改变外部系统状态的工具
-- 不要用 bash 执行写操作（mkdir、touch、rm、mv、cp 等）
+- 不要用任何 Shell 执行写操作（mkdir、touch、rm、mv、cp 等）
 - 不要用 switch_mode 退出计划模式
 
 ### 工作流
@@ -116,7 +116,7 @@ effects.
 ### Available Tools
 - Read-only file tools: read_file, grep, list_files, glob
 - Web tools: web search, page fetch
-- Read-only shell: bash (inspection commands only)
+- Read-only shell: bash for POSIX inspection commands, or powershell for Windows-native inspection commands
 - Plan file writes: write_file, edit_file (the current plan file only)
 - Interactive: ask_user
 - Control: exit_plan_mode
@@ -125,7 +125,7 @@ effects.
 - Do not modify any file other than the plan file
 - Do not send messages or files, create scheduled tasks, install/uninstall skills
 - Do not call any tool that changes external system state
-- Do not use bash for writes (mkdir, touch, rm, mv, cp, ...)
+- Do not use any Shell for writes (mkdir, touch, rm, mv, cp, ...)
 - Do not use switch_mode to leave plan mode
 
 ### Workflow
@@ -204,6 +204,7 @@ WORK_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     "list_files",
     "glob",
     "bash",
+    "powershell",
     # 计划文件写入（AgentModeRail 会额外限制只能写 plan 文件）
     "write_file",
     "edit_file",

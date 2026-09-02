@@ -66,7 +66,7 @@ DESIGN_ENTER_PLAN_MODE_INSTRUCTIONS_CN = """
 ### 可用工具
 - 只读文件工具：read_file、grep、list_files、glob
 - 联网工具：网页搜索、网页抓取
-- 只读命令：bash（仅限查看类命令）
+- 只读命令：bash（POSIX）或 powershell（Windows 原生语法，仅限查看类命令）
 - 技能加载：skill_tool（可加载 ppt-creation 的 SKILL.md 做只读调研）
 - 计划文件写入：write_file、edit_file（只能写当前计划文件）
 - 交互工具：ask_user
@@ -74,7 +74,7 @@ DESIGN_ENTER_PLAN_MODE_INSTRUCTIONS_CN = """
 
 ### 禁止事项
 - 不要调用 code 工具执行 PptxGenJS 生成幻灯片
-- 不要调用 bash 运行 QA 脚本或合并模板
+- 不要调用任何 Shell 运行 QA 脚本或合并模板
 - 不要修改计划文件以外的任何文件
 - 不要发送消息或文件、创建定时任务、安装卸载技能
 - 不要用 switch_mode 退出计划模式
@@ -120,7 +120,7 @@ effects.
 ### Available Tools
 - Read-only file tools: read_file, grep, list_files, glob
 - Web tools: web search, page fetch
-- Read-only shell: bash (inspection commands only)
+- Read-only shell: bash for POSIX inspection commands, or powershell for Windows-native inspection commands
 - Skill loader: skill_tool (may load ppt-creation's SKILL.md for read-only research)
 - Plan file writes: write_file, edit_file (the current plan file only)
 - Interactive: ask_user
@@ -128,7 +128,7 @@ effects.
 
 ### Prohibited
 - Do not call the code tool to run PptxGenJS for slide generation
-- Do not call bash to run QA scripts or merge templates
+- Do not call any Shell to run QA scripts or merge templates
 - Do not modify any file other than the plan file
 - Do not send messages or files, create scheduled tasks, install/uninstall skills
 - Do not use switch_mode to leave plan mode
@@ -214,6 +214,7 @@ DESIGN_PLAN_ALLOWED_TOOLS: tuple[str, ...] = (
     "list_files",
     "glob",
     "bash",
+    "powershell",
     # 计划文件写入（AgentModeRail 会额外限制只能写 plan 文件）
     "write_file",
     "edit_file",

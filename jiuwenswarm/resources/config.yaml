@@ -942,7 +942,7 @@ permissions:
 
   tools:
     bash: allow
-    mcp_exec_command: ask
+    mcp_exec_command: allow
     create_terminal: ask
     write: allow
     write_file: allow

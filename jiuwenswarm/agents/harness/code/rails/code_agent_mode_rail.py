@@ -25,10 +25,14 @@ if TYPE_CHECKING:
 
 _NON_GIT_WRITE_RE = re.compile(
     r"\b(mkdir|touch|mv|cp|chmod|chown|dd|tee|wget|curl\s+.*\s*-[a-zA-Z]*O)\b"
+    r"|\b(New-Item|Set-Content|Add-Content|Move-Item|Copy-Item|Rename-Item|Remove-Item)\b"
     r"|\brm\s+(-[a-zA-Z]*[rf]|/|[~.])"
     r"|\b(7z|tar|zip|unzip|gzip|gunzip)\s+"
     r"|>\s*\S"
-    r"|>>"
+    r"|>>",
+    # PowerShell cmdlets are case-insensitive; a lowercase ``move-item`` must
+    # not slip past the plan-mode write guard.
+    re.IGNORECASE,
 )
 
 _EXIT_PLAN_NOTIFICATION_OPENING = "<system-reminder>"
@@ -145,7 +149,7 @@ class CodeAgentModeRail(AgentModeRail):
 
         if plan_state.mode != "plan":
             return
-        if tool_name == "bash":
+        if tool_name in {"bash", "powershell"}:
             command = self._extract_bash_command(ctx)
             if _NON_GIT_WRITE_RE.search(command):
                 if self._language_is_cn():

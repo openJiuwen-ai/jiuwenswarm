@@ -21,10 +21,10 @@ allowed_tools: [mcp_exec_command]
 必须使用 `mcp_exec_command` 执行脚本，不要只口头总结。
 
 ```bash
-python ~/.jiuwenswarm/agent/workspace/skills/cross-channel-history-retrieval/scripts/search_history.py --channel feishu --query "报销 审批" --start "2026-03-26 09:00" --end "2026-03-26 18:00" --limit 30
+mcp_exec_command(command="python ~/.jiuwenswarm/agent/workspace/skills/cross-channel-history-retrieval/scripts/search_history.py --channel feishu --query \"报销 审批\" --start \"2026-03-26 09:00\" --end \"2026-03-26 18:00\" --limit 30", shell_type="bash")
 ```
 
-（Windows：**`--channel` / `--query` / 时间参数等与 Unix 相同**；默认 `mcp_exec_command` 走 **cmd**，**cmd 不会展开 `~`**，不要用 `~/.jiuwenswarm`，应写 `python %USERPROFILE%\.jiuwenswarm\agent\skills\cross-channel-history-retrieval\scripts\search_history.py` 再接同样参数。若整条命令在 PowerShell 里执行，`~` 一般会展开，也可用 `$env:USERPROFILE\...`。）
+（Windows：**`--channel` / `--query` / 时间参数等与 Unix 相同**；调用 `mcp_exec_command` 时必须显式提供 `shell_type="powershell"`，并使用 `$env:USERPROFILE` 或绝对路径，避免 cmd 不展开 `~`：`python $env:USERPROFILE\.jiuwenswarm\agent\skills\cross-channel-history-retrieval\scripts\search_history.py`。）
 
 ## 参数说明
 

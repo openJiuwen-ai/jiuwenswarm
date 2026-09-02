@@ -66,9 +66,11 @@ MESSAGE_TOOLS = frozenset({
     "send_html_card",
 })
 
-# OpenClaw / sandbox aliases → canonical tool behavior in scanners.py
+# OpenClaw / sandbox aliases → canonical command behavior in scanners.py.
+# ``exec`` is a generic command alias; keep it separate from the primary
+# ``bash`` tool so scanners do not teach the model that exec means Bash.
 TOOL_NAME_ALIASES: dict[str, str] = {
-    "exec": "bash",
+    "exec": "mcp_exec_command",
     "read": "read_file",
     "web_fetch": "fetch_webpage",
     "web_fetch_webpage": "fetch_webpage",

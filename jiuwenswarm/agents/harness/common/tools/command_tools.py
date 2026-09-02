@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.sys_operation.shell_process_registry import (
@@ -181,6 +181,13 @@ _POWERSHELL_TOKENS = (
     "get-childitem",
     "set-location",
     "remove-item",
+    "move-item",
+    "copy-item",
+    "rename-item",
+    "new-item",
+    "get-item",
+    "set-content",
+    "add-content",
     "test-path",
     "join-path",
     "select-object",
@@ -198,6 +205,10 @@ _POWERSHELL_TOKENS = (
 )
 
 _VALID_SHELL_TYPES = {"auto", "cmd", "powershell", "bash", "sh"}
+# ``auto`` remains available to the internal resolver for legacy shell
+# integrations, but it is intentionally not part of the Agent-facing
+# ``mcp_exec_command`` contract.  The model must choose the shell explicitly.
+_AGENT_SHELL_TYPES = frozenset({"cmd", "powershell", "bash", "sh"})
 _POWERSHELL_EXECUTABLE_PATTERN = re.compile(r"^\s*(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b", re.IGNORECASE)
 _POWERSHELL_COMMAND_ARG_PATTERN = re.compile(r"(?is)(?:^|\s)-(?:command|c)\s+(?P<script>.+)\s*$")
 _POSIX_COMMANDS = frozenset({
@@ -442,6 +453,49 @@ def _looks_like_powershell(command: str) -> bool:
         return True
     if re.search(r"(^|[\s;(])\$[A-Za-z_][A-Za-z0-9_]*", command):
         return True
+    return False
+
+
+# Cmdlet names for the *strict* detector below.  Matched against the first
+# command word of each shell segment, never as substrings, so filenames like
+# ``out-file.txt`` or ``move-item.sh`` do not trigger a match.
+_PS_CMDLET_NAMES = frozenset({
+    "get-childitem", "set-location", "remove-item", "move-item", "copy-item",
+    "rename-item", "new-item", "get-item", "set-content", "add-content",
+    "test-path", "join-path", "select-object", "where-object", "foreach-object",
+    "invoke-webrequest", "invoke-restmethod", "out-file", "start-process",
+})
+_PS_SHELL_PREFIXES = frozenset({"powershell", "pwsh"})
+# Only PowerShell-specific sigils; a generic ``$var`` is legal bash and must
+# not be treated as PowerShell syntax by the hard-block path.
+_PS_VARIABLE_RE = re.compile(r"\$(?:env:|null\b|true\b|false\b|psversiontable\b)")
+
+
+def _is_powershell_command(command: str) -> bool:
+    """Strict PowerShell detection for hard-block decisions.
+
+    Unlike ``_looks_like_powershell`` (loose, recall-oriented — a wrong guess
+    only costs one failed auto-routed command), a false positive here rejects
+    a legitimate bash command outright, so precision wins:
+
+    - generic ``$var`` bash variables are NOT PowerShell;
+    - cmdlet names are matched as the first word of each ``&&``/``||``/``|``/``;``
+      segment, never as substrings inside filenames or arguments;
+    - parenthesized sub-expressions like ``(Get-Item x)`` are not recognized —
+      a miss is harmless (the command fails in bash and the model recovers),
+      a false block is not.
+    """
+    text = (command or "").strip()
+    if not text:
+        return False
+    if "@'" in text or '@"' in text:
+        return True
+    if _PS_VARIABLE_RE.search(text):
+        return True
+    for segment in _split_shell_segments(text):
+        base = _segment_base_command(segment)
+        if base in _PS_SHELL_PREFIXES or base in _PS_CMDLET_NAMES:
+            return True
     return False
 
 
@@ -797,7 +851,10 @@ def _run_command_background(
     description=(
         "Execute simple cross-platform command-line command in project workspace. "
         "Supports Windows cmd/PowerShell and macOS/Linux bash/sh. "
-        "Optional shell_type=auto|cmd|powershell|bash|sh. "
+        "Prefer the dedicated bash tool for ordinary POSIX commands; use this tool "
+        "for explicit parameterization, background execution, or Shell fallback. "
+        "shell_type is required and must be one of cmd|powershell|bash|sh; "
+        "do not use auto. "
         "Set background=True to run non-blocking (e.g. start a server); "
         "returns immediately on success, error on failure. "
         "Set max_output_chars=0 to disable output clipping. "
@@ -807,15 +864,37 @@ def _run_command_background(
 )
 async def mcp_exec_command(
     command: str,
+    shell_type: Literal["cmd", "powershell", "bash", "sh"],
     timeout_seconds: int = 300,
     workdir: str = ".",
     max_output_chars: int = 0,
-    shell_type: str = "auto",
     background: bool = False,
 ) -> str:
     command = (command or "").strip()
     if not command:
         return "[ERROR]: command cannot be empty."
+
+    # Keep the resolver's legacy ``auto`` mode for internal callers, but do
+    # not let Agent-facing calls silently fall back to a guessed shell.
+    requested_shell_type = str(shell_type or "").strip().lower()
+    if requested_shell_type not in _AGENT_SHELL_TYPES:
+        error_code = (
+            "shell_type_required"
+            if not requested_shell_type or requested_shell_type == "auto"
+            else "invalid_shell_type"
+        )
+        return json.dumps(
+            {
+                "error": error_code,
+                "message": "mcp_exec_command requires an explicit shell_type; auto is not allowed.",
+                "allowed": sorted(_AGENT_SHELL_TYPES),
+                "example": {
+                    "command": "git status",
+                    "shell_type": "bash",
+                },
+            },
+            ensure_ascii=False,
+        )
 
     blocked_reason = _check_command_safety(command)
     if blocked_reason:
@@ -852,7 +931,7 @@ async def mcp_exec_command(
         max_output_chars = 0
     if max_output_chars < 0:
         max_output_chars = 0
-    normalized_shell_type = _normalize_shell_type(shell_type)
+    normalized_shell_type = requested_shell_type
 
     if background:
         try:

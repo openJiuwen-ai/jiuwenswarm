@@ -38,18 +38,37 @@ def _pre_execute_shell_command(command: str) -> str | None:
     return None
 
 
+def _shell_mismatch(tool_name: str, command: str) -> str | None:
+    """Reject commands whose syntax belongs to a different shell tool."""
+    if tool_name == "bash":
+        from jiuwenswarm.agents.harness.common.tools.command_tools import _is_powershell_command
+
+        if _is_powershell_command(command):
+            return (
+                "PowerShell syntax was sent to the bash tool; retry with the "
+                "powershell tool (or mcp_exec_command with shell_type=\"powershell\")."
+            )
+    return None
+
+
 def _wrap_invoke(
     original: Callable[..., Awaitable[Any]],
+    tool_name: str,
 ) -> Callable[..., Awaitable[Any]]:
     from openjiuwen.harness.tools.base_tool import ToolOutput
 
     async def invoke(self: Any, inputs: dict[str, Any], **kwargs: Any) -> Any:
         parsed = getattr(self, "_parse_inputs")(inputs)
         if parsed.command:
+            mismatch = _shell_mismatch(tool_name, parsed.command)
+            if mismatch:
+                return ToolOutput(success=False, error=mismatch)
             err = _pre_execute_shell_command(parsed.command)
             if err:
                 return ToolOutput(success=False, error=err)
-        return await original(self, inputs, **kwargs)
+        routed_inputs = dict(inputs)
+        routed_inputs["shell_type"] = tool_name
+        return await original(self, routed_inputs, **kwargs)
 
     invoke.jiuwenswarm_safety_wrapped = True
     return invoke
@@ -57,28 +76,35 @@ def _wrap_invoke(
 
 def _wrap_stream(
     original: Callable[..., Any],
+    tool_name: str,
 ) -> Callable[..., Any]:
     from openjiuwen.harness.tools.base_tool import ToolOutput
 
     async def stream(self: Any, inputs: dict[str, Any], **kwargs: Any):
         parsed = getattr(self, "_parse_inputs")(inputs)
         if parsed.command:
+            mismatch = _shell_mismatch(tool_name, parsed.command)
+            if mismatch:
+                yield ToolOutput(success=False, error=mismatch)
+                return
             err = _pre_execute_shell_command(parsed.command)
             if err:
                 yield ToolOutput(success=False, error=err)
                 return
-        async for item in original(self, inputs, **kwargs):
+        routed_inputs = dict(inputs)
+        routed_inputs["shell_type"] = tool_name
+        async for item in original(self, routed_inputs, **kwargs):
             yield item
 
     stream.jiuwenswarm_safety_wrapped = True
     return stream
 
 
-def _patch_tool_class(tool_cls: type) -> None:
+def _patch_tool_class(tool_cls: type, tool_name: str) -> None:
     if not getattr(tool_cls.invoke, "jiuwenswarm_safety_wrapped", False):
-        tool_cls.invoke = _wrap_invoke(tool_cls.invoke)
+        tool_cls.invoke = _wrap_invoke(tool_cls.invoke, tool_name)
     if not getattr(tool_cls.stream, "jiuwenswarm_safety_wrapped", False):
-        tool_cls.stream = _wrap_stream(tool_cls.stream)
+        tool_cls.stream = _wrap_stream(tool_cls.stream, tool_name)
 
 
 def _contains_unquoted_semicolon(command: str) -> bool:
@@ -127,13 +153,13 @@ def install_shell_tool_safety_hooks() -> None:
 
     from openjiuwen.harness.tools.shell.bash._tool import BashTool
 
-    _patch_tool_class(BashTool)
+    _patch_tool_class(BashTool, "bash")
     _patch_shell_execution_plan()
 
     try:
         from openjiuwen.harness.tools.shell.powershell._tool import PowerShellTool
 
-        _patch_tool_class(PowerShellTool)
+        _patch_tool_class(PowerShellTool, "powershell")
     except ImportError:
         pass
 
@@ -146,4 +172,10 @@ def reset_installed_flag() -> None:
     _installed = False
 
 
-__all__ = ["install_shell_tool_safety_hooks", "reset_installed_flag"]
+__all__ = [
+    "_pre_execute_shell_command",
+    "_shell_mismatch",
+    "_wrap_invoke",
+    "install_shell_tool_safety_hooks",
+    "reset_installed_flag",
+]

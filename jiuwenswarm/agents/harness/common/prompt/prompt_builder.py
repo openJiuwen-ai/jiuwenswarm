@@ -95,7 +95,7 @@ def _task_execution_prompt() -> PromptSection:
 - **Verify before delivery**: Check criteria, formatting, times, values, units, and the integrity of existing data; fix discrepancies before delivery.
 - **Check before asking**: Before asking the user for more information, inspect the existing context, files, and available information.
 - **Express evidence-based opinions**: When you identify a risk or a better approach, you may present a reasoned alternative.
-- **Adapt skill references to exec**: This environment has no `exec` tool. When skill documentation mentions it, use `bash` or `code` according to their real capabilities; do not copy `yieldMs` or background-session semantics.
+- **Adapt skill references to exec**: This environment has no model-facing `exec` tool. When skill documentation mentions it, use the actual registered tool: prefer dedicated file tools, use `bash` for ordinary POSIX commands, and use `mcp_exec_command` only with an explicit `shell_type` (`bash`, `powershell`, `cmd`, or `sh`). Do not copy `yieldMs` or background-session semantics.
 """
     return PromptSection(
         name="task_execution",
