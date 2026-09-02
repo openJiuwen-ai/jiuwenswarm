@@ -9,7 +9,8 @@ Eval-only deviations (documented, not product behavior):
 - no permission / plan-approval / ask-user interrupts
 - ``enable_read_image_multimodal=False``
 - no MCP / cron / browser
-- ``enable_task_loop=False`` (single-query fix)
+- ``enable_task_loop=False`` unless the runner passes ``enable_task_loop``
+  (``--product-defaults``)
 - extra ``EvalTraceRail`` for timings and intermediate payloads
 - optional ``hide_grep`` ablation
 """
@@ -115,13 +116,19 @@ PROMPT_MODE_PRODUCT = "product"
 
 
 def config_dir_name(
-    *, profile: str = "off", prefix: str = "", task_mode: str = TASK_MODE_LOCATE
+    *,
+    profile: str = "off",
+    prefix: str = "",
+    task_mode: str = TASK_MODE_LOCATE,
+    benchmark: str = "contextbench",
 ) -> str:
     """Folder name that states the profile, e.g. ``cfg_b__graph``."""
     resolved = (profile or "off").strip().lower()
     head = f"cfg_{prefix}" if prefix else "cfg_b"
     tag = "graph-off" if resolved == "off" else resolved
     name = f"{head}__{tag}"
+    if (benchmark or "contextbench").strip().lower() == "swe":
+        return f"{name}__swe"
     mode = (task_mode or TASK_MODE_LOCATE).strip().lower()
     if mode == TASK_MODE_CODING:
         name += "__coding"
@@ -359,6 +366,8 @@ def create_coding_agent(
     code_agent_system_prompt: str | None = None,
     prompt_mode: str = PROMPT_MODE_LOCATE,
     extra_hide_on_code_agent: tuple[str, ...] | None = None,
+    enable_task_loop: bool = False,
+    enable_task_planning: bool = False,
 ) -> CodingAgentHandle:
     """Create the UI Single Coding Agent with an in-memory profile overlay.
 
@@ -483,8 +492,8 @@ def create_coding_agent(
         ),
         "workspace": workspace_obj,
         "language": language,
-        "enable_task_loop": False,
-        "enable_task_planning": False,
+        "enable_task_loop": enable_task_loop,
+        "enable_task_planning": enable_task_planning,
         "max_iterations": max_iterations,
         "restrict_to_work_dir": True,
         "add_general_purpose_agent": False,
