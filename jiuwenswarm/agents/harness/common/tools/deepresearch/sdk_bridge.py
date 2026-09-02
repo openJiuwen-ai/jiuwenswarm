@@ -222,7 +222,8 @@ def write_convert_content(output: str | Path, convert_content: object) -> None:
     if invalid_target:
         raise BridgeError("bridge_output_invalid")
     archive = _decode_archive(convert_content)
-    flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(target, flags, mode=0o600)
     except OSError as exc:

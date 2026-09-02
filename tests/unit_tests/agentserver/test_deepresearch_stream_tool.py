@@ -3311,6 +3311,75 @@ def test_zip_windows_fallback_extracts_and_rolls_back_by_identity(tmp_path: Path
     assert not failed.exists()
 
 
+def test_zip_windows_fallback_writes_members_in_binary_mode(
+    tmp_path: Path, monkeypatch
+):
+    destination = tmp_path / "destination"
+    member_payload = b"line-1\nline-2\x1a"
+    payload = _zip_payload(
+        [("report_bundle/report.html", member_payload, None)]
+    )
+    binary_flag = 1 << 29
+    opened_flags: dict[int, int] = {}
+    original_open = os.open
+    original_write = os.write
+
+    def windows_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None:
+            raise NotImplementedError("dir_fd unavailable")
+        descriptor = original_open(path, flags & ~binary_flag, mode)
+        opened_flags[descriptor] = flags
+        return descriptor
+
+    def windows_write(descriptor: int, data: bytes) -> int:
+        raw = bytes(data)
+        if opened_flags[descriptor] & binary_flag:
+            return original_write(descriptor, raw)
+        translated = raw.replace(b"\n", b"\r\n")
+        assert original_write(descriptor, translated) == len(translated)
+        return len(raw)
+
+    monkeypatch.setattr(dt.os, "O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(dt.os, "open", windows_open)
+    monkeypatch.setattr(dt.os, "write", windows_write)
+
+    with patch.object(dt, "_uses_windows_path_publication", return_value=True):
+        bundle = dt._extract_styled_bundle(payload, destination)
+
+    assert (bundle / "report.html").read_bytes() == member_payload
+
+
+def test_regular_file_reader_uses_binary_mode_on_windows(
+    tmp_path: Path, monkeypatch
+):
+    source = tmp_path / "styled.zip"
+    payload = b"prefix\r\nsuffix\x1atail"
+    source.write_bytes(payload)
+    binary_flag = 1 << 29
+    opened_flags: dict[int, int] = {}
+    original_open = os.open
+    original_read = os.read
+
+    def windows_open(path, flags, mode=0o777, **kwargs):
+        descriptor = original_open(path, flags & ~binary_flag, mode, **kwargs)
+        opened_flags[descriptor] = flags
+        return descriptor
+
+    def windows_read(descriptor: int, size: int) -> bytes:
+        raw = original_read(descriptor, size)
+        if opened_flags[descriptor] & binary_flag:
+            return raw
+        return raw.split(b"\x1a", 1)[0].replace(b"\r\n", b"\n")
+
+    monkeypatch.setattr(dt.os, "O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(dt.os, "open", windows_open)
+    monkeypatch.setattr(dt.os, "read", windows_read)
+
+    assert dt._read_regular_file(
+        source, limit=len(payload), label="styled report archive"
+    ) == payload
+
+
 @pytest.mark.asyncio
 async def test_spawn_and_child_env_use_same_resolved_interpreter():
     proc = _Proc([json.dumps({"__deepsearch_status__": "error", "error": "done"})])

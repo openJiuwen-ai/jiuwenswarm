@@ -1414,6 +1414,7 @@ def _extract_validated_zip_members(
             continue
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(target, flags, 0o600)
         written = 0
@@ -2953,7 +2954,8 @@ def _read_regular_file(path: Path, *, limit: int, label: str) -> bytes:
     )
     if invalid_named_file:
         raise OSError(f"unsafe {label}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, mode=0o600)
     try:
         opened = os.fstat(descriptor)

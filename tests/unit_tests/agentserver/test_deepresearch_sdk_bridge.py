@@ -128,6 +128,42 @@ def test_bridge_writes_only_to_precreated_private_regular_file(tmp_path: Path):
     assert zipfile.is_zipfile(output)
 
 
+def test_bridge_writes_archive_in_binary_mode_on_windows(tmp_path: Path, monkeypatch):
+    output = tmp_path / "styled.zip"
+    _private_file(output)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("report_bundle/report.html", b"line-1\nline-2")
+
+    binary_flag = 1 << 29
+    opened_flags: dict[int, int] = {}
+    original_open = os.open
+    original_write = os.write
+
+    def windows_open(path, flags, mode=0o777, **kwargs):
+        descriptor = original_open(path, flags & ~binary_flag, mode, **kwargs)
+        opened_flags[descriptor] = flags
+        return descriptor
+
+    def windows_write(descriptor: int, data: bytes) -> int:
+        payload = bytes(data)
+        if opened_flags[descriptor] & binary_flag:
+            return original_write(descriptor, payload)
+        translated = payload.replace(b"\n", b"\r\n")
+        assert original_write(descriptor, translated) == len(translated)
+        return len(payload)
+
+    monkeypatch.setattr(bridge.os, "O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(bridge.os, "open", windows_open)
+    monkeypatch.setattr(bridge.os, "write", windows_write)
+
+    bridge.write_convert_content(output, base64.b64encode(archive.getvalue()).decode())
+
+    with zipfile.ZipFile(output) as bundle:
+        assert bundle.testzip() is None
+        assert bundle.read("report_bundle/report.html") == b"line-1\nline-2"
+
+
 @pytest.mark.parametrize(
     "kind", ["missing", "symlink", "hardlink", "mode", "nonempty", "reparse"]
 )
