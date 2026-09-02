@@ -31,8 +31,12 @@ const CRON_EFFECTIVE_DATE_UI_ENABLED = false;
 // 名称/描述最大长度：需与后端 jiuwenswarm/gateway/cron/models.py 里的
 // CRON_JOB_NAME_MAX_LENGTH / CRON_JOB_DESCRIPTION_MAX_LENGTH 保持一致，
 // 前端负责提前拦截+提示，后端负责兜底校验（防止绕过前端直接调 API/MCP 工具）。
+// Nothing enforced that these match their Python counterparts, and drift fails
+// in the wrong direction: they are fed to `maxLength`, so the lower of the two
+// is the cap the user meets and raising only the backend never takes effect.
+// A unit test now asserts each pair is equal.
 const CRON_NAME_MAX_LENGTH = 64;
-const CRON_DESCRIPTION_MAX_LENGTH = 500;
+const CRON_DESCRIPTION_MAX_LENGTH = 4096;
 
 export interface CronTaskFormValue {
   name: string;
@@ -281,7 +285,7 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
                 value={form.description}
                 onChange={(e) => setForm({ ...form, description: e.target.value })}
                 placeholder={t('cron.drawer.placeholderInput') ?? undefined}
-                rows={4}
+                rows={10}
                 maxLength={CRON_DESCRIPTION_MAX_LENGTH}
                 disabled={proactiveLocked}
                 title={lockedTitle}

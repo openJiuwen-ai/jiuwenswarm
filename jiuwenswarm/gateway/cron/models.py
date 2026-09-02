@@ -115,9 +115,14 @@ CRON_JOB_MODES: frozenset[str] = frozenset(
 CRON_JOB_DEFAULT_MODE: str = "agent"
 
 # 名称/描述最大长度（前后端保持一致，见 CronTaskDrawer.tsx 同名常量）。
-# 名称对齐 ConfigPanel 里 Agent 名称字段的 64；描述对齐产品确认的 500。
+# 名称对齐 ConfigPanel 里 Agent 名称字段的 64。
+# The description is a prompt, not a label: the scheduler passes it verbatim as
+# the agent's request content when the job fires, and it is never rendered in
+# the task list or in any dialog, so nothing in the panel constrains its length.
+# The sibling heartbeat scheduler already sizes the equivalent field as a prompt
+# (HEARTBEAT_PROMPT_MAX_LENGTH is 2000).
 CRON_JOB_NAME_MAX_LENGTH: int = 64
-CRON_JOB_DESCRIPTION_MAX_LENGTH: int = 500
+CRON_JOB_DESCRIPTION_MAX_LENGTH: int = 4096
 
 _CRON_JOB_MODE_ALIASES: dict[str, str] = {
     "plan": "agent",
