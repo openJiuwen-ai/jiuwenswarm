@@ -209,7 +209,7 @@ async def test_file_api_iam_accepts_username_as_user_id() -> None:
             headers={"Authorization": "Bearer iam-tok"},
         )
     assert resp.status_code == 200
-    assert router.list_container_files.await_args.kwargs["user_id"] == "iam-user"
+    assert router.list_container_files.await_args.kwargs["user_id"] == "admin"
 
 
 @pytest.mark.asyncio
@@ -252,7 +252,10 @@ async def test_file_api_iam_rejects_body_user_id_mismatch() -> None:
 async def test_file_api_iam_ok_without_request_user_id() -> None:
     router = _make_router()
     router.list_container_files = AsyncMock(return_value=[])  # type: ignore[method-assign]
-    _enable_auth(router, AuthResult(success=True, user_id="iam-user"))
+    _enable_auth(
+        router,
+        AuthResult(success=True, user_id="iam-user", extensions={"username": "admin"}),
+    )
     app = _file_api_app(router)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -262,7 +265,25 @@ async def test_file_api_iam_ok_without_request_user_id() -> None:
             headers={"Authorization": "Bearer iam-tok"},
         )
     assert resp.status_code == 200
-    assert router.list_container_files.await_args.kwargs["user_id"] == "iam-user"
+    assert router.list_container_files.await_args.kwargs["user_id"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_file_api_iam_omit_user_id_without_username_is_required() -> None:
+    router = _make_router()
+    router.list_container_files = AsyncMock()  # type: ignore[method-assign]
+    _enable_auth(router, AuthResult(success=True, user_id="iam-user"))
+    app = _file_api_app(router)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/file-api/list-files",
+            params={"dir": "/home/agentos"},
+            headers={"Authorization": "Bearer iam-tok"},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "BAD_REQUEST"
+    router.list_container_files.assert_not_called()
 
 
 @pytest.mark.asyncio
