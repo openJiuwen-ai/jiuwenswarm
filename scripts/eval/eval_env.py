@@ -28,6 +28,9 @@ JIUWEN_ROOT = _EVAL_DIR.parents[1]
 DEFAULT_OUTPUT = (
     JIUWEN_ROOT / "docs" / "ai" / "experiments" / "03-contextbench-before-productization" / "runs" / "scratch-contextbench"
 )
+DEFAULT_SWE_OUTPUT = (
+    JIUWEN_ROOT / "docs" / "ai" / "experiments" / "06-swe-verified-current" / "runs" / "scratch-swe"
+)
 GOLD_PARQUET_NAME = "contextbench_verified.parquet"
 
 
@@ -136,6 +139,37 @@ def resolve_contextbench_parquet(
     )
 
 
+def is_swe_checkout(root: Path) -> bool:
+    """True when ``root`` is the SWE-bench source tree (harness + CLI)."""
+    return (root / "swebench" / "harness" / "run_evaluation.py").is_file()
+
+
+def swe_root_candidates(*, explicit: Path | str | None = None) -> list[Path]:
+    parent = JIUWEN_ROOT.parent
+    env = os.environ.get("SWE_BENCH_ROOT", "").strip()
+    found: list[Path] = []
+    if explicit is not None and str(explicit).strip():
+        found.append(Path(str(explicit)).expanduser())
+    if env:
+        found.append(Path(env).expanduser())
+    found.extend(
+        [
+            parent / "SWE-bench",
+            JIUWEN_ROOT / "third_party" / "SWE-bench",
+            parent / "reconstruct_tmp" / "SWE-bench",
+        ]
+    )
+    return _unique(found)
+
+
+def resolve_swe_root(explicit: Path | str | None = None) -> Path | None:
+    """Optional local SWE-bench checkout. Dataset itself comes from HuggingFace."""
+    for candidate in swe_root_candidates(explicit=explicit):
+        if is_swe_checkout(candidate):
+            return candidate.expanduser().resolve()
+    return None
+
+
 def prepend_contextbench(root: Path) -> Path:
     """Put the checkout on ``sys.path`` so ``contextbench.*`` imports resolve."""
     resolved = root.expanduser().resolve()
@@ -144,6 +178,30 @@ def prepend_contextbench(root: Path) -> Path:
         sys.path.remove(text)
     sys.path.insert(0, text)
     return resolved
+
+
+def prepend_swe_bench(root: Path) -> Path:
+    """Put a SWE-bench checkout first so ``swebench submit`` / ``eval`` resolve."""
+    return prepend_contextbench(root)
+
+
+def swe_harness_env(*, swe_root: Path | None = None) -> dict[str, str]:
+    """Env for ``swebench eval``. ARM Mac is not the official Linux x86_64 host."""
+    env = dict(os.environ)
+    if swe_root is not None:
+        resolved = swe_root.expanduser().resolve()
+        env["SWE_BENCH_ROOT"] = str(resolved)
+        env["PYTHONPATH"] = (
+            str(resolved)
+            + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        )
+    if sys.platform == "darwin":
+        # docker-py pull also needs this passed as platform=; see SWE-bench
+        # harness _pull_published_image. Overwrite so a stale shell arm64
+        # default cannot leak into eval.
+        env["SWE_BENCH_ALLOW_EXPERIMENTAL_HOST"] = "1"
+        env["DOCKER_DEFAULT_PLATFORM"] = "linux/amd64"
+    return env
 
 
 def describe_openjiuwen() -> str:
