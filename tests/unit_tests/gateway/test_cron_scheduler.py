@@ -2140,3 +2140,92 @@ class TestCrashRecoveryGraceWindow:
             if ev.kind == "wake" and ev.job_id == job_a.id
         ]
         assert len(wake_a_after) == 1
+
+
+# ── Terminal runs always supersede their placeholder ──────────────────────────
+
+
+class _ArglessFailureAgentClient(FakeAgentClient):
+    """Fails the run with an exception whose ``str()`` is the empty string.
+
+    ``OSError()``, ``RuntimeError()`` and every other exception raised without
+    arguments render as ``''``. That is the shape the run has to survive: the
+    error fallback used to test the message for truthiness, so nothing was
+    synthesised and no push was ever scheduled.
+
+    ``OSError`` rather than ``TimeoutError`` because the run is wrapped in
+    ``asyncio.wait_for`` and a timeout is answered with its own message -- and
+    on Python 3.11+ ``asyncio.TimeoutError`` *is* ``TimeoutError`` -- so a bare
+    timeout never reaches the generic handler this guards.
+    """
+
+    async def send_request(self, envelope, *a, **kw):
+        if envelope.method == "session.create":
+            return await super().send_request(envelope, *a, **kw)
+        self.unary_requests.append(envelope)
+        raise OSError()
+
+    async def send_request_stream(self, envelope):
+        self.stream_requests.append(envelope)
+        if envelope.method == "session.create":
+            async for chunk in super().send_request_stream(envelope):  # pragma: no cover
+                yield chunk
+            return
+        raise OSError()
+
+
+class _GhostCancelAgentClient(FakeAgentClient):
+    """Cancels the run the way a reload cancels a job the user deleted."""
+
+    async def send_request(self, envelope, *a, **kw):
+        if envelope.method == "session.create":
+            return await super().send_request(envelope, *a, **kw)
+        self.unary_requests.append(envelope)
+        raise asyncio.CancelledError()
+
+    async def send_request_stream(self, envelope):
+        self.stream_requests.append(envelope)
+        if envelope.method == "session.create":
+            async for chunk in super().send_request_stream(envelope):  # pragma: no cover
+                yield chunk
+            return
+        raise asyncio.CancelledError()
+
+
+class TestTerminalRunAlwaysHasResultText:
+    """A run that reaches a terminal status must leave something to deliver."""
+
+    @pytest.mark.asyncio
+    async def test_argless_exception_still_reports_and_schedules_push(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store, agent_client=_ArglessFailureAgentClient())
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        # The class name stands in for the message the exception did not carry.
+        assert state.error == "OSError"
+        assert state.result_text == "[cron] 任务执行失败: OSError"
+        assert [ev for _, _, ev in svc.events if ev.kind == "push_update"]
+
+    @pytest.mark.asyncio
+    async def test_ghost_cancellation_reports_nothing_and_schedules_nothing(
+        self, tmp_path
+    ):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store, agent_client=_GhostCancelAgentClient())
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        with pytest.raises(asyncio.CancelledError):
+            await svc.run_tasks[run_id]
+
+        state = svc.runs[run_id]
+        assert state.error == "cancelled"
+        assert not state.result_text
+        assert not [ev for _, _, ev in svc.events if ev.kind == "push_update"]

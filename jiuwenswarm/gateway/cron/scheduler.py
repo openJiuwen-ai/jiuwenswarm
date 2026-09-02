@@ -1099,16 +1099,27 @@ class CronSchedulerService:
                 raise
             except Exception as exc:  # noqa: BLE001
                 state.status = "failed"
-                state.error = str(exc)
+                # str(exc) is "" for TimeoutError(), OSError(), RuntimeError() and
+                # every other exception raised without arguments, which made the
+                # fallback below skip silently: no result_text meant no push_update
+                # was ever scheduled, so the run vanished and any placeholder stood
+                # forever. The class name is a usable operator message where the
+                # status quo for those cases is silence.
+                state.error = str(exc) or type(exc).__name__
             finally:
                 state.finished_at = self._now_fn()
                 is_cancelled_ghost = state.error == "cancelled"
-                should_deliver_result = bool(state.result_text) and not is_cancelled_ghost
                 # Ensure failed runs also produce result_text so push logic can deliver it.
-                # But for cancelled ghost tasks, skip — no result should be pushed for
-                # a job the user has removed.
-                if not state.result_text and state.error and not is_cancelled_ghost:
-                    state.result_text = f"[cron] 任务执行失败: {state.error}"
+                # Keyed on the terminal status rather than on the error string:
+                # state.status is the authority on whether a run finished, and an
+                # error string is only evidence of it. But for cancelled ghost tasks,
+                # skip — no result should be pushed for a job the user has removed.
+                if (
+                    not state.result_text
+                    and state.status == "failed"
+                    and not is_cancelled_ghost
+                ):
+                    state.result_text = f"[cron] 任务执行失败: {state.error or '未知错误'}"
                 if state.result_text and not ok and not is_cancelled_ghost:
                     await self._append_failure_history_on_agentserver(
                         job=job,

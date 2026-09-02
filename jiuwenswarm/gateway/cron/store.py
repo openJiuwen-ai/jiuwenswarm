@@ -206,8 +206,22 @@ class CronJobStore:
                     continue
                 try:
                     jobs.append(CronJob.from_dict(item))
-                except Exception:
-                    # Ignore invalid entries to keep system robust
+                except Exception as exc:  # noqa: BLE001
+                    # Keep dropping the entry rather than failing the whole
+                    # read, but never drop it quietly: list_jobs is the only
+                    # read path for the scheduler, the web panel and the TUI,
+                    # and get_job walks it, so a rejected entry stops firing,
+                    # leaves both UIs and can no longer be edited through them.
+                    # Warned on every read, not once per process: the entry
+                    # stays on disk until someone repairs the file by hand.
+                    logger.warning(
+                        "[Cron] job entry rejected while reading %s, "
+                        "it is not scheduled and not visible in the UI: "
+                        "id=%s error=%s",
+                        self._path,
+                        str(item.get("id") or "").strip() or "<missing>",
+                        exc,
+                    )
                     continue
             return jobs
 
