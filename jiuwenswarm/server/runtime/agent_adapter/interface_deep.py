@@ -10718,31 +10718,28 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     return value.strip()
             return None
 
-        outer_code = _pick(exc, ("error_code", "code"))
-        outer_message = _pick(exc, ("error_message", "message"))
+        code = _pick(exc, ("error_code", "code"))
+        message = _pick(exc, ("error_message", "message"))
 
-        body_code: str | None = None
-        body_message: str | None = None
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
             inner = body.get("error")
             if not isinstance(inner, dict):
                 inner = body
-            body_code = _pick(inner, ("code", "error_code"))
-            body_message = _pick(inner, ("message", "error_message"))
+            code = code or _pick(inner, ("code", "error_code"))
+            message = message or _pick(inner, ("message", "error_message"))
 
         cause = getattr(exc, "cause", None)
         if cause is None:
             cause = getattr(exc, "__cause__", None)
-        cause_code: str | None = None
-        cause_message: str | None = None
         if cause is not None and cause is not exc:
-            cause_code, cause_message = JiuWenSwarmDeepAdapter._extract_stream_error_code_message(cause)
+            cause_code, cause_message = (
+                JiuWenSwarmDeepAdapter._extract_stream_error_code_message(cause)
+            )
+            code = code or cause_code
+            message = message or cause_message
 
-        return (
-            cause_code or body_code or outer_code,
-            cause_message or body_message or outer_message,
-        )
+        return code, message
 
     @staticmethod
     def _parse_stream_chunk(
