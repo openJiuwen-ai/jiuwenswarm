@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_CHARS = 50_000
 _MAX_CHARS_CEILING = 200_000
 _MAX_PAGES_PER_CALL = 100
+
+# An RFC 3986 scheme followed by an authority — the shape of a URL, and never
+# the shape of a local path. Deliberately limited to `scheme://`: a bare host
+# ("example.com/a.pdf") and a filename containing a colon are both legal
+# relative paths, so widening this would reject files that do exist.
+_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
 @dataclass(frozen=True)
@@ -95,12 +102,34 @@ def _resolve_pdf_path(value: str) -> Path:
     text = (value or "").strip()
     if not text:
         raise ValueError("pdf_path cannot be empty")
+    # A URL is not absolute as a path, so without this it would be joined onto
+    # the workspace and reported as a missing file — an error whose stated
+    # remedy (look for the file) is not the actual one (fetch the document).
+    if _URL_RE.match(text):
+        raise ValueError(
+            f"pdf_path must be a local file path, not a URL: {text!r}. read_pdf does "
+            "not download; it only reads a file already on disk. Fetch the document "
+            "first with a tool that can retrieve URLs, or use the local copy an "
+            "attachment was already saved to, then call read_pdf with the path that "
+            "was actually written — do not guess a filename."
+        )
     path = Path(text).expanduser()
-    if not path.is_absolute():
+    anchored = not path.is_absolute()
+    if anchored:
         path = get_agent_workspace_dir() / path
     path = path.resolve()
     if not path.exists():
-        raise FileNotFoundError(f"PDF file does not exist: {path}")
+        # Name the directory that was searched, because a relative pdf_path is
+        # anchored somewhere the caller never named and may not expect.
+        where = str(path)
+        if anchored:
+            where += " (relative pdf_path resolved against the agent workspace)"
+        raise FileNotFoundError(
+            f"No PDF at {where}. read_pdf only reads a file that already exists; it "
+            "cannot locate one by name. Pass the path that a fetch, an attachment or "
+            "a directory listing actually produced — do not guess a filename. List "
+            "the containing directory to see what is there."
+        )
     if not path.is_file():
         raise ValueError(f"pdf_path is not a file: {path}")
     if path.suffix.lower() != ".pdf":
