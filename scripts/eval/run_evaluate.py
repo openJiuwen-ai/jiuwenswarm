@@ -27,9 +27,19 @@ for path in (SCRIPT_DIR,):
 
 from eval_env import (  # noqa: E402
     prepend_contextbench,
+    prepend_swe_bench,
     resolve_contextbench_parquet,
     resolve_contextbench_root,
+    resolve_swe_root,
+    swe_harness_env,
 )
+from swe_dataset import (  # noqa: E402
+    BENCHMARK_CONTEXTBENCH,
+    BENCHMARK_SWE,
+    official_split_n,
+    resolve_benchmark,
+)
+from swe_submit import package_swe_submission  # noqa: E402
 from trajectory import contextbench_record  # noqa: E402
 
 
@@ -83,10 +93,279 @@ def write_pred_jsonl(records: list[dict[str, Any]], dest: Path) -> Path:
     return dest
 
 
+def _resolve_swe_preds(pred: Path) -> Path:
+    pred = pred.expanduser().resolve()
+    if pred.is_file():
+        return pred
+    swe = pred / "swe_preds.jsonl"
+    if swe.is_file():
+        return swe
+    raise SystemExit(f"SWE predictions not found: {swe} (or pass a .jsonl)")
+
+
+def _count_preds(swe_preds: Path) -> int:
+    n = 0
+    for line in swe_preds.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            n += 1
+    return n
+
+
+def _write_passat1(
+    dest: Path,
+    *,
+    split: str,
+    submitted: int,
+    resolved: int | None,
+) -> None:
+    official = official_split_n(split)
+    denom = official or submitted
+    payload = {
+        "split": split,
+        "official_n": official,
+        "submitted": submitted,
+        "resolved": resolved,
+        "pass_at_1_official": (resolved / denom) if resolved is not None and denom else None,
+        "pass_at_1_submitted": (
+            resolved / submitted if resolved is not None and submitted else None
+        ),
+        "leaderboard_eligible": False,
+        "note": (
+            f"Official {split} Pass@1 is resolved/{official}. "
+            "resolved/submitted is smoke only. ARM Mac is not the leaderboard host."
+            if official
+            else "Unknown split; report resolved/submitted as smoke."
+        ),
+    }
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _try_official_package(
+    args: argparse.Namespace,
+    swe_preds: Path,
+    run_id: str,
+    swe_root: Path,
+    env: dict[str, str],
+) -> bool:
+    if not (swe_root / "swebench" / "submit" / "package.py").is_file():
+        return False
+    out_dir = swe_preds.parent / "submission"
+    cmd = [
+        sys.executable,
+        "-m",
+        "swebench",
+        "submit",
+        "package",
+        run_id,
+        "-s",
+        args.swe_split,
+        "-p",
+        str(swe_preds),
+        "-o",
+        str(out_dir),
+        "--trajs",
+        str(swe_preds.parent),
+    ]
+    print(" ".join(cmd), flush=True)
+    completed = subprocess.run(cmd, env=env, check=False)
+    if completed.returncode != 0:
+        return False
+    print(
+        f"official swebench submit package -> {out_dir} "
+        "(re-grades from test_output.txt; metadata TODOs still need a human)",
+        flush=True,
+    )
+    return True
+
+
+def _read_official_resolved(out_dir: Path) -> int | None:
+    results = out_dir / "entry" / "results" / "results.json"
+    if not results.is_file():
+        return None
+    try:
+        data = json.loads(results.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    resolved = data.get("resolved") if isinstance(data, dict) else None
+    if isinstance(resolved, list):
+        return len(resolved)
+    return None
+
+
+def _package_swe(args: argparse.Namespace, swe_preds: Path, run_id: str) -> int:
+    raw_dir = swe_preds.parent
+    out_dir = raw_dir / "unofficial-submission"
+    model = None
+    extra: dict[str, Any] = {}
+    config = raw_dir.parent / "config.json"
+    if config.is_file():
+        try:
+            cfg = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cfg = {}
+        model = ((cfg.get("model") or {}).get("MODEL_NAME") if isinstance(cfg.get("model"), dict) else None)
+        extra["agent"] = "jiuwenswarm"
+        extra["name"] = f"jiuwenswarm-{cfg.get('profile') or 'graph'}"
+    result = package_swe_submission(
+        predictions=swe_preds,
+        out_dir=out_dir,
+        split=args.swe_split,
+        run_id=run_id,
+        model=model,
+        trajs=raw_dir,
+        metadata_extra=extra,
+    )
+    official = official_split_n(args.swe_split)
+    denom = official or len(result.resolved) + len(result.unresolved) + len(result.no_generation)
+    print(
+        f"unofficial helper {result.submission_id}: "
+        f"resolved={len(result.resolved)} / {denom} "
+        f"(reads report.json, does not re-grade test_output.txt) "
+        f"empty={len(result.no_generation)} no_logs={len(result.no_logs)} -> {out_dir}",
+        flush=True,
+    )
+    print(
+        f"  {out_dir} is a report.json copy, not a leaderboard submission. "
+        "Official entry is `swebench submit package` (re-grades test_output.txt).",
+        flush=True,
+    )
+    _write_passat1(
+        raw_dir / "swebench" / "passat1.json",
+        split=args.swe_split,
+        submitted=_count_preds(swe_preds),
+        resolved=len(result.resolved),
+    )
+    return len(result.resolved)
+
+
+def _eval_swe(args: argparse.Namespace) -> int:
+    """Docker Pass@1, then a submission tree (official package if the checkout has it)."""
+    swe_preds = _resolve_swe_preds(args.pred)
+    run_id = args.run_id or "swe"
+    swe_root = resolve_swe_root(getattr(args, "swe_root", None))
+    if swe_root is not None:
+        prepend_swe_bench(swe_root)
+    env = swe_harness_env(swe_root=swe_root)
+    submitted = _count_preds(swe_preds)
+    official = official_split_n(args.swe_split)
+    code = 0
+    if not args.package_only:
+        report_dir = (
+            args.out.expanduser().resolve()
+            if args.out
+            else swe_preds.parent / "swebench"
+        )
+        report_dir.mkdir(parents=True, exist_ok=True)
+        exe = Path(sys.executable).parent / "swebench"
+        cmd = [
+            str(exe) if exe.is_file() else sys.executable,
+            *([] if exe.is_file() else ["-m", "swebench"]),
+            "eval",
+            args.swe_split,
+            "-p",
+            str(swe_preds),
+            "--run-id",
+            run_id,
+            "-j",
+            str(args.workers),
+            "--report-dir",
+            str(report_dir),
+        ]
+        print(" ".join(cmd), flush=True)
+        if official:
+            print(
+                f"NOTE: official {args.swe_split} Pass@1 is resolved/{official}. "
+                f"This file has {submitted} pred row(s). Missing / failed / empty "
+                "patches all count as not resolved. ARM Mac is not the "
+                "leaderboard host; pre-pull linux/amd64 images.",
+                file=sys.stderr,
+                flush=True,
+            )
+        if swe_root is None:
+            print(
+                "WARNING: SWE-bench checkout not found. Install with "
+                "`uv run --with swebench` or `--with-editable /path/to/SWE-bench`, "
+                "or set SWE_BENCH_ROOT.",
+                file=sys.stderr,
+                flush=True,
+            )
+        code = subprocess.run(cmd, env=env, check=False).returncode
+    if args.no_package:
+        return code
+    used_official = False
+    if not getattr(args, "unofficial_package", False):
+        if swe_root is not None:
+            try:
+                used_official = _try_official_package(
+                    args, swe_preds, run_id, swe_root, env
+                )
+            except Exception as exc:
+                print(f"warning: official package failed: {exc}", file=sys.stderr)
+        if used_official:
+            resolved = _read_official_resolved(swe_preds.parent / "submission")
+            _write_passat1(
+                swe_preds.parent / "swebench" / "passat1.json",
+                split=args.swe_split,
+                submitted=submitted,
+                resolved=resolved,
+            )
+            return code
+        print(
+            "NOTE: no official `swebench submit package` (need a SWE-bench "
+            "checkout with swebench/submit). Not writing a self-copied "
+            "submission/ from report.json — that is not a leaderboard entry. "
+            "Pass --unofficial-package for a local report.json copy.",
+            file=sys.stderr,
+            flush=True,
+        )
+        if args.package_only:
+            return 1
+        return code
+    try:
+        _package_swe(args, swe_preds, run_id)
+    except Exception as exc:
+        print(f"warning: unofficial package failed: {exc}", file=sys.stderr, flush=True)
+        if args.package_only:
+            return 1
+    return code
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Official ContextBench score")
+    parser = argparse.ArgumentParser(description="Official ContextBench or SWE score")
     parser.add_argument("--pred", type=Path, required=True)
     parser.add_argument("--gold", type=Path, default=None)
+    parser.add_argument(
+        "--benchmark",
+        choices=(BENCHMARK_CONTEXTBENCH, BENCHMARK_SWE),
+        default=BENCHMARK_CONTEXTBENCH,
+        help="contextbench = official evaluate.py; swe = swebench eval Docker",
+    )
+    parser.add_argument("--swe-split", default="verified")
+    parser.add_argument(
+        "--swe-root",
+        type=Path,
+        default=None,
+        help="SWE-bench checkout (SWE_BENCH_ROOT / ../SWE-bench). Used as PYTHONPATH.",
+    )
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--workers", "-j", type=int, default=1)
+    parser.add_argument(
+        "--package-only",
+        action="store_true",
+        help="SWE: skip Docker eval; run official swebench submit package only",
+    )
+    parser.add_argument(
+        "--no-package",
+        action="store_true",
+        help="SWE: skip packaging after eval",
+    )
+    parser.add_argument(
+        "--unofficial-package",
+        action="store_true",
+        help="SWE: write raw/unofficial-submission/ from report.json "
+        "(not a leaderboard entry; official package re-grades test_output.txt)",
+    )
     parser.add_argument(
         "--contextbench-root",
         type=Path,
@@ -96,6 +375,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--cache", type=Path, default=None)
     args = parser.parse_args()
+    if resolve_benchmark(args.benchmark) == BENCHMARK_SWE:
+        raise SystemExit(_eval_swe(args))
     contextbench_root = resolve_contextbench_root(
         args.contextbench_root, parquet=args.gold
     )

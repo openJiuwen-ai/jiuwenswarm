@@ -194,6 +194,7 @@ def test_graph_agent_defaults_and_protocol_labels() -> None:
     assert resolve_graph_agent("off", None) == "root"
     assert resolve_graph_agent("off", "code_agent") == "code_agent"
     assert resolve_graph_agent("graph", None) == "code_agent"
+    assert resolve_graph_agent("graph", None, benchmark="swe") == "root"
     assert resolve_graph_agent("graph", "root") == "root"
     assert describe_protocol("graph", "code_agent") == (
         "find-root-delegates-code-agent"
