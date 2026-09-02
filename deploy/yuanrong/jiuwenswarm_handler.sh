@@ -51,6 +51,16 @@ copy_to_host() {
     fi
 }
 
+# ===== 目标主机端口监听检查（gateway / web 等平级组件共用） =====
+# 判断指定 TCP 端口是否处于 LISTEN。用于服务健康检查，
+# 防止仅看 systemctl is-active 会在"服务刚 active 即崩溃"时误报成功的缺陷。
+# netstat 的 -l 只列出监听状态套接字，故命中 :port 后跟空白即为 LISTEN。
+port_is_listening() {
+    local host="$1"
+    local port="$2"
+    exec_on_host "${host}" "netstat -ltn 2>/dev/null | grep -qE ':${port}[[:space:]]'" 2>/dev/null
+}
+
 jiuwenswarm_check_ssh() {
     local host="$1"
     if is_local_host "${host}"; then

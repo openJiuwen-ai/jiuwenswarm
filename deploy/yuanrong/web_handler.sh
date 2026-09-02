@@ -128,12 +128,13 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     exec_on_host "${master_host}" "systemctl enable ${svc_name}" 2>/dev/null || true
     exec_on_host "${master_host}" "systemctl restart ${svc_name}" || error "Failed to start ${svc_name} on ${master_host}"
 
-    # 健康检查:systemctl is-active
+    # 健康检查：systemd active 且静态端口(WEB_STATIC_PORT)处于 LISTEN，避免"刚开始即崩溃"误报成功
     local retry=0
     local max_retry=10
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null \
+            && port_is_listening "${master_host}" "${web_port}"; then
             success "Web server service is running on ${master_host} (systemd: ${svc_name}) -> http://${web_host}:${web_port}"
             return 0
         fi
@@ -141,7 +142,18 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
         info "Waiting for web server to start... (${retry}/${max_retry})"
     done
 
-    error "Web server failed to start on ${master_host}, check: journalctl -u ${svc_name}"
+    # 服务起不来：分别探测 systemd 状态与端口监听，明确给出是 web 未启动、还是启动了但端口未监听
+    local web_state="inactive"
+    exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null && web_state="active"
+    exec_on_host "${master_host}" "systemctl is-failed --quiet ${svc_name}" 2>/dev/null && web_state="failed"
+
+    local web_listen="no"
+    port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
+    info "jiuwenswarm-web on ${master_host}: systemd=${web_state}; port ${web_port}(WEB_STATIC_PORT)=${web_listen}"
+
+    warning "ss -ltn on ${master_host} (port ${web_port}):"
+    exec_on_host "${master_host}" "ss -ltn 2>/dev/null | grep -E ':${web_port}\\b' || true"
+    error "jiuwenswarm-web did NOT start on ${master_host} (systemd=${web_state}, port ${web_port}=${web_listen}). Check: journalctl -u ${svc_name} -n 50"
 }
 
 # nohup 模式启动(systemd 不可用时回退)
@@ -183,7 +195,8 @@ web_start_nohup() {
     local max_retry=10
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-web' >/dev/null 2>&1"; then
+        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-web' >/dev/null 2>&1" \
+            && port_is_listening "${master_host}" "${web_port}"; then
             success "Web process is running on ${master_host} -> http://${web_host}:${web_port}"
             return 0
         fi

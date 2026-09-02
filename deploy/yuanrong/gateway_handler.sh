@@ -203,20 +203,39 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     exec_on_host "${master_host}" "systemctl enable ${svc_name}" 2>/dev/null || true
     exec_on_host "${master_host}" "systemctl restart ${svc_name}" || error "Failed to start ${svc_name} on ${master_host}"
 
-    # 健康检查
+    # 健康检查：systemd active 且 GATEWAY_PORT/WEB_PORT 端口均处于 LISTEN，
+    # 避免服务"刚开始即崩溃"时 is-active 短暂返回 active 而误报成功。
     local retry=0
     local max_retry=10
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
-            success "Gateway service is running on ${master_host} (systemd: ${svc_name})"
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null \
+            && port_is_listening "${master_host}" "${gw_port}" \
+            && port_is_listening "${master_host}" "${web_port}"; then
+            success "Gateway service is running on ${master_host} (systemd: ${svc_name}) (ports ${gw_port}/${web_port} listening)"
             return 0
         fi
         retry=$((retry + 1))
         info "Waiting for gateway to start... (${retry}/${max_retry})"
     done
 
-    error "Gateway service failed to start on ${master_host}, check: journalctl -u ${svc_name}"
+    # 服务起不来：分别探测 systemd 状态与端口监听，明确给出是 gateway 未启动、还是启动了但端口未监听。
+    # 直接取 systemctl is-active 的原始输出（active/inactive/failed/activating/auto-restart/deactivating 等），
+    # 避免仅用 --quiet 判断导致正在重试启动(activating/auto-restart)被误报为 inactive。
+    local gw_state
+    gw_state=$(exec_on_host "${master_host}" "systemctl is-active ${svc_name} 2>/dev/null" | tr -d '\r')
+    [ -n "${gw_state}" ] || gw_state="unknown"
+
+    local gw_listen="no" web_listen="no"
+    port_is_listening "${master_host}" "${gw_port}" && gw_listen="yes"
+    port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
+    info "jiuwenswarm-gateway on ${master_host}: systemd=${gw_state}; port ${gw_port}(GATEWAY_PORT)=${gw_listen}, port ${web_port}(WEB_PORT)=${web_listen}"
+
+    warning "netstat -ltn on ${master_host} (ports ${gw_port}/${web_port}):"
+    exec_on_host "${master_host}" "netstat -ltn 2>/dev/null | grep -E ':(${gw_port}|${web_port})\\b' || true"
+    warning "systemctl status ${svc_name} on ${master_host}:"
+    exec_on_host "${master_host}" "systemctl status --no-pager -l ${svc_name} 2>/dev/null || true"
+    error "jiuwenswarm-gateway did NOT start on ${master_host} (systemd=${gw_state}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: journalctl -u ${svc_name} -n 50"
 }
 
 # nohup 模式启动（systemd 不可用时回退）
@@ -224,6 +243,8 @@ gateway_start_nohup() {
     local master_host="$1"
     local home_prefix="${2:-}"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
+    local gw_port="${DEPLOY_VARS["GATEWAY_PORT"]:-19001}"
+    local web_port="${DEPLOY_VARS["WEB_PORT"]:-19000}"
 
     # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
     local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
@@ -242,15 +263,26 @@ gateway_start_nohup() {
     local max_retry=10
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1"; then
-            success "Gateway process is running on ${master_host}"
+        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" \
+            && port_is_listening "${master_host}" "${gw_port}" \
+            && port_is_listening "${master_host}" "${web_port}"; then
+            success "Gateway process is running on ${master_host} (ports ${gw_port}/${web_port} listening)"
             return 0
         fi
         retry=$((retry + 1))
         info "Waiting for gateway to start... (${retry}/${max_retry})"
     done
 
-    error "Gateway process failed to start on ${master_host}, check /tmp/jiuwenswarm-gateway.log"
+    # 失败诊断：区分是进程没起来、还是起来了但端口未监听（对标 systemd 分支的 gw_state/监听探测）。
+    local gw_proc="no" gw_listen="no" web_listen="no"
+    exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" && gw_proc="yes"
+    port_is_listening "${master_host}" "${gw_port}" && gw_listen="yes"
+    port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
+    info "jiuwenswarm-gateway on ${master_host}: proc(alive)=${gw_proc}; port ${gw_port}(GATEWAY_PORT)=${gw_listen}, port ${web_port}(WEB_PORT)=${web_listen}"
+
+    warning "netstat -ltn on ${master_host} (ports ${gw_port}/${web_port}):"
+    exec_on_host "${master_host}" "netstat -ltn 2>/dev/null | grep -E ':(${gw_port}|${web_port})\\b' || true"
+    error "Gateway process failed to start on ${master_host} (proc=${gw_proc}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: /tmp/jiuwenswarm-gateway.log"
 }
 
 # 本机是否属于 config.yaml 的 cluster.master_nodes；返回 0 表示属于。
