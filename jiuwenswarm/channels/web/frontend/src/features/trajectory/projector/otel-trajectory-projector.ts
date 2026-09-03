@@ -532,7 +532,7 @@ function promptAttachmentHistoryModeFromContent(
 function usage(attributes: NormalizedTrajectoryAttributes): TrajectoryUsage {
   const input = nonNegativeSafeInteger(attributes.usageInputTokens)
   const cacheRead = nonNegativeSafeInteger(attributes.usageCacheReadTokens)
-  const cacheWrite = nonNegativeSafeInteger(attributes.usageCacheCreationTokens)
+  const cacheWrite = nonNegativeSafeInteger(attributes.usageCacheWriteTokens)
   const output = nonNegativeSafeInteger(attributes.usageOutputTokens)
   const reasoning = nonNegativeSafeInteger(attributes.usageReasoningTokens)
   const rawTotal = input === undefined || output === undefined ? undefined : input + output
@@ -807,12 +807,15 @@ function toolCell(
   const description = span.attributes.toolDescription
   const toolMetadata = nonEmpty({
     ...(description === undefined ? {} : { description }),
-    ...(span.attributes.toolType === undefined && span.attributes.openJiuwenToolType === undefined
+    ...(span.attributes.toolType === undefined
       ? {}
-      : { type: span.attributes.toolType ?? span.attributes.openJiuwenToolType }),
+      : { type: span.attributes.toolType }),
     ...(span.attributes.toolResourceId === undefined
       ? {}
       : { resourceId: span.attributes.toolResourceId }),
+    ...(span.attributes.toolProtocol === undefined
+      ? {}
+      : { protocol: span.attributes.toolProtocol }),
     ...(span.attributes.toolAuthoritative === undefined
       ? {}
       : { authoritative: span.attributes.toolAuthoritative }),
@@ -1681,7 +1684,7 @@ export function projectOtelTrajectory(
         : toolBySpanId.get(span.parentSpanId)
       const duplicateMcpLifecycle = span.attributes.toolAuthoritative !== true
         && parentTool?.attributes.toolAuthoritative === true
-        && (parentTool.attributes.openJiuwenToolType ?? parentTool.attributes.toolType) === 'mcp'
+        && parentTool.attributes.toolProtocol === 'mcp'
         && parentTool.attributes.toolResourceId !== undefined
         && parentTool.attributes.toolResourceId === span.attributes.toolResourceId
       if (duplicateMcpLifecycle) continue

@@ -2009,13 +2009,13 @@ def _request_usage_fact(
                 spans.extend(scope_span.get("spans", []))
     if len(spans) != 1 or not isinstance(spans[0], dict):
         return None
-    if spans[0].get("name") != "llm.call":
-        return None
     attributes = {
         str(attribute.get("key")): _otlp_attribute_value(attribute.get("value"))
         for attribute in spans[0].get("attributes", [])
         if isinstance(attribute, dict) and isinstance(attribute.get("key"), str)
     }
+    if attributes.get("gen_ai.operation.name") not in {"chat", "generate_content", "text_completion"}:
+        return None
     inference_id = str(attributes.get("openjiuwen.inference.id") or "").strip()
     if not inference_id:
         return None
@@ -2023,7 +2023,7 @@ def _request_usage_fact(
     usage_keys = {
         "input": ("gen_ai.usage.input_tokens",),
         "cacheRead": ("gen_ai.usage.cache_read.input_tokens",),
-        "cacheWrite": ("gen_ai.usage.cache_creation.input_tokens",),
+        "cacheWrite": ("gen_ai.usage.cache_write.input_tokens",),
         "output": ("gen_ai.usage.output_tokens",),
         "reasoning": ("gen_ai.usage.reasoning.output_tokens",),
     }

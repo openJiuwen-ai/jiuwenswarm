@@ -2,6 +2,17 @@
 
 /** Version pins and semantic names accepted by the observability profile. */
 
+import { GEN_AI_ATTRIBUTES } from './gen-ai-semconv.generated.ts'
+
+export {
+  GEN_AI_ATTRIBUTES,
+  GEN_AI_CORE_SEMCONV_SCHEMA_URL,
+  GEN_AI_OPERATIONS,
+  GEN_AI_SEMCONV_ATTRIBUTE_COUNT,
+  GEN_AI_SEMCONV_REVISION,
+  GEN_AI_SEMCONV_SCHEMA_URL,
+} from './gen-ai-semconv.generated.ts'
+
 /** OpenTelemetry specification revision used to define the trace model. */
 export const OTEL_SPEC_VERSION = '1.60.0' as const
 
@@ -10,9 +21,6 @@ export const OTLP_PROTO_VERSION = '1.11.0' as const
 
 /** Stable core semantic-conventions revision used by resource schema URLs. */
 export const OTEL_SEMCONV_VERSION = '1.44.0' as const
-
-/** Exact development revision of the standalone GenAI semantic conventions. */
-export const GEN_AI_SEMCONV_REVISION = 'a685613a207a580163353b8e48a7ad88967e7b42' as const
 
 /** Current pre-release DSH extension schema accepted by the viewer. */
 export const DSH_SCHEMA_VERSION = '1' as const
@@ -25,41 +33,40 @@ export const STANDARD_ATTRIBUTES = {
   exceptionType: 'exception.type',
   exceptionMessage: 'exception.message',
   exceptionStacktrace: 'exception.stacktrace',
-  operationName: 'gen_ai.operation.name',
-  providerName: 'gen_ai.provider.name',
-  conversationId: 'gen_ai.conversation.id',
-  conversationCompacted: 'gen_ai.conversation.compacted',
-  requestModel: 'gen_ai.request.model',
-  requestMaxTokens: 'gen_ai.request.max_tokens',
-  requestTemperature: 'gen_ai.request.temperature',
-  requestTopP: 'gen_ai.request.top_p',
-  requestStopSequences: 'gen_ai.request.stop_sequences',
-  requestStream: 'gen_ai.request.stream',
-  requestReasoningLevel: 'gen_ai.request.reasoning.level',
-  responseId: 'gen_ai.response.id',
-  responseModel: 'gen_ai.response.model',
-  responseFinishReasons: 'gen_ai.response.finish_reasons',
-  responseTimeToFirstChunk: 'gen_ai.response.time_to_first_chunk',
-  usageInputTokens: 'gen_ai.usage.input_tokens',
-  usageOutputTokens: 'gen_ai.usage.output_tokens',
-  usageReasoningTokens: 'gen_ai.usage.reasoning.output_tokens',
-  usageCacheReadTokens: 'gen_ai.usage.cache_read.input_tokens',
-  usageCacheCreationTokens: 'gen_ai.usage.cache_creation.input_tokens',
-  agentId: 'gen_ai.agent.id',
-  agentName: 'gen_ai.agent.name',
-  agentVersion: 'gen_ai.agent.version',
-  agentDescription: 'gen_ai.agent.description',
-  toolName: 'gen_ai.tool.name',
-  toolId: 'gen_ai.tool.id',
-  toolCallId: 'gen_ai.tool.call.id',
-  toolType: 'gen_ai.tool.type',
-  toolDescription: 'gen_ai.tool.description',
-  toolCallArguments: 'gen_ai.tool.call.arguments',
-  toolCallResult: 'gen_ai.tool.call.result',
-  systemInstructions: 'gen_ai.system_instructions',
-  inputMessages: 'gen_ai.input.messages',
-  outputMessages: 'gen_ai.output.messages',
-  toolDefinitions: 'gen_ai.tool.definitions',
+  operationName: GEN_AI_ATTRIBUTES.GEN_AI_OPERATION_NAME,
+  providerName: GEN_AI_ATTRIBUTES.GEN_AI_PROVIDER_NAME,
+  conversationId: GEN_AI_ATTRIBUTES.GEN_AI_CONVERSATION_ID,
+  conversationCompacted: GEN_AI_ATTRIBUTES.GEN_AI_CONVERSATION_COMPACTED,
+  requestModel: GEN_AI_ATTRIBUTES.GEN_AI_REQUEST_MODEL,
+  requestMaxTokens: GEN_AI_ATTRIBUTES.GEN_AI_REQUEST_MAX_TOKENS,
+  requestTemperature: GEN_AI_ATTRIBUTES.GEN_AI_REQUEST_TEMPERATURE,
+  requestTopP: GEN_AI_ATTRIBUTES.GEN_AI_REQUEST_TOP_P,
+  requestStopSequences: GEN_AI_ATTRIBUTES.GEN_AI_REQUEST_STOP_SEQUENCES,
+  requestStream: GEN_AI_ATTRIBUTES.GEN_AI_REQUEST_STREAM,
+  requestReasoningLevel: GEN_AI_ATTRIBUTES.GEN_AI_REQUEST_REASONING_LEVEL,
+  responseId: GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_ID,
+  responseModel: GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_MODEL,
+  responseFinishReasons: GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_FINISH_REASONS,
+  responseTimeToFirstChunk: GEN_AI_ATTRIBUTES.GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK,
+  usageInputTokens: GEN_AI_ATTRIBUTES.GEN_AI_USAGE_INPUT_TOKENS,
+  usageOutputTokens: GEN_AI_ATTRIBUTES.GEN_AI_USAGE_OUTPUT_TOKENS,
+  usageReasoningTokens: GEN_AI_ATTRIBUTES.GEN_AI_USAGE_REASONING_OUTPUT_TOKENS,
+  usageCacheReadTokens: GEN_AI_ATTRIBUTES.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS,
+  usageCacheWriteTokens: GEN_AI_ATTRIBUTES.GEN_AI_USAGE_CACHE_WRITE_INPUT_TOKENS,
+  agentId: GEN_AI_ATTRIBUTES.GEN_AI_AGENT_ID,
+  agentName: GEN_AI_ATTRIBUTES.GEN_AI_AGENT_NAME,
+  agentVersion: GEN_AI_ATTRIBUTES.GEN_AI_AGENT_VERSION,
+  agentDescription: GEN_AI_ATTRIBUTES.GEN_AI_AGENT_DESCRIPTION,
+  toolName: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_NAME,
+  toolCallId: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_CALL_ID,
+  toolType: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_TYPE,
+  toolDescription: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_DESCRIPTION,
+  toolCallArguments: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_CALL_ARGUMENTS,
+  toolCallResult: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_CALL_RESULT,
+  systemInstructions: GEN_AI_ATTRIBUTES.GEN_AI_SYSTEM_INSTRUCTIONS,
+  inputMessages: GEN_AI_ATTRIBUTES.GEN_AI_INPUT_MESSAGES,
+  outputMessages: GEN_AI_ATTRIBUTES.GEN_AI_OUTPUT_MESSAGES,
+  toolDefinitions: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_DEFINITIONS,
 } as const
 
 /** OpenJiuwen trajectory extensions and compatibility attributes. */
@@ -107,7 +114,7 @@ export const OPENJIUWEN_ATTRIBUTES = {
   providerMetadata: 'openjiuwen.gen_ai.response.provider_metadata',
   inputMessageProvenance: 'openjiuwen.gen_ai.input.message_provenance',
   toolResourceId: 'openjiuwen.tool.resource_id',
-  toolType: 'openjiuwen.tool.type',
+  toolProtocol: 'openjiuwen.tool.protocol',
   toolAuthoritative: 'openjiuwen.tool.authoritative',
   eventSequence: 'openjiuwen.event.sequence',
   streamKind: 'openjiuwen.stream.kind',
@@ -177,17 +184,6 @@ export const DSH_EVENTS = {
   streamChunk: 'dsh.stream.chunk',
   retryScheduled: 'dsh.retry.scheduled',
   retryStarted: 'dsh.retry.started',
-} as const
-
-/** Well-known GenAI operation names used by the projector. */
-export const GEN_AI_OPERATIONS = {
-  chat: 'chat',
-  generateContent: 'generate_content',
-  textCompletion: 'text_completion',
-  invokeAgent: 'invoke_agent',
-  executeTool: 'execute_tool',
-  invokeWorkflow: 'invoke_workflow',
-  plan: 'plan',
 } as const
 
 /** Closed DSH record-kind hints understood by the trajectory projector. */

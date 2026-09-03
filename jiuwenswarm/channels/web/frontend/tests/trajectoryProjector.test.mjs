@@ -6,6 +6,19 @@ import {
   createTrajectoryV2Reducer,
   projectOtelTrajectory,
 } from '../node_modules/.cache/trajectory-projector/projector.mjs';
+import {
+  GEN_AI_ATTRIBUTES,
+  GEN_AI_SEMCONV_ATTRIBUTE_COUNT,
+  GEN_AI_SEMCONV_REVISION,
+} from '../node_modules/.cache/trajectory-projector/gen-ai-semconv.mjs';
+
+test('generated GenAI semantic-convention attributes are complete and unique', () => {
+  const attributes = Object.values(GEN_AI_ATTRIBUTES);
+  assert.match(GEN_AI_SEMCONV_REVISION, /^[0-9a-f]{40}$/);
+  assert.equal(attributes.length, GEN_AI_SEMCONV_ATTRIBUTE_COUNT);
+  assert.equal(new Set(attributes).size, attributes.length);
+  assert.ok(attributes.every(attribute => attribute.startsWith('gen_ai.')));
+});
 
 function fixtureUrl(name) {
   return new URL(`../src/features/trajectory/fixtures/${name}`, import.meta.url);
@@ -273,7 +286,7 @@ test('Core forced-close child projects as error with its diagnostic reason', asy
   assert.equal(forcedTool.result, 'trace_safety_flush');
 });
 
-test('historical MCP raw lifecycle span is folded into its authoritative tool', async () => {
+test('MCP raw lifecycle span is folded into its authoritative tool by resource id', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const tools = spansOf(records).filter(span => span.name.startsWith('tool.'));
   const authoritative = tools.find(span => span.attributes.some(attribute => (
@@ -282,10 +295,10 @@ test('historical MCP raw lifecycle span is folded into its authoritative tool', 
   const lifecycle = tools.find(span => span !== authoritative);
   assert.ok(authoritative && lifecycle);
   const resourceId = 'playwright.playwright-official.browser_navigate';
-  setStringAttribute(authoritative, 'gen_ai.tool.type', 'mcp');
-  setStringAttribute(authoritative, 'openjiuwen.tool.type', 'mcp');
+  setStringAttribute(authoritative, 'gen_ai.tool.type', 'extension');
+  setStringAttribute(authoritative, 'openjiuwen.tool.protocol', 'mcp');
   setStringAttribute(authoritative, 'openjiuwen.tool.resource_id', resourceId);
-  setStringAttribute(lifecycle, 'gen_ai.tool.id', resourceId);
+  setStringAttribute(lifecycle, 'openjiuwen.tool.resource_id', resourceId);
   lifecycle.parentSpanId = authoritative.spanId;
   lifecycle.attributes = lifecycle.attributes.filter(attribute => (
     attribute.key !== 'gen_ai.tool.call.id'
@@ -453,11 +466,10 @@ test('system and external user lead pre-model tools while generated context foll
   assert.ok(cells.findIndex(cell => cell.text === 'prepared browser state') > cells.indexOf(setupTool));
 });
 
-test('standard and OpenJiuwen fields win over conflicting legacy aliases', async () => {
+test('standard and OpenJiuwen fields populate the request inspector', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const inference = spansOf(records).find(span => span.name === 'llm.call');
   assert.ok(inference);
-  setIntAttribute(inference, 'gen_ai.usage.total_tokens', 999);
   const snapshot = projectOtelTrajectory(records);
   const request = snapshot.requests?.[0];
   const assistant = cellsOf(snapshot).find(cell => cell.kind === 'message');
@@ -2158,7 +2170,7 @@ test('tool-ancestor branches do not reset the physical main context chain', asyn
   ]);
 });
 
-test('legacy tool-call aliases do not duplicate structured calls in one physical inference', async () => {
+test('nonstandard tool-call aliases are ignored beside canonical structured calls', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const inference = spansOf(records).find(span => span.spanId === '2000000000000000');
   assert.ok(inference);
@@ -2183,7 +2195,7 @@ test('legacy tool-call aliases do not duplicate structured calls in one physical
   assert.equal(assistant.sourceBlocks.filter(block => block.type === 'tool-call').length, 1);
 });
 
-test('no-id calls keep physical multiplicity within one source and across output messages', async () => {
+test('no-id canonical calls keep physical multiplicity across output messages', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const inference = spansOf(records).find(span => span.spanId === '2000000000000000');
   assert.ok(inference);
@@ -2192,10 +2204,6 @@ test('no-id calls keep physical multiplicity within one source and across output
     {
       role: 'assistant',
       parts: [call],
-      tool_calls: [
-        { name: 'search', arguments: { q: 'same' } },
-        { name: 'search', arguments: { q: 'same' } },
-      ],
     },
     { role: 'assistant', parts: [call] },
   ]));
@@ -2203,7 +2211,7 @@ test('no-id calls keep physical multiplicity within one source and across output
   const assistant = cellsOf(projectOtelTrajectory(records)).find(cell => cell.kind === 'message');
   assert.ok(assistant);
   const calls = assistant.sourceBlocks.filter(block => block.type === 'tool-call');
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 2);
 });
 
 test('provisional inference projects running lifecycle without a fabricated end time', async () => {
