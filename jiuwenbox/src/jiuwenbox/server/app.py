@@ -320,6 +320,14 @@ async def lifespan(_application: FastAPI):
                 logger.exception(
                     "ensure_windows_setup 失败; Windows 沙箱可能不可用",
                 )
+            # 启动时动态取沙箱有效 SID 集合 (含 Authenticated Users 等伪组).
+            # LogonUserW 会阻塞, 放线程里跑.
+            try:
+                await asyncio.to_thread(
+                    win_setup.get_sandbox_token_groups, force=True,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("启动取沙箱 TOKEN_GROUPS 失败 (非致命)", exc_info=True)
             # 启动时差集清理: 清掉历史 apply 过但当前 policy 不再包含的路径上的残留 ACE,
             # 避免配置变更 (路径从 allow_read 移除) 后旧 ACE 残留导致配置不生效
             try:
@@ -329,7 +337,12 @@ async def lifespan(_application: FastAPI):
                 _stale_policy_paths += list(_root_policy.windows.filesystem.deny_read or [])
                 _stale_policy_paths += list(_root_policy.windows.filesystem.allow_write or [])
                 _stale_policy_paths += list(_root_policy.windows.filesystem.deny_write or [])
-                win_setup.revoke_stale_acl(_stale_policy_paths, workspace="", sandbox_user_sid=_stale_sid)
+                await asyncio.to_thread(
+                    win_setup.revoke_stale_acl,
+                    _stale_policy_paths,
+                    "",
+                    _stale_sid,
+                )
             except Exception:  # noqa: BLE001
                 logger.debug("启动差集清理失败 (非致命)", exc_info=True)
             # 启动出站代理 (egress 规则取根 policy 的 windows.network; 基底+副本已合并).

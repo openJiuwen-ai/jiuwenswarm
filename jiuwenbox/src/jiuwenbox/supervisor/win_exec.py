@@ -1665,6 +1665,66 @@ def _fallback_bash_to_native_shell(command: list) -> None:
                   f"bash unavailable, fallback to cmd /c: {script[:120]!r}")
 
 
+# CreateProcessAsUserW 只找 PATHEXT 可执行文件, 不识别 cmd 内置命令 (del/dir/copy…).
+_CMD_BUILTINS = frozenset({
+    "assoc", "break", "call", "cd", "chdir", "cls", "color", "copy", "date",
+    "del", "dir", "echo", "endlocal", "erase", "exit", "for", "ftype", "goto",
+    "if", "md", "mkdir", "mklink", "move", "path", "pause", "popd", "prompt",
+    "pushd", "rd", "rem", "ren", "rename", "rmdir", "set", "setlocal", "shift",
+    "start", "time", "title", "type", "ver", "verify", "vol",
+})
+
+
+def _comspec_path(env: dict[str, str] | None) -> str:
+    """解析 cmd.exe 路径, 优先 COMSPEC / SystemRoot."""
+    candidates: list[str] = []
+    if isinstance(env, dict):
+        for key in ("COMSPEC", "ComSpec"):
+            raw = (env.get(key) or "").strip()
+            if raw:
+                candidates.append(raw)
+        windir = (env.get("SystemRoot") or env.get("windir") or "").strip()
+        if windir:
+            candidates.append(os.path.join(windir, "System32", "cmd.exe"))
+    for key in ("COMSPEC", "ComSpec", "SystemRoot", "windir"):
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            continue
+        if key.lower() in ("systemroot", "windir"):
+            candidates.append(os.path.join(raw, "System32", "cmd.exe"))
+        else:
+            candidates.append(raw)
+    candidates.append(r"C:\Windows\System32\cmd.exe")
+    for path in candidates:
+        try:
+            if path and os.path.isfile(path):
+                return path
+        except OSError:
+            continue
+    return candidates[-1]
+
+
+def _rewrite_cmd_builtins(command: list, env: dict[str, str] | None) -> None:
+    """裸 cmd 内置命令改写为 ``cmd.exe /c …``, 否则 CreateProcess 报 WinError 2."""
+    if not command:
+        return
+    exe = str(command[0])
+    if "\\" in exe or "/" in exe:
+        return
+    base = os.path.basename(exe).lower()
+    if base.endswith((".exe", ".bat", ".cmd", ".com")):
+        return
+    if base not in _CMD_BUILTINS:
+        return
+    comspec = _comspec_path(env)
+    orig = [str(part) for part in command]
+    command[:] = [comspec, "/c", *orig]
+    _push_log(
+        "INFO",
+        f"cmd builtin rewritten: {orig[0]!r} -> {comspec} /c",
+    )
+
+
 def _handle_exec_request(stream, header, restricted_token, workspace, stdin_bytes) -> None:
     """处理 exec 请求: 起 child 子命令, 回传 stdout/stderr/exit. stdin_bytes 透传给子进程."""
     command = header.get("command", [])
@@ -1686,6 +1746,8 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
     # 若 bash 确实不可用 (机器无 Git/WSL), 退化为 cmd /c 或 powershell -Command.
     if _bash_unavailable():
         _fallback_bash_to_native_shell(command)
+    # del/dir/copy 等是 cmd 内置, 不是 PATH 里的 exe.
+    _rewrite_cmd_builtins(command, header.get("env") if isinstance(header.get("env"), dict) else None)
     # 建立 pipe 收集子进程 stdout/stderr.
     kernel32 = get_kernel32()
     sa = SecurityAttr()

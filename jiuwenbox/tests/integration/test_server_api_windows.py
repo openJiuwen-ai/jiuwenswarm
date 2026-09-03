@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -69,8 +70,9 @@ class TestWindowsPolicySchema:
         policy = SecurityPolicy.model_validate(_windows_policy_yaml())
         assert policy.windows.proxy.port_range_start == 60080
         assert policy.windows.proxy.port_range_end == 60089
-        assert policy.windows.filesystem.allow_write == ["/workspace"]
-        assert policy.windows.filesystem.deny_write == ["/workspace/.git"]
+        # policy 会把路径过一遍 Path() 做平台归一 (Windows 上 / → \).
+        assert policy.windows.filesystem.allow_write == [str(Path("/workspace"))]
+        assert policy.windows.filesystem.deny_write == [str(Path("/workspace/.git"))]
         assert policy.windows.network.mode == "wfp_loopback_proxy"
         assert policy.windows.network.egress.default == "deny"
         assert policy.windows.network.egress.allowed_domains == ["pypi.org"]
@@ -123,7 +125,7 @@ class TestWindowsPolicySchema:
         from jiuwenbox.server.policy_engine import PolicyEngine
         engine = PolicyEngine()
         merged = engine.merge_policy(base, extra)
-        assert merged.windows.filesystem.allow_write == ["/workspace"]
+        assert merged.windows.filesystem.allow_write == [str(Path("/workspace"))]
         # Linux 字段保持 base 默认.
         assert merged.network.mode == base.network.mode
 
@@ -136,8 +138,10 @@ class TestWinConstants:
         assert const.RESTRICTED_TOKEN_FLAGS == (
                 const.DISABLE_MAX_PRIVILEGE
                 | const.SANDBOX_INERT
-                | const.WRITE_RESTRICTED
         )
+        # WRITE_RESTRICTED 已去掉: 带它的受限 token 下子进程起不来 (0xC0000142).
+        # 写限制改由文件 ACL (写白名单) 承担.
+        assert not (const.RESTRICTED_TOKEN_FLAGS & const.WRITE_RESTRICTED)
 
     def test_sandbox_user_flags(self):
         assert const.SANDBOX_USER_FLAGS & const.UF_SCRIPT
@@ -150,6 +154,7 @@ class TestWinConstants:
         assert const.ALLOW_WRITE_RIGHTS & const.FILE_GENERIC_WRITE
         assert const.ALLOW_WRITE_RIGHTS & const.FILE_GENERIC_EXECUTE
         assert const.ALLOW_WRITE_RIGHTS & const.FILE_DELETE_ACCESS
+        assert const.ALLOW_WRITE_RIGHTS & const.FILE_DELETE_CHILD
 
     def test_synthetic_sid_format(self):
         from jiuwenbox.supervisor import win_acl
@@ -312,8 +317,11 @@ class TestProcessRuntimeWindowsBranch:
 
         # 构造 mock 的 win_* 模块.
         fake_win_acl = MagicMock()
-        # apply_sandbox_acl 返回施加路径清单 (review M6).
-        fake_win_acl.apply_sandbox_acl = MagicMock(return_value=["/ws"])
+        # apply_sandbox_acl 返回 ApplyAclResult (paths/grants/failed).
+        from jiuwenbox.supervisor.win_acl import ApplyAclResult
+        fake_win_acl.apply_sandbox_acl = MagicMock(
+            return_value=ApplyAclResult(paths=["/ws"]),
+        )
         fake_win_exec = MagicMock()
         # review #2: two_hop_spawn_and_authorize 封装 SUSPENDED→写 token→resume,
         # 返回 (pid, process_handle) (thread_handle/token_write_handle 内部释放).
@@ -402,12 +410,23 @@ class TestAppLifespanWindowsBranch:
         async def _fake_serve(*a, **k):
             return (asyncio.ensure_future(asyncio.sleep(100)), asyncio.Event())
 
-        fake_win_proxy.serve_windows_proxy = _fake_serve
+        # AsyncMock 包一层: 断言要读 .called, 裸 async 函数没有这个属性.
+        fake_win_proxy.serve_windows_proxy = AsyncMock(side_effect=_fake_serve)
         monkeypatch.setitem(
             sys.modules, "jiuwenbox.supervisor.win_setup", fake_win_setup,
         )
         monkeypatch.setitem(
             sys.modules, "jiuwenbox.supervisor.win_proxy", fake_win_proxy,
+        )
+        # lifespan 里是 `from jiuwenbox.supervisor import win_setup`, 走包属性;
+        # 包一旦被别的用例 import 过, 只改 sys.modules 拿到的还是真模块
+        # (真的 ensure_windows_setup 会去装用户/弹 UAC). 包属性也要换掉.
+        import jiuwenbox.supervisor as supervisor_pkg
+        monkeypatch.setattr(
+            supervisor_pkg, "win_setup", fake_win_setup, raising=False,
+        )
+        monkeypatch.setattr(
+            supervisor_pkg, "win_proxy", fake_win_proxy, raising=False,
         )
 
         from jiuwenbox.server import app as app_mod
@@ -421,10 +440,12 @@ class TestAppLifespanWindowsBranch:
         fake_mgr = MagicMock()
         fake_mgr.register_zombie_reaper = MagicMock()
         fake_mgr.start_idle_reaper = MagicMock()
-        fake_mgr.stop_idle_reaper = MagicMock()
-        fake_mgr.shutdown_all_sandboxes = MagicMock()
         fake_mgr.clear_persistent_state = MagicMock()
         fake_mgr.unregister_zombie_reaper = MagicMock()
+        # lifespan / health 里 await 的几个必须是 AsyncMock.
+        fake_mgr.stop_idle_reaper = AsyncMock()
+        fake_mgr.shutdown_all_sandboxes = AsyncMock()
+        fake_mgr.list_sandboxes = AsyncMock(return_value=[])
 
         async def _mgr_noop(*a, **k):
             return fake_mgr
@@ -446,10 +467,13 @@ class TestAppLifespanWindowsBranch:
         async def _drive():
             import httpx
             transport = httpx.ASGITransport(app=app_obj)
-            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
-                # 一次请求触发 lifespan startup -> shutdown.
-                resp = await c.get("/health")
-                return resp
+            # httpx 的 ASGITransport 只发 http scope, 不跑 lifespan 协议,
+            # 光发一个请求 startup 根本不会执行. 显式进 lifespan_context.
+            async with app_obj.router.lifespan_context(app_obj):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://t",
+                ) as c:
+                    return await c.get("/health")
 
         asyncio.run(_drive())
         # startup 期间 ensure_windows_setup 应被调.
@@ -506,18 +530,21 @@ class TestAppLifespanWindowsBranch:
 class TestWinWfpFilterConstruction:
     """验证 install_wfp_filters 构造的 Block/Permit filter 结构正确.
 
-    _build_loopback_v4_condition / _build_ale_user_condition 现在返回
+    build_loopback_v4_condition / _build_ale_user_condition 现在返回
     (cond, keep_alive) 元组 (review C3/C5/M2). ALE_USER_ID 用
     FWP_SECURITY_DESCRIPTOR_TYPE (需 win32security, WSL 跳过).
     """
 
     def test_build_loopback_v4_condition(self):
         from jiuwenbox.supervisor import win_wfp
-        cond, ka = win_wfp._build_loopback_v4_condition()  # noqa: SLF001
+        cond, ka = win_wfp.build_loopback_v4_condition()
         assert cond.matchType == const.FWP_MATCH_EQUAL
         assert cond.conditionValue.type == const.FWP_V4_ADDR_MASK
-        # keep_alive 持有 FWP_V4_ADDR_MASK 实例.
-        assert ka is not None
+        # keep_alive 持有 FwpAddrMaskV4 实例, 且 addr 是 host order 127.0.0.1;
+        # 它被 cond 里的裸指针引用, 调用方不持有就会被 GC 掉.
+        assert isinstance(ka, win_wfp.FwpAddrMaskV4)
+        assert ka.addr == const.LOOPBACK_IPV4_INT
+        assert ka.mask == 0xFFFFFFFF
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +555,7 @@ class TestWinWfpConstantsAndLayout:
         """
             5 个 WFP GUID 必须等于 Windows SDK fwpmu.h DEFINE_GUID 真值 (review CRITICAL #5: 旧版全是虚构值).
         """
-        assert const.FWPM_LAYER_ALE_AUTH_CONNECT_V4 == "C38D57D1-05A7-4C33-900F-7FBCEEE60E82"
+        assert const.FWPM_LAYER_ALE_AUTH_CONNECT_V4 == "C38D57D1-05A7-4C33-904F-7FBCEEE60E82"
         assert const.FWPM_LAYER_ALE_AUTH_CONNECT_V6 == "4A72393B-319F-44BC-84C3-BA54DCB3B6B4"
         assert const.FWPM_CONDITION_ALE_USER_ID == "AF043A0A-B34D-4F86-979C-C90371AF6E66"
         assert const.FWPM_CONDITION_IP_REMOTE_ADDRESS == "B235AE9A-1D64-49B8-A44C-5FF3D9095045"
@@ -580,13 +607,16 @@ class TestWinWfpConstantsAndLayout:
         """
         import ctypes
         from jiuwenbox.supervisor import win_wfp
+        # 结构体在模块里用 Python 命名 (FwpmDisplayData0 等), SDK 的
+        # FWPM_* 名字是常量/GUID, 不是这里的 ctypes 类.
         for n in (
-                "FWPM_DISPLAY_DATA0", "FWPM_FILTER0", "FWPM_SUBLAYER0",
-                "FWPM_SESSION0", "FWP_VALUE0", "FWP_CONDITION_VALUE0",
-                "FWPM_FILTER_CONDITION0", "FWPM_ACTION0", "FWP_V4_ADDR_MASK",
+                "FwpmDisplayData0", "FwpmFilter0", "FwpmSubLayer",
+                "FwpmSession0", "FwpValue0", "FwpConditionValue0",
+                "FwpmFilterCondition0", "FwpmAction0", "FwpAddrMaskV4",
         ):
             cls = getattr(win_wfp, n)
-            inst = cls()
+            assert issubclass(cls, ctypes.Structure), n
+            cls()  # 可构造 (字段类型合法)
             assert ctypes.sizeof(cls) > 0, n
 
     def test_fwpm_sublayer_weight_is_uint16(self):
@@ -615,7 +645,7 @@ class TestWinJobLimits:
         fake_kernel.SetInformationJobObject = MagicMock(return_value=True)
         fake_kernel.CloseHandle = MagicMock()
         monkeypatch.setattr(win_job, "_kernel32", fake_kernel)
-        monkeypatch.setattr(win_job, "_get_kernel32", lambda: fake_kernel)
+        monkeypatch.setattr(win_job, "get_kernel32", lambda: fake_kernel)
 
         handle = win_job.create_job(
             memory_max=512 * 1024 * 1024,
@@ -623,25 +653,35 @@ class TestWinJobLimits:
             max_processes=32,
         )
         assert handle == 0xABCDEF
-        # SetInformationJobObject 被调用 (extended limits + cpu rate).
-        assert fake_kernel.SetInformationJobObject.call_count >= 1
-        # 检查第一次调用 (extended limits) 传入的 JOBOBJECT 结构.
-        args = fake_kernel.SetInformationJobObject.call_args_list[0].args
-        info_class = args[1]
-        assert info_class == const.JobObjectExtendedLimitInformation
+        # 三个限制齐全时: extended limits + cpu rate 两次 SetInformationJobObject.
+        info_classes = [
+            c.args[1] for c in fake_kernel.SetInformationJobObject.call_args_list
+        ]
+        assert info_classes == [
+            const.JobObjectExtendedLimitInformation,
+            const.JobObjectCpuRateControlInformation,
+        ]
+        # 传的是 byref(struct) + sizeof(struct), 两者必须配对.
+        for call in fake_kernel.SetInformationJobObject.call_args_list:
+            import ctypes
+            assert call.args[3] == ctypes.sizeof(call.args[2]._obj)  # noqa: SLF001
 
 
 class TestWinExecRunnerCommand:
     def test_build_runner_command_includes_sandbox_id(self):
         from jiuwenbox.supervisor import win_exec
         cmd = win_exec._build_runner_command(  # noqa: SLF001
-            "sb-test", "C:\\ws", 60080, 60089,
+            "sb-test", "C:\\ws", 60080, 60089, 60100,
         )
         assert "--sandbox-id" in cmd
         assert "sb-test" in cmd
         assert "--workspace" in cmd
         assert "C:\\ws" in cmd
         assert "runner" in cmd
+        # control_port 走命令行 (不走 env, 否则 CreateProcessWithLogonW WinError 87).
+        assert "--control-port 60100" in cmd
+        # control_token 绝不能出现在命令行 (会从 WMI CommandLine 泄漏).
+        assert "--control-token" not in cmd
 
 
 class TestWinAclAceConstruction:
@@ -895,6 +935,75 @@ class TestWinAclAceConstruction:
         src = inspect.getsource(win_setup.install)
         assert "reconcile_install_acl" in src
 
+    def test_allow_write_and_deny_read_propagate(self):
+        import inspect
+        from jiuwenbox.supervisor import win_acl
+        src = inspect.getsource(win_acl.apply_sandbox_acl)
+        # allow_write / deny_write / deny_read 均可传播
+        assert src.count("propagate=do_propagate") >= 3 or src.count("propagate=True") >= 3
+        assert "SetNamedSecurityInfo" in inspect.getsource(win_acl._write_file_dacl_propagate)  # noqa: SLF001
+
+    def test_apply_sandbox_acl_returns_result(self):
+        from jiuwenbox.supervisor import win_acl
+        assert callable(win_acl.effective_grant)
+        # 三个列表字段都独立默认空 (dataclass field(default_factory)).
+        r1 = win_acl.ApplyAclResult()
+        r2 = win_acl.ApplyAclResult()
+        r1.paths.append("/a")
+        r1.grants.append(win_acl.AclGrantRecord(
+            path="/a", kind="allow_write", mask=1, flags=3, propagated=True,
+        ))
+        assert r2.paths == [] and r2.grants == [] and r2.failed == []
+
+    def test_fingerprint_key_matches_between_modules(self):
+        """win_acl 查缓存与 win_setup 写缓存必须用同一套 key, 否则永不命中."""
+        from jiuwenbox.supervisor import win_acl, win_setup
+        keys = set()
+        for path in (
+            "C:\\Users\\test\\Documents",
+            "C:/Users/test/Documents/",
+            "c:/users/TEST/documents",
+        ):
+            k_acl = win_acl._fingerprint_key(path, "allow_write")  # noqa: SLF001
+            k_setup = win_setup._fingerprint_entry_key(path, "allow_write")  # noqa: SLF001
+            assert k_acl == k_setup
+            keys.add(k_acl)
+        # 反斜杠 / 尾斜杠 / 大小写都归一到同一个 key.
+        assert keys == {"c:/users/test/documents|allow_write"}
+        # kind 参与 key: 同路径的 allow_write 与 deny_write 不能互相命中.
+        assert (
+            win_acl._fingerprint_key("C:/x", "allow_write")  # noqa: SLF001
+            != win_acl._fingerprint_key("C:/x", "deny_write")  # noqa: SLF001
+        )
+
+    def test_token_group_sid_filter_drops_volatile_sids(self):
+        """随登录方式/会话变的 SID 不能进有效集合, 否则会误判"已可读"而少授权."""
+        from jiuwenbox.supervisor import win_setup
+        for sid in (
+            "S-1-5-5-0-123456",  # 登录会话
+            "S-1-16-12288",      # 完整性标签
+            "S-1-5-2",           # NETWORK (探测用 NETWORK logon 才有)
+            "S-1-5-4",           # INTERACTIVE
+            "S-1-5-64-10",       # NTLM 认证包
+            "",
+        ):
+            assert not win_setup._filter_token_group_sid(sid)  # noqa: SLF001
+        # 真正决定读权限的组必须留下.
+        for sid in (
+            "S-1-1-0",       # Everyone
+            "S-1-5-11",      # Authenticated Users
+            "S-1-5-32-545",  # BUILTIN\\Users
+            "S-1-5-21-1-2-3-1001",
+        ):
+            assert win_setup._filter_token_group_sid(sid)  # noqa: SLF001
+
+    def test_fingerprint_cache_helpers_exist(self):
+        from jiuwenbox.supervisor import win_setup
+        assert callable(win_setup.load_acl_fingerprint_cache)
+        assert callable(win_setup.record_acl_fingerprints)
+        assert callable(win_setup.get_sandbox_token_groups)
+        assert callable(win_setup.invalidate_sandbox_token_groups)
+
     def test_parent_traverse_plan_desktop_grants_list(self):
         """claw-desktop 必须带 FILE_LIST_DIRECTORY, 且禁止继承, 不能只授 traverse."""
         from jiuwenbox.supervisor import win_acl
@@ -916,7 +1025,7 @@ class TestWinAclAceConstruction:
         assert plan["protect"] is None
         assert plan["drop_world"] is False
         assert plan["skip_inherited"] is False
-        assert plan["deny_list"] is True
+        assert plan["deny_list"] is False
 
     def test_parent_traverse_plan_mid_dir_traverse_only(self):
         from jiuwenbox.supervisor import win_acl
@@ -1031,6 +1140,7 @@ class TestWinExecSidAndEnvBlock:
             本测试不跑真 AllocateAndInitializeSid (win32), 只校验 SID 字符串
             的 sub-authority 结构 + 验证 win_exec 的常量编排: 前缀含 21.
         """
+        from jiuwenbox.supervisor import win_acl
         sid = win_acl.get_synthetic_write_sid()
         parts = sid.split("-")
         # S-1-5-21-<sub0>-<sub1>-<RID> => 7 段
@@ -1049,8 +1159,9 @@ class TestWinExecSidAndEnvBlock:
             (review MAJOR #1 的接线前提).
         """
         from jiuwenbox.supervisor import win_exec
-        cmd = win_exec._build_runner_command(
-            "sb", "C:\\ws", 60080, 60089)  # noqa: SLF001 - 测试访问内部成员
+        cmd = win_exec._build_runner_command(  # noqa: SLF001 - 测试访问内部成员
+            "sb", "C:\\ws", 60080, 60089, 60100,
+        )
         assert "runner" in cmd and "--sandbox-id sb" in cmd
 
 
@@ -1065,10 +1176,12 @@ class TestWindowsPolicyReadFields:
                 "allow_write": ["/ws"],
             }}
         })
+        # 语义: expandvars → expanduser → Path() 平台归一.
         assert p.windows.filesystem.allow_read == [
-            os.path.expanduser("~/docs"), os.path.expandvars("$TMP/x"),
+            str(Path("~/docs").expanduser()),
+            str(Path(os.path.expandvars("$TMP/x"))),
         ]
-        assert p.windows.filesystem.deny_read == ["/etc/secret"]
+        assert p.windows.filesystem.deny_read == [str(Path("/etc/secret"))]
 
     def test_read_fields_default_empty(self):
         p = SecurityPolicy.model_validate({"windows": {}})
