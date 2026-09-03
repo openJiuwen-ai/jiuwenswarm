@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -803,7 +803,7 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "# Language" not in prompt
     assert "# Model Name Answer Policy" not in prompt
     assert "# Browser Tool Policy" not in prompt
-    assert "## Browser Subagent Rules" not in prompt
+    assert "## Browser Capability Routing Rules" not in prompt
     assert "browser_preflight_submit" not in prompt
     assert "hotel_option_select" not in prompt
     assert "gmail_email_select" not in prompt
@@ -821,7 +821,7 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "Current channel: web" in rendered
     assert "Always respond in English" not in prompt
     assert "# Browser Tool Policy" not in prompt
-    assert "## Browser Subagent Rules" not in prompt
+    assert "## Browser Capability Routing Rules" not in prompt
 
 
 @pytest.mark.asyncio
@@ -909,10 +909,12 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
 
     task_section = rail.system_prompt_builder.get_section("task_tool")
     assert task_section is not None
-    assert "## Browser Subagent Rules" in task_section.content["en"]
+    assert "## Browser Capability Routing Rules" in task_section.content["en"]
     assert 'set `subagent_type` to `"browser_agent"`' in task_section.content["en"]
+    assert "do not preflight with paid_search" in task_section.content["en"]
+    assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
-    assert "浏览器子智能体规则" in build_browser_task_prompt("cn")
+    assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(
@@ -924,7 +926,53 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     await rail.before_model_call(ctx)
     unloaded_task_section = rail.system_prompt_builder.get_section("task_tool")
     assert unloaded_task_section is not None
-    assert "## Browser Subagent Rules" not in unloaded_task_section.content["en"]
+    assert "## Browser Capability Routing Rules" not in unloaded_task_section.content["en"]
+
+
+@pytest.mark.asyncio
+async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
+    browser_agent = SubAgentConfig(
+        agent_card=AgentCard(name="browser_agent", description="browser"),
+        system_prompt="browser",
+    )
+    research_agent = SubAgentConfig(
+        agent_card=AgentCard(name="research_agent", description="research"),
+        system_prompt="research",
+    )
+    builder = SystemPromptBuilder(language="en")
+    agent = SimpleNamespace(
+        card=AgentCard(name="main", description="main"),
+        deep_config=SimpleNamespace(subagents=[browser_agent, research_agent]),
+        system_prompt_builder=builder,
+        ability_manager=Mock(),
+    )
+    rail = BrowserTaskPromptRail(enable_subagent_runtime=True)
+
+    rail.init(agent)
+    await rail.before_model_call(
+        AgentCallbackContext(
+            agent=agent,
+            inputs=None,
+            session=_FakeSession(),
+            extra={},
+        )
+    )
+
+    tools_by_name = {tool.card.name: tool for tool in rail.tools}
+    assert "task_tool" in tools_by_name
+    assert "subagent_spawn" in tools_by_name
+    assert tools_by_name["task_tool"]._allowed_subagent_types == frozenset(
+        {"browser_agent"}
+    )
+    assert tools_by_name["subagent_spawn"]._allowed_subagent_types == frozenset(
+        {"research_agent"}
+    )
+    task_section = builder.get_section("task_tool")
+    runtime_section = builder.get_section("subagent_tools")
+    assert task_section is not None
+    assert runtime_section is not None
+    assert "Browser Capability Routing Rules" in task_section.content["en"]
+    assert "Browser Capability Routing Rules" not in runtime_section.content["en"]
 
 
 def test_task_planning_tools_remain_enabled_without_todo_prompt_section():
