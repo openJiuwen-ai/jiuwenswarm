@@ -70,6 +70,43 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 )
 
 
+def _extract_error_code_message(exc: BaseException) -> tuple[str | None, str | None]:
+    """从模型/上游异常中提取业务错误码和错误消息，优先原始 cause/body。"""
+
+    def _pick(obj: Any, names: tuple[str, ...]) -> str | None:
+        for name in names:
+            value = getattr(obj, name, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    outer_code = _pick(exc, ("error_code", "code"))
+    outer_message = _pick(exc, ("error_message", "message"))
+
+    body_code: str | None = None
+    body_message: str | None = None
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error")
+        if not isinstance(inner, dict):
+            inner = body
+        body_code = _pick(inner, ("code", "error_code"))
+        body_message = _pick(inner, ("message", "error_message"))
+
+    cause = getattr(exc, "cause", None)
+    if cause is None:
+        cause = getattr(exc, "__cause__", None)
+    cause_code: str | None = None
+    cause_message: str | None = None
+    if cause is not None and cause is not exc:
+        cause_code, cause_message = _extract_error_code_message(cause)
+
+    return (
+        cause_code or body_code or outer_code,
+        cause_message or body_message or outer_message,
+    )
+
+
 class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
 
@@ -2561,12 +2598,17 @@ class JiuWenSwarm:
                     error_type = (
                         type(data).__name__ if isinstance(data, BaseException) else ""
                     )
+                    error_code, error_message = _extract_error_code_message(data)
                     error_payload: dict[str, Any] = {
                         "event_type": "chat.error",
                         "error": str(data),
                     }
                     if error_type:
                         error_payload["error_type"] = error_type
+                    if error_code:
+                        error_payload["code"] = error_code
+                    if error_message:
+                        error_payload["message"] = error_message
                     append_history_record(
                         session_id=session_id,
                         request_id=rid,

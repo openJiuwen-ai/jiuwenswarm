@@ -863,6 +863,18 @@ class TeamManager:
         if not has_binding:
             self._apply_session_scoped_team_name(spec, session_id=session_id)
         self.apply_team_plan_mode(spec, request_metadata=request_metadata)
+        agent_group_name = self._resolve_session_agent_group(session_id)
+        agent_group_package_dir = None
+        if agent_group_name:
+            # 装配点 _apply_agent_group 是同步函数不能自持 fetch，
+            # 在此 async 边界预取（缓存优先 + miss 回退 fetch，与单专家
+            # _apply_expert 的 package_dir=None 兜底语义对齐）——否则本地调试
+            # 源（LocalDir 不落缓存）下装配抛 FileNotFoundError 。
+            from jiuwenswarm.server.runtime.expert.expert_store import (
+                resolve_expert_package_dir,
+            )
+
+            agent_group_package_dir = await resolve_expert_package_dir(agent_group_name)
         enrich_team_spec_for_swarm(
             spec,
             session_id=session_id,
@@ -871,7 +883,8 @@ class TeamManager:
             request_id=request_id,
             channel_id=channel_id,
             request_metadata=request_metadata,
-            agent_group_name=self._resolve_session_agent_group(session_id),
+            agent_group_name=agent_group_name,
+            agent_group_package_dir=agent_group_package_dir,
         )
         self._apply_trace_context(spec, request_metadata=request_metadata)
         return spec

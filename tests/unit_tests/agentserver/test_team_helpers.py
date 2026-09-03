@@ -5478,3 +5478,37 @@ async def test_count_in_flight_members_status_and_exec(monkeypatch: pytest.Monke
         lambda _cid: _ProbeFakeManager(stream_alive=True),
     )
     assert await team_helpers._count_in_flight_members("desktop", "s1") == 0
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_create_failure_terminal_error(monkeypatch):
+    """团队建立失败（如 .team 挂载 WinError 183）：终帧必须是携带 chat.error 的
+    is_complete 帧——gateway_normalize 将其转换为 failed 终帧。
+    旧实现：错误帧非终态 + 补 payload=None 空终帧 → e2a.complete succeeded，
+    前端把建立失败的回合记成"已完成"。"""
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            raise OSError("[WinError 183] 当文件已存在时，无法创建该文件")
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-create-fail",
+        request_id="req-create-fail",
+        channel_id="web",
+        metadata=None,
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(request, {"query": "hi"}, object()):
+        chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert chunks[0].payload["event_type"] == "chat.error"
+    assert "WinError 183" in chunks[0].payload["error"]
+    assert chunks[0].is_complete is True

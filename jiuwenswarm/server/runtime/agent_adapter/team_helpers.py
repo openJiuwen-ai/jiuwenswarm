@@ -1659,16 +1659,14 @@ async def process_team_message_stream(
         _persist_team_file_monitor_roots(session_id, team_spec)
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
+        # 终帧即错误帧（is_complete=True 的 chat.error）：gateway_normalize 把
+        # is_complete 且 event_type=chat.error 的 chunk 转换为 failed 终帧。
+        # 原先错误帧非终态、随后补 payload=None 的空终帧 → e2a.complete succeeded，
+        # 前端把建立失败的回合记成"已完成"
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=channel_id,
             payload={"event_type": "chat.error", "error": str(exc)},
-            is_complete=False,
-        )
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=channel_id,
-            payload=None,
             is_complete=True,
         )
         return

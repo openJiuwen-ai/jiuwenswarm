@@ -10527,14 +10527,20 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             await self._prepare_rewind_session_for_next_invoke(
                 session_id, reason="stream_error",
             )
+            error_code, error_message = self._extract_stream_error_code_message(exc)
+            error_payload: dict[str, Any] = {
+                "event_type": "chat.error",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+            if error_code:
+                error_payload["code"] = error_code
+            if error_message:
+                error_payload["message"] = error_message
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
-                payload={
-                    "event_type": "chat.error",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
+                payload=error_payload,
                 is_complete=False,
             )
         finally:
@@ -10733,6 +10739,86 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         return None
 
     @staticmethod
+    def _extract_stream_error_code_message(
+        exc: BaseException,
+    ) -> tuple[str | None, str | None]:
+        """从模型/上游异常中尽量还原业务错误码和错误消息。"""
+
+        def _pick(obj: Any, names: tuple[str, ...]) -> str | None:
+            for name in names:
+                value = getattr(obj, name, None)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+
+        outer_code = _pick(exc, ("error_code", "code"))
+        outer_message = _pick(exc, ("error_message", "message"))
+
+        body_code: str | None = None
+        body_message: str | None = None
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            inner = body.get("error")
+            if not isinstance(inner, dict):
+                inner = body
+            body_code = _pick(inner, ("code", "error_code"))
+            body_message = _pick(inner, ("message", "error_message"))
+
+        cause = getattr(exc, "cause", None)
+        if cause is None:
+            cause = getattr(exc, "__cause__", None)
+        cause_code: str | None = None
+        cause_message: str | None = None
+        if cause is not None and cause is not exc:
+            cause_code, cause_message = JiuWenSwarmDeepAdapter._extract_stream_error_code_message(cause)
+
+        return (
+            cause_code or body_code or outer_code,
+            cause_message or body_message or outer_message,
+        )
+
+    @staticmethod
+    def _extract_payload_error_code_message(payload: Any) -> tuple[str | None, str | None]:
+        """从 dict/对象 payload 中提取 code/message，保持 chat.error 兼容。"""
+
+        def _pick(obj: Any, names: tuple[str, ...]) -> str | None:
+            for name in names:
+                value = getattr(obj, name, None)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+
+        code = _pick(payload, ("code", "error_code"))
+        message = _pick(payload, ("message", "error_message"))
+        error = _pick(payload, ("error",))
+        if not message and error:
+            message = error
+
+        if isinstance(payload, dict):
+            inner = payload.get("error")
+            if isinstance(inner, dict):
+                code = code or _pick(inner, ("code", "error_code"))
+                message = message or _pick(inner, ("message", "error_message"))
+
+        return code, message
+
+    @staticmethod
+    def _extract_error_code_message_from_text(text: str) -> tuple[str | None, str | None]:
+        """从模型错误文本中兜底提取 code/message，不改变 chat.error 结构。"""
+        if not isinstance(text, str):
+            return None, None
+        import re as _re
+
+        code_match = _re.search(r"['\"]code['\"]\s*:\s*['\"]([^'\"]+)['\"]", text)
+        message_match = _re.search(
+            r"['\"]message['\"]\s*:\s*['\"]([^'\"]+)['\"]", text
+        )
+        return (
+            code_match.group(1) if code_match else None,
+            message_match.group(1) if message_match else None,
+        )
+
+    @staticmethod
     def _parse_stream_chunk(
         chunk,
         *,
@@ -10781,7 +10867,23 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                             (item.text for item in payload.data if hasattr(item, "text")),
                             "任务执行失败",
                         )
-                        return {"event_type": "chat.error", "error": error}
+                        error_code, error_message = (
+                            JiuWenSwarmDeepAdapter._extract_payload_error_code_message(payload)
+                        )
+                        fallback_code, fallback_message = (
+                            JiuWenSwarmDeepAdapter._extract_error_code_message_from_text(error)
+                        )
+                        error_code = error_code or fallback_code
+                        error_message = error_message or fallback_message
+                        result: dict[str, Any] = {
+                            "event_type": "chat.error",
+                            "error": error,
+                        }
+                        if error_code:
+                            result["code"] = error_code
+                        if error_message:
+                            result["message"] = error_message
+                        return result
 
                 if chunk_type == "llm_output":
                     content = (
@@ -10812,10 +10914,18 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 if chunk_type == "answer":
                     if isinstance(payload, dict):
                         if payload.get("result_type") == "error":
-                            return {
+                            error_code, error_message = (
+                                JiuWenSwarmDeepAdapter._extract_payload_error_code_message(payload)
+                            )
+                            result = {
                                 "event_type": "chat.error",
                                 "error": payload.get("output", "未知错误"),
                             }
+                            if error_code:
+                                result["code"] = error_code
+                            if error_message:
+                                result["message"] = error_message
+                            return result
                         output = payload.get("output", {})
                         content = (
                             output.get("output", "") if isinstance(output, dict) else str(output)
@@ -10906,7 +11016,18 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         if isinstance(payload, dict)
                         else str(payload)
                     )
-                    return {"event_type": "chat.error", "error": error_msg}
+                    error_code, error_message = (
+                        JiuWenSwarmDeepAdapter._extract_payload_error_code_message(payload)
+                    )
+                    result = {
+                        "event_type": "chat.error",
+                        "error": error_msg,
+                    }
+                    if error_code:
+                        result["code"] = error_code
+                    if error_message:
+                        result["message"] = error_message
+                    return result
 
                 if chunk_type == "security.alert":
                     if isinstance(payload, dict):
@@ -11106,10 +11227,18 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         "goal": err_payload.get("goal"),
                     }
                 if chunk.get("result_type") == "error":
-                    return {
+                    error_code, error_message = (
+                        JiuWenSwarmDeepAdapter._extract_payload_error_code_message(chunk)
+                    )
+                    result = {
                         "event_type": "chat.error",
                         "error": chunk.get("output", "未知错误"),
                     }
+                    if error_code:
+                        result["code"] = error_code
+                    if error_message:
+                        result["message"] = error_message
+                    return result
                 output = chunk.get("output", "")
                 if output:
                     return {"event_type": "chat.delta", "content": str(output)}

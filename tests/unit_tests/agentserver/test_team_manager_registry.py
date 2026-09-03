@@ -1765,6 +1765,135 @@ async def test_get_swarm_enriched_team_spec_uses_bound_stable_team_name(
 
 
 @pytest.mark.asyncio
+async def test_get_swarm_enriched_team_spec_prefetches_group_package(
+        monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """绑定专家团的会话在 async 边界预取包目录（缓存优先 + fetch 兜底），
+    结果经 agent_group_package_dir 透传进 enrich——装配点不再裸读缓存。
+    """
+    from jiuwenswarm.server.runtime.expert import expert_store as es
+
+    manager = _TeamManagerHarness()
+    enrich_calls: list[dict] = []
+    resolve_calls: list[str] = []
+
+    class _Spec:
+        team_name = "template_team"
+
+    async def fake_ensure_postgresql(self, config_base: dict) -> None:
+        _ = self, config_base
+
+    async def fake_resolve(expert_id: str):
+        resolve_calls.append(expert_id)
+        return tmp_path / "prefetched" / expert_id
+
+    def fake_enrich(spec, **kwargs) -> None:
+        enrich_calls.append({"team_name": spec.team_name, **kwargs})
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {
+            "team_name": "custom_team",
+            "team_template_id": "expert_group",
+            "expert_id": "sample-expert-group",
+            "expert_type": "team",
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(get=lambda _team_name: None),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
+    monkeypatch.setattr(
+        TeamManager, "_load_team_spec", staticmethod(lambda _session_id, **_kw: _Spec())
+    )
+    monkeypatch.setattr(es, "resolve_expert_package_dir", fake_resolve)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
+        fake_enrich,
+    )
+
+    await manager.get_swarm_enriched_team_spec(
+        "sess-group",
+        mode="team",
+        request_metadata={"mode": "team"},
+    )
+
+    assert resolve_calls == ["sample-expert-group"]
+    assert enrich_calls[0]["agent_group_name"] == "sample-expert-group"
+    assert (
+        enrich_calls[0]["agent_group_package_dir"]
+        == tmp_path / "prefetched" / "sample-expert-group"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_swarm_enriched_team_spec_no_group_skips_prefetch(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未绑定专家团（expert_type 缺省 agent）时不预取、不透传 package_dir。"""
+    from jiuwenswarm.server.runtime.expert import expert_store as es
+
+    manager = _TeamManagerHarness()
+    enrich_calls: list[dict] = []
+
+    class _Spec:
+        team_name = "template_team"
+
+    async def fake_ensure_postgresql(self, config_base: dict) -> None:
+        _ = self, config_base
+
+    async def fake_resolve(expert_id: str):
+        raise AssertionError("未绑定专家团时不应预取")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {
+            "team_name": "custom_team",
+            "team_template_id": "beta_template",
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(get=lambda _team_name: None),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
+    monkeypatch.setattr(
+        TeamManager, "_load_team_spec", staticmethod(lambda _session_id, **_kw: _Spec())
+    )
+    monkeypatch.setattr(es, "resolve_expert_package_dir", fake_resolve)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
+        lambda spec, **kwargs: enrich_calls.append(kwargs),
+    )
+
+    await manager.get_swarm_enriched_team_spec(
+        "sess-plain",
+        mode="team",
+        request_metadata={"mode": "team"},
+    )
+
+    assert enrich_calls[0]["agent_group_name"] is None
+    assert enrich_calls[0]["agent_group_package_dir"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_swarm_enriched_team_spec_uses_bound_team_entity_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

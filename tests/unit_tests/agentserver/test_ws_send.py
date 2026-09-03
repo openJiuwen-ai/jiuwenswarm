@@ -198,13 +198,15 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_desktop_fourth_parallel_session_is_rejected_before_agent_start(
+async def test_desktop_sixth_parallel_session_is_rejected_before_agent_start(
     monkeypatch,
 ):
     blocking_session_ids = {
         "desktop-a",
         "desktop-b",
         "desktop-c",
+        "desktop-d",
+        "desktop-e",
     }
     stream_started = {
         session_id: asyncio.Event() for session_id in blocking_session_ids
@@ -302,7 +304,7 @@ async def test_desktop_fourth_parallel_session_is_rejected_before_agent_start(
     try:
         await server._handle_stream(
             rejected_ws,
-            desktop_request("desktop-d-first", "desktop-d"),
+            desktop_request("desktop-f-first", "desktop-f"),
             asyncio.Lock(),
         )
     finally:
@@ -315,7 +317,13 @@ async def test_desktop_fourth_parallel_session_is_rejected_before_agent_start(
     )
     rejected_frames = [json.loads(payload) for payload in rejected_ws.sent]
 
-    assert prepared_session_ids == ["desktop-a", "desktop-b", "desktop-c"]
+    assert prepared_session_ids == [
+        "desktop-a",
+        "desktop-b",
+        "desktop-c",
+        "desktop-d",
+        "desktop-e",
+    ]
     assert len(rejected_frames) == 1
     assert rejected_frames[0]["is_final"] is True
     assert rejected_frames[0]["body"]["result"] == {

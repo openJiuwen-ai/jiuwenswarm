@@ -734,7 +734,9 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
     assert "deep_agent" not in params
     assert "deep_agent_spec" not in params
     # The exact public surface is the session/request descriptors plus the
-    # optional AgentGroup package binding (a package *name*, still declarative).
+    # optional AgentGroup package binding (a package *name*, still declarative)
+    # and its caller-prefetched package dir (同步装配点不能自持 await，
+    # fetch 兜底上移到 async 调用方，经此参数透传）。
     assert params == {
         "spec",
         "session_id",
@@ -744,6 +746,7 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
         "channel_id",
         "request_metadata",
         "agent_group_name",
+        "agent_group_package_dir",
     }
 
 

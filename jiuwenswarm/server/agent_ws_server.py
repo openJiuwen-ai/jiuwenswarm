@@ -168,7 +168,7 @@ _DESKTOP_SESSION_LIMIT_MESSAGE = (
     "当前检测到多个会话正在并行处理，可能会导致所有任务的响应变慢或机器性能下降，"
     "请等待其他会话结束后再发起新会话。"
 )
-_DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS = 3
+_DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS = 5
 
 
 def format_permission_wire_diagnostic(

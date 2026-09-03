@@ -88,6 +88,34 @@ def get_cached_expert_package_dir(expert_id: str) -> Path | None:
     return None
 
 
+async def resolve_expert_package_dir(expert_id: str) -> Path:
+    """缓存优先解析专家包目录；缓存 miss 回退 fetch（本地源 fetch 无网络开销）。
+
+    与 ``_apply_expert``（expert_capability.py）的 ``package_dir=None`` 兜底语义
+    对齐，供**同步装配点**的 async 调用方在进入同步段之前预取——专家团装配
+    ``assembly._apply_agent_group`` 只接受已就绪的本地路径，不能自持 await 。
+    """
+    cached = get_cached_expert_package_dir(expert_id)
+    if cached is not None:
+        return cached
+    if os.environ.get(LOCAL_DIRS_ENV) == "1":
+        # 调试模式：LocalDir 源不落缓存，miss 回退 fetch 是常态
+        logger.info(
+            "expert package cache miss, fallback to source fetch "
+            "(local dirs enabled): %s",
+            expert_id,
+        )
+    else:
+        # 生产链路：缓存应已由 expert.load 落盘，miss 属异常态（缓存被清/损坏），
+        # 自动回退仓库下载可自愈，但必须留 warning 让异常可被发现
+        logger.warning(
+            "expert package cache unexpectedly missing, fallback to repo fetch: "
+            "%s（缓存本应已由 expert.load 落盘，请关注缓存目录健康）",
+            expert_id,
+        )
+    return await get_expert_source().fetch(expert_id)
+
+
 def validate_expert_package(package_dir: Path) -> list[str]:
     """校验专家包，返回 warnings；非法抛 InvalidExpertPackage。
 

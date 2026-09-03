@@ -109,6 +109,32 @@ def test_apply_agent_group_cache_missing_raises(group_cache: Path) -> None:
         _enrich(spec, "ghost-group")
 
 
+def test_apply_agent_group_prefetched_package_dir_bypasses_cache(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """调用方经 resolve_expert_package_dir 预取后传入 package_dir，
+    缓存为空（LocalDir 调试源不落缓存场景）也能装配。
+
+    有意不挂 group_cache fixture（缓存目录指向空的 tmp_path），
+    证明走通靠的是预取路径而非缓存。
+    """
+    empty_cache = tmp_path / "experts_cache"
+    monkeypatch.setattr(es, "get_expert_cache_dir", lambda: empty_cache)
+    spec = _make_team_spec()
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="sess-1",
+        mode="team",
+        agent_group_name="sample-expert-group",
+        agent_group_package_dir=TESTDATA_GROUP,
+    )
+
+    assert "主理人工作规则" in spec.leader.prompt
+    roster = {m.member_name: m for m in spec.predefined_members}
+    assert set(roster) == {"member1", "member2"}
+
+
 def test_apply_agent_group_requires_teammate_base(group_cache: Path) -> None:
     spec = TeamAgentSpec(
         agents={"leader": DeepAgentSpec()},

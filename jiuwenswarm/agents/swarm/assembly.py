@@ -253,12 +253,15 @@ def _with_member_identity(
     return member_spec
 
 
-def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
+def _apply_agent_group(spec: Any, agent_group_name: str, package_dir: Path | None = None) -> None:
     """把"本会话绑定的专家团包"覆写到 enrich 后的 TeamAgentSpec（组装七步）。
 
     1. 能力探针；
     2. 取 leader/teammate 基础 spec（缺一终止）；
-    3. 经 expert_store 缓存定位并严格加载包；
+    3. 定位包目录并严格加载：调用方预取的 ``package_dir`` 优先，缺省查
+       expert_store 缓存——本函数是同步装配点不能自持 await，fetch 兜底
+       （缓存优先契约见 ``get_cached_expert_package_dir``）已上移到
+       async 调用方 ``TeamManager.get_swarm_enriched_team_spec``；
     4. leader prompt 合并（AGENT.md+persona+instruction 拍平后追加到模板原 prompt）；
     5. leader 快照；
     6. 成员覆写 + predefined_members 替换（TeamMemberSpec.prompt = persona+instruction，不含 AGENT.md）；
@@ -274,10 +277,13 @@ def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
         get_cached_expert_package_dir,
     )
 
-    package_dir = get_cached_expert_package_dir(agent_group_name)
+    if package_dir is None:
+        package_dir = get_cached_expert_package_dir(agent_group_name)
     if package_dir is None:
         raise FileNotFoundError(
-            f"专家团包缓存缺失: {agent_group_name}（请重新 expert.load 完成下载）"
+            f"专家团包缓存缺失: {agent_group_name}（请重新 expert.load；"
+            "本地调试模式 JIUWEN_EXPERT_LOCAL_DIRS 下本地源不落缓存，"
+            "须由装配调用方预取）"
         )
     templates = load_agent_group_package(package_dir)
 
@@ -369,6 +375,7 @@ def enrich_team_spec_for_swarm(
     channel_id: str | None = None,
     request_metadata: dict[str, Any] | None = None,
     agent_group_name: str | None = None,
+    agent_group_package_dir: Path | None = None,
 ) -> None:
     """Enrich *spec* in place for provider-based swarm assembly.
 
@@ -388,6 +395,10 @@ def enrich_team_spec_for_swarm(
             enrich 之后调用 ``_apply_agent_group`` 覆写 roster/快照/模式字段——
             先基础 enrich 后团覆写，专家成员继承 jiuwenswarm 提供的
             rails/tools/MCP/workspace/权限。
+        agent_group_package_dir: 调用方预取的专家团包目录（async 边界
+            ``resolve_expert_package_dir`` 的结果，缓存优先 + fetch 兜底）。
+            为 None 时 ``_apply_agent_group`` 只查缓存，miss 即抛——
+            本地调试源不落缓存，生产路径需预取。
     """
     register_swarm_providers()
 
@@ -436,7 +447,7 @@ def enrich_team_spec_for_swarm(
             spec.agents[role] = member_spec
 
     if agent_group_name:
-        _apply_agent_group(spec, agent_group_name)
+        _apply_agent_group(spec, agent_group_name, package_dir=agent_group_package_dir)
 
     spec.build_context = base
     # Carry a serializable seed alongside the live context so members rebuilt

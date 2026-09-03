@@ -40,21 +40,21 @@ from jiuwenswarm.common.utils import logger
 
 _STATIC_SKILL_NAMES = frozenset(
     {
-        "xiaoyi-web-search",
+        "xiaoyi-web-search-win",
         "find-skills",
         "xiaoyi-doc-convert",
-        "xiaoyi-ppt",
+        "xiaoyi-ppt-win",
         "aigc_marker",
         "execution-validator-skill",
         "secret-guardian",
-        "skill-creator",
+        "skill-creator-win",
         "skill-scope",
         "swarmskill-creator",
-        "xiaoyi-pdf",
+        "xiaoyi-pdf-win",
         "seedream-image-gen",
         "seedance-video-gen",
         "music-generation",
-        "xiaoyi-image-understanding",
+        "xiaoyi-image-understanding-win",
     }
 )
 
@@ -64,8 +64,8 @@ _STATIC_BLOCK_EN = """## Skills
 
 Prefer the skills and tools below; call `skill_tool` to retrieve the full `SKILL.md` for a skill.
 
-1. Web Search (`xiaoyi-web-search`)
-   - Default tool: xiaoyi web search skill (`xiaoyi-web-search`)
+1. Web Search (`xiaoyi-web-search-win`)
+   - Default tool: xiaoyi web search skill (`xiaoyi-web-search-win`)
    - Usage rule: For all real-time web retrieval and web information query tasks, use this skill by default; only switch to another search tool when the user explicitly specifies a different search interface.
 
 2. Skill Discovery and Installation (`find-skills`)
@@ -77,8 +77,8 @@ Prefer the skills and tools below; call `skill_tool` to retrieve the full `SKILL
    - Capability: Supports bidirectional conversion between mainstream document formats including Docx, PDF, Xlsx, Pptx, and Markdown; a dedicated professional document conversion tool.
    - Priority rule: All document format conversion requests must use this skill first; manual scripting to generate or convert documents is prohibited.
 
-4. PPT — Template-based creation (`xiaoyi-ppt`)
-   - Default tool: `xiaoyi-ppt` skill
+4. PPT — Template-based creation (`xiaoyi-ppt-win`)
+   - Default tool: `xiaoyi-ppt-win` skill
    - Applicable scenario: template-based PPT creation, editing, generation, and beautification.
    - Priority rule: Unless the user specifies otherwise, template-based PPT tasks use this skill first.
    - Prohibition: Manual scripting with python-pptx or similar to generate PPTs is prohibited; exceptions are only allowed when the user explicitly requests it or this skill cannot meet the requirements.
@@ -92,16 +92,16 @@ Prefer the skills and tools below; call `skill_tool` to retrieve the full `SKILL
 7. Privacy Safety Guardian (`secret-guardian`)
    - A global privacy protection skill specifically for handling configuration files, system logs, prompts, reports, model configurations, channel configurations, browser configurations, environment variables, and all workspace content containing privacy, keys, or sensitive identifiers; can automatically audit output content, block confidential information, redact sensitive data, and strictly restrict file and network access permissions to minimize security risks.
 
-8. Single Skill Creation and Optimization (`skill-creator`)
+8. Single Skill Creation and Optimization (`skill-creator-win`)
    - Used for the full lifecycle management of independent skills; supports creating new skills from scratch, editing and optimizing existing skills, debugging and evaluating skill performance, conducting variance benchmark tests, and optimizing skill trigger copy to improve skill call accuracy; only applicable to single-agent independent skill scenarios.
 
 9. Skill Security Audit (`skill-scope`)
    - A mandatory pre-installation security scanning tool for skills; performs malicious detection for all skill installation behaviors from all channels; applicable to all installation scenarios: official repository installation, command-line installation, network download, find-skills retrieval installation, manual import to skill directory, recommended skill installation, etc.; all skill installations must pass this tool's security check first, with no exceptions and no bypassing.
 
 10. Multi-Role Team Skill Orchestration (`swarmskill-creator`)
-    - A dedicated multi-agent team skill creation, conversion, and refactoring tool; supports writing team workflows, orchestration scripts, building multi-role collaborative agent architectures, and upgrading single skills to team collaboration skills; only for multi-role team scenarios; ordinary single skill creation should use `skill-creator`.
+    - A dedicated multi-agent team skill creation, conversion, and refactoring tool; supports writing team workflows, orchestration scripts, building multi-role collaborative agent architectures, and upgrading single skills to team collaboration skills; only for multi-role team scenarios; ordinary single skill creation should use `skill-creator-win`.
 
-11. PDF Processing (`xiaoyi-pdf`)
+11. PDF Processing (`xiaoyi-pdf-win`)
     - PDF 综合处理技能，处理文档生成、编辑、安全与解析。 适用情形： 1. 创建与排版：从零生成报告、提案、简历等 PDF，或对现有文档重新排版美化； 2. 表单与水印：自动填写 PDF 表单字段，或添加文字/图片水印（如打水印、标机密）； 3. 页面管理：合并多个 PDF，或拆分、提取指定页码； 4. 安全控制：为 PDF 添加密码（加密）或移除密码（解密）； 5. 内容提取：从 PDF 中提取纯文本或导出表格数据。 只要用户诉求涉及生成、排版、美化、转换、拼接、拆分 PDF，或处理水印、表单、密码，必须触发本技能。
 
 12. Image Generation (`seedream-image-gen`)
@@ -113,16 +113,16 @@ Prefer the skills and tools below; call `skill_tool` to retrieve the full `SKILL
 14. Music Generation (`music-generation`)
     - Usage rule: call `skill_tool` to load `music-generation` and follow its SKILL.md. Deliver the audio file.
 
-15. Image Understanding (`xiaoyi-image-understanding`)
-    - Usage rule: call `skill_tool` to load `xiaoyi-image-understanding` and follow its SKILL.md.
+15. Image Understanding (`xiaoyi-image-understanding-win`)
+    - Usage rule: call `skill_tool` to load `xiaoyi-image-understanding-win` and follow its SKILL.md.
 """
 
 _STATIC_BLOCK_CN = """## 技能
 
 优先使用以下技能与工具；使用技能前调用 `skill_tool` 获取该技能的完整 `SKILL.md`。
 
-1. 网页搜索（`xiaoyi-web-search`）
-   - 默认工具：小艺网页搜索技能（`xiaoyi-web-search`）
+1. 网页搜索（`xiaoyi-web-search-win`）
+   - 默认工具：小艺网页搜索技能（`xiaoyi-web-search-win`）
    - 使用规则：所有实时网页检索与网络信息查询任务默认使用此技能；仅当用户明确指定其他搜索接口时才切换。
 
 2. 技能发现与安装（`find-skills`）
@@ -134,8 +134,8 @@ _STATIC_BLOCK_CN = """## 技能
    - 能力：支持 Docx、PDF、Xlsx、Pptx 与 Markdown 等主流文档格式之间的双向转换；专用专业文档转换工具。
    - 优先规则：所有文档格式转换请求必须优先使用此技能；禁止手工编写脚本生成或转换文档。
 
-4. PPT — 模板创建（`xiaoyi-ppt`）
-   - 默认工具：`xiaoyi-ppt` 技能
+4. PPT — 模板创建（`xiaoyi-ppt-win`）
+   - 默认工具：`xiaoyi-ppt-win` 技能
    - 适用场景：基于模板的 PPT 创建、编辑、生成与美化。
    - 优先规则：除非用户另有指定，基于模板的 PPT 任务优先使用此技能。
    - 禁止：禁止用 python-pptx 等手工编写脚本生成 PPT；仅当用户明确要求或本技能无法满足需求时才例外。
@@ -149,16 +149,16 @@ _STATIC_BLOCK_CN = """## 技能
 7. 隐私安全守护（`secret-guardian`）
    - 全局隐私保护技能，专用于处理配置文件、系统日志、提示词、报告、模型配置、通道配置、浏览器配置、环境变量及所有含隐私、密钥或敏感标识的工作区内容；可自动审计输出内容、拦截机密信息、脱敏敏感数据，并严格限制文件与网络访问权限，以最小化安全风险。
 
-8. 单技能创建与优化（`skill-creator`）
+8. 单技能创建与优化（`skill-creator-win`）
    - 用于独立技能的全生命周期管理；支持从零创建新技能、编辑与优化已有技能、调试与评估技能性能、做方差基准测试、优化技能触发文案以提升技能调用准确率；仅适用于单智能体独立技能场景。
 
 9. 技能安全审计（`skill-scope`）
    - 技能安装前强制安全扫描工具；对所有来源的技能安装行为做恶意检测；适用于所有安装场景：官方仓库安装、命令行安装、网络下载、find-skills 检索安装、手动导入技能目录、推荐技能安装等；所有技能安装必须先通过此工具的安全检查，无一例外、不可绕过。
 
 10. 多角色团队技能编排（`swarmskill-creator`）
-     - 专用的多智能体团队技能创建、转换与重构工具；支持编写团队工作流、编排脚本、构建多角色协同智能体架构、将单技能升级为团队协作技能；仅用于多角色团队场景；普通单技能创建应使用 `skill-creator`。
+     - 专用的多智能体团队技能创建、转换与重构工具；支持编写团队工作流、编排脚本、构建多角色协同智能体架构、将单技能升级为团队协作技能；仅用于多角色团队场景；普通单技能创建应使用 `skill-creator-win`。
 
-11. PDF 处理（`xiaoyi-pdf`）
+11. PDF 处理（`xiaoyi-pdf-win`）
      - PDF 综合处理技能，处理文档生成、编辑、安全与解析。 适用情形： 1. 创建与排版：从零生成报告、提案、简历等 PDF，或对现有文档重新排版美化； 2. 表单与水印：自动填写 PDF 表单字段，或添加文字/图片水印（如打水印、标机密）； 3. 页面管理：合并多个 PDF，或拆分、提取指定页码； 4. 安全控制：为 PDF 添加密码（加密）或移除密码（解密）； 5. 内容提取：从 PDF 中提取纯文本或导出表格数据。 只要用户诉求涉及生成、排版、美化、转换、拼接、拆分 PDF，或处理水印、表单、密码，必须触发本技能。
 
 12. 图像生成（`seedream-image-gen`）
@@ -170,8 +170,8 @@ _STATIC_BLOCK_CN = """## 技能
 14. 音乐生成（`music-generation`）
      - 使用规则：先 `skill_tool` 加载 `music-generation` 并严格按其 SKILL.md 填写。交付音频文件。
 
-15. 图像理解（`xiaoyi-image-understanding`）
-     - 使用规则：先 `skill_tool` 加载 `xiaoyi-image-understanding` 并严格按其 SKILL.md 填写。
+15. 图像理解（`xiaoyi-image-understanding-win`）
+     - 使用规则：先 `skill_tool` 加载 `xiaoyi-image-understanding-win` 并严格按其 SKILL.md 填写。
 """
 
 _STATIC_BLOCK: Dict[str, str] = {"cn": _STATIC_BLOCK_CN, "en": _STATIC_BLOCK_EN}

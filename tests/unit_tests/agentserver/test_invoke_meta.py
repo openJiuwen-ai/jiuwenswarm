@@ -1252,7 +1252,7 @@ def test_skills_goal_override_uses_real_skill_slugs():
     assert "seedream-image-gen" in _STATIC_SKILL_NAMES
     assert "seedance-video-gen" in _STATIC_SKILL_NAMES
     assert "music-generation" in _STATIC_SKILL_NAMES
-    assert "xiaoyi-image-understanding" in _STATIC_SKILL_NAMES
+    assert "xiaoyi-image-understanding-win" in _STATIC_SKILL_NAMES
     assert "image-generation" not in _STATIC_SKILL_NAMES
     for text in _STATIC_BLOCK.values():
         assert "seedream-image-gen" in text

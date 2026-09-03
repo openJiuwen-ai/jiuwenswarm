@@ -325,6 +325,41 @@ async def test_chain_list_raises_when_all_empty_and_repo_down(tmp_path: Path) ->
         await chain.list()
 
 
+@pytest.mark.asyncio
+async def test_resolve_package_dir_cache_hit_skips_fetch(
+        cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缓存命中时直接返回缓存目录，不触 source（重建路径不被网络阻塞）。"""
+    cached = cache_dir / "security-reviewer"
+    cached.mkdir(parents=True)
+    (cached / "manifest.json").write_text("{}", encoding="utf-8")
+
+    class _BoomSource:
+        async def fetch(self, expert_id: str) -> Path:
+            raise AssertionError("缓存命中时不应 fetch")
+
+    monkeypatch.setattr(es, "get_expert_source", lambda: _BoomSource())
+    assert await es.resolve_expert_package_dir("security-reviewer") == cached
+
+
+@pytest.mark.asyncio
+async def test_resolve_package_dir_miss_falls_back_to_fetch(
+        tmp_path: Path, cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缓存 miss 回退 source.fetch——LocalDir 调试源不落缓存场景的兜底。"""
+    local_pkg = _make_package(tmp_path / "experts", "sample-group")
+    fetch_calls: list[str] = []
+
+    class _LocalLikeSource:
+        async def fetch(self, expert_id: str) -> Path:
+            fetch_calls.append(expert_id)
+            return local_pkg
+
+    monkeypatch.setattr(es, "get_expert_source", lambda: _LocalLikeSource())
+    assert await es.resolve_expert_package_dir("sample-group") == local_pkg
+    assert fetch_calls == ["sample-group"]
+
+
 def test_validate_ok_with_tools_warning_free(tmp_path: Path) -> None:
     pkg = _make_package(tmp_path, "security-reviewer", tools=["tools/scan.py"])
     assert es.validate_expert_package(pkg) == []

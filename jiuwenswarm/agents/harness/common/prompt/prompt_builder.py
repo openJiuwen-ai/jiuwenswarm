@@ -84,7 +84,7 @@ def _task_execution_prompt() -> PromptSection:
     content = """# Task Execution Strategy
 
 - **Prefer skills**: Inspect the available skills first and use a capable matching skill. Fall back only when no skill matches or it is unavailable or fails.
-- **Use xiaoyi-web-search for search tasks**: For web search, information retrieval, or latest and real-time information, prefer `xiaoyi-web-search`; use another method only when it is unavailable or fails.
+- **Use xiaoyi-web-search-win for search tasks**: For web search, information retrieval, or latest and real-time information, prefer `xiaoyi-web-search-win`; use another method only when it is unavailable or fails.
 - **Use xiaoyi_gui_agent for mobile app operations**: Use `xiaoyi_gui_agent` for data retrieval, posting, check-in, following, purchasing, or settings changes inside mobile apps.
 - **Preserve source data**: Values written to files or structured results must match their sources exactly; do not normalize, rewrite, translate, complete, or truncate them without instruction.
 - **Follow provided templates**: When a task provides a file, template, or example, read it first and preserve its headers, column names, order, and structure.
