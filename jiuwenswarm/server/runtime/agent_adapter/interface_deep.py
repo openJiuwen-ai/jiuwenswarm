@@ -7153,28 +7153,44 @@ class JiuWenSwarmDeepAdapter:
             scope = RuntimeScopeKey.from_adapter(
                 self, session_id=route["session_id"]
             )
+            output_dir = str(route.get("output_dir") or "").strip()
             return {
                 "request_id": str(route.get("request_id") or ""),
                 "channel_id": str(route.get("channel_id") or ""),
                 "session_id": scope.session_id,
                 "service_id": scope.service_id,
                 "agent_id": scope.agent_id,
-                "output_dir": self._deepresearch_artifact_output_dir(),
+                "output_dir": output_dir or self._deepresearch_artifact_output_dir(),
             }
         context = self._runtime_cron_tool_context
         metadata = context.metadata if isinstance(context.metadata, dict) else {}
         scope = RuntimeScopeKey.from_adapter(self, session_id=context.session_id)
+        request_workspace = metadata.get("workspace_dir") or metadata.get("project_dir")
         return {
             "request_id": str(metadata.get("request_id") or ""),
             "channel_id": str(context.channel_id or ""),
             "session_id": scope.session_id,
             "service_id": scope.service_id,
             "agent_id": scope.agent_id,
-            "output_dir": self._deepresearch_artifact_output_dir(),
+            "output_dir": self._deepresearch_artifact_output_dir(
+                request_workspace if isinstance(request_workspace, str) else None
+            ),
         }
 
-    def _deepresearch_artifact_output_dir(self) -> str:
-        """Return the tenant-owned root used for immutable report artifacts."""
+    def _deepresearch_artifact_output_dir(
+        self, request_workspace: str | None = None
+    ) -> str:
+        """Return the request workspace used for immutable report artifacts."""
+        requested = (
+            request_workspace.strip()
+            if isinstance(request_workspace, str)
+            else ""
+        )
+        if requested:
+            return str(Path(requested).expanduser().resolve())
+        configured = str(getattr(self, "_project_dir", None) or "").strip()
+        if configured:
+            return str(Path(configured).expanduser().resolve())
         workspace = Path(
             getattr(self, "_workspace_dir", None) or get_agent_workspace_dir()
         ).expanduser().resolve()
@@ -8789,6 +8805,7 @@ class JiuWenSwarmDeepAdapter:
         metadata: dict[str, Any] | None,
         request_id: str | None,
         mode: str | None,
+        workspace_dir: str | None = None,
         project_dir: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> _RuntimeCronContextTokens:
@@ -8877,6 +8894,9 @@ class JiuWenSwarmDeepAdapter:
             )
 
         scope = RuntimeScopeKey.from_adapter(self, session_id=session_id)
+        request_workspace = workspace_dir or project_dir or normalized_metadata.get(
+            "project_dir"
+        )
         try:
             deepresearch_token = push_deepresearch_route(
                 request_id=request_id or "",
@@ -8884,7 +8904,9 @@ class JiuWenSwarmDeepAdapter:
                 session_id=scope.session_id,
                 service_id=scope.service_id,
                 agent_id=scope.agent_id,
-                output_dir=self._deepresearch_artifact_output_dir(),
+                output_dir=self._deepresearch_artifact_output_dir(
+                    request_workspace if isinstance(request_workspace, str) else None
+                ),
             )
         except BaseException:
             self._reset_runtime_cron_context(
@@ -14656,6 +14678,7 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
             request_id=request.request_id,
             mode=mode,
+            workspace_dir=inputs.get("workspace_dir"),
             project_dir=(request.params.get("project_dir") if isinstance(request.params, dict) else None),
             params=request.params if isinstance(request.params, dict) else None,
         )
@@ -15188,6 +15211,9 @@ class JiuWenSwarmDeepAdapter:
             "session_id": session_id,
             "request_id": rid or "",
             "channel_id": cid or "",
+            "output_dir": self._deepresearch_artifact_output_dir(
+                inputs.get("workspace_dir") or inputs.get("project_dir")
+            ),
         }
 
         # Team 模式处理
@@ -15606,6 +15632,7 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
             request_id=request.request_id,
             mode=mode,
+            workspace_dir=inputs.get("workspace_dir"),
             project_dir=(request.params.get("project_dir") if isinstance(request.params, dict) else None),
             params=request.params if isinstance(request.params, dict) else None,
         )
