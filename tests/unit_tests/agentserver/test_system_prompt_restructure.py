@@ -1,5 +1,10 @@
 import asyncio
+import re
 from dataclasses import replace
+from datetime import (
+    datetime as _real_datetime,
+    timezone as _real_timezone,
+)
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -38,6 +43,7 @@ from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import (
     build_browser_task_prompt,
 )
 from jiuwenswarm.agents.harness.common.rails import skill_retrieval_prompt_rail as _skill_retrieval_prompt_mod
+from jiuwenswarm.agents.harness.common.rails import runtime_prompt_rail as _runtime_prompt_rail_mod
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
@@ -61,6 +67,15 @@ class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
         config_base: dict | None = None,
     ):
         return self._build_configured_subagents(model, config, config_base)
+
+
+# Stand-in for ``datetime`` exposing only the ``now`` a rail would call.
+class _FrozenClock:
+    def __init__(self, moment) -> None:
+        self._moment = moment
+
+    def now(self, tz=None):
+        return self._moment if tz is None else self._moment.astimezone(tz)
 
 
 class _FakeSession:
@@ -823,6 +838,131 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "Always respond in English" not in prompt
     assert "# Browser Tool Policy" not in prompt
     assert "## Browser Subagent Rules" not in prompt
+
+
+# Return the body of ``heading`` up to the next ``##`` heading. ``heading`` is
+# expected once, and the section is expected to be followed by another ``##``:
+# both hold for the sections read here. Should this subsection ever be moved
+# last, the slice would run to the end of the prompt and the scan below would
+# silently widen past it, so the following heading is asserted rather than
+# assumed.
+def _subsection(prompt: str, heading: str) -> str:
+    start = prompt.index(heading) + len(heading)
+    end = prompt.find("\n## ", start)
+    assert end != -1, f"{heading!r} is the last section; the scan would not be bounded"
+    return prompt[start:end]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("language", "heading", "pointer"),
+    [
+        ("en", "## Time-sensitive Queries", "newest user message envelope"),
+        ("cn", "## 时间相关查询", "最新一条用户消息信封"),
+    ],
+    # Without this, the heading parameters give node ids containing spaces and
+    # escaped CJK, which have to be quoted to select a single case by id.
+    ids=["en", "cn"],
+)
+async def test_time_sensitive_queries_point_at_the_envelope_and_state_no_clock(
+    language, heading, pointer, tmp_path, monkeypatch
+):
+    # The rule tells the model to date its search query. It has to say where the
+    # date comes from, and that place cannot be this prompt: everything here
+    # precedes the conversation, so a value that ticks between calls invalidates
+    # the KV-cache prefix. ``d2316dd6`` removed a timestamp from this prompt for
+    # that reason, with review; this test is what stops it coming back.
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    runtime_rail = RuntimePromptRail(language=language, channel="web")
+    runtime_rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await runtime_rail.before_model_call(ctx)
+    body = _subsection(builder.build(), heading)
+
+    # The instruction names the fields it reads, so the model is not left to
+    # guess which part of the message carries a clock.
+    assert pointer in body
+    assert "timestamp" in body
+    assert "timezone" in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("language", "heading"),
+    [
+        ("en", "## Time-sensitive Queries"),
+        ("cn", "## 时间相关查询"),
+    ],
+    ids=["en", "cn"],
+)
+async def test_system_prompt_states_no_date_and_is_stable_across_calls(
+    language, heading, tmp_path, monkeypatch
+):
+    # Two renderings taken at different instants must be byte-identical. A date
+    # or a time of day at any granularity would break this, and with it the
+    # cache prefix that the whole conversation and every tool result sit behind.
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+
+    def _render() -> tuple[SystemPromptBuilder, _FakeAgent, RuntimePromptRail]:
+        builder = SystemPromptBuilder(language=language)
+        agent = _FakeAgent(builder)
+        runtime_rail = RuntimePromptRail(language=language, channel="web")
+        runtime_rail.init(agent)
+        return builder, agent, runtime_rail
+
+    prompts = []
+    for moment in (
+        _real_datetime(2026, 2, 24, 9, 30, 0, tzinfo=_real_timezone.utc),
+        _real_datetime(2027, 11, 5, 18, 45, 12, tzinfo=_real_timezone.utc),
+    ):
+        builder, agent, runtime_rail = _render()
+        ctx = AgentCallbackContext(
+            agent=agent,
+            inputs=None,
+            session=_FakeSession(),
+            extra={},
+        )
+        # ``create=True``: the rail imports no clock, and that is the point of
+        # the assertion below. Without it this patch would fail at setup and
+        # report a missing import instead of a restored timestamp.
+        with patch.object(
+            _runtime_prompt_rail_mod, "datetime", _FrozenClock(moment), create=True
+        ):
+            await runtime_rail.before_model_call(ctx)
+        prompts.append(builder.build())
+
+    assert prompts[0] == prompts[1]
+    # Neither instant reaches the prompt, at any granularity. The second is
+    # spelled in both zones: 2027-11-05 18:45 UTC falls on 2027-11-06 at UTC+8,
+    # the zone the envelope stamps at. Neither spelling closes a hole the other
+    # leaves open -- a clock reached through the patched name renders a
+    # different date at each instant and fails the equality above before
+    # reaching here -- but both are listed so a reader is not left inferring
+    # which zone the literal was meant to be read in.
+    assert "2026-02-24" not in prompts[0]
+    assert "2027-11-05" not in prompts[1]
+    assert "2027-11-06" not in prompts[1]
+    # Everything above only bites when the clock is reached through the patched
+    # name. An implementation calling some other clock API renders the real date
+    # in both iterations, which are milliseconds apart: the two prompts still
+    # match and neither literal appears. So assert directly that the subsection
+    # carries no clock value, whatever API produced it and however it is
+    # written. A date-shaped pattern is not enough for that: an ISO timestamp,
+    # a slashed or CJK-spelled date, a bare year and a bare time of day all
+    # evade one. The subsection is prose naming two envelope fields and states
+    # no number of its own, so the absence of a digit is the invariant, with
+    # nothing to exempt. Scoped to that subsection because that is where a date
+    # would be restored, and so unrelated prompt text stays free to contain one.
+    for prompt in prompts:
+        assert re.search(r"\d", _subsection(prompt, heading)) is None
 
 
 @pytest.mark.asyncio

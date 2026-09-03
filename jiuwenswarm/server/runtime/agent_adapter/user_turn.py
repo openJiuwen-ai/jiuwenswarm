@@ -31,6 +31,27 @@ TEAM_USER_TURN_KEY = "_user_turn"
 # Channels whose turns are system-driven rather than typed by a person.
 _SYSTEM_CHANNELS = frozenset({"cron", "heartbeat"})
 
+# The envelope's clock. It is stated here, in the newest message at the end of
+# the context, and deliberately not in the system prompt: a value that changes
+# between calls at the head of the context invalidates the whole KV-cache
+# prefix, so every turn would pay to re-encode the entire conversation.
+_ENVELOPE_TZ_NAME = "Asia/Shanghai"
+_ENVELOPE_TZ = timezone(timedelta(hours=8))
+
+
+def envelope_clock_fields() -> dict[str, str]:
+    """Return the ``timezone`` / ``timestamp`` pair every rendered turn carries.
+
+    Exposed so other renderers that bypass :meth:`UserTurn._build_envelope` --
+    the A2UI client-event payload is the one that does -- can state the same
+    clock in the same fields rather than reaching the model with no date at any
+    position.
+    """
+    return {
+        "timezone": _ENVELOPE_TZ_NAME,
+        "timestamp": datetime.now(_ENVELOPE_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
 
 @dataclass(frozen=True)
 class UserTurn:
@@ -67,6 +88,9 @@ class UserTurn:
             event, or the value unchanged when it is not renderable text (an
             ``InteractiveInput`` resume carries its own structure).
         """
+        # Kept function-level. ``a2ui.protocol`` imports ``envelope_clock_fields``
+        # from this module at import time, so hoisting this to module scope
+        # closes a cycle and both modules stop importing.
         from jiuwenswarm.server.runtime.a2ui.integration import build_user_prompt_if_a2ui_event
 
         a2ui_prompt = build_user_prompt_if_a2ui_event(
@@ -79,7 +103,11 @@ class UserTurn:
 
         if not isinstance(self.text, (str, dict)):
             # InteractiveInput and friends resume an interrupt; they are their
-            # own payload and must reach the agent untouched.
+            # own payload and must reach the agent untouched. They carry no
+            # clock and are not given one: the turn being resumed already stated
+            # one, moments earlier and still in context, and there is no field
+            # to add one to without changing a payload the agent framework
+            # matches on structurally.
             return self.text
 
         content = self.text
@@ -99,11 +127,9 @@ class UserTurn:
     def _build_envelope(self, content: Any) -> dict[str, Any]:
         """Assemble the JSON envelope body for ``content``."""
         is_system = self.channel in _SYSTEM_CHANNELS
-        now = datetime.now(timezone(timedelta(hours=8)))
         envelope: dict[str, Any] = {
             "source": "system" if is_system else self.channel,
-            "timezone": "Asia/Shanghai",
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            **envelope_clock_fields(),
             "preferred_response_language": self.language,
             "content": content,
             "type": self.channel if is_system else "user input",

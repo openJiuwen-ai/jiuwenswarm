@@ -259,6 +259,14 @@ class RuntimePromptRail(DeepAgentRail):
         env_language = "cn" if not self._force_english and self._language == "cn" else "en"
         shell_env_prompt = build_shell_environment_prompt(env_language, os_type)
 
+        # No clock is rendered into this section, by design. Everything the rail
+        # states here precedes the conversation, so a value that ticks between
+        # calls invalidates the KV-cache prefix and forces the whole history and
+        # every tool result to be re-encoded. ``d2316dd6`` removed a timestamp
+        # from this prompt for that reason, with review. The date the rules
+        # below need travels in the newest user message instead, where it costs
+        # nothing: see ``envelope_clock_fields`` in ``agent_adapter.user_turn``.
+
         if not self._force_english and self._language == "cn":
             env_content = (
                 "# 运行环境\n\n"
@@ -271,7 +279,10 @@ class RuntimePromptRail(DeepAgentRail):
                 "- 代码将在 GBK 控制台或仅支持 GBK 的工具中运行时，避免直接使用 GBK 无法编码的 Emoji 和特殊字符。\n"
                 "- 必须使用这些字符时，选择明确支持 UTF-8 的执行工具或显式配置 UTF-8 编码。\n\n"
                 "## 时间相关查询\n\n"
-                "- 用户询问“最新、当前、今年、实时、近期”等信息并需要搜索时，搜索 query 应优先包含当前年份或日期。\n\n"
+                "- 本提示词不提供时钟。当前日期与时间取自最新一条用户消息信封中的 `timestamp` 与 "
+                "`timezone` 字段，涉及日期或时间的推算一律以该值为准。\n"
+                "- 用户询问“最新、当前、今年、实时、近期”等信息并需要搜索时，搜索 query 应优先包含"
+                "该信封给出的当前年份或日期。\n\n"
                 "## 当前渠道\n\n"
                 f"- 当前渠道：`{channel}`"
             )
@@ -289,8 +300,12 @@ class RuntimePromptRail(DeepAgentRail):
                 "- If those characters are required, use a tool that explicitly supports UTF-8 or "
                 "configure UTF-8 encoding.\n\n"
                 "## Time-sensitive Queries\n\n"
+                "- This prompt states no clock. Take the current date and time from the `timestamp` and "
+                "`timezone` fields of the newest user message envelope, and base every date or time "
+                "calculation on that value.\n"
                 "- When the user asks for the latest, current, this year's, real-time, or recent information "
-                "and search is needed, prefer including the current year or date in the query.\n\n"
+                "and search is needed, prefer including the current year or date from that envelope in the "
+                "query.\n\n"
                 "## Current Channel\n\n"
                 f"- Current channel: `{channel}`"
             )
