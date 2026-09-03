@@ -267,9 +267,9 @@ def _remove_named_tools(agent: Any, names: tuple[str, ...]) -> None:
             continue
 
 
-def _system_prompt() -> str:
+def _system_prompt(*, profile: str | None = None) -> str:
     if build_code_system_prompt is not None:
-        return build_code_system_prompt()
+        return build_code_system_prompt(profile=profile)
     return (
         "You are a coding agent. Use tools instead of guessing file contents. "
         "Read source files before editing."
@@ -484,7 +484,9 @@ def create_coding_agent(
             id=f"coding-agent-{uuid.uuid4().hex[:8]}",
             description="Standalone coding agent for eval and local tests",
         ),
-        "system_prompt": _system_prompt(),
+        "system_prompt": _system_prompt(
+            profile=resolved_profile if attach_on_root else PROFILE_OFF
+        ),
         "subagents": subagents,
         "rails": _rails(
             SysOperationRail(),

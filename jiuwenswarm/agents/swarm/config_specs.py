@@ -928,8 +928,13 @@ def build_member_deep_agent_spec(
         from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
             build_code_system_prompt,
         )
+        from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+            resolve_code_graph_flags,
+        )
 
-        update["system_prompt"] = build_code_system_prompt()
+        update["system_prompt"] = build_code_system_prompt(
+            profile=resolve_code_graph_flags(config).root_prompt_profile
+        )
 
     return base_spec.model_copy(update=update)
 
