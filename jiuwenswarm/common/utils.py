@@ -2496,8 +2496,26 @@ def get_interactions_dir() -> Path:
 
 
 def get_cron_jobs_path() -> Path:
-    """Canonical path for cron_jobs.json shared by gateway and agentserver."""
-    return get_user_workspace_dir() / "agent" / "home" / "cron_jobs.json"
+    """Path to cron_jobs.json, following wherever this workspace keeps it.
+
+    ``_migrate_legacy_workspace`` relocates the file to ``gateway/`` while this
+    getter pointed at ``agent/home/``, so after a migration the scheduler read a
+    missing path and silently loaded zero jobs. Resolution order:
+
+    1. ``gateway/`` if present -- the migration ran.
+    2. ``agent/home/`` if present -- it has not; repointing unconditionally
+       would empty the schedules of every deployment that never migrated.
+    3. ``gateway/`` otherwise, so a fresh workspace never creates
+       ``agent/home``, whose existence alone marks a workspace legacy.
+    """
+    workspace = get_user_workspace_dir()
+    gateway_path = workspace / "gateway" / "cron_jobs.json"
+    legacy_path = workspace / "agent" / "home" / "cron_jobs.json"
+    if gateway_path.exists():
+        return gateway_path
+    if legacy_path.exists():
+        return legacy_path
+    return gateway_path
 
 
 def get_heartbeat_jobs_path() -> Path:

@@ -297,11 +297,22 @@ class CronSchedulerService:
             signature != self._last_store_signature
             and (signature != (0, 0, 0) or self._last_store_signature != (0, 0, 0))
         ):
-            logger.info(
-                "[Cron] store file changed (signature %s -> %s), reloading",
-                self._last_store_signature,
-                signature,
-            )
+            if signature == (0, 0, 0) and self._jobs:
+                # Losing a populated store is not routine housekeeping: an
+                # INFO "changed" line reads the same whether the file was edited
+                # or relocated away. Name what stops.
+                logger.warning(
+                    "[Cron] store %s disappeared while holding %d job(s); "
+                    "all schedules stop until it returns",
+                    self._store.path,
+                    len(self._jobs),
+                )
+            else:
+                logger.info(
+                    "[Cron] store file changed (signature %s -> %s), reloading",
+                    self._last_store_signature,
+                    signature,
+                )
             await self.reload()
             return True
         return False
@@ -406,6 +417,18 @@ class CronSchedulerService:
         continue executing and pushing results despite having no persistent record.
         """
         jobs = await self._store.list_jobs()
+        # A scheduler holding zero jobs is otherwise indistinguishable from a
+        # healthy one, which is how a relocated store goes unnoticed.
+        if jobs:
+            logger.info(
+                "[Cron] loaded %d job(s) from %s", len(jobs), self._store.path
+            )
+        else:
+            logger.warning(
+                "[Cron] loaded 0 jobs from %s (exists=%s) - nothing is scheduled",
+                self._store.path,
+                self._store.path.exists(),
+            )
         self._jobs = {j.id: j for j in jobs}
         new_job_ids = set(self._jobs.keys())
 
