@@ -607,7 +607,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             model=model,
             card=agent_card,
             tool_owner_id=self._tool_owner_id(),
-            system_prompt=build_code_system_prompt(),
+            system_prompt=build_code_system_prompt(
+                profile=self._code_graph_flags(config_base).root_prompt_profile
+            ),
             tools=tool_cards if tool_cards else [],
             subagents=configured_subagents,
             rails=rails_list if rails_list else [],
@@ -1740,6 +1742,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._workspace_dir = saved_workspace
         config_base = kwargs.get("config_base") or getattr(self, "_config_base_cache", None)
         deep_cfg.code_graph_config = self._build_code_graph_config(config_base)
+        deep_cfg.system_prompt = build_code_system_prompt(
+            profile=self._code_graph_flags(config_base).root_prompt_profile
+        )
         if agent_ws and getattr(deep_cfg, "workspace", None) is not None:
             _set_workspace_coding_memory_directory(
                 deep_cfg.workspace,
