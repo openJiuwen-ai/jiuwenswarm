@@ -108,9 +108,41 @@ def _code_system_prompt() -> PromptSection:
 # ─── Session Guidance ────────────────────────────
 
 
-def _code_session_guidance_prompt() -> PromptSection:
+def _graph_search_guidance() -> str:
+    return (
+        "- If the user names a class, function, or method, start with "
+        "resolve_symbol or find_code_symbols before bash or read_file.\n"
+        "- For narrow, targeted lookups in the codebase "
+        "(say, a particular file, class, or function), "
+        "call resolve_symbol, find_code_symbols, or search_source_text. "
+        "grep and glob are not available while Code Graph is enabled. "
+        "Do not use bash find, grep, or rg as a substitute.\n"
+        "- For wider exploration or deep research across the codebase, "
+        "keep using those Code Graph tools first. "
+        "Use task_tool with subagent_type=\"explore_agent\" "
+        "only when graph queries are insufficient "
+        "or when the task will plainly need more than three queries.\n"
+    )
+
+
+def _grep_search_guidance() -> str:
+    return (
+        "- For narrow, targeted lookups in the codebase "
+        "(say, a particular file, class, or function), "
+        "call grep or glob directly.\n"
+        "- For wider exploration or deep research across the codebase, "
+        "use task_tool with subagent_type=\"explore_agent\". "
+        "It is slower than calling grep/glob yourself, "
+        "so reserve it for when a narrow, targeted search "
+        "turns out to be insufficient or when the task "
+        "will plainly need more than three queries.\n"
+    )
+
+
+def _code_session_guidance_prompt(*, graph: bool = False) -> PromptSection:
     """Session-specific guidance — tells the LLM about subagent usage and
     the importance of understanding frameworks before writing code."""
+    search = _graph_search_guidance() if graph else _grep_search_guidance()
     content = (
         "# Session-specific guidance\n"
         "\n"
@@ -127,15 +159,7 @@ def _code_session_guidance_prompt() -> PromptSection:
         "Critically, never duplicate work a subagent is already handling — "
         "once you hand research to a subagent, "
         "do not run the same searches yourself.\n"
-        "- For narrow, targeted lookups in the codebase "
-        "(say, a particular file, class, or function), "
-        "call grep or glob directly.\n"
-        "- For wider exploration or deep research across the codebase, "
-        "use task_tool with subagent_type=\"explore_agent\". "
-        "It is slower than calling grep/glob yourself, "
-        "so reserve it for when a narrow, targeted search "
-        "turns out to be insufficient or when the task "
-        "will plainly need more than three queries.\n"
+        f"{search}"
         "- explore_agent is a read-only specialist for searching the codebase. "
         "Use it to quickly find files by patterns, "
         "search code for keywords, "
@@ -326,7 +350,39 @@ def _code_doing_tasks_prompt() -> PromptSection:
 # ─── Using Your Tools ──────────────────────────────
 
 
-def _code_using_your_tools_prompt() -> PromptSection:
+def _graph_file_search_tools() -> str:
+    return (
+        "- To search for files or symbols use resolve_symbol, "
+        "find_code_symbols, inspect_code_structure, or list_files "
+        "instead of find, ls, glob, or grep\n"
+        "- To search the content of files, use search_source_text "
+        "instead of grep or the bash grep/rg command\n"
+        "- Reserve bash exclusively for system commands "
+        "and terminal operations that require shell execution. "
+        "Do not use bash to explore the codebase "
+        "(find, grep, rg, ls, or cat of many files). "
+        "If you are unsure and there is a relevant dedicated tool, "
+        "default to using the dedicated tool "
+        "and only fallback on bash "
+        "if it is absolutely necessary.\n"
+    )
+
+
+def _grep_file_search_tools() -> str:
+    return (
+        "- To search for files use glob or list_files instead of find or ls\n"
+        "- To search the content of files, use grep instead of the bash grep command\n"
+        "- Reserve bash exclusively for system commands "
+        "and terminal operations that require shell execution. "
+        "If you are unsure and there is a relevant dedicated tool, "
+        "default to using the dedicated tool "
+        "and only fallback on bash "
+        "if it is absolutely necessary.\n"
+    )
+
+
+def _code_using_your_tools_prompt(*, graph: bool = False) -> PromptSection:
+    search = _graph_file_search_tools() if graph else _grep_file_search_tools()
     content = (
         "# Using your tools\n"
         "\n"
@@ -339,14 +395,7 @@ def _code_using_your_tools_prompt() -> PromptSection:
         "- To edit files use edit_file instead of sed or awk\n"
         "- To create files use write_file instead of cat with heredoc "
         "or echo redirection\n"
-        "- To search for files use glob or list_files instead of find or ls\n"
-        "- To search the content of files, use grep instead of the bash grep command\n"
-        "- Reserve bash exclusively for system commands "
-        "and terminal operations that require shell execution. "
-        "If you are unsure and there is a relevant dedicated tool, "
-        "default to using the dedicated tool "
-        "and only fallback on bash "
-        "if it is absolutely necessary.\n"
+        f"{search}"
         "## Task planning (todos)\n"
         "\n"
         "Use todo_create and todo_modify only when multi-phase work benefits from tracking. "
@@ -616,30 +665,34 @@ def _code_output_efficiency_prompt() -> PromptSection:
 # ─── Section Generators ────────────────────────────
 
 
-_CODE_SECTION_GENERATORS = [
-    _code_intro_prompt,
-    _code_system_prompt,
-    _code_session_guidance_prompt,
-    _code_doing_tasks_prompt,
-    _code_using_your_tools_prompt,
-    _code_actions_with_care_prompt,
-    _code_tone_and_style_prompt,
-    _code_output_efficiency_prompt,
-]
+def _iter_code_sections(*, graph: bool):
+    yield _code_intro_prompt()
+    yield _code_system_prompt()
+    yield _code_session_guidance_prompt(graph=graph)
+    yield _code_doing_tasks_prompt()
+    yield _code_using_your_tools_prompt(graph=graph)
+    yield _code_actions_with_care_prompt()
+    yield _code_tone_and_style_prompt()
+    yield _code_output_efficiency_prompt()
 
 
 # ─── Entry Point ──────────────────────────────────
 
 
-def build_code_system_prompt() -> str:
+def build_code_system_prompt(*, profile: str | None = None) -> str:
     """Build the complete code mode system prompt (English-only).
 
     Called once at agent creation time. Dynamic content (time, runtime state,
     memory) is injected per-request by Rails.
+
+    ``profile=graph`` (Root owns Code Graph) stops teaching grep/glob and
+    points targeted search at find_* / search_source_text. Other values,
+    including omitted, keep the original grep/glob wording.
     """
+    graph = str(profile or "").strip().lower() == "graph"
     builder = SystemPromptBuilder(language="en")
 
-    for generator in _CODE_SECTION_GENERATORS:
-        builder.add_section(generator())
+    for section in _iter_code_sections(graph=graph):
+        builder.add_section(section)
 
     return builder.build()

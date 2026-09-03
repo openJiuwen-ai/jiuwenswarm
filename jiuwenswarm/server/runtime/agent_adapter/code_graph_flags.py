@@ -45,6 +45,15 @@ class CodeGraphFlags:
     def on_code_agent(self) -> bool:
         return self.enabled and self.agent == AGENT_CODE
 
+    @property
+    def root_prompt_profile(self) -> str:
+        """Profile for the Root system prompt.
+
+        Teach find_* only when Root owns the graph. ``agent: code_agent``
+        leaves grep on Root; that prompt must stay off-style.
+        """
+        return self.profile if self.on_root else PROFILE_OFF
+
 
 def resolve_profile(value: Any, *, default: str = PROFILE_OFF) -> str:
     """Accept ``off`` / ``graph`` only. Anything else falls back to ``default``."""
