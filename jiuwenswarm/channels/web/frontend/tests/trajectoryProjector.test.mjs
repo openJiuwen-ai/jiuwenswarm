@@ -2295,3 +2295,102 @@ test('every inference keeps an independent request identity inside a shared step
   assert.ok(ownedTool && owner);
   assert.equal(ownedTool.requestRecordId, owner.requestRecordId);
 });
+
+function exceptionSpanEvent(attributes) {
+  return {
+    timeUnixNano: '1700000000000000000',
+    name: 'exception',
+    attributes: Object.entries(attributes).map(([key, value]) => ({
+      key,
+      value: { stringValue: value },
+    })),
+  };
+}
+
+async function errorProjection(spanId, { status, events }) {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const span = spansOf(records).find(candidate => candidate.spanId === spanId);
+  assert.ok(span, `expected span ${spanId} in fixture`);
+  span.status = status;
+  span.events = events;
+  const snapshot = projectOtelTrajectory(records);
+  const request = snapshot.requests?.find(candidate => (
+    candidate.status === 'error' && candidate.error !== undefined
+  ));
+  const assistant = cellsOf(snapshot).find(cell => (
+    cell.kind === 'message' && cell.recordId?.includes(spanId)
+  ));
+  return { snapshot, request, assistant };
+}
+
+test('a blank stream-timeout message falls back to the exception type', async () => {
+  const { request, assistant } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: '' },
+    events: [exceptionSpanEvent({
+      'exception.message': '',
+      'exception.type': 'TimeoutError',
+      'exception.stacktrace': 'Traceback (most recent call last): ...',
+    })],
+  });
+
+  assert.ok(request, 'failed request should carry an error reason');
+  assert.equal(request.error, 'TimeoutError');
+  assert.equal(assistant.isError, true);
+  assert.equal(assistant.result, 'TimeoutError');
+});
+
+test('a recorded stream-timeout summary is shown verbatim', async () => {
+  const summary = 'LLM stream timeout: stage=idle_chunk, timeout=60.0s, '
+    + 'chunk_count=368, idle_elapsed=60.00s, total_elapsed=91.15s, model=GLM-5.3';
+  const { request, assistant } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: summary },
+    events: [exceptionSpanEvent({
+      'exception.message': summary,
+      'exception.type': 'TimeoutError',
+      'exception.stacktrace': 'TimeoutError\n',
+    })],
+  });
+
+  assert.equal(request.error, summary);
+  assert.equal(assistant.result, summary);
+});
+
+test('a whitespace-only status message falls through to the exception reason', async () => {
+  const { request } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: '   \n  ' },
+    events: [exceptionSpanEvent({
+      'exception.message': 'provider down',
+      'exception.type': 'RuntimeError',
+    })],
+  });
+
+  assert.ok(request);
+  assert.equal(request.error, 'provider down');
+});
+
+test('the first informative exception message wins across multiple exception events', async () => {
+  const { request } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: '' },
+    events: [
+      exceptionSpanEvent({ 'exception.message': '', 'exception.type': '' }),
+      exceptionSpanEvent({ 'exception.message': 'provider down', 'exception.type': 'RuntimeError' }),
+    ],
+  });
+
+  assert.ok(request);
+  assert.equal(request.error, 'provider down');
+});
+
+test('without exception events the error.type attribute is the last fallback', async () => {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const span = spansOf(records).find(candidate => candidate.spanId === '5000000000000005');
+  assert.ok(span);
+  span.status = { code: 2, message: '' };
+  span.events = [];
+  setStringAttribute(span, 'error.type', 'TimeoutError');
+
+  const snapshot = projectOtelTrajectory(records);
+  const request = snapshot.requests?.find(candidate => candidate.status === 'error');
+  assert.ok(request);
+  assert.equal(request.error, 'TimeoutError');
+});

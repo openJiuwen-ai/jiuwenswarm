@@ -27,7 +27,7 @@ import {
   normalizeTrajectoryAttributes, normalizeTrajectoryStreamEvents,
 } from './attribute-resolver.ts'
 import type {
-  OtlpExportTraceServiceRequest, OtlpSpan,
+  OtlpExportTraceServiceRequest, OtlpSpan, OtlpSpanEvent,
 } from '../shared/otlp.ts'
 import type {
   TrajectoryPromptSnapshot,
@@ -555,34 +555,44 @@ function status(projected: ProjectedSpan): 'complete' | 'running' | 'error' {
     : 'complete'
 }
 
+function validErrorText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+function firstExceptionReason(
+  events: readonly OtlpSpanEvent[] | undefined,
+): string | undefined {
+  const exceptionEvents = (events ?? []).filter(event => event.name === 'exception')
+  for (const attributeKey of [
+    STANDARD_ATTRIBUTES.exceptionMessage,
+    STANDARD_ATTRIBUTES.exceptionType,
+  ]) {
+    for (const exception of exceptionEvents) {
+      const reason = validErrorText(
+        readStringAttribute(exactAttributeMap(exception.attributes), attributeKey),
+      )
+      if (reason !== undefined) return reason
+    }
+  }
+  return undefined
+}
+
 function statusError(projected: ProjectedSpan): string | undefined {
   const statusIsError = projected.span.status?.code === 2
   const forcedClose = projected.attributes.spanForcedClose === true
   if (!statusIsError && !forcedClose && projected.lifecycle !== 'error') return undefined
-  if (statusIsError
-    && projected.span.status?.message !== undefined
-    && projected.span.status.message !== '') {
-    return projected.span.status.message
-  }
-  if (statusIsError && projected.attributes.errorMessage !== undefined) {
-    return projected.attributes.errorMessage
-  }
-  const exception = projected.span.events?.find(event => event.name === 'exception')
-  if (exception !== undefined) {
-    const attributes = exactAttributeMap(exception.attributes)
-    const message = readStringAttribute(attributes, STANDARD_ATTRIBUTES.exceptionMessage)
-    if (message !== undefined) return message
-    const type = readStringAttribute(attributes, STANDARD_ATTRIBUTES.exceptionType)
-    if (type !== undefined) return type
-  }
-  if (statusIsError && projected.attributes.errorType !== undefined) {
-    return projected.attributes.errorType
-  }
-  if (forcedClose) {
-    return projected.attributes.spanForcedCloseReason ?? 'Span was force-closed during trace finalization'
-  }
-  if (projected.lifecycle === 'error') return 'Trajectory operation reported an error'
-  return 'OpenTelemetry Span reported an error'
+  return validErrorText(statusIsError ? projected.span.status?.message : undefined)
+    ?? validErrorText(statusIsError ? projected.attributes.errorMessage : undefined)
+    ?? firstExceptionReason(projected.span.events)
+    ?? validErrorText(statusIsError ? projected.attributes.errorType : undefined)
+    ?? (forcedClose
+      ? validErrorText(projected.attributes.spanForcedCloseReason)
+        ?? 'Span was force-closed during trace finalization'
+      : undefined)
+    ?? (projected.lifecycle === 'error' ? 'Trajectory operation reported an error' : undefined)
+    ?? 'OpenTelemetry Span reported an error'
 }
 
 function operation(span: ProjectedSpan): string | undefined {
