@@ -108,7 +108,7 @@ async def test_core_processor_delivers_child_then_complete_root_without_reencodi
                 "openjiuwen.trace.root": True,
                 "openjiuwen.trace.schema_version": "1",
                 "openjiuwen.trajectory.record.kind": "turn",
-                "openjiuwen.session.id": session_id,
+                "gen_ai.conversation.id": session_id,
                 "openjiuwen.request.id": request_id,
                 "openjiuwen.run.id": request_id,
                 "openjiuwen.agent.mode": "agent.work.normal",
@@ -181,7 +181,6 @@ async def test_core_snapshot_is_visible_before_end_and_finalizes_same_identity(
     try:
         routing = {
             "openjiuwen.trace.schema_version": "1",
-            "openjiuwen.session.id": session_id,
             "gen_ai.conversation.id": session_id,
             "openjiuwen.request.id": "request-live",
             "openjiuwen.run.id": "run-live",
@@ -283,7 +282,6 @@ async def test_native_context_event_is_queryable_before_parent_request_ends(
             "llm.call",
             attributes={
                 "openjiuwen.trace.schema_version": "2",
-                "openjiuwen.session.id": session_id,
                 "gen_ai.conversation.id": session_id,
                 "openjiuwen.request.id": "request-native-event",
                 "openjiuwen.run.id": "run-native-event",

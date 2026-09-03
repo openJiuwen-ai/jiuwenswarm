@@ -69,7 +69,13 @@ export const STANDARD_ATTRIBUTES = {
   toolDefinitions: GEN_AI_ATTRIBUTES.GEN_AI_TOOL_DEFINITIONS,
 } as const
 
-/** OpenJiuwen trajectory extensions and compatibility attributes. */
+/**
+ * OpenJiuwen trajectory extensions.
+ *
+ * Only facts the GenAI standard does not model live here. Session, agent and
+ * tool-call identity are read from `STANDARD_ATTRIBUTES`; the emitter writes
+ * a single canonical key per fact.
+ */
 export const OPENJIUWEN_ATTRIBUTES = {
   traceRoot: 'openjiuwen.trace.root',
   traceSchemaVersion: 'openjiuwen.trace.schema_version',
@@ -77,7 +83,6 @@ export const OPENJIUWEN_ATTRIBUTES = {
   traceForcedClose: 'openjiuwen.trace.forced_close',
   spanForcedClose: 'openjiuwen.span.forced_close',
   spanForcedCloseReason: 'openjiuwen.span.forced_close.reason',
-  sessionId: 'openjiuwen.session.id',
   requestId: 'openjiuwen.request.id',
   runId: 'openjiuwen.run.id',
   turnId: 'openjiuwen.turn.id',
@@ -91,11 +96,6 @@ export const OPENJIUWEN_ATTRIBUTES = {
   executionSubjectParentId: 'openjiuwen.execution.subject.parent_id',
   executionSubjectSessionId: 'openjiuwen.execution.subject.session_id',
   executionSubjectRequestNumber: 'openjiuwen.execution.subject.request.number',
-  teamId: 'openjiuwen.team.id',
-  teamName: 'openjiuwen.team.name',
-  teamLeader: 'openjiuwen.team.leader',
-  teamMemberId: 'openjiuwen.team.member.id',
-  teamMemberName: 'openjiuwen.team.member.name',
   trajectoryKind: 'openjiuwen.trajectory.record.kind',
   requestPurpose: 'openjiuwen.request.purpose',
   requestNumber: 'openjiuwen.request.number',
@@ -119,8 +119,6 @@ export const OPENJIUWEN_ATTRIBUTES = {
   eventSequence: 'openjiuwen.event.sequence',
   streamKind: 'openjiuwen.stream.kind',
   streamText: 'openjiuwen.stream.text',
-  streamToolCallId: 'openjiuwen.stream.tool_call.id',
-  streamToolName: 'openjiuwen.stream.tool_call.name',
   streamArgumentsDelta: 'openjiuwen.stream.tool_call.arguments_delta',
   trajectorySchemaVersion: 'openjiuwen.trajectory.schema_version',
   trajectoryEventId: 'openjiuwen.trajectory.event_id',
@@ -128,10 +126,6 @@ export const OPENJIUWEN_ATTRIBUTES = {
   trajectorySubjectId: 'openjiuwen.trajectory.subject_id',
   trajectorySubjectSequence: 'openjiuwen.trajectory.subject_sequence',
   trajectorySequenceEpoch: 'openjiuwen.trajectory.sequence_epoch',
-  trajectorySessionId: 'openjiuwen.trajectory.session_id',
-  trajectoryTurnId: 'openjiuwen.trajectory.turn_id',
-  trajectoryStepId: 'openjiuwen.trajectory.step_id',
-  trajectoryRequestId: 'openjiuwen.trajectory.request_id',
   trajectoryRecordedAtUnixNano: 'openjiuwen.trajectory.recorded_at_unix_nano',
   trajectoryPayload: 'openjiuwen.trajectory.payload',
 } as const

@@ -16,20 +16,6 @@ class TrajectoryScope:
     team_name: str | None = None
 
 
-_ATTRIBUTE_ALIASES: dict[str, tuple[str, ...]] = {
-    "team_id": (
-        "openjiuwen.team.id",
-        "agentteam.team.id",
-    ),
-    "team_name": (
-        "openjiuwen.team.name",
-        "agentteam.team.name",
-        "openjiuwen.team.id",
-        "agentteam.team.id",
-    ),
-}
-
-
 def project_trajectory_scope(otlp: Mapping[str, Any]) -> TrajectoryScope:
     """Project Team identity hints without rewriting OTLP."""
     attributes: dict[str, Any] = {}
@@ -57,8 +43,8 @@ def project_trajectory_scope(otlp: Mapping[str, Any]) -> TrajectoryScope:
                 attributes.update(_decode_attributes(span.get("attributes")))
 
     return TrajectoryScope(
-        team_id=_as_text(attributes.get("openjiuwen.team.id")) or _as_text(attributes.get("agentteam.team.id")),
-        team_name=_as_text(attributes.get("openjiuwen.team.name")) or _as_text(attributes.get("agentteam.team.name")),
+        team_id=_as_text(attributes.get("agentteam.team.id")),
+        team_name=_as_text(attributes.get("agentteam.team.name")),
     )
 
 

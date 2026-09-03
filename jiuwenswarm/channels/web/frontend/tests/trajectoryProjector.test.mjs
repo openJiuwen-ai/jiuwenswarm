@@ -112,17 +112,17 @@ function v2Record({
             v2Attribute('openjiuwen.trajectory.subject_id', subjectId),
             v2Attribute('openjiuwen.trajectory.subject_sequence', sequence, true),
             v2Attribute('openjiuwen.trajectory.sequence_epoch', sequenceEpoch),
-            v2Attribute('openjiuwen.trajectory.session_id', 'session-v2'),
-            v2Attribute('openjiuwen.trajectory.request_id', requestId),
+            v2Attribute('gen_ai.conversation.id', 'session-v2'),
+            v2Attribute('openjiuwen.request.id', requestId),
             v2Attribute('openjiuwen.trajectory.recorded_at_unix_nano', time, true),
             v2Attribute('openjiuwen.turn.number', turn, true),
             v2Attribute('openjiuwen.step.number', step, true),
             ...(stepId === undefined
               ? []
-              : [v2Attribute('openjiuwen.trajectory.step_id', stepId)]),
+              : [v2Attribute('openjiuwen.step.id', stepId)]),
             ...(turnId === undefined
               ? []
-              : [v2Attribute('openjiuwen.trajectory.turn_id', turnId)]),
+              : [v2Attribute('openjiuwen.turn.id', turnId)]),
             v2Attribute('openjiuwen.trajectory.payload', JSON.stringify(payload)),
             v2Attribute('langfuse.gen_ai.prompt.0.role', 'user'),
             v2Attribute('langfuse.gen_ai.prompt.0.content', 'must never become a v2 row'),
@@ -212,7 +212,7 @@ function trajectoryLogEventRecord({ eventKind, eventId, payload, sequence, time 
               v2Attribute('openjiuwen.trajectory.subject_id', 'team-leader'),
               v2Attribute('openjiuwen.trajectory.subject_sequence', sequence, true),
               v2Attribute('openjiuwen.trajectory.sequence_epoch', 'ask-user-epoch'),
-              v2Attribute('openjiuwen.trajectory.session_id', 'team-session'),
+              v2Attribute('gen_ai.conversation.id', 'team-session'),
               v2Attribute('openjiuwen.trajectory.recorded_at_unix_nano', time, true),
               v2Attribute('openjiuwen.trajectory.payload', JSON.stringify(payload)),
             ],

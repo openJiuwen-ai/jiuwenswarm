@@ -2,7 +2,7 @@
 
 /** Idempotent reducer for canonical OpenJiuwen trajectory schema-v2 events. */
 
-import { OPENJIUWEN_ATTRIBUTES } from '../semconv/constants.ts'
+import { OPENJIUWEN_ATTRIBUTES, STANDARD_ATTRIBUTES } from '../semconv/constants.ts'
 import { attributeMap } from '../shared/otlp.ts'
 import type { OtlpExportTraceServiceRequest, OtlpSpan } from '../shared/otlp.ts'
 import type { TrajectoryDiagnostic, TrajectoryPromptSnapshot } from '../trajectory/model.ts'
@@ -275,7 +275,7 @@ function parseEvent(record: OtlpExportTraceServiceRequest): ParsedEvent | Trajec
     attributes,
     OPENJIUWEN_ATTRIBUTES.trajectoryRecordedAtUnixNano,
   )
-  const sessionId = textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectorySessionId)
+  const sessionId = textAttribute(attributes, STANDARD_ATTRIBUTES.conversationId)
   const payload = payloadAttribute(attributes)
   if (subjectId === undefined || eventId === undefined || eventKind === undefined
     || sequence === undefined || sequenceEpoch === undefined
@@ -301,11 +301,11 @@ function parseEvent(record: OtlpExportTraceServiceRequest): ParsedEvent | Trajec
     record,
     span,
     traceId: span.traceId,
-    requestId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectoryRequestId),
+    requestId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.requestId),
     turn: safePositiveInteger(bigintAttribute(attributes, OPENJIUWEN_ATTRIBUTES.turnNumber)) ?? 1,
     step: safePositiveInteger(bigintAttribute(attributes, OPENJIUWEN_ATTRIBUTES.stepNumber)) ?? 1,
-    stepId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectoryStepId),
-    turnId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectoryTurnId),
+    stepId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.stepId),
+    turnId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.turnId),
   }
 }
 

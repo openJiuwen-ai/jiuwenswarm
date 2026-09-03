@@ -151,11 +151,12 @@ interface NormalizedMessage {
   }
 }
 
+// Foreign conventions the viewer also ingests: the legacy `tracer_otel`
+// handler and the Langfuse projection. OpenJiuwen's own emitter writes the
+// standard key alone, so it needs no entry here.
 const COMPATIBILITY = {
   openJiuwenSessionId: 'openjiuwen.session_id',
   langfuseObservationType: 'langfuse.observation.type',
-  agentTeamSessionId: 'agentteam.session.id',
-  deepAgentName: 'deepagent.agent.name',
   deepAgentIteration: 'deepagent.task.iteration',
 } as const
 
@@ -491,10 +492,8 @@ export function normalizeTrajectoryAttributes(
   const target: MutableNormalized = { raw, sources: {} }
   assign(target, 'conversationId', resolveString(raw, [
     STANDARD_ATTRIBUTES.conversationId,
-    OPENJIUWEN_ATTRIBUTES.sessionId,
     STANDARD_ATTRIBUTES.sessionId,
     COMPATIBILITY.openJiuwenSessionId,
-    COMPATIBILITY.agentTeamSessionId,
   ]))
   assign(target, 'traceRoot', resolveBoolean(raw, [
     OPENJIUWEN_ATTRIBUTES.traceRoot,
@@ -630,7 +629,6 @@ export function normalizeTrajectoryAttributes(
   ]))
   assign(target, 'agentName', resolveString(raw, [
     STANDARD_ATTRIBUTES.agentName,
-    COMPATIBILITY.deepAgentName,
   ]))
   assign(target, 'agentVersion', resolveString(raw, [
     STANDARD_ATTRIBUTES.agentVersion,
@@ -827,11 +825,11 @@ export function normalizeTrajectoryStreamEvents(
       DSH_ATTRIBUTES.streamText,
     ])?.value
     const toolCallId = resolveString(attributes, [
-      OPENJIUWEN_ATTRIBUTES.streamToolCallId,
+      STANDARD_ATTRIBUTES.toolCallId,
       DSH_ATTRIBUTES.streamToolCallId,
     ])?.value
     const toolName = resolveString(attributes, [
-      OPENJIUWEN_ATTRIBUTES.streamToolName,
+      STANDARD_ATTRIBUTES.toolName,
       DSH_ATTRIBUTES.streamToolName,
     ])?.value
     const argumentsDelta = resolveString(attributes, [

@@ -116,7 +116,7 @@ def _team_raw_record(trace_id: str, span_id: str) -> bytes:
     payload = json.loads(_raw_record(trace_id, span_id))
     attributes = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"]
     attributes.append({
-        "key": "openjiuwen.team.id",
+        "key": "agentteam.team.id",
         "value": {"stringValue": "research-team"},
     })
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
