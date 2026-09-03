@@ -26,6 +26,10 @@ from typing import Any
 from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
 
 from jiuwenswarm.server.runtime.mcp.paths import has_skill_file as _has_skill_file
+from jiuwenswarm.server.runtime.mcp.package_manifest import (
+    load_mcp_package,
+    resolve_mcp_package,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +42,15 @@ def _packages_dir() -> Path:
     return _mcp_root() / "mcp_builtins"
 
 
+def _hub_packages_dir() -> Path:
+    return _mcp_root() / "mcp_hub"
+
+
 def _mcp_pkg_dir(name: str) -> Path:
-    return _packages_dir() / str(name or "").strip()
+    package = resolve_mcp_package(
+        str(name or "").strip(), _packages_dir(), _hub_packages_dir()
+    )
+    return package.root if package is not None else _packages_dir() / str(name or "").strip()
 
 # ``@skills/connector-<name>`` is a path placeholder used by skill-only MCPs
 # (ctrip-wendao, netease-mail) in their SKILL.md command examples. openjiuwen's
@@ -92,20 +103,16 @@ def _bundled_skills(pkg_dir: Path) -> list[tuple[Path, str]]:
     skill each (named by subdir). A flat ``skills/SKILL.md`` layout collapses
     to a single skill named after the MCP.
     """
-    skills_dir = pkg_dir / "skills"
-    if not skills_dir.is_dir():
-        return []
+    package = load_mcp_package(pkg_dir)
     out: list[tuple[Path, str]] = []
-    # flat layout: SKILL.md sits directly under skills/ (a stray README.md
-    # must NOT trigger this — it would swallow every nested skill into one
-    # bogus skill and the agent would see none of them).
-    if _has_skill_file(skills_dir):
-        out.append((skills_dir, pkg_dir.name))
-        return out
-    # nested layout: each child dir with a skill file is one skill
-    for entry in sorted(skills_dir.iterdir()):
-        if entry.is_dir() and _has_skill_file(entry):
-            out.append((entry, entry.name))
+    for skills_dir in package.skill_dirs:
+        # flat layout: SKILL.md sits directly under a declared skills dir.
+        if _has_skill_file(skills_dir):
+            out.append((skills_dir, package.package_id))
+            continue
+        for entry in sorted(skills_dir.iterdir()):
+            if entry.is_dir() and _has_skill_file(entry):
+                out.append((entry, entry.name))
     return out
 
 

@@ -179,6 +179,8 @@ class ReqMethod(Enum):
     # mcp management.
     MCP_LIST = "mcp.list"
     MCP_SHOW = "mcp.show"
+    MCP_INSTALL = "mcp.install"
+    MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
     MCP_DISCONNECT = "mcp.disconnect"

@@ -436,11 +436,12 @@ export interface SessionRuntime {
   /**
    * 本会话期间持续启用的插件id/MCP名，由输入框"+"菜单"扩展"面板的开关控制。与
    * selectedSkills 不同：这两个字段发 chat.send 后不清空，会一直带在每条消息里，直到用户在
-   * 面板里手动关闭开关。插件字段名 plugin_names 后端尚未定义（backend-requests.md 需求11，
-   * 前端乐观发送，后端目前忽略）；mcp 字段名是 MCP 接口文档 v2 §6.2 的权威定义。
+   * 面板里手动关闭开关。恢复历史会话时由后端 session_equipment 快照重新填充。
    */
   enabledPlugins: string[];
   enabledMcps: string[];
+  /** 是否已从后端快照恢复，或已由用户在本地明确修改。 */
+  extensionsHydrated: boolean;
   /** SwarmFlow 是否激活（曾收到过 swarmflow 事件即置真，粘性） */
   swarmflowActive: boolean;
   /** 本会话是否启用 swarmflow（会话级，随 chat.send 下发） */
@@ -475,6 +476,7 @@ function createEmptyRuntime(sessionId?: string): SessionRuntime {
     agentSelectionIntent: sessionId ? loadAgentSelectionIntent(sessionId) : { kind: 'keep' },
     enabledPlugins: [],
     enabledMcps: [],
+    extensionsHydrated: false,
     swarmflowActive: false,
     enableSwarmflow: false,
     swarmflowBudget: null,
@@ -554,6 +556,11 @@ interface SessionState {
   removeEnabledMcp: (sessionId: string, mcpName: string) => void;
   /** 本会话启用MCP：清空 */
   clearEnabledMcps: (sessionId: string) => void;
+  /** 用后端的会话级装备快照恢复插件/MCP选择。 */
+  restoreSessionEquipment: (
+    sessionId: string,
+    equipment: { plugin_names?: string[]; mcp?: string[] },
+  ) => void;
   addTeamMember: (sessionId: string, member: TeamMember) => void;
   updateTeamMemberStatus: (sessionId: string, memberId: string, newStatus: string, timestamp?: number) => void;
   setTeamHumanShareCommands: (sessionId: string, commands: HumanShareCommand[]) => void;
@@ -1180,7 +1187,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledPlugins: [...runtime.enabledPlugins, normalized] },
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: [...runtime.enabledPlugins, normalized],
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1196,7 +1207,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledPlugins: runtime.enabledPlugins.filter((s) => s !== normalized) },
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: runtime.enabledPlugins.filter((s) => s !== normalized),
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1206,11 +1221,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      if (runtime.enabledPlugins.length === 0) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledPlugins: [] },
+          [sessionId]: { ...runtime, enabledPlugins: [], extensionsHydrated: true },
         },
       };
     });
@@ -1225,7 +1239,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledMcps: [...runtime.enabledMcps, normalized] },
+          [sessionId]: {
+            ...runtime,
+            enabledMcps: [...runtime.enabledMcps, normalized],
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1241,7 +1259,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledMcps: runtime.enabledMcps.filter((s) => s !== normalized) },
+          [sessionId]: {
+            ...runtime,
+            enabledMcps: runtime.enabledMcps.filter((s) => s !== normalized),
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1251,11 +1273,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      if (runtime.enabledMcps.length === 0) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledMcps: [] },
+          [sessionId]: { ...runtime, enabledMcps: [], extensionsHydrated: true },
+        },
+      };
+    });
+  },
+
+  restoreSessionEquipment: (sessionId, equipment) => {
+    const normalize = (values: string[] | undefined) => Array.from(new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ));
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: normalize(equipment.plugin_names),
+            enabledMcps: normalize(equipment.mcp),
+            extensionsHydrated: true,
+          },
         },
       };
     });

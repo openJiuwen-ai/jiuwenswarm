@@ -17,25 +17,27 @@ subclass + the shared detection/resolution helpers.
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import re
 from unittest.mock import patch
 
-import pytest
 
 from jiuwenswarm.server.runtime.mcp import credential as cred
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 # --- detect_credential_kind: classify an MCP by its package contents ---
 
 def test_detect_kind_none_for_no_placeholder(tmp_path: Path) -> None:
     """A free-connect remote MCP (notion-like) has only url -> 'none'."""
-    pkg = _mk_pkg(tmp_path, "notion", mcp={"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}})
+    _mk_pkg(tmp_path, "notion", mcp={"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}})
     with patch("jiuwenswarm.server.runtime.mcp.credential.get_workspace_dir", return_value=tmp_path):
         assert cred.detect_credential_kind("notion") == "none"
 
 
 def test_detect_kind_token_for_env_placeholder(tmp_path: Path) -> None:
     """jira/gmail-style: env has ${VAR} -> 'token'."""
-    pkg = _mk_pkg(tmp_path, "jira", mcp={
+    _mk_pkg(tmp_path, "jira", mcp={
         "mcpServers": {"jira": {"command": "npx", "args": ["atlassian-jira-mcp-server"],
                                  "env": {"ATLASSIAN_API_TOKEN": "${ATLASSIAN_API_TOKEN}"}}}
     })
@@ -45,7 +47,7 @@ def test_detect_kind_token_for_env_placeholder(tmp_path: Path) -> None:
 
 def test_detect_kind_token_for_headers_placeholder(tmp_path: Path) -> None:
     """tianyancha-style: headers.Authorization has ${VAR} -> 'token'."""
-    pkg = _mk_pkg(tmp_path, "tyc-mcp", mcp={
+    _mk_pkg(tmp_path, "tyc-mcp", mcp={
         "mcpServers": {"tyc-mcp": {"type": "streamableHttp", "url": "https://mcp.tianyancha.com/v1",
                                     "headers": {"Authorization": "Bearer ${TIANYANCHA_API_KEY}"}}}
     })
@@ -55,7 +57,7 @@ def test_detect_kind_token_for_headers_placeholder(tmp_path: Path) -> None:
 
 def test_detect_kind_token_for_url_placeholder(tmp_path: Path) -> None:
     """gildata-style: url query has ${VAR} -> 'token'."""
-    pkg = _mk_pkg(tmp_path, "gildata", mcp={
+    _mk_pkg(tmp_path, "gildata", mcp={
         "mcpServers": {"gildata": {"type": "streamableHttp",
                                     "url": "https://api.gildata.com/mcp?token=${GILDATA_TOKEN}"}}
     })
@@ -65,7 +67,7 @@ def test_detect_kind_token_for_url_placeholder(tmp_path: Path) -> None:
 
 def test_detect_kind_cli_oauth_for_cli_json(tmp_path: Path) -> None:
     """feishu/dingtalk: has cli.json -> 'cli_oauth' (CLI manages its own OAuth)."""
-    pkg = _mk_pkg(tmp_path, "feishu", mcp=None, cli={"runtime": {"type": "node"},
+    _mk_pkg(tmp_path, "feishu", mcp=None, cli={"runtime": {"type": "node"},
         "init": {"win32": "npm install -g @larksuite/cli"},
         "versionCheck": {"command": {"win32": "lark-cli.cmd --version"}, "minVersion": "1.0.77"}})
     with patch("jiuwenswarm.server.runtime.mcp.credential.get_workspace_dir", return_value=tmp_path):
@@ -210,11 +212,30 @@ def _mk_pkg(workspace: Path, name: str, *, mcp: dict | None, cli: dict | None = 
     pkg = workspace / "mcp" / "mcp_builtins" / name
     pkg.mkdir(parents=True, exist_ok=True)
     if mcp is not None:
-        import json
         (pkg / "mcp.json").write_text(json.dumps(mcp), encoding="utf-8")
     if cli is not None:
-        import json
         (pkg / "cli.json").write_text(json.dumps(cli), encoding="utf-8")
+        write_manifest(pkg, "cli", credentials_type="cli-oauth")
+    elif mcp is not None:
+        server = next(iter(mcp.get("mcpServers", {}).values()), {})
+        integration_type = "stdio-mcp" if server.get("command") else "remote-mcp"
+        placeholders = sorted(set(re.findall(r"\$\{(\w+)\}", json.dumps(mcp))))
+        if placeholders:
+            (pkg / "token-schema.json").write_text(
+                json.dumps({"fields": [{"key": key, "required": True} for key in placeholders]}),
+                encoding="utf-8",
+            )
+        write_manifest(
+            pkg,
+            integration_type,
+            credentials_type="token" if placeholders else None,
+        )
+    else:
+        skills = pkg / "skills"
+        skills.mkdir()
+        (skills / "SKILL.md").write_text("# Test", encoding="utf-8")
+        (pkg / "token-schema.json").write_text('{"fields":[]}', encoding="utf-8")
+        write_manifest(pkg, "skill-only", credentials_type="token", skills=True)
     return pkg
 
 
@@ -303,8 +324,8 @@ def test_build_prompt_with_schema_attaches_doc_and_field_hints(tmp_path: Path) -
     assert "OPT" not in out.get("fields", {})
 
 
-def test_build_prompt_without_schema_falls_back_to_bare_keys(tmp_path: Path) -> None:
-    """A form-B MCP with no schema still returns a minimal payload."""
+def test_build_prompt_with_minimal_schema_keeps_bare_field_key(tmp_path: Path) -> None:
+    """A minimal token schema still returns the required field key."""
     _mk_pkg(tmp_path, "plain", mcp={"mcpServers": {"plain": {
         "url": "https://x", "headers": {"X": "Bearer ${X}"}
     }}})
@@ -313,9 +334,9 @@ def test_build_prompt_without_schema_falls_back_to_bare_keys(tmp_path: Path) -> 
     assert out["credentials_required"] is True
     assert out["required_tokens"] == ["X"]
     assert out["credential_kind"] == "token"
-    # No schema -> no doc/field hints.
+    # A required schema can omit presentation hints.
     assert "doc_url" not in out
-    assert "fields" not in out
+    assert out["fields"] == {"X": {}}
     assert "title" not in out
 
 
@@ -335,4 +356,3 @@ def test_build_prompt_deveco_has_no_doc_url_only_label(tmp_path: Path) -> None:
     assert "doc_url" not in out
     assert out["doc_label"] == "请填写本地 DevEco 安装路径"
     assert out["fields"]["DEVECO_PATH"]["type"] == "text"
-

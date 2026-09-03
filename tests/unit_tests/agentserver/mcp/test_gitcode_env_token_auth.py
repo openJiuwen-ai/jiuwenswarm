@@ -28,7 +28,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
+
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _write_gitcode_pkg(tmp_path: Path) -> Path:
@@ -53,6 +54,7 @@ def _write_gitcode_pkg(tmp_path: Path) -> Path:
         '{"title":"GitCode","fields":[{"key":"GITCODE_TOKEN","type":"password","required":true}]}',
         encoding="utf-8",
     )
+    write_manifest(pkg, "cli", credentials_type="token")
     return pkg
 
 
@@ -163,6 +165,7 @@ def test_cli_driver_cred_env_none_when_no_token_schema(tmp_path: Path, monkeypat
         '"status":{"win32":"lark-cli auth status"}}',
         encoding="utf-8",
     )
+    write_manifest(pkg, "cli", credentials_type="cli-oauth")
 
     drv = cli_driver.CliDriver("feishu", cli_driver.CliManifest())
     # No token-schema → _cred_env is None → env inherits parent (OAuth path).

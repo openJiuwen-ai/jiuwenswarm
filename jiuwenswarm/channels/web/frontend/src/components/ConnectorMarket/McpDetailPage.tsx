@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, X, ExternalLink, Pencil } from 'lucide-react';
+import {
+  ChevronLeft,
+  Unlink2,
+  Trash2,
+  Plus,
+  Wrench,
+  Terminal,
+  Loader2,
+  AlertCircle,
+  X,
+  ExternalLink,
+  Pencil,
+} from 'lucide-react';
 // 2026-08-17：Trash2（原"卸载"按钮图标，按 source 分流 delete/disconnect）曾随彻底删除入口一起
 // 移除。2026-08-19 用户明确要求恢复：自定义 MCP 断联态（已经解绑过一次）的按钮要变成真正的
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
@@ -18,6 +30,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { PillButton, DetailLinkButton } from './Buttons';
 import { deriveCardState, deriveMcpAvailability } from './mcpState';
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
+import { MarketplaceSurface } from '../marketplace/MarketplaceSurface';
 
 // integrationType 决定了这个 MCP 的接入方式（要不要走 CLI OAuth、有没有"连接"按钮），之前
 // mcp.show 下发了这个字段但详情页完全没展示，用户看不出"为什么这个要跳浏览器授权""为什么那个
@@ -96,7 +109,7 @@ interface McpDetailPageProps {
 // 不再是旧版"不是 connected 就整个拒绝进入"，见 mcpState.ts deriveMcpAvailability。
 export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: McpDetailPageProps) {
   const { t } = useTranslation();
-  const connector = useConnectorStore((s) => s.connectors.find((c) => c.name === name));
+  const connector = useConnectorStore((s) => s.connectors.find((c) => c.id === name || c.runtimePackageName === name));
   const detail = useConnectorStore((s) => s.detailCache[name]);
   const tools = detail?.tools;
   // mcp.show 一次性带回的预置技能（name+description），之前只用了同批返回的 tools，这份完全
@@ -104,6 +117,8 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const skills = detail?.skills;
   const loadDetail = useConnectorStore((s) => s.loadDetail);
   const connectAction = useConnectorStore((s) => s.connect);
+  const installPackage = useConnectorStore((s) => s.installPackage);
+  const uninstallPackage = useConnectorStore((s) => s.uninstallPackage);
   const disconnectAction = useConnectorStore((s) => s.disconnect);
   const deleteConnectorAction = useConnectorStore((s) => s.deleteConnector);
   const busyMap = useConnectorStore((s) => s.busyMap);
@@ -114,13 +129,16 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const [busy, setBusy] = useState(false);
 
   // 卡片统一状态机（见 mcpState.ts）。busy 用 busyMap[name]。
+  const runtimeName = connector?.runtimePackageName ?? name;
   const cardState = connector
-    ? deriveCardState({ connectionState: connector.connectionState, busy: busyMap[name] })
+    ? deriveCardState({ connectionState: connector.connectionState, busy: busyMap[name] ?? busyMap[runtimeName] })
     : 'idle';
   // 详情页可达性：installed=能不能看到这个详情页（"已安装"，含"已安装但未连接"这个中间态），
   // linked=是否已连接（決定"会话使用"能不能点、要不要展示断联 banner）。见 mcpState.ts
   // deriveMcpAvailability 的详细说明。
-  const { installed, linked } = connector ? deriveMcpAvailability(connector.source, cardState) : { installed: false, linked: false };
+  const { installed, linked } = connector
+    ? deriveMcpAvailability(connector.installed, cardState)
+    : { installed: false, linked: false };
 
   // 2026-08-19 修根因：之前这个 effect 只依赖 [name, loadDetail]，"连接MCP"成功后
   // connectorStore.connect() 会 invalidateDetail(name) 清掉这份缓存（这一步本身是对的——连接后
@@ -139,17 +157,25 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
 
   if (!connector) return null;
 
+  const connectorId = connector.id;
+  const connectorInstalled = connector.installed;
   const avatar = getSkillAvatar(connector.displayName);
   // 自定义 MCP 一旦断联（已经解绑过一次），右上角那个按钮的语义从"解绑"变成"卸载"（彻底删除，
   // mcp.delete_custom）——用普通变量而不是每处都重新读 connector.source/!linked，也顺便避开
   // 闭包里 TS 认不出 `connector` 已经非空narrow 的问题（handleUnbind/handleDelete 定义在下面，
   // 是嵌套函数，TS 不会把上面 `if (!connector) return null` 的窄化带进闭包）。
   const isCustomize = connector.source === 'customize';
-  const isDeleteMode = isCustomize && !linked;
+  const isHub = connector.source === 'hub';
+  const isDeleteMode = isHub || (isCustomize && !linked);
 
   async function handleInstall() {
     setInstalling(true);
-    const response = await connectAction(name);
+    if (!connectorInstalled) {
+      await installPackage(connectorId);
+      setInstalling(false);
+      return;
+    }
+    const response = await connectAction(runtimeName);
     setInstalling(false);
     if (!response) return;
     if (response.credentialsRequired) {
@@ -178,7 +204,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   //   直接重连、编辑，或者卸载（真删除，见 handleDelete）。
   async function handleUnbind() {
     setBusy(true);
-    await disconnectAction(name);
+    await disconnectAction(runtimeName);
     setBusy(false);
     setConfirmUnbind(false);
     if (!isCustomize) {
@@ -193,7 +219,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   // 上，必须 onBack。
   async function handleDelete() {
     setBusy(true);
-    const ok = await deleteConnectorAction(name);
+    const ok = isHub ? await uninstallPackage(connectorId) : await deleteConnectorAction(runtimeName);
     setBusy(false);
     setConfirmUnbind(false);
     if (ok) {
@@ -202,7 +228,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   }
 
   return (
-    <div className="relative h-full overflow-y-auto bg-card px-8 py-6" data-testid="connector-market-mcp-detail">
+    <MarketplaceSurface variant="detail" testId="connector-market-mcp-detail">
       {/* 用户明确要求：去掉路径说明（原来的"MCP/MCP详情"面包屑），返回挪到整个页面最顶行，
           图标+文字（黑色），不再是原来那个跟扩展图标同排的圆形纯图标按钮。 */}
       <button
@@ -222,7 +248,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             avatar={avatar}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
           />
-          <h1 className="text-[18px] font-semibold leading-7 text-text">{connector.displayName}</h1>
+          <h1 className="text-[20px] font-semibold leading-8 text-text">{connector.displayName}</h1>
           <span
             data-tooltip={detail?.cliSpecPresent ? t('connectorMarket.detail.cliSpecPresentHint') : undefined}
             data-testid="connector-market-mcp-detail-integration-type"
@@ -233,7 +259,10 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             {t(integrationTypeLabelKey(connector.integrationType))}
           </span>
           {cardState === 'error' && (
-            <span className="flex items-center gap-1 text-[12px] text-danger" data-testid="connector-market-mcp-detail-state-error">
+            <span
+              className="flex items-center gap-1 text-[12px] text-danger"
+              data-testid="connector-market-mcp-detail-state-error"
+            >
               <AlertCircle size={14} />
               {t('connectorMarket.card.stateError')}
             </span>
@@ -244,7 +273,12 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           {/* 自定义 MCP 才能编辑（source==='customize'，built_in 没有可改的连接配置）——放在
               解绑左边，和"卸载/解绑的左边一个小编辑按键"的产品要求对齐。 */}
           {isCustomize && onEdit && (
-            <DetailLinkButton icon={<Pencil size={14} />} label={t('connectorMarket.card.edit')} onClick={onEdit} disabled={busy} />
+            <DetailLinkButton
+              icon={<Pencil size={14} />}
+              label={t('connectorMarket.card.edit')}
+              onClick={onEdit}
+              disabled={busy}
+            />
           )}
           {installed && (
             // 2026-08-19 用户明确要求：自定义 MCP 断联态（isDeleteMode，即已经解绑过一次）这个
@@ -279,10 +313,18 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             </button>
           )}
           {!installed && !installing && (
-            <PillButton icon={<Plus size={14} />} label={cardState === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')} onClick={handleInstall} />
+            <PillButton
+              icon={<Plus size={14} />}
+              label={cardState === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
+              onClick={handleInstall}
+            />
           )}
           {installing && (
-            <PillButton icon={<Loader2 size={14} className="animate-spin" />} label={t('connectorMarket.card.installing')} disabled />
+            <PillButton
+              icon={<Loader2 size={14} className="animate-spin" />}
+              label={t('connectorMarket.card.installing')}
+              disabled
+            />
           )}
         </div>
       </div>
@@ -296,7 +338,10 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           lucide 没有现成的实心圆+X 组合图标）；"连接MCP"文字从红色改成蓝色（用跟全局一致的
           accent 蓝 token）。 */}
       {installed && !linked && (
-        <div className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted" data-testid="connector-market-mcp-detail-disconnect-banner">
+        <div
+          className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted"
+          data-testid="connector-market-mcp-detail-disconnect-banner"
+        >
           <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-danger">
             <X size={9} strokeWidth={3} className="text-text-inverse" />
           </span>
@@ -325,9 +370,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
               : t('connectorMarket.confirmUnbind.title', { name: connector.displayName })
           }
           message={
-            isDeleteMode
-              ? t('connectorMarket.confirmDeleteMcp.message')
-              : t('connectorMarket.confirmUnbind.message')
+            isDeleteMode ? t('connectorMarket.confirmDeleteMcp.message') : t('connectorMarket.confirmUnbind.message')
           }
           confirmLabel={isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
           onCancel={() => setConfirmUnbind(false)}
@@ -335,14 +378,24 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
         />
       )}
 
-      <div className="mb-6">
-        <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text" data-testid="connector-market-mcp-detail-basic-info-title">{t('connectorMarket.detail.sections.basicInfo')}</h2>
+      <div className="mb-8">
+        <h2
+          className="mb-4 text-[16px] font-semibold leading-6 text-text"
+          data-testid="connector-market-mcp-detail-basic-info-title"
+        >
+          {t('connectorMarket.detail.sections.basicInfo')}
+        </h2>
         <p className="text-[12px] leading-[18px] text-text">{detail?.description ?? ''}</p>
       </div>
 
       {detail?.examples && detail.examples.length > 0 && (
-        <div className="mb-6">
-          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text" data-testid="connector-market-mcp-detail-examples-title">{t('connectorMarket.detail.sections.examples')}</h2>
+        <div className="mb-8">
+          <h2
+            className="mb-4 text-[16px] font-semibold leading-6 text-text"
+            data-testid="connector-market-mcp-detail-examples-title"
+          >
+            {t('connectorMarket.detail.sections.examples')}
+          </h2>
           <div className="flex flex-wrap gap-2" data-testid="connector-market-mcp-detail-examples">
             {/* 未连接/连接失败态下，这个 MCP 在会话里根本用不了（跟顶部"会话使用"按钮的 linked
                 门控是同一个判断），示例点了跳过去也没意义——之前只判断 onUseExample 有没有传，
@@ -353,7 +406,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                 <button
                   key={example}
                   type="button"
-                  onClick={() => onUseExample(example, name)}
+                  onClick={() => onUseExample(example, runtimeName)}
                   data-testid="connector-market-mcp-detail-example"
                   data-variant={example}
                   className="flex items-center gap-1.5 rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted transition-colors hover:border-[color:var(--color-chat-accent)] hover:text-[color:var(--color-chat-accent)]"
@@ -381,9 +434,17 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
         // （2026-08-18 已接上，见 onEdit/RegisterMcpPage editName 回填），这里维持只读摘要，
         // 不在这块小卡片里直接改。env/headers 只展示 key，不展示 value——即使后端
         // 这两个字段是明文返回的（给编辑表单回填用），只读场景没必要把密钥渲染到页面上。
-        <div className="mb-6">
-          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text" data-testid="connector-market-mcp-detail-connection-config-title">{t('connectorMarket.detail.sections.connectionConfig')}</h2>
-          <div className="space-y-2 rounded-xl border border-border bg-card p-4 text-[12px] leading-5" data-testid="connector-market-mcp-detail-connection-config">
+        <div className="mb-8">
+          <h2
+            className="mb-4 text-[16px] font-semibold leading-6 text-text"
+            data-testid="connector-market-mcp-detail-connection-config-title"
+          >
+            {t('connectorMarket.detail.sections.connectionConfig')}
+          </h2>
+          <div
+            className="space-y-2 rounded-xl border border-border bg-card p-4 text-[12px] leading-5"
+            data-testid="connector-market-mcp-detail-connection-config"
+          >
             {detail.transport && (
               <div className="flex gap-2">
                 <span className="shrink-0 text-text-muted">{t('connectorMarket.detail.config.transport')}</span>
@@ -412,7 +473,9 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   <div className="flex gap-2">
                     <span className="shrink-0 text-text-muted">{t('connectorMarket.detail.config.headers')}</span>
                     <span className="break-all font-mono text-text">
-                      {Object.keys(detail.headers).map((key) => `${key}=***`).join(', ')}
+                      {Object.keys(detail.headers)
+                        .map((key) => `${key}=***`)
+                        .join(', ')}
                     </span>
                   </div>
                 )}
@@ -422,7 +485,9 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
               <div className="flex gap-2">
                 <span className="shrink-0 text-text-muted">{t('connectorMarket.detail.config.env')}</span>
                 <span className="break-all font-mono text-text">
-                  {Object.keys(detail.env).map((key) => `${key}=***`).join(', ')}
+                  {Object.keys(detail.env)
+                    .map((key) => `${key}=***`)
+                    .join(', ')}
                 </span>
               </div>
             )}
@@ -431,11 +496,24 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
       )}
 
       {installed && skills && skills.length > 0 && (
-        <div className="mb-6">
-          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text" data-testid="connector-market-mcp-detail-skills-title">{t('connectorMarket.detail.sections.skills')}</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" data-testid="connector-market-mcp-detail-skills">
+        <div className="mb-8">
+          <h2
+            className="mb-4 text-[16px] font-semibold leading-6 text-text"
+            data-testid="connector-market-mcp-detail-skills-title"
+          >
+            {t('connectorMarket.detail.sections.skills')}
+          </h2>
+          <div
+            className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+            data-testid="connector-market-mcp-detail-skills"
+          >
             {skills.map((skill) => (
-              <div key={skill.name} className="relative rounded-xl border border-border bg-card p-4" data-testid="connector-market-mcp-detail-skill" data-variant={skill.name}>
+              <div
+                key={skill.name}
+                className="relative rounded-xl border border-border bg-card p-4"
+                data-testid="connector-market-mcp-detail-skill"
+                data-variant={skill.name}
+              >
                 <div className="mb-1.5 flex items-center gap-2.5">
                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[7.5px] border border-connector-tool-icon-border bg-connector-tool-icon-surface text-text-muted">
                     <SkillIcon aria-hidden width={16} height={16} />
@@ -445,7 +523,10 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                 {/* min-h-5（=leading-5，20px）：desc 为空字符串时 <p> 没有任何行内内容，不会
                     撑出一个 line box，浏览器会把它渲染成 0 高度，导致这张卡片比旁边有描述的卡片
                     矮一截（2026-08-21 用户反馈）。固定 min-height 让描述有没有内容都占同样的高度。 */}
-                <p className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]" title={skill.description}>
+                <p
+                  className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]"
+                  title={skill.description}
+                >
                   {skill.description}
                 </p>
               </div>
@@ -455,18 +536,34 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
       )}
 
       {installed && tools && tools.length > 0 && (
-        <div className="mb-6">
-          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text" data-testid="connector-market-mcp-detail-tools-title">{t('connectorMarket.detail.sections.tools')}</h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" data-testid="connector-market-mcp-detail-tools">
+        <div className="mb-8">
+          <h2
+            className="mb-4 text-[16px] font-semibold leading-6 text-text"
+            data-testid="connector-market-mcp-detail-tools-title"
+          >
+            {t('connectorMarket.detail.sections.tools')}
+          </h2>
+          <div
+            className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+            data-testid="connector-market-mcp-detail-tools"
+          >
             {tools.map((tool) => (
-              <div key={tool.name} className="relative rounded-xl border border-border bg-card p-4" data-testid="connector-market-mcp-detail-tool" data-variant={tool.name}>
+              <div
+                key={tool.name}
+                className="relative rounded-xl border border-border bg-card p-4"
+                data-testid="connector-market-mcp-detail-tool"
+                data-variant={tool.name}
+              >
                 <div className="mb-1.5 flex items-center gap-2.5">
                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[7.5px] border border-connector-tool-icon-border bg-connector-tool-icon-surface text-text-muted">
                     <Wrench size={16} />
                   </span>
                   <span className="text-[14px] font-semibold leading-[22px] text-text">{tool.name}</span>
                 </div>
-                <p className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]" title={tool.description}>
+                <p
+                  className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]"
+                  title={tool.description}
+                >
                   {tool.description}
                 </p>
               </div>
@@ -477,7 +574,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
 
       {tokenTarget && (
         <ConnectTokenModal
-          name={name}
+          name={runtimeName}
           displayName={connector.displayName}
           iconUrl={connector.icon ?? undefined}
           response={tokenTarget}
@@ -488,12 +585,12 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
 
       {authTarget && (
         <CliAuthModal
-          name={name}
+          name={runtimeName}
           initial={authTarget}
           onCancel={() => setAuthTarget(null)}
           onConnected={() => setAuthTarget(null)}
         />
       )}
-    </div>
+    </MarketplaceSurface>
   );
 }

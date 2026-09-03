@@ -142,6 +142,79 @@ class TestChatSendParamsAndMcpUnion:
         assert iface.compute_chat_send_mcp_needed({"query": "hi", "mcp": ["x"]}) == ["x"]
         assert iface.compute_chat_send_mcp_needed({"query": "hi"}) == []
 
+    def test_restore_chat_equipment_params_from_session_metadata(
+        self, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import session_metadata
+
+        iface = _iface()
+        session_metadata.save_session_equipment(
+            "saved-session",
+            agent_template_name="alpha",
+            plugin_names=["beta"],
+            mcp=["filesystem"],
+        )
+        params = {"query": "continue"}
+
+        iface.restore_chat_send_equipment_params("saved-session", params)
+
+        assert params == {
+            "query": "continue",
+            "agent_template_name": "alpha",
+            "plugin_names": ["beta"],
+            "mcp": ["filesystem"],
+        }
+
+    def test_compute_mcp_needed_normalizes_hub_asset_uuids(
+        self, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+            HubInstallRecord,
+            HubInstallStateStore,
+        )
+
+        iface = _iface()
+        asset_id = "expert-asset-uuid"
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "alpha",
+            installed=True,
+            connectors=["feishu"],
+        )
+        HubInstallStateStore(
+            extension_workspace / "plugins" / AGENT_TEMPLATES
+        ).upsert(
+            HubInstallRecord(
+                asset_id=asset_id,
+                package_id="alpha",
+                kind="agent_template",
+                version="1.0.0",
+                checksum_sha256="a" * 64,
+                installed_at="2026-09-02T00:00:00Z",
+            )
+        )
+
+        assert iface.compute_chat_send_mcp_needed(
+            {"agent_template_name": asset_id}
+        ) == ["feishu"]
+
+    @pytest.mark.parametrize(
+        "equipment_params",
+        [
+            {"agent_template_name": "../invalid"},
+            {"plugin_names": ["../invalid"]},
+        ],
+    )
+    def test_compute_mcp_needed_tolerates_malformed_equipment_identifiers(
+        self, equipment_params
+    ) -> None:
+        iface = _iface()
+
+        assert iface.compute_chat_send_mcp_needed(
+            {"mcp": ["custom"], **equipment_params}
+        ) == ["custom"]
+
 
 class TestChatSendMountAndGates:
     """Differential load/unload, skip modes, marketplace and connector gates."""
@@ -189,6 +262,125 @@ class TestChatSendMountAndGates:
         assert resp is None
         adapter._instance.unload_extension.assert_awaited()
         assert adapter._loaded_agent_template is None
+
+    async def test_omitted_equipment_preserves_current_mounts(self, deep_adapter):
+        adapter = deep_adapter
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha", "plugin_names": ["beta"]})
+        ) is None
+
+        adapter._instance.unload_extension.reset_mock()
+        assert await adapter._ensure_chat_extensions(_req({"query": "next turn"})) is None
+
+        adapter._instance.unload_extension.assert_not_awaited()
+        assert adapter._loaded_agent_template is not None
+        assert adapter._loaded_agent_template[0] == "alpha"
+        assert set(adapter._loaded_plugins) == {"beta"}
+
+    async def test_explicit_empty_equipment_unloads_current_mounts(self, deep_adapter):
+        adapter = deep_adapter
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha", "plugin_names": ["beta"]})
+        ) is None
+
+        adapter._instance.unload_extension.reset_mock()
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "", "plugin_names": []})
+        ) is None
+
+        assert adapter._instance.unload_extension.await_count == 2
+        assert adapter._loaded_agent_template is None
+        assert adapter._loaded_plugins == {}
+
+    async def test_successful_mount_persists_session_equipment(
+        self, deep_adapter, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import session_metadata
+
+        assert await deep_adapter._ensure_chat_extensions(
+            _req(
+                {
+                    "agent_template_name": "alpha",
+                    "plugin_names": ["beta"],
+                    "mcp": ["filesystem"],
+                },
+                session_id="persisted-equipment",
+            )
+        ) is None
+
+        assert session_metadata.get_session_equipment("persisted-equipment") == {
+            "agent_template_name": "alpha",
+            "plugin_names": ["beta"],
+            "mcp": ["filesystem"],
+        }
+
+    async def test_hub_asset_uuids_are_copied_as_runtime_package_ids_before_gates(
+        self, deep_adapter, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+            HubInstallRecord,
+            HubInstallStateStore,
+        )
+
+        adapter = deep_adapter
+        expert_uuid = "expert-asset-uuid"
+        plugin_uuid = "plugin-asset-uuid"
+        HubInstallStateStore(
+            extension_workspace / "plugins" / AGENT_TEMPLATES
+        ).upsert(
+            HubInstallRecord(
+                asset_id=expert_uuid,
+                package_id="alpha",
+                kind="agent_template",
+                version="1.0.0",
+                checksum_sha256="a" * 64,
+                installed_at="2026-09-02T00:00:00Z",
+            )
+        )
+        HubInstallStateStore(
+            extension_workspace / "plugins" / PLUGIN_PACKAGES
+        ).upsert(
+            HubInstallRecord(
+                asset_id=plugin_uuid,
+                package_id="beta",
+                kind="plugin",
+                version="1.0.0",
+                checksum_sha256="b" * 64,
+                installed_at="2026-09-02T00:00:00Z",
+            )
+        )
+        request = _req(
+            {"agent_template_name": expert_uuid, "plugin_names": [plugin_uuid]}
+        )
+
+        response = await adapter._ensure_chat_extensions(request)
+
+        assert response is None
+        assert adapter._loaded_agent_template[0] == "alpha"
+        assert set(adapter._loaded_plugins) == {"beta"}
+        assert request.params == {
+            "agent_template_name": expert_uuid,
+            "plugin_names": [plugin_uuid],
+        }
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"agent_template_name": "../invalid"},
+            {"plugin_names": ["../invalid"]},
+        ],
+    )
+    async def test_malformed_equipment_identifier_returns_chat_error(
+        self, deep_adapter, params
+    ) -> None:
+        response = await deep_adapter._ensure_chat_extensions(_req(params))
+
+        assert response is not None
+        assert response.ok is False
+        assert response.payload["event_type"] == "chat.error"
+        assert response.payload["error"]
+        deep_adapter._instance.load_agent_template.assert_not_called()
+        deep_adapter._instance.load_plugin.assert_not_called()
 
     @pytest.mark.parametrize(
         "setup,params,needle",
@@ -334,6 +526,70 @@ class TestPackageCatalogReqMethodRouting:
         assert response.payload == {"group": expected}
 
     @pytest.mark.parametrize(
+        "method,function_name,envelope",
+        [
+            (
+                ReqMethod.AGENT_TEMPLATES_LIST,
+                "list_agent_templates_with_hub",
+                "templates",
+            ),
+            (
+                ReqMethod.PLUGIN_PACKAGES_LIST,
+                "list_plugin_packages_with_hub",
+                "packages",
+            ),
+        ],
+    )
+    async def test_equipment_list_awaits_hub_aware_wrapper(
+        self, monkeypatch, method, function_name, envelope
+    ) -> None:
+        iface = _iface()
+        expected = [{"id": "remote", "source": "hub", "installed": False}]
+        wrapper = AsyncMock(return_value=expected)
+        monkeypatch.setattr(iface.package_manager, function_name, wrapper)
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"filter": "builtin+hub"}, method=method),
+        )
+
+        assert response.ok is True
+        assert response.payload == {envelope: expected}
+        wrapper.assert_awaited_once_with({"filter": "builtin+hub"})
+
+    @pytest.mark.parametrize(
+        "method,function_name,envelope",
+        [
+            (
+                ReqMethod.AGENT_TEMPLATES_SHOW,
+                "show_agent_template_with_hub",
+                "template",
+            ),
+            (
+                ReqMethod.PLUGIN_PACKAGES_SHOW,
+                "show_plugin_package_with_hub",
+                "package",
+            ),
+        ],
+    )
+    async def test_equipment_show_awaits_hub_aware_wrapper(
+        self, monkeypatch, method, function_name, envelope
+    ) -> None:
+        iface = _iface()
+        expected = {"id": "remote", "source": "hub", "installed": False}
+        wrapper = AsyncMock(return_value=expected)
+        monkeypatch.setattr(iface.package_manager, function_name, wrapper)
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "remote"}, method=method),
+        )
+
+        assert response.ok is True
+        assert response.payload == {envelope: expected}
+        wrapper.assert_awaited_once_with("remote")
+
+    @pytest.mark.parametrize(
         "method,function_name,expected",
         [
             (ReqMethod.AGENT_GROUPS_FILE_LIST, "list_agent_group_files", {"tree": []}),
@@ -475,3 +731,37 @@ class TestPackageCatalogReqMethodRouting:
         assert fail_resp.ok is False
         assert "unload boom" in str(fail_resp.payload.get("error", ""))
         assert deleted == []
+
+    async def test_hub_uninstall_unloads_runtime_package_name_before_uuid_delete(
+        self, monkeypatch
+    ) -> None:
+        iface = _iface()
+        asset_id = "482becff9f044ba9bad9caef2e43b539"
+        calls: list[tuple[str, str]] = []
+
+        async def _unload(self, kind, package_id):
+            calls.append((kind, package_id))
+
+        monkeypatch.setattr(iface.JiuWenSwarm, "_unload_live_equipment", _unload)
+        monkeypatch.setattr(
+            iface.package_manager,
+            "resolve_equipment_runtime_id",
+            lambda kind, identifier: "sales-expert",
+        )
+        monkeypatch.setattr(
+            iface.package_manager,
+            "uninstall_equipment_with_notice",
+            lambda kind, params: {},
+        )
+        owner = iface.JiuWenSwarm.__new__(iface.JiuWenSwarm)
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            owner,
+            _req(
+                {"id": asset_id},
+                method=ReqMethod.AGENT_TEMPLATES_UNINSTALL,
+            ),
+        )
+
+        assert response.ok is True
+        assert calls == [(AGENT_TEMPLATES, "sales-expert")]

@@ -31,6 +31,7 @@ interface MarketCardProps {
   canOpenDetail: boolean;
   onOpenDetail: () => void;
   onQuickAdd: () => void;
+  quickAction?: 'install' | 'connect';
   /** "会话使用"图标点击——跳新会话并顺带打开这个扩展的会话内启用开关（2026-08-18 接入，
    * 见 ConnectorMarket/index.tsx 的 onUseExtension）。不传时（比如脱离 App.tsx 环境单独渲染）
    * 退化成"还没接入"提示，不要复用 onQuickAdd（那是安装/联接语义，已连接态点它什么都不会发生，
@@ -51,6 +52,7 @@ export function MarketCard({
   canOpenDetail,
   onOpenDetail,
   onQuickAdd,
+  quickAction = 'install',
   onUse,
 }: MarketCardProps) {
   const { t } = useTranslation();
@@ -62,7 +64,7 @@ export function MarketCard({
     // h-full 让卡片撑满 grid 分给它的整行高度（grid 默认按行内最高的格子拉伸每一格，但格子里的
     // 内容不会自动填满，除非显式 h-full）——同一行内哪怕这张卡自身内容更矮，边框也要跟最高的
     // 那张对齐，不能各算各的高度。
-    <div className="relative h-full">
+    <div className="relative h-full min-h-[160px]">
       <div
         role={canOpenDetail ? 'button' : undefined}
         tabIndex={canOpenDetail ? 0 : undefined}
@@ -74,7 +76,7 @@ export function MarketCard({
               }
             : undefined
         }
-        className={`page-card flex h-full w-full flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left transition-shadow ${
+        className={`flex h-full min-h-[160px] w-full flex-col gap-2 rounded-xl border border-border bg-card p-6 text-left transition-shadow ${
           canOpenDetail ? 'cursor-pointer hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]' : ''
         }`}
       >
@@ -83,9 +85,9 @@ export function MarketCard({
             <EntityAvatar
               iconUrl={iconUrl}
               avatar={avatar}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-semibold"
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-[16px] font-semibold"
             />
-            <span className="truncate text-[16px] font-semibold leading-6 text-text">{title}</span>
+            <span className="truncate text-[18px] font-semibold leading-7 text-text">{title}</span>
             {state === 'error' && (
               <span
                 data-tooltip={t('connectorMarket.card.stateError')}
@@ -107,8 +109,12 @@ export function MarketCard({
               <button
                 type="button"
                 onClick={onQuickAdd}
-                data-tooltip={state === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
-                aria-label={state === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
+                data-tooltip={
+                  state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`)
+                }
+                aria-label={
+                  state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`)
+                }
                 className="connector-market-icon-btn flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-muted/75 text-[color:var(--color-text-placeholder)] transition-colors hover:bg-connector-add-hover-surface hover:text-[color:var(--color-chat-accent)]"
               >
                 <Plus size={16} strokeWidth={2.5} />
@@ -133,7 +139,7 @@ export function MarketCard({
             悬停会弹出完整文案，见 TruncatedText.tsx。 */}
         <TruncatedText
           text={description}
-          className="line-clamp-2 min-h-[44px] text-[14px] leading-[22px] text-[color:var(--color-text-placeholder)]"
+          className="mt-1 line-clamp-2 min-h-[44px] text-[14px] leading-[22px] text-text-muted"
         />
       </div>
     </div>

@@ -64,6 +64,15 @@ from jiuwenswarm.server.runtime.skill.skill_files import (
     resolve_skill_relative_file,
 )
 from jiuwenswarm.server.runtime.skill.skill_type import SKILL_TYPE_SWARM, detect_skill_type
+from jiuwenswarm.server.runtime.marketplace.hub_client import (
+    DEFAULT_HUB_BASE_URL,
+    HttpHubTransport,
+    HubNotFoundError,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_models import HubArtifact
+from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
+    HubPackageDownloader,
+)
 
 
 def _get_ssl_verify() -> bool:
@@ -135,7 +144,7 @@ _FREE_SEARCH_DEFAULT_NO_PROXY = "127.0.0.1,.huawei.com,localhost,local,.local,10
 
 # Team Skills Hub（仅 TEAM_SKILLS_HUB_* 环境变量）
 _TEAM_SKILLS_HUB_MARKET_TIMEOUT: float = float(os.environ.get("TEAM_SKILLS_HUB_TIMEOUT", "60"))
-_TEAM_SKILLS_HUB_BASE_URL_DEFAULT = "https://teamskills.openjiuwen.com"
+_TEAM_SKILLS_HUB_BASE_URL_DEFAULT = DEFAULT_HUB_BASE_URL
 _TEAM_SKILLS_HUB_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = (
     "openjiuwen-market.obs.*.myhuaweicloud.com",
     "127.0.0.1",
@@ -6545,43 +6554,18 @@ class SkillManager:
         system_token: str | None = None,
         not_found_code: str | None = None,
     ) -> Any:
-        base_url = (base_url or self._get_team_skills_hub_base_url()).rstrip("/")
-        rel_path = path if path.startswith("/") else f"/{path}"
-        req_url = f"{base_url}{rel_path}"
-        headers = self._teamskills_hub_auth_headers(token=token, system_token=system_token)
+        transport = HttpHubTransport(
+            base_url=base_url or self._get_team_skills_hub_base_url(),
+            timeout=timeout,
+            token=token,
+            system_token=system_token,
+        )
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-                resp = await client.get(req_url, params=params, headers=headers or None)
-        except Exception as exc:
-            raise RuntimeError(f"无法连接 Team Skills Hub: {exc}") from exc
-
-        if resp.status_code == 404:
+            return await transport.get_data(path, params=params)
+        except HubNotFoundError as exc:
             if not_found_code:
-                raise SkillRpcError(not_found_code, "SkillHub 资源不存在")
-            raise RuntimeError("Team Skills Hub API 错误 HTTP 404")
-
-        if not resp.is_success:
-            # 不向调用方透传上游响应体，避免泄露敏感信息。
-            raise RuntimeError(f"Team Skills Hub API 错误 HTTP {resp.status_code}")
-        try:
-            payload = resp.json()
-        except Exception as exc:
-            raise RuntimeError(f"Team Skills Hub API 响应不是合法 JSON: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise RuntimeError("Team Skills Hub API 响应格式错误")
-
-        code = payload.get("code", 200)
-        try:
-            code_int = int(code)
-        except Exception as exc:
-            raise RuntimeError("Team Skills Hub API 响应 code 格式错误") from exc
-        if code_int != 200:
-            raise RuntimeError("Team Skills Hub API 返回失败")
-
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise RuntimeError("Team Skills Hub API 响应 data 格式错误")
-        return data
+                raise SkillRpcError(not_found_code, "SkillHub 资源不存在") from exc
+            raise RuntimeError("Team Skills Hub API 错误 HTTP 404") from exc
 
     async def _team_skills_hub_http_post_data(
         self,
@@ -6884,30 +6868,21 @@ class SkillManager:
         checksum_sha256: str = "",
         timeout: float | None = None,
     ) -> bytes:
-        timeout = max(30.0, timeout or _TEAM_SKILLS_HUB_MARKET_TIMEOUT)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            resp = await client.get(download_url)
-            resp.raise_for_status()
-            body = resp.content or b""
-
-        if not body:
-            raise RuntimeError("下载内容为空")
-        if len(body) < 4 or not body.startswith(b"PK"):
-            raise RuntimeError("下载内容不是 ZIP 文件")
-
-        expected = checksum_sha256.strip().lower()
-        if expected:
-            digest = hashlib.sha256(body).hexdigest().lower()
-            if digest != expected:
-                raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
-
-        try:
-            with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
-                if zf.testzip() is not None:
-                    raise RuntimeError("下载 ZIP 文件已损坏")
-        except zipfile.BadZipFile as exc:
-            raise RuntimeError("下载内容不是有效 ZIP 文件") from exc
-        return body
+        downloader = HubPackageDownloader(
+            allowed_download_hosts=tuple(
+                self._get_team_skills_hub_allowed_download_hosts()
+            ),
+            timeout=max(30.0, timeout or _TEAM_SKILLS_HUB_MARKET_TIMEOUT),
+        )
+        return await downloader.download_bytes(
+            HubArtifact(
+                asset_id="skill-download",
+                plugin_type="skill",
+                version="unknown",
+                download_url=download_url,
+                checksum_sha256=checksum_sha256,
+            )
+        )
 
     @staticmethod
     def _get_github_token() -> str:

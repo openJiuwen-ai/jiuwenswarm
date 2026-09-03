@@ -48,6 +48,7 @@ export class AgentInstallPendingError extends AgentManagementError {
 
 export interface AgentCatalogListOptions {
   enrichTags?: boolean;
+  filter?: 'builtin+hub' | 'mine';
 }
 
 export interface AgentManagementClient {
@@ -74,6 +75,9 @@ export function buildDefinitionSelectionPayload(intent: AgentSelectionIntent): R
   return {};
 }
 
-export function buildDefinitionSelectionPayloadForMode(mode: string | undefined, intent: AgentSelectionIntent): Record<string, string> {
+export function buildDefinitionSelectionPayloadForMode(
+  mode: string | undefined,
+  intent: AgentSelectionIntent,
+): Record<string, string> {
   return mode === 'agent' ? buildDefinitionSelectionPayload(intent) : {};
 }

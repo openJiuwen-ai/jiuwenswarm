@@ -1,7 +1,6 @@
 import { ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { PageHeader, PageToolbarSearch } from '../ui';
 import { CatalogPage, PAGE_SIZE } from './CatalogPage';
 import { AgentEditor } from './AgentEditor';
 import { DefinitionDetailPage } from './DefinitionDetailPage';
@@ -26,6 +25,10 @@ import {
   mergeAgentDetailWithCatalog,
 } from '../../features/agentManagement';
 import './agentManagement.css';
+import { equipmentListFilter } from '../../features/equipmentMarketplace';
+import { reconcileEquipmentCatalog, writeEquipmentCatalog } from '../../features/equipmentCatalogCache';
+import { agentSummaryToDetail } from '../../features/equipmentDetailFallback';
+import { PageHeader, PageToolbarSearch } from '../ui';
 
 type PanelView = 'catalog' | 'mine' | 'detail' | 'create';
 
@@ -52,11 +55,14 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function getFriendlyErrorMessage(error: unknown, fallback: string, translate: (key: string, options?: Record<string, unknown>) => string): string {
+function getFriendlyErrorMessage(
+  error: unknown,
+  fallback: string,
+  translate: (key: string, options?: Record<string, unknown>) => string,
+): string {
   const message = typeof error === 'string' ? error : getErrorMessage(error, fallback);
-  const code = error && typeof error === 'object' && 'code' in error
-    ? String((error as { code?: unknown }).code || '')
-    : '';
+  const code =
+    error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : '';
   if (code === 'agent_detail_empty') return translate('agentManagement.states.detailError');
   const normalizedMessage = message.trim();
   if (code === 'REQUEST_TIMEOUT') return translate('network.requestTimeout');
@@ -69,7 +75,9 @@ function getFriendlyErrorMessage(error: unknown, fallback: string, translate: (k
   if (/^agent_template package not found:/i.test(normalizedMessage)) {
     return translate('agentManagement.states.agentUnavailable');
   }
-  if (/^agent_template package (?:missing\/corrupt manifest\.json|wrong package_type|conflict):/i.test(normalizedMessage)) {
+  if (
+    /^agent_template package (?:missing\/corrupt manifest\.json|wrong package_type|conflict):/i.test(normalizedMessage)
+  ) {
     return translate('agentManagement.states.agentDefinitionUnavailable');
   }
   if (/^(?:skill not found:|invalid skill name:|missing or invalid skills$)/i.test(normalizedMessage)) {
@@ -107,16 +115,27 @@ function getFriendlyErrorMessage(error: unknown, fallback: string, translate: (k
 }
 
 function deriveAgentId(name: string): string {
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
   return slug.length >= 3 ? slug.slice(0, 50) : `agent-${Date.now().toString(36)}`;
 }
 
-export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat, onViewChange }: AgentManagementPanelProps) {
+export function AgentManagementPanel({
+  onUseAgent,
+  onUsePrompt,
+  onCreateViaChat,
+  onViewChange,
+}: AgentManagementPanelProps) {
   const { t } = useTranslation();
   const client = useMemo<AgentManagementClient>(() => createAgentManagementClient(), []);
   const [state, dispatch] = useReducer(agentManagementReducer, initialAgentManagementState);
   const [view, setView] = useState<PanelView>('catalog');
-  useEffect(() => { onViewChange?.(view); }, [view, onViewChange]);
+  useEffect(() => {
+    onViewChange?.(view);
+  }, [view, onViewChange]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'content' | 'files'>('content');
   const [query, setQuery] = useState('');
@@ -137,7 +156,7 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [mcpOptions, setMcpOptions] = useState<McpOption[]>([]);
   const [mcpStatus, setMcpStatus] = useState<RequestStatus>('idle');
-  const catalogRef = useRef<AgentCatalogItem[]>([]);
+  const catalogRef = useRef<AgentCatalogItem[]>(state.catalog);
   const catalogRevisionRef = useRef(0);
   const detailRevisionRef = useRef(0);
   const filesRevisionRef = useRef(0);
@@ -145,35 +164,61 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
   const actionNoticeTimerRef = useRef<number | null>(null);
   const installFlowTargetRef = useRef<string | null>(null);
   const reconnectFlowTargetRef = useRef<string | null>(null);
-  const connectorError = useConnectorStore(state => state.error);
-  const clearConnectorError = useConnectorStore(state => state.clearError);
+  const connectorError = useConnectorStore((state) => state.error);
+  const clearConnectorError = useConnectorStore((state) => state.clearError);
   const formatActionError = useCallback(
     (error: unknown, fallback: string) => getFriendlyErrorMessage(error, fallback, t),
     [t],
   );
 
   const catalogView = useMemo(
-    () => buildCatalogViewModel(state.catalog, { scope: 'catalog', category, query, page: catalogPage, pageSize: PAGE_SIZE }),
+    () =>
+      buildCatalogViewModel(state.catalog, {
+        scope: 'catalog',
+        category,
+        query,
+        page: catalogPage,
+        pageSize: PAGE_SIZE,
+      }),
     [state.catalog, category, query, catalogPage],
   );
   const mineView = useMemo(
-    () => buildCatalogViewModel(state.catalog, { scope: 'mine', category: '', query: mineQuery, page: minePage, pageSize: PAGE_SIZE }),
+    () =>
+      buildCatalogViewModel(state.catalog, {
+        scope: 'mine',
+        category: '',
+        query: mineQuery,
+        page: minePage,
+        pageSize: PAGE_SIZE,
+      }),
     [state.catalog, mineQuery, minePage],
   );
 
-  const loadCatalog = useCallback(async () => {
-    const revision = ++catalogRevisionRef.current;
-    dispatch({ type: 'catalog.loading' });
-    try {
-      const catalog = await client.listCatalog();
-      if (revision !== catalogRevisionRef.current) return;
-      catalogRef.current = catalog;
-      dispatch({ type: 'catalog.loaded', catalog });
-    } catch (error) {
-      if (revision !== catalogRevisionRef.current) return;
-      dispatch({ type: 'catalog.error', message: formatActionError(error, t('agentManagement.states.loadError')) });
-    }
-  }, [client, formatActionError, t]);
+  const loadCatalog = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const revision = ++catalogRevisionRef.current;
+      if (!options?.silent) dispatch({ type: 'catalog.loading' });
+      try {
+        const [marketplaceCatalog, mineCatalog] = await Promise.all([
+          client.listCatalog({ filter: equipmentListFilter('agent', 'catalog') }),
+          client.listCatalog({ filter: equipmentListFilter('agent', 'mine') }),
+        ]);
+        const resolvedMarketplace = reconcileEquipmentCatalog(catalogRef.current, marketplaceCatalog);
+        const catalog = Array.from(
+          new Map([...resolvedMarketplace, ...mineCatalog].map((item) => [item.id, item])).values(),
+        );
+        if (revision !== catalogRevisionRef.current) return;
+        writeEquipmentCatalog('agent', resolvedMarketplace);
+        catalogRef.current = catalog;
+        dispatch({ type: 'catalog.loaded', catalog });
+      } catch (error) {
+        if (revision !== catalogRevisionRef.current) return;
+        if (options?.silent) return;
+        dispatch({ type: 'catalog.error', message: formatActionError(error, t('agentManagement.states.loadError')) });
+      }
+    },
+    [client, formatActionError, t],
+  );
 
   const loadSkills = useCallback(async () => {
     dispatch({ type: 'skills.loading' });
@@ -197,7 +242,17 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
   }, [client]);
 
   useEffect(() => {
-    void loadCatalog();
+    let cancelled = false;
+    let refreshTimer: number | undefined;
+    const refresh = async (silent: boolean) => {
+      await loadCatalog({ silent });
+      if (!cancelled) refreshTimer = window.setTimeout(() => void refresh(true), 10_000);
+    };
+    void refresh(false);
+    return () => {
+      cancelled = true;
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
   }, [loadCatalog]);
 
   useEffect(() => {
@@ -220,7 +275,8 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
       setView('detail');
       filesRevisionRef.current += 1;
       fileRevisionRef.current += 1;
-      dispatch({ type: 'detail.loading' });
+      const summary = catalogRef.current.find((item) => item.id === id);
+      dispatch({ type: 'detail.loading', fallback: summary ? agentSummaryToDetail(summary) : undefined });
       try {
         const detail = await client.getDefinition(id);
         if (revision !== detailRevisionRef.current) return;
@@ -228,7 +284,7 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
           type: 'detail.loaded',
           detail: mergeAgentDetailWithCatalog(
             detail,
-            catalogRef.current.find(item => item.id === id),
+            catalogRef.current.find((item) => item.id === id),
           ),
         });
       } catch (error) {
@@ -261,7 +317,7 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
     setDetailTab(tab);
     const canPreviewFiles = state.detail?.source === 'local' || state.detail?.installed === true;
     if (tab === 'files' && canPreviewFiles && selectedId && state.filesStatus === 'idle') {
-      void loadFiles(selectedId).then(files => {
+      void loadFiles(selectedId).then((files) => {
         const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
         if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
       });
@@ -341,7 +397,9 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
     const flowActive =
       installFlow.active ||
       reconnectFlow.active ||
-      Boolean(installFlow.tokenTarget || installFlow.authTarget || reconnectFlow.tokenTarget || reconnectFlow.authTarget);
+      Boolean(
+        installFlow.tokenTarget || installFlow.authTarget || reconnectFlow.tokenTarget || reconnectFlow.authTarget,
+      );
     if (flowActive) return;
 
     const id = installFlowTargetRef.current || reconnectFlowTargetRef.current;
@@ -349,8 +407,19 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
     installFlowTargetRef.current = null;
     reconnectFlowTargetRef.current = null;
     setConnectorFlowId(null);
-    setBusyId(current => (current === id ? null : current));
-  }, [connectorError, connectorFlowId, formatActionError, installFlow.active, installFlow.authTarget, installFlow.tokenTarget, reconnectFlow.active, reconnectFlow.authTarget, reconnectFlow.tokenTarget, t]);
+    setBusyId((current) => (current === id ? null : current));
+  }, [
+    connectorError,
+    connectorFlowId,
+    formatActionError,
+    installFlow.active,
+    installFlow.authTarget,
+    installFlow.tokenTarget,
+    reconnectFlow.active,
+    reconnectFlow.authTarget,
+    reconnectFlow.tokenTarget,
+    t,
+  ]);
 
   const handleInstall = async (id: string) => {
     setBusyId(id);
@@ -398,9 +467,9 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
   };
 
   const handleUse = (id: string) => {
-    const item = catalogRef.current.find(candidate => candidate.id === id);
+    const item = catalogRef.current.find((candidate) => candidate.id === id);
     if (!item?.installed || item.connectionState !== 'connected' || item.enabled === false) return;
-    onUseAgent?.(id);
+    onUseAgent?.(item.runtimePackageName);
   };
 
   const handleReconnect = async (id: string) => {
@@ -480,7 +549,7 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
       const notice = t('agentManagement.states.uploadSuccess', { id: result.id });
       setActionNotice(notice);
       actionNoticeTimerRef.current = window.setTimeout(() => {
-        setActionNotice(current => (current === notice ? null : current));
+        setActionNotice((current) => (current === notice ? null : current));
         actionNoticeTimerRef.current = null;
       }, 3000);
     } catch (error) {
@@ -512,182 +581,242 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat,
     />
   ) : null;
 
-  const isMine = view === 'mine';
-  const panelViewClass = view === 'detail' ? 'detail' : view === 'create' ? 'create' : isMine ? 'mine' : 'catalog';
-  return (
-    <div className="app-page-body">
-      <div className="page-content" data-testid="agent-management-panel" data-variant={panelViewClass} data-source={client.source}>
-      {(view === 'mine' || view === 'catalog') && (
-        <>
-          <PageHeader title={t('agentManagement.title')} subtitle={t('agentManagement.subtitle')} />
-          <div className="page-toolbar" data-testid="page-toolbar">
-            <div className="chat-picker-panel__tabs" data-testid="agent-management-primary-tabs">
-              <button
-                type="button"
-                data-testid="agent-management-primary-tab"
-                data-variant="catalog"
-                className={!isMine ? 'is-active' : ''}
-                onClick={() => {
-                  setCreateMenuOpen(false);
-                  setActionError(null);
-                  setActionNotice(null);
-                  setView('catalog');
-                }}
-              >
-                {t('agentManagement.tabs.catalog')}
-              </button>
-              <button
-                type="button"
-                data-testid="agent-management-primary-tab"
-                data-variant="mine"
-                className={isMine ? 'is-active' : ''}
-                onClick={() => {
-                  setCreateMenuOpen(false);
-                  setActionError(null);
-                  setActionNotice(null);
-                  setView('mine');
-                }}
-              >
-                {t('agentManagement.tabs.mine')}
-              </button>
-            </div>
-            <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
-              <PageToolbarSearch
-                wrapperTestId="agent-management-search"
-                inputTestId="agent-management-search-input"
-                type="search"
-                name="agent-management-search"
-                aria-label={t('agentManagement.searchLabel')}
-                autoComplete="off"
-                disabled={connectorFlowId !== null}
-                value={isMine ? mineQuery : query}
-                onChange={event => (isMine ? (setMineQuery(event.target.value), setMinePage(1)) : (setQuery(event.target.value), setCatalogPage(1)))}
-                placeholder={t(isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
-              />
-              {isMine ? (
-                <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
-                  <button
-                    type="button"
-                    className="agent-management-button agent-management-button--primary agent-management-create"
-                    aria-haspopup="menu"
-                    aria-expanded={createMenuOpen}
-                    data-testid="agent-management-create-button"
-                    onClick={() => setCreateMenuOpen(open => !open)}
-                  >
-                    {t('agentManagement.actions.create')}
-                    <ChevronDown size={15} aria-hidden="true" />
-                  </button>
-                  {createMenuOpen ? (
-                    <div className="agent-management-create-menu__popover" role="menu" data-testid="agent-management-create-menu-popover">
-                      <button type="button" role="menuitem" data-testid="agent-management-create-menu-item" data-variant="create-first" onClick={openCreate}>
-                        {t('agentManagement.actions.createFirst')}
-                      </button>
-                      <button type="button" role="menuitem" data-testid="agent-management-create-menu-item" data-variant="create-by-chat" onClick={() => { setCreateMenuOpen(false); onCreateViaChat?.(); }}>
-                        {t('agentManagement.actions.createByChat')}
-                      </button>
-                      <button type="button" role="menuitem" onClick={openUpload}>
-                        {t('agentManagement.actions.createByUpload')}
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          </div>
-          {actionError ? (
-            <div className="agent-management-inline-error" role="alert" data-testid="agent-management-inline-error">
-              {actionError}
-            </div>
-          ) : null}
-          {actionNotice ? (
-            <div className="agent-management-inline-notice" role="status" data-testid="agent-management-inline-notice">
-              {actionNotice}
-            </div>
-          ) : null}
-          <CatalogPage
-            scope={isMine ? 'mine' : 'catalog'}
-            items={isMine ? mineView.items : catalogView.items}
-            totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
-            page={isMine ? mineView.page : catalogView.page}
-            totalPages={isMine ? mineView.totalPages : catalogView.totalPages}
-            query={isMine ? mineQuery : query}
-            category={category}
-            status={state.catalogStatus}
-            error={state.catalogError}
-            busyId={busyId}
-            onCategoryChange={value => {
-              setCategory(value);
-              setCatalogPage(1);
-            }}
-            onPageChange={value => (isMine ? setMinePage(value) : setCatalogPage(value))}
-            onRetry={loadCatalog}
-            onOpen={openDetail}
+  if (view === 'detail') {
+    return (
+      <div className="app-page-body">
+        <main
+          className="page-content agent-management-panel agent-management-panel--detail"
+          data-source={client.source}
+          data-testid="agent-management-panel"
+          data-variant="detail"
+        >
+          <DefinitionDetailPage
+            detail={state.detail}
+            detailStatus={state.detailStatus}
+            detailError={state.detailError}
+            detailTab={detailTab}
+            files={state.files}
+            filesStatus={state.filesStatus}
+            filesError={state.filesError}
+            selectedFilePath={state.selectedFilePath}
+            fileContent={state.fileContent}
+            fileStatus={state.fileStatus}
+            fileError={state.fileError}
+            actionError={actionError}
+            actionNotice={actionNotice}
+            busy={busyId === selectedId}
+            onBack={goBackToCatalog}
+            onRetry={() => selectedId && void openDetail(selectedId)}
+            onTabChange={handleTabChange}
+            onRetryFiles={() =>
+              selectedId &&
+              (state.detail?.source === 'local' || state.detail?.installed === true) &&
+              void loadFiles(selectedId).then((files) => {
+                const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
+                if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
+              })
+            }
+            onSelectFile={handleSelectFile}
             onUse={handleUse}
+            onUsePrompt={onUsePrompt}
             onReconnect={handleReconnect}
             onInstall={handleInstall}
             onUninstall={handleUninstall}
-            onCreate={openCreate}
           />
-        </>
-      )}
-      {view === 'detail' && (
-        <DefinitionDetailPage
-          detail={state.detail}
-          detailStatus={state.detailStatus}
-          detailError={state.detailError}
-          detailTab={detailTab}
-          files={state.files}
-          filesStatus={state.filesStatus}
-          filesError={state.filesError}
-          selectedFilePath={state.selectedFilePath}
-          fileContent={state.fileContent}
-          fileStatus={state.fileStatus}
-          fileError={state.fileError}
-          actionError={actionError}
-          actionNotice={actionNotice}
-          busy={busyId === selectedId}
-          onBack={goBackToCatalog}
-          onRetry={() => selectedId && void openDetail(selectedId)}
-          onTabChange={handleTabChange}
-          onRetryFiles={() =>
-            selectedId &&
-            (state.detail?.source === 'local' || state.detail?.installed === true) &&
-            void loadFiles(selectedId).then(files => {
-              const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
-              if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
-            })
-          }
-          onSelectFile={handleSelectFile}
+        </main>
+        {pendingConnectorModals}
+        {uploadDialog}
+      </div>
+    );
+  }
+
+  if (view === 'create') {
+    return (
+      <div className="app-page-body">
+        <main
+          className="page-content agent-management-panel agent-management-panel--create"
+          data-source={client.source}
+          data-testid="agent-management-panel"
+          data-variant="create"
+        >
+          <AgentEditor
+            draft={draft}
+            skillOptions={state.skillOptions}
+            skillsStatus={state.skillsStatus}
+            mcpOptions={mcpOptions}
+            mcpStatus={mcpStatus}
+            saving={saving}
+            error={createError}
+            onChange={setDraft}
+            onReloadSkills={loadSkills}
+            onReloadMcps={loadMcps}
+            onCancel={() => {
+              setActionError(null);
+              setActionNotice(null);
+              setView('mine');
+            }}
+            onSave={handleCreate}
+          />
+        </main>
+        {pendingConnectorModals}
+        {uploadDialog}
+      </div>
+    );
+  }
+
+  const isMine = view === 'mine';
+  return (
+    <div className="app-page-body">
+      <main
+        className={`page-content agent-management-panel agent-management-panel--${isMine ? 'mine' : 'catalog'}`}
+        data-source={client.source}
+        data-testid="agent-management-panel"
+        data-variant={isMine ? 'mine' : 'catalog'}
+      >
+        <PageHeader title={t('agentManagement.title')} subtitle={t('agentManagement.subtitle')} />
+        <div className="page-toolbar" data-testid="page-toolbar">
+          <nav
+            className="chat-picker-panel__tabs"
+            role="tablist"
+            aria-label={t('agentManagement.tabsLabel')}
+            data-testid="agent-management-primary-tabs"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!isMine}
+              data-testid="agent-management-primary-tab"
+              data-variant="catalog"
+              className={!isMine ? 'is-active' : ''}
+              onClick={() => {
+                setCreateMenuOpen(false);
+                setActionError(null);
+                setActionNotice(null);
+                setView('catalog');
+              }}
+            >
+              {t('agentManagement.tabs.catalog')}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={isMine}
+              data-testid="agent-management-primary-tab"
+              data-variant="mine"
+              className={isMine ? 'is-active' : ''}
+              onClick={() => {
+                setCreateMenuOpen(false);
+                setActionError(null);
+                setActionNotice(null);
+                setView('mine');
+              }}
+            >
+              {t('agentManagement.tabs.mine')}
+            </button>
+          </nav>
+          <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
+            <PageToolbarSearch
+              wrapperTestId="agent-management-search"
+              inputTestId="agent-management-search-input"
+              type="search"
+              name="agent-management-search"
+              aria-label={t('agentManagement.searchLabel')}
+              autoComplete="off"
+              disabled={connectorFlowId !== null}
+              value={isMine ? mineQuery : query}
+              onChange={(event) =>
+                isMine
+                  ? (setMineQuery(event.target.value), setMinePage(1))
+                  : (setQuery(event.target.value), setCatalogPage(1))
+              }
+              placeholder={t(isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
+            />
+            {isMine ? (
+              <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
+                <button
+                  type="button"
+                  className="agent-management-button agent-management-button--primary agent-management-create"
+                  aria-haspopup="menu"
+                  aria-expanded={createMenuOpen}
+                  data-testid="agent-management-create-button"
+                  onClick={() => setCreateMenuOpen((open) => !open)}
+                >
+                  {t('agentManagement.actions.create')}
+                  <ChevronDown size={15} aria-hidden="true" />
+                </button>
+                {createMenuOpen ? (
+                  <div
+                    className="agent-management-create-menu__popover"
+                    role="menu"
+                    data-testid="agent-management-create-menu-popover"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="agent-management-create-menu-item"
+                      data-variant="create-first"
+                      onClick={openCreate}
+                    >
+                      {t('agentManagement.actions.createFirst')}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="agent-management-create-menu-item"
+                      data-variant="create-by-chat"
+                      onClick={() => {
+                        setCreateMenuOpen(false);
+                        onCreateViaChat?.();
+                      }}
+                    >
+                      {t('agentManagement.actions.createByChat')}
+                    </button>
+                    <button type="button" role="menuitem" onClick={openUpload}>
+                      {t('agentManagement.actions.createByUpload')}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        {actionError ? (
+          <div className="agent-management-inline-error" role="alert" data-testid="agent-management-inline-error">
+            {actionError}
+          </div>
+        ) : null}
+        {actionNotice ? (
+          <div className="agent-management-inline-notice" role="status" data-testid="agent-management-inline-notice">
+            {actionNotice}
+          </div>
+        ) : null}
+        <CatalogPage
+          scope={isMine ? 'mine' : 'catalog'}
+          items={isMine ? mineView.items : catalogView.items}
+          totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
+          page={isMine ? mineView.page : catalogView.page}
+          totalPages={isMine ? mineView.totalPages : catalogView.totalPages}
+          query={isMine ? mineQuery : query}
+          category={category}
+          status={state.catalogStatus}
+          error={state.catalogError}
+          busyId={busyId}
+          onCategoryChange={(value) => {
+            setCategory(value);
+            setCatalogPage(1);
+          }}
+          onPageChange={(value) => (isMine ? setMinePage(value) : setCatalogPage(value))}
+          onRetry={loadCatalog}
+          onOpen={openDetail}
           onUse={handleUse}
-          onUsePrompt={onUsePrompt}
           onReconnect={handleReconnect}
           onInstall={handleInstall}
           onUninstall={handleUninstall}
+          onCreate={openCreate}
         />
-      )}
-      {view === 'create' && (
-        <AgentEditor
-          draft={draft}
-          skillOptions={state.skillOptions}
-          skillsStatus={state.skillsStatus}
-          mcpOptions={mcpOptions}
-          mcpStatus={mcpStatus}
-          saving={saving}
-          error={createError}
-          onChange={setDraft}
-          onReloadSkills={loadSkills}
-          onReloadMcps={loadMcps}
-          onCancel={() => {
-            setActionError(null);
-            setActionNotice(null);
-            setView('mine');
-          }}
-          onSave={handleCreate}
-        />
-      )}
-      {pendingConnectorModals}
-      {uploadDialog}
-    </div>
+        {pendingConnectorModals}
+        {uploadDialog}
+      </main>
     </div>
   );
 }

@@ -24,14 +24,18 @@ function matchesCategory(category: string, itemCategory: string): boolean {
   const aliases = CATEGORY_ALIASES[category];
   if (aliases) return aliases.has(itemCategory);
   if (category === 'Other') {
-    return !Object.values(CATEGORY_ALIASES).some(values => values.has(itemCategory));
+    return !Object.values(CATEGORY_ALIASES).some((values) => values.has(itemCategory));
   }
   return itemCategory === category;
 }
 
 export function findFirstPreviewableFile(entries: DefinitionFileEntry[]): string | null {
   const preferred = entries.find(
-    entry => entry.visible !== false && entry.kind === 'file' && entry.relativePath.toLowerCase().startsWith('persona/') && entry.previewable,
+    (entry) =>
+      entry.visible !== false &&
+      entry.kind === 'file' &&
+      entry.relativePath.toLowerCase().startsWith('persona/') &&
+      entry.previewable,
   );
   if (preferred) return preferred.relativePath;
 
@@ -44,11 +48,16 @@ export function findFirstPreviewableFile(entries: DefinitionFileEntry[]): string
   return null;
 }
 
-export function mergeAgentDetailWithCatalog(detail: AgentDetail, catalogItem: AgentCatalogItem | undefined): AgentDetail {
+export function mergeAgentDetailWithCatalog(
+  detail: AgentDetail,
+  catalogItem: AgentCatalogItem | undefined,
+): AgentDetail {
   if (!catalogItem) return detail;
   return {
     ...detail,
     id: catalogItem.id,
+    runtimePackageName: catalogItem.runtimePackageName,
+    ...(catalogItem.hubAssetId ? { hubAssetId: catalogItem.hubAssetId } : {}),
     displayName: catalogItem.displayName,
     description: catalogItem.description,
     category: catalogItem.category,
@@ -59,6 +68,7 @@ export function mergeAgentDetailWithCatalog(detail: AgentDetail, catalogItem: Ag
     ...(catalogItem.updateAvailable !== undefined ? { updateAvailable: catalogItem.updateAvailable } : {}),
     tags: detail.tags.length > 0 ? detail.tags : catalogItem.tags,
     avatarUrl: detail.avatarUrl || catalogItem.avatarUrl,
+    ...(catalogItem.version ? { version: catalogItem.version } : {}),
   };
 }
 
@@ -73,8 +83,8 @@ export function buildCatalogViewModel(
   },
 ): CatalogViewModel {
   const query = options.query.trim().toLocaleLowerCase();
-  const filtered = catalog.filter(item => {
-    if (options.scope === 'catalog' && item.source !== 'builtin') {
+  const filtered = catalog.filter((item) => {
+    if (options.scope === 'catalog' && item.source !== 'builtin' && item.source !== 'hub') {
       return false;
     }
     if (options.scope === 'mine' && item.source !== 'local' && !item.installed) {
