@@ -656,6 +656,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
         ]
 
+        if self._is_xiaoyi_channel():
+            rail_infos = [
+                info
+                for info in rail_infos
+                if info.attr_name not in {"_permission_rail", "_code_ask_user_rail"}
+            ]
+
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
         # 跳过已在固定列表中的 rail，避免重复注册
         mode_config = config_base.get("modes", {}).get("code", {})

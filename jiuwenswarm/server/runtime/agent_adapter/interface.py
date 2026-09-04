@@ -1196,9 +1196,13 @@ class JiuWenSwarm:
             "query": final_query,
             "channel": channel,
             "language": language,
-            # Only an explicit false disables interactive tools. Existing
-            # clients that omit this capability remain backward compatible.
-            "supports_user_interaction": params.get("supports_user_interaction") is not False,
+            # Xiaoyi's mobile client cannot render/answer the ask_user card;
+            # keep interaction disabled there even when the legacy client omits
+            # the capability flag. Other channels remain backward compatible.
+            "supports_user_interaction": (
+                channel.strip().lower() != "xiaoyi"
+                and params.get("supports_user_interaction") is not False
+            ),
         }
         if _request_debug:
             inputs["_request_debug"] = True

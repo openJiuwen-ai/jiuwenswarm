@@ -30,10 +30,9 @@ from jiuwenswarm.agents.harness.common.tools.invoke_meta.schema_context import (
 from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (
     build_cloud_plugin_context,
     is_desktop_plugin_ws_proxy,
-    missing_credential_error,
+    missing_desktop_proxy_error,
     missing_plugin_url_error,
     missing_plugin_ws_token_error,
-    resolve_business_credential,
     resolve_plugin_runtime_url,
     resolve_plugin_ws_token,
 )
@@ -156,11 +155,10 @@ async def _invoke_cloud_plugin(
     base_url = resolve_plugin_runtime_url()
     if not base_url:
         return missing_plugin_url_error(plugin_id=spec.plugin_id, tool_name=spec.tool_name)
-    if is_desktop_plugin_ws_proxy(base_url):
-        if not resolve_plugin_ws_token():
-            return missing_plugin_ws_token_error(plugin_id=spec.plugin_id, tool_name=spec.tool_name)
-    elif not resolve_business_credential():
-        return missing_credential_error(plugin_id=spec.plugin_id, tool_name=spec.tool_name)
+    if not is_desktop_plugin_ws_proxy(base_url):
+        return missing_desktop_proxy_error(plugin_id=spec.plugin_id, tool_name=spec.tool_name)
+    if not resolve_plugin_ws_token():
+        return missing_plugin_ws_token_error(plugin_id=spec.plugin_id, tool_name=spec.tool_name)
 
     skip = {
         _BUNDLE_NAME_KEY,

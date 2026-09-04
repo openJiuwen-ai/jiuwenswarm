@@ -81,6 +81,24 @@ class _SlowCreateAgentManager(AgentManager):
 
 
 @pytest.mark.asyncio
+async def test_create_agent_propagates_channel_id_to_adapter_config(monkeypatch) -> None:
+    manager = AgentManager()
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        async def create_instance(self, config, *, mode, sub_mode):
+            captured["config"] = config
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    monkeypatch.setattr(interface_module, "JiuWenSwarm", FakeAgent)
+
+    await manager._create_agent("xiaoyi")
+
+    assert captured["config"] == {"channel_id": "xiaoyi"}
+
+
+@pytest.mark.asyncio
 async def test_cleanup_session_runtime_reclaims_idle_tui_root_agent() -> None:
     manager = AgentManager()
     agent = _SessionRuntimeAgent(has_session_runtime=False)

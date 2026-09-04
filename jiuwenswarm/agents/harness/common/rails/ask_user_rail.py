@@ -52,11 +52,19 @@ _QUESTIONS_ITEM_SCHEMA: dict[str, Any] = {
         "question": {
             "type": "string",
             "minLength": 1,
-            "description": "The question to present to the user.",
+            "description": (
+                "完整的问题文本（必填，前端原样展示，必须自包含完整题目，"
+                "禁止只写『答案是…』等缩写）/ Complete question text shown to the "
+                "user as-is; must be self-contained (do not write abbreviated "
+                "tails like 'The answer is …')."
+            ),
         },
         "header": {
             "type": "string",
-            "description": "A short label displayed as a chip/tag.",
+            "description": (
+                "简短标签，不要放题目内容 / A short label "
+                "(do not put the question itself here)."
+            ),
         },
         "options": {
             "description": "Available choices for this question (2-4 items).",
@@ -105,68 +113,55 @@ _QUESTIONS_ITEM_SCHEMA: dict[str, Any] = {
 EXTENDED_INPUT_PARAMS_EN: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "query": {
-            "type": "string",
-            "description": "The question to present to the user (required).",
-        },
         "questions": {
             "type": "array",
             "description": (
-                "Structured questions with selectable options. "
-                "Use this when you want the user to choose from predefined options "
-                "instead of typing free text. Ask at most 4 questions per call. "
-                "Omit options for free-text input; otherwise provide 2-4 options. "
-                "The user can always select 'Other' for custom input."
+                "Questions to ask (1-4). The complete question text must go into "
+                "each questions[].question — the user sees exactly that text, so "
+                "it must be self-contained. Provide 2-4 options when the user "
+                "should choose; omit options for free-text input. The user can "
+                "always select 'Other' for custom input."
             ),
             "items": _QUESTIONS_ITEM_SCHEMA,
             "maxItems": MAX_STRUCTURED_QUESTIONS,
         },
     },
-    "required": ["query"],
+    "required": ["questions"],
 }
 
 EXTENDED_INPUT_PARAMS_CN: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "query": {
-            "type": "string",
-            "description": "向用户展示的问题（必填）。",
-        },
         "questions": {
             "type": "array",
             "description": (
-                "带选项的结构化问题。当希望用户从预定义选项中选择而非自由输入时使用。"
-                "每次调用最多询问 4 个问题。"
-                "自由输入题不提供选项；否则必须提供 2-4 个选项。"
-                "用户始终可以选择「其他」进行自定义输入。"
+                "要提出的问题（1-4 个）。完整题干必须写在每个 questions[].question——"
+                "用户看到的就是这段文本，必须自包含完整题目。需要用户选择时提供 "
+                "2-4 个选项；自由输入则省略 options。用户始终可以选择「其他」自定义输入。"
             ),
             "items": _QUESTIONS_ITEM_SCHEMA,
             "maxItems": MAX_STRUCTURED_QUESTIONS,
         },
     },
-    "required": ["query"],
+    "required": ["questions"],
 }
 
 _EXTENDED_DESCRIPTION_EN: str = (
-    "Interrupts execution and requests input from the user. "
-    "Supports two modes:\n"
-    "1. Plain query (free-text): pass only `query` — the user types their answer.\n"
-    "2. Structured questions (multi-choice): pass `query` + `questions` — "
-    "the user selects from predefined options. "
-    "Use `questions` when you want the user to choose between specific options "
-    "(e.g., 'Apply update' vs 'Skip'). Ask at most 4 questions per call. "
-    "Omit options for free-text input; otherwise provide 2-4 options. "
+    "Interrupts execution and requests input from the user by asking 1-4 questions. "
+    "Put the complete question text in each questions[].question — the user sees "
+    "exactly that text, so it must be self-contained (e.g. include the full riddle, "
+    "not just 'The answer is …'). Provide 2-4 options under questions[].options when "
+    "the user should choose; omit options for free-text input. "
     "For single-select questions, an option may carry a `preview` (markdown, "
     "e.g. fenced code block ASCII mockup) shown beside it to compare concrete "
     "artifacts; use it only when a visual comparison helps the user decide."
 )
 
 _EXTENDED_DESCRIPTION_CN: str = (
-    "中断执行并向用户请求输入。支持两种模式：\n"
-    "1. 纯文本查询：只传 `query` —— 用户自由输入回答。\n"
-    "2. 结构化选项：传 `query` + `questions` —— 用户从预定义选项中选择。"
-    "当你希望用户在特定选项间做选择时（如「应用更新」vs「跳过」）使用 `questions`。"
-    "每次调用最多询问 4 个问题。自由输入题不提供选项；否则必须提供 2-4 个选项。"
+    "中断执行并向用户请求输入：向用户提出 1-4 个问题。完整题干必须写在每个 "
+    "questions[].question 中——用户看到的就是这段文本，必须自包含（例如谜语要写完整，"
+    "禁止只写『答案是…』）。需要用户选择时在 questions[].options 提供 2-4 个选项；"
+    "自由输入则省略 options。"
     "对于单选问题，选项可携带 `preview`（markdown，"
     "如带围栏代码块的 ASCII mockup）展示在选项旁，用于对比具体产物；"
     "仅在视觉对比有助于用户决策时使用。"
@@ -217,10 +212,10 @@ class StructuredAskUserTool(Tool):
         )
         super().__init__(card)
 
-    async def invoke(self, query, questions=None, **kwargs):
+    async def invoke(self, questions=None, **kwargs):
         return {}
 
-    async def stream(self, query, questions=None, **kwargs):
+    async def stream(self, questions=None, **kwargs):
         yield {}
 
 
@@ -372,6 +367,19 @@ class StructuredAskUserRail(AskUserRail):
                         f"received {len(options)}."
                     )
                 )
+
+        if not questions_data and not (
+            isinstance(args.get("query"), str) and args.get("query").strip()
+        ):
+            # 模型把字段名拼错（如 questions_list）或完全没给题干时，不能再走
+            # legacy 纯文本分支生成空问题中断：空问题会被 wire 层误判成
+            # permission_interrupt 审批卡，用户点允许/拒绝都会死循环。
+            return self.reject(
+                tool_result=(
+                    "[INVALID_ARGUMENT] ask_user requires a non-empty `questions` "
+                    "array (or a legacy non-empty `query`); received=%r" % (args,)
+                )
+            )
 
         if user_input is None:
             return self.interrupt(self._build_ask_request(tool_call))

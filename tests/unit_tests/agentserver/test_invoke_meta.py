@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Unit tests for invoke_meta (product mcp/run businessCredential handshake)."""
+"""Unit tests for invoke_meta (product mcp/run via desktop PluginWsProxy)."""
 
 from __future__ import annotations
 
@@ -31,12 +31,17 @@ from jiuwenswarm.agents.harness.common.tools.invoke_meta.workspace_context impor
     set_effective_request_workspace_dir,
 )
 
+_DESKTOP_MCP = "ws://127.0.0.1:19694/agent-runtime-service-ws/v1/mcp/run"
+
 
 @pytest.fixture(autouse=True)
 def _clear_mcp_run_env(monkeypatch):
     monkeypatch.delenv("AGENT_RUNTIME_MCP_RUN", raising=False)
-    monkeypatch.setenv("CLAW_BUSINESS_CREDENTIAL", "test-cred")
     monkeypatch.delenv("CLAW_XIAOYI_UID", raising=False)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.secrets_bootstrap.get_secret",
+        lambda key, default=None: "pws_test_token" if key == "pluginWsToken" else default,
+    )
 
 
 @pytest.fixture()
@@ -165,7 +170,7 @@ def test_load_external_tools(tools_workspace: Path):
 @pytest.mark.asyncio
 async def test_invoke_device_plugin_rejected(tools_workspace: Path, monkeypatch):
     set_effective_request_workspace_dir(str(tools_workspace))
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     tool = InvokeTool()
     result = await tool.invoke(
         {
@@ -180,7 +185,7 @@ async def test_invoke_device_plugin_rejected(tools_workspace: Path, monkeypatch)
 @pytest.mark.asyncio
 async def test_invoke_plugin_routes_to_cloud_client(tools_workspace: Path, monkeypatch):
     set_effective_request_workspace_dir(str(tools_workspace))
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
 
     mock_invoke = AsyncMock(
         return_value={
@@ -216,7 +221,7 @@ async def test_invoke_plugin_routes_to_cloud_client(tools_workspace: Path, monke
 
 @pytest.mark.asyncio
 async def test_invoke_unknown_bundle_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client(
         {"success": True, "content": '{"items":["https://x"]}'}
     )
@@ -244,7 +249,7 @@ async def test_invoke_unknown_bundle_reaches_plugin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_wrong_zone_bundle_still_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -269,7 +274,7 @@ async def test_invoke_wrong_zone_bundle_still_reaches_plugin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_missing_prompt_still_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -292,7 +297,7 @@ async def test_invoke_missing_prompt_still_reaches_plugin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_requires_top_level_function_name(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -316,7 +321,7 @@ async def test_invoke_requires_top_level_function_name(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_passthrough_does_not_normalize_size(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -342,7 +347,7 @@ async def test_invoke_passthrough_does_not_normalize_size(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_plugin_skill_exec_tool_unwraps(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured: dict[str, Any] = {}
 
     mock_invoke = AsyncMock(
@@ -383,7 +388,7 @@ async def test_invoke_plugin_skill_exec_tool_unwraps(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_flattened_capability_matches_wrapper(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     seen: list[tuple[str, str, dict[str, Any]]] = []
 
     class _FakeCloudClient:
@@ -424,7 +429,7 @@ async def test_invoke_flattened_capability_matches_wrapper(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_missing_bundle_name_errors(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -457,8 +462,7 @@ def test_invoke_tool_description_omits_internal_transport():
 
 @pytest.mark.asyncio
 async def test_invoke_logs_mcp_run_transport(monkeypatch):
-    mcp = "wss://lfhagmirror.hwcloudtest.cn:18449/agent-runtime-service-ws/v1/mcp/run"
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", mcp)
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     logged: list[str] = []
 
     def _info(msg: str, *args: Any, **kwargs: Any) -> None:
@@ -496,7 +500,7 @@ async def test_invoke_logs_mcp_run_transport(monkeypatch):
     assert result.get("success") is True
     text = "\n".join(logged)
     assert "plugin via mcp/run" in text
-    assert mcp in text
+    assert _DESKTOP_MCP in text
     assert "plugin via relay" not in text
 
 
@@ -635,12 +639,11 @@ async def test_invoke_requires_mcp_run_url_ignores_relay(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_invoke_requires_business_credential_ignores_oa_key(monkeypatch):
+async def test_invoke_rejects_non_desktop_mcp_run(monkeypatch):
     monkeypatch.setenv(
         "AGENT_RUNTIME_MCP_RUN",
         "wss://host:18449/agent-runtime-service-ws/v1/mcp/run",
     )
-    monkeypatch.delenv("CLAW_BUSINESS_CREDENTIAL", raising=False)
     monkeypatch.setenv("OA_API_KEY", "test-key")
     monkeypatch.setenv("OA_REQUEST_FROM", "jiuwenclaw")
     tool = InvokeTool()
@@ -655,12 +658,15 @@ async def test_invoke_requires_business_credential_ignores_oa_key(monkeypatch):
         }
     )
     assert result.get("success") is False
-    assert "密钥包缺少 businessCredential" in str(result.get("error") or "")
+    assert "19694" in str(result.get("error") or "")
     from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (
         build_runtime_headers,
     )
 
-    headers = build_runtime_headers(extra={"x-plugin-session-id": "pluginabc"})
+    headers = build_runtime_headers(
+        extra={"x-plugin-session-id": "pluginabc"},
+        url=_DESKTOP_MCP,
+    )
     assert "x-api-key" not in headers
     assert headers["x-request-from"] == "xiaoyiWork"
     assert "x-sandbox-id" not in headers
@@ -677,12 +683,8 @@ def test_uid_prefers_claw_xiaoyi_uid(monkeypatch):
     assert resolve_runtime_uid() == "claw-uid"
 
 
-def test_mcp_run_product_headers_prefer_business_credential(monkeypatch):
-    monkeypatch.setenv(
-        "AGENT_RUNTIME_MCP_RUN",
-        "wss://host:18449/agent-runtime-service-ws/v1/mcp/run",
-    )
-    monkeypatch.setenv("CLAW_BUSINESS_CREDENTIAL", "cred-1")
+def test_mcp_run_product_headers_use_plugin_ws_token(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     monkeypatch.setenv("CLAW_XIAOYI_UID", "uid-product")
     monkeypatch.setenv("AGENT_RUNTIME_DEVICE_ID", "dev-product")
     monkeypatch.setenv("OA_API_KEY", "should-not-use")
@@ -690,8 +692,12 @@ def test_mcp_run_product_headers_prefer_business_credential(monkeypatch):
         build_runtime_headers,
     )
 
-    headers = build_runtime_headers(extra={"x-plugin-session-id": "pluginabc"})
-    assert headers["businessCredential"] == "cred-1"
+    headers = build_runtime_headers(
+        extra={"x-plugin-session-id": "pluginabc"},
+        url=_DESKTOP_MCP,
+    )
+    assert "businessCredential" not in headers
+    assert headers["Authorization"] == "Bearer pws_test_token"
     assert headers["x-uid"] == "uid-product"
     assert headers["x-device-id"] == "dev-product"
     assert headers["x-plugin-session-id"] == "pluginabc"
@@ -702,27 +708,19 @@ def test_mcp_run_product_headers_prefer_business_credential(monkeypatch):
     assert "x-relay-role" not in headers
 
 
-_DESKTOP_MCP = "ws://127.0.0.1:19694/agent-runtime-service-ws/v1/mcp/run"
-
-
 def test_desktop_proxy_headers_use_token_not_business_credential(monkeypatch):
     monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
-    monkeypatch.setenv("CLAW_BUSINESS_CREDENTIAL", "should-not-send")
     monkeypatch.setenv("CLAW_XIAOYI_UID", "uid-1")
     monkeypatch.setenv("AGENT_RUNTIME_DEVICE_ID", "dev-1")
-    with patch(
-        "jiuwenswarm.common.secrets_bootstrap.get_secret",
-        side_effect=lambda key, default=None: "pws_test_token" if key == "pluginWsToken" else default,
-    ):
-        from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (
-            build_runtime_headers,
-            handshake_cred_source,
-        )
+    from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (
+        build_runtime_headers,
+        handshake_cred_source,
+    )
 
-        headers = build_runtime_headers(
-            extra={"x-plugin-session-id": "pluginabc"},
-            url=_DESKTOP_MCP,
-        )
+    headers = build_runtime_headers(
+        extra={"x-plugin-session-id": "pluginabc"},
+        url=_DESKTOP_MCP,
+    )
     assert "businessCredential" not in headers
     assert headers["Authorization"] == "Bearer pws_test_token"
     assert headers["x-uid"] == "uid-1"
@@ -735,27 +733,22 @@ def test_desktop_proxy_headers_use_token_not_business_credential(monkeypatch):
 @pytest.mark.asyncio
 async def test_invoke_desktop_proxy_skips_business_credential(monkeypatch):
     monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
-    monkeypatch.delenv("CLAW_BUSINESS_CREDENTIAL", raising=False)
+    captured, fake = _recording_cloud_client({"success": True, "content": "ok"})
     with patch(
-        "jiuwenswarm.common.secrets_bootstrap.get_secret",
-        side_effect=lambda key, default=None: "pws_test_token" if key == "pluginWsToken" else default,
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
     ):
-        captured, fake = _recording_cloud_client({"success": True, "content": "ok"})
-        with patch(
-            "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
-            fake,
-        ):
-            tool = InvokeTool()
-            result = await tool.invoke(
-                {
-                    "functionName": "PluginSkillExecTool",
-                    "arguments": {
-                        "functionName": "seedreamLite4Skill",
-                        "bundleName": "com.atomicservice.5765880207845681341",
-                        "prompt": "a dog",
-                    },
-                }
-            )
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "PluginSkillExecTool",
+                "arguments": {
+                    "functionName": "seedreamLite4Skill",
+                    "bundleName": "com.atomicservice.5765880207845681341",
+                    "prompt": "a dog",
+                },
+            }
+        )
     assert result.get("success") is True
     assert captured["calls"] == 1
 
@@ -763,7 +756,6 @@ async def test_invoke_desktop_proxy_skips_business_credential(monkeypatch):
 @pytest.mark.asyncio
 async def test_invoke_desktop_proxy_requires_plugin_ws_token(monkeypatch):
     monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
-    monkeypatch.delenv("CLAW_BUSINESS_CREDENTIAL", raising=False)
     with patch("jiuwenswarm.common.secrets_bootstrap.get_secret", return_value=None):
         tool = InvokeTool()
         result = await tool.invoke(
@@ -873,7 +865,7 @@ def _seedance_task_args(**extra: Any) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_invoke_seedance_submit_does_not_auto_poll(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     names: list[str] = []
 
     class _FakeCloudClient:
@@ -903,7 +895,7 @@ async def test_invoke_seedance_submit_does_not_auto_poll(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_seedance_wait_is_stripped_from_plugin_args(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     names: list[str] = []
 
     class _FakeCloudClient:
@@ -934,7 +926,7 @@ async def test_invoke_seedance_wait_is_stripped_from_plugin_args(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_seedance_string_content_passthrough(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     seen: list[dict[str, Any]] = []
 
     class _FakeCloudClient:
@@ -1014,7 +1006,7 @@ def test_invoke_tool_description_points_at_skills_not_recipes():
 
 @pytest.mark.asyncio
 async def test_invoke_lyrics_generation_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     seen: list[dict[str, Any]] = []
     timeouts: list[Any] = []
 
@@ -1046,7 +1038,7 @@ async def test_invoke_lyrics_generation_reaches_plugin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_lyrics_missing_prompt_still_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -1072,7 +1064,7 @@ async def test_invoke_lyrics_missing_prompt_still_reaches_plugin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_music_generation_reaches_plugin_with_long_timeout(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     seen: list[dict[str, Any]] = []
     timeouts: list[Any] = []
 
@@ -1104,7 +1096,7 @@ async def test_invoke_music_generation_reaches_plugin_with_long_timeout(monkeypa
 
 @pytest.mark.asyncio
 async def test_invoke_music_instrumental_keeps_top_level_prompt(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     seen: list[dict[str, Any]] = []
 
     class _FakeCloudClient:
@@ -1141,7 +1133,7 @@ async def test_invoke_music_instrumental_keeps_top_level_prompt(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_music_missing_prompt_still_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -1166,7 +1158,7 @@ async def test_invoke_music_missing_prompt_still_reaches_plugin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_wrong_bundle_for_music_still_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://example.test/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     captured, fake = _recording_cloud_client()
     with patch(
         "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
@@ -1226,7 +1218,8 @@ _PLUGIN_PLATFORM = "com.huawei.pluginPlatform"
 
 @pytest.mark.asyncio
 async def test_invoke_prod_seedream_batch5_reaches_plugin(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _PROD_MCP)
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_UPSTREAM", _PROD_MCP)
     captured: dict[str, Any] = {}
 
     class _FakeCloudClient:
@@ -1264,7 +1257,8 @@ async def test_invoke_prod_seedream_batch5_reaches_plugin(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_prod_accepts_atomic_seedream_passthrough(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _PROD_MCP)
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_UPSTREAM", _PROD_MCP)
     captured, fake = _recording_cloud_client(
         {"success": True, "content": '{"items":["https://x"]}'}
     )
@@ -1291,8 +1285,9 @@ async def test_invoke_prod_accepts_atomic_seedream_passthrough(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_invoke_test_zone_accepts_prod_seedream_passthrough(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
     monkeypatch.setenv(
-        "AGENT_RUNTIME_MCP_RUN",
+        "AGENT_RUNTIME_MCP_UPSTREAM",
         "wss://lfhagmirror.hwcloudtest.cn:18449/agent-runtime-service-ws/v1/mcp/run",
     )
     captured, fake = _recording_cloud_client()
@@ -1351,16 +1346,10 @@ def test_design_system_prompt_prod_omits_catalog_names(monkeypatch):
 def test_skills_goal_override_uses_real_skill_slugs():
     from jiuwenswarm.agents.harness.common.prompt.skills_goal_override import (
         _STATIC_BLOCK,
-        _STATIC_SKILL_NAMES,
     )
 
-    assert "seedream-image-gen" in _STATIC_SKILL_NAMES
-    assert "seedance-video-gen" in _STATIC_SKILL_NAMES
-    assert "music-generation" in _STATIC_SKILL_NAMES
-    assert "xiaoyi-image-understanding-win" in _STATIC_SKILL_NAMES
-    assert "image-generation" not in _STATIC_SKILL_NAMES
     for text in _STATIC_BLOCK.values():
-        assert "seedream-image-gen" in text
+        assert "Image Generation" in text or "图像生成" in text
         assert "skill_tool" in text
         assert "PluginSkillExecTool" not in text
         assert "com.atomicservice" not in text
@@ -1382,11 +1371,7 @@ def _plugin_spec() -> ExternalToolSpec:
 
 @pytest.mark.asyncio
 async def test_handshake_reject_logs_masked_status_no_false_succeed(monkeypatch):
-    monkeypatch.setenv(
-        "AGENT_RUNTIME_MCP_RUN",
-        "wss://host:18449/agent-runtime-service-ws/v1/mcp/run",
-    )
-    monkeypatch.setenv("CLAW_BUSINESS_CREDENTIAL", "super-secret-credential-value")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
 
     class InvalidStatusCode(Exception):
         def __init__(self) -> None:
@@ -1411,9 +1396,7 @@ async def test_handshake_reject_logs_masked_status_no_false_succeed(monkeypatch)
 
     from jiuwenswarm.agents.harness.common.tools.invoke_meta import cloud_plugin_client as cpc
 
-    client = CloudPluginClient(
-        base_url="wss://host:18449/agent-runtime-service-ws/v1/mcp/run"
-    )
+    client = CloudPluginClient(base_url=_DESKTOP_MCP)
     client._connect = lambda url, **kwargs: _FailingConnect()  # type: ignore[method-assign]
     with patch.object(cpc.logger, "info", side_effect=_capture):
         result = await client.invoke(_plugin_spec(), {"text": "hi"})
@@ -1430,11 +1413,7 @@ async def test_handshake_reject_logs_masked_status_no_false_succeed(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_handshake_ok_logged_only_after_connect(monkeypatch):
-    monkeypatch.setenv(
-        "AGENT_RUNTIME_MCP_RUN",
-        "wss://host:18449/agent-runtime-service-ws/v1/mcp/run",
-    )
-    monkeypatch.setenv("CLAW_BUSINESS_CREDENTIAL", "abcdefghijklmnop")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
 
     class _FakeWs:
         async def send(self, _message: str) -> None:
@@ -1456,16 +1435,17 @@ async def test_handshake_ok_logged_only_after_connect(monkeypatch):
         infos.append(msg % args if args else msg)
 
     from jiuwenswarm.agents.harness.common.tools.invoke_meta import cloud_plugin_client as cpc
-
-    client = CloudPluginClient(
-        base_url="wss://host:18449/agent-runtime-service-ws/v1/mcp/run"
+    from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (
+        mask_secret,
     )
+
+    client = CloudPluginClient(base_url=_DESKTOP_MCP)
     client._connect = lambda url, **kwargs: _OkConnect()  # type: ignore[method-assign]
     with patch.object(cpc.logger, "info", side_effect=_capture):
         result = await client.invoke(_plugin_spec(), {"text": "hi"})
     text = "\n".join(infos)
-    assert "cred=abcdefghijkl…(len=16)" in text
-    assert "credSrc=env" in text
+    assert f"cred={mask_secret('')}" in text
+    assert "credSrc=desktop-proxy" in text
     assert "phase=handshake_ok" in text
     assert "WS connect succeed" not in text
     assert result.get("success") is True
@@ -1474,7 +1454,6 @@ async def test_handshake_ok_logged_only_after_connect(monkeypatch):
 @pytest.mark.asyncio
 async def test_desktop_proxy_handshake_summary_empty_cred(monkeypatch):
     monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
-    monkeypatch.delenv("CLAW_BUSINESS_CREDENTIAL", raising=False)
 
     class _FakeWs:
         async def send(self, _message: str) -> None:

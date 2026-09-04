@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Plugin invoke transport: direct mcp/run (businessCredential handshake)."""
+"""Plugin invoke transport: mcp/run via desktop PluginWsProxy (pluginWsToken)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ _MCP_UPSTREAM_ENV = "AGENT_RUNTIME_MCP_UPSTREAM"
 _AGENT_BASE_ENV = "AGENT_RUNTIME_BASEURL"
 _UID_ENV = "AGENT_RUNTIME_UID"
 _CLAW_UID_ENV = "CLAW_XIAOYI_UID"
-_CREDENTIAL_ENV = "CLAW_BUSINESS_CREDENTIAL"
 _DEVICE_ID_ENVS = ("AGENT_RUNTIME_DEVICE_ID", "X_DEVICE_ID")
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
 _SECRET_HEADER_RE = re.compile(r"credential|authorization|token", re.IGNORECASE)
@@ -137,24 +136,6 @@ def resolve_runtime_uid() -> str:
     return str(_xiaoyi_channel().get("uid") or "").strip()
 
 
-def resolve_business_credential() -> str:
-    """Product mcp/run handshake credential (lab / old packets).
-
-    桌面目标态不再经密钥包下发 businessCredential：mcp/run 打本机代理，
-    由主进程按次注入 locker 票。本函数仍读 env / 旧密钥包，供实验室直连
-    远端 mcp/run。env（CLAW_BUSINESS_CREDENTIAL）仅为实验室/旧形态兜底。
-    """
-    env_value = (os.environ.get(_CREDENTIAL_ENV) or "").strip()
-    if env_value:
-        return env_value
-    try:
-        from jiuwenswarm.common.secrets_bootstrap import get_secret
-    except Exception:  # noqa: BLE001
-        return ""
-    value = get_secret("businessCredential")
-    return str(value).strip() if value else ""
-
-
 def resolve_plugin_ws_token() -> str:
     """Desktop plugin WS proxy token from stdin secrets (pluginWsToken)."""
     try:
@@ -169,15 +150,6 @@ def handshake_cred_source(url: str | None = None) -> str:
     """Where the mcp/run handshake cred is expected to come from (log field credSrc)."""
     if is_desktop_plugin_ws_proxy(url):
         return "desktop-proxy"
-    if (os.environ.get(_CREDENTIAL_ENV) or "").strip():
-        return "env"
-    try:
-        from jiuwenswarm.common.secrets_bootstrap import get_secret
-    except Exception:  # noqa: BLE001
-        return "empty"
-    value = get_secret("businessCredential")
-    if str(value).strip() if value else "":
-        return "vault"
     return "empty"
 
 
@@ -217,8 +189,8 @@ def build_product_mcp_headers(
 ) -> dict[str, str]:
     """Handshake headers for mcp/run.
 
-    Desktop loopback proxy: Authorization Bearer pluginWsToken, no businessCredential
-    (desktop injects the locker ticket on the upstream hop). Remote/lab: businessCredential.
+    Desktop loopback proxy: Authorization Bearer pluginWsToken; main process injects
+    locker businessCredential on the upstream hop. Non-loopback URLs carry no product ticket.
     """
     target = (url if url is not None else resolve_plugin_runtime_url()).strip()
     uid = resolve_runtime_uid()
@@ -232,8 +204,6 @@ def build_product_mcp_headers(
         token = resolve_plugin_ws_token()
         if token:
             headers["Authorization"] = f"Bearer {token}"
-    else:
-        headers["businessCredential"] = resolve_business_credential()
     if uid:
         headers["x-uid"] = uid
     if device_id:
@@ -242,14 +212,13 @@ def build_product_mcp_headers(
         headers["x-plugin-session-id"] = plugin_session_id
     if extra:
         headers.update({k: v for k, v in extra.items() if v})
-    if is_desktop_plugin_ws_proxy(target):
-        headers.pop("businessCredential", None)
-        headers.pop("businesscredential", None)
+    headers.pop("businessCredential", None)
+    headers.pop("businesscredential", None)
     return headers
 
 
 def build_runtime_headers(*, extra: dict[str, str] | None = None, url: str | None = None) -> dict[str, str]:
-    """Handshake headers for mcp/run: proxy token or businessCredential + uid/device/trace."""
+    """Handshake headers for mcp/run: pluginWsToken + uid/device/trace."""
     plugin_session_id = ""
     if extra:
         plugin_session_id = str(extra.get("x-plugin-session-id") or "")
@@ -349,19 +318,19 @@ def missing_plugin_url_error(*, plugin_id: str = "", tool_name: str = "") -> dic
     return {
         "success": False,
         "error": (
-            "缺少插件 WS 地址：需 AGENT_RUNTIME_MCP_RUN（桌面 spawn 注入，或实验室写入环境）"
+            "缺少插件 WS 地址：需 AGENT_RUNTIME_MCP_RUN（桌面 spawn 注入 127.0.0.1:19694）"
         ),
         "pluginId": plugin_id,
         "toolName": tool_name,
     }
 
 
-def missing_credential_error(*, plugin_id: str = "", tool_name: str = "") -> dict[str, Any]:
+def missing_desktop_proxy_error(*, plugin_id: str = "", tool_name: str = "") -> dict[str, Any]:
     return {
         "success": False,
         "error": (
-            "缺少插件握手凭证：密钥包缺少 businessCredential"
-            "（桌面登录后 spawn 下发，或实验室写入 CLAW_BUSINESS_CREDENTIAL）"
+            "插件 mcp/run 只走桌面本机代理：需 AGENT_RUNTIME_MCP_RUN 指向 "
+            "ws://127.0.0.1:19694/.../mcp/run（桌面 spawn 注入）"
         ),
         "pluginId": plugin_id,
         "toolName": tool_name,
@@ -401,11 +370,10 @@ __all__ = [
     "is_mcp_run_url",
     "mask_secret",
     "missing_agent_baseurl_error",
-    "missing_credential_error",
+    "missing_desktop_proxy_error",
     "missing_plugin_url_error",
     "missing_plugin_ws_token_error",
     "resolve_agent_runtime_baseurl",
-    "resolve_business_credential",
     "resolve_device_hostname",
     "resolve_device_sandbox_system",
     "resolve_plugin_runtime_upstream_url",

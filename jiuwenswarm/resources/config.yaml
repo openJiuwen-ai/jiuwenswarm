@@ -375,14 +375,15 @@ acp_agents:
 #     max_iterations: 300
 #
 agents:
-  # 统一元工具 invoke：云插件直连 mcp/run（默认开启）
-  # 产品（小艺 Work）：桌面 spawn 注入 AGENT_RUNTIME_MCP_RUN / CLAW_BUSINESS_CREDENTIAL /
-  #   CLAW_XIAOYI_UID / 设备字段，用户无需写 .env
-  # 握手头：businessCredential + x-uid + x-device-id + 随机 x-hag-trace-id（无 OA 头）
-  # 缺 URL 或缺凭证时该次工具调用失败，不中断会话
+  # 统一元工具 invoke：云插件经桌面 mcp/run 本机代理（默认开启）
+  # 产品（小艺 Work）：桌面 spawn 注入 AGENT_RUNTIME_MCP_RUN（127.0.0.1:19694）
+  #   与密钥包 pluginWsToken；主进程 PluginWsProxy 按次注入 businessCredential。
+  #   CLAW_XIAOYI_UID / 设备字段随 spawn 注入，用户无需写 .env
+  # 握手头（打本机代理）：Authorization Bearer pluginWsToken + x-uid + x-device-id + 随机 x-hag-trace-id
+  # 缺 URL、非本机代理、或缺 pluginWsToken 时该次工具调用失败，不中断会话
   # 环境变量：
-  #   AGENT_RUNTIME_MCP_RUN       — 完整插件 WS URL（不拼接路径）
-  #   CLAW_BUSINESS_CREDENTIAL    — mcp/run 握手凭证
+  #   AGENT_RUNTIME_MCP_RUN       — 本机插件 WS 代理 URL（含 /mcp/run，不拼接路径）
+  #   AGENT_RUNTIME_MCP_UPSTREAM  — 真实 现网/蓝绿 mcp/run（区分解析，非握手地址）
   #   CLAW_XIAOYI_UID             — 握手 x-uid（优先）；否则 AGENT_RUNTIME_UID / 渠道 uid
   #   AGENT_RUNTIME_BASEURL       — agent_as_a_tool（可选）
   #   AGENT_RUNTIME_WS_TIMEOUT    — 插件等待超时秒数（缺省 120）

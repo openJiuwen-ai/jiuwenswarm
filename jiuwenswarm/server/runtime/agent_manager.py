@@ -420,8 +420,12 @@ class AgentManager:
         # 用并轨后的子模式装配实例，和缓存键保持同一套语义。
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_dir = _normalize_project_dir((config or {}).get("project_dir"))
+        config = dict(config or {})
+        # Keep Xiaoyi's logical channel on the adapter profile so its
+        # channel-specific rails/tools can be selected while assembled.
+        if channel_key == "xiaoyi":
+            config.setdefault("channel_id", channel_key)
         if project_dir:
-            config = dict(config or {})
             config["project_dir"] = project_dir
         agent_cache_key = cache_key or _make_agent_cache_key(mode_key, sub_mode_key, project_dir)
         logger.info(

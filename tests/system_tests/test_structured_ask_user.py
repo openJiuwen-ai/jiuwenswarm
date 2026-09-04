@@ -91,26 +91,25 @@ class TestStructuredAskUserToolSchema:
     """Verify the extended tool card schema for ask_user."""
 
     @staticmethod
-    def test_en_schema_has_query_and_questions():
-        """English schema must include both `query` and `questions` properties."""
+    def test_en_schema_has_only_questions():
+        """English schema must expose `questions` only (no top-level `query`)."""
         props = EXTENDED_INPUT_PARAMS_EN["properties"]
-        assert "query" in props
+        assert "query" not in props
         assert "questions" in props
-        assert props["query"]["type"] == "string"
         assert props["questions"]["type"] == "array"
 
     @staticmethod
-    def test_cn_schema_has_query_and_questions():
-        """Chinese schema must include both `query` and `questions` properties."""
+    def test_cn_schema_has_only_questions():
+        """Chinese schema must expose `questions` only (no top-level `query`)."""
         props = EXTENDED_INPUT_PARAMS_CN["properties"]
-        assert "query" in props
+        assert "query" not in props
         assert "questions" in props
 
     @staticmethod
-    def test_required_fields_only_query():
-        """Only `query` is required; `questions` is optional."""
-        assert EXTENDED_INPUT_PARAMS_EN["required"] == ["query"]
-        assert EXTENDED_INPUT_PARAMS_CN["required"] == ["query"]
+    def test_required_fields_only_questions():
+        """`questions` is the only required field."""
+        assert EXTENDED_INPUT_PARAMS_EN["required"] == ["questions"]
+        assert EXTENDED_INPUT_PARAMS_CN["required"] == ["questions"]
 
     @staticmethod
     def test_questions_schema_limits_each_call_to_four():
@@ -141,9 +140,15 @@ class TestStructuredAskUserToolSchema:
         assert "multi_select" in props
         assert _QUESTIONS_ITEM_SCHEMA["required"] == ["question"]
         assert props["question"]["minLength"] == 1
+        assert "完整" in props["question"]["description"]
+        assert "self-contained" in props["question"]["description"]
+        assert "不要放题目" in props["header"]["description"]
         options_schema = props["options"]
-        assert options_schema["maxItems"] == 4
-        assert options_schema["anyOf"] == [{"maxItems": 0}, {"minItems": 2}]
+        assert "maxItems" not in options_schema
+        assert options_schema["anyOf"] == [
+            {"type": "array", "maxItems": 0},
+            {"type": "array", "minItems": 2, "maxItems": 4},
+        ]
         option_schema = options_schema["items"]
         assert option_schema["required"] == ["label"]
         assert option_schema["properties"]["label"]["minLength"] == 1
@@ -771,6 +776,59 @@ class TestStructuredAskUserRailResolveInterrupt:
         from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
         assert isinstance(decision, RejectResult)
         assert "questions[0].options must be an array" in decision.tool_result
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            # 顶层字段名拼错（如 questions_list）时不得生成空问题中断
+            {"questions_list": [{"header": "测试", "question": "test"}], "call_goal": "x"},
+            # 既没有 questions 也没有 legacy query
+            {"call_goal": "x"},
+            # 显式空数组也不代表自由输入
+            {"questions": []},
+            # query 全空白等同缺失
+            {"questions": [], "query": "   "},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_missing_question_content_is_rejected(arguments):
+        """没有任何可用题干时必须 reject，而不是弹空问题/审批卡死循环。"""
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments=arguments)
+
+        decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+        from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
+        assert isinstance(decision, RejectResult)
+        assert "[INVALID_ARGUMENT]" in decision.tool_result
+        assert "questions" in decision.tool_result
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_questions_only_first_call_still_interrupts():
+        """结构化工具有 questions 且无 legacy query 时仍正常弹问卷。"""
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={
+            "questions": [{"question": "Which option?", "header": "Choice"}],
+        })
+
+        decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+        from openjiuwen.harness.rails.interrupt.interrupt_base import InterruptResult
+        assert isinstance(decision, InterruptResult)
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_legacy_query_only_first_call_still_interrupts():
+        """legacy query-only 调用保持原有纯文本询问。"""
+        rail = StructuredAskUserRail()
+        tc = _make_tool_call(arguments={"query": "What is your role?"})
+
+        decision = await rail.resolve_interrupt(MagicMock(), tc, None)
+
+        from openjiuwen.harness.rails.interrupt.interrupt_base import InterruptResult
+        assert isinstance(decision, InterruptResult)
 
     @staticmethod
     @pytest.mark.asyncio

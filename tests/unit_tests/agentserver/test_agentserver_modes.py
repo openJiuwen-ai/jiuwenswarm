@@ -312,6 +312,24 @@ def test_build_inputs_propagates_user_interaction_capability(monkeypatch):
     assert inputs["supports_user_interaction"] is False
 
 
+def test_build_inputs_disables_user_interaction_by_default_for_xiaoyi(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+
+    request = AgentRequest(
+        request_id="req-xiaoyi",
+        channel_id="xiaoyi",
+        session_id="xiaoyi_session",
+        params={"query": "hello"},
+    )
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
+
+    assert inputs["supports_user_interaction"] is False
+
+
 def test_build_inputs_does_not_map_team_plan_approval_answers_to_interactive_input(monkeypatch):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -1324,6 +1342,41 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     assert orchestration_rail in fast_rails
     assert ask_user_rail in plan_rails
     assert ask_user_rail in fast_rails
+
+
+def test_deep_adapter_skips_interactive_and_permission_rails_for_xiaoyi(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    class FakeHooksConfig:
+        events = {}
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance_overrides = {"channel_id": "xiaoyi"}
+    ask_user_rail = object()
+    permission_rail = object()
+
+    monkeypatch.setattr(adapter, "_filesystem_rail_enabled_for_profile", lambda: False)
+    monkeypatch.setattr(adapter, "_build_runtime_prompt_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_response_prompt_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_stream_event_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_task_planning_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_security_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_heartbeat_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_circuit_breaker_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_avatar_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_subagent_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_skill_rail", lambda **_kwargs: None)
+    monkeypatch.setattr(adapter, "_build_skill_retrieval_prompt_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_symphony_orchestration_rail", lambda: None)
+    monkeypatch.setattr(adapter, "_build_structured_ask_user_rail", lambda: ask_user_rail)
+    monkeypatch.setattr(interface_deep_module, "build_permission_rail", lambda **_kwargs: permission_rail)
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda **_kwargs: None)
+    monkeypatch.setattr(interface_deep_module, "load_hooks_config", lambda _config: FakeHooksConfig())
+
+    rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
+
+    assert ask_user_rail not in rails
+    assert permission_rail not in rails
 
 
 def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monkeypatch):
