@@ -1203,6 +1203,7 @@ def _normalize_question_preview(preview: Any) -> dict[str, Any] | None:
 
 _PERMANENT_REMEMBER_LABELS = frozenset({
     "永久记住",
+    "总是允许",  # OfficeClaw PermissionBridge global scope 回传标签
     "Always Allow",
     "always_allow",
     "allow_always",
