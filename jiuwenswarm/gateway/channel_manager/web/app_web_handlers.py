@@ -68,6 +68,7 @@ from jiuwenswarm.common.config import (
     update_symphony_in_config,
     update_permissions_profile_in_config,
     update_setup_guide_enabled_in_config,
+    update_management_nav_enabled_in_config,
     update_memory_forbidden_enabled_in_config,
     update_memory_forbidden_description_in_config,
     update_external_cli_agents_in_config,
@@ -177,7 +178,8 @@ class _ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
+            elif (key_text.startswith("a2ui_") or key_text == "setup_guide_enabled"
+                    or key_text == "management_nav_enabled"):
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
@@ -676,6 +678,16 @@ _FORWARD_REQ_METHODS = frozenset({
     "agents.enable",
     "agents.disable",
     "agents.tools_list",
+    # Third-party agent management (read-only)
+    "third_agents.list",
+    # Hardware monitoring (read-only)
+    "hardware.npu.status",
+    # Model registry (read-only; registered by skills via harness tools)
+    "model_registry.list",
+    # User management (created via the user management UI)
+    "users.list",
+    "users.create",
+    "users.delete",
     # Schedule task management
     "schedule.check_config",
     "schedule.update_config",
@@ -768,6 +780,12 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "agents.tools_list",
     "external_cli.detect",
     "external_cli.codex_install_status",
+    "third_agents.list",
+    "hardware.npu.status",
+    "model_registry.list",
+    "users.list",
+    "users.create",
+    "users.delete",
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
@@ -850,6 +868,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "external_cli_agent_codex_use_builtin",
     "external_cli_agent_codex_cli_path",
     "setup_guide_enabled",
+    "management_nav_enabled",
     "skill_evolution",
 })
 _EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
@@ -2377,6 +2396,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["setup_guide_enabled"] = (
                 "true" if setup_guide_cfg.get("enabled", True) else "false"
             )
+            management_nav_cfg = raw.get("management_nav") or {}
+            payload["management_nav_enabled"] = (
+                "true" if management_nav_cfg.get("enabled", False) else "false"
+            )
             for key, val in payload.items():
                 from jiuwenswarm.extensions.registry import ExtensionRegistry
                 if (("api_key" in key.lower() or "token" in key.lower())
@@ -2425,6 +2448,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("permissions_profile", "full_access")
             payload.setdefault("setup_guide_enabled", "true")
+            payload.setdefault("management_nav_enabled", "false")
             payload.setdefault("skill_evolution", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("memory_forbidden_description", "")
@@ -2660,6 +2684,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     continue
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
+                elif param_key == "management_nav_enabled":
+                    update_management_nav_enabled_in_config(parsed)
                 elif param_key == "memory_forbidden_enabled":
                     update_memory_forbidden_enabled_in_config(parsed)
                 elif param_key == "memory_forbidden_description":

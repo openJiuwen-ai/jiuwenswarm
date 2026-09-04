@@ -2572,14 +2572,14 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _is_stateless_method_request(request: AgentRequest) -> bool:
-        """skills / skilldev / plugins / symphony 为无状态 RPC，无需 mode 解析与 adapter.
+        """skills / skilldev / plugins / symphony / models 为无状态 RPC，无需 mode 解析与 adapter.
 
         恢复 5084467df 引入、8f54b26a7 合入 team 时误删的短路判定。
         """
         return (
             request.req_method is not None
             and request.req_method.value.startswith(
-                ("skills.", "skilldev.", "plugins.", "symphony.")
+                ("skills.", "skilldev.", "plugins.", "symphony.", "model_registry.")
             )
         )
 

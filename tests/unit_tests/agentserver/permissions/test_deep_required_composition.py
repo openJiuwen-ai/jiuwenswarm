@@ -28,6 +28,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 
 _PROFILE_BUILDERS = """
 _build_skill_rail _build_skill_retrieval_prompt_rail _build_symphony_orchestration_rail
+_build_third_agent_prompt_rail
 _build_runtime_prompt_rail _build_response_prompt_rail _build_multimodal_image_rail
 _build_task_planning_rail _build_security_rail _build_heartbeat_rail
 _build_model_anomaly_detection_rail _build_circuit_breaker_rail _build_avatar_rail
@@ -113,7 +114,7 @@ def test_parent_composition_preserves_order_and_wiring(
     rails, required = _capture(adapter, monkeypatch, mode)
     attrs = (
         "_root_permission_queue_rail _skill_rail _skill_retrieval_prompt_rail "
-        "_symphony_orchestration_rail _root_context_rail "
+        "_symphony_orchestration_rail _third_agent_prompt_rail _root_context_rail "
         "_runtime_prompt_rail _response_prompt_rail _multimodal_image_rail "
         "_stream_event_rail _task_planning_rail _security_rail _heartbeat_rail "
         "_model_anomaly_detection_rail _circuit_breaker_rail _avatar_rail "

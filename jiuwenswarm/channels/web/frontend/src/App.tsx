@@ -10,6 +10,10 @@ import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentPanel } from './components/AgentPanel/index';
 import { TeamPanel } from './components/TeamPanel';
+import { ThirdAgentPanel } from './components/ThirdAgentPanel';
+import { HardwarePanel } from './components/HardwarePanel';
+import { ModelMgmtPanel } from './components/ModelMgmtPanel';
+import { UserMgmtPanel } from './components/UserMgmtPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import { ToolPanel } from './components/ToolPanel';
@@ -136,7 +140,7 @@ function normalizeConfigBoolean(value: unknown): boolean {
   );
 }
 
-type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'browserpanel' | 'updatepanel';
+type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'thirdagents' | 'hardware' | 'modelmgmt' | 'users' | 'sessions' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'browserpanel' | 'updatepanel';
 
 type LoadedHistoryPage = {
   pageIdx: number;
@@ -2361,6 +2365,17 @@ function AppContent() {
     };
   }, [clearChatPanelResize, showWorkspaceDivider]);
 
+  // 管理类导航卡片（Agent管理/硬件管理/模型管理/用户管理）由配置开关
+  // management_nav.enabled 控制（config.get 返回 management_nav_enabled）：
+  // 默认关闭即隐藏；开启时展示，且不影响其他导航卡片的既有可见性。
+  const managementNavEnabled = normalizeConfigBoolean(serverConfig?.management_nav_enabled);
+  const sidebarHiddenNavItems: MainNavKey[] = [
+    'sessions',
+    ...(managementNavEnabled
+      ? []
+      : ['thirdagents', 'hardware', 'modelmgmt', 'users'] as MainNavKey[]),
+  ];
+
   return (
     <div
       className={`shell shell--icon-rail ${sidebarMorePanelOpen ? 'shell--more-panel-open' : ''}`}
@@ -2375,7 +2390,7 @@ function AppContent() {
         isConnected={isConnected}
         onNewSession={handleNewSession}
         showNewSession={false}
-        hiddenNavItems={['sessions']}
+        hiddenNavItems={sidebarHiddenNavItems}
         onMorePanelOpenChange={setSidebarMorePanelOpen}
       />
 
@@ -2518,6 +2533,26 @@ function AppContent() {
         {activeNav === 'teams' && (
           <div className="app-section">
             <TeamPanel onSessionsDeleted={handleTeamSessionsDeleted} />
+          </div>
+        )}
+        {activeNav === 'thirdagents' && managementNavEnabled && (
+          <div className="app-section">
+            <ThirdAgentPanel />
+          </div>
+        )}
+        {activeNav === 'hardware' && managementNavEnabled && (
+          <div className="app-section">
+            <HardwarePanel />
+          </div>
+        )}
+        {activeNav === 'modelmgmt' && managementNavEnabled && (
+          <div className="app-section">
+            <ModelMgmtPanel />
+          </div>
+        )}
+        {activeNav === 'users' && managementNavEnabled && (
+          <div className="app-section">
+            <UserMgmtPanel />
           </div>
         )}
         {activeNav === 'sessions' && (

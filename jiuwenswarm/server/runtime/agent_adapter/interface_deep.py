@@ -348,11 +348,17 @@ from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
     SkillRetrievalToolkit,
     SkillToolkit,
+    ThirdAgentToolkit,
+    UserToolkit,
+    get_model_registry_tools,
     is_skill_retrieval_enabled,
     SymphonyToolkit,
 )
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
+)
+from jiuwenswarm.agents.harness.common.rails.third_agent_prompt_rail import (
+    ThirdAgentPromptRail,
 )
 from jiuwenswarm.symphony.config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import read_pdf
@@ -1449,6 +1455,7 @@ class JiuWenSwarmDeepAdapter:
         self._skill_retrieval_tools_registered: bool = False
         self._skill_retrieval_tools: list[Any] = []
         self._skill_retrieval_prompt_rail: SkillRetrievalPromptRail | None = None
+        self._third_agent_prompt_rail: ThirdAgentPromptRail | None = None
         self._skill_manager: SkillManager | None = None
         self._a2x_client: Any | None = None
         self._a2x_config: dict[str, Any] = {}
@@ -5787,6 +5794,15 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
             return None
 
+    @staticmethod
+    def _build_third_agent_prompt_rail() -> ThirdAgentPromptRail | None:
+        """Build the rail injecting installed third-party agent status into prompts."""
+        try:
+            return ThirdAgentPromptRail()
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] ThirdAgentPromptRail create failed: %s", exc)
+            return None
+
     async def refresh_skill_rails(self) -> None:
         """轻量刷新 skill 相关 rail，避免全量重建 agent 实例.
 
@@ -5962,6 +5978,10 @@ class JiuWenSwarmDeepAdapter:
                 _AgentRailBuildSpec(
                     "_symphony_orchestration_rail",
                     self._build_symphony_orchestration_rail,
+                ),
+                _AgentRailBuildSpec(
+                    "_third_agent_prompt_rail",
+                    self._build_third_agent_prompt_rail,
                 ),
             )
         )
@@ -6803,6 +6823,45 @@ class JiuWenSwarmDeepAdapter:
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] skill tools registration failed: %s", exc)
+
+        try:
+            third_agent_names: list[str] = []
+            for tool in ThirdAgentToolkit().get_tools():
+                self._register_shared_tool(tool)
+                tool_cards.append(tool.card)
+                third_agent_names.append(tool.card.name)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] ThirdAgentToolkit registered: tools=%s",
+                third_agent_names,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] third-agent tools registration failed: %s", exc)
+
+        try:
+            model_registry_names: list[str] = []
+            for tool in get_model_registry_tools():
+                self._register_shared_tool(tool)
+                tool_cards.append(tool.card)
+                model_registry_names.append(tool.card.name)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] ModelRegistryToolkit registered: tools=%s",
+                model_registry_names,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] model-registry tools registration failed: %s", exc)
+
+        try:
+            user_names: list[str] = []
+            for tool in UserToolkit().get_tools():
+                self._register_shared_tool(tool)
+                tool_cards.append(tool.card)
+                user_names.append(tool.card.name)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] UserToolkit registered: tools=%s",
+                user_names,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] user tools registration failed: %s", exc)
 
         if is_skill_retrieval_enabled():
             try:

@@ -5,6 +5,11 @@ preferred_language: zh
 setup_guide:
   enabled: true
 
+# 管理类导航卡片（Agent管理/硬件管理/模型管理/用户管理）总开关：
+# true 时在侧边栏展示这些卡片；false（默认）时隐藏，不影响其他导航卡片
+management_nav:
+  enabled: false
+
 # auto-recap：用户空闲5分钟后自动生成会话摘要（TUI 端）
 auto_recap:
   enabled: true
@@ -1260,6 +1265,7 @@ modes:
     #       开关关闭时不加载，开关开启时固定挂载。
     rails:
       - SkillUseRail
+      - ThirdAgentPromptRail
       - WorktreeRail
 
     # 动态 Tools — 列表中出现的 = 启用
@@ -1271,6 +1277,9 @@ modes:
       - web_paid_search
       - user_todos
       - skill_toolkit
+      - third_agent_toolkit
+      - model_registry_toolkit
+      - user_toolkit
       - skill_retrieval
 
     embedding_config:
