@@ -1675,6 +1675,8 @@ class JiuWenSwarmDeepAdapter:
         self._is_proactive_memory: bool | None = None
         self._model_cache: dict[str, Model] = {}
         self._model_name_to_keys: dict[str, list[str]] = {}
+        self._model_id_to_key: dict[str, str] = {}
+        self._model_group_cache: dict[str, Model] = {}
         # 全局列表下标 → cache_key。通道侧（Web）用全局 origin_index 拼请求 key，
         # 与后端 per-name 的 cache_key 序号语义分叉；此映射在 _resolve_model_by_name
         # 回退分支把通道传入的全局序号换算成真实 cache_key，避免同名条目
@@ -5185,6 +5187,10 @@ class JiuWenSwarmDeepAdapter:
             self._model_name_to_keys[model_name] = []
         self._model_name_to_keys[model_name].append(cache_key)
 
+        model_id = str(entry.get("model_id") or "").strip()
+        if model_id:
+            self._model_id_to_key[model_id] = cache_key
+
         # 同时用纯 model_name 作为 key 指向 is_default=true 的条目
         if entry.get("is_default") is True:
             self._model_cache[model_name] = self._model_cache[cache_key]
@@ -5205,6 +5211,7 @@ class JiuWenSwarmDeepAdapter:
         """
         self._model_name_to_keys.clear()
         self._global_index_to_cache_key.clear()
+        self._model_id_to_key.clear()
         name_counter: dict[str, int] = {}
 
         for global_idx, entry in enumerate(get_default_models(config)):
@@ -5261,6 +5268,8 @@ class JiuWenSwarmDeepAdapter:
         self._model_cache.clear()
         self._model_name_to_keys.clear()
         self._global_index_to_cache_key.clear()
+        self._model_id_to_key.clear()
+        self._model_group_cache.clear()
         self._inject_attribution_to_config(config)
         self._build_model_cache_from_defaults(config)
         if not self._model_cache:
@@ -5286,6 +5295,22 @@ class JiuWenSwarmDeepAdapter:
                     break
         if default_name is None:
             default_name = next(iter(self._model_cache))
+
+        # A configured default group outranks the default single model. The
+        # actual router is compiled by agent-core; JiuwenSwarm never builds it.
+        default_groups = [
+            group for group in (config.get("models", {}).get("groups") or [])
+            if isinstance(group, dict) and group.get("enabled", True) and group.get("is_default")
+        ]
+        if default_groups:
+            group_id = str(default_groups[0].get("model_group_id") or "")
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            resolved = ModelSelectionResolver().resolve(ModelSelection(type="model_group", id=group_id))
+            self._model_group_cache[group_id] = build_model_from_selection(resolved)
+            default_name = f"model_group:{group_id}"
+            self._model_cache[default_name] = self._model_group_cache[group_id]
 
         # 首次启动兜底：config 默认条目仍为 .env 占位符时，改选 Zen 免费模型
         # （如 DeepSeek V4 Flash）作为默认，避免把占位模型发往厂商。
@@ -5468,11 +5493,28 @@ class JiuWenSwarmDeepAdapter:
         ``command.goal`` / interrupt resume can still hit the user's choice.
         """
         params = request.params if isinstance(request.params, dict) else {}
+        raw_selection = params.get("model_selection")
+        if isinstance(raw_selection, dict):
+            try:
+                from jiuwenswarm.common.model_selection import ModelSelection
+                selection = ModelSelection.model_validate(raw_selection)
+                return f"{selection.type}:{selection.id}"
+            except ValidationError as exc:
+                raise ValueError(f"invalid model_selection: {exc}") from exc
         requested = str(params.get("model_name") or "").strip()
         if requested:
             return requested
         if getattr(self, "_last_resolved_model", None) is not None:
             return ""
+        session_id = str(getattr(request, "session_id", None) or "").strip()
+        if session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.model_selection_store import get_session_model_selection
+                selection = get_session_model_selection(session_id)
+                if selection is not None:
+                    return f"{selection.type}:{selection.id}"
+            except ValueError:
+                logger.warning("invalid session id while resolving model selection: %r", session_id)
         return self._session_stored_model_name(getattr(request, "session_id", None))
 
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
@@ -5486,6 +5528,25 @@ class JiuWenSwarmDeepAdapter:
         → 适配器默认模型。避免 command.goal / 中断恢复在适配器重建后掉回默认。
         """
         requested = self._requested_model_name(request)
+        if requested.startswith("model_group:"):
+            group_id = requested.split(":", 1)[1]
+            cached = self._model_group_cache.get(group_id)
+            if cached is not None:
+                return cached
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            resolved = ModelSelectionResolver().resolve(ModelSelection(type="model_group", id=group_id))
+            model = build_model_from_selection(resolved)
+            self._model_group_cache[group_id] = model
+            return model
+        if requested.startswith("model:"):
+            model_id = requested.split(":", 1)[1]
+            cache_key = self._model_id_to_key.get(model_id)
+            if cache_key is None or cache_key not in self._model_cache:
+                from jiuwenswarm.common.model_errors import MODEL_SELECTION_NOT_FOUND, ModelSelectionError
+                raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_id {model_id!r}")
+            return self._model_cache[cache_key]
         if not requested:
             last = getattr(self, "_last_resolved_model", None)
             if last is not None:

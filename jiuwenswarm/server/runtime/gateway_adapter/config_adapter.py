@@ -84,6 +84,13 @@ class ConfigAdapter(GatewayAdapter):
         ReqMethod.MODELS_LIST.value,
         ReqMethod.MODELS_REPLACE_ALL.value,
         ReqMethod.MODELS_VALIDATE.value,
+        ReqMethod.MODELS_UPSERT.value,
+        ReqMethod.MODELS_DELETE.value,
+        ReqMethod.MODELS_REFERENCES.value,
+        ReqMethod.MODEL_GROUPS_LIST.value,
+        ReqMethod.MODEL_GROUPS_UPSERT.value,
+        ReqMethod.MODEL_GROUPS_DELETE.value,
+        ReqMethod.SESSION_SELECTION_SET.value,
         ReqMethod.LOCALE_GET_CONF.value,
         ReqMethod.LOCALE_SET_CONF.value,
         ReqMethod.COMMAND_MODEL.value,
@@ -170,6 +177,10 @@ class ConfigAdapter(GatewayAdapter):
             ReqMethod.CONFIG_SET,
             ReqMethod.CONFIG_SAVE_ALL,
             ReqMethod.MODELS_REPLACE_ALL,
+            ReqMethod.MODELS_UPSERT,
+            ReqMethod.MODELS_DELETE,
+            ReqMethod.MODEL_GROUPS_UPSERT,
+            ReqMethod.MODEL_GROUPS_DELETE,
         }:
             metadata["config_changed"] = True
         payload = dict(response["payload"])

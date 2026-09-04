@@ -690,6 +690,7 @@ class CronSchedulerService:
                 "project_id": job.project_id or "",
                 "work_mode": job.work_mode or DEFAULT_WEB_WORK_MODE,
                 "model_name": job.model_name or None,
+                "model_selection": job.model_selection,
                 "cron_id": job.id,
                 "user_id": cron_user_id,
             },
@@ -1144,6 +1145,8 @@ class CronSchedulerService:
                 }
                 if job.model_name:
                     params["model_name"] = job.model_name
+                if job.model_selection:
+                    params["model_selection"] = dict(job.model_selection)
                 envelope = e2a_from_agent_fields(
                     request_id=f"cron-{run_id}",
                     channel_id=channel_id,

@@ -258,7 +258,8 @@ models:
   # 开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。
   enable_free_models: true
   defaults:
-    - model_client_config:
+    - model_id: mdl_default_primary
+      model_client_config:
         api_base: ${API_BASE}
         api_key: ${API_KEY}
         model_name: ${MODEL_NAME}
@@ -379,6 +380,9 @@ models:
   #     model_config_obj:
   #       temperature: 0.95
   #       context_window: 131072
+  # Model groups reference models by stable model_id. Route order is the only
+  # primary/fallback order; routes[0] is primary.
+  groups: []
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:

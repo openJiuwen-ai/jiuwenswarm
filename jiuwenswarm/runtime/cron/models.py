@@ -323,6 +323,7 @@ class CronJob:
     last_session_id: str | None = None
     # 执行时使用的模型；None 表示使用 AgentServer 默认模型
     model_name: str | None = None
+    model_selection: dict[str, str] | None = None
     # 飞书多应用场景：创建该定时任务的 app_id，用于推送时定位到正确的 app 配置
     app_id: str = ""
     # 创建者标识（web 端 user_id）。执行时透传给 faas 的 X-Session-Context，
@@ -368,6 +369,8 @@ class CronJob:
             d["last_session_id"] = self.last_session_id
         if self.model_name:
             d["model_name"] = self.model_name
+        if self.model_selection:
+            d["model_selection"] = dict(self.model_selection)
         if self.app_id:
             d["app_id"] = self.app_id
         if self.user_id:
@@ -482,6 +485,11 @@ class CronJob:
             if isinstance(model_raw, str) and str(model_raw).strip()
             else None
         )
+        selection_raw = data.get("model_selection")
+        job_model_selection = None
+        if isinstance(selection_raw, dict):
+            from jiuwenswarm.common.model_selection import ModelSelection
+            job_model_selection = ModelSelection.model_validate(selection_raw).model_dump()
         app_id_raw = data.get("app_id", "")
         job_app_id = str(app_id_raw).strip() if isinstance(app_id_raw, str) else ""
 
@@ -518,6 +526,7 @@ class CronJob:
             project_id=project_id,
             last_session_id=last_session_id,
             model_name=job_model_name,
+            model_selection=job_model_selection,
             app_id=job_app_id,
             user_id=job_user_id,
             work_mode=job_work_mode,
