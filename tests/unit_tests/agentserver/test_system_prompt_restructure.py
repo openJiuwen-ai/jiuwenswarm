@@ -972,6 +972,7 @@ async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
     assert task_section is not None
     assert runtime_section is not None
     assert "Browser Capability Routing Rules" in task_section.content["en"]
+    assert "Adding to a cart is reversible" in task_section.content["en"]
     assert "Browser Capability Routing Rules" not in runtime_section.content["en"]
 
 
