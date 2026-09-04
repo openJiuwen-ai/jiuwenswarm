@@ -366,14 +366,19 @@ gateway_deploy_process() {
     fi
 }
 
-# systemd 模式停止，不禁用开机自启动
+# systemd 模式停止：disable --now + 删除 unit 文件与 drop-in + daemon-reload。
+# 与 uninstall 对称（参照 deploy/agent-gateway/module.sh 的 agent-gateway_uninstall），
+# 避免 down/uninstall 后 unit 残留并保持开机自启，重启后因依赖已卸载反复拉起失败。
+# down 删 unit 不影响后续 up：gateway_start_systemd 会重新生成 unit 文件。
 gateway_stop_systemd() {
     local master_host="$1"
     local svc_name
     svc_name=$(gateway_service_name)
-    info "Stopping gateway service on ${master_host}..."
-    exec_on_host "${master_host}" "systemctl stop ${svc_name} 2>/dev/null || true"
-    success "Gateway service stopped on ${master_host}"
+    info "Stopping and disabling gateway service on ${master_host}..."
+    exec_on_host "${master_host}" "systemctl disable --now ${svc_name} 2>/dev/null || true"
+    exec_on_host "${master_host}" "rm -f /etc/systemd/system/${svc_name}.service; rm -rf /etc/systemd/system/${svc_name}.service.d"
+    exec_on_host "${master_host}" "systemctl daemon-reload 2>/dev/null || true"
+    success "Gateway service stopped and disabled on ${master_host}"
 }
 
 # nohup 模式停止
