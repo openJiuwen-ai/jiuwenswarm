@@ -34,6 +34,7 @@ class FakeWebChannel:
         self.responses: list[dict] = []
         self.connect_handler = None
         self.disconnect_handler = None
+        self.busy_sessions: set[str] = set()
 
     def register_method(self, name, handler):
         self.methods[name] = handler
@@ -43,6 +44,9 @@ class FakeWebChannel:
 
     def on_disconnect(self, handler):
         self.disconnect_handler = handler
+
+    def is_session_busy(self, session_id: str) -> bool:
+        return session_id in self.busy_sessions
 
     async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
         self.responses.append(
@@ -104,6 +108,24 @@ class _CapturingSessionListAgentClient:
                     "total": 1,
                     "limit": 20,
                     "offset": 0,
+                },
+            },
+        )()
+
+
+class _SessionMetadataAgentClient:
+    server_ready = True
+
+    async def send_request(self, envelope):
+        return type(
+            "Resp",
+            (),
+            {
+                "ok": True,
+                "payload": {
+                    "session_id": envelope.session_id,
+                    "status": "idle",
+                    "is_processing": False,
                 },
             },
         )()
@@ -447,6 +469,57 @@ async def test_session_list_does_not_fallback_for_offline_remote_client(monkeypa
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+async def test_session_get_metadata_uses_live_gateway_processing_status(busy: bool) -> None:
+    channel = FakeWebChannel()
+    if busy:
+        channel.busy_sessions.add("sess-running")
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=_SessionMetadataAgentClient(),
+        )
+    )
+
+    await channel.methods["session.get_metadata"](
+        object(),
+        "req-session-metadata",
+        {"session_id": "sess-running"},
+        "sess-running",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"]["is_processing"] is busy
+
+
+@pytest.mark.asyncio
+async def test_history_get_ack_preserves_cursor_request_boundary() -> None:
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["history.get"](
+        object(),
+        "req-history",
+        {"session_id": "sess-history", "cursor": "cursor-2", "limit": 50},
+        "sess-history",
+    )
+
+    assert channel.responses[-1] == {
+        "id": "req-history",
+        "ok": True,
+        "payload": {
+            "accepted": True,
+            "session_id": "sess-history",
+            "cursor": "cursor-2",
+            "limit": 50,
+        },
+        "error": None,
+        "code": None,
+    }
 
 
 @pytest.mark.asyncio

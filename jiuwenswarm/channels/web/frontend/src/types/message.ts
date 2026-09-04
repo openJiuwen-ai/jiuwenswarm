@@ -70,6 +70,8 @@ export interface Message {
   completedAt?: string;
   /** 前端渲染身份，避免业务 id 重复或历史 prepend 导致 React key 抖动 */
   renderKey?: string;
+  /** 仅用于大历史渐进发布；实时消息没有该标记。 */
+  historyBatchSeq?: number;
   audioBase64?: string;
   audioMime?: string;
   mediaItems?: MediaItem[];
@@ -156,6 +158,8 @@ export interface ToolExecution {
   requestId?: string;
   /** Web 单 Agent 工具调用所属的专家；Team 工具不设置。 */
   agentTemplateName?: string;
+  /** 仅用于大历史渐进发布；实时工具没有该标记。 */
+  historyBatchSeq?: number;
 }
 
 export interface Conversation {

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildRenderItems } from '../node_modules/.cache/build-turn-timeline/buildTurnTimeline.js';
+import {
+  buildLiveCompletedStreaks,
+  buildRenderItems,
+} from '../node_modules/.cache/build-turn-timeline/buildTurnTimeline.js';
 
 const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
@@ -66,6 +69,10 @@ function commandOutputMessage(ms, id = 'cmd1') {
 
 function turnSummaryOf(items) {
   return items.find((item) => item.type === 'turnSummary');
+}
+
+function turnSummaryKeys(items) {
+  return items.filter((item) => item.type === 'turnSummary').map((item) => item.key);
 }
 
 function execution({ status, startedAt, updatedAt, agentTemplateName }) {
@@ -230,4 +237,82 @@ test('slash 命令结果自成时间线块，不把上一轮任务用时排到�
     1,
     '命令卡片自身不应新增任务用时',
   );
+});
+
+test('历史前插完整回合时，既有任务用时行保持原有 key', () => {
+  const current = [
+    userMessage(U, 'u10'),
+    assistantMessage(U + 1_000, U + 2_000, 'a10'),
+    userMessage(U + 10_000, 'u11'),
+    assistantMessage(U + 11_000, U + 12_000, 'a11'),
+  ];
+  const before = buildRenderItems(current, false, false);
+  const after = buildRenderItems(
+    [
+      userMessage(U - 10_000, 'u9'),
+      assistantMessage(U - 9_000, U - 8_000, 'a9'),
+      ...current,
+    ],
+    false,
+    false,
+  );
+
+  assert.deepEqual(turnSummaryKeys(before), ['turn-summary-a10', 'turn-summary-a11']);
+  assert.deepEqual(
+    turnSummaryKeys(after),
+    ['turn-summary-a9', 'turn-summary-a10', 'turn-summary-a11'],
+    '前插只能新增旧回合 key，既有回合 key 不得整体改号',
+  );
+});
+
+test('历史补齐首个半回合时，边界回合的任务用时 key 也保持不变', () => {
+  const knownTail = [
+    assistantMessage(U + 1_000, U + 2_000, 'a10'),
+    userMessage(U + 10_000, 'u11'),
+    assistantMessage(U + 11_000, U + 12_000, 'a11'),
+  ];
+  const before = buildRenderItems(knownTail, false, false);
+  const after = buildRenderItems([userMessage(U, 'u10'), ...knownTail], false, false);
+
+  assert.deepEqual(turnSummaryKeys(before), ['turn-summary-a10', 'turn-summary-a11']);
+  assert.deepEqual(
+    turnSummaryKeys(after),
+    ['turn-summary-a10', 'turn-summary-a11'],
+    '补齐边界回合后，所有既有 key 都必须保持不变',
+  );
+});
+
+test('只有用户消息的进行中回合仍显示任务用时，并锚定该用户消息', () => {
+  const out = buildRenderItems([userMessage(U, 'u-running')], false, true);
+  const summary = turnSummaryOf(out);
+
+  assert.ok(summary, '进行中回合仍应显示任务用时');
+  assert.equal(summary.key, 'turn-summary-u-running');
+});
+
+test('历史前插扩展同一 streak 时，展开态 key 锚定末项并保持不变', () => {
+  const now = 1_800_000_000_000;
+  const workItem = key => ({
+    type: 'reasoning',
+    key,
+    showAvatar: false,
+    turnId: 7,
+    segment: {
+      id: key,
+      text: key,
+      startedAt: now - 20_000,
+      updatedAt: now - 15_000,
+      closedAt: now - 10_000,
+      closed: true,
+    },
+  });
+  const before = [...buildLiveCompletedStreaks([workItem('r2'), workItem('r3')], now).values()];
+  const after = [
+    ...buildLiveCompletedStreaks([workItem('r1'), workItem('r2'), workItem('r3')], now).values(),
+  ];
+
+  assert.equal(before[0].firstKey, 'r2');
+  assert.equal(after[0].firstKey, 'r1');
+  assert.equal(before[0].id, 'streak-r3');
+  assert.equal(after[0].id, 'streak-r3');
 });

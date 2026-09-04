@@ -1457,6 +1457,12 @@ body.workspace-resize-active iframe {
     margin-bottom: 0;
   }
 
+  .chat-timeline__history-sentinel {
+    height: 1px;
+    margin-bottom: -9px;
+    pointer-events: none;
+  }
+
   /* ====== Tool Tree ====== */
   .tool-group-frame {
     margin: 0;

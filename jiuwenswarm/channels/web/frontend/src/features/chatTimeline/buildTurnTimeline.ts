@@ -455,7 +455,10 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
   let hasActivity = false;
   let hasWork = false;
   let turnId = 0;
-  let seq = 0;
+  // 已完成轮次锚定该轮最后一个业务项：历史页从半轮开始时，后续只会在它前面
+  // 补数据，末项不会变化。进行中轮次仍锚定 user，避免流式追加时反复换 key。
+  let summaryAnchorKey: string | null = null;
+  let runningTurnAnchorKey: string | null = null;
   // 时间行插入点：本轮首条 assistant 内容之前（视觉上位于头像下第一行）。
   let turnContentStart = 0;
   // 空窗轮（只有 user 消息、无任何活动）透传给下一轮的起点。
@@ -478,9 +481,15 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
     // 分支），否则那一轮从首次思考才开始算，耗时显示成 0s。
     const carryTimestamps = !hasActivity;
     if (shouldShow && Number.isFinite(startMs) && Number.isFinite(endMs)) {
+      const anchorKey = isLastTurn && isProcessing
+        ? runningTurnAnchorKey ?? summaryAnchorKey
+        : summaryAnchorKey;
+      if (anchorKey === null) {
+        throw new Error('Turn summary is missing its stable timeline anchor');
+      }
       const summary: Extract<RenderItem, { type: 'turnSummary' }> = {
         type: 'turnSummary',
-        key: `turn-summary-${seq}`,
+        key: `turn-summary-${anchorKey}`,
         turnId,
         startMs,
         endMs,
@@ -490,7 +499,6 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
         hasWork,
         showAvatar: false,
       };
-      seq += 1;
       // 时间行统一挂到本轮内容顶部：接管首条 leader/助手内容的顶部头像（与折叠条同规则）；
       // 成员自己的头像不动，时间行不带头像直接排在成员消息上方。
       const firstContent = out[turnContentStart];
@@ -517,6 +525,8 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
     workEndMs = Number.NEGATIVE_INFINITY;
     hasActivity = false;
     hasWork = false;
+    summaryAnchorKey = null;
+    runningTurnAnchorKey = null;
   };
 
   for (const item of items) {
@@ -532,6 +542,8 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
       carriedStartMs = Number.POSITIVE_INFINITY;
       acc(toTimestampMs(item.message.timestamp), false);
       out.push(item);
+      summaryAnchorKey = item.key;
+      runningTurnAnchorKey = item.key;
       turnContentStart = out.length;
       continue;
     }
@@ -556,6 +568,8 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
       turnId += 1;
       startsOwnBlock = true;
     }
+    // 记录本轮当前末项。历史前插不会改变它，因此已完成轮次身份保持稳定。
+    summaryAnchorKey = item.key;
     if (item.type === 'toolGroup') {
       hasActivity = true;
       hasWork = true;
@@ -831,9 +845,10 @@ export function buildTurnFoldAnchorKeys(
 export type LiveWorkStreak = {
   id: string;
   turnId: number;
-  /** 轮次内稳定序号（不绑易变的 item.key），供展开态持久化 */
+  /** 轮次内顺序，仅用于识别顶部 streak；展开态由稳定末项 key 持久化。 */
   ordinal: number;
   firstKey: string;
+  lastKey: string;
   keys: Set<string>;
   thinkingCount: number;
   toolCount: number;
@@ -848,9 +863,9 @@ const REASONING_STREAK_MERGE_EXTRA_MS = 700;
 const TOOL_STREAK_SETTLE_MS = 1200;
 export const STREAK_FOLD_TRANSITION_DELAY_MS = 160;
 
-/** streak 展开态 key：绑 turnId + 轮次内 ordinal，避免 firstKey 变化导致展开态丢失 */
-export function streakExpandKey(turnId: number, ordinal: number): string {
-  return `streak-${turnId}-${ordinal}`;
+/** streak 展开态锚定末项；历史前插只会扩展 streak 头部，不会改变末项。 */
+export function streakExpandKey(lastKey: string): string {
+  return `streak-${lastKey}`;
 }
 
 /** 单轮耗时超过该阈值视为时间戳异常（历史脏数据/巡检污染），回退到更窄的 work 跨度。 */
@@ -1010,6 +1025,7 @@ export function buildLiveCompletedStreaks(
 
   const seal = () => {
     if (streak && streak.thinkingCount + streak.toolCount >= 2) {
+      streak.id = streakExpandKey(streak.lastKey);
       streak.outcomeTone = resolveWorkOutcomeTone(
         streak.toolSuccessCount,
         streak.toolFailedCount,
@@ -1023,10 +1039,11 @@ export function buildLiveCompletedStreaks(
   const startStreak = (item: Extract<RenderItem, { type: 'reasoning' | 'toolGroup' }>): LiveWorkStreak => {
     const ordinal = nextOrdinal(item.turnId);
     return {
-      id: streakExpandKey(item.turnId, ordinal),
+      id: '',
       turnId: item.turnId,
       ordinal,
       firstKey: item.key,
+      lastKey: item.key,
       keys: new Set(),
       thinkingCount: 0,
       toolCount: 0,
@@ -1055,6 +1072,7 @@ export function buildLiveCompletedStreaks(
         streak = startStreak(item);
       }
       streak.keys.add(item.key);
+      streak.lastKey = item.key;
       streak.thinkingCount += 1;
       continue;
     }
@@ -1073,6 +1091,7 @@ export function buildLiveCompletedStreaks(
       streak = startStreak(item);
     }
     streak.keys.add(item.key);
+    streak.lastKey = item.key;
     streak.toolCount += workToolCount;
     accumulateToolOutcomes(item.executions, streak);
   }

@@ -4268,10 +4268,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """返回单个会话的元数据（mode / model / project_dir / last_user_message_at 等）。
 
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
-        SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。
+        SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。运行态不属于
+        持久化 metadata：由 WebChannel 已维护的 session busy 状态在响应入队前覆盖，
+        这样页面刷新仍能恢复当前会话的停止按钮，并与随后同一 WS 上的状态事件保持顺序。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        target_session_id = str(
+            params.get("session_id") if isinstance(params, dict) else session_id or ""
+        ).strip()
+
+        def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
+            if ok:
+                payload["is_processing"] = channel.is_session_busy(target_session_id)
 
         await proxy_unary_request(
             channel=channel,
@@ -4283,6 +4293,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.SESSION_GET_METADATA,
             label="session.get_metadata",
+            on_done=_attach_runtime_status,
         )
 
     async def _session_plan_status(ws, req_id, params, session_id, user_id=None):
@@ -5314,6 +5325,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["session_id"] = params.get("session_id")
             if "page_idx" in params:
                 payload["page_idx"] = params.get("page_idx")
+            if "cursor" in params:
+                payload["cursor"] = params.get("cursor")
+            if "limit" in params:
+                payload["limit"] = params.get("limit")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):

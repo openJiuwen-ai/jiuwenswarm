@@ -380,6 +380,21 @@ test('subagent history rejects parent frames without its exact subagent id', () 
   }, sessionId, 1, false, subagentId), true);
 });
 
+test('cursor history accepts only the exact request cursor', () => {
+  assert.equal(shouldProcessHistoryPayload({
+    session_id: sessionId,
+    cursor: null,
+  }, sessionId, undefined, false, undefined, null), true);
+  assert.equal(shouldProcessHistoryPayload({
+    session_id: sessionId,
+    cursor: 'cursor-2',
+  }, sessionId, undefined, false, undefined, 'cursor-1'), false);
+  assert.equal(shouldProcessHistoryPayload({
+    session_id: sessionId,
+    cursor: 'cursor-1',
+  }, sessionId, undefined, false, undefined, 'cursor-1'), true);
+});
+
 test('parent tool history recovers roster and structured wait result without tool-result transcript text', () => {
   const recovered = recoverSubagentToolHistory([
     {

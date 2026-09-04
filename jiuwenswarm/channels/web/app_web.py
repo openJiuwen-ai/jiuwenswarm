@@ -26,7 +26,7 @@ import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, quote, unquote, urlparse
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
@@ -45,6 +45,26 @@ from jiuwenswarm.gateway.routing.agent_http_bridge import (
 
 _resolve_agent_http_base = resolve_agent_http_base
 _resolve_agent_upload_base = resolve_agent_upload_base
+
+if TYPE_CHECKING:
+    from jiuwenswarm.channels.web.share_image_export import ShareImageExportManager
+
+_share_image_export_manager: ShareImageExportManager | None = None
+_share_image_export_manager_lock = threading.Lock()
+
+
+def _get_share_image_export_manager() -> ShareImageExportManager:
+    """Create the share-image job registry on first use to keep startup lazy."""
+    global _share_image_export_manager
+    if _share_image_export_manager is None:
+        with _share_image_export_manager_lock:
+            if _share_image_export_manager is None:
+                from jiuwenswarm.channels.web.share_image_export import (
+                    ShareImageExportManager,
+                )
+
+                _share_image_export_manager = ShareImageExportManager()
+    return _share_image_export_manager
 
 
 def _get_user_workspace_dir() -> Path:
@@ -1170,6 +1190,65 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if _uses_agentos_routing():
             self._write_json(503, {"error": "agentserver_file_rpc_required"})
             return
+        if parsed.path == "/share-api/jobs":
+            query = self._parse_query(parsed.query)
+            session_id = (query.get("session_id") or "").strip()
+            if not session_id:
+                self._write_json(400, {"error": "missing_session_id"})
+                return
+            status = _get_share_image_export_manager().get_active_status(session_id)
+            if status is None:
+                self._write_json(404, {"error": "active_job_not_found"})
+                return
+            self._write_json(200, status)
+            return
+        job_match = re.fullmatch(
+            r"/share-api/jobs/([a-f0-9]{32})(?:/(snapshot|download))?",
+            parsed.path,
+        )
+        if job_match:
+            job_id, resource = job_match.groups()
+            if resource is None:
+                status = _get_share_image_export_manager().get_status(job_id)
+                if status is None:
+                    self._write_json(404, {"error": "job_not_found"})
+                    return
+                self._write_json(200, status)
+                return
+
+            if resource == "snapshot":
+                file_path = _get_share_image_export_manager().get_snapshot_path(job_id)
+                filename = "snapshot.json"
+                content_type = "application/json; charset=utf-8"
+            else:
+                result = _get_share_image_export_manager().get_result(job_id)
+                if result is None:
+                    status = _get_share_image_export_manager().get_status(job_id)
+                    self._write_json(
+                        404 if status is None else 409,
+                        {"error": "job_not_found" if status is None else "job_not_completed"},
+                    )
+                    return
+                file_path, filename = result
+                content_type = "application/zip" if filename.lower().endswith(".zip") else "image/png"
+
+            if file_path is None or not file_path.is_file():
+                self._write_json(404, {"error": "job_file_not_found"})
+                return
+            file_size = file_path.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Cache-Control", "no-store")
+            if resource == "download":
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            if self.command != "HEAD":
+                with file_path.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        self.wfile.write(chunk)
+            return
+
         if parsed.path != "/share-api/snapshot":
             self._write_json(404, {"error": "not_found"})
             return
@@ -1189,6 +1268,59 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._write_json(400, {"error": str(exc)})
             return
         self._write_json(200, {"filename": filename, "snapshot": snapshot})
+
+    def _handle_share_api_post(self, parsed) -> None:
+        if _uses_agentos_routing():
+            self._write_json(503, {"error": "agentserver_file_rpc_required"})
+            return
+        if parsed.path != "/share-api/jobs":
+            self._write_json(404, {"error": "not_found"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self._write_json(400, {"error": "invalid_content_length"})
+            return
+        if length < 0:
+            self._write_json(400, {"error": "invalid_content_length"})
+            return
+        if length > 64 * 1024:
+            self._write_json(413, {"error": "request_too_large"})
+            return
+        try:
+            body = json.loads(self._read_request_body().decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._write_json(400, {"error": "invalid_json"})
+            return
+        session_id = body.get("session_id", "") if isinstance(body, dict) else ""
+        if not isinstance(session_id, str) or not session_id.strip():
+            self._write_json(400, {"error": "missing_session_id"})
+            return
+        session_id = session_id.strip()
+        active_status = _get_share_image_export_manager().get_active_status(session_id)
+        if active_status is not None:
+            self._write_json(200, {**active_status, "reused": True})
+            return
+        locale = body.get("locale", "zh") if isinstance(body, dict) else "zh"
+        normalized_locale = locale.strip() if isinstance(locale, str) and locale.strip() else "zh"
+        try:
+            snapshot, filename = self._build_share_snapshot(session_id=session_id)
+        except FileNotFoundError:
+            self._write_json(404, {"error": "history_not_found"})
+            return
+        except ValueError as exc:
+            self._write_json(400, {"error": str(exc)})
+            return
+
+        port = int(self.server.server_address[1])
+        status = _get_share_image_export_manager().create_job(
+            session_id=session_id,
+            snapshot=snapshot,
+            filename=filename,
+            locale=normalized_locale,
+            base_url=f"http://127.0.0.1:{port}",
+        )
+        self._write_json(200 if status.get("reused") else 202, status)
 
     def _handle_file_api_get(self, parsed) -> None:
         path = parsed.path
@@ -1858,6 +1990,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self._is_share_api_route():
+            self._handle_share_api_post(parsed)
+            return
         if self._is_file_api_route():
             self._handle_file_api_post(parsed)
             return
@@ -1887,6 +2022,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self._is_share_api_route():
+            self._handle_share_api_get(parsed)
+            return
         if self._is_file_api_route():
             self._handle_file_api_get(parsed)
             return

@@ -66,8 +66,13 @@ interface TaskItem {
 }
 
 export interface HistoryPagerMeta {
-  loadedPages: number;
-  totalPages: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  historyComplete: boolean;
 }
 
 /**
@@ -85,6 +90,8 @@ export interface ReasoningSegment {
   updatedAt?: number;
   /** 收尾时刻；用于延迟折进 streak。历史可省略。 */
   closedAt?: number;
+  /** 仅用于大历史渐进发布；实时思考没有该标记。 */
+  historyBatchSeq?: number;
 }
 
 export interface ChatRuntime {
@@ -220,7 +227,13 @@ interface ChatState {
   closeReasoning: (sessionId: string, options?: { atMs?: number }) => void;
   restoreReasoningSegments: (
     sessionId: string,
-    items: { at: string; text: string; agentTemplateName?: string; updatedAt?: number }[],
+    items: {
+      at: string;
+      text: string;
+      agentTemplateName?: string;
+      updatedAt?: number;
+      historyBatchSeq?: number;
+    }[],
   ) => void;
   startStreaming: (sessionId: string, messageId: string, streamKey?: string) => void;
   stopStreaming: (sessionId: string, streamKey?: string) => void;
@@ -252,7 +265,12 @@ interface ChatState {
   addToolCall: (
     sessionId: string,
     toolCall: ToolCall,
-    options?: { startedAt?: string; requestId?: string; agentTemplateName?: string },
+    options?: {
+      startedAt?: string;
+      requestId?: string;
+      agentTemplateName?: string;
+      historyBatchSeq?: number;
+    },
   ) => void;
   updateToolProgress: (sessionId: string, toolCallId: string, progress: Partial<ToolResult>) => void;
   addToolResult: (sessionId: string, toolResult: ToolResult, options?: { updatedAt?: string }) => void;
@@ -551,6 +569,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           // 历史已结束：closedAt 用 startedAt，立刻 settled，且比魔法 0 更可解释。
           closedAt: startedAt,
           updatedAt,
+          historyBatchSeq: item.historyBatchSeq,
         });
       });
       segments.sort((a, b) => a.startedAt - b.startedAt);
@@ -1036,6 +1055,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         timeoutAt,
         requestId: options?.requestId,
         agentTemplateName: options?.agentTemplateName,
+        historyBatchSeq: options?.historyBatchSeq,
       });
 
       const nextOrder = [...runtime.toolExecutionOrder, toolCall.id];

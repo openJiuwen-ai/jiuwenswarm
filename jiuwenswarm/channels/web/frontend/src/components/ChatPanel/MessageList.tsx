@@ -1,4 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import clsx from 'clsx';
 import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +20,10 @@ import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
 import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
 import type { ReasoningSegment } from '../../stores/chatStore';
+import {
+  filterPublishedHistoryBatch,
+  shiftBoundedTimelineRange,
+} from '../../features/historyPagination';
 import {
   buildTimelineItems,
   buildRenderItems,
@@ -35,6 +48,8 @@ const EMPTY_REASONING: ReasoningSegment[] = [];
 interface MessageListProps {
   messages: Message[];
   renderAfterMessage?: (message: Message) => ReactNode;
+  canLoadOlderHistory?: boolean;
+  onLoadOlderHistory?: () => void | Promise<void>;
 }
 
 interface ChatTimelineListProps {
@@ -46,9 +61,164 @@ interface ChatTimelineListProps {
    * 不依赖当前会话的 isProcessing / store 思考段。
    */
   staticTimeline?: boolean;
+  /** 静态历史预览可逐批准入；分享导出保持完整静态 DOM。 */
+  virtualized?: boolean;
   mode?: string;
   disableA2UIInteraction?: boolean;
+  incrementalStaticRendering?: boolean;
   renderAfterMessage?: (message: Message) => ReactNode;
+  /** 交互时间线按会话保存派生快照和逐批准入窗口。 */
+  sessionId?: string | null;
+  /** 内容不足一屏时继续发布已存在的更早历史。 */
+  canLoadOlderHistory?: boolean;
+  onLoadOlderHistory?: () => void | Promise<void>;
+}
+
+type TimelineDerivationInput = {
+  sessionId: string | null;
+  messages: Message[];
+  executions: ToolExecution[];
+  reasoningSegments: ReasoningSegment[];
+  isTeamMode: boolean;
+  isProcessing: boolean;
+};
+
+type TimelineRenderItems = ReturnType<typeof buildRenderItems>;
+
+type TimelineDerivationCacheEntry = TimelineDerivationInput & {
+  renderItems: TimelineRenderItems;
+};
+
+const timelineDerivationCache = new WeakMap<Message[], TimelineDerivationCacheEntry>();
+const executionListCache = new WeakMap<
+  Map<string, ToolExecution>,
+  WeakMap<string[], ToolExecution[]>
+>();
+
+const INITIAL_TIMELINE_BLOCKS = 80;
+const TIMELINE_ADMISSION_BATCH = 40;
+const MAX_TIMELINE_BLOCKS = INITIAL_TIMELINE_BLOCKS + TIMELINE_ADMISSION_BATCH;
+
+type TimelineAdmission = {
+  scope: string;
+  firstKey: string;
+  /** null means that the window follows the live tail. */
+  lastKey: string | null;
+};
+
+function alignAdmissionStart(
+  items: TimelineRenderItems,
+  targetIndex: number,
+  endExclusive = items.length
+): number {
+  // 只在本批次内部向前对齐业务边界，保证单个超长 turn 也不会突破准入上限。
+  const start = Math.max(0, Math.min(targetIndex, items.length));
+  if (start === 0) {
+    return 0;
+  }
+  const end = Math.max(start, Math.min(endExclusive, items.length));
+  for (let index = start; index < end; index += 1) {
+    const item = items[index];
+    if (
+      item.type === 'message' &&
+      (item.message.role === 'user' ||
+        item.message.isCommandOutput ||
+        item.message.isProactiveRecommendation)
+    ) {
+      return index;
+    }
+  }
+  return start;
+}
+
+function initialAdmission(
+  items: TimelineRenderItems,
+  scope: string
+): TimelineAdmission {
+  const start = alignAdmissionStart(items, Math.max(0, items.length - INITIAL_TIMELINE_BLOCKS));
+  return { scope, firstKey: items[start]?.key ?? '', lastKey: null };
+}
+
+function resolveTimelineAdmission(
+  items: TimelineRenderItems,
+  scope: string,
+  admission: TimelineAdmission,
+  virtualized: boolean,
+): TimelineAdmission {
+  if (!virtualized) {
+    return initialAdmission(items, scope);
+  }
+  if (items.length <= MAX_TIMELINE_BLOCKS) {
+    return {
+      scope,
+      firstKey: items[0]?.key ?? '',
+      lastKey: null,
+    };
+  }
+
+  const start = items.findIndex((item) => item.key === admission.firstKey);
+  const end = admission.lastKey === null
+    ? items.length
+    : items.findIndex((item) => item.key === admission.lastKey) + 1;
+  if (start < 0 || end <= start) {
+    return initialAdmission(items, scope);
+  }
+  if (admission.lastKey !== null || end - start <= MAX_TIMELINE_BLOCKS) {
+    return { ...admission, scope };
+  }
+
+  const boundedStart = alignAdmissionStart(
+    items,
+    Math.max(0, end - MAX_TIMELINE_BLOCKS),
+    end,
+  );
+  return {
+    scope,
+    firstKey: items[boundedStart]?.key ?? '',
+    lastKey: null,
+  };
+}
+
+function deriveTimelineItems(
+  input: TimelineDerivationInput
+): TimelineRenderItems {
+  const cached = timelineDerivationCache.get(input.messages);
+  if (
+    cached?.sessionId === input.sessionId &&
+    cached.executions === input.executions &&
+    cached.reasoningSegments === input.reasoningSegments &&
+    cached.isTeamMode === input.isTeamMode &&
+    cached.isProcessing === input.isProcessing
+  ) {
+    return cached.renderItems;
+  }
+  const renderItems = buildRenderItems(
+    buildTimelineItems(input.messages, input.executions, input.reasoningSegments),
+    input.isTeamMode,
+    input.isProcessing
+  );
+  timelineDerivationCache.set(input.messages, { ...input, renderItems });
+  return renderItems;
+}
+
+function getExecutionList(
+  executions: Map<string, ToolExecution>,
+  order: string[]
+): ToolExecution[] {
+  let byOrder = executionListCache.get(executions);
+  if (!byOrder) {
+    byOrder = new WeakMap();
+    executionListCache.set(executions, byOrder);
+  }
+  const cached = byOrder.get(order);
+  if (cached) {
+    return cached;
+  }
+  const next = order
+    .map((toolCallId) => executions.get(toolCallId))
+    .filter((item): item is ToolExecution => Boolean(item));
+  byOrder.set(order, next);
+  return next;
 }
 
 function formatElapsedCoarse(ms: number): string {
@@ -406,22 +576,63 @@ export function ChatTimelineList({
   executions = [],
   reasoningSegments: reasoningSegmentsProp,
   staticTimeline = false,
+  virtualized = !staticTimeline,
   mode = 'default',
   disableA2UIInteraction = false,
+  incrementalStaticRendering = false,
   renderAfterMessage,
+  sessionId = null,
+  canLoadOlderHistory = false,
+  onLoadOlderHistory,
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
+  const historyPagerMeta = useChatStore(
+    (s) => s.runtimes[s.activeSessionId ?? '']?.historyPagerMeta ?? null
+  );
   const storeReasoningSegments = useChatStore(
     (s) => s.runtimes[s.activeSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
-  const reasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
+  const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
+  const publishedBatchSeq = staticTimeline
+    ? Number.MAX_SAFE_INTEGER
+    : historyPagerMeta?.publishedBatchSeq ?? Number.MAX_SAFE_INTEGER;
+  const selectedMessages = useMemo(
+    () => filterPublishedHistoryBatch(messages, publishedBatchSeq),
+    [messages, publishedBatchSeq]
+  );
+  const selectedExecutions = useMemo(
+    () => filterPublishedHistoryBatch(executions, publishedBatchSeq),
+    [executions, publishedBatchSeq]
+  );
+  const reasoningSegments = useMemo(
+    () => filterPublishedHistoryBatch(allReasoningSegments, publishedBatchSeq),
+    [allReasoningSegments, publishedBatchSeq]
+  );
+  const derivationInput = useMemo<TimelineDerivationInput>(
+    () => ({
+      sessionId,
+      messages: selectedMessages,
+      executions: selectedExecutions,
+      reasoningSegments,
+      isTeamMode,
+      isProcessing,
+    }),
+    [
+      sessionId,
+      selectedMessages,
+      selectedExecutions,
+      reasoningSegments,
+      isTeamMode,
+      isProcessing,
+    ]
+  );
   const renderItems = useMemo(
-    () => buildRenderItems(buildTimelineItems(messages, executions, reasoningSegments), isTeamMode, isProcessing),
-    [messages, executions, reasoningSegments, isTeamMode, isProcessing]
+    () => deriveTimelineItems(derivationInput),
+    [derivationInput]
   );
   const agentTemplateNameByTurn = useMemo(() => {
     const names = new Map<number, string>();
@@ -431,15 +642,274 @@ export function ChatTimelineList({
           ? item.segment.agentTemplateName?.trim()
           : item.type === 'toolGroup'
             ? item.agentTemplateName?.trim()
-          : item.type === 'message' && item.message.role === 'assistant'
-            ? item.message.agentTemplateName?.trim()
-            : undefined;
+            : item.type === 'message' && item.message.role === 'assistant'
+              ? item.message.agentTemplateName?.trim()
+              : undefined;
       if (name) {
         names.set(item.turnId, name);
       }
     }
     return names;
   }, [renderItems]);
+  const timelineScope = staticTimeline ? 'static' : sessionId ?? 'interactive';
+  const [admissionByScope, setAdmissionByScope] = useState<Map<string, TimelineAdmission>>(() => {
+    const initial = initialAdmission(renderItems, timelineScope);
+    return new Map([[timelineScope, initial]]);
+  });
+  const admission = admissionByScope.get(timelineScope)
+    ?? { scope: timelineScope, firstKey: '', lastKey: null };
+  const resolvedAdmission = useMemo(
+    () => resolveTimelineAdmission(renderItems, timelineScope, admission, virtualized),
+    [admission, renderItems, timelineScope, virtualized],
+  );
+  const admittedStartIndex = !virtualized
+    ? 0
+    : Math.max(0, renderItems.findIndex((item) => item.key === resolvedAdmission.firstKey));
+  const admittedEndExclusive = !virtualized || resolvedAdmission.lastKey === null
+    ? renderItems.length
+    : Math.max(
+      admittedStartIndex,
+      renderItems.findIndex((item) => item.key === resolvedAdmission.lastKey) + 1
+    );
+  const admittedRenderItems = !virtualized
+    ? renderItems
+    : renderItems.slice(admittedStartIndex, admittedEndExclusive);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const olderSentinelRef = useRef<HTMLDivElement>(null);
+  const newerSentinelRef = useRef<HTMLDivElement>(null);
+  const admissionPendingRef = useRef(false);
+  const admissionAnchorRef = useRef<
+    {
+      element: HTMLElement;
+      root: HTMLElement;
+      top: number;
+    } | null
+  >(null);
+  const adjustedScrollTopRef = useRef<number | null>(null);
+  const lastAutoFillRequestKeyRef = useRef<string | null>(null);
+  const admitOlderTimelineBlocksRef = useRef<() => void>(() => {});
+  const admitNewerTimelineBlocksRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    if (
+      admission.firstKey !== resolvedAdmission.firstKey
+      || admission.lastKey !== resolvedAdmission.lastKey
+    ) {
+      setAdmissionByScope((current) => {
+        const next = new Map(current);
+        next.set(timelineScope, resolvedAdmission);
+        return next;
+      });
+    }
+  }, [admission.firstKey, admission.lastKey, resolvedAdmission, timelineScope]);
+
+  const admitOlderTimelineBlocks = useCallback(() => {
+    if (!virtualized || admittedStartIndex <= 0 || admissionPendingRef.current) {
+      return;
+    }
+    const sentinel = olderSentinelRef.current;
+    const firstExistingBlock = timelineRef.current?.children[1];
+    const root = timelineRef.current?.closest<HTMLElement>('.chat-scroll');
+    if (!sentinel || !(firstExistingBlock instanceof HTMLElement) || !root) {
+      return;
+    }
+    const shiftedRange = shiftBoundedTimelineRange(
+      { start: admittedStartIndex, end: admittedEndExclusive },
+      renderItems.length,
+      'older',
+      TIMELINE_ADMISSION_BATCH,
+      MAX_TIMELINE_BLOCKS
+    );
+    const nextStart = alignAdmissionStart(
+      renderItems,
+      shiftedRange.start,
+      admittedStartIndex
+    );
+    const nextEnd = Math.min(shiftedRange.end, nextStart + MAX_TIMELINE_BLOCKS);
+    admissionPendingRef.current = true;
+    admissionAnchorRef.current = {
+      element: firstExistingBlock,
+      root,
+      top: firstExistingBlock.getBoundingClientRect().top,
+    };
+    setAdmissionByScope((current) => {
+      const next = new Map(current);
+      next.set(timelineScope, {
+        scope: timelineScope,
+        firstKey: renderItems[nextStart]?.key ?? '',
+        lastKey: nextEnd >= renderItems.length ? null : renderItems[nextEnd - 1]?.key ?? null,
+      });
+      return next;
+    });
+  }, [admittedEndExclusive, admittedStartIndex, renderItems, timelineScope, virtualized]);
+
+  const admitNewerTimelineBlocks = useCallback(() => {
+    if (
+      !virtualized
+      || admittedEndExclusive >= renderItems.length
+      || admissionPendingRef.current
+    ) {
+      return;
+    }
+    const sentinel = newerSentinelRef.current;
+    const children = timelineRef.current?.children;
+    const lastExistingBlock = children?.[children.length - 2];
+    const root = timelineRef.current?.closest<HTMLElement>('.chat-scroll');
+    if (!sentinel || !(lastExistingBlock instanceof HTMLElement) || !root) {
+      return;
+    }
+    const shiftedRange = shiftBoundedTimelineRange(
+      { start: admittedStartIndex, end: admittedEndExclusive },
+      renderItems.length,
+      'newer',
+      TIMELINE_ADMISSION_BATCH,
+      MAX_TIMELINE_BLOCKS
+    );
+    const nextStart = alignAdmissionStart(
+      renderItems,
+      shiftedRange.start,
+      shiftedRange.end
+    );
+    admissionPendingRef.current = true;
+    admissionAnchorRef.current = {
+      element: lastExistingBlock,
+      root,
+      top: lastExistingBlock.getBoundingClientRect().top,
+    };
+    setAdmissionByScope((current) => {
+      const next = new Map(current);
+      next.set(timelineScope, {
+        scope: timelineScope,
+        firstKey: renderItems[nextStart]?.key ?? '',
+        lastKey: shiftedRange.end >= renderItems.length
+          ? null
+          : renderItems[shiftedRange.end - 1]?.key ?? null,
+      });
+      return next;
+    });
+  }, [admittedEndExclusive, admittedStartIndex, renderItems, timelineScope, virtualized]);
+
+  admitOlderTimelineBlocksRef.current = admitOlderTimelineBlocks;
+  admitNewerTimelineBlocksRef.current = admitNewerTimelineBlocks;
+
+  useLayoutEffect(() => {
+    const anchor = admissionAnchorRef.current;
+    if (!anchor) {
+      admissionPendingRef.current = false;
+      return;
+    }
+    if (!anchor.element.isConnected) {
+      admissionAnchorRef.current = null;
+      admissionPendingRef.current = false;
+      return;
+    }
+    const nextTop = anchor.element.getBoundingClientRect().top;
+    anchor.root.scrollTop += nextTop - anchor.top;
+    adjustedScrollTopRef.current = anchor.root.scrollTop;
+    admissionAnchorRef.current = null;
+    admissionPendingRef.current = false;
+  }, [
+    admittedEndExclusive,
+    admittedStartIndex,
+    renderItems,
+    resolvedAdmission.firstKey,
+    resolvedAdmission.lastKey,
+    timelineScope,
+  ]);
+
+  useLayoutEffect(() => {
+    if (!virtualized || admissionPendingRef.current) return;
+    const root = timelineRef.current?.closest<HTMLElement>('.chat-scroll');
+    if (!root || root.clientHeight <= 0 || root.scrollHeight > root.clientHeight) {
+      return;
+    }
+    if (admittedStartIndex > 0) {
+      admitOlderTimelineBlocksRef.current();
+      return;
+    }
+    if (!canLoadOlderHistory || !onLoadOlderHistory) return;
+
+    const requestKey = [
+      timelineScope,
+      historyPagerMeta?.loadedBatchSeq ?? 0,
+      historyPagerMeta?.publishedBatchSeq ?? 0,
+      historyPagerMeta?.hasMore ? 1 : 0,
+    ].join(':');
+    if (lastAutoFillRequestKeyRef.current === requestKey) return;
+    lastAutoFillRequestKeyRef.current = requestKey;
+    void onLoadOlderHistory();
+  }, [
+    admittedStartIndex,
+    canLoadOlderHistory,
+    historyPagerMeta?.hasMore,
+    historyPagerMeta?.loadedBatchSeq,
+    historyPagerMeta?.publishedBatchSeq,
+    onLoadOlderHistory,
+    renderItems.length,
+    timelineScope,
+    virtualized,
+  ]);
+
+  useEffect(() => {
+    const hasOlderBoundary = admittedStartIndex > 0;
+    const hasNewerBoundary = admittedEndExclusive < renderItems.length;
+    if (!virtualized || (!hasOlderBoundary && !hasNewerBoundary)) {
+      return;
+    }
+    const root = timelineRef.current?.closest<HTMLElement>('.chat-scroll');
+    if (!root) {
+      return;
+    }
+    const boundaryIsCurrentlyVisible = (direction: 'older' | 'newer') => {
+      const sentinel = direction === 'older'
+        ? olderSentinelRef.current
+        : newerSentinelRef.current;
+      if (!sentinel) {
+        return false;
+      }
+      const rootTop = root.getBoundingClientRect().top;
+      const sentinelTop = sentinel.getBoundingClientRect().top;
+      return sentinelTop >= rootTop && sentinelTop <= rootTop + root.clientHeight;
+    };
+    let previousScrollTop = root.scrollTop;
+    const handleUserWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0 && boundaryIsCurrentlyVisible('older')) {
+        admitOlderTimelineBlocksRef.current();
+      } else if (event.deltaY > 0 && boundaryIsCurrentlyVisible('newer')) {
+        admitNewerTimelineBlocksRef.current();
+      }
+    };
+    const handleScroll = () => {
+      const nextScrollTop = root.scrollTop;
+      if (adjustedScrollTopRef.current === nextScrollTop) {
+        adjustedScrollTopRef.current = null;
+        previousScrollTop = nextScrollTop;
+        return;
+      }
+      adjustedScrollTopRef.current = null;
+      if (nextScrollTop < previousScrollTop && boundaryIsCurrentlyVisible('older')) {
+        admitOlderTimelineBlocksRef.current();
+      } else if (
+        nextScrollTop > previousScrollTop
+        && boundaryIsCurrentlyVisible('newer')
+      ) {
+        admitNewerTimelineBlocksRef.current();
+      }
+      previousScrollTop = nextScrollTop;
+    };
+    root.addEventListener('wheel', handleUserWheel, { passive: true });
+    root.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      root.removeEventListener('wheel', handleUserWheel);
+      root.removeEventListener('scroll', handleScroll);
+    };
+  }, [
+    admittedEndExclusive >= renderItems.length,
+    admittedStartIndex <= 0,
+    renderItems.length,
+    timelineScope,
+    virtualized,
+  ]);
   const settlingForStreak = isSettlingForStreak(renderItems, Date.now());
   const settleNow = useNow(settlingForStreak);
   const streakNowMs = settlingForStreak ? settleNow : Date.now();
@@ -470,11 +940,15 @@ export function ChatTimelineList({
     () => streakMapFingerprint(liveStreaksByFirstKey),
     [liveStreaksByFirstKey]
   );
-  const [displayedStreaksByFirstKey, setDisplayedStreaksByFirstKey] = useState<Map<string, LiveWorkStreak>>(
-    () => new Map()
-  );
+  const [displayedStreakState, setDisplayedStreakState] = useState<{
+    scope: string;
+    streaks: Map<string, LiveWorkStreak>;
+  }>(() => ({ scope: timelineScope, streaks: new Map() }));
   const displayedStreakFpRef = useRef('');
   const suppressStreakTransitionRef = useRef(true);
+  const displayedStreaksByFirstKey = displayedStreakState.scope === timelineScope
+    ? displayedStreakState.streaks
+    : liveStreaksByFirstKey;
   const streaksForRender = staticTimeline ? liveStreaksByFirstKey : displayedStreaksByFirstKey;
   const liveStreakByItemKey = useMemo(() => {
     const map = new Map<string, LiveWorkStreak>();
@@ -485,18 +959,57 @@ export function ChatTimelineList({
     }
     return map;
   }, [streaksForRender]);
-  const [expandedTurns, setExpandedTurns] = useState<Record<number, boolean>>({});
-  const [expandedStreaks, setExpandedStreaks] = useState<Record<string, boolean>>({});
-  const chipAnchoredTurns = useRef<Set<number>>(new Set());
+  const stableTurnKeyById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const item of renderItems) {
+      if (item.type === 'turnSummary') {
+        map.set(item.turnId, item.key);
+      }
+    }
+    return map;
+  }, [renderItems]);
+  const [expandedTurnState, setExpandedTurnState] = useState<{
+    scope: string;
+    values: Record<string, boolean>;
+  }>(() => ({ scope: timelineScope, values: {} }));
+  const [expandedStreakState, setExpandedStreakState] = useState<{
+    scope: string;
+    values: Record<string, boolean>;
+  }>(() => ({ scope: timelineScope, values: {} }));
+  const expandedTurns = expandedTurnState.scope === timelineScope
+    ? expandedTurnState.values
+    : {};
+  const expandedStreaks = expandedStreakState.scope === timelineScope
+    ? expandedStreakState.values
+    : {};
+  const incrementallyRenderItems = staticTimeline && incrementalStaticRendering;
+  const [staticRenderItemCount, setStaticRenderItemCount] = useState(1);
+  const visibleRenderItemCount = incrementallyRenderItems
+    ? Math.min(staticRenderItemCount, renderItems.length)
+    : admittedRenderItems.length;
+  const staticRenderComplete = !incrementallyRenderItems
+    || visibleRenderItemCount >= renderItems.length;
+  const visibleRenderItems = incrementallyRenderItems
+    ? renderItems.slice(0, visibleRenderItemCount)
+    : admittedRenderItems;
+  const chipAnchoredTurns = useRef<Set<string>>(new Set());
   chipAnchoredTurns.current = new Set();
 
   useEffect(() => {
-    setExpandedTurns({});
-    setExpandedStreaks({});
+    if (!incrementallyRenderItems || staticRenderComplete) return;
+    const timer = window.setTimeout(() => {
+      setStaticRenderItemCount(count => Math.min(count + 1, renderItems.length));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [incrementallyRenderItems, renderItems.length, staticRenderComplete, visibleRenderItemCount]);
+
+  useEffect(() => {
+    setExpandedTurnState({ scope: timelineScope, values: {} });
+    setExpandedStreakState({ scope: timelineScope, values: {} });
     suppressStreakTransitionRef.current = true;
     displayedStreakFpRef.current = '';
-    setDisplayedStreaksByFirstKey(new Map());
-  }, [activeSessionId]);
+    setDisplayedStreakState({ scope: timelineScope, streaks: new Map() });
+  }, [activeSessionId, timelineScope]);
 
   const wasLoadingHistoryRef = useRef(false);
   useEffect(() => {
@@ -509,13 +1022,13 @@ export function ChatTimelineList({
     }
     if (wasLoadingHistoryRef.current) {
       wasLoadingHistoryRef.current = false;
-      setExpandedTurns({});
-      setExpandedStreaks({});
+      setExpandedTurnState({ scope: timelineScope, values: {} });
+      setExpandedStreakState({ scope: timelineScope, values: {} });
       suppressStreakTransitionRef.current = true;
       displayedStreakFpRef.current = '';
-      setDisplayedStreaksByFirstKey(new Map());
+      setDisplayedStreakState({ scope: timelineScope, streaks: new Map() });
     }
-  }, [staticTimeline, isLoadingHistory]);
+  }, [staticTimeline, isLoadingHistory, timelineScope]);
 
   useEffect(() => {
     if (staticTimeline) {
@@ -528,49 +1041,75 @@ export function ChatTimelineList({
     if (suppressStreakTransitionRef.current) {
       displayedStreakFpRef.current = liveStreakFp;
       suppressStreakTransitionRef.current = false;
-      setDisplayedStreaksByFirstKey(nextMap);
+      setDisplayedStreakState({ scope: timelineScope, streaks: nextMap });
       return;
     }
     const timer = window.setTimeout(() => {
       displayedStreakFpRef.current = liveStreakFp;
-      setDisplayedStreaksByFirstKey(nextMap);
+      setDisplayedStreakState({ scope: timelineScope, streaks: nextMap });
     }, STREAK_FOLD_TRANSITION_DELAY_MS);
     return () => window.clearTimeout(timer);
-  }, [liveStreakFp, liveStreaksByFirstKey, staticTimeline]);
+  }, [liveStreakFp, liveStreaksByFirstKey, staticTimeline, timelineScope]);
 
   if (renderItems.length === 0) {
     return null;
   }
 
-  const toggleTurn = (turnId: number) => {
-    setExpandedTurns((prev) => ({ ...prev, [turnId]: !prev[turnId] }));
+  const toggleTurn = (turnKey: string) => {
+    setExpandedTurnState((current) => {
+      const values = current.scope === timelineScope ? current.values : {};
+      return {
+        scope: timelineScope,
+        values: { ...values, [turnKey]: !values[turnKey] },
+      };
+    });
   };
 
   const toggleStreak = (streakId: string) => {
-    setExpandedStreaks((prev) => ({ ...prev, [streakId]: !prev[streakId] }));
+    setExpandedStreakState((current) => {
+      const values = current.scope === timelineScope ? current.values : {};
+      return {
+        scope: timelineScope,
+        values: { ...values, [streakId]: !values[streakId] },
+      };
+    });
   };
 
   return (
-    <div className="chat-timeline" data-testid="chat-panel-timeline">
-      {renderItems.map((item) => {
+    <div
+      ref={timelineRef}
+      className="chat-timeline"
+      data-testid="chat-panel-timeline"
+      data-share-image-render-state={incrementallyRenderItems ? (staticRenderComplete ? 'complete' : 'pending') : undefined}
+    >
+      {virtualized && admittedStartIndex > 0 ? (
+        <div
+          ref={olderSentinelRef}
+          className="chat-timeline__history-sentinel"
+          aria-hidden="true"
+          data-testid="chat-panel-timeline-history-sentinel"
+        />
+      ) : null}
+      {visibleRenderItems.map((item) => {
         if (item.type === 'message') {
+          const turnKey = stableTurnKeyById.get(item.turnId) ?? item.key;
           const meta = item.turnId >= 0 ? turnWorkMeta.get(item.turnId) : undefined;
           const turnFoldable = Boolean(meta?.completed && meta.hasWork && item.hideMeta);
-          const turnOpen = !turnFoldable || Boolean(expandedTurns[item.turnId]);
+          const turnOpen = !turnFoldable || Boolean(expandedTurns[turnKey]);
           const isFoldAnchor = turnFoldAnchorKeys.get(item.turnId) === item.key;
 
           if (turnFoldable) {
             const hasDeliverable = messageHasDeliverable(item.message);
             return (
-              <Fragment key={item.key}>
+              <Fragment key={`${timelineScope}/${item.key}`}>
                 {/* 工具前的开场白若可折叠，折叠条锚在这里，展开后不会跑到「已完成」上面 */}
                 {isFoldAnchor && meta ? (
                   <CompletedWorkChip
-                    key={`completed-work-${item.turnId}`}
+                    key={`${timelineScope}/completed-work-${turnKey}`}
                     variant="turn"
                     outcomeTone={meta.outcomeTone}
                     expanded={turnOpen}
-                    onToggle={() => toggleTurn(item.turnId)}
+                    onToggle={() => toggleTurn(turnKey)}
                     elapsedMs={completedWorkDurationMs(meta)}
                     showAvatar
                     teamLayout={isTeamMode}
@@ -611,7 +1150,7 @@ export function ChatTimelineList({
           }
 
           return (
-            <Fragment key={item.key}>
+            <Fragment key={`${timelineScope}/${item.key}`}>
               <MessageItem
                 message={item.message}
                 showAvatar={item.showAvatar}
@@ -625,9 +1164,10 @@ export function ChatTimelineList({
         }
 
         if (item.type === 'reasoning' || item.type === 'toolGroup') {
+          const turnKey = stableTurnKeyById.get(item.turnId) ?? item.key;
           const meta = turnWorkMeta.get(item.turnId);
           const turnFoldable = Boolean(meta?.completed && meta.hasWork);
-          const turnOpen = !turnFoldable || Boolean(expandedTurns[item.turnId]);
+          const turnOpen = !turnFoldable || Boolean(expandedTurns[turnKey]);
           const streak = liveStreakByItemKey.get(item.key);
           const streakOpen = !streak || Boolean(expandedStreaks[streak.id]);
           const contentOpen = turnOpen && streakOpen;
@@ -637,9 +1177,9 @@ export function ChatTimelineList({
             (isFoldAnchor ||
               (!turnFoldAnchorKeys.has(item.turnId) &&
                 (meta!.firstWorkKey === item.key ||
-                  (!meta!.firstWorkKey && !chipAnchoredTurns.current.has(item.turnId)))));
+                  (!meta!.firstWorkKey && !chipAnchoredTurns.current.has(turnKey)))));
           if (isTurnAnchor && meta) {
-            chipAnchoredTurns.current.add(item.turnId);
+            chipAnchoredTurns.current.add(turnKey);
           }
 
           const nodes: ReactNode[] = [];
@@ -647,11 +1187,11 @@ export function ChatTimelineList({
           if (turnFoldable && isTurnAnchor && meta) {
             nodes.push(
               <CompletedWorkChip
-                key={`completed-work-${item.turnId}`}
+                key={`${timelineScope}/completed-work-${turnKey}`}
                 variant="turn"
                 outcomeTone={meta.outcomeTone}
                 expanded={turnOpen}
-                onToggle={() => toggleTurn(item.turnId)}
+                onToggle={() => toggleTurn(turnKey)}
                 // 折叠条就是该轮视觉顶部：头像必须挂在这里，不能跟 meta/内容区抢来抢去。
                 elapsedMs={completedWorkDurationMs(meta)}
                 showAvatar
@@ -667,7 +1207,7 @@ export function ChatTimelineList({
           if (turnOpen && streak && streak.firstKey === item.key) {
             nodes.push(
               <CompletedWorkChip
-                key={streak.id}
+                key={`${timelineScope}/${streak.id}`}
                 variant="streak"
                 thinkingCount={streak.thinkingCount}
                 toolCount={streak.toolCount}
@@ -688,7 +1228,7 @@ export function ChatTimelineList({
             if (deliverables.length > 0) {
               nodes.push(
                 <ToolGroupDisplay
-                  key={`${item.key}-deliverable`}
+                  key={`${timelineScope}/${item.key}-deliverable`}
                   executions={deliverables}
                   notices={[]}
                   showAvatar={false}
@@ -733,7 +1273,7 @@ export function ChatTimelineList({
           if (turnFoldable || streak) {
             nodes.push(
               <div
-                key={`${item.key}-collapse`}
+                key={`${timelineScope}/${item.key}-collapse`}
                 className={clsx('timeline-collapse', contentOpen && 'is-open')}
                 data-testid="chat-panel-timeline-collapse"
                 data-variant={contentOpen ? 'open' : 'closed'}
@@ -742,13 +1282,13 @@ export function ChatTimelineList({
               </div>
             );
           } else {
-            nodes.push(<Fragment key={item.key}>{body}</Fragment>);
+            nodes.push(<Fragment key={`${timelineScope}/${item.key}`}>{body}</Fragment>);
           }
 
           return nodes.length === 1 ? (
             nodes[0]
           ) : (
-            <Fragment key={`work-${item.key}`}>{nodes}</Fragment>
+            <Fragment key={`${timelineScope}/work-${item.key}`}>{nodes}</Fragment>
           );
         }
 
@@ -763,7 +1303,7 @@ export function ChatTimelineList({
             : { startMs: item.startMs, endMs: item.hasWork ? item.workEndMs : item.endMs };
           return (
             <TurnElapsed
-              key={item.key}
+              key={`${timelineScope}/${item.key}`}
               startMs={range.startMs}
               endMs={range.endMs}
               isLastTurn={item.isLastTurn}
@@ -776,19 +1316,30 @@ export function ChatTimelineList({
 
         return null;
       })}
+      {virtualized && admittedEndExclusive < renderItems.length ? (
+        <div
+          ref={newerSentinelRef}
+          className="chat-timeline__history-sentinel"
+          aria-hidden="true"
+          data-testid="chat-panel-timeline-newer-sentinel"
+        />
+      ) : null}
     </div>
   );
 }
 
-export function MessageList({ messages, renderAfterMessage }: MessageListProps) {
+export function MessageList({
+  messages,
+  renderAfterMessage,
+  canLoadOlderHistory,
+  onLoadOlderHistory,
+}: MessageListProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
   const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
-    () => toolExecutionOrder
-      .map((toolCallId) => toolExecutions.get(toolCallId))
-      .filter((item): item is NonNullable<typeof item> => !!item),
+    () => getExecutionList(toolExecutions, toolExecutionOrder),
     [toolExecutions, toolExecutionOrder]
   );
 
@@ -798,6 +1349,9 @@ export function MessageList({ messages, renderAfterMessage }: MessageListProps) 
       executions={executions}
       mode={mode}
       renderAfterMessage={renderAfterMessage}
+      sessionId={activeSessionId}
+      canLoadOlderHistory={canLoadOlderHistory}
+      onLoadOlderHistory={onLoadOlderHistory}
     />
   );
 }

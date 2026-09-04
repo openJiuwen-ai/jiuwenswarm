@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import base64
 import datetime
 import hashlib
-import logging
 import json
+import logging
 import os
 import queue
 import re
+import tempfile
 import threading
 import time
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
@@ -37,6 +39,16 @@ _FILE_CONTENT_BLOCK_RE = re.compile(
     r"\n?<file-content\s+path=\"([^\"]*)\">.*?</file-content>\n?",
     re.DOTALL,
 )
+_HISTORY_CURSOR_VERSION = 1
+_HISTORY_CURSOR_READ_BLOCK_BYTES = 64 * 1024
+
+
+class InvalidHistoryCursor(ValueError):
+    """The cursor is malformed or belongs to a different history stream."""
+
+
+class HistorySnapshotChanged(RuntimeError):
+    """The history file was replaced or truncated after the snapshot began."""
 
 
 def collapse_file_content_blocks(content: str) -> str:
@@ -413,18 +425,27 @@ def load_history_records(session_id: str, *, subagent_id: str | None = None) -> 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".jsonl":
-        payload = "\n".join(
-            json.dumps(record, ensure_ascii=False) for record in records
-        )
+        payload = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
         if payload:
             payload += "\n"
-        path.write_text(payload, encoding="utf-8")
-        return
+    else:
+        payload = json.dumps(records, ensure_ascii=False, indent=2)
 
-    path.write_text(
-        json.dumps(records, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    fd, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
     )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -446,6 +467,235 @@ def _ensure_jsonl_bootstrap(session_id: str) -> Path:
     else:
         jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     return jsonl_path
+
+
+def _cursor_stream_key(session_id: str, subagent_id: str | None) -> str:
+    raw = f"{session_id}\0{subagent_id or ''}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _encode_history_cursor(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(raw.encode("ascii")).decode("ascii").rstrip("=")
+
+
+def _decode_history_cursor(cursor: str) -> dict[str, Any]:
+    if not isinstance(cursor, str) or not cursor.strip():
+        raise InvalidHistoryCursor("history cursor must be a non-empty string")
+    token = cursor.strip()
+    try:
+        padding = "=" * (-len(token) % 4)
+        decoded = base64.urlsafe_b64decode((token + padding).encode("ascii"))
+        payload = json.loads(decoded.decode("ascii"))
+    except Exception as exc:  # noqa: BLE001
+        raise InvalidHistoryCursor("history cursor is malformed") from exc
+    if not isinstance(payload, dict) or payload.get("v") != _HISTORY_CURSOR_VERSION:
+        raise InvalidHistoryCursor("history cursor version is unsupported")
+    return payload
+
+
+def _history_snapshot_id(*, stream_key: str, device: int, inode: int, snapshot_end: int) -> str:
+    raw = f"{stream_key}:{device}:{inode}:{snapshot_end}".encode("ascii")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _ensure_cursor_jsonl_path(
+    session_id: str,
+    *,
+    subagent_id: str | None,
+) -> Path:
+    """Return a JSONL source, atomically migrating an old JSON history once."""
+    path = get_read_history_path(session_id, subagent_id=subagent_id)
+    if path.suffix.lower() == ".jsonl":
+        return path
+    if use_legacy_history_json():
+        raise InvalidHistoryCursor(
+            "cursor history requires JSONL storage; disable JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
+        )
+    records = _read_history(path)
+    jsonl_path = path.with_name(_JSONL_HISTORY_FILENAME)
+    _write_records_to_path(jsonl_path, records)
+    return jsonl_path
+
+
+def _iter_reverse_jsonl_lines(
+    fh: Any,
+    *,
+    start_position: int,
+    read_block_bytes: int,
+    bytes_read: list[int],
+) -> Iterator[tuple[bytes, int, int]]:
+    """Yield ``(line, start, end)`` from newest to oldest without splitting UTF-8."""
+    position = start_position
+    tail = b""
+    while position > 0:
+        read_start = max(0, position - read_block_bytes)
+        fh.seek(read_start)
+        chunk = fh.read(position - read_start)
+        bytes_read[0] += len(chunk)
+        data = chunk + tail
+        search_end = len(data)
+        while True:
+            newline = data.rfind(b"\n", 0, search_end)
+            if newline < 0:
+                break
+            line_start = newline + 1
+            yield (
+                data[line_start:search_end].rstrip(b"\r"),
+                read_start + line_start,
+                read_start + search_end,
+            )
+            search_end = newline
+        tail = data[:search_end]
+        position = read_start
+
+    if tail:
+        yield tail.rstrip(b"\r"), 0, len(tail)
+
+
+def read_history_cursor_page(
+    session_id: str,
+    *,
+    cursor: str | None,
+    limit: int,
+    is_restorable: Callable[[dict[str, Any]], bool],
+    subagent_id: str | None = None,
+    read_block_bytes: int = _HISTORY_CURSOR_READ_BLOCK_BYTES,
+) -> dict[str, Any]:
+    """Read one newest-to-oldest JSONL batch from a fixed file snapshot.
+
+    The initial call drains already-enqueued writes before fixing ``snapshot_end``.
+    Later calls validate the same file identity and never inspect appended bytes.
+    Repeated calls with the same cursor are therefore idempotent.
+    """
+    normalized_session_id = (session_id or "").strip()
+    normalized_subagent_id = (subagent_id or "").strip() or None
+    if not normalized_session_id or not is_valid_session_id(normalized_session_id):
+        raise InvalidHistoryCursor("invalid session_id")
+    if limit <= 0:
+        raise InvalidHistoryCursor("history limit must be positive")
+    if read_block_bytes <= 0:
+        raise InvalidHistoryCursor("history read block size must be positive")
+
+    stream_key = _cursor_stream_key(normalized_session_id, normalized_subagent_id)
+    cursor_payload = _decode_history_cursor(cursor) if cursor is not None else None
+    if cursor_payload is not None and cursor_payload.get("stream") != stream_key:
+        raise InvalidHistoryCursor("history cursor belongs to a different session")
+
+    queue_guard = _QUEUE_ENQUEUE_LOCK if cursor_payload is None else None
+    if queue_guard is not None:
+        queue_guard.acquire()
+    try:
+        if cursor_payload is None:
+            _WRITE_QUEUE.join()
+        with _FILE_LOCK:
+            path = _ensure_cursor_jsonl_path(
+                normalized_session_id,
+                subagent_id=normalized_subagent_id,
+            )
+            if not path.exists():
+                return {
+                    "messages": [],
+                    "next_cursor": None,
+                    "has_more": False,
+                    "snapshot_id": None,
+                    "snapshot_end": 0,
+                    "scanned_bytes": 0,
+                }
+
+            stat = path.stat()
+            device = int(stat.st_dev)
+            inode = int(stat.st_ino)
+            if cursor_payload is None:
+                snapshot_end = int(stat.st_size)
+                start_position = snapshot_end
+            else:
+                try:
+                    expected_device = int(cursor_payload["dev"])
+                    expected_inode = int(cursor_payload["ino"])
+                    snapshot_end = int(cursor_payload["end"])
+                    start_position = int(cursor_payload["pos"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise InvalidHistoryCursor("history cursor fields are invalid") from exc
+                if (
+                    device != expected_device
+                    or inode != expected_inode
+                    or stat.st_size < snapshot_end
+                ):
+                    raise HistorySnapshotChanged("history snapshot changed during restore")
+                if not 0 <= start_position <= snapshot_end:
+                    raise InvalidHistoryCursor("history cursor position is outside the snapshot")
+
+            snapshot_id = _history_snapshot_id(
+                stream_key=stream_key,
+                device=device,
+                inode=inode,
+                snapshot_end=snapshot_end,
+            )
+            records: list[dict[str, Any]] = []
+            next_position = start_position
+            has_more = False
+            bytes_read = [0]
+            with path.open("rb") as fh:
+                for raw_line, line_start, line_end in _iter_reverse_jsonl_lines(
+                    fh,
+                    start_position=start_position,
+                    read_block_bytes=read_block_bytes,
+                    bytes_read=bytes_read,
+                ):
+                    next_position = line_start
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line.decode("utf-8"))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "读取 history.jsonl 游标记录失败，已跳过: session_id=%s error=%s",
+                            normalized_session_id,
+                            exc,
+                        )
+                        continue
+                    if not isinstance(item, dict) or not is_restorable(item):
+                        continue
+                    if len(records) >= limit:
+                        has_more = True
+                        next_position = line_end
+                        break
+
+                    content = item.get("content")
+                    if (
+                        item.get("role") in {"user", "human"}
+                        and isinstance(content, str)
+                        and "<file-content" in content
+                    ):
+                        item = dict(item)
+                        item["content"] = collapse_file_content_blocks(content)
+                    records.append(item)
+
+            next_cursor = None
+            if has_more:
+                next_cursor = _encode_history_cursor(
+                    {
+                        "v": _HISTORY_CURSOR_VERSION,
+                        "stream": stream_key,
+                        "dev": device,
+                        "ino": inode,
+                        "end": snapshot_end,
+                        "pos": next_position,
+                    }
+                )
+            return {
+                "messages": records,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+                "snapshot_id": snapshot_id,
+                "snapshot_end": snapshot_end,
+                "scanned_bytes": bytes_read[0],
+            }
+    finally:
+        if queue_guard is not None:
+            queue_guard.release()
 
 
 def _ensure_legacy_json_bootstrap(session_id: str) -> Path:
