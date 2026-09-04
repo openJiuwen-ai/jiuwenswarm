@@ -25,6 +25,15 @@ _TRANSIENT_MESSAGE_MARKERS = (
     "read timeout",
     "connect timeout",
 )
+# Per-call budget lives on ctx.extra so concurrent call_llm/stream_llm that
+# share one rail instance (SkillTurbo PPT page gather) cannot steal or reset
+# each other's retry counts. Instance attrs are mirrored for observability only.
+_RETRY_COUNTS_KEY = "_llm_retry_counts"
+_COUNT_ATTRS: dict[str, str] = {
+    "repeat": "repeat_retry_count",
+    "stream_timeout": "stream_timeout_retry_count",
+    "transient_invoke": "transient_invoke_retry_count",
+}
 
 
 def _parent_accepts_retry_transient_invoke_errors() -> bool:
@@ -45,10 +54,9 @@ class NotifyingLLMRetryRail(LLMRetryRail):
         self.notify_user_on_retry = notify_user_on_retry
         self.notify_user_on_exhausted = notify_user_on_exhausted
         self.retry_transient_invoke_errors = retry_transient_invoke_errors
-        self._parent_supports_transient_invoke = _parent_accepts_retry_transient_invoke_errors()
 
         parent_kwargs = dict(kwargs)
-        if self._parent_supports_transient_invoke:
+        if _parent_accepts_retry_transient_invoke_errors():
             parent_kwargs["retry_transient_invoke_errors"] = retry_transient_invoke_errors
         super().__init__(**parent_kwargs)
 
@@ -66,6 +74,32 @@ class NotifyingLLMRetryRail(LLMRetryRail):
                 return True
         return False
 
+    async def before_invoke(self, ctx: AgentCallbackContext) -> None:
+        """Reset per-ctx retry budgets at the start of each call/invoke."""
+        ctx.extra[_RETRY_COUNTS_KEY] = {
+            "repeat": 0,
+            "stream_timeout": 0,
+            "transient_invoke": 0,
+        }
+        await super().before_invoke(ctx)
+
+    def _retry_counts(self, ctx: AgentCallbackContext) -> dict[str, int]:
+        counts = ctx.extra.get(_RETRY_COUNTS_KEY)
+        if not isinstance(counts, dict):
+            counts = {
+                "repeat": 0,
+                "stream_timeout": 0,
+                "transient_invoke": 0,
+            }
+            ctx.extra[_RETRY_COUNTS_KEY] = counts
+        for key in _COUNT_ATTRS:
+            raw = counts.get(key, 0)
+            try:
+                counts[key] = int(raw or 0)
+            except (TypeError, ValueError):
+                counts[key] = 0
+        return counts
+
     async def on_model_exception(self, ctx: AgentCallbackContext) -> None:
         reason: str | None = None
         if self._is_repeat_exception(ctx.exception):
@@ -79,7 +113,7 @@ class NotifyingLLMRetryRail(LLMRetryRail):
         if reason is None:
             return
 
-        will_retry, attempt, max_attempts, delay = self._peek_retry(reason)
+        will_retry, attempt, max_attempts, delay = self._peek_retry(ctx, reason)
         if will_retry and self.notify_user_on_retry:
             await self._emit_retry_notification(ctx, reason, attempt, max_attempts, delay)
         elif not will_retry and self.notify_user_on_exhausted:
@@ -88,36 +122,35 @@ class NotifyingLLMRetryRail(LLMRetryRail):
         self._request_retry_or_reset(ctx, reason)
 
     def _request_retry_or_reset(self, ctx: AgentCallbackContext, reason: str) -> None:
-        if reason == "transient_invoke" and not self._parent_supports_transient_invoke:
-            if self.transient_invoke_retry_count < self.max_retries:
-                delay = self.backoff_delay(self.transient_invoke_retry_count)
-                self.transient_invoke_retry_count += 1
-                logger.warning(
-                    "[NotifyingLLMRetryRail] retrying model call after transient invoke error "
-                    f"({self.transient_invoke_retry_count}/{self.max_retries}) after {delay:.2f}s backoff: "
-                    f"{ctx.exception!r}"
-                )
-                ctx.request_retry(delay_seconds=delay)
-            else:
-                self.transient_invoke_retry_count = 0
+        counts = self._retry_counts(ctx)
+        count = counts.get(reason, 0)
+        attr = _COUNT_ATTRS.get(reason)
+        if count < self.max_retries:
+            delay = self.backoff_delay(count)
+            counts[reason] = count + 1
+            if attr is not None:
+                setattr(self, attr, counts[reason])
+            logger.warning(
+                "[NotifyingLLMRetryRail] retrying model call after %s "
+                "(%d/%d) after %.2fs backoff: %r",
+                reason,
+                counts[reason],
+                self.max_retries,
+                delay,
+                ctx.exception,
+            )
+            ctx.request_retry(delay_seconds=delay)
             return
-        super()._request_retry_or_reset(ctx, reason)
 
-    def _peek_retry(self, reason: str) -> tuple[bool, int, int, float]:
+        counts[reason] = 0
+        if attr is not None:
+            setattr(self, attr, 0)
+
+    def _peek_retry(
+        self, ctx: AgentCallbackContext, reason: str
+    ) -> tuple[bool, int, int, float]:
         """Return ``(will_retry, attempt_number, max_attempts, delay_seconds)``."""
-        if reason == "repeat":
-            count = self.repeat_retry_count
-            if count < self.max_retries:
-                return True, count + 1, self.max_retries, self.backoff_delay(count)
-            return False, count, self.max_retries, 0.0
-
-        if reason == "transient_invoke":
-            count = self.transient_invoke_retry_count
-            if count < self.max_retries:
-                return True, count + 1, self.max_retries, self.backoff_delay(count)
-            return False, count, self.max_retries, 0.0
-
-        count = self.stream_timeout_retry_count
+        count = self._retry_counts(ctx).get(reason, 0)
         if count < self.max_retries:
             return True, count + 1, self.max_retries, self.backoff_delay(count)
         return False, count, self.max_retries, 0.0
