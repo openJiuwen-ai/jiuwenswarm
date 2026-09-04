@@ -292,3 +292,157 @@ def test_build_multi_questions_preserves_question_preview():
         "outline_ref": "outline-1",
         "meta": {"currentRound": 1},
     }
+
+
+def test_parse_hosted_permission_answer_maps_options():
+    from openjiuwen.harness.security.models import PermissionConfirmResponse
+
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        parse_hosted_permission_answer,
+    )
+
+    once = parse_hosted_permission_answer(
+        [{"selected_options": ["本次允许"]}]
+    )
+    remember = parse_hosted_permission_answer(
+        {"selected_options": ["会话内记住"]}
+    )
+    permanent = parse_hosted_permission_answer(
+        {"selected_options": ["永久记住"]}
+    )
+    reject = parse_hosted_permission_answer(
+        {"selected_options": ["拒绝"]}
+    )
+
+    assert once == PermissionConfirmResponse(
+        approved=True, auto_confirm=False, persist_allow=False, feedback=""
+    )
+    assert remember == PermissionConfirmResponse(
+        approved=True, auto_confirm=True, persist_allow=False, feedback=""
+    )
+    assert permanent == PermissionConfirmResponse(
+        approved=True, auto_confirm=True, persist_allow=True, feedback=""
+    )
+    assert reject is not None and reject.approved is False
+
+
+def test_resolve_subagent_permission_parent_ignores_same_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers as helpers
+
+    parent = SimpleNamespace(
+        get_session_id=lambda: "main-session",
+        write_stream=lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_subagent_parent_session",
+        lambda: parent,
+    )
+
+    assert (
+        helpers.resolve_subagent_permission_parent_session(
+            SimpleNamespace(session=parent)
+        )
+        is None
+    )
+
+
+def test_request_permission_confirmation_uses_hosted_path_for_subagent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from openjiuwen.harness.security.models import PermissionConfirmResponse
+
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        build_permission_rail,
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {"enabled": True, "tools": {}, "rules": []},
+    )
+
+    parent = SimpleNamespace(
+        get_session_id=lambda: "main-session",
+        write_stream=lambda *_a, **_k: None,
+    )
+    child = SimpleNamespace(get_session_id=lambda: "child-session")
+
+    async def _fake_hosted(req, *, parent_session, timeout=120.0):
+        assert parent_session is parent
+        assert req.tool_call.name == "read_file"
+        return PermissionConfirmResponse(
+            approved=True, auto_confirm=False, persist_allow=False, feedback=""
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers.resolve_subagent_permission_parent_session",
+        lambda _ctx: parent,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers.request_subagent_hosted_permission_confirmation",
+        _fake_hosted,
+    )
+
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert rail is not None
+    hook = rail._host.request_permission_confirmation
+    assert hook is not None
+
+    from openjiuwen.harness.security.host import PermissionConfirmationRequest
+    from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
+
+    req = PermissionConfirmationRequest(
+        ctx=SimpleNamespace(session=child),
+        tool_call=SimpleNamespace(id="call_1", name="read_file", arguments={"path": "x"}),
+        result=PermissionResult(
+            permission=PermissionLevel.ASK,
+            reason="file_guard",
+            matched_rule="file_guard:defaults",
+        ),
+        auto_confirm_key="read_file",
+    )
+
+    outcome = asyncio.run(hook(req))
+    assert outcome == PermissionConfirmResponse(
+        approved=True, auto_confirm=False, persist_allow=False, feedback=""
+    )
+
+
+def test_request_permission_confirmation_still_interrupts_on_web_main_agent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        build_permission_rail,
+    )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.config_loader.get_effective_permissions_config",
+        lambda **_kwargs: {"enabled": True, "tools": {}, "rules": []},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers.resolve_subagent_permission_parent_session",
+        lambda _ctx: None,
+    )
+
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert rail is not None
+    hook = rail._host.request_permission_confirmation
+    assert hook is not None
+
+    from openjiuwen.harness.security.host import PermissionConfirmationRequest
+    from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
+
+    req = PermissionConfirmationRequest(
+        ctx=SimpleNamespace(session=SimpleNamespace(get_session_id=lambda: "main")),
+        tool_call=SimpleNamespace(id="call_1", name="bash", arguments={"command": "ls"}),
+        result=PermissionResult(
+            permission=PermissionLevel.ASK,
+            reason="ask",
+            matched_rule="bash",
+        ),
+        auto_confirm_key="bash",
+    )
+
+    outcome = asyncio.run(hook(req))
+    assert outcome == "interrupt"
