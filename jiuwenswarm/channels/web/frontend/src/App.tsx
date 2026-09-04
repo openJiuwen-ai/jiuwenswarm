@@ -2284,6 +2284,10 @@ function AppContent({
     // 开关打开，跟 initialInputValue 走的是同一条通道。
     options.initialEnabledPlugins?.forEach((id) => useSessionStore.getState().addEnabledPlugin(NEW_CONVERSATION_ID, id));
     options.initialEnabledMcps?.forEach((name) => useSessionStore.getState().addEnabledMcp(NEW_CONVERSATION_ID, name));
+    if (options.metadata) {
+      useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
+      useSessionStore.getState().setSessionMetadata(NEW_CONVERSATION_ID, options.metadata);
+    }
     if (options.preserveProject) {
       preserveSelectedProjectOnChatNewRef.current = true;
       newConversationProjectRef.current = selectedProject
@@ -3352,8 +3356,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     metadata: { scene: 'create_plugin' },
                   },
                 }))}
-                onUseExample={(initialInputValue, mcpName) =>
-                  requestSessionNavigation('new', { initialInputValue, initialEnabledMcps: [mcpName], forceMode: 'agent' })
+                onUseExample={(initialInputValue, mcpName, displayName) =>
+                  requestSessionNavigation('new', {
+                    initialInputValue,
+                    initialEnabledMcps: [mcpName],
+                    forceMode: 'agent',
+                    metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
+                  })
                 }
                 onUsePluginExample={(initialInputValue, pluginId) =>
                   requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
