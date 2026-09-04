@@ -8,11 +8,8 @@ import { useState, useCallback, useEffect, useRef, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
   Check,
-  ChevronDown,
-  ChevronUp,
   Copy,
   Info,
-  MessageCircle,
   Square,
   Target,
   Volume2,
@@ -81,95 +78,6 @@ export const MarkdownMessageBody = memo(function MarkdownMessageBody({
     />
   );
 });
-
-function BtwCommandCard({
-  command,
-  output,
-}: {
-  command: string;
-  output: string;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const [answerCopied, setAnswerCopied] = useState(false);
-  const question = command.replace(/^\/btw(?:\s+|$)/i, '').trim();
-
-  const copyAnswer = useCallback(async () => {
-    if (!output) return;
-    try {
-      await navigator.clipboard.writeText(output);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = output;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    setAnswerCopied(true);
-    window.setTimeout(() => setAnswerCopied(false), 2000);
-  }, [output]);
-
-  return (
-    <section className="chat-btw-card animate-fade-in" data-testid="chat-panel-btw-card">
-      <button
-        type="button"
-        className="chat-btw-card__header"
-        aria-expanded={expanded}
-        data-testid="chat-panel-btw-card-toggle"
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <span className="chat-btw-card__icon" aria-hidden="true">
-          <MessageCircle size={16} strokeWidth={2} />
-        </span>
-        <span className="chat-btw-card__heading">
-          <span className="chat-btw-card__badge">BTW</span>
-          <span className="chat-btw-card__title">侧问</span>
-        </span>
-        <span className="chat-btw-card__scope">快速侧问，不打断主对话（基于当前上下文）</span>
-        <span className="chat-btw-card__chevron" aria-hidden="true">
-          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="chat-btw-card__body" data-testid="chat-panel-btw-card-body">
-          {question && (
-            <div className="chat-btw-card__question">
-              <span className="chat-btw-card__section-label">问题</span>
-              <span className="chat-btw-card__question-text">{question}</span>
-            </div>
-          )}
-          <div className="chat-btw-card__answer">
-            <div className="chat-btw-card__answer-header">
-              <span className="chat-btw-card__section-label">回答</span>
-              <button
-                type="button"
-                className="chat-btw-card__copy"
-                onClick={() => void copyAnswer()}
-                disabled={!output}
-                data-testid="chat-panel-btw-card-copy"
-              >
-                {answerCopied ? <Check size={14} strokeWidth={2.2} /> : <Copy size={14} />}
-                <span>{answerCopied ? '已复制' : '复制'}</span>
-              </button>
-            </div>
-            {output ? (
-              <MarkdownMessageBody
-                content={output}
-                className="chat-btw-card__answer-content"
-                testId="chat-panel-btw-card-answer"
-              />
-            ) : (
-              <span className="chat-btw-card__empty">暂无回答</span>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
 
 function CompactCommandDivider({ output }: { output: string }) {
   return (
@@ -554,17 +462,13 @@ export const MessageItem = memo(function MessageItem({
 
   // 系统消息
   if (role === 'system') {
-    // slash 命令输出按命令类型路由：BTW 使用侧问卡片，compact 使用时间线分隔条，
+    // slash 命令输出按命令类型路由：compact 使用时间线分隔条，
     // 其余命令退回通用文本；isCommandOutput 标记不会影响其他 system 消息。
     if (isCommandOutput) {
       const newlineIdx = content.indexOf('\n');
       const command = commandInput ?? (newlineIdx >= 0 ? content.slice(0, newlineIdx) : content);
       const output = commandOutput ?? (newlineIdx >= 0 ? content.slice(newlineIdx + 1).trim() : '');
       const normalizedCommandName = commandName || command.match(/^\/([\w-]+)/)?.[1]?.toLowerCase();
-
-      if (normalizedCommandName === 'btw') {
-        return <BtwCommandCard command={command} output={output} />;
-      }
 
       if (normalizedCommandName === 'compact') {
         return <CompactCommandDivider output={output} />;

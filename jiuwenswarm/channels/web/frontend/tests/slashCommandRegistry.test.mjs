@@ -24,6 +24,10 @@ function createContext(sessionId, inputLine) {
   };
 }
 
+test('/btw is not registered by the Web frontend', () => {
+  assert.equal(findSlashCommand('btw'), undefined);
+});
+
 test('/persist is registered and delegates new-session creation to the existing submit path', async () => {
   const command = findSlashCommand('persist');
   assert.ok(command);

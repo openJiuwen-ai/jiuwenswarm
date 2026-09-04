@@ -6,7 +6,7 @@ import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversatio
 import { resolvePlanGoalInterlock } from './semantics';
 
 /**
- * 斜杠命令注册表（/btw、/compact、/plan、/persist，对齐 TUI）。
+ * 斜杠命令注册表（/compact、/plan、/persist）。
  * 后端与 TUI 共用 agent_ws_server；命令结果以 system 消息留痕，
  * 第一行回显命令行，MessageItem 按 isCommandOutput 渲染。
  */
@@ -16,7 +16,7 @@ export type SlashCommandContext = {
   sessionId: string;
   /** 当前会话模式（'agent' / 'team' 等），随请求带给后端做 agent 解析 */
   mode: string;
-  /** 用户原始输入行（如 "/btw 介绍自己"），用于在结果消息第一行回显 */
+  /** 用户原始输入行（如 "/persist 跟进发布"），用于在结果消息第一行回显 */
   inputLine: string;
   addMessage: (sessionId: string, message: Message) => void;
   submitMessage?: (content: string) => void;
@@ -73,7 +73,7 @@ export function togglePlanFromSlash(
   return 'activated';
 }
 
-/** 解析 "/btw some question" → { name: "btw", args: "some question" } */
+/** 解析 "/persist some task" → { name: "persist", args: "some task" } */
 export function parseSlashLine(raw: string): { name: string; args: string } {
   const trimmed = raw.trim().replace(/^\/+/, '');
   const spaceIdx = trimmed.search(/\s/);
@@ -104,36 +104,6 @@ function commandResultMessage(inputLine: string, output: string): Message {
     timestamp: new Date().toISOString(),
   };
 }
-
-/** /btw —— 快速侧问：单轮、无工具、复用当前上下文，不打断主对话。 */
-const btwCommand: SlashCommand = {
-  name: 'btw',
-  execute: async (ctx, args) => {
-    const question = args.trim();
-    if (!question) {
-      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, '用法：/btw <你的问题>'));
-      return;
-    }
-    let output: string;
-    try {
-      const res = await webRequest<{ status: string; answer?: string }>(
-        'command.btw',
-        { session_id: ctx.sessionId, question, mode: ctx.mode },
-        { timeoutMs: 120000 },
-      );
-      if (res.status === 'ok' && res.answer) {
-        output = res.answer;
-      } else if (res.status === 'no_context') {
-        output = '还没有对话上下文，先发一条消息再侧问。';
-      } else {
-        output = res.answer ?? '侧问失败，请稍后再试。';
-      }
-    } catch {
-      output = '侧问失败：网络异常或请求超时。';
-    }
-    ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, output));
-  },
-};
 
 /** /compact —— 压缩对话历史为摘要；token 计数刷新由 context.* 事件监听处理。 */
 const compactCommand: SlashCommand = {
@@ -223,7 +193,6 @@ const persistCommand: SlashCommand = {
 };
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  btwCommand,
   compactCommand,
   planCommand,
   persistCommand,
