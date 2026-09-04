@@ -53,6 +53,7 @@ from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.extensions.hooks_context import MemoryHookContext
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
+from jiuwenswarm.server.utils.stream_utils import is_retry_notice_payload
 from jiuwenswarm.common.utils import (
     get_agent_home_dir,
     get_agent_workspace_dir,
@@ -2730,10 +2731,30 @@ class JiuWenSwarm:
                             # chat.final 双份、tool_result 多出 content 为空的冗余记录。
                             if should_record and data.payload.get("member_name"):
                                 should_record = False
+                            # 团队模式 chat.error 落盘所有权在 team_helpers（带 warning
+                            # 分级：轮内可恢复故障 warning:true，与终态错误区分）；
+                            # 通用路径再写一条无 warning 标记的同事件 = 双写，
+                            # 前端 mapper 会把无标记记录误判为终态错误（historyError）
+                            if should_record and is_team_mode and et == "chat.error":
+                                should_record = False
+                            # 重试通知（rail 的"模型调用异常…第 N 次重试"）任何模式都不落盘：
+                            # 是过程不是结果——落盘则无标记记录被 mapper 打成 historyError，
+                            # 普通会话每次透明重试都在历史上留"曾发生错误"噪音
+                            if (
+                                should_record
+                                and et == "chat.error"
+                                and is_retry_notice_payload(data.payload)
+                            ):
+                                should_record = False
                             if should_record:
                                 payload_dict = dict(data.payload)
+                                # role/error/rid 等事件路由键不能进 extra：
+                                # append_history_record 的 item.update(extra) 会把
+                                # 记录 role 覆盖成 payload 的 role（team_helpers 给 leader
+                                # 帧打 role="leader" → 落盘记录 role 被污染成 leader），
+                                # 且与回答记录共用 <rid>:assistant id 混淆对账
                                 extra_fields = {k: v for k, v in payload_dict.items() if
-                                                k not in ("event_type", "content")}
+                                                k not in ("event_type", "content", "role")}
                                 if et == EventType.TEAM_MESSAGE.value and "event" in payload_dict:
                                     event_data = payload_dict.get("event", {})
                                     if isinstance(event_data, dict):

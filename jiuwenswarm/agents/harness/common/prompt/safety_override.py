@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Monkey-patch openjiuwen's safety prompt with xiaoyi work's extended content.
+"""Monkey-patch openjiuwen's safety prompt with 小艺 work's extended content.
 
 Why a monkey-patch instead of editing openjiuwen directly:
 - ``SafetyPromptRail`` (registered by both office and code adapters, and reused
@@ -31,7 +31,7 @@ from openjiuwen.harness.prompts.sections import SectionName
 _PATCHED = False
 
 # ---------------------------------------------------------------------------
-# Extended safety prompt — original content + 3 new xiaoyi work rules
+# Extended safety prompt — original content + 3 new 小艺 work rules
 # ---------------------------------------------------------------------------
 
 SAFETY_PROMPT_CN = """# 安全原则
@@ -152,12 +152,12 @@ def build_safety_section(language: str = "en") -> Optional[PromptSection]:
     return PromptSection(
         name=SectionName.SAFETY,
         content={language: content},
-        priority=20,
+        priority=12,
     )
 
 
 def apply_patch() -> None:
-    """Patch openjiuwen's safety module with xiaoyi work's extended content.
+    """Patch openjiuwen's safety module with 小艺 work's extended content.
 
     Idempotent: safe to call from multiple builders' import paths.
     """

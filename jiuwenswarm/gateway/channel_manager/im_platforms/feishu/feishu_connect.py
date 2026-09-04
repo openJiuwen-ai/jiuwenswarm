@@ -1608,7 +1608,7 @@ class FeishuChannel(BaseChannel):
                 await self._send_ask_user_question_card(msg)
                 return
 
-            if streaming_enabled and await self._handle_cardkit_streaming_event(
+            if self.config.enable_streaming and await self._handle_cardkit_streaming_event(
                 msg, event_name, payload, meta, route_delivery
             ):
                 return

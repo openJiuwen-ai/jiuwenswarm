@@ -1104,22 +1104,11 @@ permissions:
     defaults:
       read: allow
       write: allow
-      exec: ask
+      exec: allow
     workspace:
       read: allow
       write: allow
       exec: allow
-    paths:
-      - path: "**/.ssh/**"
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
-      - path: "**/.env*"
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
 
   # Legacy external_directory：仅作兼容；启用上方 Native file_guard 后 "*" 不再驱动路径层。
   # 新信任目录写入 file_guard.paths（/add-dir），勿再写本键具名 allow。

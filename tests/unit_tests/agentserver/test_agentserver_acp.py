@@ -2651,6 +2651,73 @@ async def test_handle_session_delete_initializes_persistent_checkpointer(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_handle_session_delete_kills_tracked_shells(monkeypatch, tmp_path):
+    server = AgentWebSocketServerHarness()
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+    session_dir = sessions_root / "sess-agent-1"
+    session_dir.mkdir(parents=True)
+    kill_calls: list[str] = []
+    release_calls: list[str] = []
+
+    async def fake_ensure_persistent_checkpointer():
+        return None
+
+    async def fake_release(session_id: str):
+        release_calls.append(session_id)
+
+    def fake_kill(session_id: str) -> int:
+        kill_calls.append(session_id)
+        return 2
+
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_agent_sessions_dir",
+        lambda: sessions_root,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda _session_id: {"mode": "agent.plan"},
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "ensure_persistent_checkpointer",
+        fake_ensure_persistent_checkpointer,
+    )
+    monkeypatch.setattr(
+        "openjiuwen.core.sys_operation.shell_process_registry.kill_shell_processes_for_session_tree",
+        fake_kill,
+    )
+    monkeypatch.setattr(
+        "openjiuwen.core.runner.Runner.release",
+        fake_release,
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "remove_session_metadata_cache",
+        lambda _session_id: None,
+    )
+
+    request = AgentRequest(
+        request_id="req-session-delete-kill",
+        channel_id="web",
+        req_method=ReqMethod.SESSION_DELETE,
+        params={"session_id": "sess-agent-1"},
+    )
+
+    await server.handle_session_delete_for_test(fake_ws, request, asyncio.Lock())
+
+    assert kill_calls == ["sess-agent-1"]
+    assert release_calls == ["sess-agent-1"]
+    assert not session_dir.exists()
+
+
+@pytest.mark.asyncio
 async def test_handle_session_delete_unbinds_team_session(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
 

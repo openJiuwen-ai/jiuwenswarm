@@ -82,6 +82,7 @@ DESKTOP_PRESERVED_ENV_KEYS = (
 # 之外单独列出，避免 jiuwenswarm desktop_app._build_child_env 被要求带上这些键。
 DESKTOP_PRESERVED_INVOKE_ENV_KEYS = (
     "AGENT_RUNTIME_MCP_RUN",
+    "AGENT_RUNTIME_MCP_UPSTREAM",
     "CLAW_BUSINESS_CREDENTIAL",
     "CLAW_XIAOYI_UID",
     "CLAW_XIAOYI_AK",

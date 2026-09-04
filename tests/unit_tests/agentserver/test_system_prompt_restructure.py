@@ -769,7 +769,7 @@ async def test_runtime_prompt_uses_runtime_cwd_over_stale_trusted_dir(tmp_path, 
     assert "The project directory is your current workspace" in prompt
     assert f"the current project directory is: `{project_dir}`" in prompt
     assert "Agent internal data directory" in prompt
-    assert "## xiaoyi work Internal Data Directories" in prompt
+    assert "## 小艺 work Internal Data Directories" in prompt
     assert str(project_dir) in prompt
     # current_dir is the runtime cwd; it legitimately appears in the Runtime
     # Directory Context, but must NOT leak into Other Authorized Directories

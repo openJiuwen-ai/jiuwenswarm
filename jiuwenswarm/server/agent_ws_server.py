@@ -4474,6 +4474,26 @@ class AgentWebSocketServer:
                             channel_id=channel_id,
                         )
                     try:
+                        from openjiuwen.core.sys_operation.shell_process_registry import (
+                            kill_shell_processes_for_session_tree,
+                        )
+
+                        killed = kill_shell_processes_for_session_tree(target)
+                        if killed:
+                            logger.info(
+                                "[AgentWebSocketServer] session.delete: killed %d shell "
+                                "process(es) session=%s",
+                                killed,
+                                target,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "[AgentWebSocketServer] session.delete: kill_shell_processes "
+                            "failed session=%s",
+                            target,
+                            exc_info=True,
+                        )
+                    try:
                         if is_team_mode:
                             team_manager = get_team_manager(channel_id)
                             deleted = await team_manager.delete_session_runtime(

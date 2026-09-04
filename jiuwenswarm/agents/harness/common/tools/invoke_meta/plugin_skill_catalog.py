@@ -16,8 +16,20 @@ _PROD_MCP_HOST_MARKERS = ("hag-drcn", "dbankcloud.com", "huawei.com")
 
 
 def is_prod_plugin_runtime(url: str | None = None) -> bool:
-    """True when mcp/run points at 现网 (hag-drcn / dbankcloud / huawei.com)."""
-    raw = (url if url is not None else os.environ.get("AGENT_RUNTIME_MCP_RUN") or "").strip()
+    """True when mcp/run points at 现网 (hag-drcn / dbankcloud / huawei.com).
+
+    Desktop spawn points AGENT_RUNTIME_MCP_RUN at the loopback inject proxy;
+    prefer AGENT_RUNTIME_MCP_UPSTREAM (real 现网/蓝绿 URL) when set.
+    """
+    raw = (
+        url
+        if url is not None
+        else (
+            os.environ.get("AGENT_RUNTIME_MCP_UPSTREAM")
+            or os.environ.get("AGENT_RUNTIME_MCP_RUN")
+            or ""
+        )
+    ).strip()
     if not raw:
         return False
     host = ""

@@ -55,8 +55,9 @@ from jiuwenswarm.common.invocation_context import (
 )
 from jiuwenswarm.server.invocation_context_builder import build_invocation_context
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
-from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk, is_retry_notice_payload
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
+from jiuwenswarm.server.runtime.agent_adapter.team_stall_watchdog import schedule_team_stall_watchdog
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EvolutionProgressStatus,
     EvolutionPushContext,
@@ -136,6 +137,15 @@ def _safe_team_path_segment(value: str, fallback: str = "_") -> str:
 def _team_hide_teammate_enabled() -> bool:
     """Return whether non-leader teammate frames should be filtered out in team mode."""
     return os.environ.get(_HIDE_TEAMMATE_ENV_KEY, "").strip().lower() == "true"
+
+
+def _is_retry_notice(parsed: dict[str, Any]) -> bool:
+    """重试通知（rail 的"模型调用异常，将在 X 秒后进行第 N 次重试"）是过程不是结果：
+    广播照发（前端扫光条需要），但不落盘——否则一次重试一条留痕，刷新后警告计数失真。
+    判定口径在 stream_utils.is_retry_notice_payload（标记优先、文案兜底），
+    与 interface.py 通用落盘器共用同一实现。"""
+    return is_retry_notice_payload(parsed)
+
 
 _INTERACT_REASON_ERROR_MAP: dict[str, str] = {
     "not_active": "Team is initializing, please try again later",
@@ -2290,6 +2300,10 @@ async def _consume_stream_with_query(
     # leader 重试耗尽转 IDLE 时回合实际死亡但无任何终态帧——探针在错误后
     # 零产出的情况下补发 processing_status 终态，防前端 run 永远 running）
     death_probe_task: asyncio.Task | None = None
+    # 停摆看门狗：死亡探针只管"leader 错误后零产出"；停摆是另一族——
+    # leader 正常收尾但任务已下发、零成员在途（重试断片未派发/成员未启动），
+    # 回合无人推进且 team.completed 永不成立。回合开始广播后启动，随流回收
+    stall_watchdog_task: asyncio.Task | None = None
     # 本流已广播的回合收尾信号数（processing_status is_complete=true 等）：
     # 探针据此判断"错误之后回合已正常收尾"，避免迟到误杀已完成回合
     completion_signals = 0
@@ -2331,6 +2345,18 @@ async def _consume_stream_with_query(
                 "is_processing": True,
                 "is_complete": False,
             },
+        )
+        stall_watchdog_task = schedule_team_stall_watchdog(
+            channel_id,
+            session_id,
+            round_id,
+            # 活性口径用全量流帧（received_chunks，含成员/团队事件）——停摆语义是
+            # "无人干事"，与死亡探针的"leader 是否活着"（只数 leader 帧）不同
+            liveness=lambda: received_chunks,
+            completion_signals=lambda: completion_signals,
+            # 广播函数注入（本模块的广播有 team.error 改名/建团事件标记/cron 收尾
+            # 副作用）；看门狗模块不反向 import 本文件，防循环依赖
+            broadcast=_broadcast_event,
         )
         stream_trace_enabled = bool(
             _envs.get(_STREAM_TRACE_ENV_KEY) or os.environ.get(_STREAM_TRACE_ENV_KEY)
@@ -2619,24 +2645,28 @@ async def _consume_stream_with_query(
                     # 团队轮内故障落盘。chat.error 在团队模式是非终态警告
                     # （此前只广播不落盘，重启后"本轮曾出错"留痕蒸发）；extra.warning
                     # 供前端与终态错误（整轮判失败）区分；成员错误附 member_name 归因。
-                    append_history_record(
-                        session_id=session_id,
-                        request_id=f"{round_id}-error-{int(time.time() * 1000)}",
-                        channel_id=_resolve_channel_id(channel_id),
-                        role="assistant",
-                        event_type="chat.error",
-                        content=str(parsed.get("error") or ""),
-                        timestamp=time.time(),
-                        extra={
-                            "warning": True,
-                            **(
-                                {"member_name": str(parsed.get("member_name"))}
-                                if parsed.get("member_name")
-                                else {}
-                            ),
-                        },
-                        mode="team",
-                    )
+                    # 重试通知（"模型调用异常…第 N 次重试"）是过程不是结果：广播照发
+                    # （前端扫光条），但不落盘——否则一次重试一条留痕，警告聚合计数失真。
+                    # 结构化标记优先（retry_notice=True），文案匹配仅兜底旧框架
+                    if not _is_retry_notice(parsed):
+                        append_history_record(
+                            session_id=session_id,
+                            request_id=f"{round_id}-error-{int(time.time() * 1000)}",
+                            channel_id=_resolve_channel_id(channel_id),
+                            role="assistant",
+                            event_type="chat.error",
+                            content=str(parsed.get("error") or ""),
+                            timestamp=time.time(),
+                            extra={
+                                "warning": True,
+                                **(
+                                    {"member_name": str(parsed.get("member_name"))}
+                                    if parsed.get("member_name")
+                                    else {}
+                                ),
+                            },
+                            mode="team",
+                        )
                     if is_leader:
                         # 记录本轮未恢复的 leader 模型错误史，
                         # 供 team.completed 等收尾帧携带（根治"重试耗尽却记已完成"）
@@ -2791,9 +2821,11 @@ async def _consume_stream_with_query(
             stream_cancelled = True
             raise
     finally:
-        # 回合死亡探针随流回收（流结束=回合已有定论，不再需要补终态）
+        # 回合死亡探针/停摆看门狗随流回收（流结束=回合已有定论，不再需要补终态）
         if death_probe_task is not None and not death_probe_task.done():
             death_probe_task.cancel()
+        if stall_watchdog_task is not None and not stall_watchdog_task.done():
+            stall_watchdog_task.cancel()
         # Flush & close the stream trace logger if one was opened.
         if lg is not None:
             try:

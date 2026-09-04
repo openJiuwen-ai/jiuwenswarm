@@ -461,7 +461,7 @@ permissions:
     "*": "allow"
 
   tools:
-    bash: ask
+    bash: allow
     mcp_exec_command: allow
     create_terminal: ask
     write: allow
@@ -598,24 +598,13 @@ permissions:
   file_guard:
     enabled: true
     defaults:
-      read: ask
-      write: ask
-      exec: ask
+      read: allow
+      write: allow
+      exec: allow
     workspace:
       read: allow
       write: allow
-      exec: ask
-    paths:
-      - path: "**/.ssh/**"
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
-      - path: "**/.env*"
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
+      exec: allow
 
   # Legacy external_directory（Native file_guard 启用后 "*" 不驱动路径层）
   external_directory:

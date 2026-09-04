@@ -309,7 +309,12 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
             if isinstance(payload, dict)
             else str(payload)
         )
-        return {"event_type": "chat.error", "error": error_msg}
+        event = {"event_type": "chat.error", "error": error_msg}
+        # 结构化重试通知标记透传（openjiuwen LLMRetryRail 随 error payload 下发），
+        # 下游（落盘过滤/展示映射）按标记识别，不再匹配通知文案
+        if isinstance(payload, dict) and payload.get("retry_notice") is True:
+            event["retry_notice"] = True
+        return event
 
     if chunk_type == "thinking":
         return {
@@ -492,7 +497,7 @@ def _parse_event_typed_chunk(chunk: Any) -> dict[str, Any]:
         return chunk
 
     result = {"event_type": getattr(chunk, "event_type", "unknown")}
-    
+
     # 优先使用 Pydantic 的 model_dump/dict 方法
     if hasattr(chunk, "model_dump"):
         # Pydantic v2 - mode='json' 会将 datetime 转换为 ISO 格式字符串
@@ -558,3 +563,18 @@ def _parse_response_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, 
         "event_type": "chat.delta",
         "content": str(payload) if payload else "",
     }
+
+
+def is_retry_notice_payload(payload: dict[str, Any] | None) -> bool:
+    """重试通知判定（rail 的"模型调用异常，将在 X 秒后进行第 N 次重试"）。
+
+    结构化标记优先（retry_notice=True，openjiuwen LLMRetryRail 随 error payload
+    下发，文案改动不击穿识别链）；文案匹配兜底旧框架。重试通知是过程不是结果——
+    广播照发、不落盘（落盘则一次重试一条留痕，刷新后警告计数失真）。
+    """
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("retry_notice"):
+        return True
+    text = str(payload.get("error") or "")
+    return "模型调用异常" in text and "重试" in text

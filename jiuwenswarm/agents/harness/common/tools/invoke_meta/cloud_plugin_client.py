@@ -358,22 +358,19 @@ class CloudPluginClient(AgentRuntimeClient):
             "[session=%s] [%s] [CloudPluginClient] invoke pluginId=%s toolName=%s url=%s",
             self.session_id, self.plugin_session_id, plugin_id, tool_name, url
         )
+        self._log_handshake_summary(url, headers, plugin_id, tool_name)
 
         try:
             ws_ctx = await self._connect_with_retry(url, headers)
         except Exception as e:
+            self._log_handshake_reject(e, plugin_id, tool_name)
             logger.error(
                 "[session=%s] [%s] [CloudPluginClient] WS connect failed after retries: %s",
                 self.session_id, self.plugin_session_id, e
             )
             return self._build_error_response(spec, f"WebSocket 连接失败: {e}")
 
-        logger.info(
-            "[session=%s] [%s] [CloudPluginClient] pluginId=%s toolName=%s WS connect succeed",
-            self.session_id, self.plugin_session_id, plugin_id, tool_name
-        )
-
-        # 接收帧并返回结果
+        # 接收帧并返回结果（handshake_ok 仅在 async with 真正握上之后）
         frames = await self._receive_frames(ws_ctx, message, spec)
         rsp = self.final_response(frames, spec)
         if rsp.get("success"):
@@ -410,6 +407,11 @@ class CloudPluginClient(AgentRuntimeClient):
 
         try:
             async with ws_ctx as ws:
+                logger.info(
+                    "[session=%s] [%s] [CloudPluginClient] mcp/run handshake phase=handshake_ok "
+                    "pluginId=%s functionName=%s",
+                    self.session_id, self.plugin_session_id, plugin_id, tool_name,
+                )
                 await ws.send(message)
 
                 while True:
@@ -453,6 +455,7 @@ class CloudPluginClient(AgentRuntimeClient):
             )
             frames.append(self._build_error_frame(spec, "WebSocket 连接超时"))
         except Exception as e:
+            self._log_handshake_reject(e, plugin_id, tool_name)
             logger.error(
                 "[session=%s] [%s] [CloudPluginClient] WS operation failed: %s; last request body=%s",
                 self.session_id,
@@ -490,6 +493,55 @@ class CloudPluginClient(AgentRuntimeClient):
                 "type": "abnormal",
                 "errMessage": f"Invalid JSON response: {raw}"
             }
+
+    def _log_handshake_summary(
+            self,
+            url: str,
+            headers: dict[str, str],
+            plugin_id: str,
+            tool_name: str,
+    ) -> None:
+        from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (
+            handshake_cred_source,
+            mask_secret,
+        )
+
+        logger.info(
+            "[session=%s] [%s] [CloudPluginClient] mcp/run handshake "
+            "url=%s pluginId=%s functionName=%s cred=%s credSrc=%s "
+            "x-uid=%s x-device-id=%s x-hag-trace-id=%s",
+            self.session_id,
+            self.plugin_session_id,
+            url,
+            plugin_id,
+            tool_name,
+            mask_secret(headers.get("businessCredential") or ""),
+            handshake_cred_source(url),
+            headers.get("x-uid") or "",
+            headers.get("x-device-id") or "",
+            headers.get("x-hag-trace-id") or "",
+        )
+
+    def _log_handshake_reject(self, exc: BaseException, plugin_id: str, tool_name: str) -> None:
+        from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (
+            format_masked_headers,
+            handshake_reject_status_and_headers,
+            is_handshake_reject,
+        )
+
+        status, headers = handshake_reject_status_and_headers(exc)
+        if not is_handshake_reject(exc) and status is None:
+            return
+        logger.info(
+            "[session=%s] [%s] [CloudPluginClient] mcp/run handshake phase=handshake_reject "
+            "status=%s headers=%s pluginId=%s functionName=%s",
+            self.session_id,
+            self.plugin_session_id,
+            status,
+            format_masked_headers(headers),
+            plugin_id,
+            tool_name,
+        )
 
     def _build_headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         from jiuwenswarm.agents.harness.common.tools.invoke_meta.useraccess_runtime import (

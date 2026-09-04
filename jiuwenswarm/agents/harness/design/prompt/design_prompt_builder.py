@@ -28,13 +28,13 @@ from jiuwenswarm.agents.harness.common.prompt import skills_goal_override  # noq
 class DesignPromptPriority(IntEnum):
     INTRO = 10
     CONTENT_POLICY = 11
-    ROLE = 12
-    PRODUCT_FUNDAMENTALS = 13
-    BOUNDARIES = 14
-    INTERACTION_PRINCIPLES = 15
-    CORE_CAPABILITIES = 16
-    REGIONAL_CONVENTIONS = 17
-    SYSTEM = 20
+    SYSTEM = 13
+    ROLE = 14
+    PRODUCT_FUNDAMENTALS = 15
+    BOUNDARIES = 16
+    INTERACTION_PRINCIPLES = 17
+    CORE_CAPABILITIES = 18
+    REGIONAL_CONVENTIONS = 19
     TOOL_AND_SKILL_PRINCIPLES = 33
     ERROR_HANDLING = 38
     TONE_AND_STYLE = 45
@@ -46,12 +46,12 @@ class DesignPromptPriority(IntEnum):
 
 def _design_intro_prompt() -> PromptSection:
     content = (
-        "You are xiaoyi work Design, an interactive creative-design agent created "
-        "by xiaoyi work. You help users create design deliverables — slides, "
+        "You are 小艺 work Design, an interactive creative-design agent created "
+        "by 小艺 work. You help users create design deliverables — slides, "
         "posters, brand systems, illustrations, songs, and short videos. Use the "
         "instructions below and the tools available to you to assist the user.\n"
         "\n"
-        "IMPORTANT: Act like an experienced designer working alongside the user. "
+        "**IMPORTANT**: Act like an experienced designer working alongside the user. "
         "The user raises requirements and makes decisions; you do the hands-on "
         "work and proactively offer design suggestions.\n"
     )
@@ -96,15 +96,15 @@ def _design_role_prompt() -> PromptSection:
         "## Role\n"
         "\n"
         "You are the **Intelligent Design Assistant (设计创意助手)** — the "
-        "design-focused capability of xiaoyi work. You share xiaoyi work's overall "
+        "design-focused capability of 小艺 work. You share 小艺 work's overall "
         "identity and voice; you do **not** introduce yourself as a separate or "
         "standalone product, and you do **not** use any other product name as your "
         "identity.\n"
         "\n"
         "- When the user asks who you are, what you are, or what to call you, "
-        "identify yourself as xiaoyi work's Intelligent Design Assistant "
+        "identify yourself as 小艺 work's Intelligent Design Assistant "
         "(设计创意助手). Do not claim to be a different assistant, brand, or tool.\n"
-        "- Stay consistent with xiaoyi work's tone across other modes (work / "
+        "- Stay consistent with 小艺 work's tone across other modes (work / "
         "code): act like a senior design colleague embedded in the same product, "
         "not a separate persona.\n"
         "- Never expose internal implementation names, codenames, skill names, or "
@@ -476,7 +476,7 @@ def _design_output_efficiency_prompt() -> PromptSection:
         "End-of-turn summary: one or two sentences. What was delivered and what's "
         "next. For PPT, name the .pptx file path and the page count.\n"
         "\n"
-        "IMPORTANT: The following applies to text output only — it does NOT limit "
+        "**IMPORTANT**: The following applies to text output only — it does NOT limit "
         "your tool call count:\n"
         "\n"
         "Go straight to the point. Try the simplest approach first without going "
@@ -524,7 +524,7 @@ def build_design_system_prompt() -> str:
     memory) is injected per-request by Rails. Aligns with WorkBuddy Design
     Mode's 7 unique segments (Role / Product Fundamentals / boundaries /
     interaction_principles / core_capabilities / tool_and_skill_principles /
-    error_handling) — adapted for xiaoyi work's PPT-focused v1 scope.
+    error_handling) — adapted for 小艺 work's PPT-focused v1 scope.
     """
     builder = SystemPromptBuilder(language="en")
 

@@ -9,7 +9,7 @@ openjiuwen source file.
 What this patch does:
 
 1. **Skills section** — replaces the dynamic ``# Skills`` header with a curated
-   10-item static catalogue (the xiaoyi work canonical skill list). The
+   10-item static catalogue (the 小艺 work canonical skill list). The
    ``SkillUseRail`` still appends dynamically discovered installed skills after
    the static block, but any installed skill whose name collides with one of the
    10 static entries is de-duplicated and the remainder is renumbered so the
@@ -35,7 +35,7 @@ from typing import Dict, List, Optional
 from jiuwenswarm.common.utils import logger
 
 # ---------------------------------------------------------------------------
-# Static catalogue — the 10 canonical xiaoyi work skills
+# Static catalogue — the 10 canonical 小艺 work skills
 # ---------------------------------------------------------------------------
 
 _STATIC_SKILL_NAMES = frozenset(
@@ -59,6 +59,22 @@ _STATIC_SKILL_NAMES = frozenset(
 )
 
 _DYNAMIC_START_INDEX = len(_STATIC_SKILL_NAMES) + 1  # static catalogue then dynamic entries
+
+# Legacy non-"-win" folder names that are the same skill as a renamed
+# static entry. Used only for de-duplication so old deployments (where the
+# folder was installed without the "-win" suffix) don't re-appear as
+# "Additional installed skills" duplicates.
+_LEGACY_DEDUP_ALIASES = frozenset(
+    {
+        "xiaoyi-web-search",
+        "xiaoyi-ppt",
+        "skill-creator",
+        "xiaoyi-pdf",
+        "xiaoyi-image-understanding",
+    }
+)
+
+_DEDUP_NAMES = _STATIC_SKILL_NAMES | _LEGACY_DEDUP_ALIASES
 
 _STATIC_BLOCK_EN = """## Skills
 
@@ -102,7 +118,7 @@ Prefer the skills and tools below; call `skill_tool` to retrieve the full `SKILL
     - A dedicated multi-agent team skill creation, conversion, and refactoring tool; supports writing team workflows, orchestration scripts, building multi-role collaborative agent architectures, and upgrading single skills to team collaboration skills; only for multi-role team scenarios; ordinary single skill creation should use `skill-creator-win`.
 
 11. PDF Processing (`xiaoyi-pdf-win`)
-    - PDF 综合处理技能，处理文档生成、编辑、安全与解析。 适用情形： 1. 创建与排版：从零生成报告、提案、简历等 PDF，或对现有文档重新排版美化； 2. 表单与水印：自动填写 PDF 表单字段，或添加文字/图片水印（如打水印、标机密）； 3. 页面管理：合并多个 PDF，或拆分、提取指定页码； 4. 安全控制：为 PDF 添加密码（加密）或移除密码（解密）； 5. 内容提取：从 PDF 中提取纯文本或导出表格数据。 只要用户诉求涉及生成、排版、美化、转换、拼接、拆分 PDF，或处理水印、表单、密码，必须触发本技能。
+    - A comprehensive PDF skill for document generation, editing, security, and parsing. Applicable scenarios: 1. Creation & layout: generate reports, proposals, resumes, etc. as PDFs from scratch, or re-layout and beautify existing documents; 2. Forms & watermarks: auto-fill PDF form fields, or add text/image watermarks (e.g. watermarking, marking confidential); 3. Page management: merge multiple PDFs, or split/extract specified pages; 4. Security control: add a password (encrypt) or remove a password (decrypt) for a PDF; 5. Content extraction: extract plain text from a PDF or export table data. Whenever the user's request involves generating, laying out, beautifying, converting, concatenating, or splitting PDFs, or handling watermarks, forms, or passwords, this skill must be triggered.
 
 12. Image Generation (`seedream-image-gen`)
     - Usage rule: call `skill_tool` to load `seedream-image-gen` and follow its SKILL.md. Deliver the image file, never stop after writing only a prompt or script.
@@ -240,7 +256,7 @@ def _dedupe_and_renumber(skill_lines: str, start_index: int) -> str:
     out: List[str] = []
     idx = start_index
     for entry in entries:
-        if _entry_name(entry) in _STATIC_SKILL_NAMES:
+        if _entry_name(entry) in _DEDUP_NAMES:
             continue
         main_line = entry[0]
         rest = entry[1:]

@@ -68,12 +68,14 @@ def test_load_dotenv_runtime_preserves_invoke_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_DESKTOP", "1")
     monkeypatch.delenv(CLI_PORTS_ENV_FLAG, raising=False)
     monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", "wss://host/v1/mcp/run")
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_UPSTREAM", "wss://upstream/v1/mcp/run")
     monkeypatch.setenv("CLAW_XIAOYI_UID", "spawn-uid")
     monkeypatch.setenv("CLAW_BUSINESS_CREDENTIAL", "spawn-cred")
 
     load_dotenv_runtime(env_file, override=True)
 
     assert os.environ["AGENT_RUNTIME_MCP_RUN"] == "wss://host/v1/mcp/run"
+    assert os.environ["AGENT_RUNTIME_MCP_UPSTREAM"] == "wss://upstream/v1/mcp/run"
     assert os.environ["CLAW_XIAOYI_UID"] == "spawn-uid"
     assert os.environ["CLAW_BUSINESS_CREDENTIAL"] == "spawn-cred"
 

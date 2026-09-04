@@ -18,7 +18,7 @@ class PromptPriority(IntEnum):
     """Named prompt section priorities for general agent builder."""
 
     IDENTITY = 10
-    CONTENT_POLICY = 12
+    CONTENT_POLICY = 11
     REGIONAL_CONVENTIONS = 16
     TASK_EXECUTION = 21
     SKILLS = 40
@@ -39,7 +39,7 @@ class LocalSectionName:
 def _identity_prompt() -> PromptSection:
     content = (
         "# Identity\n\n"
-        "You are a personal agent created by xiaoyi work, responsible for understanding "
+        "You are a personal agent created by 小艺 work, responsible for understanding "
         "the user's goals and completing tasks. Interact with the user like a warm, "
         "thoughtful human assistant.\n"
     )

@@ -5,17 +5,22 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 # Direct plugin WS: full URL, do not concatenate.
 # Example: wss://host:18449/agent-runtime-service-ws/v1/mcp/run
 _MCP_RUN_ENV = "AGENT_RUNTIME_MCP_RUN"
+_MCP_UPSTREAM_ENV = "AGENT_RUNTIME_MCP_UPSTREAM"
 _AGENT_BASE_ENV = "AGENT_RUNTIME_BASEURL"
 _UID_ENV = "AGENT_RUNTIME_UID"
 _CLAW_UID_ENV = "CLAW_XIAOYI_UID"
 _CREDENTIAL_ENV = "CLAW_BUSINESS_CREDENTIAL"
 _DEVICE_ID_ENVS = ("AGENT_RUNTIME_DEVICE_ID", "X_DEVICE_ID")
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+_SECRET_HEADER_RE = re.compile(r"credential|authorization|token", re.IGNORECASE)
 
 
 def is_mcp_run_url(url: str) -> bool:
@@ -23,9 +28,89 @@ def is_mcp_run_url(url: str) -> bool:
     return "/mcp/run" in (url or "").rstrip("/")
 
 
+def mask_secret(value: str | None) -> str:
+    """Match desktop logger.maskSecret: empty → (空); else first 12 chars + …(len=N)."""
+    text = "" if value is None else str(value)
+    if not text:
+        return "(空)"
+    return f"{text[:12]}…(len={len(text)})"
+
+
+def format_masked_headers(headers: Any) -> str:
+    """Flatten handshake/response headers, masking credential/authorization/token values."""
+    items: list[Any]
+    if headers is None:
+        return ""
+    try:
+        items = list(headers.items())
+    except Exception:  # noqa: BLE001
+        if isinstance(headers, (list, tuple)):
+            items = list(headers)
+        else:
+            return ""
+    parts: list[str] = []
+    for item in items:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+        name = str(item[0])
+        value = str(item[1])
+        if _SECRET_HEADER_RE.search(name):
+            value = mask_secret(value)
+        parts.append(f"{name}={value}")
+    return " ".join(parts)
+
+
+def handshake_reject_status_and_headers(exc: BaseException) -> tuple[int | None, Any]:
+    """Extract InvalidStatusCode / InvalidStatus status and headers from a handshake error."""
+    status = getattr(exc, "status_code", None)
+    headers = getattr(exc, "headers", None)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        if status is None:
+            status = getattr(response, "status_code", None)
+        if headers is None:
+            headers = getattr(response, "headers", None)
+    try:
+        status_int = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status_int = None
+    return status_int, headers
+
+
+def is_handshake_reject(exc: BaseException) -> bool:
+    """True when the exception is an HTTP handshake rejection (non-101)."""
+    name = type(exc).__name__
+    if "InvalidStatus" in name:
+        return True
+    status, _headers = handshake_reject_status_and_headers(exc)
+    return status is not None and "handshake" in name.lower()
+
+
+def is_desktop_plugin_ws_proxy(url: str | None = None) -> bool:
+    """True when mcp/run points at the desktop loopback inject proxy (127.0.0.1:19694)."""
+    raw = (url if url is not None else resolve_plugin_runtime_url()).strip()
+    if not is_mcp_run_url(raw):
+        return False
+    try:
+        host = (urlparse(raw).hostname or "").lower().strip("[]")
+    except ValueError:
+        return False
+    return host in _LOOPBACK_HOSTS
+
+
 def resolve_plugin_runtime_url() -> str:
     """Return AGENT_RUNTIME_MCP_RUN (full URL, no path concat). Empty if unset."""
     return (os.environ.get(_MCP_RUN_ENV) or "").strip()
+
+
+def resolve_plugin_runtime_upstream_url() -> str:
+    """Return AGENT_RUNTIME_MCP_UPSTREAM when set; else AGENT_RUNTIME_MCP_RUN.
+
+    Desktop spawn points MCP_RUN at the loopback inject proxy and puts the real
+    现网/蓝绿 URL in MCP_UPSTREAM so zone helpers can still tell them apart.
+    """
+    upstream = (os.environ.get(_MCP_UPSTREAM_ENV) or "").strip()
+    return upstream or resolve_plugin_runtime_url()
 
 
 def resolve_agent_runtime_baseurl() -> str:
@@ -53,11 +138,11 @@ def resolve_runtime_uid() -> str:
 
 
 def resolve_business_credential() -> str:
-    """Product mcp/run handshake credential.
+    """Product mcp/run handshake credential (lab / old packets).
 
-    桌面密钥包形态（2026-08-28 合并决策）：凭证由 stdin 密钥包承载
-    （secrets_bootstrap.get_secret('businessCredential')），不经 env 下发；
-    env（CLAW_BUSINESS_CREDENTIAL）仅为实验室/旧形态兜底。
+    桌面目标态不再经密钥包下发 businessCredential：mcp/run 打本机代理，
+    由主进程按次注入 locker 票。本函数仍读 env / 旧密钥包，供实验室直连
+    远端 mcp/run。env（CLAW_BUSINESS_CREDENTIAL）仅为实验室/旧形态兜底。
     """
     env_value = (os.environ.get(_CREDENTIAL_ENV) or "").strip()
     if env_value:
@@ -68,6 +153,32 @@ def resolve_business_credential() -> str:
         return ""
     value = get_secret("businessCredential")
     return str(value).strip() if value else ""
+
+
+def resolve_plugin_ws_token() -> str:
+    """Desktop plugin WS proxy token from stdin secrets (pluginWsToken)."""
+    try:
+        from jiuwenswarm.common.secrets_bootstrap import get_secret
+    except Exception:  # noqa: BLE001
+        return ""
+    value = get_secret("pluginWsToken")
+    return str(value).strip() if value else ""
+
+
+def handshake_cred_source(url: str | None = None) -> str:
+    """Where the mcp/run handshake cred is expected to come from (log field credSrc)."""
+    if is_desktop_plugin_ws_proxy(url):
+        return "desktop-proxy"
+    if (os.environ.get(_CREDENTIAL_ENV) or "").strip():
+        return "env"
+    try:
+        from jiuwenswarm.common.secrets_bootstrap import get_secret
+    except Exception:  # noqa: BLE001
+        return "empty"
+    value = get_secret("businessCredential")
+    if str(value).strip() if value else "":
+        return "vault"
+    return "empty"
 
 
 def resolve_runtime_device_id() -> str:
@@ -98,16 +209,31 @@ def resolve_device_sandbox_system() -> str:
     return (os.environ.get("CLAW_DEVICE_SANDBOX_SYSTEM") or "").strip()
 
 
-def build_product_mcp_headers(*, plugin_session_id: str = "", extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Handshake headers for mcp/run: businessCredential, xiaoyiWork request-from, trace, optional uid/device."""
+def build_product_mcp_headers(
+    *,
+    plugin_session_id: str = "",
+    extra: dict[str, str] | None = None,
+    url: str | None = None,
+) -> dict[str, str]:
+    """Handshake headers for mcp/run.
+
+    Desktop loopback proxy: Authorization Bearer pluginWsToken, no businessCredential
+    (desktop injects the locker ticket on the upstream hop). Remote/lab: businessCredential.
+    """
+    target = (url if url is not None else resolve_plugin_runtime_url()).strip()
     uid = resolve_runtime_uid()
     device_id = resolve_runtime_device_id()
     headers: dict[str, str] = {
         "Content-Type": "application/json",
-        "businessCredential": resolve_business_credential(),
         "x-request-from": "xiaoyiWork",
         "x-hag-trace-id": uuid.uuid4().hex,
     }
+    if is_desktop_plugin_ws_proxy(target):
+        token = resolve_plugin_ws_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    else:
+        headers["businessCredential"] = resolve_business_credential()
     if uid:
         headers["x-uid"] = uid
     if device_id:
@@ -116,16 +242,18 @@ def build_product_mcp_headers(*, plugin_session_id: str = "", extra: dict[str, s
         headers["x-plugin-session-id"] = plugin_session_id
     if extra:
         headers.update({k: v for k, v in extra.items() if v})
+    if is_desktop_plugin_ws_proxy(target):
+        headers.pop("businessCredential", None)
+        headers.pop("businesscredential", None)
     return headers
 
 
 def build_runtime_headers(*, extra: dict[str, str] | None = None, url: str | None = None) -> dict[str, str]:
-    """Handshake headers for mcp/run: businessCredential + uid/device/trace."""
-    _ = url
+    """Handshake headers for mcp/run: proxy token or businessCredential + uid/device/trace."""
     plugin_session_id = ""
     if extra:
         plugin_session_id = str(extra.get("x-plugin-session-id") or "")
-    return build_product_mcp_headers(plugin_session_id=plugin_session_id, extra=extra)
+    return build_product_mcp_headers(plugin_session_id=plugin_session_id, extra=extra, url=url)
 
 
 def build_plugin_skill_extra_info(
@@ -240,6 +368,17 @@ def missing_credential_error(*, plugin_id: str = "", tool_name: str = "") -> dic
     }
 
 
+def missing_plugin_ws_token_error(*, plugin_id: str = "", tool_name: str = "") -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": (
+            "缺少插件 WS 代理令牌：密钥包缺少 pluginWsToken（桌面 spawn 下发）"
+        ),
+        "pluginId": plugin_id,
+        "toolName": tool_name,
+    }
+
+
 def missing_agent_baseurl_error() -> dict[str, Any]:
     return {
         "success": False,
@@ -254,15 +393,24 @@ __all__ = [
     "build_product_mcp_headers",
     "build_plugin_skill_extra_info",
     "build_runtime_headers",
+    "format_masked_headers",
+    "handshake_cred_source",
+    "handshake_reject_status_and_headers",
+    "is_desktop_plugin_ws_proxy",
+    "is_handshake_reject",
     "is_mcp_run_url",
+    "mask_secret",
     "missing_agent_baseurl_error",
     "missing_credential_error",
     "missing_plugin_url_error",
+    "missing_plugin_ws_token_error",
     "resolve_agent_runtime_baseurl",
     "resolve_business_credential",
     "resolve_device_hostname",
     "resolve_device_sandbox_system",
+    "resolve_plugin_runtime_upstream_url",
     "resolve_plugin_runtime_url",
+    "resolve_plugin_ws_token",
     "resolve_runtime_device_id",
     "resolve_runtime_uid",
 ]
