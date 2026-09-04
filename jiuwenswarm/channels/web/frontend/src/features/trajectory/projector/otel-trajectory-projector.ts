@@ -48,7 +48,6 @@ import type {
 interface ProjectedSpan {
   attributes: NormalizedTrajectoryAttributes
   endTimeUnixNano: bigint | undefined
-  explicitTurn: number | undefined
   parentSpanId: string | undefined
   request: OtlpExportTraceServiceRequest
   sourceSequence: number | undefined
@@ -59,6 +58,7 @@ interface ProjectedSpan {
   startTimeUnixNano: bigint
   traceId: string
   turn: number
+  turnKey: string
   lifecycle: 'running' | 'completed' | 'error'
   owningRequestRecordId?: string
 }
@@ -97,6 +97,13 @@ interface MutableGroup {
 interface MutableTurn {
   turn: number
   groups: Map<string, MutableGroup>
+}
+
+// What a trace states about the turn it belongs to: the identity that decides
+// which spans are one turn, and the number that turn is shown as.
+interface TurnFact {
+  key: string
+  number: number
 }
 
 interface InferenceInputProjection {
@@ -1359,18 +1366,22 @@ function requestFor(
 // A turn is one complete ReAct loop, and it can span several traces: when the
 // agent stops to ask (ask_user / permission / confirm), the answer arrives as
 // its own request and runs in its own trace while continuing the same loop.
-// `turnId` is what ties those traces together. Grouping on `turnNumber` alone
-// would not: a session that lost its durable turn state restarts numbering, and
-// two genuinely distinct turns would collapse into one.
+//
+// Everything here is read from what the spans state. `openjiuwen.turn.id` is
+// the identity — traces sharing one are one turn however they are numbered, and
+// traces with different ids stay apart even if they claim the same number.
+// `openjiuwen.turn.number` is only what the turn is shown as. Traces predating
+// turn ids fall back to the number as identity, and a trace stating neither
+// belongs to no turn at all (a span opened outside any loop, such as a manual
+// /compact) and stands alone.
 //
 // Schema-v2 events and legacy spans are projected down separate paths but share
-// one turn axis, so the mapping is resolved once over every record and handed to
-// both — see `resolveTurnNumbers`.
-function turnNumberByTrace(
+// one turn axis, so this is resolved once over every record and handed to both.
+function turnFactByTrace(
   records: readonly OtlpExportTraceServiceRequest[],
-): Map<string, number> {
+): Map<string, TurnFact> {
   const turnIdByTrace = new Map<string, string>()
-  const explicitByTrace = new Map<string, number>()
+  const numberByTrace = new Map<string, number>()
   const traceStarts = new Map<string, bigint>()
   for (const record of records) {
     const span = soleSpan(record)
@@ -1378,68 +1389,63 @@ function turnNumberByTrace(
     if (attributes.turnId !== undefined && !turnIdByTrace.has(span.traceId)) {
       turnIdByTrace.set(span.traceId, attributes.turnId)
     }
-    const explicit = positiveSafeInteger(attributes.turnNumber)
-    if (explicit !== undefined) explicitByTrace.set(span.traceId, explicit)
+    const stated = positiveSafeInteger(attributes.turnNumber)
+    if (stated !== undefined) numberByTrace.set(span.traceId, stated)
     const startedAt = BigInt(span.startTimeUnixNano)
     const prior = traceStarts.get(span.traceId)
     if (prior === undefined || startedAt < prior) traceStarts.set(span.traceId, startedAt)
   }
-  // Key precedence: a turn id identifies a turn outright, so traces sharing one
-  // are one turn however they are numbered. Without an id the number is the only
-  // identity left, and traces claiming the same number are taken to be the same
-  // turn — that is what a run predating turn ids relies on. A trace with neither
-  // stands alone; it belongs to no turn at all (a span opened outside any loop,
-  // such as a manual /compact).
-  const groupByTrace = new Map([...traceStarts.keys()].map((traceId): [string, string] => {
+  const keyByTrace = new Map([...traceStarts.keys()].map((traceId): [string, string] => {
     const turnId = turnIdByTrace.get(traceId)
     if (turnId !== undefined) return [traceId, `id:${turnId}`]
-    const explicit = explicitByTrace.get(traceId)
-    return [traceId, explicit === undefined ? `trace:${traceId}` : `number:${explicit}`]
+    const stated = numberByTrace.get(traceId)
+    return [traceId, stated === undefined ? `trace:${traceId}` : `number:${stated}`]
   }))
-  const groupStarts = new Map<string, bigint>()
-  const explicitByGroup = new Map<string, number>()
+  const numberByKey = new Map<string, number>()
+  const startByKey = new Map<string, bigint>()
   for (const [traceId, startedAt] of traceStarts) {
-    const group = groupByTrace.get(traceId) ?? `trace:${traceId}`
-    const prior = groupStarts.get(group)
-    if (prior === undefined || startedAt < prior) groupStarts.set(group, startedAt)
-    const explicit = explicitByTrace.get(traceId)
-    if (explicit !== undefined) explicitByGroup.set(group, explicit)
+    const key = keyByTrace.get(traceId) ?? `trace:${traceId}`
+    const prior = startByKey.get(key)
+    if (prior === undefined || startedAt < prior) startByKey.set(key, startedAt)
+    const stated = numberByTrace.get(traceId)
+    if (stated !== undefined) numberByKey.set(key, stated)
   }
-  const turnByGroup = new Map<string, number>()
-  const claimed = new Set<number>()
-  let highest = 0
-  for (const [group] of [...groupStarts].sort((left, right) =>
+  // Only a turn that states no number of its own gets one here, and it is
+  // placed after every stated number so it can never take one of theirs.
+  let unnumbered = Math.max(0, ...numberByKey.values())
+  for (const [key] of [...startByKey].sort((left, right) =>
     compareBigint(left[1], right[1]) || left[0].localeCompare(right[0]))) {
-    // A turn number another turn already took cannot stand for this one: a
-    // session that lost its durable turn state restarts numbering, and two
-    // distinct turns then both claim the same number. The later one moves above
-    // everything in play rather than merging into its neighbour. Turns with no
-    // number of their own land there too.
-    const explicit = explicitByGroup.get(group)
-    const turn = explicit !== undefined && !claimed.has(explicit) ? explicit : highest + 1
-    turnByGroup.set(group, turn)
-    claimed.add(turn)
-    highest = Math.max(highest, turn)
+    if (!numberByKey.has(key)) {
+      unnumbered += 1
+      numberByKey.set(key, unnumbered)
+    }
   }
-  return new Map([...traceStarts.keys()].map(traceId => [
-    traceId,
-    turnByGroup.get(groupByTrace.get(traceId) ?? `trace:${traceId}`) ?? 1,
-  ]))
+  return new Map([...traceStarts.keys()].map((traceId): [string, TurnFact] => {
+    const key = keyByTrace.get(traceId) ?? `trace:${traceId}`
+    return [traceId, { key, number: numberByKey.get(key) ?? 1 }]
+  }))
 }
 
 function assignTurns(
-  spans: readonly Omit<ProjectedSpan, 'turn'>[],
-  turnByTrace: ReadonlyMap<string, number>,
+  spans: readonly Omit<ProjectedSpan, 'turn' | 'turnKey'>[],
+  turnByTrace: ReadonlyMap<string, TurnFact>,
 ): ProjectedSpan[] {
-  return spans.map(span => ({ ...span, turn: turnByTrace.get(span.traceId) ?? 1 }))
+  return spans.map(span => {
+    const fact = turnByTrace.get(span.traceId)
+    return {
+      ...span,
+      turn: fact?.number ?? 1,
+      turnKey: fact?.key ?? `trace:${span.traceId}`,
+    }
+  })
 }
 
 function normalize(
   records: readonly OtlpExportTraceServiceRequest[],
   options: TrajectoryProjectionOptions,
-  turnByTrace: ReadonlyMap<string, number>,
+  turnByTrace: ReadonlyMap<string, TurnFact>,
 ): ProjectedSpan[] {
-  const spans = assignTurns(records.map((record): Omit<ProjectedSpan, 'turn'> => {
+  const spans = assignTurns(records.map((record): Omit<ProjectedSpan, 'turn' | 'turnKey'> => {
     const span = soleSpan(record)
     const attributes = normalizeTrajectoryAttributes(span.attributes)
     const lifecycle = options.lifecycleByRecordId?.get(`${span.traceId}:${span.spanId}`)
@@ -1454,7 +1460,6 @@ function normalize(
       endTimeUnixNano: lifecycle === 'running' || span.endTimeUnixNano === undefined
         ? undefined
         : BigInt(span.endTimeUnixNano),
-      explicitTurn: positiveSafeInteger(attributes.turnNumber),
       sourceSequence: nonNegativeSafeInteger(attributes.sourceSequence),
       identityRequestNumber: positiveSafeInteger(attributes.requestNumber),
       requestNumber: undefined,
@@ -1670,9 +1675,9 @@ export function projectOtelTrajectory(
   const v2InferenceIds = new Set(v2Subjects.flatMap(subject => (
     [...subject.handledInferenceIds]
   )))
-  const turnByTrace = turnNumberByTrace(records)
+  const turnByTrace = turnFactByTrace(records)
   const spans = normalize(legacyRecords, options, turnByTrace)
-  const mutableTurns = new Map<number, MutableTurn>()
+  const mutableTurns = new Map<string, MutableTurn>()
   const requests: TrajectoryRequest[] = []
   const inputProjection = projectInferenceInputs(spans, v2InferenceIds)
   const toolSpanIds = new Set(spans.filter(isTool).map(span => span.span.spanId))
@@ -1695,8 +1700,8 @@ export function projectOtelTrajectory(
       )
     ) rootByTrace.set(span.traceId, span)
   }
-  const compactionInferences = new Map<number, ProjectedSpan>()
-  const compactions = new Map<number, ProjectedSpan>()
+  const compactionInferences = new Map<string, ProjectedSpan>()
+  const compactions = new Map<string, ProjectedSpan>()
   const toolSchemaByTurnAndName = new Map<string, string>()
   const inferenceById = new Map(spans.filter(isInference).flatMap((span): Array<[
     string,
@@ -1714,18 +1719,18 @@ export function projectOtelTrajectory(
 
   for (const span of spans.filter(isInference)) {
     for (const schema of toolSchemas(span.attributes.toolDefinitions)) {
-      toolSchemaByTurnAndName.set(`${span.turn}\u0000${schema.name}`, JSON.stringify(schema))
+      toolSchemaByTurnAndName.set(`${span.turnKey}\u0000${schema.name}`, JSON.stringify(schema))
     }
   }
 
   for (const span of spans) {
-    const turn = mutableTurns.get(span.turn) ?? { turn: span.turn, groups: new Map() }
-    mutableTurns.set(span.turn, turn)
+    const turn = mutableTurns.get(span.turnKey) ?? { turn: span.turn, groups: new Map() }
+    mutableTurns.set(span.turnKey, turn)
     const step = positiveSafeInteger(span.attributes.stepNumber) ?? 1
     if (isInference(span)) {
       const purpose = span.attributes.requestPurpose
       if (purpose === 'compaction') {
-        compactionInferences.set(span.turn, span)
+        compactionInferences.set(span.turnKey, span)
         requests.push(requestFor(
           span,
           'compaction',
@@ -1783,12 +1788,12 @@ export function projectOtelTrajectory(
       group(turn, step, span.attributes.stepId, startedAt(span)).cells.push(toolCell(
         span,
         toolSpanIds,
-        toolSchemaByTurnAndName.get(`${span.turn}\u0000${name}`),
+        toolSchemaByTurnAndName.get(`${span.turnKey}\u0000${name}`),
         correlatedResult,
       ))
       continue
     }
-    if (isCompaction(span)) compactions.set(span.turn, span)
+    if (isCompaction(span)) compactions.set(span.turnKey, span)
   }
 
   const v2CompactionEvents: TrajectoryV2EventProjection[] = []
@@ -1808,17 +1813,21 @@ export function projectOtelTrajectory(
         ? undefined
         : inferenceByToolCallId.get(`${event.traceId}\u0000${askUserCallId}`)
       : inferenceById.get(`${event.traceId}\u0000${anchorInferenceId}`)
-    // The event's own ``openjiuwen.turn.number`` is only a claim; the resolved
-    // axis is what keeps v2 events and legacy spans on one set of turns.
-    const eventTurn = inference?.turn ?? turnByTrace.get(event.traceId) ?? event.turn
+    // The turn this event's own trace states, so v2 events and legacy spans
+    // land on one axis. An anchoring inference already carries the resolved
+    // turn, so prefer it and keep the event beside the request it belongs to.
+    const eventFact = turnByTrace.get(event.traceId)
+    const eventTurnKey = inference?.turnKey ?? eventFact?.key ?? `trace:${event.traceId}`
+    const eventTurnNumber = inference?.turn ?? eventFact?.number ?? event.turn
     const eventStep = inference === undefined
       ? event.step
       : positiveSafeInteger(inference.attributes.stepNumber) ?? event.step
     const inferencePrompt = inference === undefined
       ? undefined
       : promptSnapshot(inference.attributes)
-    const turn = mutableTurns.get(eventTurn) ?? { turn: eventTurn, groups: new Map() }
-    mutableTurns.set(eventTurn, turn)
+    const turn = mutableTurns.get(eventTurnKey)
+      ?? { turn: eventTurnNumber, groups: new Map() }
+    mutableTurns.set(eventTurnKey, turn)
     const eventOrder = inference === undefined
       ? Math.min(...event.cells.map(cell => cell.startedAt ?? 0))
       : startedAt(inference)
@@ -1861,7 +1870,9 @@ export function projectOtelTrajectory(
   }
 
   const turns: TrajectoryTurnModel[] = []
-  for (const turn of [...mutableTurns.values()].sort((left, right) => left.turn - right.turn)) {
+  const orderedTurns = [...mutableTurns.entries()]
+    .sort((left, right) => left[1].turn - right[1].turn || left[0].localeCompare(right[0]))
+  for (const [turnKey, turn] of orderedTurns) {
     const groups = [...turn.groups.entries()]
       .sort((left, right) => left[1].order - right[1].order
         || left[1].step - right[1].step
@@ -1873,13 +1884,13 @@ export function projectOtelTrajectory(
       }))
       .filter(value => value.cells.length > 0)
     if (groups.length > 0) turns.push({ turn: turn.turn, groups })
-    const compaction = compactions.get(turn.turn)
+    const compaction = compactions.get(turnKey)
     if (compaction !== undefined) {
       turns.push({
         turn: null,
         groups: [{
           title: 'Compaction',
-          cells: [compactionCell(compaction, compactionInferences.get(turn.turn))],
+          cells: [compactionCell(compaction, compactionInferences.get(turnKey))],
         }],
       })
     }

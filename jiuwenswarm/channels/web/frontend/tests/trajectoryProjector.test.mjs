@@ -2433,9 +2433,10 @@ test('a HITL resume continues its turn across the trace boundary', () => {
   assert.equal(snapshot.turns[0].turn, 4);
 });
 
-test('separate turns stay separate even when their numbering restarts', () => {
+test('distinct turn ids stay separate even when they claim one number', () => {
   // A session that lost its durable turn state restarts numbering, so two
-  // distinct turns can both claim number 1. Distinct turn ids keep them apart.
+  // distinct turns can both state number 1. The id is the identity, so they
+  // stay apart; the number is shown as stated rather than rewritten to hide it.
   const first = v2Record({
     eventId: 'event-turn-first',
     requestId: 'request-first',
@@ -2464,5 +2465,68 @@ test('separate turns stay separate even when their numbering restarts', () => {
   const snapshot = projectOtelTrajectory([first, second]);
 
   assert.equal(snapshot.turns.length, 2);
-  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 2]);
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 1]);
+});
+
+function turnSpanRecord({ attributes, name, spanId, startTimeUnixNano, traceId }) {
+  return {
+    resourceSpans: [{
+      scopeSpans: [{
+        spans: [{
+          traceId,
+          spanId,
+          name,
+          startTimeUnixNano: String(startTimeUnixNano),
+          endTimeUnixNano: String(startTimeUnixNano + 1_000),
+          attributes,
+        }],
+      }],
+    }],
+  };
+}
+
+test('a resumed tool rejoins the step the interrupt paused', () => {
+  // The interrupt pauses step 4; the resume finishes that step's tool work in
+  // its own trace, where no step span was reopened to take an id from. It must
+  // land in step 4, not open a second "Step 4" beside it.
+  const paused = turnSpanRecord({
+    name: 'llm.call',
+    spanId: 'aaaaaaaaaaaaaaa1',
+    startTimeUnixNano: 1_000_000,
+    traceId: '5'.repeat(32),
+    attributes: [
+      v2Attribute('gen_ai.conversation.id', 'session-resume'),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'inference'),
+      v2Attribute('openjiuwen.turn.id', 'turn-paused'),
+      v2Attribute('openjiuwen.turn.number', 3, true),
+      v2Attribute('openjiuwen.step.number', 4, true),
+      v2Attribute('openjiuwen.step.id', 'step-paused'),
+      v2Attribute('openjiuwen.inference.id', 'inference-paused'),
+      v2Attribute('gen_ai.output.messages', JSON.stringify([
+        structuredMessage('assistant', 'checking with you first'),
+      ])),
+    ],
+  });
+  const replayed = turnSpanRecord({
+    name: 'execute_tool search',
+    spanId: 'bbbbbbbbbbbbbbb1',
+    startTimeUnixNano: 5_000_000,
+    traceId: '6'.repeat(32),
+    attributes: [
+      v2Attribute('gen_ai.conversation.id', 'session-resume'),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'tool'),
+      v2Attribute('gen_ai.operation.name', 'execute_tool'),
+      v2Attribute('gen_ai.tool.name', 'search'),
+      v2Attribute('gen_ai.tool.call.id', 'call-resumed'),
+      v2Attribute('openjiuwen.turn.id', 'turn-paused'),
+      v2Attribute('openjiuwen.turn.number', 3, true),
+      v2Attribute('openjiuwen.step.number', 4, true),
+      v2Attribute('openjiuwen.step.id', 'step-paused'),
+    ],
+  });
+
+  const snapshot = projectOtelTrajectory([paused, replayed]);
+
+  assert.equal(snapshot.turns.length, 1);
+  assert.deepEqual(snapshot.turns[0].groups.map(group => group.title), ['Step 4']);
 });
