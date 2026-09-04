@@ -83,13 +83,16 @@ def _get_insecure_ssl_context() -> ssl.SSLContext:
     return get_insecure_ssl_context()
 
 
-def _format_ws_diagnostics(**kwargs: Any) -> str:
+def _format_ws_diagnostics(
+    *parts: dict[str, Any] | None,
+    **kwargs: Any,
+) -> str:
     from jiuwenswarm.common.ws_diagnostics import format_ws_diagnostics
 
-    return format_ws_diagnostics(**kwargs)
+    return format_ws_diagnostics(*parts, **kwargs)
 
 
-def _describe_ws_exception(exc: BaseException) -> str:
+def _describe_ws_exception(exc: BaseException) -> dict[str, Any]:
     from jiuwenswarm.common.ws_diagnostics import describe_ws_exception
 
     return describe_ws_exception(exc)
@@ -823,6 +826,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             )
             self.send_error(502, "proxy ws connect failed")
             return
+
+        # The short timeout above is only for each connection probe. Restore the
+        # normal budget before TLS and the HTTP upgrade handshake.
+        upstream.settimeout(self._WS_CONNECT_TIMEOUT)
 
         try:
             if parsed.scheme in ("wss", "https"):
