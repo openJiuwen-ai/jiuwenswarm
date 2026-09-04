@@ -1659,7 +1659,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const trimmedBase = (richContent + pendingVoiceText).trim();
 
     // 单 Agent 下拦截斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
-    // Team 下不拦截，以普通文本发送，不会触发 command.btw / command.compact 等 RPC。
+    // Team 下不拦截，以普通文本发送，不会触发 command.compact 等 RPC。
     if (trimmedBase.startsWith('/')) {
       const { name, args } = parseSlashLine(trimmedBase);
       const cmd = findSlashCommand(name);
@@ -1958,7 +1958,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         return;
       }
-      // 有参命令（/btw）：把 "/query" 替换成蓝色原子 chip。提取文本时再还原为
+      // 有参命令（如 /persist）：把 "/query" 替换成蓝色原子 chip。提取文本时再还原为
       // "/<name>"，因此视觉表现和技能一致，同时保留既有命令解析/提交语义。
       const trigger = getCurrentComposerTrigger();
       if (trigger) {
