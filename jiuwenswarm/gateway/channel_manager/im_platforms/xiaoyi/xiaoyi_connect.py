@@ -493,6 +493,14 @@ class XiaoyiChannel(BaseChannel):
             getattr(config, "team_ws_keepalive_interval", 20) or 20
         )
         self._ws_keepalive_task: asyncio.Task | None = None
+        # 终帧看门狗：CHAT_FINAL 文本帧下发后，若 N 秒内未等到终态
+        # processing_status/team.completed（事件被 defer/跳过/上游缺失），
+        # 主动补发 state=completed 的终态 status 帧并 finalize，
+        # 防止手机端等不到 final=true 收口帧（响应永远"收不掉"）。
+        self._final_frame_watchdog_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._final_frame_watchdog_timeout: float = float(
+            getattr(config, "final_frame_watchdog_timeout", 30) or 30
+        )
         # V2: push 合并窗口缓冲 push_id → [(ts, content, summary)]，避免短时多条 push 轰炸
         self._push_merge_buffers: dict[str, list[tuple[float, str, str]]] = {}
         # V2: push 延迟 flush 任务 push_id → asyncio.Task，窗口到期统一发送
@@ -590,6 +598,11 @@ class XiaoyiChannel(BaseChannel):
         for task in self._session_timeout_tasks.values():
             if task:
                 task.cancel()
+        # Cancel all final-frame watchdog tasks
+        for task in self._final_frame_watchdog_tasks.values():
+            if task:
+                task.cancel()
+        self._final_frame_watchdog_tasks.clear()
         # Close all websocket connections
         for url_key, ws in list(self._ws_connections.items()):
             if ws:
@@ -1309,8 +1322,10 @@ class XiaoyiChannel(BaseChannel):
             elif is_chat_final:
                 append = False
                 last_chunk = True
-                # Agent streams finish via processing_status; local notices do not.
-                final = terminal_notice
+                # 单帧收口（对齐 develop 协议）：上游明确标记 is_complete=True 时，
+                # 文本帧直接作为终帧收口，不再依赖后续 processing_status 终态帧。
+                # Agent 标准流不带该标记，仍走两帧式（processing_status 收口）。
+                final = terminal_notice or is_final
             else:
                 append = True
                 last_chunk = is_final
@@ -1355,6 +1370,16 @@ class XiaoyiChannel(BaseChannel):
                     )
                 except Exception as e:
                     logger.warning(f"XiaoyiChannel 发送消息失败 ({url_key}): {e}")
+
+        if final and session_id:
+            # 已单帧收口，无需看门狗
+            self._cancel_final_frame_watchdog(session_id, task_id)
+        elif last_chunk and session_id and task_id:
+            # CHAT_FINAL 文本帧（final=False，两帧式）：启动看门狗——若终态
+            # processing_status 被 defer/跳过/缺失，到期补发 completed 终态帧。
+            # team 会话成员输出不是任务终帧，不启动（team 整轮靠 team.completed）。
+            if not (is_team_session and team_role == "teammate"):
+                self._start_final_frame_watchdog(session_id, task_id)
 
         if final and session_id:
             await self._stop_session_heartbeat(session_id)
@@ -3096,6 +3121,7 @@ class XiaoyiChannel(BaseChannel):
         preserve_team_session: bool = False,
     ) -> None:
         """Finish one A2A task and emit a deferred push exactly once."""
+        self._cancel_final_frame_watchdog(session_id, task_id)
         self._clear_task_timeout(session_id, task_id)
         self._clear_session_timeout(session_id, task_id)
         self._mark_session_completed(session_id, task_id)
@@ -3556,6 +3582,59 @@ class XiaoyiChannel(BaseChannel):
                 )
         if not sent:
             raise RuntimeError("发送文件消息失败，WebSocket 未连接")
+
+    def _cancel_final_frame_watchdog(
+        self, session_id: str, task_id: str | None = None
+    ) -> None:
+        """取消终帧看门狗（终态帧已正常到达或会话已收口）。"""
+        keys = [
+            key
+            for key in self._final_frame_watchdog_tasks
+            if key[0] == session_id and (task_id is None or key[1] == task_id)
+        ]
+        for key in keys:
+            task = self._final_frame_watchdog_tasks.pop(key, None)
+            if task and not task.done():
+                task.cancel()
+
+    def _start_final_frame_watchdog(self, session_id: str, task_id: str) -> None:
+        """启动终帧看门狗：文本帧后 N 秒无终态则补发 completed 终态帧。"""
+        self._cancel_final_frame_watchdog(session_id, task_id)
+
+        async def watchdog_handler() -> None:
+            try:
+                await asyncio.sleep(self._final_frame_watchdog_timeout)
+                # 终态已到（会话/任务已失活）则无事可做
+                if not self._is_session_active(session_id, task_id):
+                    return
+                logger.warning(
+                    "[XiaoyiChannel] final-frame watchdog fired: no terminal frame "
+                    "within %.0fs, sending completed status-update sid=%s task=%s",
+                    self._final_frame_watchdog_timeout,
+                    session_id,
+                    task_id,
+                )
+                for url_key in list(self._ws_connections.keys()):
+                    await self._send_status_update_with_state(
+                        task_id,
+                        session_id,
+                        "任务已完成",
+                        "completed",
+                        url_key,
+                    )
+                await self._finalize_session(
+                    session_id,
+                    task_id,
+                    preserve_team_session=(
+                        session_id in self._team_sessions
+                    ),
+                )
+            except asyncio.CancelledError:
+                pass
+
+        self._final_frame_watchdog_tasks[(session_id, task_id)] = (
+            asyncio.create_task(watchdog_handler())
+        )
 
     def _clear_task_timeout(self, session_id: str, task_id: str | None = None) -> None:
         """清除任务超时任务."""
