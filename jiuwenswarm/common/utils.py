@@ -1596,38 +1596,6 @@ def _print_console_progress(message: str) -> None:
         print(escaped)
 
 
-def mcp_builtins_needs_upgrade(workspace_dir: Optional[Path] = None) -> bool:
-    """True 当已安装的 mcp_builtins 版本落后于随包 seed zip 版本。
-
-    给启动门控用：只判 ``mcp_builtins_missing`` 会让已装旧版的用户重启也
-    进不去 ``prepare_workspace``，版本升级逻辑（``_ensure_mcp_builtins`` 内
-    ``seed_version != local_version``）形同虚设。本函数补这个缺口——
-    本地 index.json 的 version 严格落后于 seed zip 的 version 时返回 True。
-
-    无 seed zip / 读不到版本 / 本地无 index.json（已被 missing 判断覆盖）
-    一律返回 False，不触发多余解压。
-    """
-    package_root = _find_package_root()
-    if not package_root:
-        return False
-    seed = _find_mcp_builtins_seed(package_root / "resources" / "agent" / "workspace")
-    if seed is None:
-        return False
-    seed_version = _read_zip_index_version(seed)
-    if not seed_version:
-        return False
-    if workspace_dir is None:
-        workspace_dir = get_user_workspace_dir()
-    local_idx = Path(workspace_dir) / "agent" / "workspace" / "mcp" / "mcp_builtins" / "index.json"
-    if not local_idx.is_file():
-        return False  # 目录缺失走 missing 分支，这里不重复触发
-    try:
-        local_version = str(json.loads(local_idx.read_text(encoding="utf-8")).get("version", "")).strip() or None
-    except (OSError, json.JSONDecodeError):
-        return False
-    return bool(local_version) and local_version != seed_version
-
-
 def _ensure_mcp_builtins(
     template_agent_workspace: Path,
     mcp_builtins_dir: Path,
@@ -2752,8 +2720,11 @@ _DATA_IMAGE_PATTERN = re.compile(
 # 4) 值本体（用于脱敏后附指纹）；5) 可选结束引号。
 _KV_SENSITIVE_PATTERN = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
-    r"(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|authorization|user[_-]?id|userid)"
+    r"(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
+    r"secret[_-]?key|access[_-]?token|refresh[_-]?token|authorization|"
+    r"auth[_-]?code|auth[_-]?token|"
+    r"user[_-]?id|userid|project[_-]?id|"
+    r"amap[_-]?key|map[_-]?ak)"
     r"(?![A-Za-z0-9])(\s*[:=]\s*)([\"']?)([^,\s\"'\]\}]+)([\"']?)"
 )
 # 匹配“键名包含敏感关键词”且“值被引号包裹”的场景，覆盖:
@@ -2767,13 +2738,27 @@ _KV_SENSITIVE_PATTERN = re.compile(
 # 4) 结束引号（通过 (\2) 强制与起始引号一致）
 _NAMED_SENSITIVE_KV_PATTERN = re.compile(
     r"(?i)([\"']?[A-Za-z0-9_.-]*"
-    r"(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|"
-    r"credential|private[_-]?key|user[_-]?id|userid)"
+    r"(?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|"
+    r"secret[_-]?key|authorization|auth[_-]?code|auth[_-]?token|"
+    r"credential|private[_-]?key|"
+    r"user[_-]?id|userid|project[_-]?id|"
+    r"amap[_-]?key|map[_-]?ak)"
     r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
 )
 # 匹配 Authorization Bearer 令牌，保留 "Bearer " 前缀，仅掩码后面的令牌值。
 # 分组：1) "Bearer " 前缀；2) 令牌值本体（用于算指纹）。
 _BEARER_SENSITIVE_PATTERN = re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9\-._~+/]+=*)")
+# 匹配命令行 flag 后跟明文凭证值（如 args=['--token', 'xxx', '--api-key', 'yyy']）：
+# ``--token VALUE`` / ``--api-key VALUE`` 不是 KV 语法，KV 正则覆盖不到，单列一条。
+# 覆盖三种形态：``--token VALUE``（空格）、``--token=VALUE``、``'--token', 'VALUE'``
+# （pydantic repr 把 list 序列化成引号逗号分隔的元素）。
+# 分组：1) flag 名 + 分隔（空白/= 或引号逗号引号）；2) 凭证值本体（用于算指纹）。
+_CLI_FLAG_SENSITIVE_PATTERN = re.compile(
+    r"(?i)(--(?:[a-z]+[_-])*(?:token|secret|password|passwd|pwd|api[_-]?key|"
+    r"access[_-]?key|secret[_-]?key|auth[_-]?code|auth[_-]?token|"
+    r"access[_-]?token|refresh[_-]?token|apikey|authorization)"
+    r"(?:[a-z0-9_-]*)(?:\s*=|',\s*'|\s+))([A-Za-z0-9\-._~+/]+=*)"
+)
 _SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
     # 匹配 JWT（header.payload.signature 三段式，常见以 eyJ 开头）。
     re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
@@ -2856,6 +2841,10 @@ def _sanitize_log_text(text: str) -> str:
     )
     # _BEARER_SENSITIVE_PATTERN: 组1=Bearer 前缀, 组2=令牌值。
     masked = _BEARER_SENSITIVE_PATTERN.sub(
+        lambda m: f"{m.group(1)}{_masked_with_fp(m.group(2))}", masked
+    )
+    # _CLI_FLAG_SENSITIVE_PATTERN: 组1=flag 名+分隔, 组2=凭证值。
+    masked = _CLI_FLAG_SENSITIVE_PATTERN.sub(
         lambda m: f"{m.group(1)}{_masked_with_fp(m.group(2))}", masked
     )
     # 凭证类 prefix key（JWT/sk-/ghp_/glpat-）：掩码并附指纹。

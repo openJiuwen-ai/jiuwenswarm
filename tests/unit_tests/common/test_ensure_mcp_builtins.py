@@ -23,7 +23,6 @@ from jiuwenswarm.common.utils import (
     _find_mcp_builtins_seed,
     _print_console_progress,
     _read_mcp_builtins_seed_version,
-    mcp_builtins_needs_upgrade,
     mcp_builtins_seed_update_needed,
 )
 
@@ -323,74 +322,3 @@ def test_bad_seed_zip_preserves_existing_dir(seed_dir: Path, tmp_path: Path) -> 
     # 也不留其它 .tmp 拋留.
     tmp_leaks = [p for p in dest.parent.iterdir() if ".tmp." in p.name]
     assert not tmp_leaks, f"temp dir leaked: {tmp_leaks}"
-
-
-# ---------------------------------------------------------------------------
-# mcp_builtins_needs_upgrade — startup-gate version check
-# ---------------------------------------------------------------------------
-
-
-def _seed_under_package(tmp_path: Path, version: str) -> Path:
-    """Create a fake package root with a seed zip under resources/agent/workspace.
-
-    Returns the package root so _find_package_root can be monkeypatched to it.
-    """
-    pkg = tmp_path / "pkg"
-    seed_dir = pkg / "resources" / "agent" / "workspace"
-    seed_dir.mkdir(parents=True)
-    _make_seed_zip(seed_dir / f"mcp_builtins_{version}.zip", version=version)
-    return pkg
-
-
-def _write_local_index(workspace_dir: Path, version: str) -> None:
-    """Write the user's mcp_builtins/index.json with the given version."""
-    idx = workspace_dir / "agent" / "workspace" / "mcp" / "mcp_builtins" / "index.json"
-    idx.parent.mkdir(parents=True, exist_ok=True)
-    idx.write_text(json.dumps({"version": version, "mcps": []}, ensure_ascii=False), encoding="utf-8")
-
-
-def test_needs_upgrade_true_when_local_behind(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pkg = _seed_under_package(tmp_path, "v0.2")
-    monkeypatch.setattr("jiuwenswarm.common.utils._find_package_root", lambda: pkg)
-    ws = tmp_path / "home"
-    _write_local_index(ws, "v0.1")  # local v0.1 < seed v0.2
-
-    assert mcp_builtins_needs_upgrade(ws) is True
-
-
-def test_needs_upgrade_false_when_versions_match(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pkg = _seed_under_package(tmp_path, "v0.2")
-    monkeypatch.setattr("jiuwenswarm.common.utils._find_package_root", lambda: pkg)
-    ws = tmp_path / "home"
-    _write_local_index(ws, "v0.2")  # same as seed
-
-    assert mcp_builtins_needs_upgrade(ws) is False
-
-
-def test_needs_upgrade_false_when_no_local_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No local index.json means first install — covered by mcp_builtins_missing,
-    not by this gate. Returns False so it doesn't double-trigger."""
-    pkg = _seed_under_package(tmp_path, "v0.2")
-    monkeypatch.setattr("jiuwenswarm.common.utils._find_package_root", lambda: pkg)
-    ws = tmp_path / "home"  # nothing written
-
-    assert mcp_builtins_needs_upgrade(ws) is False
-
-
-def test_needs_upgrade_false_when_no_seed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Dev environment with no seed zip — don't trigger an upgrade."""
-    pkg = tmp_path / "pkg"  # no resources/agent/workspace, no zip
-    pkg.mkdir()
-    monkeypatch.setattr("jiuwenswarm.common.utils._find_package_root", lambda: pkg)
-    ws = tmp_path / "home"
-    _write_local_index(ws, "v0.1")
-
-    assert mcp_builtins_needs_upgrade(ws) is False

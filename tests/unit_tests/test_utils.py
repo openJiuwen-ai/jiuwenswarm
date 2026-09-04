@@ -254,6 +254,35 @@ class TestSourceRecordMasking:
         finally:
             self._restore_state(state)
 
+    def test_cloud_credential_keys_masked(self):
+        """access_key / secret_key / project_id (e.g. HUAWEI_ACCESS_KEY) are
+        masked — the bare ``_KEY`` suffix form was a gap before access[_-]?key
+        / secret[_-]?key / project[_-]?id were added to the keyword list."""
+        raw = (
+            "params={'env': {'HUAWEI_ACCESS_KEY': 'HPUASSNLEYPK55WDLS5X', "
+            "'HUAWEI_PROJECT_ID': '4e273616d7724562be9c286f916cf417', "
+            "'HUAWEI_SECRET_KEY': 'xXznbRtIRS2Zq1QctJ0YgRErGeXP613rPnukZPtb'}}"
+        )
+        masked = utils._sanitize_log_text(raw)
+        assert "HPUASSNLEYPK55WDLS5X" not in masked, "HUAWEI_ACCESS_KEY leaked"
+        assert "xXznbRtIRS2Zq1QctJ0YgRErGeXP613rPnukZPtb" not in masked, "HUAWEI_SECRET_KEY leaked"
+        assert "4e273616d7724562be9c286f916cf417" not in masked, "HUAWEI_PROJECT_ID leaked"
+        assert masked.count("******") == 3, "all three credential fields must be masked"
+
+    def test_cli_flag_credentials_masked(self):
+        """Command-line flags serialized as list elements (pydantic repr of
+        args=['--token', 'xxx', '--api-key', 'yyy']) are masked — KV patterns
+        only match ``key:value`` / ``key=value``, not ``'--flag', 'value'``."""
+        raw = (
+            "args=['--token', 'tok-secret', '--api-key', 'ak-secret', "
+            "'--access-key', 'ak2-secret', '--secret-key', 'sk-secret']"
+        )
+        masked = utils._sanitize_log_text(raw)
+        assert "tok-secret" not in masked, "--token value leaked"
+        assert "ak-secret" not in masked, "--api-key value leaked"
+        assert "ak2-secret" not in masked, "--access-key value leaked"
+        assert "sk-secret" not in masked, "--secret-key value leaked"
+
     def test_install_is_idempotent(self):
         """Repeated install_source_record_masking calls are safe (no-op after first)."""
         import logging
