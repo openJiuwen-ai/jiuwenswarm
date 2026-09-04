@@ -106,6 +106,34 @@ async def test_task_tool_ask_is_control_silent_after_engine(tmp_path) -> None:
     assert base.calls == []
 
 
+async def test_task_tool_alias_does_not_use_control_silent_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import jiuwenswarm.common.permission_tools as permission_tools
+
+    monkeypatch.setitem(
+        permission_tools.PERMISSION_TOOL_ALIASES,
+        "task_tool_alias",
+        "task_tool",
+    )
+    rail, policy, reviewer, base = _rail(
+        tmp_path,
+        PolicyEvaluation(level="ask", reason="default_ask"),
+    )
+
+    result = await rail.before_tool_call(
+        tool_name="task_tool_alias",
+        tool_args={"action": "status"},
+        session_id="session-a",
+    )
+
+    assert classify_permission_result(result) == "allow"
+    assert len(policy.calls) == 1
+    assert len(reviewer.requests) == 1
+    assert base.calls == []
+
+
 @pytest.mark.parametrize(
     ("tool_name", "tool_args"),
     [

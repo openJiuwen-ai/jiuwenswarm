@@ -99,6 +99,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
     DecisionRoute,
+    ToolDecisionFacts,
     build_tool_decision_facts,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
@@ -126,6 +127,20 @@ _SUBAGENT_RUNTIME_CONTROL_TYPES = {
 def _subagent_tool_parent(resource: object) -> object | None:
     """Read the owner from OpenJiuwen runtime tools lacking a public accessor."""
     return getattr(resource, "_parent_agent", None)
+
+
+def _trusted_task_tool_name(facts: ToolDecisionFacts) -> bool:
+    """Accept only the exact, unaliased Host task-tool registration."""
+    capability = facts.capability
+    if facts.tool_name != "task_tool":
+        return False
+    if capability.registered_name != facts.tool_name:
+        return False
+    if capability.aliases or capability.alias_conflict:
+        return False
+    if capability.facts_source != "host_static":
+        return False
+    return facts.arguments_valid_object
 
 
 def _trusted_subagent_runtime_control_binding(invocation: ToolInvocation) -> bool:
@@ -708,6 +723,9 @@ class AutoPermissionBeforeToolMixin:
                 facts.capability.operation_family == "subagent_runtime_control"
                 and not subagent_runtime_control_verified
             ):
+                # The binding already took the manual-only route above. An explicit
+                # allow-once satisfies that human gate; a reviewer must not replace
+                # or re-review the user's decision.
                 allow_once_requires_reviewer = False
                 allow_once_terminal_result = None
             else:
@@ -770,7 +788,7 @@ class AutoPermissionBeforeToolMixin:
             )
             return runtime_result(None, decision_source="canonical_internal_action")
 
-        if facts.tool_name == "task_tool":
+        if _trusted_task_tool_name(facts):
             self._emit_audit(
                 facts,
                 decision=ALLOW_LEVEL,
