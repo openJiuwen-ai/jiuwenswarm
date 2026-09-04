@@ -6259,12 +6259,15 @@ class AgentWebSocketServer:
                 team_agent = get_team_manager(channel_id).get_team_agent(session_id)
                 if team_agent is not None:
                     execution_subject = team_agent.observability_execution_subject(session_id)
+            # No turn id: manual /compact runs outside any ReAct loop, so it
+            # belongs to no turn. Claiming one (the request id used to stand in
+            # for it) split the session's turn numbering with a span that is
+            # not a turn at all.
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=params.get("mode", "agent"),
                 request_id=request.request_id,
                 run_id=request.request_id,
-                turn_id=request.request_id,
                 execution_subject=execution_subject,
             )
             try:

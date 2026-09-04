@@ -2394,3 +2394,75 @@ test('without exception events the error.type attribute is the last fallback', a
   assert.ok(request);
   assert.equal(request.error, 'TimeoutError');
 });
+
+test('a HITL resume continues its turn across the trace boundary', () => {
+  // The agent stops to ask (ask_user / permission / confirm); the answer comes
+  // back as its own request and runs in its own trace, but the ReAct loop it
+  // resumes is the same one, so both traces are one turn.
+  const asked = v2Record({
+    eventId: 'event-turn-asked',
+    requestId: 'request-asked',
+    sequence: 1,
+    time: 1_000_000,
+    traceId: '1'.repeat(32),
+    turn: 4,
+    turnId: 'turn-hitl',
+    payload: contextCommit('window-asked', null, [
+      contextMessage('message-asked', 'user', 'deploy it'),
+    ], []),
+  });
+  const resumed = v2Record({
+    eventId: 'event-turn-resumed',
+    requestId: 'request-resumed',
+    sequence: 2,
+    time: 2_000_000,
+    traceId: '2'.repeat(32),
+    turn: 4,
+    turnId: 'turn-hitl',
+    payload: contextCommit('window-resumed', 'window-asked', [
+      contextMessage('message-asked', 'user', 'deploy it'),
+      contextMessage('message-answer', 'user', 'yes, go ahead'),
+    ], [
+      { op: 'insert', message_id: 'message-answer', index: 1, message: contextMessage('message-answer', 'user', 'yes, go ahead') },
+    ]),
+  });
+
+  const snapshot = projectOtelTrajectory([asked, resumed]);
+
+  assert.equal(snapshot.turns.length, 1);
+  assert.equal(snapshot.turns[0].turn, 4);
+});
+
+test('separate turns stay separate even when their numbering restarts', () => {
+  // A session that lost its durable turn state restarts numbering, so two
+  // distinct turns can both claim number 1. Distinct turn ids keep them apart.
+  const first = v2Record({
+    eventId: 'event-turn-first',
+    requestId: 'request-first',
+    sequence: 1,
+    time: 1_000_000,
+    traceId: '3'.repeat(32),
+    turn: 1,
+    turnId: 'turn-first',
+    payload: contextCommit('window-first', null, [
+      contextMessage('message-first', 'user', 'first ask'),
+    ], []),
+  });
+  const second = v2Record({
+    eventId: 'event-turn-second',
+    requestId: 'request-second',
+    sequence: 2,
+    time: 2_000_000,
+    traceId: '4'.repeat(32),
+    turn: 1,
+    turnId: 'turn-second',
+    payload: contextCommit('window-second', null, [
+      contextMessage('message-second', 'user', 'second ask'),
+    ], []),
+  });
+
+  const snapshot = projectOtelTrajectory([first, second]);
+
+  assert.equal(snapshot.turns.length, 2);
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 2]);
+});

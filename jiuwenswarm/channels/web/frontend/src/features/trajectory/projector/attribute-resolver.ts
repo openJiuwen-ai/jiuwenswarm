@@ -157,7 +157,6 @@ interface NormalizedMessage {
 const COMPATIBILITY = {
   openJiuwenSessionId: 'openjiuwen.session_id',
   langfuseObservationType: 'langfuse.observation.type',
-  deepAgentIteration: 'deepagent.task.iteration',
 } as const
 
 const TRAJECTORY_KINDS = new Set<string>(DSH_TRAJECTORY_KINDS)
@@ -742,7 +741,6 @@ export function normalizeTrajectoryAttributes(
   assign(target, 'stepNumber', resolvePositiveInt64(raw, [
     OPENJIUWEN_ATTRIBUTES.stepNumber,
     DSH_ATTRIBUTES.stepNumber,
-    COMPATIBILITY.deepAgentIteration,
   ]))
   assign(target, 'trajectoryKind', resolveClosedString(raw, [
     OPENJIUWEN_ATTRIBUTES.trajectoryKind,
