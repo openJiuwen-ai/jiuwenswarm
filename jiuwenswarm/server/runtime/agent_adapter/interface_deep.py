@@ -407,6 +407,7 @@ from jiuwenswarm.common.utils import (
     get_default_project_session_workspace_dir,
     get_env_file,
     get_runtime_state_path,
+    mask_sensitive,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.mode_matrix import (
@@ -4000,7 +4001,10 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
                 if not first_error:
-                    first_error = str(exc) or repr(exc)
+                    # exc may carry the full McpServerConfig (env with plaintext
+                    # tokens) serialized by openjiuwen build_error — mask before
+                    # propagating so it never reaches the frontend / logs as-is.
+                    first_error = mask_sensitive(str(exc) or repr(exc))
         if not applied_any:
             raise RuntimeError(first_error or f"MCP '{name}' register failed")
         return applied_any

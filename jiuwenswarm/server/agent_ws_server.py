@@ -793,6 +793,14 @@ class McpUpsertTypes(NamedTuple):
     fail: str
 
 
+# Key substrings whose presence marks a payload field as credential-like.
+_MCP_KEY_SENSITIVE_SUBSTRINGS = frozenset({
+    "api_key", "access_key", "secret_key", "project_id",
+    "auth_code", "auth_token", "amap_key", "map_ak",
+    "token", "authorization", "secret",
+})
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -6444,10 +6452,8 @@ class AgentWebSocketServer:
             for key, value in payload.items():
                 key_text = str(key).lower()
                 value_text = value.lower() if isinstance(value, str) else ""
-                key_sensitive = any(
-                    token in key_text for token in ("api_key", "token", "authorization", "secret")
-                )
-                value_sensitive = any(token in value_text for token in ("bearer ", "api-key ", "secret-"))
+                key_sensitive = any(t in key_text for t in _MCP_KEY_SENSITIVE_SUBSTRINGS)
+                value_sensitive = any(t in value_text for t in ("bearer ", "api-key ", "secret-"))
                 if (key_sensitive or value_sensitive) and not isinstance(value, (dict, list)):
                     masked[key] = "***"
                 else:
