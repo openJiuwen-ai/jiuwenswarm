@@ -901,7 +901,8 @@ def get_permissions_owner_scopes() -> dict[str, Any]:
     cfg = get_config() or {}
     perm = cfg.get("permissions", {})
     return {
-        "owner_scopes": perm.get("owner_scopes", {}),
+        # 模板把该键留空以躲开 _deep_merge 的裁剪，读到的可能是 None。
+        "owner_scopes": perm.get("owner_scopes") or {},
         "deny_guidance_message": perm.get("deny_guidance_message", ""),
     }
 

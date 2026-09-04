@@ -265,7 +265,12 @@ def persist_to_owner_scope(
         with _persist_lock:
             raw = get_config_raw()
             perm_cfg = raw.setdefault("permissions", {})
-            scopes = perm_cfg.setdefault("owner_scopes", {})
+            # 模板把该键留空（None）以躲开 _deep_merge 的裁剪，
+            # setdefault 对已存在的 None 不会替换，需显式判类型。
+            scopes = perm_cfg.get("owner_scopes")
+            if not isinstance(scopes, dict):
+                scopes = {}
+                perm_cfg["owner_scopes"] = scopes
             ch = scopes.setdefault(channel_id, {})
             user = ch.setdefault(user_id, {})
             tools = user.setdefault("tools", {})
