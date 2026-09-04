@@ -29,8 +29,10 @@ from jiuwenswarm.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
+    handshake_auth_denied,
     is_origin_check_enabled,
     is_allowed_browser_origin,
+    unauthorized_handshake_response,
 )
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.ws_diagnostics import (
@@ -678,7 +680,7 @@ class WebChannel(BaseWsChannel):
                 enable_origin_check,
                 True,
             )
-            return None
+            return await self._handshake_auth_response(args, path, request_headers)
 
         allowed = is_allowed_browser_origin(origin)
         logger.info(
@@ -689,7 +691,7 @@ class WebChannel(BaseWsChannel):
             allowed,
         )
         if allowed:
-            return None
+            return await self._handshake_auth_response(args, path, request_headers)
 
         logger.warning(
             "WebChannel 握手拒绝 path=%s origin=%s reason=origin_not_allowed",
@@ -697,6 +699,19 @@ class WebChannel(BaseWsChannel):
             origin,
         )
         return forbidden_origin_response(args)
+
+    async def _handshake_auth_response(
+        self,
+        process_request_args: tuple[Any, ...],
+        path: str,
+        request_headers: Any,
+    ) -> Any:
+        if not await handshake_auth_denied(
+            self, path=path, headers=request_headers, channel="web"
+        ):
+            return None
+        logger.warning("WebChannel 握手拒绝 path=%s reason=unauthorized", path)
+        return unauthorized_handshake_response(process_request_args)
 
     @staticmethod
     def _should_preserve_full_payload(event_name: str) -> bool:

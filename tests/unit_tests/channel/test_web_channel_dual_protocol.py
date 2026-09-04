@@ -17,8 +17,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
 from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
     _reject_disallowed_origin,
+    _serve_channel_websocket,
     build_web_channel_app,
     normalize_web_ws_path,
 )
@@ -186,3 +188,24 @@ def test_webchannel_config_dual_protocol_default_true() -> None:
 
 def test_webchannel_config_legacy_flag() -> None:
     assert WebChannelConfig(dual_protocol=False).dual_protocol is False
+
+
+@pytest.mark.asyncio
+async def test_serve_ws_does_not_accept_when_unauthorized() -> None:
+    channel = _make_channel()
+
+    async def deny(**_kwargs: Any) -> AuthResult:
+        return AuthResult(success=False, error="Token 无效或已过期")
+
+    channel.on_handshake_auth(deny)
+    websocket = MagicMock()
+    websocket.headers = {}
+    websocket.url.path = "/ws"
+    websocket.url.query = "token=fake"
+    websocket.client = MagicMock(host="127.0.0.1", port=9)
+    websocket.send_denial_response = AsyncMock()
+    websocket.accept = AsyncMock()
+    await _serve_channel_websocket(channel, websocket)
+    websocket.accept.assert_not_called()
+    websocket.send_denial_response.assert_awaited_once()
+    assert websocket.send_denial_response.await_args.args[0].status_code == 401

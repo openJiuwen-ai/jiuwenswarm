@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from http import HTTPStatus
 from typing import Any
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit
 _ENABLE_ORIGIN_CHECK_ENV = "JIUWENSWARM_ENABLE_ORIGIN_CHECK"
 _ALLOWED_ORIGIN_HOSTS_ENV = "JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS"
 _FORBIDDEN_BODY = b"Forbidden: Origin not allowed\n"
+_UNAUTHORIZED_BODY = b"Unauthorized\n"
 
 
 def is_origin_check_enabled() -> bool:
@@ -86,3 +88,38 @@ def forbidden_origin_response(process_request_args: tuple[Any, ...]) -> Any:
         return Response(status.value, status.phrase, Headers(headers), _FORBIDDEN_BODY)
 
     return status, headers, _FORBIDDEN_BODY
+
+
+def unauthorized_handshake_response(process_request_args: tuple[Any, ...]) -> Any:
+    """Build a 401 response for legacy/new websockets process_request APIs."""
+    status = HTTPStatus.UNAUTHORIZED
+    headers = [
+        ("Content-Type", "text/plain; charset=utf-8"),
+        ("Content-Length", str(len(_UNAUTHORIZED_BODY))),
+    ]
+
+    if process_request_args and not isinstance(process_request_args[0], str):
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
+
+        return Response(status.value, status.phrase, Headers(headers), _UNAUTHORIZED_BODY)
+
+    return status, headers, _UNAUTHORIZED_BODY
+
+
+async def handshake_auth_denied(
+    owner: Any,
+    *,
+    path: str,
+    headers: Any,
+    remote: str = "",
+    channel: str = "",
+) -> bool:
+    """Return True when ``owner._handshake_auth`` exists and rejected the upgrade."""
+    hook = getattr(owner, "_handshake_auth", None)
+    if not callable(hook):
+        return False
+    result = hook(path=path, headers=headers, remote=remote, channel=channel)
+    if inspect.isawaitable(result):
+        result = await result
+    return result is not None and not bool(getattr(result, "success", True))
