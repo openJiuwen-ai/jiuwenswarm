@@ -44,7 +44,12 @@ parse_dotenv_early("jiuwenswarm-gateway")
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
 from jiuwenswarm.gateway.routing.agent_request_timeout import coerce_client_timeout_ms
-from jiuwenswarm.common.security.ws_origin import get_header_value
+from jiuwenswarm.common.security.ws_origin import (
+    extract_handshake_request,
+    get_header_value,
+    handshake_auth_denied,
+    unauthorized_handshake_response,
+)
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.utils import (
@@ -767,6 +772,24 @@ class GatewayServer(BaseWebChannel):
             route.outbound_interceptor = route.outbound_interceptor or self._acp_bridge.outbound_intercept
             route.cleanup_handler = route.cleanup_handler or self._acp_bridge.cleanup
 
+    async def _process_request(self, *args: Any) -> Any:
+        """Reject hooked upgrades (TUI) before 101 when IAM fails."""
+        path, request_headers = extract_handshake_request(args)
+        request_path = urlparse(path or "").path or (path or "")
+        route, _matched = self._resolve_route(request_path)
+        ws_channel = getattr(route, "ws_channel", None) if route is not None else None
+        channel_name = str(getattr(route, "channel_id", "") or "")
+        if not await handshake_auth_denied(
+            ws_channel, path=path, headers=request_headers, channel=channel_name
+        ):
+            return None
+        logger.warning(
+            "GatewayServer 握手拒绝 path=%s channel=%s reason=unauthorized",
+            request_path,
+            channel_name,
+        )
+        return unauthorized_handshake_response(args)
+
     def _resolve_route(self, request_path: str) -> tuple[RouteConfig | None, str]:
         """按精确路径匹配路由；支持常见变体（如尾部斜杠）以避免客户端握手失败。"""
         routes = self.config.routes
@@ -848,6 +871,7 @@ class GatewayServer(BaseWebChannel):
             self._connection_handler,
             self.config.host,
             self.config.port,
+            process_request=self._process_request,
             ping_interval=20,
             ping_timeout=600,
             max_size=ws_max_size,

@@ -221,9 +221,13 @@ class BaseWebChannel(BaseChannel):
         super().__init__(config, router)
         self._connect_hooks: list[ConnectHook] = []
         self._disconnect_hooks: list[ConnectHook] = []
+        self._handshake_auth: Callable[..., Any] | None = None
 
     def on_connect(self, callback: ConnectHook) -> None:
         self._connect_hooks.append(callback)
 
     def on_disconnect(self, callback: ConnectHook) -> None:
         self._disconnect_hooks.append(callback)
+
+    def on_handshake_auth(self, callback: Callable[..., Any]) -> None:
+        self._handshake_auth = callback
