@@ -3309,35 +3309,37 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
         {activeNav === 'connectorMarket' && (
-          <div className="app-section">
-            <ConnectorMarketPanel
-              applicationPlugins={applicationPlugins}
-              applicationPluginsLoading={applicationPluginState.loading}
-              applicationPluginsError={applicationPluginState.error}
-              onRefreshApplicationPlugins={applicationPluginState.refresh}
-              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
-                detail: {
-                  skillName: 'plugin-creator',
-                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
-                  metadata: { scene: 'create_plugin' },
-                },
-              }))}
-              onUseExample={(initialInputValue, mcpName) =>
-                requestSessionNavigation('new', { initialInputValue, initialEnabledMcps: [mcpName], forceMode: 'agent' })
-              }
-              onUsePluginExample={(initialInputValue, pluginId) =>
-                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
-              }
-              onUseExtension={({ kind, id }) =>
-                requestSessionNavigation(
-                  'new',
-                  kind === 'plugin'
-                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
-                    : { initialEnabledMcps: [id], forceMode: 'agent' },
-                )
-              }
+          <div className="app-page-body">
+            <div className="page-content">
+              <ConnectorMarketPanel
+                applicationPlugins={applicationPlugins}
+                applicationPluginsLoading={applicationPluginState.loading}
+                applicationPluginsError={applicationPluginState.error}
+                onRefreshApplicationPlugins={applicationPluginState.refresh}
+                onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                  detail: {
+                    skillName: 'plugin-creator',
+                    suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                    metadata: { scene: 'create_plugin' },
+                  },
+                }))}
+                onUseExample={(initialInputValue, mcpName) =>
+                  requestSessionNavigation('new', { initialInputValue, initialEnabledMcps: [mcpName], forceMode: 'agent' })
+                }
+                onUsePluginExample={(initialInputValue, pluginId) =>
+                  requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+                }
+                onUseExtension={({ kind, id }) =>
+                  requestSessionNavigation(
+                    'new',
+                    kind === 'plugin'
+                      ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                      : { initialEnabledMcps: [id], forceMode: 'agent' },
+                  )
+                }
               />
             </div>
+          </div>
         )}
       </main>
 
