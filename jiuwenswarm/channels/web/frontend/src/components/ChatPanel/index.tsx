@@ -741,21 +741,22 @@ function scrollToBottom(el: HTMLDivElement): void {
   el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
 }
 
+const BEE_ANIMATION_DURATION = 4536;
+
 function BeeBanner({ className, altText, onTrigger }: { className: string; altText: string; onTrigger: () => void }) {
   const [isPlaying, setIsPlaying] = useState(false);
-  const playingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleMouseEnter = useCallback(() => {
-    if (playingRef.current) return;
-    playingRef.current = true;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
     setIsPlaying(true);
     onTrigger();
-    if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      playingRef.current = false;
       setIsPlaying(false);
-    }, 3000);
+      timerRef.current = null;
+    }, BEE_ANIMATION_DURATION);
   }, [onTrigger]);
 
   useEffect(() => {
