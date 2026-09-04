@@ -618,6 +618,42 @@ def test_resolve_agent_workspace_rejects_non_directory(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_workspace_precreate_failure_is_retryable(tmp_path) -> None:
+    """workspace 未就绪导致的 pre-create 失败不应被缓存为永久 FAILED。
+
+    删除重建用户时，workspace 目录可能在首次请求瞬间尚未就绪；这类发生在
+    ``create_sandbox`` 之前的失败应允许下一次请求重试，而不是一直回放错误。
+    """
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    workspace_root = tmp_path / "ws"
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        agent_manager,
+        workspace_root=str(workspace_root),
+    )
+
+    # 首次：workspace 目录缺失 → pre-create 失败，返回路由错误且不建沙箱。
+    first = await client.send_request(_envelope())
+    assert not first.ok
+    assert "agent workspace does not exist" in str(first.payload.get("error"))
+    assert yuanrong.create_calls == 0
+    # 不留下 FAILED runtime，下一次请求可重新创建。
+    assert await agent_manager.list_user_agents("u1") == []
+
+    # workspace 就绪后重试成功。
+    (workspace_root / "u1").mkdir(parents=True)
+    second = await client.send_request(_envelope())
+    await asyncio.sleep(0.05)
+    assert second.ok
+    assert yuanrong.create_calls == 1
+    assert len(await agent_manager.list_user_agents("u1")) == 1
+
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_third_party_type_creates_via_yuanrong(agentos_workspace_root: str) -> None:
     class RegistryWithEnvVars(FakeRegistryClient):
         async def get_image_info(self, image_name: str) -> ImageInfo:

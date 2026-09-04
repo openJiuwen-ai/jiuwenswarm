@@ -22,6 +22,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentCreatingTimeout,
     AgentDeleted,
     AgentManager,
+    AgentPreCreateError,
     AgentRuntime,
     is_third_party_agent_type,
 )
@@ -2131,10 +2132,15 @@ class AgentOSRouterClient(AgentServerClient):
         return reaped
 
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
-        workspace = resolve_agent_workspace(
-            agent_info.user_id,
-            workspace_root=self._workspace_root,
-        )
+        try:
+            workspace = resolve_agent_workspace(
+                agent_info.user_id,
+                workspace_root=self._workspace_root,
+            )
+        except ValueError as exc:
+            # workspace 校验失败发生在 create_sandbox 之前，属于可重试的
+            # pre-create 错误，避免被缓存为永久 FAILED。
+            raise AgentPreCreateError(str(exc)) from exc
         # runtime_spec 获取方式因 agent_type 而异
         env_vars: dict[str, str] | None = None
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:

@@ -206,7 +206,7 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     # 健康检查：systemd active 且 GATEWAY_PORT/WEB_PORT 端口均处于 LISTEN，
     # 避免服务"刚开始即崩溃"时 is-active 短暂返回 active 而误报成功。
     local retry=0
-    local max_retry=10
+    local max_retry=15
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
         if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null \
@@ -260,7 +260,7 @@ gateway_start_nohup() {
     exec_on_host "${master_host}" "bash -c '${start_cmd}'"
 
     local retry=0
-    local max_retry=10
+    local max_retry=15
     while [ ${retry} -lt ${max_retry} ]; do
         sleep 2
         if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" \
