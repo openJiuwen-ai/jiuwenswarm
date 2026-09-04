@@ -2667,7 +2667,11 @@ async def _consume_stream_with_query(
                             },
                             mode="team",
                         )
-                    if is_leader:
+                    if is_leader and not _is_retry_notice(parsed):
+                        # 注意：重试通知不进本分支——通知是 rail 过程性广播（马上自动重试），
+                        # 不是"未恢复错误史"：挂探针会在重试回退窗口（0.5-2s 后还有一次
+                        # 模型调用静默期）误补失败终态；round_unrecovered_error 同理，
+                        # 通知后恢复产出的清除逻辑（chat.delta/final）才是它的语义边界。
                         # 记录本轮未恢复的 leader 模型错误史，
                         # 供 team.completed 等收尾帧携带（根治"重试耗尽却记已完成"）
                         round_unrecovered_error = str(parsed.get("error") or "")

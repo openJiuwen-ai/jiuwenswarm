@@ -168,6 +168,7 @@ def _create_windows_junction(target_path: Path, link_path: Path) -> None:
         [cmd_path, "/c", "mklink", "/J", str(link_path), str(target_path)],
         capture_output=True,
         text=True,
+        encoding="gbk",
         check=False,
         shell=False,
     )

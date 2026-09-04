@@ -1,0 +1,20 @@
+{
+  "package_type": "agent_group",
+  "name": "__EXPERT_ID__",
+  "agents": __AGENTS_JSON__,
+  "instruction": "[TODO: 全员共享的协作契约 — 注入 agent_group_instruction prompt section（priority 20），描述团队目标、协作铁律、交接规范]",
+  "skills": [],
+  "metadata": {
+    "displayName": "__DISPLAY_NAME_ZH__",
+    "description": "__DESCRIPTION_ZH__",
+    "avatar": "avatars/expert.png",
+    "tags": ["__TAG1__", "__TAG2__", "__TAG3__"],
+    "quickPrompts": [
+      "__QUICK_PROMPT1__",
+      "__QUICK_PROMPT2__",
+      "__QUICK_PROMPT3__"
+    ],
+    "profession": "__PROFESSION__",
+    "categoryId": "__CATEGORY_ID__"
+  }
+}

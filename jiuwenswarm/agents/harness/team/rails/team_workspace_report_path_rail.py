@@ -22,12 +22,14 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
         root_dir: str,
         team_id: str | None = None,
         language: str = "cn",
+        project_dir: str | None = None,
     ) -> None:
         super().__init__()
         self.system_prompt_builder = None
         self._root_dir = str(Path(root_dir))
         self._team_id = team_id or ""
         self._language = language
+        self._project_dir = str(Path(project_dir)) if project_dir else None
 
     def init(self, agent) -> None:
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -59,6 +61,17 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
             "join the remaining file name under the team workspace absolute root before sending and reporting it.\n"
             f"- Example absolute path to pass to `send_file_to_user`: `{sample}`\n"
         )
+        if self._project_dir:
+            deliverable_sample = str(Path(self._project_dir) / "prd-review-memo.md")
+            content += (
+                "\n## Deliverables in the Task Working Directory\n\n"
+                "- User-facing deliverables live in the current working directory (the task workspace): "
+                f"`{self._project_dir}` — not under the team workspace root.\n"
+                f"- Example deliverable path to pass to `send_file_to_user`: `{deliverable_sample}`\n"
+                "- After `send_file_to_user` succeeds for such a deliverable, report its real absolute path "
+                "under the task working directory. The mount-prefix rewrite rules above only apply to files "
+                "that are actually stored in the team shared workspace.\n"
+            )
         self.system_prompt_builder.add_section(
             PromptSection(
                 name="team_workspace_report_paths",

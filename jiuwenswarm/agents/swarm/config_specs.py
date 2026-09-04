@@ -103,6 +103,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.HEARTBEAT,
     registry.AVATAR_PROMPT,
     registry.TEAM_WORKSPACE_REPORT_PATH,
+    registry.TEAM_DELIVERABLE_LOCATION,
     registry.CONTEXT_PROCESSOR,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
@@ -161,6 +162,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
 # Rails shared with the team profile, appended to the code profile.
 _CODE_SHARED_RAIL_NAMES: tuple[str, ...] = (
     registry.TEAM_WORKSPACE_REPORT_PATH,
+    registry.TEAM_DELIVERABLE_LOCATION,
     registry.PLUGIN_RAILS,
 )
 

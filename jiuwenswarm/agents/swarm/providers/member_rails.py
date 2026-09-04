@@ -41,6 +41,9 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
 )
+from jiuwenswarm.agents.harness.team.rails.team_deliverable_location_rail import (
+    TeamDeliverableLocationRail,
+)
 from jiuwenswarm.agents.harness.team.rails.team_skill_storage_policy_rail import (
     TeamSkillStoragePolicyRail,
 )
@@ -61,6 +64,7 @@ RUNTIME_PROMPT = "swarm.runtime_prompt"
 TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 TEAM_SHARED_SKILL_LINK_REFRESH = "swarm.team_shared_skill_link_refresh"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
+TEAM_DELIVERABLE_LOCATION = "swarm.team_deliverable_location"
 CONTEXT_PROCESSOR = "swarm.context_processor"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
@@ -305,6 +309,10 @@ class TeamWorkspaceReportPathInput(ConstructionInput):
         description="Team shared workspace root path (gate; skipped when absent).",
     )
     team_id: str = context_field(attr="team_id", default="", description="Team name.")
+    project_dir: str | None = context_field(
+        attr="project_dir",
+        description="Resolved user project directory (deliverable path examples).",
+    )
     language: str = context_field(
         attr="language",
         default="cn",
@@ -339,6 +347,57 @@ def _build_team_workspace_report_path_rail(
     return TeamWorkspaceReportPathRail(
         root_dir=inp.team_ws_root,
         team_id=inp.team_id,
+        language=inp.language,
+        project_dir=inp.project_dir,
+    )
+
+
+class TeamDeliverableLocationInput(ConstructionInput):
+    """Construction inputs for the team deliverable location rail."""
+
+    project_dir: str | None = context_field(
+        attr="project_dir",
+        description="Resolved user project directory (gate; skipped when absent).",
+    )
+    member_workspace_root: str | None = context_field(
+        resolver=_workspace_root,
+        description="Current member workspace root (contrasted in the prompt).",
+    )
+    language: str = context_field(
+        attr="language",
+        default="cn",
+        description="Resolved member language code.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=TEAM_DELIVERABLE_LOCATION,
+    description="Guides team members to write user-facing deliverables into "
+                "the task working directory instead of the private workspace (skipped "
+                "when the session has no project directory).",
+    input_model=TeamDeliverableLocationInput,
+)
+def _build_team_deliverable_location_rail(
+        params: dict[str, Any],
+        context: SwarmBuildContext,
+) -> TeamDeliverableLocationRail | None:
+    """Build the deliverable location rail when a project directory exists.
+
+    Args:
+        params: Spec params (unused; kept for the provider contract).
+        context: Per-member build context.
+
+    Returns:
+        A ``TeamDeliverableLocationRail`` or ``None`` when the session has no
+        resolved project directory (behavior stays unchanged there).
+    """
+    inp = TeamDeliverableLocationInput.resolve(params, context)
+    if not inp.project_dir:
+        return None
+    return TeamDeliverableLocationRail(
+        project_dir=inp.project_dir,
+        member_workspace_root=inp.member_workspace_root,
         language=inp.language,
     )
 
@@ -493,6 +552,7 @@ __all__ = [
     "PLUGIN_RAILS",
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",
+    "TEAM_DELIVERABLE_LOCATION",
     "TEAM_PERMISSION",
     "TEAM_PERMISSION_POLICY",
     "TEAM_MEMBER_IDENTITY",

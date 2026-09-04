@@ -1,0 +1,10 @@
+{
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "leader",
+    "name": "__LEADER_NAME_ZH__",
+    "description": "__LEADER_DESCRIPTION_ZH__"
+  },
+  "persona": { "dir": "agents" },
+  "skills": []
+}

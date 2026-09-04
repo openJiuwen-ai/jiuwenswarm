@@ -116,11 +116,16 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.HEARTBEAT,
         registry.AVATAR_PROMPT,
         registry.TEAM_WORKSPACE_REPORT_PATH,
+        registry.TEAM_DELIVERABLE_LOCATION,
         registry.CONTEXT_PROCESSOR,
         registry.PLUGIN_RAILS,
         registry.SKILL_RETRIEVAL_PROMPT,
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.MEMBER_SKILL_TOOLKIT,
+        # Appended unconditionally for both roles by _build_team_capability_specs
+        # (member skill-use placeholder + member identity placeholder).
+        registry.TEAM_SKILL_USE,
+        registry.TEAM_MEMBER_IDENTITY,
     }
 )
 
@@ -441,7 +446,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 16
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 19
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)

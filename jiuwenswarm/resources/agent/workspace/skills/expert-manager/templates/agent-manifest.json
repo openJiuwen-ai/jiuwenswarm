@@ -1,0 +1,21 @@
+{
+  "packageType": "agent_template",
+  "agentCard": {
+    "id": "__EXPERT_ID__",
+    "name": "__DISPLAY_NAME_ZH__",
+    "description": "__DESCRIPTION_ZH__"
+  },
+  "persona": { "dir": "agents" },
+  "skills": [],
+  "metadata": {
+    "avatar": "avatars/expert.png",
+    "tags": ["__TAG1__", "__TAG2__", "__TAG3__"],
+    "quickPrompts": [
+      "__QUICK_PROMPT1__",
+      "__QUICK_PROMPT2__",
+      "__QUICK_PROMPT3__"
+    ],
+    "profession": "__PROFESSION__",
+    "categoryId": "__CATEGORY_ID__"
+  }
+}
