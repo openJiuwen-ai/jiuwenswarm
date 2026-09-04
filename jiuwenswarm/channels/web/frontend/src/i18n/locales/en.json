@@ -242,6 +242,8 @@
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
+      "deleteModelTitle": "Delete model configuration",
+      "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
     },
     "browser": {
@@ -249,7 +251,6 @@
       "runtimeDescription": "The existing backend resets the browser runtime after saving.",
       "path": "Browser path",
       "pathDescription": "Specify the browser executable path, or leave it empty for automatic detection.",
-      "preferredBrowser": "Preferred browser",
       "runMode": "Browser run mode",
       "runModeDescription": "Show the browser window in the foreground or run in headless mode.",
       "headed": "Show in foreground",
@@ -278,10 +279,6 @@
         "title": "Browser path",
         "description": "Specify the browser executable path, or leave it empty for automatic detection.",
         "placeholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-      },
-      "browser_type": {
-        "title": "Preferred browser",
-        "description": "Pinning a type searches only that browser; an explicit path always wins."
       },
       "headless": {
         "title": "Browser run mode",
@@ -1508,9 +1505,6 @@
     }
   },
   "browser": {
-    "browserTypeAuto": "Auto (Chrome > Edge)",
-    "browserTypeChrome": "Chrome",
-    "browserTypeEdge": "Microsoft Edge",
     "errors": {
       "loadPath": "Failed to load browser settings"
     }

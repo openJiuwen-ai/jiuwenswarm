@@ -242,6 +242,8 @@
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
+      "deleteModelTitle": "删除模型配置",
+      "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
     },
     "browser": {
@@ -249,7 +251,6 @@
       "runtimeDescription": "浏览器配置保存后会由现有后端逻辑重置运行时。",
       "path": "浏览器路径",
       "pathDescription": "指定浏览器可执行文件路径；留空时自动探测。",
-      "preferredBrowser": "优先浏览器",
       "runMode": "浏览器运行方式",
       "runModeDescription": "选择在前台显示浏览器窗口或以无头模式运行。",
       "headed": "前台显示",
@@ -278,10 +279,6 @@
         "title": "浏览器路径",
         "description": "指定浏览器可执行文件路径；留空时自动探测。",
         "placeholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-      },
-      "browser_type": {
-        "title": "优先浏览器",
-        "description": "指定类型时只查找该浏览器；填写路径时以路径为准。"
       },
       "headless": {
         "title": "浏览器运行方式",
@@ -1496,9 +1493,6 @@
     }
   },
   "browser": {
-    "browserTypeAuto": "自动（Chrome > Edge）",
-    "browserTypeChrome": "Chrome",
-    "browserTypeEdge": "Microsoft Edge",
     "errors": {
       "loadPath": "加载浏览器配置失败"
     }

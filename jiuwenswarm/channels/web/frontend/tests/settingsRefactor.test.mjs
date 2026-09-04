@@ -413,7 +413,7 @@ test('simple Settings definitions reject unknown sources and derive required i18
         titleKey: 'settings.browser',
         icon: Icon,
         source: 'browser',
-        sections: [{ id: 'browser', items: [{ id: 'type', component: 'select', key: 'browser_type', options: [] }] }],
+        sections: [{ id: 'browser', items: [{ id: 'type', component: 'select', key: 'headless', options: [] }] }],
       }),
     /has no options/,
   );
@@ -1259,7 +1259,7 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 test('Agent configuration entry points are disabled while the backend is connecting', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected\}/g)?.length, 1);
-  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 2);
+  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 3);
   assert.match(agentSettings, /<FormDialog[\s\S]*confirmDisabled=\{!isConnected\}/);
 });
 
@@ -1292,10 +1292,13 @@ test('media capability configuration and hot-apply state use exact fields', () =
   assert.equal(wasConfigAppliedWithoutRestart({ applied_without_restart: true }), true);
   assert.equal(wasConfigAppliedWithoutRestart({ applied_without_restart: false }), false);
   assert.equal(wasConfigAppliedWithoutRestart({}), false);
-  assert.doesNotMatch(agentSettings, /settingsActionIcons\.delete/);
+  assert.match(agentSettings, /settingsActionIcons\.delete/);
+  assert.match(agentSettings, /mediaCapabilityPersistenceFields\(deleteTarget\)/);
+  assert.match(agentSettings, /updates\[enabledField\] = toConfigBoolean\(false\)/);
+  assert.match(agentSettings, /settingsPanel\.agent\.deleteModelConfirm/);
 });
 
-test('search dialogs keep the shared required-field contract', () => {
+test('search credential fields are optional so keys can be cleared', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   const agentSettingsFile = parseTsx('src/features/settings/modules/agent/AgentSettings.tsx');
   assert.deepEqual(findVariableArrayStrings(agentSettingsFile, 'keyFields'), [
@@ -1304,11 +1307,10 @@ test('search dialogs keep the shared required-field contract', () => {
     'perplexity_api_key',
     'serper_api_key',
   ]);
-  assert.match(agentSettings, /const required = isRequiredAgentConfigField\(name\)/);
-  assert.match(agentSettings, /required[,}]/);
-  assert.match(agentSettings, /fields\.filter\(isRequiredAgentConfigField\)/);
-  assert.match(agentSettings, /String\(value \?\? ''\)\.trim\(\)/);
-  assert.match(agentSettings, /<Form form=\{form\} items=\{items\} rules=\{rules\}/);
+  assert.doesNotMatch(agentSettings, /isRequiredAgentConfigField/);
+  assert.doesNotMatch(agentSettings, /required[,}]/);
+  assert.match(agentSettings, /String\(result\.values\[name\] \?\? ''\)\.trim\(\)/);
+  assert.match(agentSettings, /<Form form=\{form\} items=\{items\}/);
 });
 
 test('multimodal dialogs reuse provider-first model configuration without model testing or account login', () => {
@@ -1421,14 +1423,11 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.doesNotMatch(browserDefinition, /component: 'switch'|key: 'enabled'|subItems:/);
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
     'chrome_path',
-    'browser_type',
     'headless',
   ]);
   assert.match(browserDefinition, /\{ value: false, labelKey: 'settingsPanel\.browser\.headed' \}/);
   assert.match(browserDefinition, /\{ value: true, labelKey: 'settingsPanel\.browser\.headless' \}/);
-  assert.match(browserDefinition, /\{ value: 'auto', labelKey: 'browser\.browserTypeAuto' \}/);
-  assert.match(browserDefinition, /\{ value: 'chrome', labelKey: 'browser\.browserTypeChrome' \}/);
-  assert.match(browserDefinition, /\{ value: 'msedge', labelKey: 'browser\.browserTypeEdge' \}/);
+  assert.doesNotMatch(browserDefinition, /browser_type|browserType/);
   assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.get'\)/);
   assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.set', next/);
   assert.doesNotMatch(sourceProvider, /enabled|onlyEnabled/);
@@ -1908,12 +1907,7 @@ test('legacy page translations and Harness package state are removed without del
   ];
 
   for (const locale of [zh, en]) {
-    assert.deepEqual(Object.keys(locale.browser).sort(), [
-      'browserTypeAuto',
-      'browserTypeChrome',
-      'browserTypeEdge',
-      'errors',
-    ]);
+    assert.deepEqual(Object.keys(locale.browser).sort(), ['errors']);
     assert.deepEqual(Object.keys(locale.channels.labels).sort(), supportedChannelIds);
     assert.deepEqual(Object.keys(locale.config).sort(), expectedConfigSections);
     assert.equal(locale.extensions, undefined);
