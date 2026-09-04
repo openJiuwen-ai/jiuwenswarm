@@ -1991,6 +1991,12 @@ class JiuWenSwarmDeepAdapter:
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
     SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC = 30.0
     _RUNTIME_STATE_WRITE_LIMIT = threading.BoundedSemaphore(2)
+    # Process-level cache for AGENT_EXTRA_TOOLS loads, keyed by module path
+    # (see _load_extra_tools_from_env): session-scoped adapters rebuild per
+    # session, and extra tools register process-shared under their card id,
+    # so the same module must resolve to the same instances on every build.
+    _EXTRA_TOOLS_CACHE: dict[str, list[Any]] = {}
+    _EXTRA_TOOLS_CACHE_LOCK = threading.Lock()
 
     """Deep SDK 适配器，实现 AgentAdapter 协议.
 
@@ -7075,6 +7081,66 @@ class JiuWenSwarmDeepAdapter:
         return extra_rails
 
     @staticmethod
+    def _load_extra_tools_from_env() -> list[Any]:
+        """Load extra tools from AGENT_EXTRA_TOOLS env var.
+
+        Env format (semicolon-separated module paths):
+            AGENT_EXTRA_TOOLS=path.to.module1;path.to.module2
+
+        Each module must expose a ``register_tools()`` function that returns
+        a list of Tool instances. Only honored under enterprise edition.
+
+        Results are cached per module for the process lifetime: session-scoped
+        adapters rebuild per session, and extra tools register process-shared
+        under their card id — without the cache, a factory returning fresh
+        instances would register a new id on every build (registry leak,
+        since stateless registrations are never torn down). Failures are not
+        cached, so a transient failure retries on the next build.
+        """
+        if not is_enterprise():
+            return []
+        env_value = os.getenv("AGENT_EXTRA_TOOLS", "").strip()
+        if not env_value:
+            return []
+
+        extra_tools: list[Any] = []
+        for module_path in [p.strip() for p in env_value.split(";") if p.strip()]:
+            try:
+                # The lock spans cache lookup + import + factory call: concurrent
+                # session builds must not race past a not-yet-written cache entry
+                # and invoke register_tools() twice (double-checked locking cannot
+                # close that gap when the factory runs between the checks).
+                with JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE_LOCK:
+                    cached = JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE.get(module_path)
+                    if cached is None:
+                        mod = importlib.import_module(module_path)
+                        register_fn = getattr(mod, "register_tools", None)
+                        if register_fn is None:
+                            logger.warning(
+                                "[JiuWenSwarmDeepAdapter] Extra tool module '%s' has no register_tools(), skipping",
+                                module_path,
+                            )
+                            continue
+                        tools = register_fn()
+                        if tools and not isinstance(tools, list):
+                            tools = [tools]
+                        cached = tools or []
+                        JiuWenSwarmDeepAdapter._EXTRA_TOOLS_CACHE[module_path] = cached
+                        logger.info(
+                            "[JiuWenSwarmDeepAdapter] Loaded %d tool(s) from '%s'",
+                            len(cached),
+                            module_path,
+                        )
+                extra_tools.extend(cached)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] Failed to load extra tools from '%s': %s",
+                    module_path,
+                    exc,
+                )
+        return extra_tools
+
+    @staticmethod
     def _build_multimodal_image_rail(
         enable_image_multimodal: bool | None = None,
     ) -> MultimodalImageRail | None:
@@ -8204,6 +8270,52 @@ class JiuWenSwarmDeepAdapter:
         ]
         tool_cards.extend(registered_cards)
 
+    def _append_extra_tool_cards(self, tool_cards: list[Any]) -> None:
+        """Append extra tools loaded from AGENT_EXTRA_TOOLS to ``tool_cards``.
+
+        Non-invasive tool extension mirroring ``AGENT_EXTRA_RAILS`` (see
+        ``_load_extra_tools_from_env``): enterprise only, semicolon-separated
+        module paths, each exposing ``register_tools()``. Every tool is
+        registered process-shared (``_register_shared_tool``) and its card
+        joins ``tool_cards``, so it flows through the same config pipeline as
+        builtin tools (model visibility, ``disabled_tools`` filtering).
+
+        Isolation: a tool without a card name, a name conflicting with an
+        already-collected card, or a failing registration is logged and
+        skipped — one bad extension tool never blocks the agent build nor
+        the remaining tools (same convention as the vision/audio/extension
+        registration blocks above).
+
+        Args:
+            tool_cards: Cards collected so far by ``_get_tool_cards``; extra
+                cards are appended in place.
+        """
+        existing_names = {card.name for card in tool_cards}
+        for tool in self._load_extra_tools_from_env():
+            tname = getattr(getattr(tool, "card", None), "name", "")
+            if not tname:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] extra tool without card.name, skip"
+                )
+                continue
+            if tname in existing_names:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] extra tool '%s' conflicts with existing tool, skip",
+                    tname,
+                )
+                continue
+            try:
+                registered = self._register_shared_tool(tool)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] extra tool '%s' registration failed: %s",
+                    tname,
+                    exc,
+                )
+                continue
+            tool_cards.append(registered.card)
+            existing_names.add(tname)
+
     async def _get_tool_cards(self, agent_id: str):
         """Get tool cards."""
         tool_cards = []
@@ -8408,6 +8520,9 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] acp_chat registration failed: %s", exc)
 
         self._register_deepresearch_tool_cards(tool_cards)
+
+        # 动态加载环境变量配置的非侵入式工具扩展（AGENT_EXTRA_TOOLS，仅企业版）
+        self._append_extra_tool_cards(tool_cards)
 
         return tool_cards
 
