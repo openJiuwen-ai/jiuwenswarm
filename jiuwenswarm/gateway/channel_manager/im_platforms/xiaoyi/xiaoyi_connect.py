@@ -677,11 +677,19 @@ class XiaoyiChannel(BaseChannel):
                 # 快照活跃映射，避免迭代中修改
                 snapshot = list(self._active_push_sessions.items())
                 kept = 0
+                stale_entries: list[str] = []
                 for aid, entry in snapshot:
                     sid, tid, _, ts = entry
                     # 仅对窗口内的 agent_id 保活（ws 大概率还开着）。
                     # 保活成功后刷新 last_seen，使 ws_active 持续为 True（防超窗后误走 push）。
                     if (now - ts) >= self._team_ws_alive_window:
+                        continue
+                    # 任务已完结的会话绝不保活：终态后的空 working 帧会把手机端
+                    # 任务状态反复拉回 working、又阻止其空闲超时收口，导致响应
+                    # 永远"收不掉"。死任务直接移除条目（不刷新 last_seen），
+                    # 让其自然出窗，下次手机端来新消息时重新登记。
+                    if not self._is_session_active(sid, tid):
+                        stale_entries.append(aid)
                         continue
                     try:
                         for url_key, ws in self._ws_connections.items():
@@ -694,6 +702,13 @@ class XiaoyiChannel(BaseChannel):
                         kept += 1
                     except Exception as e:
                         logger.debug("[XiaoyiChannel] ws keepalive 失败 agent_id=%s: %s", (aid or "")[:8], e)
+                for aid in stale_entries:
+                    self._active_push_sessions.pop(aid, None)
+                if stale_entries:
+                    logger.info(
+                        "[XiaoyiChannel] ws keepalive removed %d finished-task entries",
+                        len(stale_entries),
+                    )
                 if kept:
                     logger.info("[XiaoyiChannel] ws keepalive sent: %d agents", kept)
         except asyncio.CancelledError:
@@ -2963,18 +2978,30 @@ class XiaoyiChannel(BaseChannel):
                 },
             },
         }
-        logger.info(
-            "[GUI_AGENT_DIAG] phase=XIAOYI_STATUS_RESPONSE_BUILT "
-            "session_id=%s task_id=%s connection=%s state=%s "
-            "final=%s text=%r response=%r",
-            session_id,
-            task_id,
-            url_key,
-            state,
-            is_final,
-            message,
-            response,
-        )
+        # 保活空帧（message 为空且非终态）是周期性噪音，降为 debug 且不打完整
+        # response，避免日志刷屏；有实质内容/终态的帧保持 INFO 便于排查。
+        if not message and not is_final:
+            logger.debug(
+                "[GUI_AGENT_DIAG] phase=XIAOYI_STATUS_RESPONSE_BUILT(keepalive) "
+                "session_id=%s task_id=%s connection=%s state=%s",
+                session_id,
+                task_id,
+                url_key,
+                state,
+            )
+        else:
+            logger.info(
+                "[GUI_AGENT_DIAG] phase=XIAOYI_STATUS_RESPONSE_BUILT "
+                "session_id=%s task_id=%s connection=%s state=%s "
+                "final=%s text=%r response=%r",
+                session_id,
+                task_id,
+                url_key,
+                state,
+                is_final,
+                message,
+                response,
+            )
         await self._send_agent_response(session_id, task_id, response, url_key)
 
     def _is_session_active(self, session_id: str, task_id: str | None = None) -> bool:
@@ -3077,6 +3104,13 @@ class XiaoyiChannel(BaseChannel):
             self._clear_task_timeout(session_id)
             self._clear_session_timeout(session_id)
 
+        # 任务收尾即移除 ws 保活映射中该 (sid, tid) 的登记，否则保活循环会
+        # 对已完结任务无限发送空 working 帧，手机端响应永远收不掉。
+        for aid in [
+            key for key, entry in self._active_push_sessions.items()
+            if entry[0] == session_id and entry[1] == task_id
+        ]:
+            self._active_push_sessions.pop(aid, None)
         text = accumulated_text
         task_key = (session_id, task_id)
         if text is None:
