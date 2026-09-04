@@ -38,6 +38,22 @@ def install_permission_file_semantics() -> None:
         raise RuntimeError("permission_file_semantics_conflict:read_pdf")
 
 
+def _is_exact_subagent_runtime_control(
+    tool_name: object,
+    resolution: PermissionToolNameResolution,
+) -> bool:
+    """Accept only an unaliased, exact SDK runtime-control name."""
+    if not isinstance(tool_name, str):
+        return False
+    if tool_name not in _SUBAGENT_RUNTIME_CONTROL_TOOLS:
+        return False
+    if resolution.registered_name != tool_name:
+        return False
+    if resolution.canonical_name != tool_name:
+        return False
+    return not resolution.aliases
+
+
 @dataclass(frozen=True)
 class ToolCapability:
     """Immutable Host facts; this value never grants a permission decision."""
@@ -337,13 +353,7 @@ def classify_tool(tool_name: str) -> ToolCapability:
             True,
             authoritative=False,
         )
-    if (
-        isinstance(tool_name, str)
-        and tool_name in _SUBAGENT_RUNTIME_CONTROL_TOOLS
-        and resolution.registered_name == tool_name
-        and resolution.canonical_name == tool_name
-        and not resolution.aliases
-    ):
+    if _is_exact_subagent_runtime_control(tool_name, resolution):
         return _capability(
             resolution,
             "subagent",

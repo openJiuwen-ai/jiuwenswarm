@@ -123,6 +123,11 @@ _SUBAGENT_RUNTIME_CONTROL_TYPES = {
 }
 
 
+def _subagent_tool_parent(resource: object) -> object | None:
+    """Read the owner from OpenJiuwen runtime tools lacking a public accessor."""
+    return getattr(resource, "_parent_agent", None)
+
+
 def _trusted_subagent_runtime_control_binding(invocation: ToolInvocation) -> bool:
     """Prove the current executable binding is the root-owned SDK tool."""
     expected_type = _SUBAGENT_RUNTIME_CONTROL_TYPES.get(invocation.tool_name)
@@ -133,9 +138,9 @@ def _trusted_subagent_runtime_control_binding(invocation: ToolInvocation) -> boo
         manager = callback_agent.ability_manager
         card = manager.get(invocation.tool_name)
         resource = Runner.resource_mgr.get_tool(card.id, session=None)
-        outer_agent = resource._parent_agent
+        outer_agent = _subagent_tool_parent(resource)
         return bool(
-            type(resource) is expected_type
+            resource.__class__ is expected_type
             and resource.card is card
             and outer_agent.react_agent is callback_agent
             and outer_agent.ability_manager is manager

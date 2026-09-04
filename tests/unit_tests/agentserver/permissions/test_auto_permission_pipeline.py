@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
+from types import SimpleNamespace, new_class
 
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool as before_tool_module
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_override_consume as override_module
@@ -157,6 +157,34 @@ async def test_subagent_runtime_same_id_shadow_does_not_use_internal_fast_path(
         card=resource.card,
         _parent_agent=resource._parent_agent,
     )
+    monkeypatch.setattr(
+        before_tool_module,
+        "Runner",
+        SimpleNamespace(
+            resource_mgr=SimpleNamespace(get_tool=lambda *_args, **_kwargs: shadow)
+        ),
+    )
+
+    with pytest.raises(AbortError):
+        await rail.before_tool_call(ctx)
+
+    assert len(policy.calls) == 1
+    assert reviewer.requests == []
+    assert base.calls == []
+
+
+async def test_subagent_runtime_subclass_shadow_does_not_use_internal_fast_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    rail, policy, reviewer, base = _rail(
+        tmp_path,
+        PolicyEvaluation(level="ask", reason="default_ask"),
+    )
+    ctx, resource = _runtime_control_ctx(monkeypatch, "subagent_list", {})
+    shadow_type = new_class("ShadowSubagentListTool", (resource.__class__,))
+    shadow = object.__new__(shadow_type)
+    shadow.__dict__.update(resource.__dict__)
     monkeypatch.setattr(
         before_tool_module,
         "Runner",
