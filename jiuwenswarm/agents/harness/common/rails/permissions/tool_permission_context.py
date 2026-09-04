@@ -16,6 +16,12 @@ TOOL_PERMISSION_CHANNEL_ID: contextvars.ContextVar[str] = contextvars.ContextVar
     default="",
 )
 
+# Host request id for the current asyncio task. Tool call ids are useful for UI
+# correlation, but permission provenance must stay scoped to the host request.
+TOOL_PERMISSION_REQUEST_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "jiuwenswarm_tool_permission_request_id",
+    default="",
+)
 
 # skills.rebuild 静默 follow-up：无 UI 审批，权限轨需自动放行。
 SKILLS_REBUILD_SILENT: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -24,4 +30,8 @@ SKILLS_REBUILD_SILENT: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
-__all__ = ["SKILLS_REBUILD_SILENT", "TOOL_PERMISSION_CHANNEL_ID"]
+__all__ = [
+    "SKILLS_REBUILD_SILENT",
+    "TOOL_PERMISSION_CHANNEL_ID",
+    "TOOL_PERMISSION_REQUEST_ID",
+]
