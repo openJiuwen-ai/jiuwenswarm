@@ -83,7 +83,7 @@ def apply_task_tool_debug_patch() -> None:
             source_label=_subagent_source_label(subagent),
         )
 
-    TaskTool._invoke_subagent = _invoke_subagent_with_trace
+    setattr(TaskTool, "_invoke_subagent", _invoke_subagent_with_trace)
     TaskTool.debug_trace_patch_applied = True
     TaskTool.debug_trace_patch_mode = "dispatch_only"
     _PATCH_APPLIED = True
