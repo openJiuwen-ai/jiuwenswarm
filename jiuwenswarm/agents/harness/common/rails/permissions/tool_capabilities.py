@@ -80,6 +80,14 @@ _PATH_TOOLS = {
 _PUBLIC_SEARCH_TOOLS = {"mcp_free_search", "mcp_paid_search"}
 _PUBLIC_WEB_READ_TOOLS = {"mcp_fetch_webpage"}
 _SUBAGENT_TOOLS = {"task_tool", "spawn_sub_agent", "session_new"}
+_SUBAGENT_RUNTIME_CONTROL_TOOLS = {
+    "subagent_close",
+    "subagent_list",
+    "subagent_resume",
+    "subagent_send_input",
+    "subagent_spawn",
+    "subagent_wait",
+}
 _HOST_TODO_TOOLS = {
     "todo_create",
     "todo_list",
@@ -156,6 +164,7 @@ _STATIC_CANONICAL_TOOL_NAMES = frozenset(
     | _PUBLIC_SEARCH_TOOLS
     | _PUBLIC_WEB_READ_TOOLS
     | _SUBAGENT_TOOLS
+    | _SUBAGENT_RUNTIME_CONTROL_TOOLS
     | _HOST_TODO_TOOLS
     | _LEGACY_TODO_TOOLS
     | _SESSION_STATUS_TOOLS
@@ -327,6 +336,22 @@ def classify_tool(tool_name: str) -> ToolCapability:
             "high",
             True,
             authoritative=False,
+        )
+    if (
+        isinstance(tool_name, str)
+        and tool_name in _SUBAGENT_RUNTIME_CONTROL_TOOLS
+        and resolution.registered_name == tool_name
+        and resolution.canonical_name == tool_name
+        and not resolution.aliases
+    ):
+        return _capability(
+            resolution,
+            "subagent",
+            "subagent_runtime_control",
+            "agent_runtime",
+            {"delegation"},
+            "low",
+            False,
         )
     if lowered in _SUBAGENT_TOOLS:
         return _capability(
