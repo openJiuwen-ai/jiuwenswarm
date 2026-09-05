@@ -93,6 +93,7 @@ class FakeYuanRongClient:
         runtime_spec: dict[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> SandboxInfo:
         self.create_calls += 1
         payload = {
@@ -109,10 +110,10 @@ class FakeYuanRongClient:
             metadata=payload,
         )
 
-    async def delete_sandbox(self, sandbox_id: str) -> None:
+    async def delete_sandbox(self, sandbox_id: str, **kwargs: Any) -> None:
         self.delete_calls.append(sandbox_id)
 
-    async def get_agent_info(self, instance_id: str) -> dict:
+    async def get_agent_info(self, instance_id: str, **kwargs: Any) -> dict:
         status = "running"
         if self.get_info_statuses:
             status = self.get_info_statuses.pop(0)
@@ -123,7 +124,7 @@ class FakeYuanRongClient:
             "sandbox_ip": "127.0.0.1",
         }
 
-    async def wait_until_running(self, instance_id: str) -> dict:
+    async def wait_until_running(self, instance_id: str, **kwargs: Any) -> dict:
         self.wait_running_calls.append(instance_id)
         while True:
             info = await self.get_agent_info(instance_id)
@@ -1033,8 +1034,9 @@ class StubSshRelay:
         instance_id: str,
         *,
         user_id: str,
+        **kwargs: Any,
     ) -> None:
-        del user_id
+        del user_id, kwargs
         self.run_instance_ids.append(instance_id)
         self.started.set()
         await self.finish.wait()
@@ -1770,7 +1772,7 @@ async def test_register_agent_gives_up_at_backoff_cap() -> None:
 
 
 class FailingDeleteYuanRongClient(FakeYuanRongClient):
-    async def delete_sandbox(self, sandbox_id: str) -> None:
+    async def delete_sandbox(self, sandbox_id: str, **kwargs: Any) -> None:
         self.delete_calls.append(sandbox_id)
         raise YuanrongAgentApiError(
             "agent API failed: http_status=500, code=500, message='boom'"
@@ -1819,6 +1821,7 @@ class TimeoutOnceYuanRongClient(FakeYuanRongClient):
         runtime_spec: dict[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> SandboxInfo:
         self.attempt_payloads.append(
             {"namespace": namespace, "name": name, "workspace": workspace}
@@ -1832,6 +1835,7 @@ class TimeoutOnceYuanRongClient(FakeYuanRongClient):
             runtime_spec=runtime_spec,
             env_vars=env_vars,
             mounts=mounts,
+            **kwargs,
         )
 
 

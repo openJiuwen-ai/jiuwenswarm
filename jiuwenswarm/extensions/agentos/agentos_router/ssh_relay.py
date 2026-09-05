@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
+from jiuwenswarm.extensions.yuanrong_frontend_client import normalize_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -176,11 +177,15 @@ class YuanrongSshRelay:
     def client_keys_dir(self) -> str:
         return self._settings.client_keys_dir
 
-    def backend_username(self, instance_id: str) -> str:
+    def backend_username(self, instance_id: str, *, trace_id: str = "") -> str:
         instance = str(instance_id or "").strip()
         if not instance:
             raise ValueError("instance_id is required for YuanRong SSH relay")
-        return self._settings.user_template.format(instance=instance)
+        username = self._settings.user_template.format(instance=instance)
+        tid = str(trace_id or "").strip()
+        if tid:
+            username = f"{username}:trace={urllib.parse.quote(tid, safe='')}"
+        return username
 
     async def run(
         self,
@@ -188,6 +193,7 @@ class YuanrongSshRelay:
         instance_id: str,
         *,
         user_id: str = "",
+        request_id: str = "",
     ) -> int:
         """Relay *session* to the YuanRong instance; returns the exit code.
 
@@ -198,7 +204,9 @@ class YuanrongSshRelay:
         """
         exit_code = 1
         try:
-            exit_code = await self._relay(session, instance_id, user_id=user_id)
+            exit_code = await self._relay(
+                session, instance_id, user_id=user_id, request_id=request_id
+            )
         except asyncio.CancelledError:
             log_agentos(
                 logger,
@@ -259,13 +267,16 @@ class YuanrongSshRelay:
         instance_id: str,
         *,
         user_id: str = "",
+        request_id: str = "",
     ) -> None:
         """Probe southbound SSH until sshd accepts, then close the probe.
 
         Used by ``3rdagent.switch`` after create so the client does not SSH
         before the YuanRong instance is reachable.
         """
-        conn = await self._connect_until_ready(instance_id, user_id=user_id)
+        conn = await self._connect_until_ready(
+            instance_id, user_id=user_id, request_id=request_id
+        )
         conn.close()
         try:
             await conn.wait_closed()
@@ -278,6 +289,7 @@ class YuanrongSshRelay:
         *,
         user_id: str = "",
         session_id: str = "",
+        request_id: str = "",
     ) -> Any:
         asyncssh = _import_asyncssh()
 
@@ -287,7 +299,9 @@ class YuanrongSshRelay:
                 "yuanrong ssh host is empty "
                 "(set gateway.agent_client.frontend_endpoint with a hostname)"
             )
-        username = self.backend_username(instance_id)
+        username = self.backend_username(
+            instance_id, trace_id=normalize_trace_id(request_id)
+        )
         client_keys = self._resolve_client_keys(user_id)
         keys_dir = resolve_client_keys_dir(self._settings.client_keys_dir, user_id)
         deadline = (
@@ -362,12 +376,14 @@ class YuanrongSshRelay:
         instance_id: str,
         *,
         user_id: str = "",
+        request_id: str = "",
     ) -> int:
         try:
             conn = await self._connect_until_ready(
                 instance_id,
                 user_id=user_id,
                 session_id=str(getattr(session, "session_id", "") or ""),
+                request_id=request_id,
             )
         except Exception as exc:
             # 标记为连接阶段失败：路由层据此区分"网络不可达（清理死沙箱）"

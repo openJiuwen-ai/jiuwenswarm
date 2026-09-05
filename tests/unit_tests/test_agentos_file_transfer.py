@@ -16,6 +16,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, Agen
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     AgentOSFileTransferError,
     AgentOSRouterClient,
+    build_auth_headers_from_mapping,
     build_auth_headers_from_token,
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
@@ -100,12 +101,13 @@ class _FakeYuanrong:
         runtime_spec: dict[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
     ) -> SandboxInfo:
-        del namespace, name, workspace, runtime_spec, env_vars, mounts
+        del namespace, name, workspace, runtime_spec, env_vars, mounts, kwargs
         self.create_calls += 1
         return SandboxInfo(sandbox_id=f"sbx-{self.create_calls}", metadata={})
 
-    async def get_agent_info(self, instance_id: str) -> dict[str, Any]:
+    async def get_agent_info(self, instance_id: str, **kwargs: Any) -> dict[str, Any]:
         return {"instance_id": instance_id}
 
     async def upload_agent_file(
@@ -115,6 +117,7 @@ class _FakeYuanrong:
         data: bytes,
         *,
         auth_headers: dict[str, str] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         self.upload_calls.append(
             {
@@ -134,6 +137,7 @@ class _FakeYuanrong:
         offset: int = 0,
         limit: int = 65536,
         auth_headers: dict[str, str] | None = None,
+        **kwargs: Any,
     ) -> AgentFileDownloadChunk:
         self.download_calls.append(
             {
@@ -163,6 +167,7 @@ class _FakeYuanrong:
         recursive: bool = False,
         max_depth: int = 0,
         auth_headers: dict[str, str] | None = None,
+        **kwargs: Any,
     ) -> list[dict[str, Any]]:
         self.list_calls.append(
             {
@@ -183,6 +188,7 @@ class _FakeYuanrong:
         mode: str | None = None,
         recursive: bool = False,
         auth_headers: dict[str, str] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         self.mkdir_calls.append(
             {
@@ -229,6 +235,15 @@ def _make_router_with_runtime(*, sandbox_id: str = "inst-1") -> AgentOSRouterCli
 def test_build_auth_headers_from_token_adds_bearer_prefix() -> None:
     assert build_auth_headers_from_token("abc") == {"Authorization": "Bearer abc"}
     assert build_auth_headers_from_token("Bearer xyz") == {"Authorization": "Bearer xyz"}
+
+
+def test_build_auth_headers_from_mapping_forwards_trace_id() -> None:
+    assert build_auth_headers_from_mapping(
+        {"Authorization": "Bearer tok", "X-Trace-Id": "t-1"}
+    ) == {"Authorization": "Bearer tok", "X-Trace-Id": "t-1"}
+    assert build_auth_headers_from_mapping({"x-trace-id": "t-2"}) == {
+        "X-Trace-Id": "t-2"
+    }
 
 
 def test_normalize_agent_file_upload_path_prefixes_home_agentos() -> None:
@@ -1077,6 +1092,7 @@ async def test_container_file_http_list_files_and_markdown() -> None:
     assert missing_dir.status_code == 400
     assert missing_dir.json()["error"] == "missing_dir"
     assert listed.status_code == 200
+    assert listed.headers.get("x-trace-id")
     assert [item["name"] for item in listed.json()["files"]] == [
         "logs",
         "app.py",
@@ -1130,7 +1146,10 @@ async def test_container_file_http_mkdir() -> None:
                 "user_id": "user-1",
                 "session_id": "sess-1",
             },
-            headers={"Authorization": "Bearer tok-1"},
+            headers={
+                "Authorization": "Bearer tok-1",
+                "X-Trace-Id": "t-20260903-001",
+            },
         )
 
     assert missing_path.status_code == 400
@@ -1147,5 +1166,7 @@ async def test_container_file_http_mkdir() -> None:
     assert kwargs["recursive"] is True
     assert kwargs["user_id"] == "user-1"
     assert kwargs["session_id"] == "sess-1"
+    assert kwargs["trace_id"] == "t-20260903-001"
     assert "auth_headers" not in kwargs
+    assert created.headers.get("x-trace-id") == "t-20260903-001"
 

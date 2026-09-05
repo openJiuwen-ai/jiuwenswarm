@@ -21,6 +21,11 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     AgentOSFileTransferError,
     AgentOSRouterClient,
 )
+from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    TRACE_ID_HEADER,
+    extract_trace_id,
+    normalize_trace_id,
+)
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
@@ -130,6 +135,22 @@ def _error_json(*, error: str, code: str | None = None, status_code: int | None 
         payload["code"] = code
     status = status_code if status_code is not None else _status_for_transfer_code(code or "INTERNAL_ERROR")
     return JSONResponse(status_code=status, content=payload)
+
+
+def _file_api_trace_id(request: Request) -> str:
+    existing = getattr(request.state, "agentos_trace_id", None)
+    if existing:
+        return str(existing)
+    resolved = normalize_trace_id(
+        extract_trace_id(headers_to_dict(request.headers))
+    )
+    request.state.agentos_trace_id = resolved
+    return resolved
+
+
+def _with_trace_header(response: Response, request: Request) -> Response:
+    response.headers[TRACE_ID_HEADER] = _file_api_trace_id(request)
+    return response
 
 
 def _request_remote(request: Request) -> str:
@@ -438,7 +459,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 latency_ms=max(0, int((time.monotonic() - started) * 1000)),
                 error="user_mismatch" if status == 403 else "unauthorized",
             )
-            return denied
+            return _with_trace_header(denied, request)
         try:
             response = await call_next(request)
         except Exception as exc:
@@ -454,7 +475,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             status=int(getattr(response, "status_code", 500) or 500),
             latency_ms=max(0, int((time.monotonic() - started) * 1000)),
         )
-        return response
+        return _with_trace_header(response, request)
 
     async def _authenticate_file_api(request: Request) -> JSONResponse | None:
         path = str(request.url.path or "")
@@ -513,6 +534,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 max_depth=int(params.max_depth),
                 agent_type=agent_type,
                 session_id=sid,
+                trace_id=_file_api_trace_id(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -561,6 +583,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 limit=lim,
                 agent_type=agent_type,
                 session_id=sid,
+                trace_id=_file_api_trace_id(request),
             )
 
         try:
@@ -641,6 +664,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 offset=0,
                 limit=_STREAM_CHUNK,
                 session_id=session_id,
+                trace_id=_file_api_trace_id(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -672,6 +696,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     offset=offset,
                     limit=_STREAM_CHUNK,
                     session_id=session_id,
+                    trace_id=_file_api_trace_id(request),
                 )
                 if chunk.data:
                     yield chunk.data
@@ -705,6 +730,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     limit=_STREAM_CHUNK,
                     agent_type=agent_type,
                     session_id=sid,
+                    trace_id=_file_api_trace_id(request),
                 )
                 parts.append(chunk.data)
                 if chunk.eof:
@@ -780,6 +806,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     content=content,
                     agent_type=form.agent_type if isinstance(form.agent_type, str) else None,
                     session_id=sid,
+                    trace_id=_file_api_trace_id(request),
                 )
                 out_path = str(result.get("path") or "")
                 mime, _ = mimetypes.guess_type(filename)
@@ -836,6 +863,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 content=content.encode("utf-8"),
                 agent_type=agent_type if isinstance(agent_type, str) else None,
                 session_id=sid,
+                trace_id=_file_api_trace_id(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -868,6 +896,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 recursive=bool(params.recursive),
                 agent_type=agent_type,
                 session_id=sid,
+                trace_id=_file_api_trace_id(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)

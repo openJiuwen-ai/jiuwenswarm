@@ -73,11 +73,15 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     AgentRuntimeSpec,
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    TRACE_ID_HEADER,
     RuntimeProbeSettings,
     YuanrongAgentApiError,
     YuanrongAgentFileError,
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
+    apply_trace_header,
+    extract_trace_id,
+    normalize_trace_id,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
 from jiuwenswarm.gateway import ChannelManager
@@ -125,6 +129,30 @@ _WS_CONNECT_RETRYABLE_TEXT_TOKENS = (
 def _should_log_ws_retry(attempt: int) -> bool:
     """Log retry WARNING sparsely: first attempt + every 10th attempt."""
     return attempt == 1 or attempt % 10 == 0
+
+
+def _metadata_trace_id(metadata: Mapping[str, Any] | None) -> str | None:
+    if not metadata:
+        return None
+    text = str(metadata.get("request_id") or "").strip()
+    return text or None
+
+
+async def _connect_ws_client(
+    client: Any,
+    uri: str,
+    *,
+    extra_headers: Mapping[str, str] | None = None,
+) -> None:
+    """Connect a WS client; test doubles may not accept extra_headers."""
+    connect = client.connect
+    if extra_headers:
+        try:
+            await connect(uri, extra_headers=extra_headers)
+            return
+        except TypeError:
+            pass
+    await connect(uri)
 
 
 def _is_team_mode(params: Any) -> bool:
@@ -306,17 +334,22 @@ def normalize_agent_file_download_path(path: str) -> str:
 
 
 def build_auth_headers_from_mapping(headers: Mapping[str, str] | None) -> dict[str, str]:
-    """Build Authorization header for YuanRong file APIs from WS/auth headers."""
+    """Build Authorization / X-Trace-Id for YuanRong file APIs from WS/auth headers."""
     if not headers:
         return {}
     lowered = {str(k).lower(): str(v) for k, v in headers.items() if v is not None}
+    out: dict[str, str] = {}
     auth = lowered.get("authorization", "").strip()
     if auth:
-        return {"Authorization": auth}
-    token = lowered.get("x-token", "").strip()
-    if token:
-        return {"Authorization": f"Bearer {token}"}
-    return {}
+        out["Authorization"] = auth
+    else:
+        token = lowered.get("x-token", "").strip()
+        if token:
+            out["Authorization"] = f"Bearer {token}"
+    trace_id = extract_trace_id(headers)
+    if trace_id:
+        out[TRACE_ID_HEADER] = normalize_trace_id(trace_id)
+    return out
 
 
 def build_auth_headers_from_token(token: str | None) -> dict[str, str]:
@@ -890,6 +923,7 @@ class AgentOSRouterClient(AgentServerClient):
         session_id: str = "",
         instance_id: str | None = None,
         acquire: bool = False,
+        trace_id: str | None = None,
     ) -> tuple[str, Any]:
         """Return ``(instance_id, runtime_key)``; ``runtime_key`` is set when acquired."""
         explicit = str(instance_id or "").strip()
@@ -912,6 +946,11 @@ class AgentOSRouterClient(AgentServerClient):
             key_values = {"session_id": session_id}
 
         acquired_key = None
+        create_metadata: dict[str, Any] = {}
+        if session_id:
+            create_metadata["session_id"] = session_id
+        if trace_id:
+            create_metadata["request_id"] = normalize_trace_id(trace_id)
         # Builtin jiuwenswarm: same as chat.send — create sandbox then use instance files API.
         if self._uses_direct_yuanrong(normalized_type):
             try:
@@ -920,7 +959,7 @@ class AgentOSRouterClient(AgentServerClient):
                     normalized_type,
                     key_values=key_values,
                     creator=self._create_agent,
-                    metadata={"session_id": session_id} if session_id else None,
+                    metadata=create_metadata or None,
                     acquire=acquire,
                 )
             except (ValueError, AgentCreatingTimeout, AgentCreateFailed, AgentDeleted) as exc:
@@ -963,6 +1002,7 @@ class AgentOSRouterClient(AgentServerClient):
         session_id: str = "",
         instance_id: str | None = None,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Upload bytes into the user's agent container workspace.
 
@@ -978,6 +1018,7 @@ class AgentOSRouterClient(AgentServerClient):
             session_id=session_id,
             instance_id=instance_id,
             acquire=True,
+            trace_id=trace_id or extract_trace_id(auth_headers),
         )
         try:
             return await self._yuanrong.upload_agent_file(
@@ -985,6 +1026,7 @@ class AgentOSRouterClient(AgentServerClient):
                 normalized_path,
                 content,
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
+                trace_id=trace_id or extract_trace_id(auth_headers),
             )
         except YuanrongAgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
@@ -1003,6 +1045,7 @@ class AgentOSRouterClient(AgentServerClient):
         session_id: str = "",
         instance_id: str | None = None,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> AgentFileDownloadChunk:
         """Download one chunk from the user's agent container."""
         normalized_path = normalize_agent_file_download_path(path)
@@ -1012,6 +1055,7 @@ class AgentOSRouterClient(AgentServerClient):
             session_id=session_id,
             instance_id=instance_id,
             acquire=True,
+            trace_id=trace_id or extract_trace_id(auth_headers),
         )
         try:
             return await self._yuanrong.download_agent_file(
@@ -1020,6 +1064,7 @@ class AgentOSRouterClient(AgentServerClient):
                 offset=max(int(offset), 0),
                 limit=max(int(limit), 1),
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
+                trace_id=trace_id or extract_trace_id(auth_headers),
             )
         except YuanrongAgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
@@ -1038,6 +1083,7 @@ class AgentOSRouterClient(AgentServerClient):
         session_id: str = "",
         instance_id: str | None = None,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """List files in a directory inside the user's agent container."""
         if int(max_depth) < 0:
@@ -1049,6 +1095,7 @@ class AgentOSRouterClient(AgentServerClient):
             session_id=session_id,
             instance_id=instance_id,
             acquire=True,
+            trace_id=trace_id or extract_trace_id(auth_headers),
         )
         try:
             return await self._yuanrong.list_agent_files(
@@ -1057,6 +1104,7 @@ class AgentOSRouterClient(AgentServerClient):
                 recursive=bool(recursive),
                 max_depth=int(max_depth),
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
+                trace_id=trace_id or extract_trace_id(auth_headers),
             )
         except YuanrongAgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
@@ -1075,6 +1123,7 @@ class AgentOSRouterClient(AgentServerClient):
         session_id: str = "",
         instance_id: str | None = None,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a directory inside the user's agent container."""
         normalized_path = normalize_agent_file_download_path(path)
@@ -1086,6 +1135,7 @@ class AgentOSRouterClient(AgentServerClient):
             session_id=session_id,
             instance_id=instance_id,
             acquire=True,
+            trace_id=trace_id or extract_trace_id(auth_headers),
         )
         try:
             return await self._yuanrong.mkdir_agent_dir(
@@ -1094,6 +1144,7 @@ class AgentOSRouterClient(AgentServerClient):
                 mode=mode,
                 recursive=bool(recursive),
                 auth_headers=build_auth_headers_from_mapping(auth_headers),
+                trace_id=trace_id or extract_trace_id(auth_headers),
             )
         except YuanrongAgentFileError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.error_code) from exc
@@ -1183,6 +1234,7 @@ class AgentOSRouterClient(AgentServerClient):
         user_id: str = "",
         session_id: str = "",
         agent_type: str = "",
+        request_id: str = "",
     ) -> WebSocketAgentServerClient:
         """建立到 instance 的 WS；对冷启动 502 等做 deadline 内重试."""
         uri = self._agent_ws_url(instance_id, agent_port)
@@ -1206,7 +1258,14 @@ class AgentOSRouterClient(AgentServerClient):
                 attempt=attempt,
             )
             try:
-                await client.connect(uri)
+                await _connect_ws_client(
+                    client,
+                    uri,
+                    extra_headers=apply_trace_header(
+                        {},
+                        request_id or None,
+                    ),
+                )
                 log_agentos(
                     logger,
                     logging.INFO,
@@ -1279,6 +1338,7 @@ class AgentOSRouterClient(AgentServerClient):
         user_id: str = "",
         session_id: str = "",
         agent_type: str = "",
+        request_id: str = "",
     ) -> None:
         """GET /api/agent/:id until YuanRong reports ``status=running``.
 
@@ -1289,7 +1349,10 @@ class AgentOSRouterClient(AgentServerClient):
         if not callable(waiter):
             getter = getattr(self._yuanrong, "get_agent_info", None)
             if callable(getter):
-                await getter(instance_id)
+                try:
+                    await getter(instance_id, trace_id=request_id or None)
+                except TypeError:
+                    await getter(instance_id)
             return
         log_agentos(
             logger,
@@ -1301,9 +1364,17 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_type,
             instance=instance_id,
         )
-        await waiter(instance_id)
+        try:
+            await waiter(instance_id, trace_id=request_id or None)
+        except TypeError:
+            await waiter(instance_id)
 
-    async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:
+    async def _get_ws_client(
+        self,
+        runtime: AgentRuntime,
+        *,
+        request_id: str = "",
+    ) -> WebSocketAgentServerClient:
         """获取（或建立）到该 agent instance 的 WS 直连，不走 invoke 链路.
 
         create 后先 GET 等到 status=running（端口探针成功），再连 WS。
@@ -1347,6 +1418,7 @@ class AgentOSRouterClient(AgentServerClient):
                 user_id=str(info.user_id or ""),
                 session_id=str(info.metadata.get("session_id") or ""),
                 agent_type=str(info.agent_type or ""),
+                request_id=request_id,
             )
             client = await self._connect_ws_until_ready(
                 instance_id=instance_id,
@@ -1354,6 +1426,7 @@ class AgentOSRouterClient(AgentServerClient):
                 user_id=str(info.user_id or ""),
                 session_id=str(info.metadata.get("session_id") or ""),
                 agent_type=str(info.agent_type or ""),
+                request_id=request_id,
             )
         except Exception as exc:
             async with self._ws_clients_lock:
@@ -1426,7 +1499,10 @@ class AgentOSRouterClient(AgentServerClient):
                 )
             # create 后通过 YuanRong frontend WS 代理直连 instance，不走 invoke。
             try:
-                ws_client = await self._get_ws_client(runtime)
+                ws_client = await self._get_ws_client(
+                    runtime,
+                    request_id=str(envelope.request_id or ""),
+                )
             except ValueError as exc:
                 self._log_route(
                     "route.error",
@@ -1485,7 +1561,10 @@ class AgentOSRouterClient(AgentServerClient):
                 return
             # create 后通过 YuanRong frontend WS 代理直连 instance，不走 invoke。
             try:
-                ws_client = await self._get_ws_client(runtime)
+                ws_client = await self._get_ws_client(
+                    runtime,
+                    request_id=str(envelope.request_id or ""),
+                )
             except ValueError as exc:
                 self._log_route(
                     "route.error",
@@ -1945,11 +2024,19 @@ class AgentOSRouterClient(AgentServerClient):
                 instance=instance_id,
                 channel="ssh",
             )
-            await ssh_relay.run(
-                relay_session,
-                instance_id,
-                user_id=runtime.info.user_id,
-            )
+            try:
+                await ssh_relay.run(
+                    relay_session,
+                    instance_id,
+                    user_id=runtime.info.user_id,
+                    request_id=str(envelope.request_id or ""),
+                )
+            except TypeError:
+                await ssh_relay.run(
+                    relay_session,
+                    instance_id,
+                    user_id=runtime.info.user_id,
+                )
         except SshSouthConnectError as exc:
             original = exc.original
             if _is_ssh_connect_retryable(original):
@@ -2024,7 +2111,10 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type,
             key_values={"session_id": envelope.session_id},
             creator=self._create_agent,
-            metadata={"session_id": envelope.session_id},
+            metadata={
+                "session_id": envelope.session_id,
+                "request_id": str(envelope.request_id or ""),
+            },
             acquire=acquire,
         )
 
@@ -2188,6 +2278,7 @@ class AgentOSRouterClient(AgentServerClient):
                 workspace=workspace,
                 runtime_spec=runtime_spec,
                 env_vars=env_vars,
+                trace_id=_metadata_trace_id(agent_info.metadata),
             )
 
         try:
@@ -2281,7 +2372,10 @@ class AgentOSRouterClient(AgentServerClient):
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
             try:
-                await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
+                await self._yuanrong.delete_sandbox(
+                    agent_info.sandbox_id,
+                    trace_id=_metadata_trace_id(agent_info.metadata),
+                )
             except Exception:
                 # YuanRong 删除失败不阻断后续清理：继续移除
                 # 内存 runtime 并注销注册中心，避免残留僵尸 runtime / 注册条目；
@@ -2397,7 +2491,10 @@ class AgentOSRouterClient(AgentServerClient):
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
             try:
-                await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
+                await self._yuanrong.delete_sandbox(
+                    agent_info.sandbox_id,
+                    trace_id=_metadata_trace_id(agent_info.metadata),
+                )
             except Exception:
                 logger.exception(
                     format_agentos(
@@ -2566,7 +2663,8 @@ class AgentOSRouterClient(AgentServerClient):
             # 创建后查询 YuanRong 获取 node_ip / sandbox_ip，更新注册中心 instance
             # 的 placement 字段（node + address）与 instance_id，供调度/路由使用。
             instance_info = await self._yuanrong.get_agent_info(
-                agent_info.sandbox_id
+                agent_info.sandbox_id,
+                trace_id=_metadata_trace_id(agent_info.metadata),
             )
             node_ip = str(instance_info.get("node_ip") or "").strip()
             sandbox_ip = str(instance_info.get("sandbox_ip") or "").strip()

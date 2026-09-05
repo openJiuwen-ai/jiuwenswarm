@@ -84,7 +84,7 @@ class StubSshRelay:
         self.backend_host = backend_host
         self.backend_port = backend_port
 
-    def backend_username(self, instance_id: str) -> str:
+    def backend_username(self, instance_id: str, **kwargs: Any) -> str:
         return DEFAULT_SSH_USER_TEMPLATE.format(instance=instance_id)
 
     async def run(
@@ -93,6 +93,7 @@ class StubSshRelay:
         instance_id: str,
         *,
         user_id: str = "",
+        **kwargs: Any,
     ) -> int:
         self.ran.append((session.session_id, instance_id, user_id))
         session.exit_code = 0
@@ -119,6 +120,14 @@ def test_backend_username_uses_yr_instance_template() -> None:
     assert (
         relay.backend_username("inst-42")
         == "yr:instance:inst-42:port=2222"
+    )
+    assert (
+        relay.backend_username("inst-42", trace_id="t-20260903-001")
+        == "yr:instance:inst-42:port=2222:trace=t-20260903-001"
+    )
+    assert (
+        relay.backend_username("default-alice+coder", trace_id="a b")
+        == "yr:instance:default-alice+coder:port=2222:trace=a%20b"
     )
     assert relay.backend_host == "frontend.yuanrong.test"
     assert relay.backend_port == 2222
@@ -802,9 +811,9 @@ async def test_relay_run_cancelled_releases_session_done() -> None:
     )
 
     async def _hang(
-        _session: Any, _instance_id: str, *, user_id: str = ""
+        _session: Any, _instance_id: str, *, user_id: str = "", **kwargs: Any
     ) -> int:
-        del user_id
+        del user_id, kwargs
         await asyncio.Event().wait()
         return 0
 
@@ -832,8 +841,9 @@ async def test_router_disconnect_cancels_background_ssh_relay() -> None:
             instance_id: str,
             *,
             user_id: str = "",
+            **kwargs: Any,
         ) -> int:
-            del instance_id, user_id
+            del instance_id, user_id, kwargs
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -982,6 +992,7 @@ class ConnectFailsRelay(StubSshRelay):
         instance_id: str,
         *,
         user_id: str = "",
+        **kwargs: Any,
     ) -> int:
         self.ran.append((session.session_id, instance_id, user_id))
         session.exit_code = 1
@@ -1126,8 +1137,10 @@ async def test_relay_run_swallows_non_connect_errors() -> None:
         frontend_endpoint="http://127.0.0.1:31220",
     )
 
-    async def _bug(_session: Any, _instance_id: str, *, user_id: str = "") -> int:
-        del _session, _instance_id, user_id
+    async def _bug(
+        _session: Any, _instance_id: str, *, user_id: str = "", **kwargs: Any
+    ) -> int:
+        del _session, _instance_id, user_id, kwargs
         raise RuntimeError("mid-session relay bug")
 
     relay._relay = _bug  # type: ignore[method-assign]

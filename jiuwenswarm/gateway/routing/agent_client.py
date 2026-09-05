@@ -8,7 +8,7 @@ import logging
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
@@ -171,27 +171,40 @@ class WebSocketAgentServerClient(AgentServerClient):
         """AgentServer 是否已发送 connection.ack 确认就绪."""
         return self._server_ready
 
-    async def connect(self, uri: str) -> None:
+    async def connect(
+        self,
+        uri: str,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         if self._ws is not None:
             await self.disconnect()
         logger.debug("[WebSocketAgentServerClient] 正在连接: %s", uri)
         self._uri = uri
         self._server_ready = False
         origin = _build_ws_origin(uri)
+        connect_kwargs: dict[str, Any] = {
+            "origin": origin,
+            "ping_interval": self._ping_interval,
+            "ping_timeout": self._ping_timeout,
+            "close_timeout": 5.0,
+            "max_size": AGENT_WS_MAX_MESSAGE_BYTES,
+        }
+        cleaned_headers = {
+            str(key): str(value)
+            for key, value in dict(extra_headers or {}).items()
+            if str(value).strip()
+        }
         try:
             from websockets.legacy.client import connect as legacy_connect
             connect_fn = legacy_connect
+            if cleaned_headers:
+                connect_kwargs["extra_headers"] = list(cleaned_headers.items())
         except ImportError:
             import websockets
             connect_fn = websockets.connect
-        self._ws = await connect_fn(
-            uri,
-            origin=origin,
-            ping_interval=self._ping_interval,
-            ping_timeout=self._ping_timeout,
-            close_timeout=5.0,
-            max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-        )
+            if cleaned_headers:
+                connect_kwargs["additional_headers"] = cleaned_headers
+        self._ws = await connect_fn(uri, **connect_kwargs)
         logger.info("[WebSocketAgentServerClient] 已连接: %s", uri)
 
         # 读取 AgentServer 的 connection.ack 事件

@@ -47,7 +47,7 @@ class _FakeYuanrong:
         del kwargs
         return SandboxInfo(sandbox_id="sbx-1", metadata={})
 
-    async def get_agent_info(self, instance_id: str) -> dict[str, Any]:
+    async def get_agent_info(self, instance_id: str, **kwargs: Any) -> dict[str, Any]:
         return {"instance_id": instance_id}
 
 
