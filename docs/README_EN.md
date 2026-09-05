@@ -134,6 +134,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Long-context handling, conversation compression, and context offload mechanisms.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Experiment Integrity</strong></td>
+      <td width="28%"><a href="en/ExperimentIntegrity.md">Experiment Integrity and Artifact Lineage</a></td>
+      <td width="50%">Records experiment commands, environment fingerprints, artifact hashes, and metric sources for reproducibility audits.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Skill Self-Evolution</strong></td>
       <td width="28%"><a href="en/SkillSelfEvolution.md">Skill Self-Evolution</a></td>
       <td width="50%">Skill iteration, self-optimization, and capability accumulation mechanisms.</td>

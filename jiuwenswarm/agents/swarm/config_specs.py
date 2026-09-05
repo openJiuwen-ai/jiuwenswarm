@@ -97,6 +97,10 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.TASK_PLANNING,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
+    # Research-integrity provenance rail (observation-only): records
+    # experiment tool calls / model usage into the manifest store when
+    # ``research_integrity.enabled`` is true; self-gates to None otherwise.
+    registry.EXPERIMENT_INTEGRITY,
     registry.HEARTBEAT,
     registry.AVATAR_PROMPT,
     registry.MULTIMODAL_IMAGE,
@@ -404,6 +408,13 @@ def _model_anomaly_detection_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _research_integrity_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Attribute params for the research-integrity provenance rail."""
+    return {
+        "rail_config": _config_section(config, "research_integrity"),
+    }
+
+
 def _permission_params(config: dict[str, Any]) -> dict[str, Any]:
     """Attribute params for the permission-interrupt rail."""
     return {
@@ -431,6 +442,7 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.CONTEXT_PROCESSOR: _context_processor_params,
     registry.MODEL_ANOMALY_DETECTION: _model_anomaly_detection_params,
+    registry.EXPERIMENT_INTEGRITY: _research_integrity_params,
     registry.CODE_PROJECT_MEMORY: lambda c: {
         "additional_directories": _additional_directories(c)
     },

@@ -844,6 +844,22 @@ execution_guard:
     # 未知/错误工具连续调用达到该次数时停止重试并中断
     unknown_tool_threshold: 10
 
+# 科研诚信（实验溯源）：把实验相关工具调用、模型用量与 run_id 关联
+# 写入 manifest 存储，供论文表格指标溯源与复现性审计。
+# Rail 仅观测记录（fail-safe），不改变 agent 行为。
+research_integrity:
+  # 总开关。默认关闭（opt-in）；开启后注册 ExperimentIntegrityRail
+  enabled: false
+  # manifest 存储目录；相对路径以 project_root 为基准；留空时默认
+  # <project_root>/.jiuwen/research_integrity
+  manifest_dir: ""
+  # 记录为溯源事件的工具名；留空时用默认集合
+  # （bash / code / python / run_research_experiment）
+  tracked_tools: []
+  # 记录的阶段标签；留空时记录全部阶段
+  # （experiment / evaluation / ablation / benchmark / ...）
+  tracked_stages: []
+
 channels:
   web:
     send_file_allowed: true

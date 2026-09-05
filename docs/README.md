@@ -144,6 +144,11 @@
       <td width="50%">超长上下文处理、会话压缩与上下文卸载机制。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>实验完整性</strong></td>
+      <td width="28%"><a href="zh/实验完整性.md">实验完整性与工件血缘</a></td>
+      <td width="50%">记录实验命令、环境指纹、输出哈希和指标来源，支持可复现性审计。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>单机多实例运行</strong></td>
       <td width="28%"><a href="zh/单机多实例运行.md">单机多实例运行</a></td>
       <td width="50%">在同一台机器上运行多个 JiuwenSwarm 实例的部署场景与配置。</td>

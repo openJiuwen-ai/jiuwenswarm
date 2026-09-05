@@ -185,6 +185,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.STREAM_EVENT,
         registry.SECURITY,
         registry.MODEL_ANOMALY_DETECTION,
+        registry.EXPERIMENT_INTEGRITY,
         registry.HEARTBEAT,
         registry.AVATAR_PROMPT,
         registry.MULTIMODAL_IMAGE,
@@ -578,7 +579,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 18
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 19
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -1542,6 +1543,121 @@ def test_model_anomaly_detection_params_from_execution_guard() -> None:
     )
     assert params["rail_config"]["enabled"] is True
     assert params["rail_config"]["tool_loop_compact"]["enabled"] is True
+
+
+def test_experiment_integrity_provider_skips_when_disabled() -> None:
+    """The provenance rail is not mounted when research_integrity is off."""
+    ctx = SwarmBuildContext(project_dir="/proj")
+
+    assert (
+        member_rails._build_experiment_integrity_rail(
+            {"rail_config": {"enabled": False}}, ctx
+        )
+        is None
+    )
+
+
+def test_experiment_integrity_provider_skips_without_root() -> None:
+    """No project dir and no workspace root means no provenance root."""
+    ctx = SwarmBuildContext(project_dir=None, workspace=None)
+
+    assert (
+        member_rails._build_experiment_integrity_rail(
+            {"rail_config": {"enabled": True}}, ctx
+        )
+        is None
+    )
+
+
+def test_experiment_integrity_provider_defaults_manifest_dir(tmp_path: Path) -> None:
+    """Enabled + project root mounts the rail with the default manifest dir."""
+    from jiuwenswarm.research_integrity.manifest import DEFAULT_MANIFEST_DIR
+    from jiuwenswarm.research_integrity.rail import ExperimentIntegrityRail
+
+    ctx = SwarmBuildContext(project_dir=str(tmp_path))
+    rail = member_rails._build_experiment_integrity_rail(
+        {"rail_config": {"enabled": True}}, ctx
+    )
+
+    assert isinstance(rail, ExperimentIntegrityRail)
+    assert rail.project_root == str(tmp_path)
+    assert str(rail.manifest_dir) == str(tmp_path / DEFAULT_MANIFEST_DIR)
+
+
+def test_experiment_integrity_provider_forwards_config(tmp_path: Path) -> None:
+    """Explicit manifest_dir / tracked_tools / tracked_stages reach the rail."""
+    manifest_dir = tmp_path / "manifests"
+    ctx = SwarmBuildContext(project_dir=str(tmp_path))
+    rail = member_rails._build_experiment_integrity_rail(
+        {
+            "rail_config": {
+                "enabled": True,
+                "manifest_dir": str(manifest_dir),
+                "tracked_tools": ["bash"],
+                "tracked_stages": ["experiment", "ablation"],
+            }
+        },
+        ctx,
+    )
+
+    assert rail is not None
+    assert str(rail.manifest_dir) == str(manifest_dir)
+    assert rail.tracked_tools == frozenset({"bash"})
+    assert rail.tracked_stages == frozenset({"experiment", "ablation"})
+
+
+def test_experiment_integrity_resolves_relative_manifest_dir(tmp_path: Path) -> None:
+    """Relative manifest paths are anchored to the provenance project root."""
+    ctx = SwarmBuildContext(project_dir=str(tmp_path))
+    rail = member_rails._build_experiment_integrity_rail(
+        {
+            "rail_config": {
+                "enabled": True,
+                "manifest_dir": "provenance/manifests",
+            }
+        },
+        ctx,
+    )
+
+    assert rail is not None
+    assert rail.manifest_dir == (tmp_path / "provenance" / "manifests").resolve()
+
+
+def test_experiment_integrity_falls_back_to_workspace_root(tmp_path: Path) -> None:
+    """Without a project the member workspace root becomes the provenance root."""
+    from jiuwenswarm.research_integrity.manifest import DEFAULT_MANIFEST_DIR
+
+    ws_root = tmp_path / "member_ws"
+    ctx = SwarmBuildContext(
+        project_dir=None,
+        workspace=types.SimpleNamespace(root_path=str(ws_root)),
+    )
+    rail = member_rails._build_experiment_integrity_rail(
+        {"rail_config": {"enabled": True}}, ctx
+    )
+
+    assert rail is not None
+    assert rail.project_root == str(ws_root)
+    assert str(rail.manifest_dir) == str(ws_root / DEFAULT_MANIFEST_DIR)
+
+
+def test_experiment_integrity_params_from_config_section() -> None:
+    """config_specs forwards the research_integrity section as rail_config."""
+    from jiuwenswarm.agents.swarm.config_specs import _research_integrity_params
+
+    params = _research_integrity_params(
+        {
+            "research_integrity": {
+                "enabled": True,
+                "manifest_dir": "/tmp/ri",
+                "tracked_tools": ["bash"],
+                "tracked_stages": [],
+            }
+        }
+    )
+    assert params["rail_config"]["enabled"] is True
+    assert params["rail_config"]["manifest_dir"] == "/tmp/ri"
+    assert params["rail_config"]["tracked_tools"] == ["bash"]
 
 
 def test_team_workspace_report_path_returns_none_without_root() -> None:

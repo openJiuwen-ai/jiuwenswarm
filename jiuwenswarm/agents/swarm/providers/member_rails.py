@@ -57,6 +57,8 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.research_integrity.manifest import DEFAULT_MANIFEST_DIR
+from jiuwenswarm.research_integrity.rail import ExperimentIntegrityRail
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ TEAM_SKILL_LIBRARY_RELOAD = "swarm.team_skill_library_reload"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 CONTEXT_PROCESSOR = "swarm.context_processor"
 MODEL_ANOMALY_DETECTION = "swarm.model_anomaly_detection"
+EXPERIMENT_INTEGRITY = "swarm.experiment_integrity"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
@@ -534,6 +537,83 @@ def _build_model_anomaly_detection(
         return None
 
 
+class ExperimentIntegrityInput(ConstructionInput):
+    """Construction inputs for the research-integrity provenance rail.
+
+    ``rail_config`` carries the ``research_integrity`` config section; the
+    provenance root falls back from the user project directory to the member
+    workspace so the rail works in both project and project-less sessions.
+    """
+
+    rail_config: dict[str, Any] = param_field(
+        default_factory=dict,
+        description="research_integrity config section (enabled / manifest_dir / "
+        "tracked_tools / tracked_stages).",
+    )
+    project_dir: str | None = context_field(
+        attr="project_dir",
+        description="User project root (default provenance root).",
+    )
+    member_workspace_root: str | None = context_field(
+        resolver=_workspace_root,
+        description="Member workspace root (fallback provenance root).",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=EXPERIMENT_INTEGRITY,
+    description="Records experiment provenance (tool calls, model usage, "
+    "linked run ids) into the research-integrity manifest for reproducibility. "
+    "Mounted when research_integrity.enabled is true; observation-only and "
+    "fail-safe, never alters agent behaviour.",
+    input_model=ExperimentIntegrityInput,
+)
+def _build_experiment_integrity_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> ExperimentIntegrityRail | None:
+    """Build the research-integrity provenance rail when enabled in config.
+
+    Args:
+        params: Spec params (carries the ``research_integrity`` config section
+            baked by ``config_specs``).
+        context: Per-member build context.
+
+    Returns:
+        An ``ExperimentIntegrityRail`` rooted at the member's project or
+        workspace, or ``None`` when the feature is disabled or no root can
+        be resolved.
+    """
+    inp = ExperimentIntegrityInput.resolve(params, context)
+    rail_cfg = inp.rail_config if isinstance(inp.rail_config, dict) else {}
+    if rail_cfg.get("enabled", False) is not True:
+        return None
+
+    project_root = inp.project_dir or inp.member_workspace_root
+    if not project_root:
+        logger.debug("[SwarmRails] ExperimentIntegrity skipped: no project/workspace root")
+        return None
+
+    manifest_dir = str(rail_cfg.get("manifest_dir") or "").strip()
+    if not manifest_dir:
+        manifest_dir = DEFAULT_MANIFEST_DIR
+
+    tracked_tools = rail_cfg.get("tracked_tools") or None
+    tracked_stages = rail_cfg.get("tracked_stages") or None
+
+    try:
+        return ExperimentIntegrityRail(
+            project_root=project_root,
+            manifest_dir=manifest_dir,
+            tracked_tools=tracked_tools,
+            tracked_stages=tracked_stages,
+        )
+    except Exception as exc:
+        logger.warning("[SwarmRails] ExperimentIntegrityRail create failed: %s", exc)
+        return None
+
+
 @harness_element(
     kind=ElementKind.RAIL,
     name=PLUGIN_RAILS,
@@ -581,6 +661,7 @@ __all__ = [
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
     "MODEL_ANOMALY_DETECTION",
+    "EXPERIMENT_INTEGRITY",
     "PLUGIN_RAILS",
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",
