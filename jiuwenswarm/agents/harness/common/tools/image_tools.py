@@ -619,7 +619,7 @@ def _save_generated_images(response: Any, *, prompt: str, output_dir: Path | Non
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
-            response_dl = requests.get(url, headers={"User-Agent": ua}, verify=get_requests_verify())
+            response_dl = requests_get(url, headers={"User-Agent": ua}, verify=get_requests_verify())
             response_dl.raise_for_status()
             dest.write_bytes(response_dl.content)
             if dest.stat().st_size == 0:
@@ -734,10 +734,17 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
         async def _call():
             return await model_instance.generate_image(messages=messages, model=model, **gen_kwargs)
 
-        result = await _RetryExecutor.with_backoff(_call, max_tries=3)
+        # DashScope 等客户端内部是同步 SDK 调用（MultiModalConversation.call），
+        # 直接 await 会阻塞整个事件循环（实测单次 45-60s，重试可达 300s+），
+        # 导致 WS 心跳停发、客户端断连。整体挪到工作线程的独立事件循环执行。
+        result = await asyncio.to_thread(
+            lambda: asyncio.run(_RetryExecutor.with_backoff(_call, max_tries=3))
+        )
 
         out_dir = Path(save_dir) if save_dir else None
-        saved_paths = _save_generated_images(result, prompt=prompt, output_dir=out_dir)
+        saved_paths = await asyncio.to_thread(
+            _save_generated_images, result, prompt=prompt, output_dir=out_dir
+        )
 
         return {
             "image_paths": [str(p) for p in saved_paths],

@@ -297,6 +297,7 @@ def _build_structural_template_fill_prompt(
     outline_page: str,
     outline_full: str,
     seed_html: str,
+    image_map_page: str = "",
     user_query: str = "",
 ) -> str:
     """构造结构页官方模板填槽 prompt（仅替换 {{}}，不重写骨架）。"""
@@ -415,6 +416,41 @@ def _build_structural_template_fill_prompt(
             f"{_placeholder_common_tail}"
         )
 
+    # 对齐 skill 原文 slide-designer 任务清单的图片映射指令（imageMapLine）：
+    # 结构页映射存在图片时必须使用——custom 填 STRUCTURAL_IMAGE_* 槽，
+    # 预设按模板 <head> 注释的背景图方式插入全幅背景。否则 LLM 只看到
+    # 模板注释「背景图（可选）：默认纯黑底」会静默保留纯色底（bad case：
+    # cover 生成的图从未进 PPT）。
+    structural_image_section = ""
+    if image_map_page:
+        if style_id == "custom":
+            structural_image_section = (
+                "\n### 背景图素材（必须使用）\n"
+                f"{image_map_page}\n"
+                "- 本页存在映射图片：`STRUCTURAL_IMAGE_PRESENT` 必须填 `true`，"
+                "`STRUCTURAL_IMAGE_PATH` 必须原样使用上方 `path` 字段值，"
+                "`STRUCTURAL_IMAGE_ALT` 填图片描述\n"
+                "- 禁止把映射图片降级为卡片、角落点缀或低透明度小图；"
+                "背景图必须走模板 `data-pptx-role=\"structural-background\"` 全幅槽\n"
+            )
+        else:
+            structural_image_section = (
+                "\n### 背景图素材（必须使用）\n"
+                f"{image_map_page}\n"
+                "- 本页存在映射图片，**必须启用背景图**（模板 head 注释中的"
+                "「可选」对本任务不适用）：按下方模板 `<head>` 注释中的背景图"
+                "插入方式，在 `.ppt-slide` 内首位插入全幅背景 "
+                '`<img class="absolute inset-0 w-full h-full object-cover" '
+                "src=\"path值\">` 与模板指定的遮罩层，并给内容 stage 补 "
+                "`relative z-10`\n"
+                "- `src` 必须原样使用上方 `path` 字段值（相对路径，禁止改写、"
+                "禁止 background-image:url()）\n"
+                "- `usage=cover` 的图片必须用作全幅背景，不得保留模板默认"
+                "纯黑底/纯色底\n"
+                "- 除背景图与遮罩的插入、内容 stage 补 `relative z-10` 外，"
+                "骨架/CSS/装饰结构仍禁止改动\n"
+            )
+
     page_type_label = page_type or template_page_type
     return (
         f"{user_query_section}"
@@ -427,6 +463,7 @@ def _build_structural_template_fill_prompt(
         f"### 大纲 — 本页规划（{page_type_label}）\n"
         f"{outline_page}\n\n"
         f"{outline_full_section}"
+        f"{structural_image_section}"
         "### 预铺模板 HTML（只填槽，勿重写）\n"
         f"{seed_html}\n"
     )
@@ -4218,6 +4255,35 @@ def _build_image_section(image_map_page: str) -> str:
     )
 
 
+_MAPPED_IMAGE_PATH_LINE_RE = re.compile(r"- path: ([^,\n]+), usage:")
+
+
+def _missing_mapped_image_reason(html: str, ctx: PageGenContext) -> str:
+    """image_map 映射图片零引用检测（返回失败 reason；通过返回空串）。
+
+    P6.5 已为本页规划图片并写入 image_map.json，prompt 明确「必须使用」，
+    但 LLM 偶发忽略会导致生成的图从未进 PPT（bad case：page-5 一图未引）。
+    仅当本页映射图片全部未被引用时判失败，避免局部使用误伤。
+    """
+    if not ctx.image_map_page:
+        return ""
+    paths = [
+        p.strip()
+        for p in _MAPPED_IMAGE_PATH_LINE_RE.findall(ctx.image_map_page)
+        if p.strip()
+    ]
+    if not paths:
+        return ""
+    filenames = [p.rstrip("/").rsplit("/", 1)[-1] for p in paths]
+    text = html or ""
+    if any(name and name in text for name in filenames):
+        return ""
+    return (
+        "missing_mapped_image: 本页 image_map 映射的图片全部未被引用"
+        f"（{', '.join(filenames)}）；必须在 `<img src=\"...\">` 中原样使用映射 path"
+    )
+
+
 def _build_page_prompt(
     page_number: int,
     style_id: str,
@@ -4475,6 +4541,10 @@ def _postprocess_generated_html(raw_html: str, ctx: PageGenContext) -> tuple[str
         logger.warning("[P8.1] 页面 %d 图表容器高度链校验失败", ctx.page_num)
         return "", html, "invalid_chart_height_chain"
     _warn_chart_mount_mismatch_soft(html, page_num=ctx.page_num)
+    missing_image_reason = _missing_mapped_image_reason(html, ctx)
+    if missing_image_reason:
+        logger.warning("[P8.1] 页面 %d 映射图片未被引用，触发重试", ctx.page_num)
+        return "", html, missing_image_reason
     return html, "", ""
 
 
@@ -4546,6 +4616,10 @@ def _postprocess_content_template_fill(
         )
         return "", html, reason
     _warn_chart_mount_mismatch_soft(html, page_num=ctx.page_num)
+    missing_image_reason = _missing_mapped_image_reason(html, ctx)
+    if missing_image_reason:
+        logger.warning("[P8.1] 内容页映射图片未被引用，触发重试 page=%d", ctx.page_num)
+        return "", html, missing_image_reason
     logger.info(
         "[P8.1] 内容页官方模板填槽完成 page=%d style=%s",
         ctx.page_num,
@@ -4618,6 +4692,13 @@ def _postprocess_structural_template_fill(
             page_type,
         )
         return ""
+    if _missing_mapped_image_reason(html, ctx):
+        # 仅告警不硬失败：结构页路径无 reason 重试通道，强指令已在 prompt 注入
+        logger.warning(
+            "[P8.1] 结构页映射图片未被引用 page=%d type=%s（背景图未启用？）",
+            ctx.page_num,
+            page_type,
+        )
     logger.info(
         "[P8.1] 结构页官方模板填槽完成 page=%d style=%s type=%s",
         ctx.page_num,
@@ -5244,6 +5325,33 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             final_html = html
             break
 
+        # 映射图片未被引用非致命：重试耗尽后兜底接受无图版本，避免整页丢失
+        if (
+            not final_html
+            and last_raw_html
+            and last_fail_reason.startswith("missing_mapped_image")
+        ):
+            fallback_html = last_raw_html
+            if (
+                needs_chart_gate
+                and pptx_root
+                and _html_requires_activate_template_chart(fallback_html)
+            ):
+                passed, _, chart_skipped = await _run_activate_template_chart_page(
+                    self,
+                    pages_dir=pages_dir,
+                    pptx_root=pptx_root,
+                    page_num=page_num,
+                )
+                if not chart_skipped and not passed:
+                    fallback_html = ""
+            if fallback_html and await self._write_file(path, fallback_html):
+                logger.warning(
+                    "[P8.1] 页面 %d 映射图片重试后仍未引用，兜底接受无图版本",
+                    page_num,
+                )
+                final_html = fallback_html
+
         if not final_html:
             await self._delete_page_file(path)
             return {"missing": True, "low_density": False, "report": {}}
@@ -5312,6 +5420,7 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             outline_page=ctx.outline_page,
             outline_full=ctx.outline_full,
             seed_html=seed_html,
+            image_map_page=ctx.image_map_page,
             user_query=ctx.user_query,
         )
         node_suffix = f"{template_page_type}_fill_{ctx.page_num}"
