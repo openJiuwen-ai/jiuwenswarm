@@ -1961,6 +1961,126 @@ async def _discover_and_cache_office_claw_mcp_schema(
                 _office_claw_mcp_schema_inflight.pop(loop_key, None)
 
 
+_OFFICE_CLAW_MCP_MANIFEST_ENV = "OFFICE_CLAW_MCP_MANIFEST_PATH"
+_OFFICE_CLAW_MCP_MANIFEST_SWITCH_ENV = "JIUWENSWARM_MCP_MANIFEST"
+_OFFICE_CLAW_MCP_MANIFEST_OFF = frozenset({"0", "false", "no", "off"})
+
+
+def _office_claw_mcp_manifest_enabled() -> bool:
+    """Toggle for the manifest fast path (default on).
+
+    Set ``JIUWENSWARM_MCP_MANIFEST=0/false/no/off`` to disable and fall
+    back to live spawn discovery — identical to the behavior before this
+    feature was introduced.
+    """
+    return (
+        str(os.environ.get(_OFFICE_CLAW_MCP_MANIFEST_SWITCH_ENV, "") or "").strip().lower()
+        not in _OFFICE_CLAW_MCP_MANIFEST_OFF
+    )
+
+
+def _office_claw_mcp_manifest_content_hash_matches(
+    manifest_files: Any,
+    actual_files: list[dict[str, Any]],
+) -> bool:
+    """Compare SHA-256 content hashes of manifest build files against actual files.
+
+    Unlike ``mtime_ns`` (which changes on copy/bundle/install), a content hash
+    is stable across build steps and filesystem operations — the same file
+    content always produces the same hash regardless of where or when it was
+    copied. This makes the fingerprint reliable across source builds, Windows
+    packaging, and installed releases.
+    """
+    if not isinstance(manifest_files, list) or not manifest_files:
+        return False
+    actual_by_path: dict[str, dict[str, Any]] = {}
+    for entry in actual_files:
+        if isinstance(entry, dict):
+            actual_by_path[_normalized_path(str(entry.get("path") or ""))] = entry
+    for entry in manifest_files:
+        if not isinstance(entry, dict):
+            return False
+        expected_hash = str(entry.get("sha256") or "").strip()
+        if not expected_hash:
+            return False
+        manifest_path = _normalized_path(str(entry.get("path") or ""))
+        actual = actual_by_path.get(manifest_path)
+        if actual is None:
+            return False
+        try:
+            content = Path(str(actual.get("path") or "")).read_bytes()
+            actual_hash = hashlib.sha256(content).hexdigest()
+        except OSError:
+            return False
+        if actual_hash != expected_hash:
+            return False
+    return True
+
+
+def _load_office_claw_mcp_manifest(
+    params: Mapping[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Load pre-baked tool schemas from a build-time manifest.
+
+    Returns the full tool list (exclusion applied) when the manifest exists and
+    its bundle fingerprint matches the actual MCP bundle, so callers can skip
+    the spawn-initialize-list_tools discovery on the TTFT critical path.
+    Returns ``None`` when the manifest is absent/unreadable or the fingerprint
+    does not match, so callers fall back to live discovery.
+    """
+    if not _office_claw_mcp_manifest_enabled():
+        return None
+    manifest_path = str(os.environ.get(_OFFICE_CLAW_MCP_MANIFEST_ENV, "") or "").strip()
+    if not manifest_path:
+        return None
+    path = Path(manifest_path).expanduser()
+    if not path.is_file():
+        logger.debug("OfficeClaw MCP manifest not found: %s", path)
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("OfficeClaw MCP manifest unreadable (%s): %s", exc, path)
+        return None
+    if not isinstance(raw, dict):
+        return None
+    tools = raw.get("tools")
+    if not isinstance(tools, list) or not tools:
+        return None
+    manifest_files = raw.get("buildFiles")
+    actual_files = _office_claw_mcp_build_fingerprint(params)
+    if not _office_claw_mcp_manifest_content_hash_matches(manifest_files, actual_files):
+        logger.warning(
+            "OfficeClaw MCP manifest fingerprint mismatch — falling back to live discovery"
+        )
+        return None
+    # Apply the runtime exclusion policy (same set the MCP server itself honors
+    # via OFFICE_CLAW_MCP_EXCLUDED_TOOLS when spawned). The manifest stores the
+    # full catalog; filtering here keeps the exclusion list a runtime policy so
+    # a changed exclude set needs no manifest regeneration.
+    excluded_raw = str(
+        (params.get("env") or {}).get("OFFICE_CLAW_MCP_EXCLUDED_TOOLS") or ""
+    )
+    excluded = {name.strip() for name in excluded_raw.split(",") if name.strip()}
+    normalized: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            return None
+        name = str(tool.get("name") or "").strip()
+        if not name or name in excluded:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "description": str(tool.get("description") or ""),
+                "input_params": tool.get("input_params") or {},
+            }
+        )
+    if not normalized:
+        return None
+    return copy.deepcopy(normalized)
+
+
 async def list_office_claw_mcp_tools(
     params: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
@@ -1979,7 +2099,21 @@ async def list_office_claw_mcp_tools(
     the in-flight table. ``invalidate_office_claw_mcp_schema_cache`` drops
     everything on catalog revision change. Setting the env var to
     ``0/false/no/off`` falls back to the uncached path.
+
+    When ``OFFICE_CLAW_MCP_MANIFEST_PATH`` points at a build-time manifest whose
+    bundle fingerprint matches, schemas are read from the manifest instead of
+    spawning the MCP server — this removes the spawn from the TTFT critical
+    path. A fingerprint mismatch (rebuilt bundle with a stale manifest) falls
+    back to the live discovery path below.
     """
+
+    manifest_tools = _load_office_claw_mcp_manifest(params)
+    if manifest_tools is not None:
+        logger.info(
+            "OfficeClaw MCP manifest hit: tools=%s (schema-discovery spawn skipped)",
+            len(manifest_tools),
+        )
+        return manifest_tools
 
     if not _office_claw_mcp_schema_cache_enabled():
         return await _list_office_claw_mcp_tools_uncached(params)
