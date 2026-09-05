@@ -174,11 +174,14 @@ class SendFileToolkit:
     def _materialize_team_deliverable(self, file_path: str) -> str:
         """Copy a team-workspace deliverable into the active user project.
 
-        The team workspace is an internal collaboration area.  Files selected
-        for user delivery are project artifacts, so preserve their path
-        relative to the team workspace under the current project before
-        building download metadata.  Files outside the team workspace keep
-        their original path.
+        A projectless team member's deliverables already live in the shared team
+        ``outputs/`` directory (``team-workspace/artifacts/<date>/chat-<n>/
+        outputs/``); with no project bound, the file is delivered in place and
+        nothing is copied. When the member is bound to a project, files written
+        under the team workspace are project artifacts, so preserve their path
+        relative to the team workspace under the current project before building
+        download metadata. Files outside the team workspace keep their original
+        path.
         """
         project_dir = self._resolve_project_dir()
         if not project_dir:
