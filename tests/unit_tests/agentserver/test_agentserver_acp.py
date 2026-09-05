@@ -1867,6 +1867,7 @@ async def test_first_team_chat_auto_binds_and_preserves_original_query(monkeypat
             }
         }
     }
+    session_id = f"sess-auto-team-{mode.replace('.', '-')}"
     original_query = "建立一个团队，开发一个斗地主游戏"
     generation_prompts: list[str] = []
 
@@ -1888,14 +1889,14 @@ async def test_first_team_chat_auto_binds_and_preserves_original_query(monkeypat
     )
 
     init_session_metadata(
-        session_id="sess-auto-team",
+        session_id=session_id,
         channel_id="web",
         mode=mode,
     )
     request = AgentRequest(
         request_id="req-auto-team-chat",
         channel_id="web",
-        session_id="sess-auto-team",
+        session_id=session_id,
         req_method=ReqMethod.CHAT_SEND,
         params={"mode": mode, "query": original_query},
     )
@@ -1906,10 +1907,10 @@ async def test_first_team_chat_auto_binds_and_preserves_original_query(monkeypat
     assert request.params["query"] == original_query
     assert request.params["team_name"] == "landlord_game_team"
     assert generation_prompts == [original_query]
-    persisted = get_session_metadata("sess-auto-team", cache_bust=True)
+    persisted = get_session_metadata(session_id, cache_bust=True)
     assert persisted["team_name"] == "landlord_game_team"
     assert persisted["team_template_id"] == "research"
-    assert binding_store.get("landlord_game_team").session_ids == ("sess-auto-team",)
+    assert binding_store.get("landlord_game_team").session_ids == (session_id,)
     assert entity_store.get("landlord_game_team") is not None
 
 

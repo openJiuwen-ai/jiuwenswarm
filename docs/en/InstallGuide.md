@@ -71,6 +71,7 @@ The desktop installers already include the Python runtime and front-end static a
 |------------|---------|------------|-------|
 | Python | ≥3.11, <3.14 | pip and source installs | Python 3.11 recommended |
 | Node.js | 18.x or newer | Source install only | Builds the Web front end; the pip package already includes the static assets |
+| Node.js | 20.x or newer | Browser runtime in pip/wheel and source installs | Runs the bundled Playwright MCP CLI; normal application use does not need Node |
 | Git | Latest | Source install only | Clones and updates the source tree |
 
 Run the checks that apply to your installation method:
@@ -83,6 +84,10 @@ python --version
 # Source install only: check Node.js
 node --version
 # Expect: v18.x.x or newer
+
+# pip/wheel or source browser runtime: check Node.js
+node --version
+# Expect: v20.x.x or newer
 
 # Source install only: check Git
 git --version
@@ -515,7 +520,7 @@ See [macOS: download the dmg with curl (recommended)](#1-macos-download-the-dmg-
 
 ### Q: During a source install I see "Node.js not found" or `npm` is unavailable
 
-Install Node.js 18.x or newer, then rebuild the front end. The desktop installers and pip package already include the front-end static assets, so normal installation and startup do not require Node.js. See [Environment check](#environment-check) for details.
+Install Node.js 18.x or newer to rebuild the front end. Browser runtime use in a pip/wheel or source installation requires Node.js 20 or newer for the bundled Playwright MCP CLI. Desktop installers bundle Node 22.11.0. Normal installation, startup, and non-browser agents do not require Node.js. See [Environment check](#environment-check) for details.
 
 ### Q: How do I install a beta pre-release?
 

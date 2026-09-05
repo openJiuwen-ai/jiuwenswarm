@@ -247,6 +247,9 @@ if [[ "$BUNDLE_NODE" == "1" ]]; then
   printf '\n[5/9] Bundle Node.js runtime (single arch, M-series first)...\n'
   NODE_SRC="$(resolve_node_dir)" || exit 1
   copy_node_into_app "$NODE_SRC"
+  printf 'Verifying frozen Playwright MCP bundle and bundled Node...\n'
+  "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" \
+    "$PROJECT_ROOT/scripts/verify_playwright_mcp_bundle.py"
 fi
 
 # 注意：--deep 会打印 deprecation 警告，但对 PyInstaller 应用（含大量嵌套 .so/.dylib、

@@ -399,6 +399,12 @@ from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_mana
 from jiuwenswarm.runtime.cron import CronTargetChannel
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.playwright_mcp_runtime import (
+    clear_managed_launch_environment,
+    record_managed_launch_environment,
+    resolve_playwright_mcp_launch,
+    serialize_playwright_mcp_args,
+)
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     get_agent_skills_dir,
@@ -3485,24 +3491,39 @@ class JiuWenSwarmDeepAdapter:
     def _sync_browser_runtime_environment(
         self,
         config_base: dict[str, Any] | None = None,
+        *,
+        runtime_enabled: bool | None = None,
     ) -> None:
         """Synchronize browser launch settings before browser runtimes are built."""
         headless = self._resolve_headless_from_config(config_base)
-        mcp_args_raw = (
-            os.getenv("PLAYWRIGHT_MCP_ARGS") or "-y @playwright/mcp@latest"
-        ).strip()
-        mcp_args = (
-            mcp_args_raw.split()
-            if mcp_args_raw
-            else ["-y", "@playwright/mcp@latest"]
+        browser_runtime_enabled = (
+            self._browser_runtime_enabled()
+            if runtime_enabled is None
+            else runtime_enabled
         )
-        mcp_args = [arg for arg in mcp_args if arg != "--headless"]
+        if browser_runtime_enabled:
+            launch = resolve_playwright_mcp_launch()
+            mcp_args = [arg for arg in launch.args if arg != "--headless"]
+            if headless:
+                mcp_args.append("--headless")
+            serialized_args = serialize_playwright_mcp_args(mcp_args)
+            os.environ["PLAYWRIGHT_MCP_COMMAND"] = launch.command
+            os.environ["PLAYWRIGHT_MCP_ARGS"] = serialized_args
+            record_managed_launch_environment(os.environ, launch, serialized_args)
+            logger.info(
+                "[%s] Playwright MCP launch: source=%s, version=%s, runtime=%s",
+                type(self).__name__,
+                launch.source,
+                launch.version,
+                launch.runtime_display_path or "external",
+            )
+        else:
+            clear_managed_launch_environment(os.environ)
+
         if headless:
-            mcp_args.append("--headless")
             os.environ["BROWSER_MANAGED_ARGS"] = "--headless=new"
         else:
             os.environ.pop("BROWSER_MANAGED_ARGS", None)
-        os.environ["PLAYWRIGHT_MCP_ARGS"] = " ".join(mcp_args)
         chrome_path = self._resolve_managed_browser_binary_from_config(config_base)
         if chrome_path:
             os.environ["BROWSER_MANAGED_BINARY"] = chrome_path
@@ -3655,17 +3676,21 @@ class JiuWenSwarmDeepAdapter:
             subagents_cfg.get("browser_agent") if isinstance(subagents_cfg, dict) else {}
         )
 
+        browser_enabled = self._browser_runtime_enabled()
         # Swarm members and the main browser subagent read these variables when
-        # their browser runtimes are built.
+        # their browser runtimes are built. Runtime extraction stays lazy when
+        # browser support is disabled.
         self._browser_runtime_settings = None
         self._browser_runtime_security_profile = None
-        self._sync_browser_runtime_environment(config_base)
+        self._sync_browser_runtime_environment(
+            config_base,
+            runtime_enabled=browser_enabled,
+        )
         # Skill-only MCPs' bundled scripts read tokens from os.environ (BashTool
         # inherits it). Sync now so a freshly built agent process has the
         # connected MCPs' tokens available before any skill runs.
         self._sync_mcp_credentials_environment()
 
-        browser_enabled = self._browser_runtime_enabled()
         if browser_enabled:
             if not str(os.getenv("BROWSER_DRIVER") or "").strip():
                 os.environ["BROWSER_DRIVER"] = "managed"

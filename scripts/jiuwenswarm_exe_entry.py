@@ -57,9 +57,8 @@ if getattr(sys, "frozen", False):
         _old_path = os.environ.get("PATH", "")
         os.environ["PATH"] = os.pathsep.join([*_path_prefixes, _old_path] if _old_path else _path_prefixes)
 
-    # macOS：把 .app 内置的 node-runtime/bin 前置到 PATH，使 shutil.which("npx")
-    # 与 playwright_runtime 默认的 "npx" 命令命中内置 Node（> v18），
-    # 用户无需单独安装 Node。入口脚本是所有冻结进程（主进程 + --desktop-run-*
+    # macOS：把 .app 内置的 node-runtime/bin 前置到 PATH，使浏览器运行时
+    # 优先命中内置 Node 22，用户无需单独安装 Node。入口脚本是所有冻结进程（主进程 + --desktop-run-*
     # 子进程）的共同入口，PATH 在每个进程启动时都会被前置，幂等且随子进程继承。
     if sys.platform == "darwin":
         _node_bin = (
@@ -71,12 +70,12 @@ if getattr(sys, "frozen", False):
             os.environ["PATH"] = (
                 f"{_node_bin}{os.pathsep}{_old_path}" if _old_path else str(_node_bin)
             )
-    # Windows: use the Node runtime bundled by scripts/build-exe.ps1, when present.
-    # This makes browser runtime's default "npx" command work on machines without
-    # a system Node.js installation. Frozen child processes inherit this PATH too.
+    # Windows: prefer the Node runtime bundled by scripts/build-exe.ps1. The
+    # healthy browser path invokes the packaged MCP CLI directly with node;
+    # npm/npx are retained only for the prominently logged pinned fallback.
     elif os.name == "nt":
         _node_runtime = Path(sys.executable).resolve().parent / "runtime" / "node-runtime"
-        if (_node_runtime / "npx.cmd").is_file():
+        if (_node_runtime / "node.exe").is_file():
             _old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = (
                 f"{_node_runtime}{os.pathsep}{_old_path}"

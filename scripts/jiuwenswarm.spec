@@ -145,10 +145,49 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-datas += collect_resources_data_files(
+_playwright_mcp_resource_dir = os.path.join(
+    project_root,
+    "jiuwenswarm",
+    "resources",
+    "runtime",
+    "playwright-mcp",
+)
+_playwright_mcp_zip = os.path.join(
+    _playwright_mcp_resource_dir,
+    "playwright-mcp-0.0.78.zip",
+)
+_playwright_mcp_manifest = os.path.join(_playwright_mcp_resource_dir, "manifest.json")
+for _required_playwright_resource in (_playwright_mcp_zip, _playwright_mcp_manifest):
+    if not os.path.isfile(_required_playwright_resource):
+        raise SystemExit(
+            "ERROR: bundled Playwright MCP resource is missing: "
+            f"{_required_playwright_resource}. Run scripts/update_playwright_mcp_runtime.py."
+        )
+
+_resource_datas = collect_resources_data_files(
     os.path.join(project_root, "jiuwenswarm", "resources"),
     "jiuwenswarm/resources",
 )
+# Keep the ZIP explicit: generic PyInstaller resource patterns historically
+# covered only text data, while the browser runtime must remain a real file.
+datas += [
+    (
+        _playwright_mcp_zip,
+        "jiuwenswarm/resources/runtime/playwright-mcp",
+    )
+]
+datas += [
+    item
+    for item in _resource_datas
+    if os.path.normcase(os.path.abspath(item[0]))
+    != os.path.normcase(os.path.abspath(_playwright_mcp_zip))
+]
+datas += [
+    (
+        os.path.join(project_root, "OPEN_SOURCE_SOFTWARE_NOTICE.md"),
+        ".",
+    )
+]
 datas += collect_data_files(
     "certifi",
     include_py_files=False,

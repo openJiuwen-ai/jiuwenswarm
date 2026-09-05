@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@691347b97ef5089a0b0caf7861c98cb9ad35aa2b",
+    "openjiuwen @ git+https://github.com/openJiuwen-ai/agent-core.git@0e7ebaf01538a07db979d871e90f1d40bd037ae9",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -70,7 +70,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@691347b97ef5089a0b0caf7861c98cb9ad35aa2b",
+    "openjiuwen @ git+https://github.com/openJiuwen-ai/agent-core.git@0e7ebaf01538a07db979d871e90f1d40bd037ae9",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "aiosqlite>=0.22.1",
@@ -143,6 +143,7 @@ jiuwenbox-server = "jiuwenbox.server.launcher:main"
 # 入口脚本现在是 jiuwenswarm 包内的一部分，不需要 py-modules
 py-modules = []
 include-package-data = true
+license-files = ["LICENSE", "OPEN_SOURCE_SOFTWARE_NOTICE.md"]
 package-dir = {"jiuwenbox" = "jiuwenbox/src/jiuwenbox"}
 
 [tool.setuptools.packages.find]
@@ -186,7 +187,7 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "691347b97ef5089a0b0caf7861c98cb9ad35aa2b" }
+openjiuwen = { git = "https://github.com/openJiuwen-ai/agent-core.git", rev = "0e7ebaf01538a07db979d871e90f1d40bd037ae9" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
