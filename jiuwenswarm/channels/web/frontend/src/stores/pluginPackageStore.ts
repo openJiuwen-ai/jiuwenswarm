@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import { PluginInstallPendingError, pluginPackagesApi } from '../services/pluginPackagesApi';
 import type { PluginConnectionState, PluginPackageDetail, PluginPackageSummary } from '../types/pluginPackage';
+import {
+  readEquipmentCatalog,
+  reconcileEquipmentCatalog,
+  writeEquipmentCatalog,
+} from '../features/equipmentCatalogCache';
 
 // 2026-08-07：installed/enabledMap 已经改成以后端 list/show 真实下发的字段为准（对齐
 // 专家与插件装备-前端接口(3).md v1.5）——loadList() 每次都会用 pkg.installed/pkg.enabled
@@ -103,7 +108,7 @@ interface PluginPackageState {
   successMessage: string | null;
   busyId: string | null;
 
-  loadList: (filter?: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
+  loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
   // 返回是否成功——PluginDetailPage.tsx 卸载后要重新 show() 探测这个插件还在不在（新方案
   // "我的插件"卸载后的收尾逻辑：还能读到就留在详情页，读不到才退出到列表页），需要知道结果。
   loadDetail: (id: string) => Promise<boolean>;
@@ -113,7 +118,13 @@ interface PluginPackageState {
    * 不该弹一条吓人的红色错误提示——真正的卸载结果反馈已经由 uninstall()/deletePackage() 自己的
    * successMessage/error 负责，这个探测只是导航判断用。 */
   probeExists: (id: string) => Promise<boolean>;
-  create: (params: { id: string; name: string; description: string; skills: string[]; mcps: string[] }) => Promise<boolean>;
+  create: (params: {
+    id: string;
+    name: string;
+    description: string;
+    skills: string[];
+    mcps: string[];
+  }) => Promise<boolean>;
   importLocal: (params: { path: string }) => Promise<boolean>;
   install: (id: string) => Promise<void>;
   uninstall: (id: string) => Promise<void>;
@@ -126,6 +137,13 @@ interface PluginPackageState {
 }
 
 const persisted = loadPersistedLocalState();
+const cachedPluginPackages = readEquipmentCatalog<PluginPackageSummary>('plugin');
+const cachedInstalled = { ...persisted.installed };
+const cachedConnectionStates: Record<string, PluginConnectionState> = {};
+for (const pkg of cachedPluginPackages) {
+  cachedInstalled[pkg.id] = pkg.installed;
+  cachedConnectionStates[pkg.id] = pkg.connectionState;
+}
 
 // 2026-08-18：同 connectorStore.ts 的 listRequestSeq——ExtensionPickerPanel 每次打开都无条件
 // 重新 loadList，同一个 filter 桶（'local' 或 packages 那半，undefined/'builtin' 共用）可能有
@@ -133,7 +151,7 @@ const persisted = loadPersistedLocalState();
 // 写入的 state 字段分桶（跟下面 `filter === 'local' ? localPackages : packages` 的判断保持一致），
 // 不是按 filter 原始取值分——undefined 和 'builtin' 本来就写同一个 packages 字段，理应共用同一个
 // 序号桶，否则这两者各自的序号互不感知，挡不住彼此的旧请求覆盖。
-const listRequestSeq: Record<'local' | 'packages', number> = { local: 0, packages: 0 };
+const listRequestSeq: Record<'mine' | 'packages', number> = { mine: 0, packages: 0 };
 
 // 照抄 connectorStore.ts 的 scheduleQuickRefresh：install() 成功后本地乐观 patch
 // connectionStateMap 只是让 UI 立刻可信，仍需要一次真实的 loadList('local') 兜底校准，防止
@@ -146,16 +164,16 @@ function scheduleQuickRefresh(): void {
   if (quickRefreshTimer !== null) window.clearTimeout(quickRefreshTimer);
   quickRefreshTimer = window.setTimeout(() => {
     quickRefreshTimer = null;
-    void usePluginPackageStore.getState().loadList('local', { silent: true });
+    void usePluginPackageStore.getState().loadList('mine', { silent: true });
   }, QUICK_REFRESH_DELAY_MS);
 }
 
 export const usePluginPackageStore = create<PluginPackageState>((set) => ({
-  packages: [],
+  packages: cachedPluginPackages,
   localPackages: [],
   detailCache: {},
-  installed: persisted.installed,
-  connectionStateMap: {},
+  installed: cachedInstalled,
+  connectionStateMap: cachedConnectionStates,
   installPendingMap: {},
   isLoading: false,
   error: null,
@@ -168,12 +186,17 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
   // 的 loadList(options)、抄自 CronPanel/index.tsx 的 loadJobs(silent)。
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
-    const seqKey = filter === 'local' ? 'local' : 'packages';
+    const seqKey = filter === 'mine' ? 'mine' : 'packages';
     const mySeq = ++listRequestSeq[seqKey];
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const packages = await pluginPackagesApi.list(filter);
+      const freshPackages = await pluginPackagesApi.list(filter);
       if (listRequestSeq[seqKey] !== mySeq) return; // 已有更新的同桶调用发起过，这次结果作废
+      const packages =
+        filter === 'mine'
+          ? freshPackages
+          : reconcileEquipmentCatalog(usePluginPackageStore.getState().packages, freshPackages);
+      if (filter !== 'mine') writeEquipmentCatalog('plugin', packages);
       set((state) => {
         // installed/connectionStateMap 是 packages+localPackages 两份列表的并集，合并写入而不是
         // 整份覆盖——否则市场页（filter=undefined）和会话面板（filter='local'）交替 loadList 时，
@@ -186,7 +209,7 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
         }
         persistLocalState({ installed: nextInstalled });
         return {
-          ...(filter === 'local' ? { localPackages: packages } : { packages }),
+          ...(filter === 'mine' ? { localPackages: packages } : { packages }),
           isLoading: false,
           installed: nextInstalled,
           connectionStateMap: nextConnectionStateMap,
@@ -195,10 +218,15 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     } catch (error) {
       if (listRequestSeq[seqKey] !== mySeq) return;
       if (silent) return;
-      set({
-        ...(filter === 'local' ? { localPackages: [] } : { packages: [] }),
-        isLoading: false,
-        error: error instanceof Error ? error.message : String(error),
+      set((state) => {
+        const current = filter === 'mine' ? state.localPackages : state.packages;
+        return current.length > 0
+          ? { isLoading: false }
+          : {
+              ...(filter === 'mine' ? { localPackages: [] } : { packages: [] }),
+              isLoading: false,
+              error: error instanceof Error ? error.message : String(error),
+            };
       });
     }
   },
@@ -244,7 +272,7 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
       // 新建的包必然是 source==='local'，刷新 localPackages（'我的插件'桶）即可；2026-08-19
       // loadList() 的 filter 语义改成跟 MCP 侧对齐后，裸调 loadList()（等价于 filter='builtin'）
       // 会用只含 builtin 的结果覆盖 packages，刷不出刚创建的这条、还会短暂污染"插件广场"数据。
-      await usePluginPackageStore.getState().loadList('local');
+      await usePluginPackageStore.getState().loadList('mine');
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
@@ -258,7 +286,7 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
   importLocal: async (params) => {
     try {
       await pluginPackagesApi.importLocal(params);
-      await usePluginPackageStore.getState().loadList('local');
+      await usePluginPackageStore.getState().loadList('mine');
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
@@ -283,7 +311,12 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
   // scheduleQuickRefresh 一次真实 loadList('local') 兜底校准（同 connectorStore.ts 的
   // scheduleQuickRefresh，避免乐观值和后端真实状态长期不同步）。
   install: async (id: string) => {
-    set((state) => ({ busyId: id, error: null, successMessage: null, installPendingMap: { ...state.installPendingMap, [id]: undefined } }));
+    set((state) => ({
+      busyId: id,
+      error: null,
+      successMessage: null,
+      installPendingMap: { ...state.installPendingMap, [id]: undefined },
+    }));
     try {
       await pluginPackagesApi.install(id);
       set((state) => {

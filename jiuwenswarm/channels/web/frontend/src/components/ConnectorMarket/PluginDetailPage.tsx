@@ -7,8 +7,10 @@ import { NewConversationIcon } from './icons';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { EntityAvatar } from './EntityAvatar';
 import { PillButton, DetailLinkButton } from './Buttons';
+import { MarketplaceSurface } from '../marketplace/MarketplaceSurface';
 import { ConfirmDialog } from './ConfirmDialog';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
+import { pluginSummaryToDetail } from '../../features/equipmentDetailFallback';
 
 interface PluginDetailPageProps {
   id: string;
@@ -18,7 +20,7 @@ interface PluginDetailPageProps {
   /** "我的插件"卸载后 show() 探测发现条目已不存在时调用，退出到"我的插件"列表页。 */
   onDeleted?: () => void;
   /** "会话使用"点击——真正入口是 ChatPanel 输入框的"+"面板，这里没有真实目的地。 */
-  onUse?: () => void;
+  onUse?: (runtimePackageName: string) => void;
   /**
    * 点"试试这样用"下面的某个示例——跳新会话并把示例文案填进输入框，同时打开这个插件的会话内
    * 启用开关。跟 McpDetailPage.tsx 的 onUseExample 是同一条设计（App.tsx 那边对称接了
@@ -56,7 +58,11 @@ interface PluginDetailPageProps {
 //   不会触发，但逻辑按方案原文实现，为将来后端行为变化（真的会让条目消失）留好退路。
 export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseExample }: PluginDetailPageProps) {
   const { t, i18n } = useTranslation();
-  const detail = usePluginPackageStore((s) => s.detailCache[id]);
+  const loadedDetail = usePluginPackageStore((s) => s.detailCache[id]);
+  const summary = usePluginPackageStore((s) =>
+    [...s.packages, ...s.localPackages].find((item) => item.id === id || item.runtimePackageName === id),
+  );
+  const detail = loadedDetail ?? (summary ? pluginSummaryToDetail(summary) : undefined);
   const loadDetail = usePluginPackageStore((s) => s.loadDetail);
   const probeExists = usePluginPackageStore((s) => s.probeExists);
   const installed = usePluginPackageStore((s) => s.installed[id] ?? false);
@@ -120,7 +126,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   // JSX），进来时必然已就绪，直接跳转。未就绪时的连接走断联 banner 的"连接MCP"，不再由
   // "使用"按钮承担触发连接续跑的职责（2026-08-29 用户要求：待连接状态使用按钮不可用）。
   function handleUse() {
-    if (linked) onUse?.();
+    if (linked) onUse?.(detail.runtimePackageName);
   }
 
   async function handleUninstall() {
@@ -141,7 +147,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   }
 
   return (
-    <div className="relative h-full overflow-y-auto bg-card px-8 py-6" data-testid="connector-market-plugin-detail">
+    <MarketplaceSurface variant="detail" testId="connector-market-plugin-detail">
       {/* 用户明确要求：去掉路径说明（原来的"插件/插件详情"面包屑），返回挪到整个页面最顶行，
           图标+文字（黑色），不再是原来那个跟扩展图标同排的圆形纯图标按钮。 */}
       <button
@@ -162,11 +168,16 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
           />
           <div>
-            <h1 className="text-[18px] font-semibold leading-7 text-text">{title}</h1>
+            <h1 className="text-[20px] font-semibold leading-8 text-text">{title}</h1>
             {detail.tags.length > 0 && (
               <div className="mt-0.5 flex flex-wrap gap-1">
                 {detail.tags.map((tag) => (
-                  <span key={localizedText(tag, i18n.language)} data-testid="connector-market-plugin-detail-tag" data-variant={localizedText(tag, i18n.language)} className="inline-block rounded-[2px] bg-connector-tag-surface px-1.5 py-0.5 text-[12px] leading-[18px] text-text">
+                  <span
+                    key={localizedText(tag, i18n.language)}
+                    data-testid="connector-market-plugin-detail-tag"
+                    data-variant={localizedText(tag, i18n.language)}
+                    className="inline-block rounded-[2px] bg-connector-tag-surface px-1.5 py-0.5 text-[12px] leading-[18px] text-text"
+                  >
                     {localizedText(tag, i18n.language)}
                   </span>
                 ))}
@@ -215,8 +226,16 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
               {t('connectorMarket.card.use')}
             </button>
           )}
-          {!installed && !installBusy && <PillButton icon={<Plus size={14} />} label={t('connectorMarket.card.install')} onClick={handleInstall} />}
-          {!installed && installBusy && <PillButton icon={<Loader2 size={14} className="animate-spin" />} label={t('connectorMarket.card.installing')} disabled />}
+          {!installed && !installBusy && (
+            <PillButton icon={<Plus size={14} />} label={t('connectorMarket.card.install')} onClick={handleInstall} />
+          )}
+          {!installed && installBusy && (
+            <PillButton
+              icon={<Loader2 size={14} className="animate-spin" />}
+              label={t('connectorMarket.card.installing')}
+              disabled
+            />
+          )}
         </div>
       </div>
 
@@ -226,7 +245,10 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           McpDetailPage.tsx 断联 banner 那一版视觉（浅红底 #FCE3E1 + 红圆底白X图标 + accent蓝
           链接文字），不用这里原来的纯文字+danger红。 */}
       {installed && !linked && (
-        <div className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted" data-testid="connector-market-plugin-detail-disconnect-banner">
+        <div
+          className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted"
+          data-testid="connector-market-plugin-detail-disconnect-banner"
+        >
           <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-danger">
             <X size={9} strokeWidth={3} className="text-text-inverse" />
           </span>
@@ -255,7 +277,9 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
       )}
 
       <Section title={t('connectorMarket.detail.sections.basicInfo')}>
-        <p className="text-[12px] leading-[18px] text-text">{localizedText(detail.displayDescription, i18n.language)}</p>
+        <p className="text-[12px] leading-[18px] text-text">
+          {localizedText(detail.displayDescription, i18n.language)}
+        </p>
       </Section>
 
       {/* "试试这样用"——照抄 McpDetailPage.tsx 同款示例区，2026-08-21 后端 show 接口新增
@@ -263,8 +287,10 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           未就绪（installed && !linked）时这个插件在会话里根本用不了，示例点了也没意义，跟 MCP
           那边"onUseExample && linked 才可点，否则渲染成不可点的纯展示 span"是同一个门控。 */}
       {detail.quickInputs && detail.quickInputs.length > 0 && (
-        <div className="mb-6">
-          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text">{t('connectorMarket.detail.sections.examples')}</h2>
+        <div className="mb-8">
+          <h2 className="mb-4 text-[16px] font-semibold leading-6 text-text">
+            {t('connectorMarket.detail.sections.examples')}
+          </h2>
           <div className="flex flex-wrap gap-2" data-testid="connector-market-plugin-detail-examples">
             {detail.quickInputs.map((quickInput) => {
               const text = localizedText(quickInput, i18n.language);
@@ -272,7 +298,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                 <button
                   key={text}
                   type="button"
-                  onClick={() => onUseExample(text, id)}
+                  onClick={() => onUseExample(text, detail.runtimePackageName)}
                   data-testid="connector-market-plugin-detail-example"
                   data-variant={text}
                   className="flex items-center gap-1.5 rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted transition-colors hover:border-[color:var(--color-chat-accent)] hover:text-[color:var(--color-chat-accent)]"
@@ -324,7 +350,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           都按各自的 active 状态独立渲染，不额外加互斥判断。 */}
       <PendingConnectorModals flow={installFlow} />
       <PendingConnectorModals flow={reconnectFlow} />
-    </div>
+    </MarketplaceSurface>
   );
 }
 
@@ -340,7 +366,7 @@ function CapabilityGrid({
   skillStyle?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       {items.map((item) => {
         const title = localizedText(item.displayName, language);
         const desc = localizedText(item.displayDescription, language);
@@ -364,7 +390,10 @@ function CapabilityGrid({
             {/* min-h-5（=leading-5，20px）：desc 为空字符串时 <p> 没有任何行内内容，不会撑出
                 一个 line box，浏览器会把它渲染成 0 高度，导致这张卡片比旁边有描述的卡片矮一截
                 （2026-08-21 用户反馈，同款修法见 McpDetailPage.tsx 的技能/工具卡片）。 */}
-            <p className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]" title={desc}>
+            <p
+              className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]"
+              title={desc}
+            >
               {desc}
             </p>
           </div>
@@ -376,8 +405,8 @@ function CapabilityGrid({
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mb-6">
-      <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text">{title}</h2>
+    <div className="mb-8">
+      <h2 className="mb-4 text-[16px] font-semibold leading-6 text-text">{title}</h2>
       {children}
     </div>
   );

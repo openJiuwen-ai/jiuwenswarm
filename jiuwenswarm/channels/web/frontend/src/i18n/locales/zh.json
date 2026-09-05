@@ -2160,7 +2160,7 @@
     "subtitle": "创建并管理专家，快速复用专家资产",
     "tabsLabel": "专家管理分类",
     "tabs": { "catalog": "专家广场", "mine": "我的专家" },
-    "source": { "builtin": "官方", "local": "我的" },
+    "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
     "categoryLabel": "专家分类",
     "categoryAll": "全部",
     "categoryOther": "其他",
@@ -2618,6 +2618,7 @@
       "restart_pending": "等待重启",
       "restarting": "重启中...",
       "installing": "安装中",
+      "connect": "连接",
       "error": "检查失败",
       "unsupported": "当前平台不支持",
       "disabled": "更新已禁用"
@@ -2930,6 +2931,7 @@
       "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
     },
     "card": {
+      "connect": "连接",
       "use": "使用",
       "useNotWired": "该功能尚未接入，请在会话输入框的\"+\"面板里选用",
       "install": "安装",
@@ -2937,6 +2939,7 @@
       "connecting": "连接中",
       "disconnecting": "解绑中",
       "deleting": "删除中",
+      "uninstalling": "卸载中",
       "stateError": "连接失败",
       "retry": "重试",
       "uninstall": "卸载",
@@ -3010,6 +3013,9 @@
     },
     "toast": {
       "mcpConnected": "连接器已连接成功。",
+      "mcpInstalled": "连接器安装成功，请连接后使用。",
+      "mcpUninstalled": "连接器卸载成功。",
+      "mcpUninstallPendingReload": "连接器包已卸载，运行中的服务将在下次刷新时完成清理。",
       "mcpCreated": "连接器已创建成功。",
       "mcpCreatedAndConnected": "连接器已创建并连接成功。",
       "pluginInstalled": "插件安装成功。",

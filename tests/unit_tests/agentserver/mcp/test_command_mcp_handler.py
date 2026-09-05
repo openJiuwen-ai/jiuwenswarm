@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -78,6 +78,10 @@ def _find_payload_recursive(data: Any) -> dict[str, Any]:
             "show_failed",
             "bad_request",
             "internal_error",
+            "installed",
+            "install_failed",
+            "uninstalled",
+            "uninstall_failed",
         ):
             return data
         for v in data.values():
@@ -125,8 +129,8 @@ class TestHandleMcpList:
         ]
 
         with patch(
-            "jiuwenswarm.server.runtime.mcp.registry.list_marketplace_mcps",
-            return_value=fake_marketplace,
+            "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
+            new=AsyncMock(return_value=fake_marketplace),
         ):
             await server._handle_mcp_list(ws, request, send_lock)
 
@@ -150,13 +154,13 @@ class TestHandleMcpList:
 
         captured: dict[str, Any] = {}
 
-        def _fake(filter: str = "builtin") -> list[dict[str, Any]]:
+        async def _fake(filter: str = "builtin") -> list[dict[str, Any]]:
             captured["filter"] = filter
             return [{"name": "github", "connection_state": "disconnected"}]
 
         # 显式 local → 透传 local
         with patch(
-            "jiuwenswarm.server.runtime.mcp.registry.list_marketplace_mcps",
+            "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
         ):
             await server._handle_mcp_list(
@@ -168,7 +172,7 @@ class TestHandleMcpList:
 
         # 无 filter → 兜底 builtin
         with patch(
-            "jiuwenswarm.server.runtime.mcp.registry.list_marketplace_mcps",
+            "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
         ):
             await server._handle_mcp_list(
@@ -180,7 +184,7 @@ class TestHandleMcpList:
 
         # 非法值 → 兜底 builtin
         with patch(
-            "jiuwenswarm.server.runtime.mcp.registry.list_marketplace_mcps",
+            "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
         ):
             await server._handle_mcp_list(
@@ -220,8 +224,8 @@ class TestHandleMcpShow:
         }
 
         with patch(
-            "jiuwenswarm.server.runtime.mcp.registry.get_mcp",
-            return_value=fake_detail,
+            "jiuwenswarm.server.runtime.mcp.marketplace.show_mcp_with_hub",
+            new=AsyncMock(return_value=fake_detail),
         ):
             await server._handle_mcp_show(ws, request, send_lock)
 
@@ -245,8 +249,8 @@ class TestHandleMcpShow:
         send_lock = asyncio.Lock()
 
         with patch(
-            "jiuwenswarm.server.runtime.mcp.registry.get_mcp",
-            return_value=None,
+            "jiuwenswarm.server.runtime.mcp.marketplace.show_mcp_with_hub",
+            new=AsyncMock(return_value=None),
         ):
             await server._handle_mcp_show(ws, request, send_lock)
 
@@ -277,6 +281,236 @@ class TestHandleMcpShow:
         body_details = (wire.get("body") or {}).get("details", {})
         assert body_details.get("type") == "bad_request"
         assert body_details.get("code") == "MCP_BAD_REQUEST"
+
+
+class TestHandleMcpInstall:
+    """mcp.install: download and persist a Hub MCP package."""
+
+    @pytest.mark.anyio
+    async def test_install_returns_installed_package(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(
+            req_method=ReqMethod.MCP_INSTALL,
+            params={"id": "mcp-asset-uuid"},
+        )
+        install = AsyncMock(
+            return_value={"id": "mcp-asset-uuid", "name": "hub-mcp", "installed": True}
+        )
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.install_hub_mcp",
+            new=install,
+        ):
+            await server._handle_mcp_install(ws, request, asyncio.Lock())
+
+        install.assert_awaited_once_with("mcp-asset-uuid")
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "installed"
+        assert payload["item"]["name"] == "hub-mcp"
+
+    @pytest.mark.anyio
+    async def test_install_requires_asset_id(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.install_hub_mcp",
+            new=AsyncMock(side_effect=ValueError("Hub MCP asset id is required")),
+        ):
+            await server._handle_mcp_install(
+                ws,
+                _make_request(req_method=ReqMethod.MCP_INSTALL),
+                asyncio.Lock(),
+            )
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "install_failed"
+        assert payload["code"] == "MCP_BAD_REQUEST"
+
+
+class TestHandleMcpUninstall:
+    """mcp.uninstall: disconnect and remove a Hub MCP package."""
+
+    @pytest.mark.anyio
+    async def test_uninstall_returns_removed_package(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(
+            req_method=ReqMethod.MCP_UNINSTALL,
+            params={"id": "mcp-asset-uuid"},
+        )
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
+            return_value={"id": "mcp-asset-uuid", "name": "hub-mcp", "removed": True},
+        ):
+            await server._handle_mcp_uninstall(ws, request, asyncio.Lock())
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "uninstalled"
+        assert payload["item"]["removed"] is True
+
+    @pytest.mark.anyio
+    async def test_uninstall_applies_runtime_removal_clears_credentials_and_refreshes_skills(
+        self,
+    ) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        order: list[tuple[str, str] | tuple[str]] = []
+
+        class _AM:
+            async def apply_mcp_change(self, name, action):
+                order.append(("apply", name))
+                assert action == "remove"
+
+            def clear_mcp_credentials(self, name):
+                order.append(("clear", name))
+
+            async def refresh_skill_rails(self):
+                order.append(("refresh",))
+
+        server._agent_manager = _AM()
+        ws = _FakeWS()
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
+            return_value={"id": "asset-uuid", "name": "hub-mcp", "removed": True},
+        ):
+            await server._handle_mcp_uninstall(
+                ws,
+                _make_request(
+                    req_method=ReqMethod.MCP_UNINSTALL, params={"id": "asset-uuid"}
+                ),
+                asyncio.Lock(),
+            )
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "uninstalled"
+        assert payload["applied"] is True
+        assert order == [("apply", "hub-mcp"), ("clear", "hub-mcp"), ("refresh",)]
+
+    @pytest.mark.anyio
+    async def test_uninstall_runtime_failure_is_degraded_success(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        cleared: list[str] = []
+        refreshed: list[bool] = []
+
+        class _AM:
+            async def apply_mcp_change(self, _name, _action):
+                raise RuntimeError("runtime remove failed")
+
+            def clear_mcp_credentials(self, name):
+                cleared.append(name)
+
+            async def refresh_skill_rails(self):
+                refreshed.append(True)
+
+        server._agent_manager = _AM()
+        ws = _FakeWS()
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
+            return_value={"id": "asset-uuid", "name": "hub-mcp", "removed": True},
+        ):
+            await server._handle_mcp_uninstall(
+                ws,
+                _make_request(
+                    req_method=ReqMethod.MCP_UNINSTALL, params={"id": "asset-uuid"}
+                ),
+                asyncio.Lock(),
+            )
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "uninstalled"
+        assert payload["applied"] is False
+        assert payload["error"] == "runtime remove failed"
+        assert cleared == ["hub-mcp"]
+        assert refreshed == [True]
+
+    @pytest.mark.anyio
+    async def test_uninstall_propagates_request_cancellation(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        apply_started = asyncio.Event()
+        apply_release = asyncio.Event()
+        apply_finished = asyncio.Event()
+        apply_cancelled = asyncio.Event()
+        cleared: list[str] = []
+        refreshed: list[bool] = []
+
+        class _AM:
+            async def apply_mcp_change(self, _name, _action):
+                apply_started.set()
+                try:
+                    await apply_release.wait()
+                except asyncio.CancelledError:
+                    apply_cancelled.set()
+                    raise
+                finally:
+                    apply_finished.set()
+
+            def clear_mcp_credentials(self, name):
+                cleared.append(name)
+
+            async def refresh_skill_rails(self):
+                refreshed.append(True)
+
+        server._agent_manager = _AM()
+        ws = _FakeWS()
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
+            return_value={"id": "asset-uuid", "name": "hub-mcp", "removed": True},
+        ):
+            handler = asyncio.create_task(
+                server._handle_mcp_uninstall(
+                    ws,
+                    _make_request(
+                        req_method=ReqMethod.MCP_UNINSTALL,
+                        params={"id": "asset-uuid"},
+                    ),
+                    asyncio.Lock(),
+                )
+            )
+            await asyncio.wait_for(apply_started.wait(), timeout=1.0)
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+
+        assert apply_cancelled.is_set() is False
+        assert cleared == []
+        assert refreshed == []
+        assert ws.sent == []
+        apply_release.set()
+        await asyncio.wait_for(apply_finished.wait(), timeout=1.0)
+
+    @pytest.mark.anyio
+    async def test_uninstall_unknown_asset_returns_not_found(self) -> None:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.marketplace.uninstall_hub_mcp",
+            side_effect=KeyError("not installed"),
+        ):
+            await server._handle_mcp_uninstall(
+                ws,
+                _make_request(
+                    req_method=ReqMethod.MCP_UNINSTALL,
+                    params={"id": "unknown"},
+                ),
+                asyncio.Lock(),
+            )
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "uninstall_failed"
+        assert payload["code"] == "MCP_NOT_FOUND"
 
 
 
@@ -428,7 +662,14 @@ class TestHandleMcpConnect:
         # when (_packages_dir()/"github").is_dir() — CI has no marketplace
         # package cache, so stub a tmp dir containing a github/ subdir so the
         # rollback reliably hits remove_mcp_record (the assertion target).
-        (tmp_path / "github").mkdir()
+        package = tmp_path / "github"
+        package.mkdir()
+        (package / "mcp.json").write_text(
+            '{"mcpServers":{"github":{"url":"https://example.test/mcp"}}}',
+            encoding="utf-8",
+        )
+        from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
+        write_manifest(package, "remote-mcp")
         with patch(
             "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
             return_value=fake_entry,
@@ -744,4 +985,3 @@ class TestHandleMcpDeleteCustom:
         assert payload["type"] == "deleted"
         assert payload["applied"] is False
         assert "cancel-scope" in payload["error"]
-

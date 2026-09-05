@@ -2172,7 +2172,7 @@
     "subtitle": "Create and manage reusable Expert assets",
     "tabsLabel": "Expert management categories",
     "tabs": { "catalog": "Expert marketplace", "mine": "My Experts" },
-    "source": { "builtin": "Official", "local": "Mine" },
+    "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
     "categoryOther": "Other",
@@ -2630,6 +2630,7 @@
       "restart_pending": "Restart pending",
       "restarting": "Restarting...",
       "installing": "Installing",
+      "connect": "Connect",
       "error": "Check failed",
       "unsupported": "Unsupported platform",
       "disabled": "Updater disabled"
@@ -2949,6 +2950,7 @@
       "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
     },
     "card": {
+      "connect": "Connect",
       "use": "Use",
       "useNotWired": "Not wired yet — use it from the \"+\" panel in the chat input instead.",
       "install": "Install",
@@ -2956,6 +2958,7 @@
       "connecting": "Connecting",
       "disconnecting": "Disconnecting",
       "deleting": "Deleting",
+      "uninstalling": "Uninstalling",
       "stateError": "Connection failed",
       "retry": "Retry",
       "uninstall": "Uninstall",
@@ -3029,6 +3032,9 @@
     },
     "toast": {
       "mcpConnected": "Connector connected successfully.",
+      "mcpInstalled": "Connector installed. Connect it before use.",
+      "mcpUninstalled": "Connector uninstalled successfully.",
+      "mcpUninstallPendingReload": "The package was removed, but the running service will finish refreshing on the next reload.",
       "mcpCreated": "Connector created successfully.",
       "mcpCreatedAndConnected": "Connector created and connected successfully.",
       "pluginInstalled": "Plugin installed successfully.",

@@ -2,7 +2,13 @@ import { ArrowLeft } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
-import { getAgentAvatarUrl, type AgentCapability, type AgentDetail, type DefinitionFileEntry, type RequestStatus } from '../../features/agentManagement';
+import {
+  getAgentAvatarUrl,
+  type AgentCapability,
+  type AgentDetail,
+  type DefinitionFileEntry,
+  type RequestStatus,
+} from '../../features/agentManagement';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
@@ -37,7 +43,11 @@ type DefinitionDetailPageProps = {
 function Avatar({ name, avatarUrl }: { name: string; avatarUrl: string | null }) {
   return (
     <span className="agent-management-avatar agent-management-avatar--detail" aria-hidden="true">
-      {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="agent-management-avatar__letter">{name.trim().slice(0, 1).toUpperCase() || '?'}</span>}
+      {avatarUrl ? (
+        <img src={avatarUrl} alt="" />
+      ) : (
+        <span className="agent-management-avatar__letter">{name.trim().slice(0, 1).toUpperCase() || '?'}</span>
+      )}
     </span>
   );
 }
@@ -48,7 +58,7 @@ function ChipList({ title, items }: { title: string; items: Array<{ id: string; 
     <section className="agent-management-detail-capability-group">
       <h2>{title}</h2>
       <div className="agent-management-chip-row">
-        {items.map(item => (
+        {items.map((item) => (
           <span key={item.id} className="agent-management-chip">
             {item.name}
           </span>
@@ -64,7 +74,7 @@ function CapabilityList({ title, items }: { title: string; items: AgentCapabilit
     <section className="agent-management-detail-capability-group">
       <h2>{title}</h2>
       <div className="agent-management-chip-row">
-        {items.map(item => (
+        {items.map((item) => (
           <span key={item.id} className="agent-management-chip">
             {item.name}
           </span>
@@ -102,7 +112,7 @@ export function DefinitionDetailPage({
 }: DefinitionDetailPageProps) {
   const { t } = useTranslation();
 
-  if (detailStatus === 'loading') {
+  if (detailStatus === 'loading' && !detail) {
     return (
       <div className="agent-management-detail agent-management-detail--state">
         <button type="button" className="agent-management-back" onClick={onBack}>
@@ -113,9 +123,12 @@ export function DefinitionDetailPage({
       </div>
     );
   }
-  if (detailStatus === 'error' || !detail) {
+  if (!detail) {
     return (
-      <div className="agent-management-detail agent-management-detail--state agent-management-state--error" role="alert">
+      <div
+        className="agent-management-detail agent-management-detail--state agent-management-state--error"
+        role="alert"
+      >
         <button type="button" className="agent-management-back" onClick={onBack}>
           <ArrowLeft size={16} aria-hidden="true" />
           {t('agentManagement.actions.back')}
@@ -146,14 +159,18 @@ export function DefinitionDetailPage({
             <h1 title={detail.displayName}>{detail.displayName}</h1>
             <div className="agent-management-detail__badges">
               <span className="agent-management-tag">
-                {t(`agentManagement.categories.${detail.category}`, { defaultValue: detail.category || t('agentManagement.categoryOther') })}
+                {t(`agentManagement.categories.${detail.category}`, {
+                  defaultValue: detail.category || t('agentManagement.categoryOther'),
+                })}
               </span>
               <span className="agent-management-source">
                 {t('agentManagement.detail.sourcePrefix', {
-                  source: detail.source === 'builtin' ? t('agentManagement.source.builtin') : t('agentManagement.source.local'),
+                  source: t(`agentManagement.source.${detail.source}`),
                 })}
               </span>
-              {detail.installed ? <span className="agent-management-installed">{t('agentManagement.states.installed')}</span> : null}
+              {detail.installed ? (
+                <span className="agent-management-installed">{t('agentManagement.states.installed')}</span>
+              ) : null}
             </div>
           </div>
         </div>
@@ -231,6 +248,12 @@ export function DefinitionDetailPage({
         </div>
       ) : null}
 
+      {detailStatus === 'error' ? (
+        <div className="agent-management-inline-error" role="status">
+          {detailError || t('agentManagement.states.detailError')}
+        </div>
+      ) : null}
+
       {needsConnection ? (
         <div className="agent-management-connection-warning" role="status">
           {t('agentManagement.states.connectionUnavailable')}
@@ -239,11 +262,16 @@ export function DefinitionDetailPage({
 
       <section className="agent-management-detail-section">
         <h2>{t('agentManagement.detail.ability')}</h2>
-        <p className="agent-management-detail-description">{detail.description || t('agentManagement.unknownDescription')}</p>
+        <p className="agent-management-detail-description">
+          {detail.description || t('agentManagement.unknownDescription')}
+        </p>
       </section>
 
       <div className="agent-management-detail-capabilities">
-        <ChipList title={t('agentManagement.detail.tags')} items={detail.tags.map(tag => ({ id: tag.id, name: tag.label }))} />
+        <ChipList
+          title={t('agentManagement.detail.tags')}
+          items={detail.tags.map((tag) => ({ id: tag.id, name: tag.label }))}
+        />
         <CapabilityList title={t('agentManagement.detail.skills')} items={detail.skills} />
         <CapabilityList title={t('agentManagement.detail.tools')} items={detail.tools} />
         <CapabilityList title={t('agentManagement.detail.rails')} items={detail.rails} />
@@ -254,7 +282,7 @@ export function DefinitionDetailPage({
         <section className="agent-management-detail-section agent-management-detail-section--prompts">
           <h2>{t('agentManagement.detail.quickInputs')}</h2>
           <div className="agent-management-prompt-list">
-            {detail.suggestedPrompts.map(prompt => (
+            {detail.suggestedPrompts.map((prompt) => (
               <div key={prompt} className="agent-management-prompt">
                 <span>{prompt}</span>
                 <button
@@ -262,7 +290,7 @@ export function DefinitionDetailPage({
                   className="agent-management-prompt__send"
                   aria-label={t('agentManagement.detail.usePrompt', { prompt })}
                   disabled={!canUse || busy || !onUsePrompt}
-                  onClick={() => onUsePrompt?.(detail.id, prompt)}
+                  onClick={() => onUsePrompt?.(detail.runtimePackageName, prompt)}
                 >
                   <PromptSendIcon width={16} height={16} aria-hidden="true" />
                 </button>

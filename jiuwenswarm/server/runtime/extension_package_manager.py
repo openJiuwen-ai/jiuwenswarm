@@ -26,6 +26,21 @@ from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
+    install_hub_asset_package,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
+    HubAssetDetail,
+    HubAssetPort,
+    HubAssetQuery,
+    HubAssetSummary,
+    HubAssetKind,
+    HubSearchRequest,
+    create_default_hub_asset_port,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+    HubInstallStateStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -556,15 +571,8 @@ def _iter_resource_package_dirs(kind: str) -> list[Path]:
 
 def _iter_local_package_dirs(local_root: Path) -> list[Path]:
     """Return package dirs under the user local/ root."""
-    if not local_root.exists():
-        try:
-            local_root.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            logger.warning(
-                "[extension_package_manager] failed to create missing package root: %s",
-                local_root,
-            )
-            return []
+    if not local_root.is_dir():
+        return []
     try:
         entries = sorted(local_root.iterdir(), key=lambda p: p.name)
     except OSError:
@@ -871,6 +879,44 @@ def _validate_package_manifest(
             f"(expected {package_type}, got {declared!r})"
         )
     return candidate
+
+
+def _normalize_hub_equipment_manifest(package_root: Path, *, package_type: str) -> None:
+    """Translate Hub manifest aliases into Jiuwenswarm's canonical schema."""
+    manifest = _read_package_manifest(package_root)
+    if manifest is None:
+        raise ValueError(
+            f"{package_type} package missing/corrupt manifest.json: {package_root.name}"
+        )
+
+    changed = False
+    aliases = {
+        "packageType": "package_type",
+        "displayName": "display_name",
+        "displayDescription": "display_description",
+        "defaultInitInput": "default_init_input",
+        "quickInputs": "quick_inputs",
+    }
+    for hub_field, canonical_field in aliases.items():
+        if canonical_field not in manifest and hub_field in manifest:
+            manifest[canonical_field] = manifest[hub_field]
+            changed = True
+
+    if package_type == "agent_template":
+        agent_card = manifest.get("agentCard")
+        if isinstance(agent_card, dict):
+            if "name" not in manifest and "id" in agent_card:
+                manifest["name"] = agent_card["id"]
+                changed = True
+            if "description" not in manifest and "description" in agent_card:
+                manifest["description"] = agent_card["description"]
+                changed = True
+
+    if changed:
+        (package_root / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _resolve_package_dir(
@@ -1211,22 +1257,30 @@ def _lifecycle_package_id(params: dict, kind: str) -> str:
 def _apply_list_source_filter(
     cards: list[dict], params: dict | None
 ) -> list[dict]:
-    """Filter list cards by ``params.filter`` (``builtin`` | ``local``).
+    """Filter list cards by the catalog/mine source contract.
     local: source is local or builtin and installed
     builtin: source is builtin
     """
     if not isinstance(params, dict):
         return cards
     raw = params.get("filter")
-    if raw not in ("builtin", "local"):
+    if raw not in ("builtin", "local", "builtin+hub", "mine"):
         return cards
     if raw == "builtin":
         return [card for card in cards if card.get("source") == "builtin"]
+    if raw == "builtin+hub":
+        return [card for card in cards if card.get("source") in {"builtin", "hub"}]
+    if raw == "mine":
+        return [
+            card
+            for card in cards
+            if card.get("source") == "local" or bool(card.get("installed"))
+        ]
     filtered: list[dict] = []
     for card in cards:
         source = card.get("source")
         if source == "local" or (
-            source == "builtin" and bool(card.get("installed"))
+            source in {"builtin", "hub"} and bool(card.get("installed"))
         ):
             filtered.append(card)
     return filtered
@@ -1243,6 +1297,120 @@ def list_agent_templates(params: dict | None = None) -> list[dict]:
         marketplace_by_id=market,
     )
     return _apply_list_source_filter(cards, params)
+
+
+def _hub_install_state_store(kind: str) -> HubInstallStateStore:
+    return HubInstallStateStore(_kind_root(kind))
+
+
+def _hub_asset_kind(kind: str) -> HubAssetKind:
+    if kind == _AGENT_TEMPLATE_KIND:
+        return "agent_template"
+    if kind == _PLUGIN_PACKAGE_KIND:
+        return "plugin"
+    raise ValueError(f"unknown Hub asset kind: {kind}")
+
+
+def _hub_list_card(item: HubAssetSummary) -> dict[str, Any]:
+    package_name = item.package_name or item.asset_id
+    return {
+        "id": item.asset_id,
+        "packageName": package_name,
+        "displayName": _i18n(item.display_name, package_name),
+        "displayDescription": _i18n(item.short_description),
+        "category": "",
+        "source": "hub",
+        "installed": False,
+        "connection_state": "disconnected",
+        "avatar": item.icon_uri,
+        "tags": [_i18n(tag, tag) for tag in item.tags],
+        "version": item.public_latest_version,
+    }
+
+
+async def _list_equipment_with_hub(
+    kind: str,
+    params: dict | None,
+    *,
+    hub_port: HubAssetPort | None = None,
+) -> list[dict]:
+    hub_asset_kind = _hub_asset_kind(kind)
+    local_cards = (
+        list_agent_templates(None)
+        if kind == _AGENT_TEMPLATE_KIND
+        else list_plugin_packages(None)
+    )
+    cards_by_id: dict[str, dict] = {}
+    local_package_ids: set[str] = set()
+    for card in local_cards:
+        package_id = str(card.get("id") or "")
+        local_package_ids.add(package_id)
+        record = _hub_install_state_store(kind).get_by_package_id(package_id)
+        if record is not None and record.kind == hub_asset_kind:
+            card = {
+                **card,
+                "id": record.asset_id,
+                "packageName": package_id,
+                "source": "hub",
+                "installedVersion": record.version,
+            }
+            cards_by_id[record.asset_id] = card
+        else:
+            cards_by_id[package_id] = card
+
+    source_filter = params.get("filter") if isinstance(params, dict) else None
+    if source_filter in {"local", "mine"}:
+        return _apply_list_source_filter(list(cards_by_id.values()), params)
+
+    port = hub_port or create_default_hub_asset_port()
+    try:
+        remote_items: list[HubAssetSummary] = []
+        page_number = 1
+        while page_number <= 100:
+            page = await port.search_assets(
+                HubSearchRequest(
+                    kind=hub_asset_kind,
+                    page=page_number,
+                    page_size=100,
+                )
+            )
+            remote_items.extend(page.items)
+            if not page.items or len(remote_items) >= page.total:
+                break
+            page_number += 1
+    except Exception:
+        logger.warning(
+            "[extension_package_manager] failed to list Hub %s packages",
+            hub_asset_kind,
+            exc_info=True,
+        )
+        return _apply_list_source_filter(list(cards_by_id.values()), params)
+    for item in remote_items:
+        if (
+            item.kind != hub_asset_kind
+            or item.asset_id in cards_by_id
+            or (item.package_name or item.asset_id) in local_package_ids
+        ):
+            continue
+        cards_by_id[item.asset_id] = _hub_list_card(item)
+    cards = [cards_by_id[key] for key in sorted(cards_by_id)]
+    return _apply_list_source_filter(cards, params)
+
+
+async def list_agent_templates_with_hub(
+    params: dict | None = None, *, hub_port: HubAssetPort | None = None
+) -> list[dict]:
+    return await _list_equipment_with_hub(
+        _AGENT_TEMPLATE_KIND, params, hub_port=hub_port
+    )
+
+
+async def list_plugin_packages_with_hub(
+    params: dict | None = None, *, hub_port: HubAssetPort | None = None
+) -> list[dict]:
+    return await _list_equipment_with_hub(
+        _PLUGIN_PACKAGE_KIND, params, hub_port=hub_port
+    )
 
 
 def list_agent_groups(params: dict | None = None) -> list[dict]:
@@ -1491,6 +1659,92 @@ def show_plugin_package(name: str) -> dict | None:
     )
 
 
+def _hub_detail_card(
+    detail: HubAssetDetail,
+) -> dict[str, Any]:
+    return {
+        "id": detail.asset_id,
+        "packageName": detail.package_name or detail.asset_id,
+        "displayName": _i18n(
+            detail.display_name, detail.package_name or detail.asset_id
+        ),
+        "displayDescription": _i18n(detail.short_description),
+        "source": "hub",
+        "avatar": detail.icon_uri,
+        "version": detail.version,
+        "details": detail.detail_description or detail.short_description,
+        "tags": [_i18n(tag, tag) for tag in detail.tags],
+        "skills": [],
+        "tools": [],
+        "rails": [],
+        "mcps": [],
+        "installed": False,
+        "connection_state": "disconnected",
+        "pending_connectors": [],
+        "quickInputs": [],
+    }
+
+
+async def _show_equipment_with_hub(
+    kind: str, name: str, *, hub_port: HubAssetPort | None = None
+) -> dict | None:
+    hub_asset_kind = _hub_asset_kind(kind)
+    state_store = _hub_install_state_store(kind)
+    record = state_store.get(name) or state_store.get_by_package_id(name)
+    local_name = record.package_id if record is not None else name
+    local_card = (
+        show_agent_template(local_name)
+        if kind == _AGENT_TEMPLATE_KIND
+        else show_plugin_package(local_name)
+    )
+    pending_hub = bool(
+        local_card is not None
+        and record is not None
+        and record.kind == hub_asset_kind
+        and local_card.get("installed") is False
+    )
+    if local_card is not None and not pending_hub:
+        if record is not None and record.kind == hub_asset_kind:
+            local_card.update(
+                {
+                    "id": record.asset_id,
+                    "packageName": record.package_id,
+                    "source": "hub",
+                    "installedVersion": record.version,
+                }
+            )
+        return local_card
+    port = hub_port or create_default_hub_asset_port()
+    remote_asset_id = record.asset_id if record is not None else name
+    remote = await port.query_asset(
+        HubAssetQuery(kind=hub_asset_kind, asset_id=remote_asset_id)
+    )
+    if remote.kind != hub_asset_kind:
+        raise ValueError(f"Hub package type mismatch: {name}")
+    if remote.asset_id != remote_asset_id:
+        raise ValueError(
+            f"Hub asset id mismatch: expected {remote_asset_id!r}, "
+            f"got {remote.asset_id!r}"
+        )
+    return _hub_detail_card(remote)
+
+
+async def show_agent_template_with_hub(
+    name: str, *, hub_port: HubAssetPort | None = None
+) -> dict | None:
+    return await _show_equipment_with_hub(
+        _AGENT_TEMPLATE_KIND, name, hub_port=hub_port
+    )
+
+
+async def show_plugin_package_with_hub(
+    name: str, *, hub_port: HubAssetPort | None = None
+) -> dict | None:
+    return await _show_equipment_with_hub(
+        _PLUGIN_PACKAGE_KIND, name, hub_port=hub_port
+    )
+
+
 def manifest_connector_names(kind: str, package_id: str) -> list[str]:
     """Return deduplicated connector names from a package manifest (read-only).
 
@@ -1625,6 +1879,117 @@ def install_equipment_gated(kind: str, params: dict) -> tuple[bool, dict[str, An
     return True, {}
 
 
+def _equipment_definition_exists(kind: str, package_id: str) -> bool:
+    resources = _resources_root(kind)
+    candidates = [
+        _local_root(kind) / package_id,
+        _built_in_root(kind) / package_id,
+    ]
+    if resources is not None:
+        candidates.append(resources / package_id)
+    return any(candidate.is_dir() for candidate in candidates)
+
+
+async def _prepare_hub_equipment(
+    kind: str,
+    package_id: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> str:
+    hub_asset_kind = _hub_asset_kind(kind)
+    kind_label = hub_asset_kind
+    package_type = hub_asset_kind
+
+    def validate_package(package_root: Path, expected_package_id: str) -> None:
+        _normalize_hub_equipment_manifest(package_root, package_type=package_type)
+        _validate_package_manifest(package_root, kind_label, package_type)
+        manifest = _read_package_manifest(package_root)
+        if manifest is None:
+            raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+        manifest_id = _package_id_from_manifest(
+            manifest, package_type=package_type, kind_label=kind_label
+        )
+        if manifest_id != expected_package_id:
+            raise ValueError(
+                f"Hub {kind_label} package id mismatch: expected "
+                f"{expected_package_id!r}, "
+                f"got {manifest_id!r}"
+            )
+
+    def reject_conflict(runtime_package_id: str) -> None:
+        _assert_package_id_available(
+            runtime_package_id,
+            local_root=_local_root(kind),
+            built_in_root=_built_in_root(kind),
+            kind=kind_label,
+            resources_root=_resources_root(kind),
+        )
+
+    def write_marketplace(record: Any) -> None:
+        if kind == _PLUGIN_PACKAGE_KIND:
+            upsert_plugin_marketplace_entry(
+                record.package_id, installed=False, source="hub"
+            )
+        else:
+            upsert_agent_template_marketplace_entry(
+                record.package_id, installed=False, source="hub"
+            )
+
+    result = await install_hub_asset_package(
+        kind=hub_asset_kind,
+        asset_id=package_id,
+        destination_root=_local_root(kind),
+        state_store=_hub_install_state_store(kind),
+        package_name_validator=lambda value: _reject_package_name(
+            value, f"Hub {kind_label} package"
+        ),
+        package_validator=validate_package,
+        conflict_validator=reject_conflict,
+        on_committed=write_marketplace,
+        on_rollback=lambda runtime_package_id: _remove_marketplace_entry(
+            kind, runtime_package_id
+        ),
+        hub_port=hub_port,
+        downloader=downloader,
+    )
+    return result.package_id
+
+
+async def install_equipment_from_hub_gated(
+    kind: str,
+    params: dict,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> tuple[bool, dict[str, Any]]:
+    kind_label = _hub_asset_kind(kind)
+    requested_id = _lifecycle_package_id(params, kind_label)
+    state_store = _hub_install_state_store(kind)
+    record = state_store.get(requested_id) or state_store.get_by_package_id(
+        requested_id
+    )
+    runtime_package_id = record.package_id if record is not None else requested_id
+    if not _equipment_definition_exists(kind, runtime_package_id):
+        runtime_package_id = await _prepare_hub_equipment(
+            kind,
+            requested_id,
+            hub_port=hub_port,
+            downloader=downloader,
+        )
+    ok, payload = install_equipment_gated(kind, {"id": runtime_package_id})
+    record = state_store.get(requested_id) or state_store.get_by_package_id(
+        runtime_package_id
+    )
+    if record is not None:
+        _upsert_marketplace_entry(
+            kind,
+            runtime_package_id,
+            fields={"installed": ok, "source": "hub"},
+        )
+    return ok, payload
+
+
 _CONNECTOR_UNINSTALL_NOTICE = (
     "本装备依赖的 connector 仍保持连接，可在 MCP 管理页断开"
 )
@@ -1637,15 +2002,13 @@ def uninstall_equipment_with_notice(kind: str, params: dict) -> dict[str, Any]:
     declared connectors, the success payload includes a ``notice`` tip.
     """
     if kind == _AGENT_TEMPLATE_KIND:
-        kind_label = "agent_template"
         uninstall_fn = uninstall_agent_template
     elif kind == _PLUGIN_PACKAGE_KIND:
-        kind_label = "plugin"
         uninstall_fn = uninstall_plugin_package
     else:
         raise ValueError(f"unknown package kind: {kind}")
 
-    package_id = _lifecycle_package_id(params, kind_label)
+    package_id = resolve_equipment_runtime_id(kind, params.get("id"))
     connectors = manifest_connector_names(kind, package_id)
     uninstall_fn(params)
     if connectors:
@@ -1653,15 +2016,38 @@ def uninstall_equipment_with_notice(kind: str, params: dict) -> dict[str, Any]:
     return {}
 
 
+def resolve_equipment_runtime_id(kind: str, identifier: Any) -> str:
+    """Translate a Hub asset UUID to its local runtime package identifier."""
+    package_id = _lifecycle_package_id({"id": identifier}, _hub_asset_kind(kind))
+    store = _hub_install_state_store(kind)
+    record = store.get(package_id) or store.get_by_package_id(package_id)
+    return record.package_id if record is not None else package_id
+
+
+def _installed_agent_template_runtime_id(identifier: Any) -> str:
+    package_id = resolve_equipment_runtime_id(_AGENT_TEMPLATE_KIND, identifier)
+    record = _hub_install_state_store(_AGENT_TEMPLATE_KIND).get(identifier)
+    if record is None:
+        record = _hub_install_state_store(
+            _AGENT_TEMPLATE_KIND
+        ).get_by_package_id(package_id)
+    if record is not None:
+        marketplace = _marketplace_index(read_agent_template_marketplace_entries())
+        entry = marketplace.get(record.package_id)
+        if entry is None or entry.get("installed") is not True:
+            raise ValueError(f"agent_template not installed: {record.package_id}")
+    return package_id
+
+
 def list_agent_template_files(name: str) -> list[dict]:
     """Return the previewable file tree for one agent_template package."""
-    pkg_dir = resolve_agent_template_dir(name)
+    pkg_dir = resolve_agent_template_dir(_installed_agent_template_runtime_id(name))
     return _build_file_tree(pkg_dir, pkg_dir)
 
 
 def read_agent_template_file(name: str, rel_path: str) -> dict:
     """Read one previewable file from an agent_template package."""
-    pkg_dir = resolve_agent_template_dir(name)
+    pkg_dir = resolve_agent_template_dir(_installed_agent_template_runtime_id(name))
     rel = str(rel_path or "").strip().replace("\\", "/")
     if not _is_previewable_file(rel):
         raise ValueError(f"file not previewable: {rel}")
@@ -2109,13 +2495,13 @@ def _commit_imported_package(
     )
     dest = local_root / package_id
     local_root.mkdir(parents=True, exist_ok=True)
+    staging_parent = Path(
+        tempfile.mkdtemp(prefix=f".{package_id}.staging-", dir=local_root)
+    )
+    staged = staging_parent / package_id
     try:
-        shutil.copytree(pkg_root, dest)
-    except Exception:
-        if dest.exists():
-            shutil.rmtree(dest, ignore_errors=True)
-        raise
-    try:
+        shutil.copytree(pkg_root, staged)
+        staged.replace(dest)
         if kind == _PLUGIN_PACKAGE_KIND:
             upsert_plugin_marketplace_entry(package_id, installed=False, source="local")
         elif kind == _AGENT_GROUP_KIND:
@@ -2127,9 +2513,20 @@ def _commit_imported_package(
                 package_id, installed=False, source="local"
             )
     except Exception:
-        if kind == _AGENT_GROUP_KIND:
+        if dest.exists():
             shutil.rmtree(dest, ignore_errors=True)
+        try:
+            _remove_marketplace_entry(kind, package_id)
+        except Exception:
+            logger.warning(
+                "[extension_package_manager] failed to roll back marketplace entry: %s/%s",
+                kind,
+                package_id,
+                exc_info=True,
+            )
         raise
+    finally:
+        shutil.rmtree(staging_parent, ignore_errors=True)
     return {"id": package_id}
 
 
@@ -2316,12 +2713,16 @@ def _rmtree(path: Path, *, retries: int = 6, delay: float = 0.5) -> None:
 
 def uninstall_agent_template(params: dict) -> None:
     """Uninstall an expert package."""
-    package_id = _lifecycle_package_id(params, "agent_template")
+    requested_id = _lifecycle_package_id(params, "agent_template")
+    store = _hub_install_state_store(_AGENT_TEMPLATE_KIND)
+    record = store.get(requested_id) or store.get_by_package_id(requested_id)
+    package_id = record.package_id if record is not None else requested_id
     pkg_dir = _locate_user_package_dir(
         package_id, kind=_AGENT_TEMPLATE_KIND, kind_label="agent_template"
     )
     _rmtree(pkg_dir)
     remove_agent_template_marketplace_entry(package_id)
+    store.remove(record.asset_id if record is not None else requested_id)
 
 
 def uninstall_agent_group(params: dict) -> None:
@@ -2338,12 +2739,16 @@ def uninstall_agent_group(params: dict) -> None:
 
 def uninstall_plugin_package(params: dict) -> None:
     """Uninstall a plugin package."""
-    package_id = _lifecycle_package_id(params, "plugin")
+    requested_id = _lifecycle_package_id(params, "plugin")
+    store = _hub_install_state_store(_PLUGIN_PACKAGE_KIND)
+    record = store.get(requested_id) or store.get_by_package_id(requested_id)
+    package_id = record.package_id if record is not None else requested_id
     pkg_dir = _locate_user_package_dir(
         package_id, kind=_PLUGIN_PACKAGE_KIND, kind_label="plugin"
     )
     _rmtree(pkg_dir)
     remove_plugin_marketplace_entry(package_id)
+    store.remove(record.asset_id if record is not None else requested_id)
 
 
 def is_agent_template_installed(package_id: str) -> bool:

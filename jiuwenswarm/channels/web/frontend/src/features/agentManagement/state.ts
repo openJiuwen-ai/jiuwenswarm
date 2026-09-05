@@ -6,6 +6,7 @@ import type {
   RequestStatus,
   SkillOption,
 } from './types';
+import { readEquipmentCatalog } from '../equipmentCatalogCache';
 
 export type AgentManagementState = {
   catalog: AgentCatalogItem[];
@@ -25,29 +26,35 @@ export type AgentManagementState = {
   skillsStatus: RequestStatus;
 };
 
-export const initialAgentManagementState: AgentManagementState = {
-  catalog: [],
-  catalogStatus: 'idle',
-  catalogError: null,
-  detail: null,
-  detailStatus: 'idle',
-  detailError: null,
-  files: [],
-  filesStatus: 'idle',
-  filesError: null,
-  selectedFilePath: null,
-  fileContent: null,
-  fileStatus: 'idle',
-  fileError: null,
-  skillOptions: [],
-  skillsStatus: 'idle',
-};
+export function createInitialAgentManagementState(catalog: AgentCatalogItem[] = []): AgentManagementState {
+  return {
+    catalog,
+    catalogStatus: catalog.length > 0 ? 'success' : 'idle',
+    catalogError: null,
+    detail: null,
+    detailStatus: 'idle',
+    detailError: null,
+    files: [],
+    filesStatus: 'idle',
+    filesError: null,
+    selectedFilePath: null,
+    fileContent: null,
+    fileStatus: 'idle',
+    fileError: null,
+    skillOptions: [],
+    skillsStatus: 'idle',
+  };
+}
+
+export const initialAgentManagementState = createInitialAgentManagementState(
+  readEquipmentCatalog<AgentCatalogItem>('agent'),
+);
 
 export type AgentManagementAction =
   | { type: 'catalog.loading' }
   | { type: 'catalog.loaded'; catalog: AgentCatalogItem[] }
   | { type: 'catalog.error'; message: string }
-  | { type: 'detail.loading' }
+  | { type: 'detail.loading'; fallback?: AgentDetail }
   | { type: 'detail.loaded'; detail: AgentDetail }
   | { type: 'detail.error'; message: string }
   | { type: 'files.loading' }
@@ -71,11 +78,13 @@ export function agentManagementReducer(
     case 'catalog.loaded':
       return { ...state, catalog: action.catalog, catalogStatus: 'success', catalogError: null };
     case 'catalog.error':
-      return { ...state, catalogStatus: 'error', catalogError: action.message };
+      return state.catalog.length > 0
+        ? { ...state, catalogStatus: 'success', catalogError: null }
+        : { ...state, catalogStatus: 'error', catalogError: action.message };
     case 'detail.loading':
       return {
         ...state,
-        detail: null,
+        detail: action.fallback ?? null,
         detailStatus: 'loading',
         detailError: null,
         files: [],

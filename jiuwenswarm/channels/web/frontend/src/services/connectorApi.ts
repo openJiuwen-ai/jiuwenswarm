@@ -3,8 +3,12 @@ import type {
   ConnectorConnectResponse,
   ConnectorCredentialField,
   ConnectorDetail,
+  ConnectorInstallResponse,
   ConnectorSummary,
+  ConnectorUninstallResponse,
 } from '../types/connector';
+import { normalizeEquipmentIdentity, normalizeEquipmentSource } from '../features/equipmentMarketplace';
+import { requestEquipmentList } from '../features/equipmentListRequest';
 
 // 薄封装，照抄 projectRegistryClient.ts 惯例：一个方法一行 webRequest，不额外包装错误处理。
 // 对齐 cjh/feature/MCP/MCP 接口文档.md，方法名/参数按该文档的 mcp.* 命名 + snake_case，响应体在
@@ -25,7 +29,9 @@ import type {
 // mock 兜底继续保留，两边独立，不要混着改。
 
 interface RawConnectorSummary {
+  id?: string;
   name: string;
+  package_name?: string;
   display_name: string;
   description: string;
   category: string;
@@ -33,7 +39,10 @@ interface RawConnectorSummary {
   connection_state: ConnectorSummary['connectionState'];
   has_bundled_skills: boolean;
   icon?: string | null;
-  source: ConnectorSummary['source'];
+  source?: string;
+  installed?: boolean;
+  version?: string;
+  tags?: string[];
   // connected 布尔镜像字段已删（2026-08-10 状态机重构，types/connector.ts 注释见说明），
   // 后端仍下发但我们不再读取——statusFilter/卡片态一律走 connection_state。
   connected: boolean;
@@ -44,8 +53,18 @@ interface RawConnectorSummary {
 }
 
 function fromRawSummary(raw: RawConnectorSummary): ConnectorSummary {
-  return {
+  const identity = normalizeEquipmentIdentity({
+    id: raw.id,
     name: raw.name,
+    packageName: raw.package_name,
+    source: raw.source,
+  });
+  const source = normalizeEquipmentSource(raw.source, 'local');
+  return {
+    id: identity.id,
+    name: identity.runtimePackageName,
+    runtimePackageName: identity.runtimePackageName,
+    hubAssetId: identity.hubAssetId,
     displayName: raw.display_name,
     description: raw.description,
     category: raw.category,
@@ -53,7 +72,10 @@ function fromRawSummary(raw: RawConnectorSummary): ConnectorSummary {
     connectionState: raw.connection_state,
     hasBundledSkills: raw.has_bundled_skills,
     icon: raw.icon,
-    source: raw.source,
+    source: source === 'builtin' ? 'built_in' : source === 'local' ? 'customize' : 'hub',
+    installed: raw.installed ?? source !== 'hub',
+    version: raw.version,
+    tags: raw.tags ?? [],
   };
 }
 
@@ -161,19 +183,19 @@ export const connectorApi = {
   // "builtin" 处理，之前不传 filter 的单次调用会让"我的MCP"完全看不到自定义 MCP，是真实 bug，
   // 不是理论风险（评估过程见 cjh/feature/MCP/_migration/mcp-interface-v2-gap-assessment.md）。
   list: async (filter: 'builtin' | 'local'): Promise<ConnectorSummary[]> => {
-    const payload = await webRequest<{ items: RawConnectorSummary[] }>('mcp.list', { filter });
+    const payload = await requestEquipmentList<{ items: RawConnectorSummary[] }>(webRequest, 'mcp.list', { filter });
     return payload.items.map(fromRawSummary);
   },
-  show: async (name: string): Promise<ConnectorDetail> => {
-    const payload = await webRequest<{ item: RawConnectorDetail }>('mcp.show', { name });
+  show: async (id: string): Promise<ConnectorDetail> => {
+    const payload = await webRequest<{ item: RawConnectorDetail }>('mcp.show', { id });
     return fromRawDetail(payload.item);
   },
+  install: (id: string): Promise<ConnectorInstallResponse> =>
+    webRequest<ConnectorInstallResponse>('mcp.install', { id }),
+  uninstall: (id: string): Promise<ConnectorUninstallResponse> =>
+    webRequest<ConnectorUninstallResponse>('mcp.uninstall', { id }),
   connect: async (name: string): Promise<ConnectorConnectResponse> => {
-    const payload = await webRequest<RawConnectResponse>(
-      'mcp.connect',
-      { name },
-      { timeoutMs: CONNECT_TIMEOUT_MS },
-    );
+    const payload = await webRequest<RawConnectResponse>('mcp.connect', { name }, { timeoutMs: CONNECT_TIMEOUT_MS });
     return fromRawConnect(payload);
   },
   // 后端把"轮询直到 CLI OAuth 完成"整个收进这一个 hold-open 请求，前端只发一次，最长等 10 分钟，
@@ -228,8 +250,8 @@ export const connectorApi = {
     return fromRawConnect(payload);
   },
   saveCredentials: (name: string, tokens: Record<string, string>) =>
-    webRequest<{ type: 'credentials_saved'; name: string; saved_keys: string[] }>(
-      'mcp.save_credentials',
-      { name, tokens },
-    ),
+    webRequest<{ type: 'credentials_saved'; name: string; saved_keys: string[] }>('mcp.save_credentials', {
+      name,
+      tokens,
+    }),
 };

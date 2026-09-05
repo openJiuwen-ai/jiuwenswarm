@@ -113,9 +113,30 @@ def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
     """
     p = params if isinstance(params, dict) else {}
     mcp = p.get("mcp")
+    agent_template_id = p.get("agent_template_name")
+    if isinstance(agent_template_id, str) and agent_template_id.strip():
+        try:
+            agent_template_id = package_manager.resolve_equipment_runtime_id(
+                "agent_templates", agent_template_id
+            )
+        except (TypeError, ValueError):
+            pass
+    plugin_ids = p.get("plugin_names")
+    if isinstance(plugin_ids, list):
+        resolved_plugin_ids: list[Any] = []
+        for item in plugin_ids:
+            if isinstance(item, str) and item.strip():
+                try:
+                    item = package_manager.resolve_equipment_runtime_id(
+                        "plugin_packages", item
+                    )
+                except (TypeError, ValueError):
+                    pass
+            resolved_plugin_ids.append(item)
+        plugin_ids = resolved_plugin_ids
     connectors = package_manager.collect_connectors_for_packages(
-        agent_template_id=p.get("agent_template_name"),
-        plugin_ids=p.get("plugin_names") if isinstance(p.get("plugin_names"), list) else None,
+        agent_template_id=agent_template_id,
+        plugin_ids=plugin_ids if isinstance(plugin_ids, list) else None,
         skip_missing=True,
     )
     out: list[str] = []
@@ -129,6 +150,32 @@ def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+def restore_chat_send_equipment_params(
+    session_id: str | None,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill omitted equipment fields from the session's persisted snapshot.
+
+    Explicit empty values are never overwritten: omission means "keep", while
+    ``""`` / ``[]`` mean "clear".
+    """
+    if not session_id:
+        return params
+    mode = str(params.get("mode") or "").strip().lower()
+    if mode == "auto_harness" or is_team_runtime_mode(mode):
+        return params
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_equipment,
+    )
+
+    saved = get_session_equipment(session_id)
+    for key in ("agent_template_name", "plugin_names", "mcp"):
+        if key not in params and key in saved:
+            value = saved[key]
+            params[key] = list(value) if isinstance(value, list) else value
+    return params
 
 
 def _schedule_symphony_session_feedback(
@@ -2123,10 +2170,14 @@ class JiuWenSwarm:
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
                 payload = {
-                    "templates": package_manager.list_agent_templates(params)
+                    "templates": await package_manager.list_agent_templates_with_hub(
+                        params
+                    )
                 }
             elif method == ReqMethod.AGENT_TEMPLATES_SHOW:
-                card = package_manager.show_agent_template(str(name or ""))
+                card = await package_manager.show_agent_template_with_hub(
+                    str(name or "")
+                )
                 if card is None:
                     raise ValueError(f"agent_template not found: {name!r}")
                 payload = {"template": card}
@@ -2139,14 +2190,20 @@ class JiuWenSwarm:
                     str(name or ""), str(params.get("path", ""))
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_LIST:
-                payload = {"packages": package_manager.list_plugin_packages(params)}
+                payload = {
+                    "packages": await package_manager.list_plugin_packages_with_hub(
+                        params
+                    )
+                }
             elif method == ReqMethod.PLUGIN_PACKAGES_SHOW:
-                card = package_manager.show_plugin_package(str(name or ""))
+                card = await package_manager.show_plugin_package_with_hub(
+                    str(name or "")
+                )
                 if card is None:
                     raise ValueError(f"plugin not found: {name!r}")
                 payload = {"package": card}
             elif method == ReqMethod.AGENT_TEMPLATES_INSTALL:
-                ok, payload = package_manager.install_equipment_gated(
+                ok, payload = await package_manager.install_equipment_from_hub_gated(
                     "agent_templates", params
                 )
                 if not ok:
@@ -2158,7 +2215,7 @@ class JiuWenSwarm:
                         metadata=request.metadata,
                     )
             elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
-                ok, payload = package_manager.install_equipment_gated(
+                ok, payload = await package_manager.install_equipment_from_hub_gated(
                     "plugin_packages", params
                 )
                 if not ok:
@@ -2172,14 +2229,20 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_TEMPLATES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    await unload_live("agent_templates", str(name or ""))
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "agent_templates", name
+                    )
+                    await unload_live("agent_templates", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "agent_templates", params
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    await unload_live("plugin_packages", str(name or ""))
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "plugin_packages", name
+                    )
+                    await unload_live("plugin_packages", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "plugin_packages", params
                 )
@@ -2529,6 +2592,8 @@ class JiuWenSwarm:
             return heartbeat_response
 
         session_id = self._session_manager.get_session_id(request.session_id)
+        if isinstance(request.params, dict):
+            restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
         feedback_scheduled = False
 
@@ -2816,6 +2881,8 @@ class JiuWenSwarm:
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
         session_id = self._session_manager.get_session_id(request.session_id)
+        if isinstance(request.params, dict):
+            restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
 
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""

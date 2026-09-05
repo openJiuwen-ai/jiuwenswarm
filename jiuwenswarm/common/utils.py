@@ -1524,34 +1524,67 @@ def prepare_workspace(
 def _find_mcp_builtins_seed(template_agent_workspace: Path) -> Path | None:
     """定位打包进 resources 的预置 MCP 种子 zip。
 
-    文件名形如 ``mcp_builtins_v0.1.zip``（版本号随发布变），用 glob
-    匹配 ``mcp_builtins*.zip``，这样升级换 zip 时无需改代码。种子随
-    ``resources/**/*`` 打进 whl（pyproject 的 package-data 已含）。
+    文件名形如 ``mcp_builtins_v0.1.zip``，用 glob 匹配
+    ``mcp_builtins*.zip``；多个候选的排序依据是压缩包内部版本标记，
+    文件名不作为版本真值。种子随 ``resources/**/*`` 打进 whl。
     """
-    candidates = sorted(template_agent_workspace.glob("mcp_builtins*.zip"))
-    return candidates[-1] if candidates else None
+    candidates = list(template_agent_workspace.glob("mcp_builtins*.zip"))
+    return max(candidates, key=_mcp_seed_sort_key) if candidates else None
 
 
-def _read_zip_index_version(zip_path: Path) -> str | None:
-    """读 zip 内顶层 index.json 的 version 字段（不落地解压）。"""
+def _mcp_seed_sort_key(zip_path: Path) -> tuple[int, ...]:
+    version = _read_mcp_builtins_seed_version(zip_path)
+    if version is None:
+        return ()
+    try:
+        return tuple(int(part) for part in version.removeprefix("v").split("."))
+    except ValueError:
+        return ()
+
+
+def _read_mcp_builtins_seed_version(zip_path: Path) -> str | None:
+    """Read the collection version declared inside a valid seed archive."""
     try:
         with zipfile.ZipFile(zip_path) as zf:
-            names = zf.namelist()
-            # zip 打包时可能把 mcp_builtins/ 顶层或内容直接铺在根，
-            # index.json 可能在根也可能在 mcp_builtins/ 下，取第一个命中。
-            idx_name = None
-            for n in names:
-                if n.rstrip("/") == "index.json" or n.endswith("/index.json"):
-                    idx_name = n
-                    break
-            if not idx_name:
+            names = {info.filename.replace("\\", "/"): info for info in zf.infolist()}
+            marker = names.get("mcp_builtins/.mcp_builtins_version")
+            if marker is None:
+                logger.warning(
+                    "[mcp_builtins] seed %s has no internal version marker",
+                    zip_path,
+                )
                 return None
-            with zf.open(idx_name) as fh:
-                data = json.load(fh)
-            return str(data.get("version", "")).strip() or None
-    except (OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
-        logger.warning("[mcp_builtins] read seed index.json failed: %s", exc)
+            version = zf.read(marker).decode("utf-8").strip()
+            return version or None
+    except (OSError, UnicodeError, zipfile.BadZipFile) as exc:
+        logger.warning("[mcp_builtins] read seed version failed: %s", exc)
         return None
+
+
+def mcp_builtins_seed_update_needed(workspace_dir: Path | None = None) -> bool:
+    """Return whether the bundled MCP seed must be installed or upgraded."""
+    package_root = _find_package_root()
+    if package_root is None:
+        return False
+
+    seed_zip = _find_mcp_builtins_seed(
+        package_root / "resources" / "agent" / "workspace"
+    )
+    if seed_zip is None:
+        return False
+    seed_version = _read_mcp_builtins_seed_version(seed_zip)
+    if seed_version is None:
+        return False
+
+    runtime_root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
+    installed_dir = runtime_root / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    try:
+        installed_version = (
+            installed_dir / ".mcp_builtins_version"
+        ).read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    return installed_version != seed_version
 
 
 def _print_console_progress(message: str) -> None:
@@ -1571,8 +1604,8 @@ def _ensure_mcp_builtins(
 ) -> None:
     """启动时保证预置 MCP 包目录就位（首次解压 / 版本更新覆盖）。
 
-    规则：无 mcp_builtins 目录 → 解压种子；已有但 index.json version 与
-    种子不一致 → 整目录覆盖解压（版本升级）；一致且非 overwrite → 跳过；
+    规则：无 mcp_builtins 目录 → 解压种子；已有但目录内版本标记与种子内标记
+    版本不一致 → 整目录覆盖解压（版本升级）；一致且非 overwrite → 跳过；
     overwrite=True（init -f）→ 无论版本一致都重新解压。种子 zip 缺失则
     跳过（开发期 resources 没打 zip 不应阻断启动）。
     """
@@ -1581,15 +1614,16 @@ def _ensure_mcp_builtins(
         logger.debug("[mcp_builtins] no seed zip under %s; skip", template_agent_workspace)
         return
 
-    seed_version = _read_zip_index_version(seed_zip)
-    # 读已落地的 index.json version（目录不存在视为 None）。
+    seed_version = _read_mcp_builtins_seed_version(seed_zip)
+    if seed_version is None:
+        logger.error("[mcp_builtins] invalid seed without collection version: %s", seed_zip)
+        return
+    version_file = mcp_builtins_dir / ".mcp_builtins_version"
     local_version: str | None = None
     if mcp_builtins_dir.is_dir():
-        local_idx = mcp_builtins_dir / "index.json"
         try:
-            with local_idx.open("r", encoding="utf-8") as fh:
-                local_version = str(json.load(fh).get("version", "")).strip() or None
-        except (OSError, json.JSONDecodeError):
+            local_version = version_file.read_text(encoding="utf-8").strip() or None
+        except OSError:
             local_version = None
 
     # 首次安装（无目录）或版本不一致（升级）或强制覆盖 → 解压。
@@ -1609,7 +1643,7 @@ def _ensure_mcp_builtins(
         action, seed_version, local_version, seed_zip.name,
     )
     _print_console_progress(
-        f"[jiuwenswarm-init] MCP 预置包 {action} (v{seed_version or '?'}) "
+        f"[jiuwenswarm-init] MCP 预置包 {action} ({seed_version or '?'}) "
         f"<- {seed_zip.name}"
     )
 
@@ -1631,9 +1665,14 @@ def _ensure_mcp_builtins(
                 # Skip dir entries (trailing /)
                 if member.endswith("/"):
                     continue
-                # Guard against absolute / parent-traversal entries.
-                if member.startswith("/") or ".." in member.split("/"):
-                    continue
+                # Guard against absolute / parent-traversal entries. A malformed
+                # seed is rejected as a whole instead of silently dropping files.
+                if (
+                    not member.startswith("mcp_builtins/")
+                    or member.startswith("/")
+                    or ".." in member.split("/")
+                ):
+                    raise OSError(f"unsafe MCP seed member: {info.filename}")
                 target = tmp_dir / member
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(target, "wb") as dst:
@@ -1646,6 +1685,28 @@ def _ensure_mcp_builtins(
             for entry in nested.iterdir():
                 shutil.move(str(entry), str(tmp_dir / entry.name))
             nested.rmdir()
+        marker = tmp_dir / ".mcp_builtins_version"
+        if marker.read_text(encoding="utf-8").strip() != seed_version:
+            raise OSError("MCP seed collection version marker changed during extraction")
+        unexpected_root_files = [
+            path.name
+            for path in tmp_dir.iterdir()
+            if path.is_file() and path.name != ".mcp_builtins_version"
+        ]
+        if unexpected_root_files:
+            raise OSError(
+                "MCP seed contains unexpected root files: "
+                + ", ".join(sorted(unexpected_root_files))
+            )
+        from jiuwenswarm.server.runtime.mcp.package_manifest import iter_mcp_packages
+
+        package_dirs = [
+            path for path in tmp_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        ]
+        packages = iter_mcp_packages(tmp_dir)
+        if not package_dirs or len(packages) != len(package_dirs):
+            raise OSError("MCP seed contains an invalid package manifest")
     except (OSError, zipfile.BadZipFile) as exc:
         logger.error("[mcp_builtins] extract %s failed: %s", seed_zip, exc)
         print(f"[jiuwenswarm-init] ERROR: extract MCP seed failed: {exc}")
@@ -1673,7 +1734,6 @@ def _ensure_mcp_builtins(
         os.replace(tmp_dir, mcp_builtins_dir)
     except OSError:
         shutil.move(str(tmp_dir), str(mcp_builtins_dir))
-
     with TrackCopyDiff(
         dest=mcp_builtins_dir,
         cumulative=cumulative_diff,
@@ -1704,8 +1764,14 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     config_missing = not config_file.exists()
     workspace_migration_needed = old_workspace.exists() and not new_workspace.exists()
     mcp_builtins_missing = not mcp_builtins_dir.is_dir()
+    mcp_builtins_update_needed = mcp_builtins_seed_update_needed(workspace_dir)
     workspace_preparation_needed = any(
-        (config_missing, workspace_migration_needed, mcp_builtins_missing)
+        (
+            config_missing,
+            workspace_migration_needed,
+            mcp_builtins_missing,
+            mcp_builtins_update_needed,
+        )
     )
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir)

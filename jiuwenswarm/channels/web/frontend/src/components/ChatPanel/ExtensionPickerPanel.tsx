@@ -17,6 +17,7 @@ import { CliAuthModal } from '../ConnectorMarket/CliAuthModal';
 import { requestManageView } from '../ConnectorMarket';
 import { usePendingConnectorFlow, PendingConnectorModals } from '../ConnectorMarket/usePendingConnectorFlow';
 import { Switch } from '../Switch';
+import { resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
@@ -123,7 +124,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   // 才用非静默调用走正常的 loading 态，避免用户盯着一片空白却看不出到底是"真没数据"还是"正在
   // 加载中"。
   useEffect(() => {
-    void loadPluginList('local', { silent: packages.length > 0 });
+    void loadPluginList('mine', { silent: packages.length > 0 });
     void loadConnectorList('local', { silent: myConnectors.length > 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -282,16 +283,22 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
           </div>
         )}
         {!loading && tab === 'plugin' && filteredPlugins.map((pkg) => {
+          const { marketplaceId, sessionPluginName } = resolvePluginPickerIdentifiers(pkg);
           const label = localizedText(pkg.displayName, i18n.language);
           const desc = localizedText(pkg.displayDescription, i18n.language);
           const avatar = getSkillAvatar(label);
-          const installed = installedMap[pkg.id];
-          const linked = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
-          const isEnabled = enabledPlugins.includes(pkg.id);
-          const isConnectingThis = connectingPluginIdRef.current === pkg.id && (pluginInstallFlow.active || pluginReconnectFlow.active);
-          const busy = pluginBusyId === pkg.id || isConnectingThis;
+          const installed = installedMap[marketplaceId];
+          const linked = (pluginConnectionStateMap[marketplaceId] ?? 'disconnected') === 'connected';
+          const isEnabled = enabledPlugins.includes(sessionPluginName);
+          const isConnectingThis = connectingPluginIdRef.current === marketplaceId && (pluginInstallFlow.active || pluginReconnectFlow.active);
+          const busy = pluginBusyId === marketplaceId || isConnectingThis;
           return (
-            <div key={pkg.id} className="chat-skill-select__item chat-extension-picker__item" data-testid="chat-panel-extension-picker-item" data-variant={pkg.id}>
+            <div
+              key={marketplaceId}
+              className="chat-skill-select__item chat-extension-picker__item"
+              data-testid="chat-panel-extension-picker-item"
+              data-variant={marketplaceId}
+            >
               <div className={`chat-skill-select__avatar ${avatar.color}`}>
                 {avatar.firstChar}
               </div>
@@ -301,11 +308,11 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
               {busy ? (
                 <Loader2 className="chat-extension-picker__spinner" size={16} />
               ) : installed && linked ? (
-                <Switch checked={isEnabled} onChange={() => handleTogglePlugin(pkg.id)} />
+                <Switch checked={isEnabled} onChange={() => handleTogglePlugin(sessionPluginName)} />
               ) : installed ? (
-                <ConnectButton label={t('chat.extensionConnect')} handlers={tooltipHandlers} onClick={() => void handleReconnectPlugin(pkg.id)} />
+                <ConnectButton label={t('chat.extensionConnect')} handlers={tooltipHandlers} onClick={() => void handleReconnectPlugin(marketplaceId)} />
               ) : (
-                <ConnectButton label={t('chat.extensionConnect')} handlers={tooltipHandlers} onClick={() => void handleConnectPlugin(pkg.id)} />
+                <ConnectButton label={t('chat.extensionConnect')} handlers={tooltipHandlers} onClick={() => void handleConnectPlugin(marketplaceId)} />
               )}
             </div>
           );
