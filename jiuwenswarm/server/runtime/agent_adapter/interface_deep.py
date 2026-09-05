@@ -227,6 +227,7 @@ from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
+from jiuwenswarm.agents.harness.common.rails.context_headroom_rail import ContextHeadroomRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
     setup_permission_context,
@@ -915,6 +916,16 @@ def parse_int(value: Any, default: int) -> int:
         return default
 
 
+def _parse_float(value: Any, default: float) -> float:
+    """Parse float-like values safely, falling back to *default* on null/invalid."""
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_bool(value: Any, default: bool = False) -> bool:
     """Parse persisted YAML/API boolean values without truthiness surprises."""
     if isinstance(value, bool):
@@ -1599,6 +1610,7 @@ class JiuWenSwarmDeepAdapter:
             None
         )
         self._avatar_rail: Any = None
+        self._context_headroom_rail: ContextHeadroomRail | None = None
         self._memory_forbidden_rail: Any = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
@@ -7274,6 +7286,32 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    @staticmethod
+    def _build_context_headroom_rail(config_base: dict[str, Any]) -> ContextHeadroomRail | None:
+        """Build ContextHeadroomRail: steer the agent as the context nears its limit.
+
+        Only added to the rail set when ``context_headroom.enabled`` is true (see
+        ``_build_agent_rails``). Reads ``warn_ratio`` (default 0.60) and
+        ``critical_ratio`` (default 0.80). As context usage crosses each ratio
+        the rail injects a conciseness directive so the agent wraps up before
+        hitting the hard limit.
+        """
+        try:
+            _ch_cfg = config_base.get("context_headroom") or {}
+            _warn_ratio = _parse_float(_ch_cfg.get("warn_ratio"), 0.60)
+            _critical_ratio = _parse_float(_ch_cfg.get("critical_ratio"), 0.80)
+            rail = ContextHeadroomRail(_warn_ratio, _critical_ratio)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] ContextHeadroomRail attached "
+                "(warn=%.0f%%, critical=%.0f%%)",
+                _warn_ratio * 100,
+                _critical_ratio * 100,
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] Failed to attach ContextHeadroomRail: %s", exc)
+            return None
+
     def _build_agent_rails(
         self,
         config: dict[str, Any],
@@ -7330,6 +7368,19 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+
+        # Context headroom guard: warn as context usage approaches the limit.
+        # Disabled by default — only inserted when enabled so the registry's
+        # "build returned None" warning is not spammed on every normal build.
+        _ch_cfg = config_base.get("context_headroom") or {}
+        if bool(_ch_cfg.get("enabled", False)):
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_context_headroom_rail",
+                    self._build_context_headroom_rail,
+                    {"config_base": config_base},
+                )
+            )
 
         # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
@@ -7559,6 +7610,25 @@ class JiuWenSwarmDeepAdapter:
         if self._heartbeat_rail is None:
             self._heartbeat_rail = self._build_heartbeat_rail()
 
+        # Rebuild the context-headroom rail from the current config snapshot so
+        # context_headroom.enabled / .warn_ratio / .critical_ratio changes take
+        # effect on hot reload. Its type appearing in the returned list makes
+        # _hot_reload_rails cycle the old instance out (uninit removes the
+        # section). When disabled, the previous instance is still listed so it
+        # is torn down, and the property is cleared.
+        _ch_cfg = (config_base or self._config_base_cache or {}).get(
+            "context_headroom"
+        ) or {}
+        _ch_enabled = bool(_ch_cfg.get("enabled", False))
+        _old_ch_rail = getattr(self, "_context_headroom_rail", None)
+        if _ch_enabled:
+            self._context_headroom_rail = self._build_context_headroom_rail(
+                config_base or self._config_base_cache or {}
+            )
+        else:
+            self._context_headroom_rail = None
+        _ch_reload_rail = self._context_headroom_rail or _old_ch_rail
+
         rails_list = []
         if self._skill_rail is not None:
             rails_list.append(self._skill_rail)
@@ -7576,6 +7646,8 @@ class JiuWenSwarmDeepAdapter:
             rails_list.append(self._permission_rail)
         if self._heartbeat_rail is not None:
             rails_list.append(self._heartbeat_rail)
+        if _ch_reload_rail is not None:
+            rails_list.append(_ch_reload_rail)
         return rails_list
 
     def _tool_owner_id(self) -> str:

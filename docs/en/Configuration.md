@@ -450,6 +450,9 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `context_headroom.enabled` | When true, monitors context token usage before every model call and injects escalating conciseness directives into the system prompt as the context window fills up, reducing token waste and slowing the rate at which useful information is lost to automatic compression | `false` |
+| `context_headroom.warn_ratio` | Fraction of the context window used before a moderate "be concise" directive is injected | `0.60` |
+| `context_headroom.critical_ratio` | Fraction used before a strong "be extremely brief" directive is injected, signalling that automatic compression is imminent | `0.80` |
 
 <a id="dotenv-configuration"></a>
 
