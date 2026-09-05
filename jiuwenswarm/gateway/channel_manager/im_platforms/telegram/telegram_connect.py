@@ -326,7 +326,7 @@ class TelegramChannel(BaseChannel):
                     mention_text = f"@{bot_username}"
                     if mention_text not in text:
                         logger.debug(
-                            f"Telegram group chat mode is 'mention', message doesn't mention bot, ignoring"
+                            "Telegram group chat mode is 'mention', message doesn't mention bot, ignoring"
                         )
                         return
 
@@ -337,14 +337,14 @@ class TelegramChannel(BaseChannel):
                 elif group_mode == "reply":
                     if not update.message.reply_to_message:
                         logger.debug(
-                            f"Telegram group chat mode is 'reply', message is not a reply, ignoring"
+                            "Telegram group chat mode is 'reply', message is not a reply, ignoring"
                         )
                         return
 
                     # 检查是否回复的是机器人的消息
                     if update.message.reply_to_message.from_user.id != context.bot.id:
                         logger.debug(
-                            f"Telegram group chat mode is 'reply', not replying to bot, ignoring"
+                            "Telegram group chat mode is 'reply', not replying to bot, ignoring"
                         )
                         return
 

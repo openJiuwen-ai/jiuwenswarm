@@ -444,8 +444,6 @@ class MultiSessionToolkit:
 
     def get_tools(self) -> List[Tool]:
         """Return tools for registration in Runner."""
-        session_id = self.session_id
-
         def make_tool(
                 name: str,
                 description: str,

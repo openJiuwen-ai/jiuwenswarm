@@ -95,12 +95,10 @@ def fork_session(
 
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    history_data: list[dict[str, Any]] = []
     if history_exists(source_session_id):
         try:
             data = load_history_records(source_session_id)
             if isinstance(data, list):
-                history_data = data
                 forked_records: list[dict[str, Any]] = []
                 for record in data:
                     forked_record = dict(record)

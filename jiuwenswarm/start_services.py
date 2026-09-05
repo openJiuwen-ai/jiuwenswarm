@@ -984,7 +984,7 @@ def _start_named_instance(name: str, mode: str) -> int:
     lock = InstanceLock(config)
     if not lock.acquire(timeout=5.0):
         logging.info(f"[start_services] ERROR: Instance '{name}' startup in progress by another process")
-        logging.info(f"[start_services] Wait a few seconds or check if another terminal is starting this instance.")
+        logging.info("[start_services] Wait a few seconds or check if another terminal is starting this instance.")
         return 1
 
     try:

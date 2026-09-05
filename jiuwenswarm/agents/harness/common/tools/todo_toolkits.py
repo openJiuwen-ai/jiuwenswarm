@@ -253,8 +253,6 @@ class TodoToolkit:
         Returns:
             List of Tool instances (LocalFunction) ready for Runner/agent registration.
         """
-        session_id = self.session_id
-
         def make_tool(
             name: str,
             description: str,

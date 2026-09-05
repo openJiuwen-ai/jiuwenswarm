@@ -909,7 +909,7 @@ def _migrate_from_jiuwenclaw_root() -> bool:
         return False
     if new_root.exists():
         # New workspace exists, don't migrate
-        print(f"[migration] Both .jiuwenclaw and .jiuwenswarm exist, skipping migration")
+        print("[migration] Both .jiuwenclaw and .jiuwenswarm exist, skipping migration")
         return False
 
     print(f"[migration] Migrating from {old_root} to {new_root}")
@@ -940,7 +940,7 @@ def _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir: Path) -> None:
         return
     if new_workspace.exists():
         # Both exist - merge carefully
-        print(f"[migration] Both jiuwenclaw_workspace and workspace exist, merging...")
+        print("[migration] Both jiuwenclaw_workspace and workspace exist, merging...")
         for item in old_workspace.iterdir():
             dest = new_workspace / item.name
             if item.is_dir():
