@@ -2,6 +2,7 @@
 
 import logging
 import asyncio
+import fnmatch
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -177,14 +178,13 @@ class BaseChannel(ABC):
         if not allow_list:
             return True
 
-        sender_str = str(sender_id)
-        if sender_str in allow_list:
-            return True
-        if "|" in sender_str:
-            for part in sender_str.split("|"):
-                if part and part in allow_list:
-                    return True
-        return False
+        sender_parts = [part for part in str(sender_id).split("|") if part]
+        patterns = [str(pattern) for pattern in allow_list if pattern is not None]
+        return any(
+            fnmatch.fnmatchcase(sender_part, pattern)
+            for sender_part in sender_parts
+            for pattern in patterns
+        )
 
     async def _handle_message(
             self,
