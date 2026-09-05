@@ -15,6 +15,8 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa: E402
+    INTERFACE_CLASSIC,
+    INTERFACE_FOCUSED,
     PROFILE_GRAPH,
     PROFILE_OFF,
     admit_code_graph_workspace,
@@ -24,6 +26,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     parse_source_volume_to_bytes,
     product_code_graph_config,
     resolve_code_graph_flags,
+    resolve_retrieval_interface,
     rewrite_code_graph_limit_message,
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (  # noqa: E402
@@ -476,6 +479,42 @@ def test_config_dir_name_labels_the_profile() -> None:
         config_dir_name(profile=PROFILE_GRAPH, task_mode="coding")
         == "cfg_b__graph__coding"
     )
+    assert (
+        config_dir_name(profile=PROFILE_GRAPH, retrieval_interface=INTERFACE_FOCUSED)
+        == "cfg_b__graph__focused"
+    )
+    assert (
+        config_dir_name(
+            profile=PROFILE_GRAPH,
+            retrieval_interface=INTERFACE_FOCUSED,
+            benchmark="swe",
+        )
+        == "cfg_b__graph__focused__swe"
+    )
+    assert (
+        config_dir_name(profile=PROFILE_GRAPH, retrieval_interface=INTERFACE_CLASSIC)
+        == "cfg_b__graph"
+    )
+    assert (
+        config_dir_name(profile=PROFILE_OFF, retrieval_interface=INTERFACE_FOCUSED)
+        == "cfg_b__graph-off"
+    )
+
+
+def test_focused_interface_is_ignored_when_profile_off() -> None:
+    assert resolve_retrieval_interface("focused") == INTERFACE_FOCUSED
+    flags = resolve_code_graph_flags(
+        {"code_graph": {"profile": "off", "retrieval_interface": "focused"}}
+    )
+    assert flags.profile == PROFILE_OFF
+    assert flags.retrieval_interface == INTERFACE_CLASSIC
+    assert flags.uses_focused is False
+    cfg = apply_code_graph_profile(
+        {"code_graph": {}, "react": {"subagents": {}}},
+        PROFILE_GRAPH,
+        retrieval_interface=INTERFACE_FOCUSED,
+    )
+    assert resolve_code_graph_flags(cfg).uses_focused is True
 
 
 def test_task_mode_hidden_tools_and_capture_patch(tmp_path: Path) -> None:

@@ -862,6 +862,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             flags.profile,
             flags.on_root,
             flags.on_code_agent,
+            flags.retrieval_interface,
             cfg.max_files,
             cfg.max_source_bytes,
             cfg.max_build_rss_mb,
@@ -1044,10 +1045,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Hang find_* on Root. ``code_agent`` hang stays on the sub-agent."""
         flags = self._code_graph_flags(config_base)
         profile = flags.profile if flags.on_root else PROFILE_OFF
-        rail = CodeGraphProfileRail(
-            profile,
-            config=self._build_code_graph_config(config_base),
-        )
+        rail_kwargs: dict[str, Any] = {
+            "config": self._build_code_graph_config(config_base),
+        }
+        import inspect
+
+        if "retrieval_interface" in inspect.signature(CodeGraphProfileRail.__init__).parameters:
+            rail_kwargs["retrieval_interface"] = flags.retrieval_interface
+        rail = CodeGraphProfileRail(profile, **rail_kwargs)
         logger.info(
             "[JiuwenSwarmCodeAdapter] CodeGraphProfileRail on Root profile=%s on_root=%s",
             profile,
@@ -1228,6 +1233,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return {"code_graph_profile": PROFILE_OFF}
         kwargs: dict[str, Any] = {"code_graph_profile": flags.profile}
         kwargs["code_graph_config"] = self._build_code_graph_config(config_base)
+        try:
+            import inspect
+
+            from openjiuwen.harness.subagents.code_agent import create_code_agent
+
+            if "code_graph_retrieval_interface" in inspect.signature(create_code_agent).parameters:
+                kwargs["code_graph_retrieval_interface"] = flags.retrieval_interface
+        except Exception:  # noqa: BLE001 — older engines keep the classic rail
+            pass
         return kwargs
 
     def _build_agent_mode_rail(self) -> AgentModeRail | None:
