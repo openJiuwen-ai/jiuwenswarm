@@ -43,6 +43,7 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     build_statusline_setup_dispatch,
 )
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+from jiuwenswarm.server.hooks.precompact import fire_pre_compact_hooks_background
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.utils.utils import is_team_params
@@ -3188,6 +3189,9 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
+        # PreCompact fires at most once per request stream (agent-core may emit
+        # several "started" compression states, one per processor/phase).
+        pre_compact_fired = False
         team_a2ui_blocks = TeamA2UIBlockBuffer()
         repair_call = getattr(adapter, "repair_model_response", None)
         retry_without_a2ui_call = self._make_retry_without_a2ui_call(
@@ -3407,6 +3411,9 @@ class JiuWenSwarm:
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "context.compression_state":
+                                if not pre_compact_fired and data.payload.get("status") == "started":
+                                    pre_compact_fired = True
+                                    fire_pre_compact_hooks_background("auto", session_id)
                                 _append_compact_history_from_payload(
                                     payload=data.payload,
                                     session_id=session_id,
@@ -3598,6 +3605,9 @@ class JiuWenSwarm:
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
                         if et == "context.compression_state":
+                            if not pre_compact_fired and data.get("status") == "started":
+                                pre_compact_fired = True
+                                fire_pre_compact_hooks_background("auto", session_id)
                             _append_compact_history_from_payload(
                                 payload=data,
                                 session_id=session_id,

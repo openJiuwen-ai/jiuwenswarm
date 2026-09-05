@@ -108,6 +108,7 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.server.hooks.precompact import fire_pre_compact_hooks
 from jiuwenswarm.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
@@ -5919,10 +5920,24 @@ class AgentWebSocketServer:
 
             if agent is None:
                 raise ValueError("Failed to get agent")
-
+                
             # /compact 同 /btw：非 chat 通道 RPC 需先 ensure_instance 懒构建根 DeepAgent，
             # 否则 self._instance 为 None 时 compress_context 会直接 noop（误报"无需压缩"）。
             await agent.ensure_instance()
+      
+            hook_results = await fire_pre_compact_hooks("manual", session_id)
+            blocking = next((r for r in hook_results if r.outcome == "blocking"), None)
+            if blocking is not None:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={"result": "blocked", "reason": blocking.error},
+                )
+                wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+                async with send_lock:
+                    await send_wire_payload(ws, wire)
+                return
 
             # 手动压缩发生在 agent turn 之外，本无录制中的 root span，compaction.completed
             # 轨迹事件会因 ContextCompressionObservabilityBridge 找不到 parent 而被丢弃。

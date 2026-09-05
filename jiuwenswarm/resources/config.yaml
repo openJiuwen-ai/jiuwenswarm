@@ -1229,7 +1229,7 @@ extensions:
 
 # ============================================================
 # Hooks 配置
-# 17 个事件类型，支持 command / prompt 两种 hook 类型
+# 18 个事件类型，支持 command / prompt 两种 hook 类型
 # 字段说明：
 #   - disable_all_hooks: 全局关闭所有 hooks
 #   - <事件名>:
@@ -1279,6 +1279,15 @@ hooks:
   #     hooks:
   #       - type: command
   #         command: "echo 'agent stopping'"
+
+  # PreCompact: before context compaction; matcher matches the trigger
+  # ("manual" from /compact, "auto" for automatic compaction).
+  # Blocking (exit code 2) cancels a manual /compact; auto cannot be blocked.
+  # PreCompact:
+  #   - matcher: "manual"
+  #     hooks:
+  #       - type: command
+  #         command: "echo 'about to compact context'"
 
 
 mcp:

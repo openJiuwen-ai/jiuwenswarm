@@ -791,7 +791,7 @@ TUI 通过 `hooks.list` RPC 请求 Gateway，Gateway 从 `config.yaml` 的 `hook
    - `Source` — 配置来源（`config.yaml`）
    - `Global Status` — 全局开关状态（`enabled` / `DISABLED`）
    - `Total Hooks` — 所有事件的 hook 总数
-   - `Active Events` — 至少配置了 1 个 hook 的事件数 / 总事件数（共 17 种事件）
+   - `Active Events` — 至少配置了 1 个 hook 的事件数 / 总事件数（共 18 种事件）
 3. **Hook 详情卡片（Level 2）**：按 `事件 > matcher` 分组，每个 hook 展示：
    - `Type` — `command`（shell 命令）或 `prompt`（LLM 审查）
    - `Command` / `Prompt` — hook 的具体内容
@@ -805,7 +805,7 @@ TUI 通过 `hooks.list` RPC 请求 Gateway，Gateway 从 `config.yaml` 的 `hook
 
 #### Hooks 概念速览
 
-Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 17 种事件：
+Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 18 种事件：
 
 | 事件 | 执行层 | 触发时机 |
 |---|---|---|
@@ -826,6 +826,7 @@ Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 17 �
 | `ConfigChange` | Gateway | 配置变更 |
 | `InstructionsLoaded` | Gateway | 指令加载 |
 | `Setup` | Gateway | 初始化 |
+| `PreCompact` | Agent Server | 上下文压缩之前（手动 `/compact` 或自动压缩） |
 
 支持两种 hook 类型：
 
@@ -835,6 +836,7 @@ Hooks 是在特定事件触发时自动执行的扩展逻辑，支持以下 17 �
 | `prompt` | 调用 LLM 审查。模板中 `$ARGUMENTS` 替换为 JSON 上下文，`$TOOL_NAME` 替换为工具名。LLM 响应中的 JSON `decision: "block"` 可阻断。 | `prompt`、`timeout`（默认 15s）、`model` |
 
 - **阻断行为**：退出码 2（command）或 `decision: "block"`（prompt）会阻止当前操作（如跳过工具调用），并将原因反馈给模型。
+- **PreCompact matcher**：`PreCompact` 的 matcher 匹配压缩触发方式 — `manual`（来自 `/compact`）或 `auto`（自动压缩）。阻断可取消手动 `/compact`；自动触发的 hook 为即发即弃，无法阻断。
 - **输入修改**：PreToolUse hook 可通过 stdout JSON 的 `modifiedInput` 字段修改工具输入参数。
 - **附加上下文**：可通过 stdout JSON 的 `additionalContext` 字段注入额外信息到工具结果或模型上下文。
 - **全局开关**：`config.yaml` 中 `hooks.disable_all_hooks: true` 可禁用所有 hooks。
