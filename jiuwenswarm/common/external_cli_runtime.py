@@ -648,6 +648,34 @@ def _runtime_package_versions(artifacts: list[dict[str, str]]) -> list[dict[str,
     ]
 
 
+def pinned_sdk_requirements(cli_agent: str) -> list[str]:
+    """Return ``name==version`` requirements for an agent's SDK packages.
+
+    Reads the managed-runtime manifest (the single source of truth for the SDK
+    versions this product ships, already used by the frozen-app installer) so
+    source installs resolve the exact same versions instead of whatever the
+    index happens to list as latest. Returns [] when the manifest has no
+    entry for the agent, letting the plain extra resolve as before.
+    """
+    _validate_cli_agent(cli_agent)
+    try:
+        manifest = _load_manifest()
+        platforms = manifest["agents"][cli_agent].get("platforms", {})
+    except RuntimeError:
+        # An unreadable manifest should not break source installs; fall back
+        # to the unpinned extra.
+        logger.debug("Falling back to unpinned %s SDK requirements", cli_agent)
+        return []
+    # SDK versions are identical across platforms in the manifest; take any.
+    for artifacts in platforms.values():
+        return [
+            f"{artifact['name']}=={artifact['version']}"
+            for artifact in artifacts
+            if artifact.get("name") and artifact.get("version")
+        ]
+    return []
+
+
 def _required_runtime_files_present(cli_agent: str, site_packages: Path) -> bool:
     return all(
         (site_packages / module).exists() or (site_packages / f"{module}.py").is_file()
