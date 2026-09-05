@@ -2105,10 +2105,15 @@ wait_port_release() {{
 wait_port_release {backend_port} backend
 wait_port_release {frontend_port} frontend
 
-# Mount the DMG at a controlled mount point
-MOUNT_POINT="/tmp/jiuwenswarm_dmg_{parent_pid}"
-rm -rf "$MOUNT_POINT" 2>/dev/null || true
-mkdir -p "$MOUNT_POINT"
+# Mount the DMG at a private mount point created fresh for this run. A name
+# built from the pid is guessable, and pids are not unique across accounts, so
+# clearing such a path before mounting can remove a directory belonging to
+# another account and then mount onto one that account controls. mktemp -d
+# creates the directory 0700 and fails rather than reusing an existing name.
+if ! MOUNT_POINT=$(mktemp -d "${{TMPDIR:-/tmp}}/jiuwenswarm_dmg.XXXXXXXX"); then
+    echo "[helper] ERROR: failed to create a mount point"
+    exit 1
+fi
 echo "[helper] attaching DMG at $MOUNT_POINT"
 if ! hdiutil attach {q_target} -mountpoint "$MOUNT_POINT" -nobrowse -noautoopen -quiet; then
     echo "[helper] ERROR: hdiutil attach failed"
