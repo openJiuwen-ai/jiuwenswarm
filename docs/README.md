@@ -164,6 +164,11 @@
       <td width="50%">系统命令、文件操作、工具调用中的安全拦截与权限管控。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>命令执行防护</strong></td>
+      <td width="28%"><a href="zh/命令执行防护.md">命令执行防护</a></td>
+      <td width="50%">断路器、相同失败重复检测与进程树回收：一次 Git OOM 事故暴露的运行时缺口及其修复。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>E2A</strong></td>
       <td width="28%"><a href="zh/E2A-protocol.md">E2A-protocol</a></td>
       <td width="50%">Gateway 与 AgentServer 之间的统一请求信封协议。</td>

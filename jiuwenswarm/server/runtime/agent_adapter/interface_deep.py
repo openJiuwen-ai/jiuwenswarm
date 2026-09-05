@@ -6957,6 +6957,13 @@ class JiuWenSwarmDeepAdapter:
                 unknown_tool_threshold=cb_cfg.get(
                     "unknown_tool_threshold", defaults.unknown_tool_threshold
                 ),
+                identical_repeat_threshold=cb_cfg.get(
+                    "identical_repeat_threshold", defaults.identical_repeat_threshold
+                ),
+                identical_repeat_abort_threshold=cb_cfg.get(
+                    "identical_repeat_abort_threshold",
+                    defaults.identical_repeat_abort_threshold,
+                ),
             )
             rail = CircuitBreakerRail(config, language=self._resolve_runtime_language())
             logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create success")

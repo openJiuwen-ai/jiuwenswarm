@@ -164,7 +164,9 @@ async def test_bound_sandbox_rejects_workdir_escape_before_execution(
     finally:
         reset_command_execution(token)
 
-    assert result == "[ERROR]: workdir is outside project workspace."
+    payload = json.loads(result)
+    assert payload["success"] is False
+    assert payload["stderr"] == "[ERROR]: workdir is outside project workspace."
     assert sys_operation._shell.calls == []
 
 

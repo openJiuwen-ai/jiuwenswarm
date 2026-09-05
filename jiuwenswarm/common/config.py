@@ -2366,6 +2366,53 @@ def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
         user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
 
 
+#: Config keys introduced by the same template change that turned the circuit
+#: breaker on. Their presence dates a config to that change or later.
+_CIRCUIT_BREAKER_POST_INCIDENT_KEYS = (
+    "identical_repeat_threshold",
+    "identical_repeat_abort_threshold",
+)
+
+
+def _migrate_circuit_breaker_default_enabled(user_data: dict[str, Any]) -> None:
+    """Turn the circuit breaker on for installs that only ever had the old default.
+
+    The template default flipped from ``false`` to ``true`` after the 2026-08-02
+    Git OOM incident, where a tuned ladder of loop detectors sat out an incident
+    it was built for because the switch was off.
+
+    ``_deep_merge`` alone cannot deliver that: it preserves the user's value for
+    any key the template already had, and ``circuit_breaker.enabled`` has been in
+    the template since 2026-06. Every existing config therefore carries an
+    explicit ``false`` and would keep it -- while the new thresholds, being new
+    keys, *are* added. The config ends up looking configured with the guard off,
+    which is worse than either state.
+
+    A ``false`` alone cannot say which of the two it is, so the new threshold
+    keys are the marker. They arrive in the same template change that flipped
+    the default, so a config that already carries them has been merged against
+    the post-incident template at least once: its ``enabled`` survived that
+    merge and is a deliberate setting, which this must leave alone. A config
+    without them predates the change and can only be holding the old default.
+
+    The practical effect is that the documented opt-out works: write
+    ``enabled: false`` in a config that has the thresholds and it stays off
+    across upgrades. Removing the thresholds by hand would make the flip
+    reachable again, which is the same as asking for the defaults back.
+    """
+    guard = user_data.get("execution_guard")
+    if not isinstance(guard, dict):
+        return
+    breaker = guard.get("circuit_breaker")
+    if not isinstance(breaker, dict):
+        return
+    if breaker.get("enabled") is not False:
+        return
+    if any(key in breaker for key in _CIRCUIT_BREAKER_POST_INCIDENT_KEYS):
+        return
+    breaker["enabled"] = True
+
+
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -2408,6 +2455,10 @@ def migrate_config_from_template(
     # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
     _migrate_legacy_agent_submode_memory(user_data)
     _migrate_legacy_kv_cache_affinity_config(user_data)
+
+    # 默认值迁移：断路器总开关 false -> true。同样必须在 _deep_merge 之前，
+    # 因为 merge 会保留用户既有的值，模板改默认值无法送达任何已存在的安装。
+    _migrate_circuit_breaker_default_enabled(user_data)
 
     # Deep merge: template provides defaults, user values preserved
     merged_data = _deep_merge(template_data, user_data)
