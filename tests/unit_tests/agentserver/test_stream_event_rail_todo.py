@@ -97,6 +97,10 @@ async def test_context_usage_reports_input_tokens_instead_of_reply_total(monkeyp
         "rate": 12.0,
         "context_max": 10000,
         "tokens_used": 1200,
+        "input_tokens": 1200,
+        "output_tokens": 800,
+        "total_tokens": 2000,
+        "usage_source": "usage_metadata",
     }
 
 
@@ -126,7 +130,85 @@ async def test_context_usage_keeps_zero_input_tokens_instead_of_falling_back(mon
 
     await _TestRail().emit_context_usage(ctx)
 
-    assert session.outputs[0].payload["tokens_used"] == 0
+    assert session.outputs[0].payload == {
+        "rate": 0.0,
+        "context_max": 10000,
+        "tokens_used": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 800,
+        "usage_source": "usage_metadata",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_source"),
+    [
+        (SimpleNamespace(usage={"prompt_tokens": 11, "completion_tokens": 4}), "usage"),
+        (
+            SimpleNamespace(
+                usage=SimpleNamespace(prompt_tokens=12, completion_tokens=5, total_tokens=17)
+            ),
+            "usage",
+        ),
+        (
+            SimpleNamespace(
+                raw=SimpleNamespace(
+                    usage=type(
+                        "DictUsage",
+                        (),
+                        {"dict": lambda self: {"prompt_tokens": 13, "completion_tokens": 6}},
+                    )()
+                )
+            ),
+            "raw.usage",
+        ),
+    ],
+)
+async def test_context_usage_normalizes_provider_shapes(
+    monkeypatch, response, expected_source
+):
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
+        lambda **_kwargs: 100,
+    )
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(),
+        agent=None,
+        inputs=SimpleNamespace(response=response),
+    )
+
+    await _TestRail().emit_context_usage(ctx)
+
+    payload = session.outputs[0].payload
+    assert payload["usage_source"] == expected_source
+    assert payload["input_tokens"] in {11, 12, 13}
+    assert payload["output_tokens"] in {4, 5, 6}
+    assert payload["total_tokens"] == payload["input_tokens"] + payload["output_tokens"]
+    assert payload["tokens_used"] == payload["input_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_context_usage_falls_back_to_total_only_when_input_is_absent(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
+        lambda **_kwargs: 10000,
+    )
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(),
+        agent=None,
+        inputs=SimpleNamespace(response=SimpleNamespace(usage={"total_tokens": 9})),
+    )
+
+    await _TestRail().emit_context_usage(ctx)
+
+    assert session.outputs[0].payload["tokens_used"] == 9
+    assert session.outputs[0].payload["input_tokens"] == 0
 
 
 @pytest.mark.asyncio

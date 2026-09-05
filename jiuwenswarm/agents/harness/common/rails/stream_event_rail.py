@@ -219,6 +219,65 @@ def _infer_tool_result_error(value: Any) -> bool | None:
     return None
 
 
+def _usage_token_value(usage: Any, *names: str) -> int | None:
+    values = usage if isinstance(usage, dict) else None
+    if values is None:
+        for dump_name in ("model_dump", "dict"):
+            dump = getattr(usage, dump_name, None)
+            if not callable(dump):
+                continue
+            try:
+                dumped = dump()
+            except (TypeError, ValueError, AttributeError, RuntimeError):
+                logger.debug(
+                    "[StreamEventRail] usage dump %s failed on %s", dump_name, type(usage).__name__
+                )
+                continue
+            if isinstance(dumped, dict):
+                values = dumped
+                break
+
+    for name in names:
+        value = values.get(name) if values is not None else getattr(usage, name, None)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return None
+
+
+def _normalize_response_usage(response: Any) -> dict[str, Any]:
+    candidates = [
+        ("usage_metadata", getattr(response, "usage_metadata", None)),
+        ("usage", getattr(response, "usage", None)),
+        ("raw.usage", getattr(getattr(response, "raw", None), "usage", None)),
+    ]
+    for source, usage in candidates:
+        if usage is None:
+            continue
+        input_tokens = _usage_token_value(usage, "input_tokens", "prompt_tokens")
+        output_tokens = _usage_token_value(usage, "output_tokens", "completion_tokens")
+        total_tokens = _usage_token_value(usage, "total_tokens")
+        if input_tokens is None and output_tokens is None and total_tokens is None:
+            continue
+        if total_tokens is None:
+            total_tokens = (input_tokens or 0) + (output_tokens or 0)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens or 0,
+            "total_tokens": total_tokens,
+            "usage_source": source,
+        }
+    return {
+        "input_tokens": None,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "usage_source": "missing",
+    }
+
+
 class JiuSwarmStreamEventRail(DeepAgentRail):
     """Emit frontend stream events and enforce pause/abort checkpoints.
 
@@ -989,18 +1048,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
 
             # The context window contains model input, not the generated reply.
-            # Some providers only expose total_tokens, so keep it as a fallback.
+            # Only fall back to total when the provider omitted input entirely;
+            # an explicit input_tokens=0 is meaningful and must stay zero.
             response = ctx.inputs.response
-            usage_metadata = {}
-            if response and hasattr(response, 'usage_metadata') and response.usage_metadata:
-                usage_metadata = response.usage_metadata.model_dump()
-            current_context_tokens = 0
-            if isinstance(usage_metadata, dict):
-                for token_key in ("input_tokens", "prompt_tokens", "total_tokens"):
-                    token_value = usage_metadata.get(token_key)
-                    if token_value is not None:
-                        current_context_tokens = token_value
-                        break
+            usage = _normalize_response_usage(response)
+            input_tokens = usage["input_tokens"]
+            current_context_tokens = (
+                input_tokens if input_tokens is not None else usage["total_tokens"]
+            )
 
             if raw_total_tokens != 0:
                 rate = current_context_tokens / raw_total_tokens * 100
@@ -1011,6 +1066,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "rate": rate,
                 "context_max": raw_total_tokens,
                 "tokens_used": current_context_tokens,
+                "input_tokens": input_tokens or 0,
+                "output_tokens": usage["output_tokens"],
+                "total_tokens": usage["total_tokens"],
+                "usage_source": usage["usage_source"],
             }
             if role:
                 payload["role"] = role
