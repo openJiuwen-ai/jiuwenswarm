@@ -222,6 +222,10 @@ class PermissionInterruptInput(ConstructionInput):
         attr="trusted_dirs",
         description="Directories the client declared as trusted for this request.",
     )
+    project_dir: str | None = context_field(
+        attr="project_dir",
+        description="Frontend/session project directory; merged into file_guard trusted_dirs.",
+    )
 
 
 class _TeamPlanPermissionInterruptRail:
@@ -271,6 +275,7 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
     """Build PermissionInterruptRail (None unless ``permissions.enabled`` in config)."""
     try:
         from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            apply_permission_trusted_dirs,
             build_permission_rail,
         )
 
@@ -279,11 +284,14 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
             config={"permissions": inp.permissions_config},
             llm=None,
             model_name=inp.model_name,
+            session_id=getattr(ctx, "session_id", None) or None,
         )
-        if rail is not None and inp.trusted_dirs:
-            # Mirrors the single agent: trusted subtrees count as internal, so
-            # the external_directory check skips ask/deny inside them.
-            rail.set_trusted_dirs(inp.trusted_dirs)
+        if rail is not None:
+            apply_permission_trusted_dirs(
+                rail,
+                trusted_dirs=inp.trusted_dirs,
+                project_dir=inp.project_dir,
+            )
         if rail is not None and _is_team_plan_leader(ctx):
             return _TeamPlanPermissionInterruptRail(rail)
         return rail

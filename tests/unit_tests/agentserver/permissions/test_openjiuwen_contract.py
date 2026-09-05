@@ -4,11 +4,24 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import (
     build_denied_permission_response,
     build_rejected_permission_response,
     classify_permission_result,
     load_openjiuwen_permission_contract,
+)
+
+_INTERRUPT_HELPERS = (
+    Path(__file__).resolve().parents[4]
+    / "jiuwenswarm"
+    / "agents"
+    / "harness"
+    / "common"
+    / "rails"
+    / "interrupt"
+    / "interrupt_helpers.py"
 )
 
 
@@ -19,6 +32,17 @@ def test_openjiuwen_permission_contract_imports() -> None:
     assert contract.before_tool_call_is_async is True
     assert contract.supports_update_config is True
     assert contract.supports_manual_approval_response is True
+    assert contract.permission_confirm_response_class.__module__ == (
+        "openjiuwen.harness.security.permission_engine.models"
+    )
+    assert contract.supports_permission_engine_factory is True
+
+
+def test_interrupt_helpers_uses_permission_engine_factory() -> None:
+    source = _INTERRUPT_HELPERS.read_text(encoding="utf-8")
+    assert "build_permission_interrupt_rail" in source
+    assert "from openjiuwen.harness.security.host" not in source
+    assert "PermissionInterruptRail(" not in source
 
 
 def test_build_denied_permission_response() -> None:

@@ -1,11 +1,20 @@
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    apply_permission_trusted_dirs,
     build_permission_rail,
     convert_interactions_to_ask_user_question,
+    merge_permission_trusted_dirs,
+)
+from jiuwenswarm.common.utils import (
+    get_agent_workspace_dir,
+    get_default_project_session_workspace_dir,
+    get_default_project_workspace_dir,
+    get_workspace_dir,
 )
 
 
@@ -114,7 +123,7 @@ def test_legacy_skill_evolution_approval_metadata_is_classified():
 
 
 def _scene_hook_input(normalized_tool_name: str, user_input):
-    from openjiuwen.harness.security.host import PermissionSceneHookInput
+    from openjiuwen.harness.security import PermissionSceneHookInput
 
     return PermissionSceneHookInput(
         ctx=SimpleNamespace(session=None),
@@ -350,3 +359,176 @@ def test_convert_interactions_derives_prompt_from_the_calls_query():
     question = payload["questions"][0]
     assert question["question"] == "Please provide the details for your follow-up:"
     assert question["inputs"] == [{"type": "date", "name": "d"}]
+
+def test_permission_interrupt_uses_ask_title_from_metadata():
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        extract_question_from_interaction,
+    )
+
+    question = extract_question_from_interaction(
+        SimpleNamespace(
+            id="call_perm",
+            value={
+                "message": "write C:\\Users\\test\\test.txt\n",
+                "tool_name": "write_file",
+                "tool_args": {"file_path": r"C:\Users\test\test.txt"},
+                "metadata": {
+                    "ask_category": "path",
+                    "ask_title": "检测到受保护的文件路径访问",
+                    "ask_summary": r"write C:\Users\test\test.txt",
+                },
+            },
+        )
+    )
+
+    assert question is not None
+    assert question["header"] == "检测到受保护的文件路径访问"
+    assert question["question"].startswith("write C:\\Users\\test\\test.txt")
+
+
+def test_permission_rail_workspace_uses_session_dir():
+    session_id = "sess_permission_workspace"
+    rail = build_permission_rail(
+        {"permissions": {"enabled": True}},
+        session_id=session_id,
+    )
+    assert rail is not None
+    resolved = rail._host.resolve_workspace_dir().resolve()
+    expected = get_default_project_session_workspace_dir(session_id).resolve()
+    assert resolved == expected
+    assert resolved != get_workspace_dir().resolve()
+    assert resolved != get_agent_workspace_dir().resolve()
+
+
+def test_permission_rail_workspace_without_session_uses_projects_root():
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert rail is not None
+    resolved = rail._host.resolve_workspace_dir().resolve()
+    assert resolved == get_default_project_workspace_dir().resolve()
+    assert resolved != get_agent_workspace_dir().resolve()
+
+
+def test_merge_permission_trusted_dirs_adds_project_when_empty(tmp_path: Path):
+    project = tmp_path / "my-project"
+    project.mkdir()
+    merged = merge_permission_trusted_dirs(None, str(project))
+    assert [Path(item).resolve() for item in merged] == [project.resolve()]
+
+
+def test_merge_permission_trusted_dirs_keeps_session_trusted_and_project(tmp_path: Path):
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    project = tmp_path / "proj"
+    project.mkdir()
+    merged = merge_permission_trusted_dirs([str(extra)], str(project))
+    resolved = {Path(item).resolve() for item in merged}
+    assert extra.resolve() in resolved
+    assert project.resolve() in resolved
+
+
+def test_merge_permission_trusted_dirs_dedupes_project_already_trusted(tmp_path: Path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    merged = merge_permission_trusted_dirs([str(project)], str(project))
+    assert len(merged) == 1
+    assert Path(merged[0]).resolve() == project.resolve()
+
+
+def test_apply_permission_trusted_dirs_injects_project_into_file_guard(tmp_path: Path):
+    project = tmp_path / "web-project"
+    project.mkdir()
+    rail = build_permission_rail(
+        {"permissions": {"enabled": True}},
+        session_id="sess_web_project",
+    )
+    assert rail is not None
+    apply_permission_trusted_dirs(rail, trusted_dirs=None, project_dir=str(project))
+    trusted = [path.resolve() for path in rail._engine.trusted_dirs]
+    assert project.resolve() in trusted
+
+
+def _patch_permission_layer_paths(tmp_path: Path, monkeypatch) -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    monkeypatch.setattr(layers, "user_permissions_path", lambda: tmp_path / "user_permissions.yaml")
+    monkeypatch.setattr(
+        layers,
+        "session_permissions_path",
+        lambda session_id: tmp_path / session_id / "session_permissions.yaml",
+    )
+    monkeypatch.setattr(layers, "load_global_permissions", lambda: {})
+
+
+def test_persist_session_allow_uses_explicit_session_id_when_unbound(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Rail built without session_id must still persist when the hook gets ctx id."""
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    _patch_permission_layer_paths(tmp_path, monkeypatch)
+    rail = build_permission_rail({"permissions": {"enabled": True}}, session_id=None)
+    assert rail is not None
+    hook = rail._host.persist_session_allow_rule
+    assert hook is not None
+    ok = hook(
+        {
+            "allow_tools": ["bash"],
+            "approval_overrides": [{"id": "x", "action": "allow"}],
+        },
+        session_id="sess-explicit",
+    )
+    assert ok is True
+    session = layers.load_session_permissions("sess-explicit")
+    assert session["allow_tools"] == ["bash"]
+    assert session["approval_overrides"][0]["id"] == "x"
+
+
+def test_persist_session_allow_skips_when_unbound_and_no_explicit_id() -> None:
+    rail = build_permission_rail({"permissions": {"enabled": True}}, session_id=None)
+    assert rail is not None
+    hook = rail._host.persist_session_allow_rule
+    assert hook is not None
+    assert hook({"allow_tools": ["bash"]}) is False
+
+
+def test_snapshot_loads_overlay_for_explicit_session_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    _patch_permission_layer_paths(tmp_path, monkeypatch)
+    rail = build_permission_rail({"permissions": {"enabled": True}}, session_id=None)
+    assert rail is not None
+    persist = rail._host.persist_session_allow_rule
+    snapshot = rail._host.get_permissions_snapshot
+    assert persist is not None and snapshot is not None
+    assert persist(
+        {"allow_tools": ["bash"]},
+        session_id="sess-explicit",
+    ) is True
+    assert layers.load_session_permissions("sess-explicit")["allow_tools"] == ["bash"]
+
+    empty = snapshot()
+    tools_empty = empty.get("tools") or {}
+    assert tools_empty.get("bash") != "allow"
+
+    overlay = snapshot(session_id="sess-explicit")
+    tools = overlay.get("tools") or {}
+    assert tools.get("bash") == "allow" or "bash" in (overlay.get("allow_tools") or [])
+
+
+def test_persist_session_allow_still_uses_bound_session_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    _patch_permission_layer_paths(tmp_path, monkeypatch)
+    rail = build_permission_rail(
+        {"permissions": {"enabled": True}},
+        session_id="sess-bound",
+    )
+    assert rail is not None
+    hook = rail._host.persist_session_allow_rule
+    assert hook is not None
+    assert hook({"allow_tools": ["bash"]}) is True
+    assert layers.load_session_permissions("sess-bound")["allow_tools"] == ["bash"]

@@ -652,7 +652,7 @@ class TeamPermissionInput(ConstructionInput):
     permissions_config: dict[str, Any] = param_field(
         default_factory=dict,
         description="Full permission config dict (as consumed by "
-        "openjiuwen.harness.security.engine.PermissionEngine).",
+        "openjiuwen.harness.security.permission_engine.PermissionEngine).",
     )
 
 
@@ -668,7 +668,7 @@ def _build_team_permission_rail(params: dict[str, Any], context: Any) -> Any | N
     Thin swarm provider: reads ``permissions_config`` from ``RailSpec.params``
     (baked by config_specs) and runtime handles from ``BuildContext.extras``
     (injected by AgentConfigurator). The actual permission logic —
-    openjiuwen.harness.security.engine.PermissionEngine,
+    openjiuwen.harness.security.permission_engine.PermissionEngine,
     openjiuwen.agent_teams.rails.team_permission_rail.TeamPermissionRail,
     openjiuwen.agent_teams.rails.team_permission_rail.TeamApprovalOrchestrator —
     lives in openjiuwen.
@@ -687,7 +687,7 @@ def _build_team_permission_rail(params: dict[str, Any], context: Any) -> Any | N
         TeamPermissionRail,
     )
     from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
-    from openjiuwen.harness.security.host import ToolPermissionHost
+    from openjiuwen.harness.security import ToolPermissionHost
     from openjiuwen.agent_teams.security.narrowing import narrow_permissions
 
     override = get_permissions_override(context)

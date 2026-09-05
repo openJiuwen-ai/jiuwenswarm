@@ -196,6 +196,7 @@ from jiuwenswarm.agents.harness.common.auto_harness import (
 )
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA,
+    apply_permission_trusted_dirs,
     build_permission_rail,
     convert_interactions_to_ask_user_question,
 )
@@ -7319,6 +7320,7 @@ class JiuWenSwarmDeepAdapter:
                     .get("default", {})
                     .get("model_client_config", {})
                     .get("model_name", "gpt-4"),
+                    "session_id": getattr(self, "_parent_session_id", None),
                 },
             ),
             _RailBuildInfo(
@@ -7491,9 +7493,24 @@ class JiuWenSwarmDeepAdapter:
 
     def _update_permission_rail(self, config_base: dict[str, Any] | None) -> None:
         """原地更新已有 PermissionRail 配置，或在首次启用时新建。"""
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+            compose_host_effective_permissions,
+        )
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+            load_session_permissions,
+            load_user_permissions,
+        )
+
         permission_config = config_base.get("permissions", {}) if config_base else {}
+        session_id = str(getattr(self, "_parent_session_id", None) or "").strip() or None
         if self._permission_rail is not None:
-            self._permission_rail.update_config(permission_config)
+            effective = compose_host_effective_permissions(
+                global_permissions=permission_config if isinstance(permission_config, dict) else {},
+                user_permissions=load_user_permissions(),
+                session_permissions=load_session_permissions(session_id),
+                session_id=session_id,
+            )
+            self._permission_rail.update_config(effective)
             logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")
         elif permission_config.get("enabled", False):
             self._permission_rail = build_permission_rail(
@@ -7503,6 +7520,7 @@ class JiuWenSwarmDeepAdapter:
                 .get("default", {})
                 .get("model_client_config", {})
                 .get("model_name", "gpt-4"),
+                session_id=session_id,
             )
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
@@ -9324,13 +9342,17 @@ class JiuWenSwarmDeepAdapter:
             self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
         if self._response_prompt_rail:
             self._response_prompt_rail.set_channel(resolved_channel)
-        # PermissionInterruptRail: per-request trusted_dirs 注入，使 external_directory
-        # 检查将这些子树视为 internal 而跳过 ask/deny（与 RuntimePromptRail 对齐）。
+        # PermissionInterruptRail: file_guard 工作目录是 session 任务目录；
+        # 每轮把 trusted_dirs 与前端 project_dir 合并成信任前缀。
         # 用 getattr 兼容绕过 __init__ 的测试构造（_permission_rail 仅在 rail 构建流程赋值）。
         permission_rail = getattr(self, "_permission_rail", None)
-        if permission_rail is not None and bind_request:
+        if permission_rail is not None:
             try:
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                apply_permission_trusted_dirs(
+                    permission_rail,
+                    trusted_dirs=runtime_config.trusted_dirs,
+                    project_dir=runtime_config.project_dir or self._project_dir,
+                )
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] permission_rail.set_trusted_dirs failed",

@@ -14,7 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from openjiuwen.harness.security.shell_ast import parse_shell_for_permission
+from openjiuwen.harness.security.permission_engine.toolguard.shell_ast import (
+    parse_shell_for_permission,
+)
 
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
     redact_reviewable_payload_text,

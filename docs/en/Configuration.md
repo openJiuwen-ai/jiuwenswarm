@@ -308,15 +308,16 @@ permissions:
     "*": "allow"           # Allow all actions by default
   tools:
     bash: ask              # Require confirmation for command execution
+    powershell: ask
     mcp_exec_command: ask
     write_file: ask
   rules:
     - id: shell_allow_ls
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "ls *"
       severity: LOW        # normal mode: LOW/MEDIUM → allow
     - id: shell_ask_rm
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "rm *"
       severity: HIGH       # normal mode: HIGH/CRITICAL → ask
 ```

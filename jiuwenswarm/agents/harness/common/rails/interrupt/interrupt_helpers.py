@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from pathlib import Path
 from typing import Any, Mapping
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
@@ -48,6 +49,55 @@ SKILL_EVOLUTION_APPROVAL_TOOL_KINDS = {
 }
 
 
+def resolve_permission_workspace_dir(session_id: str | None = None) -> Path:
+    """Default file_guard workspace: session task dir, not the whole agent workspace."""
+    from jiuwenswarm.common.utils import get_default_project_session_workspace_dir
+
+    return get_default_project_session_workspace_dir(session_id)
+
+
+def merge_permission_trusted_dirs(
+    trusted_dirs: list[str] | None = None,
+    project_dir: str | None = None,
+) -> list[str]:
+    """Merge request trusted_dirs with frontend project_dir for file_guard."""
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: Any) -> None:
+        text = str(raw or "").strip()
+        if not text:
+            return
+        try:
+            key = str(Path(text).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            key = text
+        folded = key.casefold()
+        if folded in seen:
+            return
+        seen.add(folded)
+        merged.append(key)
+
+    if isinstance(trusted_dirs, (list, tuple)):
+        for item in trusted_dirs:
+            _add(item)
+    _add(project_dir)
+    return merged
+
+
+def apply_permission_trusted_dirs(
+    rail: Any,
+    *,
+    trusted_dirs: list[str] | None = None,
+    project_dir: str | None = None,
+) -> None:
+    """Hot-update file_guard trusted prefixes: client dirs plus project_dir."""
+    setter = getattr(rail, "set_trusted_dirs", None)
+    if not callable(setter):
+        return
+    setter(merge_permission_trusted_dirs(trusted_dirs, project_dir))
+
+
 def has_interrupt_resume_payload(params: Any) -> bool:
     if not isinstance(params, dict):
         return False
@@ -76,6 +126,7 @@ def build_permission_rail(
     config: dict[str, Any],
     llm: Any = None,
     model_name: str | None = None,
+    session_id: str | None = None,
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -83,35 +134,56 @@ def build_permission_rail(
         config: Agent config dict containing permissions section
         llm: LLM instance for risk assessment
         model_name: Model name for risk assessment
+        session_id: Host identity for User/Session compose and persist
 
     Returns:
         PermissionInterruptRail instance or None if disabled
     """
-    from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
-    from openjiuwen.harness.security.host import (
+    from openjiuwen.harness.security import (
         PermissionConfirmationRequest,
+        PermissionConfirmResponse,
         PermissionSceneHookInput,
         ToolPermissionHost,
+        build_permission_interrupt_rail,
     )
-    from openjiuwen.harness.security.models import PermissionConfirmResponse
 
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        load_session_permissions,
+        load_user_permissions,
+        persist_session_overlay_from_effective,
+        persist_user_overlay_from_effective,
+    )
     from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
         SKILLS_REBUILD_SILENT,
         TOOL_PERMISSION_CHANNEL_ID,
     )
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
-    from jiuwenswarm.common.utils import get_config_file, get_workspace_dir
+    from jiuwenswarm.common.utils import get_config_file
 
-    permission_config = config.get("permissions", {})
+    inline_permissions = config.get("permissions", {})
+    if not isinstance(inline_permissions, dict):
+        inline_permissions = {}
     logger.info(
-        "[InterruptHelpers] build_permission_rail called: enabled=%s",
-        permission_config.get("enabled", False)
+        "[InterruptHelpers] build_permission_rail called: enabled=%s session_id=%s",
+        inline_permissions.get("enabled", False),
+        session_id,
     )
 
-    if not permission_config.get("enabled", False):
+    if not inline_permissions.get("enabled", False):
         logger.info("[InterruptHelpers] Permission system is disabled, returning None")
         return None
+
+    bound_session_id = str(session_id).strip() if session_id else None
+    permission_config = compose_host_effective_permissions(
+        global_permissions=inline_permissions,
+        user_permissions=load_user_permissions(),
+        session_permissions=load_session_permissions(bound_session_id),
+        session_id=bound_session_id,
+    )
 
     def _collect_optional_tool_tags(cfg: dict[str, Any]) -> list[str]:
         # openjiuwen PermissionInterruptRail 会拦截所有工具；
@@ -150,52 +222,32 @@ def build_permission_rail(
         tool_names, llm is not None, model_name,
     )
     try:
-        def _persist_allow_rule(permissions: dict[str, Any]) -> bool:
-            """Persist merged `permissions` config back to config.yaml.
+        def _effective_session_id(session_id: str | None = None) -> str | None:
+            sid = (session_id or "").strip()
+            return sid or bound_session_id
 
-            openjiuwen PermissionInterruptRail calls this when user selects "always allow".
-
-            Instead of replacing the entire ``permissions`` section with the
-            in-memory snapshot (which may contain stale entries that were
-            already deleted from config.yaml), we first re-read the current
-            on-disk permissions, then merge only the *approval_overrides*、
-            *file_guard*（及过渡期 *external_directory*）deltas from
-            ``permissions`` into it.
-            This prevents re-creating tool-level entries (e.g. ``bash: ask``)
-            that the user has already removed via the webui.
-            """
+        def _persist_allow_rule(
+            permissions: dict[str, Any], session_id: str | None = None
+        ) -> bool:
             try:
-                from jiuwenswarm.common.config import _dump_yaml_round_trip, _load_yaml_round_trip
-
-                yaml_path = get_config_file()
-                data = _load_yaml_round_trip(yaml_path)
-                if not isinstance(data, dict):
-                    data = {}
-
-                on_disk_perms = data.get("permissions")
-                if not isinstance(on_disk_perms, dict):
-                    on_disk_perms = {}
-
-                # Overlay path-related deltas + approval_overrides;
-                # keep on-disk tools/defaults/rules to avoid restoring
-                # entries the user already deleted via webui.
-                merged = dict(on_disk_perms)
-                overrides_new = permissions.get("approval_overrides")
-                if overrides_new is not None:
-                    merged["approval_overrides"] = overrides_new
-                # 路径信任写 file_guard.paths（agent-core §5.5.6）；过渡期仍接受旧 external_directory
-                fg_new = permissions.get("file_guard")
-                if fg_new is not None:
-                    merged["file_guard"] = fg_new
-                ext_dir_new = permissions.get("external_directory")
-                if ext_dir_new is not None:
-                    merged["external_directory"] = ext_dir_new
-
-                data["permissions"] = merged
-                _dump_yaml_round_trip(yaml_path, data)
-                return True
+                return persist_user_overlay_from_effective(
+                    permissions, session_id=_effective_session_id(session_id)
+                )
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
+                return False
+
+        def _persist_session_allow_rule(
+            permissions: dict[str, Any], session_id: str | None = None
+        ) -> bool:
+            sid = _effective_session_id(session_id)
+            if not sid:
+                logger.warning("[InterruptHelpers] persist_session_allow_rule skipped: no session_id")
+                return False
+            try:
+                return persist_session_overlay_from_effective(sid, permissions)
+            except Exception as exc:
+                logger.warning("[InterruptHelpers] persist_session_allow_rule failed: %s", exc)
                 return False
 
         def _resolve_session_id(ctx: Any) -> str | None:
@@ -379,38 +431,50 @@ def build_permission_rail(
                 return ("approve",)
             return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
 
-        def _get_permissions_snapshot():
+        def _get_permissions_snapshot(session_id: str | None = None):
             # skills.rebuild 静默路径：返回 full_access，避免 ASK 中断。
             if SKILLS_REBUILD_SILENT.get():
                 return {
                     "enabled": True,
-                    "mode": "full_access",
                     "defaults": {"*": "allow"},
                     "file_guard": {"enabled": False},
                 }
-            cfg = get_config()
-            return cfg.get("permissions") if isinstance(cfg, dict) else {}
+            sid = _effective_session_id(session_id)
+            return compose_host_effective_permissions(
+                    global_permissions=inline_permissions,
+                    user_permissions=load_user_permissions(),
+                    session_permissions=load_session_permissions(sid),
+                    session_id=sid,
+            )
 
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_permissions_snapshot,
             persist_allow_rule=_persist_allow_rule,
-            resolve_workspace_dir=get_workspace_dir,
+            persist_session_allow_rule=_persist_session_allow_rule,
+            resolve_workspace_dir=lambda: resolve_permission_workspace_dir(
+                bound_session_id
+            ),
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,
         )
 
-        permission_rail = PermissionInterruptRail(
-            config=permission_config,
-            tool_names=tool_names,
+        permission_rail = build_permission_interrupt_rail(
+            permissions=permission_config,
             llm=llm,
             model_name=model_name,
             host=host,
         )
-        logger.info(
-            "[InterruptHelpers] PermissionInterruptRail created successfully with tool_names=%s",
-            tool_names
-        )
+        if permission_rail is None:
+            logger.info(
+                "[InterruptHelpers] build_permission_interrupt_rail returned None tool_names=%s",
+                tool_names,
+            )
+        else:
+            logger.info(
+                "[InterruptHelpers] PermissionInterruptRail created successfully with tool_names=%s",
+                tool_names,
+            )
     except Exception as exc:
         logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)
         permission_rail = None
@@ -489,6 +553,12 @@ def _build_plain_ask_user_question(value_obj: Any) -> dict | None:
 
 _PERMISSION_INTERRUPT_MARKERS = (
     "需要授权才能执行",
+    "需要授权后才能使用",
+    "检测到受保护的文件路径访问",
+    "检测到需确认的网络访问",
+    "检测到需确认的命令执行",
+    "检测到风险命令结构",
+    "操作需要授权",
     "requires permission",
     "Permission denied",
     "安全风险评估",
@@ -959,7 +1029,9 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
         header = f"操作确认: {tool_name}" if tool_name else "操作确认"
         question = message
     else:
-        header = f"权限审批: {tool_name}" if tool_name else "权限审批"
+        metadata = _extract_interrupt_metadata(value_obj)
+        ask_title = str(metadata.get("ask_title") or "").strip()
+        header = ask_title or (f"权限审批: {tool_name}" if tool_name else "权限审批")
         question = message
 
     return {

@@ -20,7 +20,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.harness.security.patterns import (
+from openjiuwen.harness.security import (
+    merge_file_guard_access_allows,
+    merge_file_guard_path_rule,
     merge_permission_allow_rule_into_permissions,
 )
 
@@ -52,19 +54,6 @@ def _ensure_permissions_dict(data: Any) -> dict[str, Any]:
         permissions = {}
         data["permissions"] = permissions
     return permissions
-
-
-def _ensure_file_guard_dict(permissions: dict[str, Any]) -> dict[str, Any]:
-    fg = permissions.get("file_guard")
-    if not isinstance(fg, dict):
-        fg = {}
-        permissions["file_guard"] = fg
-    fg["enabled"] = True
-    paths = fg.get("paths")
-    if not isinstance(paths, list):
-        paths = []
-        fg["paths"] = paths
-    return fg
 
 
 def _ensure_approval_overrides_list(permissions: dict[str, Any]) -> list[dict[str, Any]]:
@@ -111,50 +100,14 @@ def _merge_file_guard_path_into_permissions(
     write: str = "allow",
     exec_: str = "ask",
 ) -> bool:
-    """写入 / 更新一条 ``file_guard.paths``；返回是否有变更。
-
-    优先调用 agent-core ``merge_file_guard_path_rule``；不可用时本地写入。
-    """
-    try:
-        from openjiuwen.harness.security.patterns import merge_file_guard_path_rule
-
-        merged, wrote = merge_file_guard_path_rule(
-            permissions, path_norm, read=read, write=write, exec_=exec_,
-        )
-        # merge 返回副本；写回同一 permissions 引用供调用方 dump
-        permissions.clear()
-        permissions.update(merged)
-        return wrote
-    except ImportError:
-        pass
-
-    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
-
-    fg = _ensure_file_guard_dict(permissions)
-    paths: list[Any] = fg["paths"]  # type: ignore[assignment]
-    entry = {
-        "path": DoubleQuotedScalarString(path_norm),
-        "read": DoubleQuotedScalarString(read),
-        "write": DoubleQuotedScalarString(write),
-        "exec": DoubleQuotedScalarString(exec_),
-        "match": DoubleQuotedScalarString("prefix"),
-    }
-    for i, existing in enumerate(paths):
-        if not isinstance(existing, dict):
-            continue
-        existing_path = str(existing.get("path") or "").replace("\\", "/").rstrip("/")
-        if existing_path != path_norm:
-            continue
-        if (
-            existing.get("read") == read
-            and existing.get("write") == write
-            and existing.get("exec") == exec_
-        ):
-            return False
-        paths[i] = {**existing, **entry}
-        return True
-    paths.append(entry)
-    return True
+    """写入 / 更新一条 ``file_guard.paths``；返回是否有变更。"""
+    merged, wrote = merge_file_guard_path_rule(
+        permissions, path_norm, read=read, write=write, exec_=exec_,
+    )
+    # merge 返回副本；写回同一 permissions 引用供调用方 dump
+    permissions.clear()
+    permissions.update(merged)
+    return wrote
 
 
 def build_command_allow_pattern(cmd: str) -> str:
@@ -217,46 +170,17 @@ def persist_external_directory_allow(
     if not paths:
         return
 
-    try:
-        from openjiuwen.harness.security.patterns import merge_file_guard_access_allows
-
-        data, yaml_path = _load_config_yaml_round_trip()
-        permissions = _ensure_permissions_dict(data)
-        access_list: list[tuple[str, str]] = []
-        for i, path_str in enumerate(paths):
-            act = "read"
-            if actions is not None and i < len(actions) and actions[i]:
-                act = str(actions[i])
-            access_list.append((path_str, act))
-        merged, wrote = merge_file_guard_access_allows(permissions, access_list)
-        if wrote:
-            data["permissions"] = merged
-            _dump_config_yaml_round_trip(yaml_path, data)
-        return
-    except ImportError:
-        pass
-
     data, yaml_path = _load_config_yaml_round_trip()
     permissions = _ensure_permissions_dict(data)
-    wrote = False
+    access_list: list[tuple[str, str]] = []
     for i, path_str in enumerate(paths):
-        path_norm = path_str.replace("\\", "/").rstrip("/")
-        if not path_norm:
-            continue
         act = "read"
         if actions is not None and i < len(actions) and actions[i]:
-            act = str(actions[i]).strip().lower()
-        if act == "write":
-            read, write, exec_ = "allow", "allow", "ask"
-        elif act == "exec":
-            read, write, exec_ = "allow", "ask", "allow"
-        else:
-            read, write, exec_ = "allow", "ask", "ask"
-        if _merge_file_guard_path_into_permissions(
-            permissions, path_norm, read=read, write=write, exec_=exec_,
-        ):
-            wrote = True
+            act = str(actions[i])
+        access_list.append((path_str, act))
+    merged, wrote = merge_file_guard_access_allows(permissions, access_list)
     if wrote:
+        data["permissions"] = merged
         _dump_config_yaml_round_trip(yaml_path, data)
 
 

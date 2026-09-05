@@ -75,13 +75,51 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
 
     try:
         if m == ReqMethod.PERMISSIONS_TOOLS_GET:
-            return _ok(request, dict(get_permissions_tools()))
+            from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+                compose_host_effective_permissions,
+            )
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                load_global_permissions,
+                load_session_permissions,
+                load_user_permissions,
+            )
+
+            effective = compose_host_effective_permissions(
+                global_permissions=load_global_permissions(),
+                user_permissions=load_user_permissions(),
+                session_permissions=load_session_permissions(None),
+            )
+            tools = effective.get("tools") if isinstance(effective.get("tools"), dict) else {}
+            return _ok(request, {"tools": dict(tools)})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_SET:
             if not isinstance(params, dict):
                 return _err(request, "params must be object")
             tools = params.get("tools")
-            replace_permissions_tools_in_config(tools)
+            if not isinstance(tools, dict):
+                return _err(request, "tools must be object")
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                load_user_permissions,
+                save_user_permissions,
+            )
+
+            overlay = load_user_permissions()
+            deny, ask, allow = [], [], []
+            for name, raw in tools.items():
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                level = raw.get("*") if isinstance(raw, dict) else raw
+                lv = str(level or "").strip().lower()
+                if lv == "deny":
+                    deny.append(name.strip())
+                elif lv == "ask":
+                    ask.append(name.strip())
+                elif lv == "allow":
+                    allow.append(name.strip())
+            overlay["deny_tools"] = deny
+            overlay["ask_tools"] = ask
+            overlay["allow_tools"] = allow
+            save_user_permissions(overlay)
             return _ok(request, {"ok": True})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_UPDATE:
