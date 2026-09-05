@@ -2115,6 +2115,27 @@ def main() -> None:
     _ConfiguredHandler.logs_root = logs_root
     _ConfiguredHandler.logger = logger
     handler = partial(_ConfiguredHandler, directory=str(dist_dir))
+
+    # Pre-check port occupancy before binding.
+    # On Windows, SO_REUSEADDR allows a second process to silently bind the same
+    # port even while another one is actively listening, which makes the kernel
+    # randomly distribute browser connections between the two servers (e.g. a
+    # leftover Vite dev server on the same port), causing intermittent auth-page
+    # symptoms. Actively connect-probing the port catches this on every platform.
+    _probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _probe.settimeout(0.5)
+    try:
+        if _probe.connect_ex((args.host, args.port)) == 0:
+            _msg = (
+                f"[jiuwenswarm-web] port {args.port} on {args.host} is already in use by another "
+                f"process; refusing to start (check for a leftover dev server, e.g. Vite/node)"
+            )
+            logger.error(_msg)
+            print(_msg, file=sys.stderr)
+            raise SystemExit(1)
+    finally:
+        _probe.close()
+
     server = ThreadingHTTPServer((args.host, args.port), handler)
 
     # Windows has no SIGUSR1, so avoid importing debug_dump (which itself
