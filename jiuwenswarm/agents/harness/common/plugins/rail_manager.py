@@ -355,7 +355,17 @@ class RailManager:
         return self._extensions[name].to_dict()
 
     def set_agent_instance(self, agent_instance: Any) -> None:
-        """设置 DeepAgent 实例，用于热更新 rail."""
+        """设置 DeepAgent 实例，用于热更新 rail.
+
+        实例更换时清空注册状态：``_registered_rails`` 记录的是"已注册到上一个
+        实例"，对新实例不成立。不清空会导致 ``hot_reload_rail`` 误判"已注册"而
+        跳过，新实例永远拿不到 rail（例如每个 chat run 创建新 DeepAgent 的场景）。
+        """
+        if (
+            self._agent_instance is not None
+            and self._agent_instance is not agent_instance
+        ):
+            self._registered_rails.clear()
         self._agent_instance = agent_instance
         logger.info("[RailManager] DeepAgent 实例已设置")
 
