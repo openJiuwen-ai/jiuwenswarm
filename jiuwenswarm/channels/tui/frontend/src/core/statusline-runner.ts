@@ -66,6 +66,9 @@ export function runStatusLineCommand(
     { timeout: 3_000, maxBuffer: 10_240, cwd },
     (error, stdout) => callback(error, stdout),
   );
+  // A fast-exiting command may close stdin before end() flushes. Consuming the
+  // stream error keeps an optional statusline command from crashing the TUI.
+  child.stdin?.on("error", () => undefined);
   child.stdin?.end(jsonInput);
   return child;
 }
