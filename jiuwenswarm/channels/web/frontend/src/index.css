@@ -459,6 +459,85 @@ body.workspace-resize-active iframe {
     padding-bottom: 24px;
   }
 
+  /* 技能/专家/扩展页通栏：滚动条贴屏幕右缘，内容统一 48px 留白。
+     滚动容器用负 margin 右出血 + 自身右 padding 抵消；
+     scrollbar-gutter: stable 永久预留 8px 滚动条槽位（全局 ::-webkit-scrollbar 宽 8px），
+     滚动条因此"住"在 48px 留白带内（40px padding + 8px 槽），出现/消失都不挤压内容 */
+  [data-testid='skill-content'],
+  [data-testid='connector-market-page'] {
+    max-width: none;
+    margin-right: 0;
+    margin-left: 0;
+    padding-right: 48px;
+    padding-left: 48px;
+  }
+
+  /* 专家页：通栏，滚动条贴屏幕右缘；自身是滚动容器（detail/create 视图整页滚动），
+     预留自己的滚动条槽位（stable） */
+  [data-testid='agent-management-panel'] {
+    max-width: none;
+    margin-right: 0;
+    margin-left: 0;
+    padding-right: 48px;
+    padding-left: 48px;
+    scrollbar-gutter: stable;
+  }
+
+  .skill-list-scroll,
+  [data-testid='agent-management-catalog-content'],
+  [data-testid='connector-market-card-list'] {
+    margin-right: -48px;
+    padding-right: 40px;
+    scrollbar-gutter: stable;
+  }
+
+  /* 详情页统一滚动容器（agent/skill/connector detail）。
+     负 margin 右出血 48px 贴父容器右内缘；scrollbar-gutter 预留 8px 槽，
+     padding-right = 48-8 = 40；滚动条出现在父容器 48px 留白带的最右缘。
+     子元素通过 > * 规则限宽 1400px 并居中。 */
+  .detail-body {
+    margin-right: -48px;
+    padding-right: 40px;
+    scrollbar-gutter: stable;
+  }
+
+  .detail-body > * {
+    width: 100%;
+    max-width: 1400px;
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  /* 统一返回按钮（agent/skill/connector detail）。
+     限宽 1400px 并居中，与详情页内容区域对齐；flex-shrink:0 保证不被压缩。 */
+  .detail-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-primary);
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 22px;
+    width: 100%;
+    max-width: 1400px;
+    margin-right: auto;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .detail-back:hover {
+    color: var(--color-text-strong);
+  }
+
+  .detail-back svg {
+    width: 12px;
+    height: 12px;
+  }
+
   .page-content .chat-picker-panel__tabs {
     height: 34px;
     min-height: 34px;
@@ -687,15 +766,6 @@ body.workspace-resize-active iframe {
 
   .chat-bubble-wrapper--with-files {
     width: 100%;
-  }
-
-  .message-row [data-testid="chat-panel-message-meta"] {
-    opacity: 0;
-    transition: opacity 150ms ease;
-  }
-
-  .message-row:hover [data-testid="chat-panel-message-meta"] {
-    opacity: 1;
   }
 
   /* AI disclaimer — footer note pinned below the composer */
@@ -1121,21 +1191,21 @@ body.workspace-resize-active iframe {
     gap: 4px;
   }
 
-  /* ====== Team Timeline Messages（与单 agent assistant-row 同一套布局指标） ====== */
+  /* ====== Team Timeline Messages（头像+名字一行，正文另起一行） ====== */
   .team-member-message {
     width: min(100%, 920px);
     margin: 0 auto 12px;
     display: flex;
-    gap: 10px;
-    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+    align-items: stretch;
   }
 
   .team-member-message__header {
     display: flex;
     align-items: center;
+    gap: 8px;
     flex: 0 0 auto;
-    width: 32px;
-    margin-top: 2px;
   }
 
   .team-member-message__body {
@@ -1167,7 +1237,6 @@ body.workspace-resize-active iframe {
   }
 
   .team-member-message__plain {
-    max-width: min(100%, 720px);
     min-width: 0;
     overflow-x: auto;
     color: var(--color-text-primary);
@@ -1206,6 +1275,13 @@ body.workspace-resize-active iframe {
   .team-message-markdown--inline>p:first-child {
     display: inline;
     margin: 0;
+  }
+
+  /* ====== Member detail body (team-area / subagent shared) ====== */
+  .member-detail-body>* {
+    max-width: max(720px, calc(100% - 640px));
+    margin-left: auto;
+    margin-right: auto;
   }
 
   /* ====== Team Event Group Cards ====== */
@@ -2328,11 +2404,6 @@ body.workspace-resize-active iframe {
 
 @media (min-width: 1440px) {
   :root {
-    --font-size-base: 15px;
-    --font-size-lg: 17px;
-    --font-size-sm: 14px;
-    --font-size-xs: 13px;
-    --font-size-2xs: 12px;
     --shell-nav-width: 248px;
     --tool-panel-width: var(--shell-nav-width);
     --statusbar-right-space: var(--tool-panel-width);
@@ -2341,11 +2412,6 @@ body.workspace-resize-active iframe {
 
 @media (min-width: 1920px) {
   :root {
-    --font-size-base: 16px;
-    --font-size-lg: 18px;
-    --font-size-sm: 15px;
-    --font-size-xs: 14px;
-    --font-size-2xs: 13px;
     --shell-nav-width: 272px;
     --tool-panel-width: var(--shell-nav-width);
     --statusbar-right-space: var(--tool-panel-width);

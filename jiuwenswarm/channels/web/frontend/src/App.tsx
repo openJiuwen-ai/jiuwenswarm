@@ -3291,7 +3291,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         )}
         {activeNav === 'connectorMarket' && (
           <div className="app-page-body">
-            <div className="page-content">
+            <div className="page-content" data-testid="connector-market-page">
               <ConnectorMarketPanel
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {

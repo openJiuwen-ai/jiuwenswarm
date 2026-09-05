@@ -1,4 +1,4 @@
-import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Minus, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Minus, X } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -7,6 +7,7 @@ import DeleteIcon from '../../assets/agent-management/remove.svg?react';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
+import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentDraft, McpOption, RequestStatus, SkillOption } from '../../features/agentManagement';
@@ -233,11 +234,13 @@ export function AgentEditor({
 
   return (
     <form className="agent-management-editor" onSubmit={handleSubmit} data-testid="agent-editor">
-      <button type="button" className="agent-management-back" onClick={onCancel}>
-        <ArrowLeft size={16} aria-hidden="true" />
+      <button type="button" className="detail-back mb-[35px]" onClick={onCancel}>
+        <BackIcon aria-hidden="true" />
         {t('agentManagement.actions.back')}
       </button>
 
+      <div className="detail-body flex-1 min-h-0 overflow-y-auto">
+      <div className="agent-management-editor__inner">
       <header className="agent-management-editor__header">
         <h1>{t('agentManagement.form.title')}</h1>
         <div className="agent-management-editor__tabs" role="tablist" aria-label={t('agentManagement.form.createTabsLabel')}>
@@ -588,6 +591,8 @@ export function AgentEditor({
         </div>,
         document.body,
       ) : null}
+      </div>
+      </div>
     </form>
   );
 }

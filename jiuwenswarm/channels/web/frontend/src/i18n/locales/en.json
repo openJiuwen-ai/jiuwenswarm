@@ -623,6 +623,7 @@
     "addImageDisabled": "Cannot add images while processing or recording",
     "addFile": "Add file",
     "addFileDisabled": "Cannot add files while processing or recording",
+    "addFileTooltip": "Add files, experts, skills, connectors",
     "addAttachment": "Add attachment",
     "removeImage": "Remove image",
     "sendTask": "Send message without interrupting model",

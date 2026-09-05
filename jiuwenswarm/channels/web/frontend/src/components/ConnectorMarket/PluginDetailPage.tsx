@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, Trash2, Plus, Wrench, Link2, Plug, Loader2, X, ExternalLink, Pencil } from 'lucide-react';
+import { Trash2, Plus, Wrench, Link2, Plug, Loader2, X, ExternalLink, Pencil } from 'lucide-react';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText, type PluginCapabilityRef } from '../../types/pluginPackage';
 import { NewConversationIcon } from './icons';
@@ -9,6 +9,7 @@ import { EntityAvatar } from './EntityAvatar';
 import { PillButton, DetailLinkButton } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
+import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
 interface PluginDetailPageProps {
   id: string;
@@ -141,17 +142,17 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   }
 
   return (
-    <div className="relative h-full overflow-y-auto bg-card px-8 py-6">
-      {/* 用户明确要求：去掉路径说明（原来的"插件/插件详情"面包屑），返回挪到整个页面最顶行，
-          图标+文字（黑色），不再是原来那个跟扩展图标同排的圆形纯图标按钮。 */}
+    <div className="flex min-h-0 flex-1 flex-col">
       <button
         type="button"
         onClick={onBack}
-        className="mb-4 flex items-center gap-1 text-[14px] leading-[22px] text-text hover:opacity-70"
+        className="detail-back mb-[35px]"
       >
-        <ChevronLeft size={16} />
+        <BackIcon aria-hidden="true" />
         {t('connectorMarket.common.back')}
       </button>
+
+      <div className="detail-body relative flex-1 min-h-0 overflow-y-auto pb-6">
 
       <div className="mb-6 flex items-start justify-between">
         <div className="flex items-center gap-3">
@@ -165,7 +166,10 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
             {detail.tags.length > 0 && (
               <div className="mt-0.5 flex flex-wrap gap-1">
                 {detail.tags.map((tag) => (
-                  <span key={localizedText(tag, i18n.language)} className="inline-block rounded-[2px] bg-connector-tag-surface px-1.5 py-0.5 text-[12px] leading-[18px] text-text">
+                  <span
+                    key={localizedText(tag, i18n.language)}
+                    className="inline-block rounded-[2px] bg-connector-tag-surface px-1.5 py-0.5 text-[12px] leading-[18px] text-text"
+                  >
                     {localizedText(tag, i18n.language)}
                   </span>
                 ))}
@@ -213,8 +217,16 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
               {t('connectorMarket.card.use')}
             </button>
           )}
-          {!installed && !installBusy && <PillButton icon={<Plus size={14} />} label={t('connectorMarket.card.install')} onClick={handleInstall} />}
-          {!installed && installBusy && <PillButton icon={<Loader2 size={14} className="animate-spin" />} label={t('connectorMarket.card.installing')} disabled />}
+          {!installed && !installBusy && (
+            <PillButton icon={<Plus size={14} />} label={t('connectorMarket.card.install')} onClick={handleInstall} />
+          )}
+          {!installed && installBusy && (
+            <PillButton
+              icon={<Loader2 size={14} className="animate-spin" />}
+              label={t('connectorMarket.card.installing')}
+              disabled
+            />
+          )}
         </div>
       </div>
 
@@ -252,7 +264,9 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
       )}
 
       <Section title={t('connectorMarket.detail.sections.basicInfo')}>
-        <p className="text-[12px] leading-[18px] text-text">{localizedText(detail.displayDescription, i18n.language)}</p>
+        <p className="text-[12px] leading-[18px] text-text">
+          {localizedText(detail.displayDescription, i18n.language)}
+        </p>
       </Section>
 
       {/* "试试这样用"——照抄 McpDetailPage.tsx 同款示例区，2026-08-21 后端 show 接口新增
@@ -261,7 +275,9 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           那边"onUseExample && linked 才可点，否则渲染成不可点的纯展示 span"是同一个门控。 */}
       {detail.quickInputs && detail.quickInputs.length > 0 && (
         <div className="mb-6">
-          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text">{t('connectorMarket.detail.sections.examples')}</h2>
+          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text">
+            {t('connectorMarket.detail.sections.examples')}
+          </h2>
           <div className="flex flex-wrap gap-2">
             {detail.quickInputs.map((quickInput) => {
               const text = localizedText(quickInput, i18n.language);
@@ -317,6 +333,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           都按各自的 active 状态独立渲染，不额外加互斥判断。 */}
       <PendingConnectorModals flow={installFlow} />
       <PendingConnectorModals flow={reconnectFlow} />
+      </div>
     </div>
   );
 }
@@ -357,7 +374,10 @@ function CapabilityGrid({
             {/* min-h-5（=leading-5，20px）：desc 为空字符串时 <p> 没有任何行内内容，不会撑出
                 一个 line box，浏览器会把它渲染成 0 高度，导致这张卡片比旁边有描述的卡片矮一截
                 （2026-08-21 用户反馈，同款修法见 McpDetailPage.tsx 的技能/工具卡片）。 */}
-            <p className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]" title={desc}>
+            <p
+              className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]"
+              title={desc}
+            >
               {desc}
             </p>
           </div>
