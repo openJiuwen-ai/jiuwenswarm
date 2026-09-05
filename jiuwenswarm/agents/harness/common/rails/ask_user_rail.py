@@ -59,10 +59,16 @@ _QUESTIONS_ITEM_SCHEMA: dict[str, Any] = {
             "description": "A short label displayed as a chip/tag.",
         },
         "options": {
-            "type": "array",
             "description": "Available choices for this question (2-4 items).",
-            "maxItems": 4,
-            "anyOf": [{"maxItems": 0}, {"minItems": 2}],
+            # Moonshot/Kimi 的 flavored JSON Schema 校验器要求：parent schema 里
+            # 不得同时存在 type 与 anyOf，type 必须写进 anyOf 的每个分支
+            # （报错 "type should be defined in anyOf items instead of the parent
+            # schema"）。语义不变：数组元素由 items 约束（object + required label），
+            # 数量由 anyOf 约束（0 个，或 2-4 个）。
+            "anyOf": [
+                {"type": "array", "maxItems": 0},
+                {"type": "array", "minItems": 2, "maxItems": 4},
+            ],
             "items": {
                 "type": "object",
                 "properties": {
