@@ -1690,6 +1690,12 @@ class JiuWenSwarmDeepAdapter:
         self._last_models_config_fingerprint: str | None = None
         self._registered_mcp_server_ids: set[str] = set()
         self._registered_mcp_servers: dict[str, McpServerConfig] = {}
+        # server_ids that the last ``_propagate_mcps_to_subagent_specs`` pass
+        # wrote into SubAgentConfig.mcps. Used to strip previously-propagated
+        # entries before re-applying the live set, so a spec's own explicit
+        # mcps survive register/unregister cycles and stale entries are dropped
+        # after an MCP server is unregistered.
+        self._last_propagated_mcp_ids: set[str] = set()
         # MCP names this session loaded via chat.send's ``mcp`` field
         # (reconcile_session_mcp). init-registered config.yaml MCPs are NOT in
         # this set — reconcile only adds/removes its own, never touching init's.
@@ -3831,6 +3837,10 @@ class JiuWenSwarmDeepAdapter:
                 self._instance.ability_manager.add(cfg)
                 self._registered_mcp_server_ids.add(server_id)
                 self._registered_mcp_servers[server_id] = cfg
+                # Subagents are materialized later from SubAgentConfig; keep
+                # their mcps mirroring the live set so they see the same MCP
+                # tools the main agent has (see _propagate_mcps_to_subagent_specs).
+                self._propagate_mcps_to_subagent_specs()
                 return True
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] MCP server register failed: "
@@ -3889,6 +3899,10 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("[JiuWenSwarmDeepAdapter] MCP ability remove failed: %s", exc)
         self._registered_mcp_server_ids.discard(server_id)
         self._registered_mcp_servers.pop(server_id, None)
+        # Mirror the removal onto subagent specs (see
+        # _propagate_mcps_to_subagent_specs) so stale MCP tools disappear
+        # from subagents after disconnect/disable/reload.
+        self._propagate_mcps_to_subagent_specs()
 
     async def _safe_remove_mcp_server(self, server_id: str) -> None:
         """Run remove_mcp_server in a fresh task so its TaskGroup's cancel-scope
@@ -3904,6 +3918,83 @@ class JiuWenSwarmDeepAdapter:
             await asyncio.wait_for(t, timeout=10.0)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[JiuWenSwarmDeepAdapter] MCP remove timed out/errored: %s", exc)
+
+    def _propagate_mcps_to_subagent_specs(self) -> None:
+        """Mirror the adapter-registered MCP set onto subagent specs.
+
+        This adapter registers MCP servers at runtime onto the MAIN agent only
+        (``Runner.resource_mgr`` + main ``ability_manager``). Subagents are
+        materialized later from ``SubAgentConfig`` via
+        ``DeepAgent.create_subagent()`` and their tool list comes from the
+        subagent's own ability manager — so with ``SubAgentConfig.mcps`` empty
+        a subagent never sees MCP tools (e.g. the general-purpose subagent
+        cannot call ``mcp_<server>_*`` tools that the main agent can).
+
+        Sharing the same ``McpServerConfig`` objects (same ``server_id``)
+        makes the subagent-side ``DeepAgent._register_pending_mcps`` hit the
+        "already registered" branch: it only re-tags the shared server onto
+        the subagent's card id and mounts it, without spawning a second MCP
+        process (``resource_mgr.add_mcp_server`` dedups by ``server_id``).
+
+        Propagation rules per spec:
+        - empty ``mcps`` → inherit the live set;
+        - fully inherited (only entries from a previous pass) → refresh to the
+          current live set;
+        - own explicit entries (possibly with stale inherited ones mixed in) →
+          keep the own entries, strip the inherited ones, then stop tracking.
+        """
+        instance = self._instance
+        if instance is None:
+            return
+        deep_cfg = getattr(instance, "_deep_config", None)
+        specs = getattr(deep_cfg, "subagents", None) or []
+        try:
+            from openjiuwen.harness.schema.config import SubAgentConfig
+        except Exception:  # noqa: BLE001
+            return
+        # Dedup by server_name (first wins), mirroring AbilityManager.add's
+        # duplicate-name skip for MCP server abilities.
+        live: list[McpServerConfig] = []
+        seen_names: set[str] = set()
+        for cfg in self._registered_mcp_servers.values():
+            name = str(getattr(cfg, "server_name", "") or "").strip()
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            live.append(cfg)
+        live_ids = {str(getattr(cfg, "server_id", "") or "") for cfg in live}
+        prev_ids = self._last_propagated_mcp_ids
+        changed = False
+        for spec in specs:
+            if not isinstance(spec, SubAgentConfig):
+                continue
+            spec_mcps = list(spec.mcps or [])
+            own = [
+                c for c in spec_mcps
+                if str(getattr(c, "server_id", "") or "") not in prev_ids
+            ]
+            if not spec_mcps:
+                # Empty → inherit the live set.
+                new_mcps = list(live)
+            elif not own:
+                # Fully inherited before → refresh to the current live set
+                # (covers unregister/reload removing or adding servers).
+                new_mcps = list(live)
+            else:
+                # Spec declares its own MCP set. Strip any previously
+                # propagated entries that got mixed in, keep the own ones.
+                new_mcps = own
+            new_ids = [str(getattr(c, "server_id", "") or "") for c in new_mcps]
+            if [str(getattr(c, "server_id", "") or "") for c in spec_mcps] != new_ids:
+                spec.mcps = new_mcps
+                changed = True
+        self._last_propagated_mcp_ids = live_ids
+        if changed and live:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] propagated %d MCP server(s) to subagent specs: %s",
+                len(live),
+                sorted(seen_names),
+            )
 
     # --- Targeted single-MCP control (no full reload) ---
     # The mcp connect/disconnect/enable/disable handlers call these instead
