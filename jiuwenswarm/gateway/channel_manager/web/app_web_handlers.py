@@ -4501,6 +4501,30 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             req_method=ReqMethod.PROJECT_LIST,
             label="project.list",
         )
+        return
+
+    def _to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
+        """将会话元数据投影为 SessionInfo(排除 delivery_context/channel_metadata 等内部字段)。"""
+        lum = meta.get("last_user_message_at")
+        return {
+            "session_id": str(meta.get("session_id", "")),
+            "title": str(meta.get("title", "")),
+            "created_at": meta.get("created_at", 0),
+            "last_message_at": meta.get("last_message_at", 0),
+            "message_count": int(meta.get("message_count", 0)),
+            "mode": str(meta.get("mode", "unknown")),
+            "team_name": str(meta.get("team_name", "")),
+            "pinned": bool(meta.get("pinned", False)),
+            "pin_order": int(meta.get("pin_order", 0)),
+            "project_dir": str(meta.get("project_dir", "")),
+            "project_id": str(meta.get("project_id", "")),
+            "persist_session": meta.get("persist_session") is True,
+            "cron_id": str(meta.get("cron_id", "")),
+            "last_user_message_at": lum if isinstance(lum, (int, float)) and not isinstance(lum, bool) else None,
+            "model": str(meta.get("model", "")),
+            "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
+            "history_path": str(meta.get("history_path", "")),
+        }
 
     async def _project_get_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目下的非置顶普通会话列表（目标 AgentServer 执行）。"""

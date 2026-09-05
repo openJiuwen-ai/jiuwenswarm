@@ -239,6 +239,15 @@ def _resolve_final_record_timestamp(
 ) -> float:
     """chat.final 落盘用「气泡出现的时刻」，收尾时刻另存 completed_at。"""
     completed_at = time.time()
+    if event_type in ("chat.llm_call_start", "chat.usage_metadata"):
+        # Anchor the call-start marker and the usage card to the call's start
+        # so they render before the response text (chat.final). chat.llm_call_end
+        # keeps its REAL completion timestamp.
+        if isinstance(extra_fields, dict):
+            start_ts = extra_fields.get("llm_start_ts")
+            if isinstance(start_ts, (int, float)) and 0 < start_ts <= completed_at:
+                return float(start_ts)
+        return completed_at
     if event_type != "chat.final" or not segment_started_at:
         return completed_at
     if segment_started_at >= completed_at:

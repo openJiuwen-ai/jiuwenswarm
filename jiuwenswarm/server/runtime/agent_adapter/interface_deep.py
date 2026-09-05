@@ -11697,6 +11697,22 @@ class JiuWenSwarmDeepAdapter:
         Returns:
             AgentResponse 包含执行结果
         """
+        # Record the parent request context so sub-agent LLM calls (which run in
+        # sub-sessions) can be forwarded into this session's history (TraceHound).
+        try:
+            from jiuwenswarm.agents.harness.agent_observability import (
+                set_parent_request_context,
+            )
+            set_parent_request_context(
+                session_id=request.session_id or "default",
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                mode=(request.params.get("mode", "agent")
+                      if isinstance(request.params, dict) else "agent"),
+            )
+        except Exception:
+            pass
+
         if not self._is_session_scoped_adapter:
             session_adapter = await self._get_or_create_session_adapter(
                 request.session_id,
@@ -12103,6 +12119,25 @@ class JiuWenSwarmDeepAdapter:
 
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
+
+        # Record the parent request context so sub-agent LLM calls (which run in
+        # sub-sessions) can be forwarded into this session's history (TraceHound).
+        # Mirror of the non-streaming path (process_message_impl) — the web chat
+        # rides this streaming handler, and without it no sub-agent LLM records
+        # are attributed to the parent session.
+        try:
+            from jiuwenswarm.agents.harness.agent_observability import (
+                set_parent_request_context,
+            )
+            set_parent_request_context(
+                session_id=request.session_id or "default",
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                mode=(request.params.get("mode", "agent")
+                      if isinstance(request.params, dict) else "agent"),
+            )
+        except Exception:
+            pass
 
         _req_model = self._requested_model_name(request)
         if not self._has_valid_model_config(_req_model):
@@ -12901,6 +12936,10 @@ class JiuWenSwarmDeepAdapter:
             # A previous consumer may have stopped mid-round; this stream must
             # sample the run kind again on its own first chunk.
             self._reset_round_kind_latch()
+            last_llm_prompt: str | None = None
+            # Call-start time — anchors the chat.usage_metadata record so the LLM
+            # Call card renders before the response text (recorded at completion).
+            last_llm_start_ts: float | None = None
             async for chunk in interaction_stream:
                 self._track_round_output_boundary(chunk)
                 # First chunk handed back by the runner: records the time to
@@ -12975,6 +13014,35 @@ class JiuWenSwarmDeepAdapter:
 
                 chunk_type = chunk.type
 
+                if chunk_type in ("llm_call_start", "llm_call_end"):
+                    payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    forward: dict[str, Any] = {
+                        "event_type": "chat." + chunk_type,
+                        "member_name": payload.get("member_name"),
+                        "role": payload.get("role"),
+                    }
+                    prompt = payload.get("prompt")
+                    if prompt:
+                        forward["prompt"] = prompt
+                        if chunk_type == "llm_call_start":
+                            last_llm_prompt = str(prompt)
+                            last_llm_start_ts = time.time()
+                    content = payload.get("content")
+                    if content:
+                        forward["content"] = content
+                    # Anchor start / end / usage of the same call to the call's
+                    # start timestamp so the call events group together ahead of
+                    # chat.final (which is recorded at completion).
+                    if chunk_type == "llm_call_start" and last_llm_start_ts is not None:
+                        forward["llm_start_ts"] = last_llm_start_ts
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=note_chat_payload(forward),
+                        is_complete=False,
+                    )
+                    continue
+
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
                     usage_meta = (
@@ -12992,6 +13060,13 @@ class JiuWenSwarmDeepAdapter:
                             usage_accumulator[token] += usage_meta.get(token, 0) or 0
                         for cost in ("input_cost", "output_cost", "total_cost"):
                             usage_accumulator[cost] += usage_meta.get(cost, 0.0) or 0.0
+                        # agent-core no longer serializes the prompt; carry the one
+                        # captured by the llm_call_start rail event so the final
+                        # prompt stays available for the LLM call.
+                        if last_llm_prompt and not usage_meta.get("prompt"):
+                            usage_meta = {**usage_meta, "prompt": last_llm_prompt}
+                            if isinstance(chunk.payload, dict):
+                                chunk.payload["usage_metadata"] = usage_meta
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
@@ -12999,6 +13074,7 @@ class JiuWenSwarmDeepAdapter:
                             "event_type": "chat.usage_metadata",
                             "metadata": chunk.payload,
                             "session_id": session_id,
+                            **({"llm_start_ts": last_llm_start_ts} if last_llm_start_ts is not None else {}),
                         },
                         is_complete=False,
                     )

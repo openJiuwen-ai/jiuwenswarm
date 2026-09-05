@@ -203,6 +203,22 @@ _mark_startup_import_phase("entry_module_ready")
 
 # ``TaskTool`` 的 /debug 跟踪补丁按首个开启 subagent trace 的请求再加载。
 # 普通启动无需导入 SDK 的 TaskTool 实现；实际补丁仍会在请求 dispatch 前完成。
+from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+    apply_task_tool_debug_patch,
+)
+apply_task_tool_debug_patch()
+
+# 让所有分发路径创建的 subagent 都带上 OTel 观测 rail（内置 task_tool、自定义
+# agent 工具、后台 subagent），这样子 agent 的 llm/tool span 归属自己的
+# agent.<type>.invoke span，而不是挂到派发它的 agent 身上。
+from jiuwenswarm.agents.harness.agent_observability import (
+    install_subagent_llm_history_forwarder,
+    install_subagent_observability_hook,
+)
+
+install_subagent_observability_hook()
+install_subagent_llm_history_forwarder()
+
 
 
 async def _run(host: str, port: int) -> None:
@@ -272,9 +288,11 @@ async def _run(host: str, port: int) -> None:
     # 观测 hook 只会在后续创建子 Agent 时生效，不是首页 RPC 的前置条件。
     # 延后其依赖导入可让冻结进程先开放 AgentServer 端口；在事件循环处理首个
     # 请求前仍会同步安装完成，保持所有执行路径的 span 归属不变。
-    from openjiuwen.harness.observability import install_subagent_observability_hook
+    from openjiuwen.harness.observability import (
+        install_subagent_observability_hook as install_openjiuwen_subagent_observability_hook,
+    )
 
-    install_subagent_observability_hook()
+    install_openjiuwen_subagent_observability_hook()
     log_startup_stage("observability_installed")
 
     # ---------- 图像模态探针预热 ----------
