@@ -11832,6 +11832,7 @@ class JiuWenSwarmDeepAdapter:
         if self._stream_event_rail is not None:
             self._stream_event_rail.reset_abort(session_id)
         image_files_token = None
+        image_tool_fallback_notice: dict[str, Any] | None = None
         _run_span: Any = None
         _run_exception: BaseException | None = None
         _run_error_type = ""
@@ -11880,6 +11881,14 @@ class JiuWenSwarmDeepAdapter:
             enable_read_image_multimodal = self._native_image_input_enabled(
                 self._config_cache,
                 resolved_model,
+            )
+            # Same notice the streaming paths yield as a ``chat.notice`` chunk.
+            # A non-streaming request has no chunk to carry it, so it is folded
+            # into the final payload below.
+            image_tool_fallback_notice = self._build_image_tool_fallback_notice(
+                request,
+                enable_read_image_multimodal=enable_read_image_multimodal,
+                model=resolved_model,
             )
             inputs = self._prepare_react_image_tool_prompt(
                 request,
@@ -12055,22 +12064,35 @@ class JiuWenSwarmDeepAdapter:
         if error_text:
             # 模型/round 级错误：即使已流出部分内容，也按失败返回并透传错误消息，
             # 避免 cron 等调用方误判为"执行完成但未返回结果"。
-            payload: dict[str, Any] = {"error": error_text}
+            response_payload: dict[str, Any] = {"error": error_text}
             if content:
-                payload["content"] = content
-            return AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload=payload,
-                metadata=request.metadata,
-            )
+                response_payload["content"] = content
+            response_ok = False
+        else:
+            response_payload = {"content": content}
+            response_ok = True
+
+        if image_tool_fallback_notice is not None and "content" in response_payload:
+            # The streaming paths yield this as its own ``chat.notice`` chunk.
+            # A non-streaming reply has no chunk to carry a side event and every
+            # consumer renders ``payload["content"]`` and nothing else, so the
+            # notice is prepended to the text the reply already carries rather
+            # than put beside it under a key nothing reads. Folding it in once,
+            # after the payload has been chosen, is what lets a branch added
+            # above inherit it: a reply carrying ``content`` gets the notice, a
+            # reply with no user-facing text is left alone.
+            notice_text = str(image_tool_fallback_notice.get("content") or "").strip()
+            if notice_text:
+                answer = response_payload["content"]
+                response_payload["content"] = (
+                    f"{notice_text}\n\n{answer}" if answer else notice_text
+                )
 
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
-            ok=True,
-            payload={"content": content},
+            ok=response_ok,
+            payload=response_payload,
             metadata=request.metadata,
         )
 
