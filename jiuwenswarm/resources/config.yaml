@@ -709,6 +709,11 @@ tools:
   - todo
   - skill
 
+output_format:
+  enabled: false      # pin extracted output-format hints from task file in the system prompt
+  path: /app/task.md  # task description file to extract output format from
+  max_chars: 800      # maximum characters of extracted content to inject
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}

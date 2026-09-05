@@ -450,6 +450,9 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `output_format.enabled` | When true, reads the task file, strips its YAML front-matter, and extracts the last 1–2 prose paragraphs plus any structured code blocks (JSON, CSV, YAML, etc.) as a concise "Required Output Format" reminder pinned in the system prompt at priority 14, ensuring the agent never forgets what it needs to produce even after context compression | `false` |
+| `output_format.path` | Path to the task description file to extract output format hints from | `/app/task.md` |
+| `output_format.max_chars` | Maximum characters of extracted output-format content to inject into the system prompt | `800` |
 
 <a id="dotenv-configuration"></a>
 
