@@ -51,6 +51,15 @@ from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
 
+# A sub-agent interrupt envelope stringified into a ToolMessage. The envelope is
+# built with "result_type" first, so requiring it at the head of the mapping
+# literal keeps the match anchored instead of merely keyword-based. Both repr()
+# (single quotes) and JSON (double quotes) renderings are accepted.
+_INTERRUPT_ENVELOPE_HEAD_RE = re.compile(
+    r"""^\{\s*(?P<k>['"])result_type(?P=k)\s*:\s*(?P<v>['"])interrupt(?P=v)\s*[,}]"""
+)
+_INTERRUPT_ENVELOPE_IDS_RE = re.compile(r"""(?P<k>['"])interrupt_ids(?P=k)\s*:""")
+
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
     detailed_output = getattr(result, "detailed_output", None)
@@ -361,6 +370,42 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             for template in legacy_templates
         )
 
+    @staticmethod
+    def _is_serialized_interrupt_envelope_text(content: str) -> bool:
+        """Detect a stringified interrupt envelope stored as a tool result.
+
+        A tool that delegates to a sub-agent does not raise when the sub-agent
+        interrupts: it returns the interrupt envelope
+        ``{"result_type": "interrupt", "state": [...], "interrupt_ids": [...]}``
+        as its result. Dict results are stringified into the ToolMessage, so the
+        parent context receives a ToolMessage whose content is the envelope
+        rather than an answer -- and the envelope embeds the sub-agent's pending
+        question. When the sub-agent resumes and returns for real, a second
+        ToolMessage arrives with the same tool_call_id. Unless the envelope is
+        recognised as a placeholder, the first-wins de-duplication in
+        _fix_incomplete_tool_context keeps the envelope and discards the genuine
+        result, so the parent goes on to answer with the stale question.
+
+        Matching is deliberately narrow because it is text sniffing:
+
+        - the whole content must be a mapping literal (``{`` ... ``}``);
+        - ``result_type`` must be its *first* key and must map to
+          ``interrupt`` -- which is exactly how the envelope is built;
+        - an ``interrupt_ids`` key must also be present.
+
+        The ``result_type``/``interrupt_ids`` pair is what the interrupt handling
+        itself tests on the live dict. Anchoring that pair to the head of the
+        literal means an ordinary result which merely mentions these words -- in
+        prose, in a quoted snippet, or as a nested value -- cannot match, because
+        such a result never *begins* with the envelope's first key.
+        """
+        stripped = content.strip()
+        if not stripped.startswith("{") or not stripped.endswith("}"):
+            return False
+        if not _INTERRUPT_ENVELOPE_HEAD_RE.match(stripped):
+            return False
+        return bool(_INTERRUPT_ENVELOPE_IDS_RE.search(stripped))
+
     def _is_tool_interrupt_placeholder(
         self,
         message: Any,
@@ -376,6 +421,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         3. We then compare content against known interrupt placeholder text
            variants for that tool. So fake/real is still determined by content,
            not by tool_call_id alone.
+        4. A stringified interrupt envelope counts as a placeholder too: it is
+           the "no result yet" marker a delegating tool leaves behind, and it
+           carries no tool name, so it is matched on its own shape.
         """
         if not isinstance(message, ToolMessage):
             return False
@@ -387,6 +435,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if not content:
             return False
         if expected and content == expected:
+            return True
+        if self._is_serialized_interrupt_envelope_text(content):
             return True
         tool_name = tool_names_by_id.get(tool_call_id, "")
         if not tool_name:
