@@ -76,17 +76,33 @@ def resolve_env_vars(value: Any) -> Any:
             is_need_decrypt = ("api_key" in var_name.lower() or "token" in var_name.lower()) and current
             reg_mod = sys.modules.get("jiuwenswarm.extensions.registry")
             if reg_mod is not None and hasattr(reg_mod, "ExtensionRegistry"):
+                # 取 provider 失败（扩展未注册/未初始化）属预期情形，
+                # 可能是有意不配加密；维持 debug 级别，不刷屏。
+                crypto = None
                 try:
-                    reg = reg_mod.ExtensionRegistry.get_instance()
-                    crypto = reg.get_crypto_provider()
-                    if is_need_decrypt and crypto:
-                        current = crypto.decrypt(current)
+                    crypto = reg_mod.ExtensionRegistry.get_instance().get_crypto_provider()
                 except Exception:
                     logger.debug(
                         "Crypto provider unavailable while resolving env var %s; using raw value",
                         var_name,
                         exc_info=True,
                     )
+                # provider 就绪但 decrypt 抛异常属非预期失败：本应解密的
+                # api_key/token 解不开，退回用原值当密钥是静默 fail-open，
+                # 必须提到 warning 让运维可见，并保留异常类型与消息供排查。
+                # 级别与同文件 _decrypt_model_entries 对齐。
+                if is_need_decrypt and crypto:
+                    try:
+                        current = crypto.decrypt(current)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to decrypt env var %s; using raw value "
+                            "(error=%s: %s)",
+                            var_name,
+                            type(exc).__name__,
+                            exc,
+                            exc_info=True,
+                        )
             # Bash: ${VAR:-default} uses default when VAR is unset OR empty.
             # ${VAR} (no :-) keeps getenv behavior; unset -> "".
             if default is not None:
