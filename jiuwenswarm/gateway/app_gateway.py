@@ -89,7 +89,6 @@ from jiuwenswarm.server.runtime.attachments.media_attachments import (
 )
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
-
 _logging_yaml = get_root_dir() / "config" / "logging.yaml"
 if _logging_yaml.exists():
     from openjiuwen.core.common.logging.log_config import configure_log

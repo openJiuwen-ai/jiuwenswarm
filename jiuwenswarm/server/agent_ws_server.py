@@ -13,7 +13,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
@@ -90,6 +90,7 @@ from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_STARTUP_MODE,
     get_config,
     get_default_models,
+    get_config_yaml_mcp_servers,
     get_mcp_server_config,
     get_mcp_servers,
     get_sandbox_endpoint,
@@ -785,6 +786,19 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
     """Compatibility alias for the shared Runtime plan controller."""
     PlanModeController.inject_activation_reminder(request)
 
+
+class McpUpsertTypes(NamedTuple):
+    """Add/update response ``type`` pair, grouped to satisfy the arg-count lint."""
+    ok: str
+    fail: str
+
+
+# Key substrings whose presence marks a payload field as credential-like.
+_MCP_KEY_SENSITIVE_SUBSTRINGS = frozenset({
+    "api_key", "access_key", "secret_key", "project_id",
+    "auth_code", "auth_token", "amap_key", "map_ak",
+    "token", "authorization", "secret",
+})
 
 
 class AgentWebSocketServer:
@@ -6438,10 +6452,8 @@ class AgentWebSocketServer:
             for key, value in payload.items():
                 key_text = str(key).lower()
                 value_text = value.lower() if isinstance(value, str) else ""
-                key_sensitive = any(
-                    token in key_text for token in ("api_key", "token", "authorization", "secret")
-                )
-                value_sensitive = any(token in value_text for token in ("bearer ", "api-key ", "secret-"))
+                key_sensitive = any(t in key_text for t in _MCP_KEY_SENSITIVE_SUBSTRINGS)
+                value_sensitive = any(t in value_text for t in ("bearer ", "api-key ", "secret-"))
                 if (key_sensitive or value_sensitive) and not isinstance(value, (dict, list)):
                     masked[key] = "***"
                 else:
@@ -6622,6 +6634,113 @@ class AgentWebSocketServer:
             raise KeyError(f"MCP server '{name}' not found")
         return self._normalize_mcp_payload(params, current=current)
 
+    async def _persist_and_probe_mcp(
+        self,
+        request: AgentRequest,
+        payload: dict[str, Any],
+        old_item: dict[str, Any] | None,
+        types: McpUpsertTypes,
+        item: dict[str, Any] | None = None,
+    ) -> AgentResponse:
+        """Shared add/update persistence + live-connect probe.
+
+        Unchanged re-upsert stays ``connected`` (no probe, no reload). A
+        changed/new MCP is written ``connecting``, then probed before reload:
+        on failure roll back and return ``types.fail`` without reloading;
+        on success flip to ``connected`` and reload. config.yaml legacy stock
+        skips the probe (no connection_state, state.json-only rollback).
+        """
+        name = str(payload.get("name", "") or "").strip()
+        # old_item may carry internal fields (e.g. server_id_scope) the
+        # normalized payload never emits — diff only the payload's fields,
+        # else a state.json MCP always looks changed and gets needlessly probed.
+        if old_item is None:
+            config_changed = True
+        else:
+            old_relevant = {k: old_item[k] for k in payload if k in old_item}
+            config_changed = old_relevant != payload
+        if not config_changed:
+            logger.info("[command.mcp] add/update skipped reload: '%s' config unchanged", name)
+        # config.yaml legacy stock has no connection_state and no state.json
+        # rollback target — skip the probe; keep the direct write+reload path.
+        is_config_yaml = any(
+            str(s.get("name", "")).strip() == name
+            for s in get_config_yaml_mcp_servers()
+        )
+        upsert_mcp_server(
+            payload,
+            state="connected" if is_config_yaml
+            else ("connecting" if config_changed else "connected"),
+        )
+        if not config_changed:
+            resp_payload: dict[str, Any] = {
+                "type": "updated", "name": payload["name"], "applied": True,
+            }
+            if item is not None:
+                resp_payload["item"] = item
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=resp_payload,
+            )
+        if is_config_yaml:
+            probe_ok, probe_reason = True, ""
+        else:
+            probe_ok, probe_reason = (
+                await self._agent_manager.probe_mcp_live_connection(name)
+                if name else (True, "")
+            )
+        if not probe_ok:
+            logger.warning("[command.mcp] live-probe failed: %s", probe_reason)
+            try:
+                from jiuwenswarm.server.runtime.mcp.registry import (
+                    rollback_failed_connect,
+                )
+                rollback_failed_connect(name)
+            except Exception as rollback_exc:  # noqa: BLE001
+                logger.warning("[command.mcp] rollback '%s' failed: %s", name, rollback_exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "type": types.fail,
+                    "name": payload["name"],
+                    "error": probe_reason or "MCP live-connect probe failed",
+                    "code": "MCP_UNREACHABLE",
+                },
+            )
+        if not is_config_yaml:
+            try:
+                from jiuwenswarm.server.runtime.mcp.state_store import set_mcp_state
+                set_mcp_state(name, state="connected")
+            except Exception as state_exc:  # noqa: BLE001
+                logger.warning("[command.mcp] flip '%s' to connected failed: %s", name, state_exc)
+        applied = True
+        error_message = ""
+        try:
+            await self._agent_manager.reload_agents_config(get_config(), None)
+        except Exception as reload_exc:  # noqa: BLE001
+            applied = False
+            error_message = str(reload_exc)
+            logger.warning("[command.mcp] reload after %s failed: %s", types.fail, reload_exc)
+        resp_payload = {
+            "type": types.ok,
+            "name": payload["name"],
+            "applied": applied,
+        }
+        if error_message:
+            resp_payload["error"] = error_message
+        if item is not None:
+            resp_payload["item"] = item
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=resp_payload,
+        )
+
     async def _handle_command_mcp(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         try:
             params = request.params or {}
@@ -6732,44 +6851,11 @@ class AgentWebSocketServer:
                             logger.info("[command.mcp] add pre-check ok: %s", check_msg)
 
                 if not pre_check_failed:
-                    # 对于 update，先读旧配置，判断是否真有变化
                     name = server_payload.get("name", "")
                     old_item = get_mcp_server_config(name) if name else None
-
-                    _, created = upsert_mcp_server(server_payload)
-                    applied = True
-                    error_message = ""
-
-                    # 判断是否需要 reload: 新增必然需要；更新时做完整比较，
-                    # 配置完全一致才跳过（dict 比较成本极低，避免漏字段导致改了不生效）。
-                    config_changed = created
-                    if not created and old_item is not None:
-                        config_changed = (dict(old_item) != dict(server_payload))
-                        if not config_changed:
-                            logger.info(
-                                "[command.mcp] add/update skipped reload: '%s' config unchanged", name
-                            )
-
-                    if config_changed:
-                        try:
-                            await self._agent_manager.reload_agents_config(get_config(), None)
-                        except Exception as reload_exc:  # noqa: BLE001
-                            applied = False
-                            error_message = str(reload_exc)
-                            logger.warning("[command.mcp] reload after add failed: %s", reload_exc)
-
-                    resp_payload: dict[str, Any] = {
-                        "type": "added" if created else "updated",
-                        "name": server_payload["name"],
-                        "applied": applied,
-                    }
-                    if error_message:
-                        resp_payload["error"] = error_message
-                    resp = AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=True,
-                        payload=resp_payload,
+                    resp = await self._persist_and_probe_mcp(
+                        request, server_payload, old_item,
+                        types=McpUpsertTypes(ok="added", fail="add_failed"),
                     )
             elif action in {"enable", "disable"}:
                 name = str(params.get("name", "")).strip()
@@ -6886,28 +6972,12 @@ class AgentWebSocketServer:
                         pre_check_failed = True
 
                 if not pre_check_failed:
-                    _, _created = upsert_mcp_server(normalized)
-                    applied = True
-                    error_message = ""
-                    try:
-                        await self._agent_manager.reload_agents_config(get_config(), None)
-                    except Exception as reload_exc:  # noqa: BLE001
-                        applied = False
-                        error_message = str(reload_exc)
-                        logger.warning("[command.mcp] reload after update failed: %s", reload_exc)
-                    payload = {
-                        "type": "updated",
-                        "name": normalized["name"],
-                        "applied": applied,
-                        "item": self._mask_sensitive_fields(normalized),
-                    }
-                    if error_message:
-                        payload["error"] = error_message
-                    resp = AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=True,
-                        payload=payload,
+                    upd_name = normalized.get("name", "")
+                    old_item = get_mcp_server_config(upd_name) if upd_name else None
+                    resp = await self._persist_and_probe_mcp(
+                        request, normalized, old_item,
+                        types=McpUpsertTypes(ok="updated", fail="update_failed"),
+                        item=self._mask_sensitive_fields(normalized),
                     )
             elif action == "list_tools":
                 name = str(params.get("name", "")).strip()
