@@ -1572,6 +1572,8 @@ class JiuWenSwarmDeepAdapter:
         self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
         self._external_memory_rail_registered: bool = False
+        self._external_memory_session_finalized: bool = False
+        self._external_memory_finalize_lock = asyncio.Lock()
         # 记忆 embedding 配置指纹：用于检测 embed 段变化并据此重建 MemoryRail。
         # 重建 rail 才能让 _embedding_config 刷新；否则换 endpoint 时 rail 复用旧配置。
         self._memory_embedding_fingerprint: str = ""
@@ -9583,6 +9585,7 @@ class JiuWenSwarmDeepAdapter:
                     self._parent_session_id,
                     exc,
                 )
+        await self._finalize_external_memory_session()
         try:
             await self._sync_personal_context_rail("cleanup")
         except BaseException as exc:  # noqa: BLE001
@@ -14224,7 +14227,121 @@ class JiuWenSwarmDeepAdapter:
         return build_external_memory_rail(
             config=get_config(),
             workspace_dir=self._workspace_dir,
+            session_id=self._parent_session_id or "__default__",
         )
+
+    def _get_external_memory_session_messages(self) -> list[dict[str, Any]]:
+        """Return the current session history in the provider's JSON-compatible format."""
+        if self._instance is None or self._instance.react_agent is None:
+            return []
+
+        session_id = self._parent_session_id or "__default__"
+        try:
+            context_engine = self._instance.react_agent.context_engine
+            context = context_engine.get_context(session_id=session_id)
+            raw_messages = list(context.get_messages() or []) if context is not None else []
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] read external memory session history failed: "
+                "session_id=%s error=%s",
+                session_id,
+                exc,
+            )
+            return []
+
+        messages: list[dict[str, Any]] = []
+        for message in raw_messages:
+            try:
+                if isinstance(message, dict):
+                    serialized = message
+                else:
+                    model_dump = getattr(message, "model_dump", None)
+                    if callable(model_dump):
+                        try:
+                            serialized = model_dump(mode="json")
+                        except TypeError:
+                            serialized = model_dump()
+                    else:
+                        to_dict = getattr(message, "to_dict", None)
+                        serialized = to_dict() if callable(to_dict) else None
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] serialize external memory message failed: "
+                    "session_id=%s type=%s error=%s",
+                    session_id,
+                    type(message).__name__,
+                    exc,
+                )
+                continue
+
+            if isinstance(serialized, dict):
+                messages.append(serialized)
+                continue
+
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] skip unsupported external memory message: "
+                "session_id=%s type=%s",
+                session_id,
+                type(message).__name__,
+            )
+        return messages
+
+    async def _finalize_external_memory_session(self) -> None:
+        """Flush and commit external memory before its rail shuts down."""
+        finalize_lock = getattr(self, "_external_memory_finalize_lock", None)
+        if finalize_lock is None:
+            finalize_lock = asyncio.Lock()
+            self._external_memory_finalize_lock = finalize_lock
+
+        async with finalize_lock:
+            if getattr(self, "_external_memory_session_finalized", False):
+                return
+
+            rail = self._external_memory_rail
+            provider = getattr(rail, "_provider", None)
+            if rail is None or provider is None or not hasattr(provider, "on_session_end"):
+                return
+
+            session_id = self._parent_session_id or "__default__"
+            sync_task = getattr(rail, "_sync_task", None)
+            if sync_task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(sync_task), timeout=10.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] external memory sync timed out before "
+                        "session commit: session_id=%s",
+                        session_id,
+                    )
+                except asyncio.CancelledError:
+                    if not sync_task.cancelled():
+                        raise
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] external memory sync was cancelled before "
+                        "session commit: session_id=%s",
+                        session_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] external memory sync failed before "
+                        "session commit: session_id=%s error=%s",
+                        session_id,
+                        exc,
+                    )
+
+            messages = self._get_external_memory_session_messages()
+            try:
+                await provider.on_session_end(messages)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] external memory session commit failed: "
+                    "session_id=%s provider=%s error=%s",
+                    session_id,
+                    getattr(provider, "name", type(provider).__name__),
+                    exc,
+                )
+            else:
+                self._external_memory_session_finalized = True
 
     async def _handle_external_memory_rail_by_config(self):
         """Register / unregister ExternalMemoryRail based on config.
@@ -14252,20 +14369,13 @@ class JiuWenSwarmDeepAdapter:
             try:
                 await self._instance.register_rail(self._external_memory_rail)
                 self._external_memory_rail_registered = True
+                self._external_memory_session_finalized = False
                 logger.info("[JiuWenSwarmDeepAdapter] ExternalMemoryRail registered")
             except Exception as exc:
                 logger.error("[JiuWenSwarmDeepAdapter] ExternalMemoryRail register failed: %s", exc)
                 self._external_memory_rail = None
         elif self._external_memory_rail is not None and self._external_memory_rail_registered:
-            # Call on_session_end BEFORE unregister_rail: unregister -> uninit()
-            # is sync, and run_coroutine_threadsafe from the same event loop
-            # thread would deadlock.
-            provider = getattr(self._external_memory_rail, "_provider", None)
-            if provider is not None and hasattr(provider, "on_session_end"):
-                try:
-                    await provider.on_session_end()
-                except Exception as exc:
-                    logger.debug("[JiuWenSwarmDeepAdapter] on_session_end failed: %s", exc)
+            await self._finalize_external_memory_session()
             try:
                 await self._instance.unregister_rail(self._external_memory_rail)
                 logger.info("[JiuWenSwarmDeepAdapter] ExternalMemoryRail unregistered")

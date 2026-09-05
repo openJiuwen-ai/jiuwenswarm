@@ -30,6 +30,7 @@ _BUILTIN_PROVIDERS = {"openjiuwen", "mem0", "openviking"}
 def build_external_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     workspace_dir: str = ".",
+    session_id: str = "__default__",
 ) -> Optional[Any]:
     """Build an ExternalMemoryRail from config, or None if disabled/failed."""
     try:
@@ -72,6 +73,7 @@ def build_external_memory_rail(
             provider,
             user_id=ext_cfg.get("user_id", "__default__"),
             scope_id=ext_cfg.get("scope_id", "__default__"),
+            session_id=session_id,
         )
         logger.info(
             "[ExternalMemoryBuilder] ExternalMemoryRail built (provider=%s)",

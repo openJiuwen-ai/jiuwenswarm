@@ -29,6 +29,7 @@ class _FakeRail:
             "provider": provider,
             "user_id": user_id,
             "scope_id": scope_id,
+            "session_id": session_id,
         }
         self.provider = provider
 
@@ -314,6 +315,14 @@ def test_openjiuwen_happy_path(monkeypatch):
     rail_args = _FakeRail.last_args
     assert rail_args["user_id"] == "alice"
     assert rail_args["scope_id"] == "proj-a"
+
+
+def test_session_id_is_forwarded_to_external_memory_rail(monkeypatch):
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://viking:1933")
+    cfg = {"memory": {"external": {"provider": "openviking", "openviking": {}}}}
+
+    assert emb.build_external_memory_rail(cfg, session_id="session-2472") is not None
+    assert _FakeRail.last_args["session_id"] == "session-2472"
 
 
 # ---------------------------------------------------------------------------
