@@ -49,9 +49,11 @@ for path in (SCRIPT_DIR, JIUWEN_ROOT):
         sys.path.insert(0, text)
 
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa: E402
+    INTERFACE_CLASSIC,
     PROFILE_GRAPH,
     PROFILE_OFF,
     resolve_profile,
+    resolve_retrieval_interface,
 )
 from eval_env import (  # noqa: E402
     DEFAULT_OUTPUT,
@@ -861,6 +863,13 @@ def parse_args() -> argparse.Namespace:
         help="off=original coding tools, no graph; graph=find_* tools. "
         "default no code_agent for off (pass --graph-agent code_agent to hang it)",
     )
+    parser.add_argument(
+        "--retrieval-interface",
+        default=INTERFACE_CLASSIC,
+        choices=(INTERFACE_CLASSIC, "focused"),
+        help="graph observation contract. classic keeps current payloads; "
+        "focused is the ACI summary + focus_code path. ignored when --profile off.",
+    )
     parser.add_argument("--max-iterations", type=int, default=40)
     parser.add_argument(
         "--product-defaults",
@@ -946,6 +955,7 @@ async def run_one(
     benchmark: str = BENCHMARK_CONTEXTBENCH,
     include_hints: bool = False,
     product_defaults: bool = False,
+    retrieval_interface: str = INTERFACE_CLASSIC,
 ) -> str:
     instance_id = record_id(row)
     dest_traj = output_dir / f"{instance_id}.traj.json"
@@ -999,6 +1009,7 @@ async def run_one(
         extra_hide_on_code_agent=code_agent_hidden_tools(
             profile=profile, graph_agent=graph_agent, task_mode=task_mode
         ),
+        retrieval_interface=retrieval_interface,
     )
     handle.trace.recorder.repo_root = str(repo_dir)
     await handle.agent.ensure_initialized()
@@ -1261,7 +1272,13 @@ async def async_main() -> None:
         default_out = DEFAULT_OUTPUT
 
     run_root = (args.output or default_out).expanduser().resolve()
-    name = config_dir_name(profile=profile, task_mode=task_mode, benchmark=benchmark)
+    retrieval_interface = resolve_retrieval_interface(getattr(args, "retrieval_interface", None))
+    name = config_dir_name(
+        profile=profile,
+        task_mode=task_mode,
+        benchmark=benchmark,
+        retrieval_interface=retrieval_interface,
+    )
     paths = cfg_paths(run_root, name)
     paths["raw"].mkdir(parents=True, exist_ok=True)
     isolate_eval_logs(paths["logs"])
@@ -1282,6 +1299,7 @@ async def async_main() -> None:
             "official_n": official_split_n(args.swe_split) if swe else None,
             "instances": [record_id(row) for row in rows],
             "profile": profile,
+            "retrieval_interface": retrieval_interface,
             "pair": describe_eval_pair(),
             "openjiuwen": describe_openjiuwen(),
             "model": model_env_snapshot(),
@@ -1329,6 +1347,7 @@ async def async_main() -> None:
                 benchmark=benchmark,
                 include_hints=include_hints,
                 product_defaults=bool(args.product_defaults),
+                retrieval_interface=retrieval_interface,
             )
         except Exception as exc:
             iid = record_id(row)
