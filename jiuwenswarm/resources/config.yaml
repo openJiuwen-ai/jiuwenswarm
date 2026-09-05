@@ -586,6 +586,7 @@ react:
   # 单轮任务循环等待上限（秒）；null 表示不限时，避免长任务被静默截断
   completion_timeout: null
   max_iterations: 100
+  budget_warning_threshold: 10  # warn agent when this many iterations remain
   model_name: ${MODEL_NAME}
   skill_mode: all
   # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用

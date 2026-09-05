@@ -450,6 +450,7 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `react.budget_warning_threshold` | Number of remaining iterations at which the agent receives a wrap-up warning in its system prompt, telling it to prioritise finishing current work | `10` |
 
 <a id="dotenv-configuration"></a>
 

@@ -222,6 +222,10 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
 )
 from jiuwenswarm.common.context_window import parse_positive_int, resolve_context_window_tokens
 
+from jiuwenswarm.agents.harness.common.rails.iteration_budget_rail import (
+    IterationBudgetRail,
+)
+from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
@@ -7274,6 +7278,32 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    @staticmethod
+    def _build_iteration_budget_rail(config: dict[str, Any]) -> IterationBudgetRail | None:
+        """Build IterationBudgetRail: warn the agent when iterations are nearly exhausted.
+
+        Reads ``max_iterations`` / ``budget_warning_threshold`` from the mode
+        config (defaults 15 / 10) and injects a system-prompt warning when the
+        agent is running low, so it prioritises finishing instead of starting
+        new long subtasks. ``max_iterations`` defaults to 15 to match the
+        agent's own iteration budget; parsing is lenient (``parse_int``) so a
+        null/empty value in config falls back instead of crashing.
+        """
+        try:
+            _max_iter = parse_int(config.get("max_iterations"), 15)
+            _warn_threshold = parse_int(config.get("budget_warning_threshold"), 10)
+            rail = IterationBudgetRail(_max_iter, _warn_threshold)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] IterationBudgetRail attached "
+                "(max_iterations=%d, warning_threshold=%d)",
+                _max_iter,
+                _warn_threshold,
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] Failed to attach IterationBudgetRail: %s", exc)
+            return None
+
     def _build_agent_rails(
         self,
         config: dict[str, Any],
@@ -7328,6 +7358,11 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
+            _RailBuildInfo(
+                "_iteration_budget_rail",
+                self._build_iteration_budget_rail,
+                {"config": config},
             ),
         ]
 
