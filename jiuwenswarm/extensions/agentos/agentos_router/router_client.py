@@ -336,7 +336,11 @@ def resolve_agent_workspace(user_id: str, *, workspace_root: str | None = None) 
     """
     safe_user = _WORKSPACE_NAME_RE.sub("_", str(user_id or "").strip()) or "default"
     root = Path(workspace_root or DEFAULT_AGENT_WORKSPACE_ROOT).expanduser()
-    workspace = (root / safe_user).resolve()
+    # Normalize lexically (abspath) instead of Path.resolve(): the result is a
+    # bind path handed to YuanRong, so it must keep the configured root verbatim
+    # and must not follow local symlinks (on macOS /home is a firmlink into
+    # /System/Volumes/Data, which resolve() would silently bake into the path).
+    workspace = Path(os.path.abspath(root / safe_user))
     _validate_agent_workspace(workspace)
     return str(workspace)
 
