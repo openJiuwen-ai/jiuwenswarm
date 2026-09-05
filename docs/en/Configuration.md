@@ -450,6 +450,8 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `verifier_circuit_breaker.enabled` | Enable the verifier-aware circuit breaker rail; when `true`, `VerifierCircuitBreakerRail` is registered automatically | `false` |
+| `verifier_circuit_breaker.break_after` | Number of consecutive identical verifier failures before a rethink directive is injected into the system prompt; escalates to an "abandon approach entirely" directive at `break_after × 2` | `3` |
 
 <a id="dotenv-configuration"></a>
 

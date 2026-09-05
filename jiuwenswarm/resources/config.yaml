@@ -844,6 +844,13 @@ execution_guard:
     # 未知/错误工具连续调用达到该次数时停止重试并中断
     unknown_tool_threshold: 10
 
+# 验证器感知断路器：当相同的测试失败连续出现时中断循环，强制 Agent 重新思考策略
+verifier_circuit_breaker:
+  # 总开关。开启后自动注册 VerifierCircuitBreakerRail
+  enabled: false
+  # 相同验证器失败连续出现多少次后注入"停止修补，重新思考"指令
+  break_after: 3
+
 channels:
   web:
     send_file_allowed: true
