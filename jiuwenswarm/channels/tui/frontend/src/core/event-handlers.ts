@@ -941,7 +941,11 @@ function handleSubtaskUpdate(
   const rawStatus = typeof payload.status === "string" ? payload.status : "starting";
   const progressStatus = legacyStatus ?? rawStatus;
   const subtasks = delegate.getActiveSubtasks();
-  if (progressStatus === "completed" || progressStatus === "error") {
+  if (
+    progressStatus === "completed" ||
+    progressStatus === "error" ||
+    progressStatus === "cancelled"
+  ) {
     subtasks.delete(taskId);
     return true;
   }

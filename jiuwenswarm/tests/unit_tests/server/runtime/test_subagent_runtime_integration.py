@@ -138,6 +138,24 @@ class TestSubagentStreamMapping:
         assert parsed["can_send_input"] is True
 
     @staticmethod
+    def test_maps_idle_cancelled_to_legacy_cancelled() -> None:
+        parsed = _map_subagent_updated_chunk(
+            SUBAGENT_UPDATED_EVENT_TYPE,
+            {
+                "subagent_updated": {
+                    "subagent_id": "sid-1",
+                    "status": "idle",
+                    "turn_outcome": "cancelled",
+                    "display_name": "Explorer",
+                }
+            },
+        )
+        assert parsed is not None
+        assert parsed["status"] == "idle"
+        assert parsed["turn_outcome"] == "cancelled"
+        assert parsed["legacy_status"] == "cancelled"
+
+    @staticmethod
     def test_maps_idle_failed_preserves_error_and_legacy() -> None:
         parsed = _map_subagent_updated_chunk(
             SUBAGENT_UPDATED_EVENT_TYPE,
@@ -156,6 +174,26 @@ class TestSubagentStreamMapping:
         assert parsed["legacy_status"] == "error"
         assert parsed["error"] == {"code": "TIMEOUT", "message": "turn timeout"}
         assert parsed["message"] == "turn timeout"
+
+    @staticmethod
+    def test_maps_closed_cancelled_to_legacy_cancelled() -> None:
+        parsed = _map_subagent_updated_chunk(
+            SUBAGENT_UPDATED_EVENT_TYPE,
+            {
+                "subagent_updated": {
+                    "subagent_id": "sid-1",
+                    "status": "closed",
+                    "closed_reason": "cancelled",
+                    "lifecycle": "closed",
+                    "needs_resume": False,
+                    "display_name": "Explorer",
+                }
+            },
+        )
+        assert parsed is not None
+        assert parsed["status"] == "closed"
+        assert parsed["closed_reason"] == "cancelled"
+        assert parsed["legacy_status"] == "cancelled"
 
     @staticmethod
     def test_maps_closed_completed_to_legacy_completed() -> None:

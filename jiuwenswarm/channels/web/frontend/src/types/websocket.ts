@@ -113,7 +113,7 @@ export interface InterruptResultPayload {
 /**
  * 子任务状态类型
  */
-export type SubtaskStatus = 'starting' | 'tool_call' | 'tool_result' | 'completed' | 'error';
+export type SubtaskStatus = 'starting' | 'tool_call' | 'tool_result' | 'completed' | 'cancelled' | 'error';
 
 /**
  * 子任务更新 Payload

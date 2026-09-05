@@ -13501,7 +13501,7 @@ class JiuWenSwarmDeepAdapter:
         with cls._subagent_progress_batches_lock:
             order = cls._subagent_progress_batches.setdefault(parent_session_id, [])
 
-            if legacy_status in ("completed", "error"):
+            if legacy_status in ("completed", "error", "cancelled"):
                 if subagent_id not in order:
                     return 0, 1, False
                 index = order.index(subagent_id)
@@ -13522,9 +13522,15 @@ class JiuWenSwarmDeepAdapter:
         """Return (legacy_status, message) for Web SubtaskProgress compatibility."""
         status = str(projection.get("status") or "running")
         closed_reason = projection.get("closed_reason")
+        turn_outcome = projection.get("turn_outcome")
         message = ""
         if status == "closed":
-            if closed_reason == "failed":
+            if turn_outcome in ("cancelled", "canceled") or closed_reason in (
+                "cancelled",
+                "canceled",
+            ):
+                legacy_status = "cancelled"
+            elif closed_reason == "failed":
                 legacy_status = "error"
                 error = projection.get("error")
                 if isinstance(error, dict):
@@ -13532,12 +13538,13 @@ class JiuWenSwarmDeepAdapter:
             else:
                 legacy_status = "completed"
         elif status == "idle":
-            turn_outcome = projection.get("turn_outcome")
             if turn_outcome == "failed":
                 legacy_status = "error"
                 error = projection.get("error")
                 if isinstance(error, dict):
                     message = str(error.get("message") or "")
+            elif turn_outcome in ("cancelled", "canceled"):
+                legacy_status = "cancelled"
             else:
                 legacy_status = "completed"
         else:

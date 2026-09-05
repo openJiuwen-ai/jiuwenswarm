@@ -1095,7 +1095,7 @@ export class CliPiAppState {
       return ex?.tool.status === "running";
     });
     const hasActiveSubtasks = [...this.activeSubtasks.values()].some(
-      (s) => s.status !== "completed" && s.status !== "error",
+      (s) => s.status !== "completed" && s.status !== "error" && s.status !== "cancelled",
     );
     // 与「Ctrl+C 强制结束当前任务」对齐：有任一进行中工作则为 true。
     // 包含 activeCommandRequestId 以确保 /btw 等命令请求在等待响应期间
