@@ -1347,7 +1347,12 @@ class GatewayServer(BaseWebChannel):
                         await result
                 except Exception as e:  # pragma: no cover
                     logger.warning(
-                        "%s on_disconnect hook error: %s",
+                        "WebChannel on_disconnect hook error: %s",
+                        format_ws_diagnostics(
+                            {"remote": remote, "path": request_path},
+                            describe_ws_peer(ws),
+                            describe_ws_exception(e),
+                        ),
                     )
 
     async def _handle_raw_message(self, ws: Any, raw: str, request_path: str, route: RouteConfig) -> None:

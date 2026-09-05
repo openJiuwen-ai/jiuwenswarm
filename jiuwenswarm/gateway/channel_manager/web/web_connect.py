@@ -485,7 +485,7 @@ class WebChannel(BaseWsChannel):
                 )
             except Exception as send_err:
                 logger.warning(
-                    "WebChannel failed to send handler error response ({}): {}",
+                    "WebChannel failed to send handler error response (%s): %s",
                     invocation.method, send_err,
                 )
             return False

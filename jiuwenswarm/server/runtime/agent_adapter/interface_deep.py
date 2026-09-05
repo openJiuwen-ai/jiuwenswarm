@@ -10247,8 +10247,8 @@ class JiuWenSwarmDeepAdapter:
         _session_is_active = self._is_session_active(_normalized_sid)
         if not _session_is_active and intent in ("pause", "resume"):
             logger.info(
-                "[JiuWenSwarmDeepAdapter] interrupt(%s):",
-                "session=%s not active on this adapter, ",
+                "[JiuWenSwarmDeepAdapter] interrupt(%s): "
+                "session=%s not active on this adapter, "
                 "skipping pause/resume (active_sessions=%s)",
                 intent,
                 request.session_id,
