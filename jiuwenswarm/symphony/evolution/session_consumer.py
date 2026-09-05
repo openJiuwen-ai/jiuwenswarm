@@ -39,6 +39,7 @@ _SYMPHONY_TOOL_NAMES = {
     "symphony_refresh_graph",
 }
 _SKILL_FILE_TOOL_NAMES = {"read_file", "Read"}
+_INTERRUPT_RESUME_SOURCE = "permission_interrupt"
 _NON_BUSINESS_TOOL_NAMES = {
     "skill_tool",
     *_SKILL_FILE_TOOL_NAMES,
@@ -310,7 +311,10 @@ def _consume_records(
             if result is not None:
                 results.append(result)
                 pending = {}
-            elif _has_user_record(request_records):
+            elif (
+                _has_user_record(request_records)
+                and not _deferred_interaction_tool_call_ids(request_records)
+            ):
                 skipped = int(pending.get("skipped_turns") or 0) + 1
                 if skipped >= _MAX_SKIPPED_TURNS:
                     pending = {}
@@ -354,6 +358,15 @@ def _consume_execution_turn(
     same_turn: bool,
     activated_skill_ids: list[str],
 ) -> dict[str, Any] | None:
+    deferred_call_ids = _deferred_interaction_tool_call_ids(records)
+    if deferred_call_ids:
+        pending["deferred_tool_call_ids"] = _dedupe_strings(
+            [
+                *(pending.get("deferred_tool_call_ids") or []),
+                *deferred_call_ids,
+            ]
+        )
+        return None
     classification = _classify_outcome(records)
     if classification is None:
         return None
@@ -507,6 +520,12 @@ def _execution_correlation(
         activated_skill_ids,
     )
     has_successful_execution_tool = bool(_successful_execution_tool_names(records))
+    if (
+        outcome == "success"
+        and activation_covers_plan
+        and _has_successful_interrupt_resume(pending, records)
+    ):
+        return "session_activation_with_permission_resume_tool_execution"
     if same_turn:
         if outcome == "success" and activation_covers_plan:
             if has_successful_execution_tool:
@@ -572,6 +591,89 @@ def _classify_outcome(
             return None
         return "success", "", final_text[-1000:]
     return None
+
+
+def _deferred_interaction_tool_call_ids(
+    records: list[dict[str, Any]],
+) -> list[str]:
+    """Return preliminary interactive results that have no durable tool call yet."""
+
+    paired_call_ids = {
+        str(tool_call.get("tool_call_id") or tool_call.get("id") or "").strip()
+        for record in records
+        if record.get("event_type") == "chat.tool_call"
+        and isinstance((tool_call := record.get("tool_call")), dict)
+    }
+    deferred: list[str] = []
+    for record in records:
+        if record.get("event_type") != "chat.tool_result":
+            continue
+        call_id = str(record.get("tool_call_id") or "").strip()
+        if not call_id or call_id in paired_call_ids:
+            continue
+        if _is_empty_interaction_result(record):
+            deferred.append(call_id)
+    return _dedupe_strings(deferred)
+
+
+def _is_empty_interaction_result(record: dict[str, Any]) -> bool:
+    """Match the SDK shell emitted while an interactive tool awaits a resume."""
+
+    if record.get("success") is not None or record.get("is_error") is not None:
+        return False
+    if (
+        str(record.get("status") or "").strip()
+        or str(record.get("error") or "").strip()
+    ):
+        return False
+    value = record.get("raw_output")
+    if value is None:
+        value = record.get("result")
+    if isinstance(value, dict):
+        return (
+            value.get("success") is False
+            and value.get("data") is None
+            and not str(value.get("error") or "").strip()
+            and not str(value.get("status") or "").strip()
+            and value.get("is_error") is not True
+        )
+    if not isinstance(value, str):
+        return False
+    return bool(
+        re.fullmatch(
+            r"\s*success\s*=\s*False\s+data\s*=\s*None\s+error\s*=\s*(?:''|\"\")\s*",
+            value,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_successful_interrupt_resume(
+    pending: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> bool:
+    deferred_call_ids = {
+        str(item).strip()
+        for item in pending.get("deferred_tool_call_ids") or []
+        if str(item).strip()
+    }
+    if not deferred_call_ids:
+        return False
+    for record in records:
+        if record.get("event_type") != "chat.tool_result":
+            continue
+        if str(record.get("source") or "").strip() != _INTERRUPT_RESUME_SOURCE:
+            continue
+        if str(record.get("tool_call_id") or "").strip() not in deferred_call_ids:
+            continue
+        tool_name = str(record.get("tool_name") or "").strip()
+        if (
+            tool_name
+            and tool_name not in _NON_BUSINESS_TOOL_NAMES
+            and not _tool_result_failed(record)
+        ):
+            return True
+    return False
 
 
 def _request_cancelled(records: list[dict[str, Any]]) -> bool:
@@ -904,6 +1006,12 @@ def _dedupe_skill_ids(values: Any) -> list[str]:
             output.append(current)
             seen.add(key)
     return output
+
+
+def _dedupe_strings(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
 def _merge_skill_ids(existing: list[str], additions: list[str]) -> list[str]:
