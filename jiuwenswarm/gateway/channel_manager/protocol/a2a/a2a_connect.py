@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from jiuwenswarm.common.errors import record_boundary_exception
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel
 from jiuwenswarm.common.e2a.acp.acp_tool_updates import is_reasoning_event
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
@@ -235,6 +236,7 @@ class _A2AAgentExecutor(_AgentExecutorBase):
                     break
         except Exception as exc:  # noqa: BLE001
             logger.exception("[A2AChannel] execution failed: request_id=%s err=%s", request_id, exc)
+            record_boundary_exception("a2a.execute", exc)
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
                     task_id=task_id,

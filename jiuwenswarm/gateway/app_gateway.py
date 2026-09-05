@@ -48,6 +48,7 @@ from jiuwenswarm.common.media_capability_config import (
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
 _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from jiuwenswarm.common.errors import record_boundary_exception
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 
 parse_dotenv_early("jiuwenswarm-gateway")
@@ -239,13 +240,23 @@ def _normalize_gateway_message(msg):
         params=params,
         timestamp=msg.timestamp,
         ok=msg.ok,
+        provider=msg.provider,
+        chat_id=msg.chat_id,
+        bot_id=msg.bot_id,
+        app_id=msg.app_id,
+        agent_ref=msg.agent_ref,
+        payload=msg.payload,
         req_method=req_method,
+        event_type=msg.event_type,
         mode=msg.mode,
         is_stream=is_stream,
         stream_seq=msg.stream_seq,
         stream_id=msg.stream_id,
         metadata=msg.metadata,
         user_id=getattr(msg, "user_id", None),
+        group_digital_avatar=msg.group_digital_avatar,
+        enable_memory=msg.enable_memory,
+        enable_streaming=msg.enable_streaming,
     )
 
 
@@ -359,8 +370,9 @@ class _InboundGatewayServer:
                 handled = self._inbound_handler(msg)
                 if asyncio.iscoroutine(handled):
                     await handled
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("[App] Gateway inbound handling failed: id=%s", getattr(msg, "id", None))
+                record_boundary_exception("gateway.serve_loop", exc)
 
 
 async def _connect_with_retry(

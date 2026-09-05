@@ -23,6 +23,7 @@ from typing import Any, AsyncIterator, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
+from jiuwenswarm.common.errors import record_boundary_exception
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     SKILLS_REBUILD_SILENT,
 )
@@ -3134,6 +3135,7 @@ class JiuWenSwarm:
                 raise
             except Exception as exc:
                 logger.exception("[JiuWenSwarm] 流式任务异常: %s", exc)
+                record_boundary_exception("agent_adapter.stream", exc)
                 try:
                     await stream_queue.put(("error", exc))
                 except asyncio.CancelledError as cancel_exc:
@@ -4299,6 +4301,28 @@ class JiuWenSwarm:
             await abort_fn(exclude_session_ids=protected)
         except Exception:
             logger.exception("[JiuWenSwarm] adapter.abort_on_gateway_disconnect failed")
+
+    async def cleanup_session_runtime(self, session_id: str) -> bool:
+        """释放单个 session 的运行时状态（任务处理器 + adapter 侧 session 状态）."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+
+        closed = await self._session_manager.close_session(sid)
+
+        adapter = self._adapter
+        if adapter is not None:
+            cleanup_fn = getattr(adapter, "cleanup_session_adapter", None)
+            if callable(cleanup_fn):
+                try:
+                    await cleanup_fn(sid)
+                except Exception:
+                    logger.exception(
+                        "[JiuWenSwarm] adapter.cleanup_session_adapter failed: session_id=%s",
+                        sid,
+                    )
+
+        return closed
 
     async def cleanup(self) -> None:
         """清理资源，准备销毁实例.
