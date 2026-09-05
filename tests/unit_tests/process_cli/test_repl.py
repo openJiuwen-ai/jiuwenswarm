@@ -60,7 +60,8 @@ def test_invalid_choice_error_is_fully_chinese(capsys) -> None:
 
     error = capsys.readouterr().err
     assert "参数 --work-mode 的值无效" in error
-    assert "可选值：'code', 'work'" in error
+    # Python 3.13 起 argparse 的 choices 列表不再逐项加引号，两种格式都要接受
+    assert "可选值：'code', 'work'" in error or "可选值：code, work" in error
     assert "invalid choice" not in error
 
 
