@@ -1499,34 +1499,19 @@ class SkillTurboExecutor:
         return None, current_tool_call_id
 
     def _next_tool_call_id(self, tool_name: str, kwargs: dict[str, Any]) -> str:
-        """生成确定性 tool_call_id：基于 (tool_name, request_id, canonical_args, call_index) 哈希。
+        """生成确定性 tool_call_id：基于 (tool_name, canonical_args, call_index) 哈希。
 
-        - request_id：``self._execution_inputs["request_id"]``，外层 ReAct 调用的
-          UUID（skill_turbo_tools 注入 inputs），全局唯一。它随 ``save_resume_ctx``
-          整体落盘、resume 时 ``apply_interactive_ask_to_inputs`` 原样复原
-          （不改动 request_id），因此同请求内重放稳定、跨请求不同。
-          混入它可避免「相同 ask_user args」时 tool_call_id 在不同会话/请求间撞车
-          导致 relay-claw 的 AskUserQuestionBridge 把后续卡片当同 HITL 重放吞掉
-          （前端不弹卡）。
         - canonical_args：``json.dumps(sort_keys, default=str)`` 后取 sha1[:8]
-        - call_index：本次执行内同 (name, args, request_id) 的第几次调用（从 0 起算）
+        - call_index：本次执行内同 (name, args) 的第几次调用（从 0 起算）
 
-        重放时只要 plan_code+inputs 一致且同一请求，相同顺序的同名同参调用必然得到
-        同样的 id；与 ``PermissionInterruptRail`` 的 ``user_inputs[tool_call_id]``
-        对应即可命中。
-
-        request_id 缺失（无外层请求上下文的单测/降级）时退化为原行为，仅保留同执行内
-        确定性，不影响重放匹配（回退命中走 tool_name + idx 路径）。
+        重放时只要 plan_code+inputs 一致，相同顺序的同名同参调用必然得到同样的 id；
+        与 ``PermissionInterruptRail`` 的 ``user_inputs[tool_call_id]`` 对应即可命中。
         """
         try:
             args_canonical = json.dumps(kwargs, sort_keys=True, default=str)
         except (TypeError, ValueError):
             args_canonical = repr(sorted(kwargs.items()))
-        # 混入 request_id：跨请求隔离，同请求内重放稳定（resume_ctx 整体穿越中断）。
-        # request_id 缺失时退化为原行为（args_canonical 单独哈希），不引入新失败模式。
-        rid = str(self._execution_inputs.get("request_id") or "")
-        args_source = f"{rid}\n{args_canonical}" if rid else args_canonical
-        args_hash = hashlib.sha1(args_source.encode("utf-8")).hexdigest()[:8]
+        args_hash = hashlib.sha1(args_canonical.encode("utf-8")).hexdigest()[:8]
         key = f"{tool_name}|{args_hash}"
         idx = self._tool_call_counter.get(key, 0)
         self._tool_call_counter[key] = idx + 1

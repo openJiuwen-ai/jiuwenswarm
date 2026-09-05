@@ -1379,15 +1379,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                         _skill_turbo_tic.tool_call.id if _skill_turbo_tic.tool_call else "?",
                         ctx.inputs.tool_call.id if isinstance(ctx.inputs, ToolCallInputs) else "?",
                     )
-                    # 主路径必须主动 emit：外层 tool_name 是 skill_acceleration_exec，
-                    # _emit_ask_user_question_if_interrupted 不会命中；也不能只依赖
-                    # harness __interaction__（同 tool_call_id 二次 HITL 时常哑火）。
-                    await self._emit_skill_turbo_ask_user_question(
-                        session,
-                        outer_tool_call=ctx.inputs.tool_call,
-                        skill_turbo_tic=_skill_turbo_tic,
-                    )
-                    return  # 跳过 _emit_tool_result；ask_user 已在上方强制发出
+                    # 卡片由 harness __interaction__ 转换统一发出（外层
+                    # tool_call_id，harness 恢复按同一 id 对齐）；此处不再主动
+                    # emit，避免同一次中断发出两张 ask_user 卡片。
+                    return  # 跳过 _emit_tool_result：中断态无结果可发
             except Exception:
                 logger.debug(
                     "[StreamEventRail] skill_turbo HITL rewrite failed",
@@ -1530,62 +1525,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
         except Exception:
             logger.debug("tool_result emit failed", exc_info=True)
-
-    @staticmethod
-    async def _emit_skill_turbo_ask_user_question(
-        session: Session,
-        *,
-        outer_tool_call: Any,
-        skill_turbo_tic: Any,
-    ) -> None:
-        """Emit chat.ask_user_question for SkillTurbo nested ask_user HITL.
-
-        request_id is the inner ask_user tool_call.id (unique per ask_user),
-        NOT the outer skill_acceleration_exec id. This ensures sequential
-        ask_user cards within the same skill_acceleration_exec have distinct
-        request_ids, so the frontend shows each as a separate card.
-
-        SkillTurbo resume (_resume_user_input_from_raw) extracts the user's
-        answer via ``next(iter(user_inputs.values()))`` — it ignores the key,
-        so using the inner ask_user id does not break resume.
-        """
-        inner_tc = getattr(skill_turbo_tic, "tool_call", None)
-        payload = _ask_user_question_payload_from_interrupt(
-            inner_tc or outer_tool_call,
-            skill_turbo_tic,
-        )
-        if not payload:
-            logger.debug(
-                "[StreamEventRail] SkillTurbo HITL ask_user payload unavailable"
-            )
-            return
-        inner_request_id = str(payload.get("request_id") or "").strip()
-        if not inner_request_id:
-            logger.warning(
-                "[StreamEventRail] SkillTurbo HITL ask_user skipped: "
-                "inner ask_user request_id unavailable; harness_id=%s",
-                getattr(outer_tool_call, "id", ""),
-            )
-            return
-        try:
-            await session.write_stream(
-                OutputSchema(
-                    type="chat.ask_user_question",
-                    index=0,
-                    payload=payload,
-                )
-            )
-            logger.info(
-                "[StreamEventRail] SkillTurbo HITL emitted chat.ask_user_question "
-                "request_id=%s harness_id=%s",
-                inner_request_id,
-                getattr(outer_tool_call, "id", ""),
-            )
-        except Exception:
-            logger.debug(
-                "[StreamEventRail] SkillTurbo HITL ask_user emit failed",
-                exc_info=True,
-            )
 
     @staticmethod
     async def _emit_ask_user_question_if_interrupted(

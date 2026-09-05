@@ -17432,11 +17432,12 @@ class JiuWenSwarmDeepAdapter:
                 # After ask_user, skip trailing metadata until a real resume
                 # chunk arrives (in-place HITL). Unknown types default to clear
                 # so new SDK frames cannot re-hang the stream.
+                # Only suppress is cleared (resume forwarding); hitl_pending_stream
+                # stays True to drive the chat.invocation_paused end-frame.
                 if suppress_stream_after_hitl:
                     if self._is_hitl_suppress_noise_chunk(chunk):
                         continue
                     suppress_stream_after_hitl = False
-                    hitl_pending_stream = False
                     logger.info(
                         "[JiuWenSwarmDeepAdapter] HITL suppress cleared on "
                         "runner resume: request_id=%s chunk_type=%s",
