@@ -1690,6 +1690,39 @@ def check_orphan_role_files(roles_dir: Path, declared_role_ids: list[str], repor
             )
 
 
+def check_skill_display_md(root: Path, report: Report) -> None:
+    """Soft-check UI display metadata (warning only; does not fail validation)."""
+    path = root / "skill_display.md"
+    if not path.exists():
+        report.warn(
+            "skill_display.md",
+            "missing — recommended for UI display_name_zh/description_zh "
+            "(and en counterparts)",
+        )
+        return
+    try:
+        text = path.read_text(encoding="utf-8")
+        fm, _ = split_frontmatter(text)
+    except Exception as exc:
+        report.warn("skill_display.md", f"parse failed: {exc}")
+        return
+    if fm is None:
+        report.warn("skill_display.md", "missing YAML frontmatter (--- ... ---)")
+        return
+    required = (
+        "display_name_zh",
+        "description_zh",
+        "display_name_en",
+        "description_en",
+    )
+    missing = [key for key in required if not str(fm.get(key) or "").strip()]
+    if missing:
+        report.warn(
+            "skill_display.md",
+            "missing or empty fields: " + ", ".join(missing),
+        )
+
+
 def detect_structure(root: Path, report: Report) -> tuple[bool, bool]:
     """Return (has_swarmflow_script, is_script_only)."""
     script_path = root / "scripts" / "workflow.py"
@@ -1743,6 +1776,9 @@ def validate(root: Path) -> int:
 
     # 1. SKILL.md
     skill_fm, role_ids = validate_skill_md(root / "SKILL.md", report, script_only=is_script_only)
+
+    # 1b. skill_display.md (soft warning only)
+    check_skill_display_md(root, report)
 
     if has_swarmflow_script:
         validate_swarmflow_script(root / "scripts" / "workflow.py", root.name, report)

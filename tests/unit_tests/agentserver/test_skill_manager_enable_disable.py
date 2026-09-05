@@ -201,12 +201,13 @@ def test_builtin_scan_uses_directory_name_without_frontmatter(monkeypatch, tmp_p
     """Built-in marketplace entries should not appear as the generic SKILL name."""
     skills_dir = tmp_path / "skills"
     builtin_dir = tmp_path / "builtin"
-    _make_skill_dir(builtin_dir, "builtin-no-frontmatter")
+    # Must be on the UI whitelist to appear in _scan_builtin_skills.
+    _make_skill_dir(builtin_dir, "skill-creator")
 
     manager = _init_manager_with_skills_dir(monkeypatch, skills_dir, builtin_dir)
 
     listed = manager._scan_builtin_skills()
-    assert [s.get("name") for s in listed] == ["builtin-no-frontmatter"]
+    assert [s.get("name") for s in listed] == ["skill-creator"]
 
 
 def test_already_registered_skill_not_duplicated(monkeypatch, tmp_path):

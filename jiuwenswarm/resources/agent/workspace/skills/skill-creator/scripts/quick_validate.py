@@ -143,6 +143,49 @@ def validate_skill(skill_path: Path | str) -> tuple[bool, str]:
                 ),
             )
 
+    # Soft-check skill_display.md (UI metadata; missing is a warning only)
+    display_path = skill_path / "skill_display.md"
+    display_warning = ""
+    if not display_path.is_file():
+        display_warning = (
+            "Warning: skill_display.md not found "
+            "(recommended for UI display_name_zh/description_zh)."
+        )
+        logger.warning(display_warning)
+    else:
+        try:
+            display_text = display_path.read_text(encoding="utf-8")
+            display_match = re.match(
+                r"^---\n(.*?)\n---", display_text, re.DOTALL
+            )
+            if not display_match:
+                display_warning = (
+                    "Warning: skill_display.md missing YAML frontmatter."
+                )
+                logger.warning(display_warning)
+            else:
+                display_fm = yaml.safe_load(display_match.group(1)) or {}
+                required_display = (
+                    "display_name_zh",
+                    "description_zh",
+                    "display_name_en",
+                    "description_en",
+                )
+                missing = [
+                    key
+                    for key in required_display
+                    if not str(display_fm.get(key) or "").strip()
+                ]
+                if missing:
+                    display_warning = (
+                        "Warning: skill_display.md missing fields: "
+                        + ", ".join(missing)
+                    )
+                    logger.warning(display_warning)
+        except Exception as exc:
+            display_warning = f"Warning: skill_display.md parse failed: {exc}"
+            logger.warning(display_warning)
+
     # Validate compatibility field if present (optional)
     compatibility = frontmatter.get("compatibility", "")
     if compatibility:
@@ -163,6 +206,8 @@ def validate_skill(skill_path: Path | str) -> tuple[bool, str]:
                 ),
             )
 
+    if display_warning:
+        return True, f"Skill is valid! {display_warning}"
     return True, "Skill is valid!"
 
 

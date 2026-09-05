@@ -177,13 +177,27 @@ Cross-check against what you found in Reference Discovery: if the highest-instal
 
 **Write out the planned structure as a directory tree before coding anything.** Show it to the user: "Here's the structure I'm planning — [tree]. Does this look right?" This takes 30 seconds and prevents throwing away hours of work.
 
-Once the structure is agreed, create all directories and populate them in parallel with writing SKILL.md. SKILL.md should always include clear `references/` pointers with "when to read this" guidance for every bundled file, so the model using the skill knows what to load and when.
+Once the structure is agreed, create all directories and populate them in parallel with writing SKILL.md **and** `skill_display.md`. SKILL.md should always include clear `references/` pointers with "when to read this" guidance for every bundled file, so the model using the skill knows what to load and when.
 
 Based on the user interview and insights from the reference skills above, fill in these components:
 
-- **name**: Skill identifier
+- **name**: Skill identifier (kebab-case; used for Agent triggering and directory name)
 - **description**: When to trigger, what it does. This is the primary triggering mechanism - include both what the skill does AND specific contexts for when to use it. All "when to use" info goes here, not in the body. Note: currently Claude has a tendency to "undertrigger" skills -- to not use them when they'd be useful. To combat this, please make the skill descriptions a little bit "pushy". So for instance, instead of "How to build a simple fast dashboard to display internal Anthropic data.", you might write "How to build a simple fast dashboard to display internal Anthropic data. Make sure to use this skill whenever the user mentions dashboards, data visualization, internal metrics, or wants to display any kind of company data, even if they don't explicitly ask for a 'dashboard.'"
 - **compatibility**: Required tools, dependencies (optional, rarely needed)
+- **skill_display.md** (required for every new skill): UI display metadata, sibling of SKILL.md. YAML frontmatter only:
+
+```yaml
+---
+display_name_zh: <中文展示名>
+description_zh: <中文简短描述，给人看，不是 Agent 触发词>
+display_name_en: <English display name>
+description_en: <English short description for UI>
+---
+```
+
+  - `display_name_*` / `description_*` are for the client UI only.
+  - Keep SKILL.md `name` / `description` as the Agent trigger surface (English trigger wording is fine).
+  - All four fields must be non-empty before packaging.
 - **the rest of the skill :)**
 
 ### Skill Writing Guide
@@ -195,6 +209,7 @@ skill-name/
 ├── SKILL.md (required)
 │   ├── YAML frontmatter (name, description required)
 │   └── Markdown instructions + pointers to bundled resources
+├── skill_display.md (required) — UI display names/descriptions (zh + en)
 └── Bundled Resources (create proactively for non-trivial skills)
     ├── scripts/    - Executable code for deterministic/repetitive tasks
     ├── references/ - Domain knowledge, SOPs, schemas, API docs
@@ -525,6 +540,10 @@ Take `best_description` from the JSON output and update the skill's SKILL.md fro
 ---
 
 ### Package and Present (only if `present_files` tool is available)
+
+Before packaging, confirm `skill_display.md` exists next to SKILL.md and that
+`display_name_zh`, `description_zh`, `display_name_en`, and `description_en`
+are all non-empty. If any are missing, write or fix `skill_display.md` first.
 
 Check whether you have access to the `present_files` tool. If you don't, skip this step. If you do, package the skill and present the .skill file to the user:
 
