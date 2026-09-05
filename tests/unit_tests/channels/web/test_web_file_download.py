@@ -177,6 +177,37 @@ def test_valid_token_is_accepted() -> None:
     assert payload["sid"] == "session-1"
 
 
+def test_non_expiring_token_omits_exp() -> None:
+    """send_file_to_user 交付产物应签发不过期令牌（payload 无 exp）。"""
+    manager = WebFileDownloadManager(secret="s" * 32)
+    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=None)
+
+    payload = manager.validate_token(token)
+    assert payload is not None
+    assert payload["path"] == "/tmp/report.xlsx"
+    assert "exp" not in payload
+    assert payload["sid"] == "session-1"
+
+
+def test_non_expiring_download_info_stays_valid(tmp_path: Path) -> None:
+    file_path = tmp_path / "deliverable.txt"
+    file_path.write_text("ok", encoding="utf-8")
+    info = web_file_download.build_file_download_info(
+        str(file_path), "deliverable.txt", "session-1"
+    )
+    payload = web_file_download.validate_file_download_token(info["download_token"])
+    assert payload is not None
+    assert "exp" not in payload
+
+
+def test_expired_token_is_rejected() -> None:
+    manager = WebFileDownloadManager(secret="s" * 32)
+    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=-1)
+
+    assert manager.validate_token(token) is None
+    assert manager.validate_token(token, check_expiry=False) is not None
+
+
 def test_tampered_token_is_rejected() -> None:
     manager = WebFileDownloadManager(secret="s" * 32)
     token = manager.generate_token("/tmp/report.xlsx", expires_in=60)

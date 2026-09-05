@@ -381,8 +381,13 @@ class SendFileToolkit:
 
                 for file_path in valid_files:
                     base_name = os.path.basename(file_path)
+                    # 交付产物下载令牌不过期，便于会话历史 / 产物面板长期下载。
                     download_info = build_file_download_info(
-                        file_path, base_name, self.session_id, user_id=self._user_id
+                        file_path,
+                        base_name,
+                        self.session_id,
+                        expires_in=None,
+                        user_id=self._user_id,
                     )
                     files_payload.append({
                         "path": file_path,

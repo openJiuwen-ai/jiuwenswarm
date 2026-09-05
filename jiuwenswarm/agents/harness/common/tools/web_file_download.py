@@ -7,7 +7,8 @@
 
 协议：
 - 令牌格式: Base64URL(payload_json) + "." + Hex(HMAC-SHA256)
-- payload 包含: path, exp, session_id
+- 普通下载 payload: path, sid；可选 exp（省略则不过期，用于 send_file_to_user 交付产物）
+- Skill 正文图片 / 上传等短期令牌仍携带 exp
 - 密钥来源: 环境变量 JIUWENSWARM_FILE_DOWNLOAD_SECRET 或自动生成并写入共享文件
 """
 
@@ -100,16 +101,18 @@ class WebFileDownloadManager:
         self,
         file_path: str,
         session_id: str = "",
-        expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+        expires_in: int | None = None,
         *,
         agent_http_base: str | None = None,
         agent_http_base_key: str = "",
     ) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "path": file_path,
-            "exp": int(time.time()) + expires_in,
             "sid": session_id,
         }
+        # expires_in=None：不写入 exp，校验侧视为不过期（send_file 交付产物）。
+        if expires_in is not None:
+            payload["exp"] = int(time.time()) + int(expires_in)
         # AgentOS 下 token 由目标 AgentServer 签发。将部署注入的、可访问该
         # sandbox 的 HTTP bridge 基址随 token 返回，使独立运行的 Web 静态进程
         # 不必持有用户态目录或 AgentOS Router 对象也能代理到正确用户。
@@ -153,8 +156,11 @@ class WebFileDownloadManager:
             if not isinstance(payload, dict):
                 return None
             if check_expiry:
+                # 兼容无 exp 字段的交付令牌：不强制过期；有 exp 则严格校验。
                 exp = payload.get("exp")
-                if exp is not None and (not isinstance(exp, (int, float)) or int(exp) < int(time.time())):
+                if exp is not None and (
+                    not isinstance(exp, (int, float)) or int(exp) < int(time.time())
+                ):
                     return None
             if session_id is not None and str(session_id).strip():
                 if str(payload.get("sid") or "").strip() != str(session_id).strip():
@@ -176,8 +182,13 @@ class WebFileDownloadManager:
 def generate_file_download_token(
     file_path: str,
     session_id: str = "",
-    expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+    expires_in: int | None = None,
 ) -> str:
+    """签发文件下载令牌。
+
+    ``expires_in=None``（默认）表示不过期，供 ``send_file_to_user`` 等持久交付使用；
+    需要短期有效时显式传入秒数。
+    """
     return WebFileDownloadManager.get_instance().generate_token(
         file_path,
         session_id,
@@ -290,9 +301,13 @@ def build_file_download_info(
     file_path: str,
     file_name: str,
     session_id: str = "",
-    expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+    expires_in: int | None = None,
     user_id: str = "",
 ) -> dict[str, Any]:
+    """构建可投递的文件下载信息。
+
+    默认签发不过期令牌（``expires_in=None``），与 ``send_file_to_user`` 产物语义一致。
+    """
     token = generate_file_download_token(file_path, session_id, expires_in)
     download_url = WebFileDownloadManager.get_instance().generate_download_url(token, user_id)
 
