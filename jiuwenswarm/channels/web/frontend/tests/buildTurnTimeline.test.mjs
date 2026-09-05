@@ -56,10 +56,10 @@ function commandOutputMessage(ms, id = 'cmd1') {
     message: {
       id,
       role: 'system',
-      content: '/btw side question\nside answer',
+      content: '/compact\ncontext compressed',
       timestamp: iso(ms),
       isCommandOutput: true,
-      commandName: 'btw',
+      commandName: 'compact',
     },
   };
 }

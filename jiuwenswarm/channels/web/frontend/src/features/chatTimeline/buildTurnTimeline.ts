@@ -536,7 +536,7 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
       continue;
     }
     // slash 命令结果不属于上一轮 assistant 工作，也不应产生自己的「任务用时」。
-    // 先收束上一轮，再把 BTW/compact 等命令结果作为独立时间线块插入。
+    // 先收束上一轮，再把 compact 等命令结果作为独立时间线块插入。
     if (item.type === 'message' && item.message.isCommandOutput) {
       flush(false);
       out.push(item);

@@ -99,6 +99,7 @@ import sendActiveIcon from '../../assets/send_active.svg';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { CodeBranchSelector } from '../../features/code-mode/CodeBranchSelector';
 import { generateUuidV4 } from '../../utils/uuid';
+import { buildInstalledSkillNames, filterEnabledMySkills } from '../../utils/mySkills';
 import { createAgentManagementClient, getAgentAvatarUrl, type AgentCatalogItem } from '../../features/agentManagement';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
@@ -115,6 +116,7 @@ type InputAreaSkillItem = {
   enabled?: boolean;
   installed?: boolean;
   tags?: string[];
+  skill_type?: 'skill' | 'swarm_skill' | 'multimodal_skill';
 };
 
 type SlashCommandMeta = {
@@ -137,7 +139,7 @@ type InputAreaInstalledPlugin = {
   version: string;
   installed_at: string;
   git_commit?: string | null;
-  skills: string[];
+  skills: Array<string | { name: string; version?: string | null }>;
 };
 
 type InputAreaTeamMember = {
@@ -160,7 +162,6 @@ type ComposerSuggestionItem = {
   status?: string;
   description?: string;
   itemKind?: 'command' | 'skill';
-  source?: string;
   takesArgs?: boolean;
   disabled?: boolean;
   disabledReason?: string;
@@ -171,6 +172,7 @@ function getComposerSuggestionItems(
   members: ComposerSuggestionItem[],
   slashCommands: SlashCommandMeta[],
   slashSkills: InputAreaSkillItem[],
+  isTeamMode: boolean,
 ): ComposerSuggestionItem[] {
   if (!suggestion) return [];
   if (suggestion.kind === 'slash') {
@@ -185,9 +187,14 @@ function getComposerSuggestionItems(
         takesArgs: command.takesArgs,
       }));
     const skills = slashSkills
+      .filter((skill) => (
+        isTeamMode
+          ? skill.skill_type === 'swarm_skill'
+          : !skill.skill_type || skill.skill_type === 'skill'
+      ))
       .filter((skill) => {
         if (!query) return true;
-        return [skill.name, skill.display_name, skill.description, ...(skill.tags ?? [])]
+        return [skill.name, skill.display_name, skill.description]
           .filter(Boolean)
           .join(' ')
           .toLowerCase()
@@ -198,7 +205,6 @@ function getComposerSuggestionItems(
         label: skill.display_name || skill.name,
         description: skill.description,
         itemKind: 'skill' as const,
-        source: skill.source,
       }));
     return [...commands, ...skills];
   }
@@ -822,13 +828,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       mentionableMembers,
       getWebSlashCommandsForMode(slashCommands, mode),
       slashSkills,
+      isTeamMode,
     );
     return items.map((item) => (
       item.itemKind === 'command' && isSlashCommandDisabledByGoal(item.id, hasUnfinishedGoal)
         ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
         : item
     ));
-  }, [composerSuggestion, hasUnfinishedGoal, mentionableMembers, mode, slashCommands, slashSkills, t]);
+  }, [composerSuggestion, hasUnfinishedGoal, isTeamMode, mentionableMembers, mode, slashCommands, slashSkills, t]);
 
   const selectableComposerSuggestionIndices = useMemo(
     () => composerSuggestionItems.reduce<number[]>((indices, item, index) => {
@@ -852,22 +859,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         { timeoutMs: 30_000 },
       ),
     ]).then(([commandData, skillData]) => {
-      const installedNames = new Set(
-        (skillData.plugins ?? []).flatMap((plugin) => plugin.skills ?? []),
-      );
-      const availableSkills = (skillData.skills ?? []).filter((skill) => (
-        Boolean(skill.name) &&
-        skill.enabled !== false &&
-        Boolean(
-          skill.installed ||
-          skill.is_builtin ||
-          skill.is_builtin_source ||
-          skill.source === 'builtin' ||
-          skill.source === 'local' ||
-          skill.source === 'project' ||
-          installedNames.has(skill.name)
-        )
-      ));
+      const installedNames = buildInstalledSkillNames(skillData.plugins ?? []);
+      const availableSkills = filterEnabledMySkills(skillData.skills ?? [], installedNames);
       setSlashCommands(commandData.commands ?? []);
       setSlashSkills(availableSkills);
       setSlashCatalogLoaded(true);
@@ -1666,7 +1659,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const trimmedBase = (richContent + pendingVoiceText).trim();
 
     // 单 Agent 下拦截斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
-    // Team 下不拦截，以普通文本发送，不会触发 command.btw / command.compact 等 RPC。
+    // Team 下不拦截，以普通文本发送，不会触发 command.compact 等 RPC。
     if (trimmedBase.startsWith('/')) {
       const { name, args } = parseSlashLine(trimmedBase);
       const cmd = findSlashCommand(name);
@@ -1965,7 +1958,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         return;
       }
-      // 有参命令（/btw）：把 "/query" 替换成蓝色原子 chip。提取文本时再还原为
+      // 有参命令（如 /persist）：把 "/query" 替换成蓝色原子 chip。提取文本时再还原为
       // "/<name>"，因此视觉表现和技能一致，同时保留既有命令解析/提交语义。
       const trigger = getCurrentComposerTrigger();
       if (trigger) {
@@ -4106,9 +4099,6 @@ function ComposerSuggestionMenu({
                         <span className="chat-composer-suggestion__meta">{item.description}</span>
                       ) : null}
                     </span>
-                    {item.source ? (
-                      <span className="chat-composer-suggestion__source">{item.source}</span>
-                    ) : null}
                   </>
                 ) : (
                   <>
