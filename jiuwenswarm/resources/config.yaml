@@ -709,6 +709,10 @@ tools:
   - todo
   - skill
 
+failure_memory:
+  enabled: false      # track failed tool calls and inject a "do not repeat" notice
+  max_failures: 10    # maximum number of failure entries to retain per session
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}
