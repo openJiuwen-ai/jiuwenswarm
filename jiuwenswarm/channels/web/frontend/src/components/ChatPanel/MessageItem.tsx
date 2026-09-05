@@ -4,7 +4,7 @@
  * 单条消息显示，支持 TTS 朗读
  */
 
-import { useState, useCallback, useEffect, useRef, memo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
   Check,
@@ -42,6 +42,7 @@ import clsx from 'clsx';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { isTeamP2PMessageToUser, parseTeamEventMessage } from './teamEventUtils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
+import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { AgentAvatar } from '../AgentAvatar';
 import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
@@ -195,12 +196,25 @@ export function TeamMemberMessageFrame({
   children: ReactNode;
   contentClassName?: string;
 }) {
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
+  // 头像旁的成员名：名册 display name 优先，leader 固定 Jiuwen，查不到退回 member_id。
+  // 订阅名册而非 getState 直读，成员迟到时名字能跟着刷新（同 TeamMemberAvatar 的考量）。
+  const memberName = useMemo(() => {
+    const id = member?.trim() ?? '';
+    if (!id) return '';
+    if (isTeamLeaderMember(id)) return 'Jiuwen';
+    const known = teamMembers?.find((item) => item.member_id === id);
+    return known?.name?.trim() || id;
+  }, [member, teamMembers]);
+
   return (
     <div className="team-member-message animate-fade-in" data-testid="chat-panel-team-member-message">
       {/* 与单 agent 的 assistant-row 一致：无头像时整列不渲染，正文直接对齐最左边。 */}
       {showAvatar ? (
         <div className="team-member-message__header" data-testid="chat-panel-team-member-message-header">
           <TeamMemberAvatar member={member} />
+          {memberName ? <span className="chat-avatar-name">{memberName}</span> : null}
         </div>
       ) : null}
       <div className={clsx('team-member-message__body', contentClassName)} data-testid="chat-panel-team-member-message-body">

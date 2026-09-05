@@ -616,10 +616,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [projectSearch, setProjectSearch] = useState('');
   const [projectCreateMode, setProjectCreateMode] = useState<ProjectCreateMode>('blank');
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
-  const [hoveredOptionDesc, setHoveredOptionDesc] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [agentPickerQuery, setAgentPickerQuery] = useState('');
   const { tooltip: agentTooltipNode, handlers: agentTooltipHandlers } = useAdaptiveTooltip({ offsetX: -50 });
+  const { tooltip: attachTooltipNode, handlers: attachTooltipHandlers } = useAdaptiveTooltip();
+  const [hoveredOptionDesc, setHoveredOptionDesc] = useState<string | null>(null);
+  const [hoveredOptionRect, setHoveredOptionRect] = useState<DOMRect | null>(null);
   const [agentOptions, setAgentOptions] = useState<AgentCatalogItem[]>([]);
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
@@ -2542,12 +2544,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleModeSelect = useCallback(async (targetMode: AgentMode) => {
     setIsModeMenuOpen(false);
+    setHoveredOptionDesc(null);
+    setHoveredOptionRect(null);
     await handleModeSwitch(targetMode);
   }, [handleModeSwitch]);
 
   useEffect(() => {
     setIsModeMenuOpen(false);
   }, [isProcessing, mode]);
+
+  useEffect(() => {
+    if (!isModeMenuOpen) {
+      setHoveredOptionDesc(null);
+      setHoveredOptionRect(null);
+    }
+  }, [isModeMenuOpen]);
 
   const openProjectCreateDialog = useCallback(async (mode: ProjectCreateMode) => {
     setProjectDirError(null);
@@ -2893,13 +2904,16 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 attachTriggerDisabled && 'chat-input-btn--disabled',
                 attachMenuOpen && 'chat-input-btn--menu-open',
               )}
-              title={attachTriggerDisabled ? t('chat.addFileDisabled') : t('chat.addFile')}
+              title={attachTriggerDisabled ? t('chat.addFileDisabled') : undefined}
               aria-label={attachTriggerDisabled ? t('chat.addFileDisabled') : t('chat.addFile')}
               aria-haspopup="menu"
               aria-expanded={attachMenuOpen}
+              data-tooltip={attachTriggerDisabled ? t('chat.addFileDisabled') : t('chat.addFileTooltip')}
+              {...attachTooltipHandlers}
             >
               <Plus className="chat-input-btn-icon" strokeWidth={1.8} />
             </button>
+            {attachTooltipNode}
             {attachMenuOpen && attachMenuAnchor && createPortal(
               <div
                 ref={attachMenuPortalRef}
@@ -3336,8 +3350,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     type="button"
                     key={m.value}
                     onClick={() => void handleModeSelect(m.value)}
-                    onMouseEnter={() => setHoveredOptionDesc(m.descriptionI18nKey ?? null)}
-                    onMouseLeave={() => setHoveredOptionDesc(null)}
+                    onMouseEnter={(e) => {
+                      const desc = m.descriptionI18nKey ? t(m.descriptionI18nKey) : null;
+                      setHoveredOptionDesc(desc);
+                      setHoveredOptionRect(desc ? e.currentTarget.getBoundingClientRect() : null);
+                    }}
+                    onMouseLeave={() => {
+                      setHoveredOptionDesc(null);
+                      setHoveredOptionRect(null);
+                    }}
                     className={clsx(
                       'chat-mode-select__option',
                       mode === m.value && 'chat-mode-select__option--active',
@@ -3359,24 +3380,26 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       </svg>
                     )}
                   </button>
-                ))}
-              </div>,
-              document.body
-            )}
-            {isModeMenuOpen && hoveredOptionDesc && modeMenuAnchor && createPortal(
-              <div
-                className="chat-mode-option-tooltip"
-                data-testid="chat-panel-mode-select-tooltip"
-                style={menuDirection === 'up'
-                  ? { position: 'fixed', bottom: window.innerHeight - modeMenuAnchor.top + 10, left: modeMenuAnchor.left + 188, zIndex: 10000 }
-                  : { position: 'fixed', top: modeMenuAnchor.bottom + 10, left: modeMenuAnchor.left + 188, zIndex: 10000 }
-                }
-              >
-                {t(hoveredOptionDesc)}
-              </div>,
-              document.body
-            )}
-          </div>
+                  ))}
+                </div>,
+                document.body
+              )}
+              {isModeMenuOpen && hoveredOptionDesc && hoveredOptionRect && createPortal(
+                <div
+                  className="adaptive-tooltip"
+                  data-testid="chat-panel-mode-select-tooltip"
+                  style={{
+                    position: 'fixed',
+                    top: hoveredOptionRect.top + (hoveredOptionRect.height / 2) - 17,
+                    left: hoveredOptionRect.right + 11,
+                    zIndex: 10000,
+                  }}
+                >
+                  {hoveredOptionDesc}
+                </div>,
+                document.body
+              )}
+            </div>
           <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
 
           {selectedAgentId && (

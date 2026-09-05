@@ -14,9 +14,12 @@
   color: var(--color-text-primary);
 }
 
-.page-content[data-testid="agent-management-panel"][data-variant="catalog"],
-.page-content[data-testid="agent-management-panel"][data-variant="mine"] {
+[data-testid="agent-management-panel"][data-variant="catalog"],
+[data-testid="agent-management-panel"][data-variant="mine"],
+[data-testid="agent-management-panel"][data-variant="detail"],
+[data-testid="agent-management-panel"][data-variant="create"] {
   overflow-y: hidden;
+  scrollbar-gutter: auto;
 }
 
 [data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor,
@@ -26,9 +29,10 @@
 
 .agent-management-detail,
 .agent-management-editor {
-  width: min(calc(100% - (var(--agent-page-gutter) * 2)), var(--agent-content-max));
-  margin-right: auto;
-  margin-left: auto;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
 }
 
 .agent-management-editor h1 {
@@ -277,7 +281,7 @@
   overflow: hidden;
 }
 
-.agent-management-card__meta > .agent-management-tag {
+.agent-management-card__meta>.agent-management-tag {
   display: block;
   min-width: 0;
   max-width: 100%;
@@ -526,74 +530,38 @@
   opacity: var(--agent-opacity-disabled);
 }
 
-.agent-management-detail,
 .agent-management-editor {
-  padding-top: 68px;
   padding-bottom: 72px;
 }
 
+/* 详情页：返回按钮固定在顶部，其余内容（含 header）在 detail-body 内整体滚动 */
 .agent-management-detail {
-  padding-top: 70px;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
   font-family: var(--font-body);
 }
 
-.agent-management-editor {
-  padding-top: 64px;
+/* detail-body 已移至 index.css 统一管理 */
+
+.detail-body>.agent-management-detail-content {
+  max-width: var(--agent-content-max, 1400px);
 }
+
 
 .agent-management-editor h1 {
   font-size: 20px;
   line-height: 30px;
 }
 
-.agent-management-detail > .agent-management-back,
-.agent-management-detail > .agent-management-detail__header,
-.agent-management-detail > .agent-management-detail-section,
-.agent-management-detail > .agent-management-detail-capabilities,
-.agent-management-detail > .agent-management-detail-tabs,
-.agent-management-detail > .agent-management-detail-content {
-  margin-right: 0;
-  margin-left: 0;
-}
-
-.agent-management-detail > .agent-management-back {
-  position: relative;
-  top: -5px;
-}
-
-.agent-management-detail > .agent-management-detail__header {
-  margin-left: 16px;
-}
-
-.agent-management-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-primary);
-  padding: 0;
-  cursor: pointer;
-  font-family: var(--font-body);
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.agent-management-back:hover {
-  color: var(--color-text-strong);
-}
-
-.agent-management-back svg {
-  width: 12px;
-  height: 12px;
-}
+/* detail-back 已移至 index.css 统一管理 */
 
 .agent-management-detail__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  margin-top: 26px;
 }
 
 .agent-management-detail__identity {
@@ -787,7 +755,7 @@
   min-height: 116px;
 }
 
-.agent-management-detail-capability-group + .agent-management-detail-capability-group {
+.agent-management-detail-capability-group+.agent-management-detail-capability-group {
   margin-top: 32px;
 }
 
@@ -956,7 +924,7 @@
   line-height: 24px;
 }
 
-.agent-management-file-tree > div > .agent-management-file-entry,
+.agent-management-file-tree>div>.agent-management-file-entry,
 .agent-management-file-entry.is-skill-definition {
   margin-bottom: 6px;
 }
@@ -988,7 +956,7 @@
   justify-content: center;
 }
 
-.agent-management-file-entry__icon > svg {
+.agent-management-file-entry__icon>svg {
   flex: 0 0 auto;
 }
 
@@ -1020,7 +988,7 @@
   line-height: 28px;
 }
 
-.agent-management-file-content__header > * {
+.agent-management-file-content__header>* {
   position: relative;
   top: -2px;
 }
@@ -1101,11 +1069,11 @@
   line-height: 24px;
 }
 
-.agent-management-markdown__body > :first-child {
+.agent-management-markdown__body> :first-child {
   margin-top: 0;
 }
 
-.agent-management-markdown__body > :last-child {
+.agent-management-markdown__body> :last-child {
   margin-bottom: 0;
 }
 
@@ -1303,17 +1271,17 @@
   margin-top: 32px;
 }
 
-.agent-management-editor > .agent-management-form-section:first-of-type {
+.agent-management-editor>.agent-management-form-section:first-of-type {
   margin-top: 32px;
 }
 
-.agent-management-form-section > h2 {
+.agent-management-form-section>h2 {
   margin-bottom: 24px;
   font-size: 18px;
   line-height: 28px;
 }
 
-.agent-management-editor > .agent-management-form-section:first-of-type > h2 {
+.agent-management-editor>.agent-management-form-section:first-of-type>h2 {
   margin-bottom: 16px;
   line-height: 28px;
 }
@@ -1341,7 +1309,7 @@
   line-height: 22px;
 }
 
-.agent-management-form-grid > .agent-management-form-field--wide {
+.agent-management-form-grid>.agent-management-form-field--wide {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1351,11 +1319,11 @@
   line-height: 22px;
 }
 
-.agent-management-form-grid > .agent-management-form-field--runtime-id {
+.agent-management-form-grid>.agent-management-form-field--runtime-id {
   order: 5;
 }
 
-.agent-management-form-grid > .agent-management-form-field--tag-picker {
+.agent-management-form-grid>.agent-management-form-field--tag-picker {
   gap: 2px;
   margin-bottom: 16px;
   min-width: 0;
@@ -1454,7 +1422,7 @@
   font: inherit;
 }
 
-.agent-management-tag--selected > button {
+.agent-management-tag--selected>button {
   display: inline-flex;
   width: 16px;
   height: 16px;
@@ -1615,7 +1583,7 @@
   line-height: 1.7;
 }
 
-.agent-management-form-grid > label:has(.agent-management-persona) {
+.agent-management-form-grid>label:has(.agent-management-persona) {
   gap: 14px;
 }
 
@@ -1670,27 +1638,27 @@
   line-height: 22px;
 }
 
-.agent-management-persona-rendered .agent-management-markdown > h1,
-.agent-management-persona-rendered .agent-management-markdown > h2,
-.agent-management-persona-rendered .agent-management-markdown > h3 {
+.agent-management-persona-rendered .agent-management-markdown>h1,
+.agent-management-persona-rendered .agent-management-markdown>h2,
+.agent-management-persona-rendered .agent-management-markdown>h3 {
   color: var(--color-text-strong);
 }
 
-.agent-management-persona-rendered .agent-management-markdown > h1 {
+.agent-management-persona-rendered .agent-management-markdown>h1 {
   margin: 0 0 8px;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
 }
 
-.agent-management-persona-rendered .agent-management-markdown > h2 {
+.agent-management-persona-rendered .agent-management-markdown>h2 {
   margin: 24px 0 8px;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
 }
 
-.agent-management-persona-rendered .agent-management-markdown > p {
+.agent-management-persona-rendered .agent-management-markdown>p {
   margin: 0 0 24px;
   font-size: 16px;
   line-height: 24px;
@@ -1814,8 +1782,8 @@
   text-align: left;
 }
 
-.agent-management-capability-card > span:nth-child(2),
-.agent-management-selection-card > span:nth-child(2) {
+.agent-management-capability-card>span:nth-child(2),
+.agent-management-selection-card>span:nth-child(2) {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -1918,7 +1886,7 @@
   font-size: 20px;
 }
 
-.agent-management-selected-capabilities .agent-management-capability-card > small {
+.agent-management-selected-capabilities .agent-management-capability-card>small {
   display: -webkit-box;
   width: 100%;
   height: 44px;
@@ -1952,19 +1920,19 @@
   padding: 24px;
 }
 
-.agent-management-upload-dialog > header,
-.agent-management-upload-dialog > footer {
+.agent-management-upload-dialog>header,
+.agent-management-upload-dialog>footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
 }
 
-.agent-management-upload-dialog > header {
+.agent-management-upload-dialog>header {
   justify-content: space-between;
 }
 
-.agent-management-upload-dialog > header h2 {
+.agent-management-upload-dialog>header h2 {
   margin: 0;
   color: var(--color-text-strong);
   font-size: 18px;
@@ -1977,7 +1945,7 @@
   box-shadow: none;
 }
 
-.agent-management-upload-dialog > header button {
+.agent-management-upload-dialog>header button {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -1991,8 +1959,8 @@
   cursor: pointer;
 }
 
-.agent-management-upload-dialog > header button:hover,
-.agent-management-upload-dialog > header button:focus-visible {
+.agent-management-upload-dialog>header button:hover,
+.agent-management-upload-dialog>header button:focus-visible {
   background: var(--color-action-secondary);
   color: var(--color-text-strong);
   outline: 0;
@@ -2046,7 +2014,7 @@
   border-color: var(--color-border-danger);
 }
 
-.agent-management-upload-picker > span {
+.agent-management-upload-picker>span {
   color: var(--color-chat-supporting-text);
   font-size: 13px;
   line-height: 20px;
@@ -2061,12 +2029,12 @@
   text-align: left;
 }
 
-.agent-management-upload-picker__selected > svg {
+.agent-management-upload-picker__selected>svg {
   flex: 0 0 22px;
   color: var(--color-text-secondary);
 }
 
-.agent-management-upload-picker__selected > div {
+.agent-management-upload-picker__selected>div {
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -2125,20 +2093,20 @@
   line-height: 18px;
 }
 
-.agent-management-upload-dialog > footer .agent-management-button {
+.agent-management-upload-dialog>footer .agent-management-button {
   min-height: 32px;
   border-radius: var(--radius-full);
   padding-right: 16px;
   padding-left: 16px;
 }
 
-.agent-management-upload-dialog > footer .agent-management-button--primary {
+.agent-management-upload-dialog>footer .agent-management-button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
 }
 
-.agent-management-upload-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
+.agent-management-upload-dialog>footer .agent-management-button--primary:hover:not(:disabled) {
   border-color: var(--color-text-primary);
   background: var(--color-text-primary);
 }
@@ -2173,8 +2141,8 @@
   box-shadow: var(--effect-shadow-xl);
 }
 
-.agent-management-selection-dialog > header,
-.agent-management-selection-dialog > footer {
+.agent-management-selection-dialog>header,
+.agent-management-selection-dialog>footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2183,7 +2151,7 @@
   padding: 16px 24px;
 }
 
-.agent-management-selection-dialog > header h2 {
+.agent-management-selection-dialog>header h2 {
   margin: 0;
   color: var(--color-text-strong);
   font-size: 16px;
@@ -2343,7 +2311,7 @@
   box-shadow: none;
 }
 
-.agent-management-selection-dialog > header button {
+.agent-management-selection-dialog>header button {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -2357,8 +2325,8 @@
   cursor: pointer;
 }
 
-.agent-management-selection-dialog > header button:hover,
-.agent-management-selection-dialog > header button:focus-visible {
+.agent-management-selection-dialog>header button:hover,
+.agent-management-selection-dialog>header button:focus-visible {
   background: var(--color-action-secondary);
   color: var(--color-text-strong);
   outline: 0;
@@ -2387,32 +2355,32 @@
   margin: 0;
 }
 
-.agent-management-selection-dialog > footer {
+.agent-management-selection-dialog>footer {
   border-top: 1px solid var(--color-border-default);
   border-bottom: 0;
   color: var(--color-text-secondary);
   font-size: 14px;
 }
 
-.agent-management-selection-dialog > footer .agent-management-button {
+.agent-management-selection-dialog>footer .agent-management-button {
   min-height: 32px;
   border-radius: var(--radius-full);
   padding-right: 16px;
   padding-left: 16px;
 }
 
-.agent-management-selection-dialog > footer .agent-management-button--primary {
+.agent-management-selection-dialog>footer .agent-management-button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
 }
 
-.agent-management-selection-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
+.agent-management-selection-dialog>footer .agent-management-button--primary:hover:not(:disabled) {
   border-color: var(--color-text-primary);
   background: var(--color-text-primary);
 }
 
-.agent-management-selection-dialog > footer > div {
+.agent-management-selection-dialog>footer>div {
   display: flex;
   gap: 12px;
 }
@@ -2515,7 +2483,7 @@
   color: var(--color-text-link);
 }
 
-.agent-management-skill-option > span:last-child {
+.agent-management-skill-option>span:last-child {
   display: flex;
   min-width: 0;
   flex-direction: column;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, X, ExternalLink, Pencil } from 'lucide-react';
+import { Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, X, ExternalLink, Pencil } from 'lucide-react';
 // 2026-08-17：Trash2（原"卸载"按钮图标，按 source 分流 delete/disconnect）曾随彻底删除入口一起
 // 移除。2026-08-19 用户明确要求恢复：自定义 MCP 断联态（已经解绑过一次）的按钮要变成真正的
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
@@ -18,6 +18,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { PillButton, DetailLinkButton } from './Buttons';
 import { deriveCardState, deriveMcpAvailability } from './mcpState';
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
+import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
 // integrationType 决定了这个 MCP 的接入方式（要不要走 CLI OAuth、有没有"连接"按钮），之前
 // mcp.show 下发了这个字段但详情页完全没展示，用户看不出"为什么这个要跳浏览器授权""为什么那个
@@ -202,18 +203,18 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   }
 
   return (
-    <div className="relative h-full overflow-y-auto bg-card px-8 py-6" data-testid="connector-market-mcp-detail">
-      {/* 用户明确要求：去掉路径说明（原来的"MCP/MCP详情"面包屑），返回挪到整个页面最顶行，
-          图标+文字（黑色），不再是原来那个跟扩展图标同排的圆形纯图标按钮。 */}
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-mcp-detail">
       <button
         type="button"
         onClick={onBack}
-        className="mb-4 flex items-center gap-1 text-[14px] leading-[22px] text-text hover:opacity-70"
+        className="detail-back mb-[35px]"
         data-testid="connector-market-mcp-detail-back"
       >
-        <ChevronLeft size={16} />
+        <BackIcon aria-hidden="true" />
         {t('connectorMarket.common.back')}
       </button>
+
+      <div className="detail-body relative flex-1 min-h-0 overflow-y-auto pb-6">
 
       <div className="mb-6 flex items-start justify-between">
         <div className="flex items-center gap-3">
@@ -494,6 +495,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           onConnected={() => setAuthTarget(null)}
         />
       )}
+      </div>
     </div>
   );
 }

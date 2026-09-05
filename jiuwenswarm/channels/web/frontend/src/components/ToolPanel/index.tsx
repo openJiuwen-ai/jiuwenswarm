@@ -465,6 +465,7 @@ export function ToolPanel({
                   members={teamMembers}
                   totalTasks={teamTotalTasks}
                   completedTasks={teamCompletedTasks}
+                  statusIconAtEnd={isTeam}
                 />
               ) : (
                 <TaskPlanningPanel
@@ -533,6 +534,7 @@ export function ToolPanel({
             hideHeader
             hideExpandButton
             hideAssignee={!isTeam}
+            statusIconAtEnd={isTeam}
             title={t('chat.recentTasks')}
             maxCollapsedCount={4}
             {...planningProps}
@@ -594,6 +596,7 @@ export function ToolPanel({
             tasks={subagentTasks}
             members={[]}
             hideAssignee
+            statusIconAtEnd
             maxCollapsedCount={4}
             expanded={subagentsExpanded}
             emptyText={t('subagent.empty')}

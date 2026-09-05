@@ -627,6 +627,7 @@
     "addImageDisabled": "处理中或录音中不可添加图片",
     "addFile": "上传文件",
     "addFileDisabled": "处理中或录音中不可上传文件",
+    "addFileTooltip": "可添加文件、专家、技能、连接器",
     "addAttachment": "添加附件",
     "removeImage": "移除图片",
     "sendTask": "发送消息，但不打断模型运行",

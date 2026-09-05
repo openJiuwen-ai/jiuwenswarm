@@ -90,7 +90,7 @@
 }
 
 .conversation-sidebar__mode-collapse:hover {
-  background: var(--color-surface-hover);
+  background: var(--color-sidebar-nav-active);
   border-radius: 10.67px;
 }
 

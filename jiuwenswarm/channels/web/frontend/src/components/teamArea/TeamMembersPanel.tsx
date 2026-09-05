@@ -10,6 +10,7 @@ import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
 import teamIcon from '../../assets/team.svg';
 import PendingIcon from '../../assets/pending.svg?react';
+import BackIcon from '../../assets/back.svg?react';
 import { MemberListItem } from './MemberListItem';
 import { MemberTaskListBar, MemberTaskListItems } from './MemberTaskList';
 import {
@@ -27,7 +28,7 @@ import {
   type TeamDetailTab,
   type TeamMember,
 } from './shared';
-import { AlertTriangle, ChevronRight, CircleAlert, LoaderCircle, MessageSquare, Wrench, X } from 'lucide-react';
+import { AlertTriangle, CircleAlert, LoaderCircle, MessageSquare, Wrench, X } from 'lucide-react';
 
 type TeamMembersPanelProps = {
   variant: 'compact' | 'expanded';
@@ -718,7 +719,7 @@ function MemberTaskDetail({
             className="flex items-center text-sm text-text-muted hover:text-text"
             data-testid="team-area-member-detail-back"
           >
-            <ChevronRight size={16} className="rotate-180" />
+            <BackIcon className="text-text" />
           </button>
         )}
         <div className="text-sm font-semibold text-text" data-testid="team-area-member-detail-title">
