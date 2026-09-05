@@ -4,12 +4,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.util
 import json
 import logging
 import shutil
 import sys
+import threading
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List
@@ -80,8 +83,19 @@ class RailManager:
         self._registered_rails: set[str] = set()
         # DeepAgent 实例引用，用于 register/unregister
         self._agent_instance: Any = None
+        # 注册状态必须按 DeepAgent 实例隔离。agent 模式会先创建模板 Agent，
+        # 再为每个 session 创建独立 Agent；若只用全局名称集合，后者会被误判为
+        # “已注册”而跳过。弱引用避免 session Agent 回收后被管理器持有。
+        self._agent_rail_instances: weakref.WeakKeyDictionary[Any, dict[str, Any]] = (
+            weakref.WeakKeyDictionary()
+        )
+        # Rail class 与实例分开缓存：不同 Agent 需要独立实例，但扩展模块只应加载一次。
+        self._rail_classes: dict[str, type] = {}
+        self._rail_class_lock = threading.RLock()
         # 缓存已加载的 rail 实例，确保同一个 rail 只实例化一次
         self._rail_instances: dict[str, Any] = {}
+        # 串行化注册、注销与删除，避免删除过程中又有新 Agent 注册同一扩展。
+        self._lifecycle_lock = asyncio.Lock()
 
         self._initialized = True
         logger.info("[RailManager] 初始化完成，扩展目录: %s", self._extensions_dir)
@@ -106,10 +120,7 @@ class RailManager:
     def _save_config(self) -> None:
         """保存扩展信息到配置文件."""
         try:
-            data = {
-                name: ext.to_dict()
-                for name, ext in self._extensions.items()
-            }
+            data = {name: ext.to_dict() for name, ext in self._extensions.items()}
             with open(self._config_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             logger.debug("[RailManager] 保存配置文件成功")
@@ -169,7 +180,9 @@ class RailManager:
             if dest_path.exists():
                 shutil.rmtree(dest_path)
             shutil.copytree(source_path, dest_path)
-            logger.info("[RailManager] 复制文件夹成功: %s -> %s", source_path, dest_path)
+            logger.info(
+                "[RailManager] 复制文件夹成功: %s -> %s", source_path, dest_path
+            )
         except Exception as e:
             logger.error("[RailManager] 复制文件夹失败: %s", e)
             raise
@@ -273,7 +286,7 @@ class RailManager:
         import re
 
         # 尝试匹配 priority: int = XX
-        pattern = r'priority\s*:\s*int\s*=\s*(\d+)'
+        pattern = r"priority\s*:\s*int\s*=\s*(\d+)"
         match = re.search(pattern, file_str)
         if match:
             return int(match.group(1))
@@ -286,10 +299,19 @@ class RailManager:
         Returns:
             已注册的 rail 名称集合的副本
         """
-        return self._registered_rails.copy()
+        names = {
+            name
+            for rails_by_name in self._agent_rail_instances.values()
+            for name in rails_by_name
+        }
+        self._registered_rails = names
+        return names.copy()
 
-    def delete_extension(self, name: str) -> bool:
+    async def delete_extension(self, name: str) -> bool:
         """删除一个扩展（整个文件夹）.
+
+        删除磁盘文件和配置前，会先从所有仍存活的 Agent 注销对应 Rail。
+        任一注销失败时保留扩展与失败 Agent 的实例记录，便于重试。
 
         Args:
             name: 扩展名称
@@ -299,38 +321,66 @@ class RailManager:
 
         Raises:
             ValueError: 扩展不存在
+            RuntimeError: 扩展无法从一个或多个 Agent 注销
         """
-        if name not in self._extensions:
-            raise ValueError(f"扩展 '{name}' 不存在")
+        async with self._lifecycle_lock:
+            if name not in self._extensions:
+                raise ValueError(f"扩展 '{name}' 不存在")
+            await self._unregister_extension_from_agents(name)
 
-        # 如果扩展已注册，从已注册集合中移除
-        if name in self._registered_rails:
             self._registered_rails.discard(name)
-            logger.info("[RailManager] 扩展 '%s' 从已注册集合中移除", name)
+            self.invalidate_rail_cache(name)
 
-        # 清除缓存的实例
-        if name in self._rail_instances:
-            del self._rail_instances[name]
-            logger.info("[RailManager] 扩展 '%s' 的缓存实例已清除", name)
+            # 删除整个文件夹
+            folder_path = self._extensions_dir / name
+            if folder_path.exists():
+                try:
+                    if folder_path.is_dir():
+                        shutil.rmtree(folder_path)
+                    else:
+                        folder_path.unlink()
+                except Exception as e:
+                    logger.error("[RailManager] 删除文件夹失败: %s", e)
+                    raise
 
-        # 删除整个文件夹
-        folder_path = self._extensions_dir / name
-        if folder_path.exists():
+            # 删除扩展记录
+            del self._extensions[name]
+            self._save_config()
+
+            logger.info("[RailManager] 删除扩展成功: %s", name)
+            return True
+
+    async def _unregister_extension_from_agents(self, name: str) -> None:
+        """从所有活跃 Agent 注销扩展，且仅在成功后移除实例记录."""
+        registrations = [
+            (agent, rails_by_name[name])
+            for agent, rails_by_name in list(self._agent_rail_instances.items())
+            if name in rails_by_name
+        ]
+        failures: list[Exception] = []
+
+        for agent, rail_instance in registrations:
             try:
-                if folder_path.is_dir():
-                    shutil.rmtree(folder_path)
-                else:
-                    folder_path.unlink()
-            except Exception as e:
-                logger.error("[RailManager] 删除文件夹失败: %s", e)
-                raise
+                await agent.unregister_rail(rail_instance)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+                logger.error(
+                    "[RailManager] 从 Agent 注销扩展失败: %s, agent_id=%s, 错误: %s",
+                    name,
+                    id(agent),
+                    exc,
+                )
+                continue
 
-        # 删除扩展记录
-        del self._extensions[name]
-        self._save_config()
+            rails_by_name = self._agent_rail_instances.get(agent)
+            if rails_by_name is not None and rails_by_name.get(name) is rail_instance:
+                del rails_by_name[name]
 
-        logger.info("[RailManager] 删除扩展成功: %s", name)
-        return True
+        self.get_registered_rail_names()
+        if failures:
+            raise RuntimeError(
+                f"扩展 '{name}' 无法从 {len(failures)} 个 Agent 注销，已保留扩展以便重试"
+            ) from failures[0]
 
     def toggle_extension(self, name: str, enabled: bool) -> dict:
         """切换扩展的启用状态（仅更新配置文件）.
@@ -359,31 +409,58 @@ class RailManager:
         self._agent_instance = agent_instance
         logger.info("[RailManager] DeepAgent 实例已设置")
 
-    async def hot_reload_rail(self, name: str, enabled: bool) -> None:
+    async def hot_reload_rail(
+        self,
+        name: str,
+        enabled: bool,
+        *,
+        agent_instance: Any | None = None,
+    ) -> None:
         """热更新 rail：根据 enabled 状态注册或注销 rail 实例.
 
         Args:
             name: 扩展名称
             enabled: 是否启用
+            agent_instance: 显式目标 DeepAgent。省略时兼容使用
+                ``set_agent_instance()`` 设置的实例。并发创建 session Agent
+                时应显式传入，避免目标串线。
 
         Raises:
             ValueError: 扩展不存在或未设置 agent 实例
         """
-        if name not in self._extensions:
-            raise ValueError(f"扩展 '{name}' 不存在")
-
-        if self._agent_instance is None:
+        target_agent = (
+            agent_instance if agent_instance is not None else self._agent_instance
+        )
+        if target_agent is None:
             raise ValueError("DeepAgent 实例未设置，请先调用 set_agent_instance()")
+
+        async with self._lifecycle_lock:
+            if name not in self._extensions:
+                raise ValueError(f"扩展 '{name}' 不存在")
+            await self._hot_reload_rail_for_agent(name, enabled, target_agent)
+
+    async def _hot_reload_rail_for_agent(
+        self,
+        name: str,
+        enabled: bool,
+        target_agent: Any,
+    ) -> None:
+        """在生命周期锁内为单个 Agent 注册或注销 Rail."""
+        rails_by_name = self._agent_rail_instances.setdefault(target_agent, {})
 
         if enabled:
             # 开启：注册 rail
-            if name in self._registered_rails:
-                logger.warning("[RailManager] 扩展 '%s' 已注册，跳过", name)
+            if name in rails_by_name:
+                logger.warning(
+                    "[RailManager] 扩展 '%s' 已在当前 Agent 注册，跳过", name
+                )
                 return
 
             try:
-                rail_instance = self.load_rail_instance_without_enabled_check(name)
-                await self._agent_instance.register_rail(rail_instance)
+                # Rail 可持有会话上下文、工具注册状态等实例字段，不能跨 Agent 复用。
+                rail_instance = self.create_fresh_rail_instance(name)
+                await target_agent.register_rail(rail_instance)
+                rails_by_name[name] = rail_instance
                 self._registered_rails.add(name)
                 logger.info("[RailManager] 成功注册 rail 扩展: %s", name)
             except Exception as e:
@@ -391,22 +468,34 @@ class RailManager:
                 raise
         else:
             # 关闭：注销 rail
-            if name not in self._registered_rails:
-                logger.warning("[RailManager] 扩展 %s 未注册，跳过", name)
+            if name not in rails_by_name:
+                logger.warning("[RailManager] 扩展 %s 未在当前 Agent 注册，跳过", name)
                 return
 
             try:
-                rail_instance = self.load_rail_instance_without_enabled_check(name)
-                await self._agent_instance.unregister_rail(rail_instance)
-                self._registered_rails.discard(name)
+                rail_instance = rails_by_name[name]
+                await target_agent.unregister_rail(rail_instance)
+                del rails_by_name[name]
+                if not any(
+                    name in registered
+                    for registered in self._agent_rail_instances.values()
+                ):
+                    self._registered_rails.discard(name)
                 logger.info("[RailManager] 成功注销 rail 扩展: %s", name)
             except Exception as e:
                 logger.error("[RailManager] 注销 rail 扩展失败: %s, 错误: %s", name, e)
                 raise
 
-    def is_rail_registered(self, name: str) -> bool:
+    def is_rail_registered(
+        self,
+        name: str,
+        *,
+        agent_instance: Any | None = None,
+    ) -> bool:
         """检查 rail 是否已注册."""
-        return name in self._registered_rails
+        if agent_instance is not None:
+            return name in self._agent_rail_instances.get(agent_instance, {})
+        return name in self.get_registered_rail_names()
 
     def get_extensions(self) -> List[dict]:
         """获取所有扩展列表."""
@@ -452,8 +541,53 @@ class RailManager:
 
         return self._load_rail_instance_impl(name)
 
+    def invalidate_rail_cache(self, name: str) -> None:
+        """清除扩展的 class、主实例与动态模块缓存，供真正代码重载使用."""
+        with self._rail_class_lock:
+            class_removed = self._rail_classes.pop(name, None) is not None
+            instance_removed = self._rail_instances.pop(name, None) is not None
+
+            module_roots = (
+                f"jiuwenswarm_rail_extension_{name}",
+                f"rail_extension_{name}",
+            )
+            removed_modules = 0
+            for module_name in tuple(sys.modules):
+                if any(
+                    module_name == root or module_name.startswith(f"{root}.")
+                    for root in module_roots
+                ):
+                    sys.modules.pop(module_name, None)
+                    removed_modules += 1
+
+        if class_removed or instance_removed or removed_modules:
+            logger.info(
+                "[RailManager] 扩展 '%s' 缓存已清除: class=%s, instance=%s, modules=%d",
+                name,
+                class_removed,
+                instance_removed,
+                removed_modules,
+            )
+
     def _load_rail_class(self, name: str) -> type:
-        """加载 Rail 类（不实例化，不缓存）."""
+        """加载并缓存 Rail 类，避免创建独立实例时重复执行扩展模块."""
+        with self._rail_class_lock:
+            if name in self._rail_classes:
+                logger.debug("[RailManager] 返回缓存的 Rail 类: %s", name)
+                return self._rail_classes[name]
+
+            try:
+                rail_class = self._load_rail_class_uncached(name)
+            except Exception:
+                # 避免失败的包导入在 sys.modules 中留下半初始化模块，阻塞后续重试。
+                self.invalidate_rail_cache(name)
+                raise
+            self._rail_classes[name] = rail_class
+            logger.info("[RailManager] 加载并缓存 Rail 类成功: %s", name)
+            return rail_class
+
+    def _load_rail_class_uncached(self, name: str) -> type:
+        """从扩展目录执行模块并返回 Rail 类，不读取或写入 class 缓存."""
         extension = self._extensions[name]
 
         folder_path = self._extensions_dir / name
@@ -478,13 +612,18 @@ class RailManager:
                 package_spec.loader.exec_module(package_module)
 
                 module_name = f"{package_name}.rail"
-                rail_spec = importlib.util.spec_from_file_location(module_name, plugin_file)
-                if rail_spec is None or rail_spec.loader is None:
-                    raise ValueError(f"无法加载 Rail 模块: {name}")
+                module = sys.modules.get(module_name)
+                if module is None:
+                    rail_spec = importlib.util.spec_from_file_location(
+                        module_name,
+                        plugin_file,
+                    )
+                    if rail_spec is None or rail_spec.loader is None:
+                        raise ValueError(f"无法加载 Rail 模块: {name}")
 
-                module = importlib.util.module_from_spec(rail_spec)
-                sys.modules[module_name] = module
-                rail_spec.loader.exec_module(module)
+                    module = importlib.util.module_from_spec(rail_spec)
+                    sys.modules[module_name] = module
+                    rail_spec.loader.exec_module(module)
             else:
                 spec = importlib.util.spec_from_file_location(
                     f"rail_extension_{name}", plugin_file
@@ -524,7 +663,7 @@ class RailManager:
         return rail_instance
 
     def create_fresh_rail_instance(self, name: str) -> Any:
-        """为 team 子 agent 创建独立的 rail 实例（不使用缓存，每次返回新实例）.
+        """从缓存的 Rail class 创建独立实例（不复用实例）.
 
         Args:
             name: 扩展名称
@@ -541,7 +680,7 @@ class RailManager:
 
         rail_class = self._load_rail_class(name)
         rail_instance = rail_class()
-        logger.debug("[RailManager] 创建新 Rail 实例（team 专用）: %s -> %s", name, rail_instance)
+        logger.debug("[RailManager] 创建独立 Rail 实例: %s -> %s", name, rail_instance)
         return rail_instance
 
 

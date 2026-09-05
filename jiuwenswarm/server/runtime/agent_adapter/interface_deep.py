@@ -8184,7 +8184,11 @@ class JiuWenSwarmDeepAdapter:
             for ext in extensions:
                 if ext["enabled"]:
                     try:
-                        await manager.hot_reload_rail(ext["name"], True)
+                        await manager.hot_reload_rail(
+                            ext["name"],
+                            True,
+                            agent_instance=self._instance,
+                        )
                     except Exception as e:
                         logger.error(
                             "[JiuWenSwarmDeepAdapter] 用户 Rail 扩展加载失败: %s, 错误: %s",

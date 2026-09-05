@@ -560,9 +560,7 @@ def _build_plugin_rails(
     rails: list[Any] = []
     for rail_name in rail_manager.get_registered_rail_names():
         try:
-            rail_instance = rail_manager.load_rail_instance_without_enabled_check(
-                rail_name,
-            )
+            rail_instance = rail_manager.create_fresh_rail_instance(rail_name)
             if rail_instance is not None:
                 rails.append(rail_instance)
         except Exception as exc:

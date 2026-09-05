@@ -9305,7 +9305,7 @@ class AgentWebSocketServer:
                 raise ValueError("缺少 name 参数")
 
             manager = get_rail_manager()
-            manager.delete_extension(name)
+            await manager.delete_extension(name)
 
             resp = AgentResponse(
                 request_id=request.request_id,
