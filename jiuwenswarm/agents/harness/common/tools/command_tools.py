@@ -658,17 +658,15 @@ def _resolve_execution_plan(command: str, shell_type: str) -> tuple[list[str] | 
     raise RuntimeError(f"Unsupported shell_type: {normalized}")
 
 
-def _resolve_encoding(resolved_shell: str) -> str:
-    """Choose subprocess text encoding based on the resolved shell type.
-
-    - bash / sh on Windows (e.g. Git Bash / MSYS2) output UTF-8 by default.
-    - cmd uses the system code page (typically CP936/GBK on Chinese Windows).
-    - PowerShell also uses the system code page by default; safest to use
-      the system code page and rely on ``errors='replace'`` for edge cases.
-    """
-    if os.name == "nt" and resolved_shell in ("bash", "sh"):
-        return "utf-8"
-    return locale.getpreferredencoding(False) or "utf-8"
+def _decode_subprocess_output(output: bytes | None) -> str:
+    """Decode CLI output as UTF-8, falling back to the system encoding."""
+    if not output:
+        return ""
+    try:
+        return output.decode("utf-8")
+    except UnicodeDecodeError:
+        encoding = locale.getpreferredencoding(False) or "utf-8"
+        return output.decode(encoding, errors="replace")
 
 
 def _run_command_sync(
@@ -679,7 +677,6 @@ def _run_command_sync(
     session_id: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     plan, use_shell, resolved_shell = _resolve_execution_plan(command, shell_type)
-    encoding = _resolve_encoding(resolved_shell)
     popen_kw: dict[str, Any] = {}
     if os.name != "nt":
         _jw_start_new_session = os.getenv("JW_START_NEW_SESSION", "true").strip().lower()
@@ -691,16 +688,13 @@ def _run_command_sync(
         cwd=str(workdir),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        encoding=encoding,
-        errors="replace",
         **popen_kw,
     )
     sid = (session_id or "").strip()
     if sid:
         register_shell_process(sid, proc)
-    stdout: str = ""
-    stderr: str = ""
+    stdout_bytes: bytes | None = b""
+    stderr_bytes: bytes | None = b""
     deadline = time.monotonic() + timeout_seconds
     try:
         while proc.poll() is None:
@@ -719,7 +713,7 @@ def _run_command_sync(
         # forever when a grandchild inherits stdout/stderr (e.g. `cmd &` in shell).
         remaining = max(deadline - time.monotonic(), 1.0)
         try:
-            stdout, stderr = proc.communicate(timeout=remaining)
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=remaining)
         except subprocess.TimeoutExpired:
             terminate_shell_process(proc)
             raise subprocess.TimeoutExpired(cmd=command, timeout=timeout_seconds) from None
@@ -745,8 +739,8 @@ def _run_command_sync(
     return subprocess.CompletedProcess(
         args=plan,
         returncode=proc.returncode if proc.returncode is not None else -1,
-        stdout=stdout or "",
-        stderr=stderr or "",
+        stdout=_decode_subprocess_output(stdout_bytes),
+        stderr=_decode_subprocess_output(stderr_bytes),
     ), resolved_shell
 
 
