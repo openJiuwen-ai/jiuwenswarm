@@ -1736,6 +1736,8 @@
       "updatedAt": "Updated",
       "searchPlaceholder": "Search skills",
       "noResults": "No matching skills",
+      "noSources": "No skill sources available. Contact your administrator.",
+      "checkUpdates": "Check updates",
       "prev": "Previous",
       "next": "Next",
       "replaceConfirm": "Skill {{name}} is already installed. Overwrite?",
@@ -2130,6 +2132,7 @@
     "marketplacesDefault": "Default marketplace: anthropics",
     "installPrompt": "Enter plugin spec (plugin@marketplace)",
     "importPrompt": "Enter a local skill path on the server (SKILL.md or directory)",
+    "uninstallConfirmTitle": "Uninstall",
     "uninstallConfirm": "Uninstall {{pluginName}}?",
     "messages": {
       "installing": "Installing: {{name}}...",

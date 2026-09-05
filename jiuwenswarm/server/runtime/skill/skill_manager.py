@@ -92,6 +92,9 @@ def enabled_skills_from_environ() -> str | None:
 
 _SKILLNET_DOWNLOAD_TIMEOUT: int = int(os.environ.get("SKILLNET_DOWNLOAD_TIMEOUT", "60"))
 _SKILLNET_MAX_RETRIES: int = int(os.environ.get("SKILLNET_MAX_RETRIES", "3"))
+_MARKETPLACE_GIT_TIMEOUT_SECONDS: float = float(
+    os.environ.get("MARKETPLACE_GIT_TIMEOUT", "30")
+)
 # SkillNet 异步安装 job 必须跨 SkillManager 实例共享：skills.* 无状态 RPC 在
 # AgentManager 缓存未命中时会临时 new JiuWenSwarm()，install 与 install_status
 # 可能落到不同实例；若 job 仅存实例内存会误报「安装会话已过期」。
@@ -724,13 +727,16 @@ class SkillManager:
 
         params:
             refresh_marketplaces: bool (可选, 默认 False)
-                为 True 时，先对已配置 marketplace 执行 clone/pull，再扫描列表。
+                个人版为 True 时，先对已配置 marketplace 执行 clone/pull，再扫描列表；
+                企业版不消费 marketplace，忽略该参数。
             with_installed: bool (可选, 默认 False)
                 为 True 时，同一次响应中附带 plugins（与 skills.installed 一致），
                 避免网关串行处理两次 RPC 导致列表刷新超时或排队过久。
         """
         refresh_marketplaces = bool(params.get("refresh_marketplaces", False))
-        if refresh_marketplaces:
+        # 企业版不消费 marketplace 扫描结果（下方 marketplace 恒为 []），
+        # 跳过同步，避免无意义的 git clone/pull 拖慢列表请求（超时/502）。
+        if refresh_marketplaces and not is_enterprise():
             await self._sync_marketplace_repos()
         # 每次列举前，把手动拷入 skills 目录、尚未登记的本地技能补登记为 local，
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
@@ -2353,6 +2359,7 @@ class SkillManager:
         fingerprint: str | None = None,
         verification: dict[str, Any] | None = None,
         market_display_name: str = "",
+        author: str = "",
     ) -> dict[str, Any]:
         """Atomically replace the entity, then commit the JSON installation record."""
         existing_ref = self._find_installation_by_skill_ref(source_id, skill_id)
@@ -2403,6 +2410,7 @@ class SkillManager:
                 verification=verification,
                 entity_dir=entity_dir,
                 market_display_name=market_display_name,
+                author=author,
             )
         except Exception:
             if dest.exists():
@@ -2430,6 +2438,8 @@ class SkillManager:
         force = bool(params.get("force", False))
         # 市场展示名（技能广场卡片名）透传落盘，让「我的技能」与技能广场同名显示
         market_display_name = str(params.get("display_name") or "").strip()[:200]
+        market_version = str(params.get("version") or "").strip()[:100]
+        market_author = str(params.get("author") or "").strip()[:200]
         try:
             descriptor, body, verification = await self._fetch_verified_source_artifact(
                 source_id=source_id,
@@ -2452,11 +2462,19 @@ class SkillManager:
                 skill_name = _safe_path_name(
                     str(metadata.get("name") or skill_dir.name), "skill"
                 )
+                descriptor_metadata = dict(descriptor.metadata or {})
                 version = str(
-                    metadata.get("version")
-                    or descriptor.metadata.get("version")
+                    descriptor_metadata.get("version")
+                    or market_version
+                    or metadata.get("version")
                     or version_id
                 ).strip()
+                author = str(
+                    descriptor_metadata.get("author")
+                    or descriptor_metadata.get("publisher_name")
+                    or descriptor_metadata.get("owner_display_name")
+                    or market_author
+                ).strip()[:200]
                 record = self._commit_source_skill_entity(
                     skill_dir,
                     skill_name=skill_name,
@@ -2468,12 +2486,13 @@ class SkillManager:
                     fingerprint=descriptor.fingerprint,
                     verification=verification,
                     market_display_name=market_display_name,
+                    author=author,
                 )
             skill_payload: dict[str, Any] = {}
             for key in (
                 "installation_id", "name", "declared_name", "source_type",
                 "source_id", "skill_id", "version_id", "version", "enabled",
-                "installed", "removable", "consistency",
+                "installed", "removable", "consistency", "author",
             ):
                 value = record.get(key)
                 if value is not None:
@@ -3250,7 +3269,13 @@ class SkillManager:
         # 优先用 origin 精确定位目录（ClawHub 目录名 = slug，可由 origin 直推）
         dest = None
         name = ""
-        if raw_origin:
+        if installation is not None and installation.get("entity_dir"):
+            name = _safe_path_name(str(installation.get("name") or raw_name), "skill")
+            entity_path = _safe_child_path(self._skills_dir, str(installation["entity_dir"]), "skill")
+            if not entity_path.is_dir():
+                return {"success": False, "detail": f"未找到 skill: {name}"}
+            dest = entity_path
+        if dest is None and raw_origin:
             dest = self._resolve_local_skill_dir_by_origin(raw_origin)
             # origin 命中时 name 用于 builtin 校验/记录回退
             name = raw_name
@@ -3650,7 +3675,15 @@ class SkillManager:
                 "error_message": "service_id and agent_id are required",
             }
 
-        installation = self._find_skill_installation(name=name)
+        origin = str(params.get("origin") or "").strip()
+        if origin:
+            matches = [
+                record for record in self.list_skill_installations()
+                if str(record.get("origin") or "").strip() == origin
+            ]
+            installation = matches[0] if len(matches) == 1 else None
+        else:
+            installation = self._find_skill_installation(name=name)
         if installation is None:
             return {
                 "success": False,
@@ -3664,6 +3697,7 @@ class SkillManager:
                 "error_message": f"skill `{name}` is prebuilt and cannot be uninstalled",
             }
 
+        name = str(installation.get("name") or "").strip()
         result = await self.handle_skills_uninstall(
             {"name": name, "origin": str(installation.get("origin") or "")}
         )
@@ -5282,6 +5316,16 @@ class SkillManager:
     async def _git_clone(self, url: str, dest: Path) -> str | None:
         """浅克隆 git 仓库，返回 commit hash 或 None."""
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            return await self._git_get_commit(dest)
+        staging = dest.with_name(f".{dest.name}.clone-{uuid.uuid4().hex}")
+
+        def cleanup_partial_clone() -> None:
+            if not staging.exists():
+                return
+            if not _safe_rmtree(staging):
+                logger.warning("清理未完成的 git clone 目录失败: %s", staging)
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 "git",
@@ -5289,16 +5333,41 @@ class SkillManager:
                 "--depth",
                 "1",
                 url,
-                str(dest),
+                str(staging),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            try:
+                _, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=_MARKETPLACE_GIT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                if proc.returncode is None:
+                    proc.kill()
+                await proc.communicate()
+                logger.error(
+                    "git clone 超时（%.1fs）: %s",
+                    _MARKETPLACE_GIT_TIMEOUT_SECONDS,
+                    url,
+                )
+                cleanup_partial_clone()
+                return None
             if proc.returncode != 0:
                 logger.error("git clone 失败: %s", stderr.decode(errors="replace"))
+                cleanup_partial_clone()
                 return None
+            try:
+                staging.rename(dest)
+            except OSError:
+                # 另一个并发 clone 已率先发布时，只清理本请求独占的暂存目录。
+                if dest.exists():
+                    cleanup_partial_clone()
+                    return await self._git_get_commit(dest)
+                raise
             return await self._git_get_commit(dest)
         except Exception as exc:
+            cleanup_partial_clone()
             logger.error("git clone 异常: %s", exc)
             return None
 
@@ -5314,7 +5383,21 @@ class SkillManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await proc.communicate()
+            try:
+                _, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=_MARKETPLACE_GIT_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                if proc.returncode is None:
+                    proc.kill()
+                await proc.communicate()
+                logger.warning(
+                    "git pull 超时（%.1fs）: %s",
+                    _MARKETPLACE_GIT_TIMEOUT_SECONDS,
+                    repo_path,
+                )
+                return None
             if proc.returncode != 0:
                 logger.warning("git pull 失败: %s", stderr.decode(errors="replace"))
                 return None
@@ -5744,6 +5827,7 @@ class SkillManager:
             "sync_status",
             "consistency",
             "market_display_name",
+            "author",
         ):
             if key in dto:
                 payload[key] = dto[key]
@@ -5788,6 +5872,7 @@ class SkillManager:
         verification: dict[str, Any] | None = None,
         entity_dir: str | None = None,
         market_display_name: str | None = None,
+        author: str | None = None,
         replace_by_name: bool = False,
     ) -> dict[str, Any]:
         """Create or update one managed installation in workspace JSON."""
@@ -5858,6 +5943,7 @@ class SkillManager:
             ("version_id", version_id),
             ("fingerprint", fingerprint),
             ("market_display_name", market_display_name),
+            ("author", author),
         ):
             normalized = str(value or "").strip()
             if normalized:

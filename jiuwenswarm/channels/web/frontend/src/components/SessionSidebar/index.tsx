@@ -24,9 +24,7 @@ import { webRequest } from '../../services/webClient';
 import { useEnterpriseContext } from '../../services/enterpriseContext';
 import { isClickOutside } from './clickOutside';
 import { EditableCombobox } from './EditableCombobox';
-
-type MainNavKey =
-  'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'history' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'browserpanel' | 'updatepanel' | 'a2aingress';
+import type { MainNavKey } from '../../features/mainNavigationState';
 
 interface SessionSidebarProps {
   activeNav: MainNavKey;

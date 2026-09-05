@@ -39,7 +39,7 @@ export function ConfirmDialog({
           <button
             onClick={onConfirm}
             disabled={loading}
-            className="px-6 py-1.5 rounded-full text-sm font-medium bg-primary text-text-inverse hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-full bg-accent px-6 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
             {confirmLabel || t("common.confirm")}
           </button>

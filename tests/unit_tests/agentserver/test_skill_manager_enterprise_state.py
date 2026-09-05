@@ -150,3 +150,57 @@ def test_enterprise_web_install_and_uninstall_use_workspace_state(
     assert removed == {"success": True, "name": "user-skill"}
     assert not (workspace / "skills" / "user-skill").exists()
     assert manager.list_skill_installations() == []
+
+
+def test_enterprise_uninstall_uses_origin_and_persisted_entity_directory(tmp_path: Path) -> None:
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "package-directory")
+    manager.record_skill_installation(
+        name="internal-name", source_type="user", origin="customhub:asset-1",
+        source="customhub", entity_dir="package-directory", market_display_name="中文技能",
+    )
+    # 模拟刷新后重建管理器，市场名、登记名、磁盘目录名彼此不同。
+    restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    result = asyncio.run(restored.handle_skills_web_uninstall(
+        {"name": "中文技能", "origin": "customhub:asset-1"}
+    ))
+    assert result == {"success": True, "name": "internal-name"}
+    assert not skill_dir.exists()
+    assert restored.list_skill_installations() == []
+
+
+def test_enterprise_uninstall_does_not_fall_back_from_unknown_origin(tmp_path: Path) -> None:
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "user-skill")
+    manager.record_skill_installation(name="user-skill", source_type="user", origin="customhub:asset-1")
+    result = asyncio.run(manager.handle_skills_web_uninstall(
+        {"name": "user-skill", "origin": "customhub:missing"}
+    ))
+    assert result["success"] is False
+    assert skill_dir.exists()
+
+
+def test_enterprise_skills_list_does_not_wait_for_marketplace_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing the enterprise guard must make this request time out."""
+    manager = SkillManager(workspace_dir=str(tmp_path / "tenant"))
+
+    async def never_finishes() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.is_enterprise",
+        lambda: True,
+    )
+    monkeypatch.setattr(manager, "_sync_marketplace_repos", never_finishes)
+
+    payload = asyncio.run(
+        asyncio.wait_for(
+            manager.handle_skills_list({"refresh_marketplaces": True}),
+            timeout=0.1,
+        )
+    )
+
+    assert isinstance(payload["skills"], list)

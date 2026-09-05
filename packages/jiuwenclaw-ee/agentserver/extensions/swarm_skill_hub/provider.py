@@ -282,6 +282,17 @@ class SwarmSkillHubProvider(SkillSourceProvider):
         download_url = _text(data.get("download_url"))
         if not download_url:
             raise RuntimeError("SwarmSkillHub 未返回 download_url")
+        metadata: dict[str, Any] = {}
+        for key in (
+            "display_name",
+            "short_desc",
+            "version",
+            "author",
+            "publisher_name",
+            "owner_display_name",
+        ):
+            if key in data and data[key] is not None:
+                metadata[key] = data[key]
         return ArtifactDescriptor(
             artifact_ref=ArtifactRef(skill_ref=skill_ref, version_id=version_id),
             download_url=download_url,
@@ -300,9 +311,5 @@ class SwarmSkillHubProvider(SkillSourceProvider):
             key_id=_text(data.get("key_id") or data.get("keyId")) or None,
             fingerprint=_text(data.get("fingerprint")) or None,
             content_length=_int_or_none(data.get("content_length")),
-            metadata={
-                key: data[key]
-                for key in ("display_name", "short_desc", "version")
-                if key in data and data[key] is not None
-            },
+            metadata=metadata,
         )
