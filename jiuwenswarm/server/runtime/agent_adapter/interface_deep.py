@@ -222,6 +222,10 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
 )
 from jiuwenswarm.common.context_window import parse_positive_int, resolve_context_window_tokens
 
+from jiuwenswarm.agents.harness.common.rails.task_description_rail import (
+    TaskDescriptionRail,
+)
+from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
@@ -1600,6 +1604,7 @@ class JiuWenSwarmDeepAdapter:
         )
         self._avatar_rail: Any = None
         self._memory_forbidden_rail: Any = None
+        self._task_description_rail: TaskDescriptionRail | None = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
@@ -7274,6 +7279,26 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    @staticmethod
+    def _build_task_description_rail(config_base: dict[str, Any]) -> TaskDescriptionRail | None:
+        """Build TaskDescriptionRail: pin a task-description file into the system prompt.
+
+        Only added to the rail set when ``task_description.enabled`` is true
+        (see ``_build_agent_rails``). Reads the file path from
+        ``task_description.path`` (default /app/task.md) and keeps its content
+        visible for every model call — never compressed away — for CI /
+        evaluation runs where the task is written to a file first.
+        """
+        try:
+            _td_cfg = config_base.get("task_description") or {}
+            _td_path = str(_td_cfg.get("path", "/app/task.md"))
+            rail = TaskDescriptionRail(_td_path)
+            logger.info("[JiuWenSwarmDeepAdapter] TaskDescriptionRail loaded from %s", _td_path)
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] Failed to load TaskDescriptionRail: %s", exc)
+            return None
+
     def _build_agent_rails(
         self,
         config: dict[str, Any],
@@ -7330,6 +7355,19 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+
+        # Task description pinning: keep task file content visible throughout the run.
+        # Disabled by default — only inserted when enabled so the registry's
+        # "build returned None" warning is not spammed on every normal build.
+        _td_cfg = config_base.get("task_description") or {}
+        if bool(_td_cfg.get("enabled", False)):
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_task_description_rail",
+                    self._build_task_description_rail,
+                    {"config_base": config_base},
+                )
+            )
 
         # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
@@ -7559,6 +7597,25 @@ class JiuWenSwarmDeepAdapter:
         if self._heartbeat_rail is None:
             self._heartbeat_rail = self._build_heartbeat_rail()
 
+        # Rebuild the task-description rail from the current config snapshot so
+        # task_description.enabled / .path changes take effect on hot reload.
+        # Its type appearing in the returned list makes _hot_reload_rails cycle
+        # the old instance out (uninit removes the section). When disabled, the
+        # previous instance is still listed so it is torn down, and the property
+        # is cleared.
+        _td_cfg = (config_base or self._config_base_cache or {}).get(
+            "task_description"
+        ) or {}
+        _td_enabled = bool(_td_cfg.get("enabled", False))
+        _old_td_rail = getattr(self, "_task_description_rail", None)
+        if _td_enabled:
+            self._task_description_rail = self._build_task_description_rail(
+                config_base or self._config_base_cache or {}
+            )
+        else:
+            self._task_description_rail = None
+        _td_reload_rail = self._task_description_rail or _old_td_rail
+
         rails_list = []
         if self._skill_rail is not None:
             rails_list.append(self._skill_rail)
@@ -7576,6 +7633,8 @@ class JiuWenSwarmDeepAdapter:
             rails_list.append(self._permission_rail)
         if self._heartbeat_rail is not None:
             rails_list.append(self._heartbeat_rail)
+        if _td_reload_rail is not None:
+            rails_list.append(_td_reload_rail)
         return rails_list
 
     def _tool_owner_id(self) -> str:

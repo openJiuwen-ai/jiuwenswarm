@@ -709,6 +709,13 @@ tools:
   - todo
   - skill
 
+# Task description pinning: keep the task file content always visible in the
+# system prompt, unaffected by context compression. Useful in any automated
+# pipeline where the task is written to a file before the agent starts.
+task_description:
+  enabled: false          # set true when a task file is reliably present
+  path: /app/task.md      # path to the task description file
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}

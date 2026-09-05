@@ -450,6 +450,8 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `task_description.enabled` | When `true`, reads the file at `task_description.path` and pins its content as a permanent system-prompt section (priority 12), ensuring the task goal survives context compression | `false` |
+| `task_description.path` | Path to the task description file to pin in the system prompt | `/app/task.md` |
 
 <a id="dotenv-configuration"></a>
 
