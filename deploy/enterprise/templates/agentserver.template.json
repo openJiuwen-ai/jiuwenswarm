@@ -148,10 +148,10 @@
         "namespace": "<<NAMESPACE>>",
         "nodeName": "<<CURRENT_NODE_NAME>>",
         "sse_path": "/api/v1/events/stream",
-        "scope_concurrency": 3,
-        "pod_concurrency": 2,
+        "scope_concurrency": 400,
+        "pod_concurrency": 200,
         "session_ttl": 60,
-        "pod_ttl": 3600,
+        "pod_ttl": 180,
         "min_idle_pods": 1,
         "ready_timeout": 240,
         "volumes": [
