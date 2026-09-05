@@ -385,7 +385,7 @@ async def _connect_with_retry(
 
     def _tcp_ready(timeout: float = 0.5) -> bool:
         try:
-            with _socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            with _socket.create_connection((host, port), timeout=timeout):
                 return True
         except OSError:
             return False
