@@ -137,20 +137,22 @@ export default function HeartbeatTaskDrawer({ mode, initial, meta, submitting, e
             options={concurrencyOptions}
           />
         </div>
-        <div className="flex-1" data-testid="heartbeat-panel-session-deleted-policy-field">
-          <label
-            className="mb-1 block text-sm text-text-muted"
-            title={t('heartbeat.drawer.fieldSessionDeletedPolicyHint') ?? undefined}
-            data-testid="heartbeat-panel-session-deleted-policy-label"
-          >
-            {t('heartbeat.drawer.fieldSessionDeletedPolicy')}
-          </label>
-          <SimpleSelect
-            value={form.sessionDeletedPolicy}
-            onChange={(v) => setForm({ ...form, sessionDeletedPolicy: v as HeartbeatSessionDeletedPolicy })}
-            options={sessionDeletedOptions}
-          />
-        </div>
+        {mode === 'edit' && (
+          <div className="flex-1" data-testid="heartbeat-panel-session-deleted-policy-field">
+            <label
+              className="mb-1 block text-sm text-text-muted"
+              title={t('heartbeat.drawer.fieldSessionDeletedPolicyHint') ?? undefined}
+              data-testid="heartbeat-panel-session-deleted-policy-label"
+            >
+              {t('heartbeat.drawer.fieldSessionDeletedPolicy')}
+            </label>
+            <SimpleSelect
+              value={form.sessionDeletedPolicy}
+              onChange={(v) => setForm({ ...form, sessionDeletedPolicy: v as HeartbeatSessionDeletedPolicy })}
+              options={sessionDeletedOptions}
+            />
+          </div>
+        )}
       </div>
       <div data-testid="heartbeat-panel-max-runs-field">
         <label className="mb-1 block text-sm text-text-muted" title={t('heartbeat.drawer.fieldMaxRunsHint') ?? undefined} data-testid="heartbeat-panel-max-runs-label">

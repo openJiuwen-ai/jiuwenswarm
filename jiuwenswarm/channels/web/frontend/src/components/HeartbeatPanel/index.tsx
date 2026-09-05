@@ -341,8 +341,8 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
         schedule: scheduleFormToDto(value.schedule),
         timezone: value.schedule.timezone,
         concurrency_policy: value.concurrencyPolicy,
-        session_deleted_policy: value.sessionDeletedPolicy,
         max_runs: value.maxRuns,
+        ...(drawer.mode === 'edit' ? { session_deleted_policy: value.sessionDeletedPolicy } : {}),
       };
       try {
         if (drawer.mode === 'create') {
