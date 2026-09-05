@@ -1508,3 +1508,33 @@ modes:
         # 控制记忆内容如何注入到每个成员的 system prompt 中：
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
+
+      # ============================================================
+      # Team 任务输出质量验证（TeamVerificationRail 配置）
+      # ============================================================
+      # 作为 Leader 挂载的 Rail，在 Teammate 完成任务后自动验证输出质量。
+      # 支持的维度：correctness, completeness, clarity, consistency, security。
+      # ============================================================
+      verification:
+        # 总开关；关闭后不创建 TeamVerificationRail，Leader 不验证
+        enabled: true
+
+        # fail 时阻止 Leader consolidation
+        block_on_fail: false
+
+        # fail 时自动创建 rework 任务（TODO: 待实现）
+        auto_rework: false
+
+        # 阈值：PASS / NEEDS_REWORK / FAIL
+        pass_threshold: 70
+        rework_threshold: 40
+
+        # 跳过验证的任务标题模式（小写匹配子串）
+        skip_patterns:
+          - heartbeat
+          - ping
+          - healthcheck
+
+        # (预留) verification reviewer 使用的模型名；
+        # 当前未接入，不传时 rail 使用 mock 模式
+        model: null

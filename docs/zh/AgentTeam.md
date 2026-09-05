@@ -238,7 +238,54 @@ Agent Team 模式下同样支持技能（Skills）的使用和开发。团队中
 
 > 有关 Team Skills 的详细使用和开发教程，请参阅 [Swarm Skills 团队技能](SwarmSkills.md)。
 
-### 2.5 Team Memory
+### 2.5 团队验证（质量保障）
+
+Agent Team 模式内置**团队验证层**，在 Leader 汇总结果之前自动审查团队成员的任务产出质量。
+
+**验证触发时机：**
+- 当 Teammate 标记任务完成时，系统自动触发异步验证
+- 验证不阻塞团队工作流（fire-and-forget）
+
+**质量评估维度：**
+
+| 维度 | 权重 | 说明 |
+|------|------|------|
+| 正确性 | 25% | 事实准确性、技术有效性 |
+| 完整性 | 20% | 需求覆盖度、无遗漏 |
+| 一致性 | 20% | 与团队上下文和先前决策的对齐 |
+| 清晰度 | 15% | 结构、可读性、逻辑流畅度 |
+| 安全性 | 10% | 风险规避、无不安全模式 |
+| 性能 | 10% | 效率、无不必要开销 |
+
+**验证结果状态：**
+
+| 状态 | 含义 | 后续动作 |
+|------|------|---------|
+| **PASS** | 产出符合质量标准 | Leader 正常汇总 |
+| **NEEDS_REWORK** | 产出存在问题，建议修订 | 可选择自动创建返工任务 |
+| **FAIL** | 产出不可接受 | 可配置阻塞 Leader 汇总 |
+
+**配置方式：**
+
+在 `config.yaml` 中配置验证参数：
+
+```yaml
+team:
+  verification:
+    enabled: true
+    pass_threshold: 70
+    rework_threshold: 40
+    block_on_fail: false
+    auto_rework: false
+```
+
+**查看验证历史：**
+
+验证结果自动存入 `team-workspace/TEAM_MEMORY.md` 的"验证历史"章节，所有团队成员均可只读访问。Leader 可以查询质量趋势，识别薄弱维度。
+
+> 详细文档请参阅 agent-core SDK 中的团队验证层文档。
+
+### 2.6 Team Memory
 
 **Round 定义**：Agent Team 中一轮完整的团队协作周期，通常包含任务分配、执行、汇报和汇总等阶段。
 

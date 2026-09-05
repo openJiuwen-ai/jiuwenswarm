@@ -1081,7 +1081,8 @@ async def ensure_monitor_handlers_for_active_runtime(
                 team_name,
             )
         else:
-            monitor_handler = TeamMonitorHandler(monitor, session_id)
+            verification_rail = tm.get_team_verification_rail(session_id)
+            monitor_handler = TeamMonitorHandler(monitor, session_id, verification_rail=verification_rail)
             try:
                 await monitor_handler.start()
                 tm.register_monitor(session_id, monitor_handler)

@@ -16,6 +16,7 @@ from typing import Any
 from openjiuwen.agent_teams.monitor import TeamMonitor
 from openjiuwen.agent_teams.monitor.models import MonitorEvent, MonitorEventType
 
+from openjiuwen.agent_teams.verification.result import VerificationInput
 from jiuwenswarm.agents.harness.team.event_types import (
     TeamEventCategory,
     resolve_team_event,
@@ -139,8 +140,9 @@ class TeamMonitorHandler(BaseMonitorHandler):
     封装 Monitor 的创建、事件处理和状态查询，提供简化的接口给前端.
     """
 
-    def __init__(self, monitor: TeamMonitor, session_id: str):
+    def __init__(self, monitor: TeamMonitor, session_id: str, verification_rail=None):
         super().__init__(monitor, session_id)
+        self._verification_rail = verification_rail
 
     # ------------------------------------------------------------------
     # Collect loop — consumes monitor.events()
@@ -254,6 +256,20 @@ class TeamMonitorHandler(BaseMonitorHandler):
             return None
         return task.title, task.content
 
+    async def _run_verification(self, inp: VerificationInput) -> None:
+        """Run verification and emit the result as a team event."""
+        try:
+            result = await self._verification_rail.on_task_completed(inp)
+            if result and result.get("event_type"):
+                event_dict = {
+                    "event_type": "team.task",
+                    "session_id": self._session_id,
+                    "event": result,
+                }
+                await self._event_queue.put(event_dict)
+        except Exception as e:
+            logger.warning("[TeamMonitorHandler] Verification execution failed: %s", e)
+
     async def _handle_task(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
         """Converge every task event into the frontend-ready task shape.
 
@@ -290,6 +306,58 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 content_field = _task_text_field("content", body[1])
                 base.update(title_field)
                 base.update(content_field)
+        return base
+
+    async def _handle_task_unblocked(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
+        # task_id and status already set by _handle_task; this method only
+        # adds the verification side-effect for TASK_UNBLOCKED events.
+
+        # Trigger verification if the verification rail is configured
+        if self._verification_rail is not None:
+            try:
+                # Fetch task details for verification
+                task_info = None
+                try:
+                    tasks = await self._monitor.get_tasks()
+                    for t in tasks:
+                        if t.task_id == event.task_id:
+                            task_info = t
+                            break
+                except Exception as e:
+                    logger.debug("[TeamMonitorHandler] Could not fetch task info for verification: %s", e)
+
+                if task_info is not None:
+                    # Build team context from recent messages
+                    team_context = ""
+                    try:
+                        messages = await self._monitor.get_messages()
+                        recent = messages[-5:] if len(messages) > 5 else messages
+                        team_context = "\n".join(
+                            f"{m.from_member_name}: {m.content[:200]}"
+                            for m in recent if hasattr(m, "content")
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "[TeamMonitorHandler] Could not build team context for verification: %s",
+                            exc,
+                        )
+
+                    # Run verification asynchronously (fire-and-forget to not block event flow)
+                    asyncio.create_task(
+                        self._run_verification(
+                            VerificationInput(
+                                task_id=event.task_id,
+                                task_title=task_info.title or "",
+                                task_content=task_info.content or "",
+                                assignee=task_info.assignee or event.member_name or "",
+                                output=task_info.result or "",
+                                team_context=team_context,
+                            )
+                        )
+                    )
+            except Exception as e:
+                logger.warning("[TeamMonitorHandler] Verification trigger failed: %s", e)
+
         return base
 
     async def _handle_message(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
@@ -370,6 +438,8 @@ class TeamMonitorHandler(BaseMonitorHandler):
         # dedicated handlers because they carry distinct fields.
         if event_category == TeamEventCategory.TASK:
             event_data = await self._handle_task(event_data, event)
+            if event.event_type == MonitorEventType.TASK_UNBLOCKED:
+                event_data = await self._handle_task_unblocked(event_data, event)
         else:
             non_task_handlers = {
                 MonitorEventType.MEMBER_SPAWNED: self._handle_member_spawned,

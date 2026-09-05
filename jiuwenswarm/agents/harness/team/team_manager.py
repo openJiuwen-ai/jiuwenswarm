@@ -21,6 +21,7 @@ from openjiuwen.agent_teams import observability as team_observability
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.harness import DeepAgent
+from openjiuwen.agent_teams.verification.rail import TeamVerificationRail
 from openjiuwen.harness.rails import (
     EvolutionInterruptRail,
     SkillEvolutionRail,
@@ -370,6 +371,8 @@ class TeamManager:
         self._team_member_rail_contexts: dict[str, list[TeamRailMountContext]] = {}
         # session_id → live rails and owning DeepAgent, for hot-unregister
         self._team_live_rails: dict[str, list[tuple[Any, Any]]] = {}
+        # session_id → TeamVerificationRail instance (for monitor handler wiring)
+        self._team_verification_rails: dict[str, TeamVerificationRail] = {}
         # session_id → evolution watcher task
         self._team_evolution_watchers: dict[str, asyncio.Task] = {}
         # session_id → runtime_ready requested a watcher before the rail registered
@@ -1665,6 +1668,16 @@ class TeamManager:
         if entry not in rails:
             rails.append(entry)
 
+    def register_team_verification_rail(
+        self, session_id: str, rail: TeamVerificationRail
+    ) -> None:
+        """Register a TeamVerificationRail instance for monitor handler wiring."""
+        self._team_verification_rails[session_id] = rail
+
+    def get_team_verification_rail(self, session_id: str) -> TeamVerificationRail | None:
+        """Return the TeamVerificationRail for a session, or None."""
+        return self._team_verification_rails.get(session_id)
+
     async def reload_team_skill_views(self, session_id: str | None = None) -> int:
         """Re-scan the shared Skill library for live team members.
 
@@ -1719,6 +1732,7 @@ class TeamManager:
         self._team_evolution_enabled.pop(session_id, None)
         self._team_member_rail_contexts.pop(session_id, None)
         self._team_live_rails.pop(session_id, None)
+        self._team_verification_rails.pop(session_id, None)
 
     def _clear_terminal_session_markers(self, session_id: str) -> None:
         """Release process-wide markers only for non-resumable teardown."""
@@ -1823,6 +1837,10 @@ class TeamManager:
                 context.agent.add_rail(rail)
                 self.register_team_live_rail(session_id, context.agent, rail)
                 team_skill_create_rail = rail
+            elif isinstance(rail, TeamVerificationRail):
+                context.agent.add_rail(rail)
+                self.register_team_live_rail(session_id, context.agent, rail)
+                self.register_team_verification_rail(session_id, rail)
 
         if team_skill_rail is not None:
             self.register_team_skill_rail(session_id, team_skill_rail)

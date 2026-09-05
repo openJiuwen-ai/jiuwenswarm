@@ -450,6 +450,11 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `team.verification.enabled` | Enable the team verification layer; a reviewer agent scores each sub-agent output and the leader receives result + score | `false` |
+| `team.verification.block_on_fail` | Block leader consolidation when a sub-agent result scores below `rework_threshold` | `false` |
+| `team.verification.pass_threshold` | Minimum score (0–100) for a PASS verdict | `70` |
+| `team.verification.rework_threshold` | Score below which a FAIL verdict is issued | `40` |
+| `team.verification.auto_rework` | Automatically create rework tasks when a sub-agent fails verification | `false` |
 
 <a id="dotenv-configuration"></a>
 
