@@ -546,8 +546,22 @@ def _build_plugin_rails(
 ) -> list[Any]:
     """Build user-registered extension rails for a member.
 
-    Enumerates every registered rail extension and instantiates a fresh
+    Enumerates every enabled rail extension and instantiates a fresh
     instance per member, skipping any that fail to load.
+
+    Two details matter here:
+
+    - **Fresh instances, not cached ones.** Rails hold per-agent state (an
+      in-flight accumulator, checked-artifact hashes, the last alert level
+      raised). ``load_rail_instance_without_enabled_check`` is cache-backed,
+      so every member would share one object: concurrent members interleave
+      ``before_invoke``/``after_invoke`` on the same slot, losing records or
+      attributing them to the wrong member. ``create_fresh_rail_instance``
+      is the API provided for exactly this case.
+    - **Enabled config, not the registration set.**
+      ``get_registered_rail_names()`` tracks "already registered to the
+      current DeepAgent instance" and is cleared when that instance is
+      replaced, so it can be empty at member-assembly time.
 
     Args:
         params: Spec params (unused; kept for the provider contract).
@@ -558,11 +572,12 @@ def _build_plugin_rails(
     """
     rail_manager = get_rail_manager()
     rails: list[Any] = []
-    for rail_name in rail_manager.get_registered_rail_names():
+    for ext in rail_manager.list_extensions():
+        rail_name = ext.get("name")
+        if not rail_name or not ext.get("enabled"):
+            continue
         try:
-            rail_instance = rail_manager.load_rail_instance_without_enabled_check(
-                rail_name,
-            )
+            rail_instance = rail_manager.create_fresh_rail_instance(rail_name)
             if rail_instance is not None:
                 rails.append(rail_instance)
         except Exception as exc:

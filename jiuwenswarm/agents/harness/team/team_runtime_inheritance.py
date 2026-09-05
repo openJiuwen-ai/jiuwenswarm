@@ -30,6 +30,7 @@ from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
 
+from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
@@ -363,8 +364,52 @@ def build_member_rails(
         if rail is not None:
             rails_list.append(rail)
 
+    # User-registered extension rails (RailManager) for all members.
+    # The swarm provider path mounts these via the ``swarm.plugin_rails``
+    # provider (see ``member_rails._build_plugin_rails``); this legacy path
+    # built only the hard-coded built-ins, so extension rails silently never
+    # ran for team members — their hooks fired for the top-level agent only.
+    rails_list.extend(build_extension_rails())
+
     logger.info("[TeamRuntime] Total rails built: %d", len(rails_list))
     return rails_list
+
+
+def build_extension_rails() -> list[Any]:
+    """Instantiate each enabled extension rail, one fresh instance per member.
+
+    Iterates the *enabled extension config* rather than
+    ``get_registered_rail_names()``: the latter tracks "already registered to
+    the current DeepAgent instance" and is cleared whenever that instance is
+    replaced, so it is empty at member-assembly time.
+
+    Uses ``create_fresh_rail_instance`` (not the cached loader) because rails
+    hold per-agent state — e.g. checked-artifact hashes, last-triggered alert
+    level — which must not be shared across members.
+
+    A failing extension is skipped, never fatal to member assembly.
+    """
+    rails: list[Any] = []
+    try:
+        rail_manager = get_rail_manager()
+    except Exception as exc:
+        logger.warning("[TeamRuntime] get_rail_manager failed: %s", exc)
+        return rails
+    for ext in rail_manager.list_extensions():
+        name = ext.get("name")
+        if not name or not ext.get("enabled"):
+            continue
+        try:
+            rail = rail_manager.create_fresh_rail_instance(name)
+        except Exception as exc:
+            logger.warning(
+                "[TeamRuntime] extension rail %s load failed: %s", name, exc
+            )
+            continue
+        if rail is not None:
+            rails.append(rail)
+            logger.info("[TeamRuntime] extension rail mounted: %s", name)
+    return rails
 
 
 def filter_inheritable_ability_cards(main_agent: Any) -> list[ToolCard]:

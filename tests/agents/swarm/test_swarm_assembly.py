@@ -3247,3 +3247,95 @@ def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
             shared_entries.append(s)
     assert not shared_entries, "shared playwright_official_stdio entry must be removed"
     assert subagent_factories.count(SWARM_BROWSER_AGENT) == 1
+
+
+# ---------------------------------------------------------------------------
+# PLUGIN_RAILS: fresh instance per member (shared state would corrupt data)
+# ---------------------------------------------------------------------------
+
+
+class _ExtStateRail:
+    """Stand-in for a stateful extension rail (accumulator + alert level)."""
+
+    def __init__(self):
+        self.cur = None
+
+
+class _CountingRailManager:
+    def __init__(self, extensions):
+        self._extensions = extensions
+        self.fresh_calls: list[str] = []
+        self.cached_calls: list[str] = []
+
+    def list_extensions(self):
+        return self._extensions
+
+    def get_registered_rail_names(self):
+        # Empty on purpose: mirrors the real manager at member-assembly time,
+        # where the agent-instance swap cleared the registration set.
+        return set()
+
+    def create_fresh_rail_instance(self, name):
+        self.fresh_calls.append(name)
+        if name == "broken":
+            raise RuntimeError("boom")
+        return _ExtStateRail()
+
+    def load_rail_instance_without_enabled_check(self, name):
+        # Cache-backed in the real manager — must NOT be used for members.
+        self.cached_calls.append(name)
+        return _ExtStateRail()
+
+
+def _patch_plugin_rail_manager(monkeypatch, extensions):
+    manager = _CountingRailManager(extensions)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.providers.member_rails.get_rail_manager",
+        lambda: manager,
+    )
+    return manager
+
+
+def test_plugin_rails_uses_fresh_instance_per_member(monkeypatch):
+    """Members must not share a rail object: rails hold per-agent state."""
+    from jiuwenswarm.agents.swarm.providers import member_rails
+
+    manager = _patch_plugin_rail_manager(monkeypatch, [
+        {"name": "token_meter", "enabled": True},
+    ])
+
+    first = member_rails._build_plugin_rails({}, None)
+    second = member_rails._build_plugin_rails({}, None)
+
+    assert first[0] is not second[0], "each member needs its own instance"
+    assert manager.fresh_calls == ["token_meter", "token_meter"]
+    assert manager.cached_calls == [], "cache-backed loader must not be used"
+
+
+def test_plugin_rails_mounts_enabled_only(monkeypatch):
+    """Registration set is empty at assembly time; enabled config drives it."""
+    from jiuwenswarm.agents.swarm.providers import member_rails
+
+    manager = _patch_plugin_rail_manager(monkeypatch, [
+        {"name": "token_meter", "enabled": True},
+        {"name": "off_rail", "enabled": False},
+    ])
+
+    rails = member_rails._build_plugin_rails({}, None)
+
+    assert len(rails) == 1
+    assert manager.fresh_calls == ["token_meter"]
+
+
+def test_plugin_rails_skips_broken_extension(monkeypatch):
+    """A failing extension is skipped, never fatal to member assembly."""
+    from jiuwenswarm.agents.swarm.providers import member_rails
+
+    _patch_plugin_rail_manager(monkeypatch, [
+        {"name": "broken", "enabled": True},
+        {"name": "token_meter", "enabled": True},
+    ])
+
+    rails = member_rails._build_plugin_rails({}, None)
+
+    assert len(rails) == 1
