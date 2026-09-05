@@ -450,6 +450,8 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `skills.external_dirs` | Extra skill directories loaded as if locally installed. Accepts a YAML list or a semicolon-separated string (also settable via `EXTERNAL_SKILL_DIRS` env var). Skills here are fully equivalent to UI-installed skills. | `""` (empty) |
+| `skills.external_only` | When `true` and `skills.external_dirs` is non-empty, the personal skills directory is excluded — only external-dir skills are visible to the agent. Use in benchmark / CI environments to prevent unrelated installed skills from appearing. | `false` |
 
 <a id="dotenv-configuration"></a>
 

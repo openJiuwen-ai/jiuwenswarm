@@ -19,7 +19,9 @@ so openjiuwen builds the member from the merged spec. Two profiles are supported
 
 from __future__ import annotations
 
+import logging
 import os
+from pathlib import Path
 from typing import (
     Any,
     Callable,
@@ -63,6 +65,9 @@ from jiuwenswarm.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     is_team_plan_mode,
 )
+from jiuwenswarm.common.utils import get_agent_skills_dir
+
+logger = logging.getLogger(__name__)
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset(
@@ -280,15 +285,62 @@ def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     return False
 
 
+def _external_skill_dirs(config: dict[str, Any]) -> list[str]:
+    """Resolve the configured external skill directories for team Skill rails.
+
+    Reads ``skills.external_dirs`` from the resolved config — a YAML list or a
+    semicolon-separated string (e.g. the ``${EXTERNAL_SKILL_DIRS:-}`` env
+    expansion) — mirroring ``SkillManager._load_external_skill_dirs`` so team
+    members and single agents resolve the same set of directories. Only paths
+    that exist and are directories are returned.
+
+    Args:
+        config: The resolved config mapping.
+
+    Returns:
+        Existing external skill directory paths (absolute), in config order.
+    """
+    skills_cfg = _config_section(config, "skills")
+    raw = skills_cfg.get("external_dirs") or []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(";") if p.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        parts = [str(p).strip() for p in raw if str(p).strip()]
+    else:
+        return []
+
+    dirs: list[str] = []
+    for p in parts:
+        try:
+            path = Path(p).expanduser().resolve()
+        except Exception:
+            logger.warning(
+                "[swarm.skill_use] invalid skills.external_dirs entry %r, skipped",
+                p,
+            )
+            continue
+        if path.is_dir():
+            dirs.append(str(path))
+        else:
+            logger.warning(
+                "[swarm.skill_use] skills.external_dirs %s does not exist "
+                "or is not a directory, skipped",
+                path,
+            )
+    return dirs
+
+
 def _team_skill_use_rail_spec(config: dict[str, Any], role: str) -> RailSpec:
     """Declare the team Skill rail for a member of either profile.
 
-    Only the exposure mode and the seed allow-list are declared here. The rail
-    reads the one physical Skill library narrowed by the member's and the team's
-    ``skills-visibility.json``, and those declaration paths are keyed on a
+    Only the exposure mode, the seed allow-list and the Skill library roots are
+    declared here. The rail reads the Skill library roots (the personal library
+    plus any configured external dirs, narrowed by the member's and the team's
+    ``skills-visibility.json``), and the declaration paths are keyed on a
     member identity that is minted per spawn, long after this spec is built —
     ``openjiuwen.agent_teams.skill.rail_spec.complete_declared_team_skill_rails``
-    fills them in during member setup, together with the library root.
+    fills them in during member setup, together with the library root when none
+    was declared.
 
     Declaring the rail here rather than leaving it to the team's auto-add is
     what keeps ``react.skill_mode`` / agentic retrieval honoured: the auto-add
@@ -302,12 +354,26 @@ def _team_skill_use_rail_spec(config: dict[str, Any], role: str) -> RailSpec:
     Returns:
         A ``core.team.skill_use`` RailSpec.
     """
+    params: dict[str, Any] = {
+        "skill_mode": _skill_mode(config),
+        "bootstrap_allow": _resolve_member_skills(config, role),
+    }
+    # External skill dirs mirror the single-agent path: skills.external_dirs
+    # (config or EXTERNAL_SKILL_DIRS env expansion) are added as extra library
+    # roots so task-provided skills reach team members too. With
+    # skills.external_only=true and a non-empty external list the personal
+    # library is dropped entirely — the benchmark / CI mode that hides
+    # unrelated installed skills from the agent.
+    external_only = bool(_config_section(config, "skills").get("external_only", False))
+    external_dirs = _external_skill_dirs(config)
+    if external_dirs:
+        if external_only:
+            params["skills_dir"] = external_dirs
+        else:
+            params["skills_dir"] = [str(get_agent_skills_dir())] + external_dirs
     return RailSpec(
         type=TEAM_SKILL_USE,
-        params={
-            "skill_mode": _skill_mode(config),
-            "bootstrap_allow": _resolve_member_skills(config, role),
-        },
+        params=params,
     )
 
 

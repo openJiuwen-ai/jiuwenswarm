@@ -164,6 +164,88 @@ def _skill_library_dir(ctx: SwarmBuildContext) -> Path:
     return Path(raw).expanduser() if raw else get_agent_skills_dir()
 
 
+def _external_skill_dirs(config: dict[str, Any] | None) -> list[str]:
+    """Resolve the configured external Skill directories for a member view.
+
+    Mirrors ``SkillManager._load_external_skill_dirs`` and the team rail spec
+    (``config_specs._external_skill_dirs``): ``skills.external_dirs`` may be a
+    YAML list or a semicolon-separated string (the ``${EXTERNAL_SKILL_DIRS:-}``
+    expansion). Only existing directories are returned, in config order, so the
+    member's listing and retrieval stay in agreement with what its SkillUseRail
+    actually scans.
+
+    Args:
+        config: The resolved config mapping (may be ``None`` when a context
+            predates the field, in which case no external dirs apply).
+
+    Returns:
+        Existing external Skill directory paths (absolute), in config order.
+    """
+    if not config:
+        return []
+    skills_cfg = config.get("skills") or {}
+    if not isinstance(skills_cfg, dict):
+        return []
+    raw = skills_cfg.get("external_dirs") or []
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(";") if p.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        parts = [str(p).strip() for p in raw if str(p).strip()]
+    else:
+        return []
+
+    dirs: list[str] = []
+    for part in parts:
+        try:
+            path = Path(part).expanduser().resolve()
+        except Exception as exc:
+            logger.warning(
+                "[swarm.skill_toolkit] invalid skills.external_dirs entry %r, "
+                "skipped: %s",
+                part,
+                exc,
+            )
+            continue
+        if path.is_dir():
+            dirs.append(str(path))
+    return dirs
+
+
+def _external_only(config: dict[str, Any] | None) -> bool:
+    """Return whether ``skills.external_only`` is set (benchmark / CI mode)."""
+    if not config:
+        return False
+    skills_cfg = config.get("skills")
+    return bool(skills_cfg.get("external_only", False)) if isinstance(skills_cfg, dict) else False
+
+
+def _member_skill_scan_dirs(ctx: SwarmBuildContext) -> list[str]:
+    """Member Skill scan roots: the personal library plus configured external dirs.
+
+    Mirrors the single-agent ``_build_skill_rail`` and the team rail spec: with
+    ``skills.external_only`` and a non-empty external list, only the external
+    dirs are scanned, otherwise external dirs are appended to the personal
+    library. Keeping this byte-identical to what the member's SkillUseRail
+    scans is what makes ``list_skill`` / ``skill_index`` agree with what the
+    member can actually invoke.
+
+    Args:
+        ctx: The per-member build context.
+
+    Returns:
+        The member's Skill scan roots.
+    """
+    config = getattr(ctx, "config", None)
+    external = _external_skill_dirs(config)
+    if _external_only(config) and external:
+        return external
+    roots = [str(_skill_library_dir(ctx))]
+    for d in external:
+        if d not in roots:
+            roots.append(d)
+    return roots
+
+
 def _scan_library_skill_names(library_dir: Path) -> set[str]:
     """Return every installed Skill name in the library, ignoring visibility.
 
@@ -220,6 +302,11 @@ def visible_skill_names_for_list_skill(ctx: SwarmBuildContext) -> set[str]:
     the documents decide who sees what. Deliberately evaluated on every call so
     a runtime authorization change is reflected without rebuilding the tools.
 
+    External skill dirs (``skills.external_dirs``) are scanned too, and with
+    ``skills.external_only`` + a non-empty external list only the external
+    skills are returned — the same roots the member's SkillUseRail scans
+    (``_member_skill_scan_dirs``).
+
     Args:
         ctx: The per-member build context.
 
@@ -230,7 +317,9 @@ def visible_skill_names_for_list_skill(ctx: SwarmBuildContext) -> set[str]:
         compose_member_skill_visibility,
     )
 
-    names = _scan_library_skill_names(_skill_library_dir(ctx))
+    names: set[str] = set()
+    for root in _member_skill_scan_dirs(ctx):
+        names |= _scan_library_skill_names(Path(root))
     enabled_skills, disabled_skills = compose_member_skill_visibility(ctx)
     return _apply_skill_visibility(names, enabled_skills, disabled_skills)
 
@@ -371,7 +460,7 @@ def skill_retrieval_toolkit_for_context(
     )
     source_manager = SkillManager()
     toolkit = SkillRetrievalToolkit(
-        skill_directories=lambda: [str(_skill_library_dir(ctx))],
+        skill_directories=lambda: _member_skill_scan_dirs(ctx),
         disabled_skills=load_execution_disabled_skills,
         visible_skill_names=lambda: visible_skill_names_for_list_skill(ctx),
         source_by_name=lambda: skill_sources_from_manager(source_manager),

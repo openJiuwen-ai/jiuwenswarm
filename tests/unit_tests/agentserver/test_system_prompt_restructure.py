@@ -1555,6 +1555,65 @@ def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_
     assert toolkit.current_records() == ()
     assert manager.reload_count >= 2
 
+def test_deep_adapter_visible_skill_names_match_list_skill(monkeypatch, tmp_path):
+    for name in ("alpha", "beta", "_internal", ".hidden"):
+        skill_dir = tmp_path / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+    (tmp_path / "not-a-skill").mkdir()
+
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    adapter.set_skill_manager(
+        SimpleNamespace(
+            list_execution_disabled_skills=lambda: ["beta"],
+            get_external_skill_dirs=lambda: [],
+        )
+    )
+    captured: dict[str, object] = {}
+
+    class FakeRail:
+        def __init__(self, *, toolkit, **_kwargs):
+            captured["toolkit"] = toolkit
+
+    class FakeManager:
+        def __init__(self):
+            self.disabled: list[str] = []
+            self.persisted_disabled: list[str] = ["beta"]
+            self.reload_count = 0
+
+        def reload_state(self):
+            self.reload_count += 1
+            self.disabled = list(self.persisted_disabled)
+
+        def list_execution_disabled_skills(self):
+            return list(self.disabled)
+
+    manager = FakeManager()
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    adapter.set_skill_manager(manager)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_skill_retrieval_enabled",
+        lambda *_args: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.get_agent_skills_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.SkillRetrievalPromptRail",
+        FakeRail,
+    )
+
+    rail = adapter._build_skill_retrieval_prompt_rail()
+
+    assert isinstance(rail, FakeRail)
+    toolkit = captured["toolkit"]
+    assert isinstance(toolkit, SkillRetrievalToolkit)
+    assert [record.worker_id for record in toolkit.current_records()] == ["alpha"]
+    manager.persisted_disabled.append("alpha")
+    assert toolkit.current_records() == ()
+    assert manager.reload_count >= 2
+
 
 @pytest.mark.asyncio
 async def test_deep_adapter_skill_retrieval_prompt_rail_sync_hot_toggles(monkeypatch):

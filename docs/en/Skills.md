@@ -622,3 +622,54 @@ The output only includes basic items such as temperature, wind speed, precipitat
 
 ### After optimization
 When you call it again, the output includes not only temperature and wind speed, but also UV intensity.
+
+---
+
+### External Skill Directories
+
+**External skill directories** let you load skills from an arbitrary path on disk without going through the UI installer. Skills loaded this way are fully equivalent to locally installed skills — they appear in skill lists, can be executed, and are injected into the system prompt.
+
+This is useful for:
+- CI / benchmark pipelines that mount task-specific skills at a known path
+- Development workflows where skills live in a project repo and you want to test them without installing
+
+#### Configuration
+
+Two equivalent methods are supported:
+
+**Method 1 — YAML list** (`~/.jiuwenswarm/config/config.yaml`):
+
+```yaml
+skills:
+  external_dirs:
+    - /path/to/project/skills
+    - ~/my-extra-skills
+```
+
+**Method 2 — environment variable** (semicolon-separated):
+
+```bash
+export EXTERNAL_SKILL_DIRS="/path/to/project/skills;~/my-extra-skills"
+```
+
+Both methods can be used at the same time; the paths are merged.
+
+#### Precedence
+
+If a skill with the same name exists in both the personal skills dir and an external dir, the **personal skills dir wins** — external dir skills with duplicate names are silently skipped.
+
+#### Distractor filter (`external_only`)
+
+In automated environments (benchmarks, CI) you typically want the agent to see *only* the task-provided skills and not your personally installed ones. Set `external_only: true` to suppress the personal skills dir entirely when external dirs are non-empty:
+
+```yaml
+skills:
+  external_dirs: ${EXTERNAL_SKILL_DIRS:-}
+  external_only: true
+```
+
+With `external_only: true`:
+- If `external_dirs` is non-empty → only those dirs are searched; personal skills dir is ignored.
+- If `external_dirs` is empty → falls back to the personal skills dir as usual (the flag is a no-op when there is nothing to replace it with).
+
+Default: `false` (personal skills dir is always included).

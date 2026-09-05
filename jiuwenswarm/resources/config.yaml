@@ -709,6 +709,34 @@ tools:
   - todo
   - skill
 
+# ============================================================
+# Skills 配置
+# ============================================================
+# external_dirs：外部技能目录列表。
+#   这些目录中的技能会被当作本地安装的技能使用，与通过 UI 导入或
+#   jiuwenswarm 内部下载/创建的技能完全等价（可列出、查看、执行）。
+#
+#   适用场景：SkillsBench 等 benchmark 在运行时提供的技能目录；
+#   或用户希望从项目目录直接引用技能而无需安装。
+#
+#   支持两种配置方式：
+#   【方式 1：YAML 列表】
+#     skills:
+#       external_dirs:
+#         - /path/to/skillsbench/tasks/my_task/environment/skills
+#         - ~/my-extra-skills
+#
+#   【方式 2：环境变量（分号分隔多个路径）】
+#     export EXTERNAL_SKILL_DIRS="/path/to/skills1;/path/to/skills2"
+#
+skills:
+  external_dirs: ${EXTERNAL_SKILL_DIRS:-}
+  # When true and external_dirs is non-empty, only skills from external_dirs
+  # are shown to the agent — the personal skills dir is excluded entirely.
+  # Ideal for benchmark / CI environments where task-provided skills should
+  # not compete with unrelated personally-installed skills.
+  external_only: false
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}

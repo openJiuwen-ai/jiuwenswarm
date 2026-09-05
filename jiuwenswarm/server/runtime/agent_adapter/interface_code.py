@@ -1791,6 +1791,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         rail = self._build_skill_rail(
             self._config_cache,
             include_tools=include_tools,
+            config_base=self._config_base_cache,
         )
         if rail is not None:
             self._skill_rail = rail

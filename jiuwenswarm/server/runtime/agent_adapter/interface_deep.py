@@ -4771,6 +4771,23 @@ class JiuWenSwarmDeepAdapter:
             )
             return []
 
+    def _skill_scan_dirs_with_external(self) -> list[str]:
+        """Skill scan roots for the live SkillRetrievalToolkit: the centralized
+        ``_skill_scan_dirs`` plus any configured external skill dirs.
+
+        The shared taxonomy index stays stable (``index_skill_directories`` is
+        still the agent skills dir only); external dirs are task-provided and
+        join the live session scan so external skills remain discoverable.
+        """
+        roots = self._skill_scan_dirs()
+        get_external = getattr(self._skill_manager, "get_external_skill_dirs", None)
+        if callable(get_external):
+            for p in get_external():
+                d = str(p)
+                if d and d not in roots:
+                    roots.append(d)
+        return roots
+
     def _get_or_create_skill_retrieval_toolkit(self) -> SkillRetrievalToolkit:
         toolkit = self._skill_retrieval_toolkit
         if toolkit is not None:
@@ -4778,7 +4795,7 @@ class JiuWenSwarmDeepAdapter:
         toolkit = SkillRetrievalToolkit(
             # Match SkillUseRail exactly: selected MCP-bundled Skills are part
             # of this session's directory, while unselected MCPs stay hidden.
-            skill_directories=self._skill_scan_dirs,
+            skill_directories=self._skill_scan_dirs_with_external,
             # Shared taxonomy generations are built only from JiuwenSwarm's
             # stable installed inventory. Session-selected MCP Skills remain
             # visible through the live provider above and appear in a stale
@@ -6423,13 +6440,24 @@ class JiuWenSwarmDeepAdapter:
                 )
 
     def _build_skill_rail(
-        self, config: dict[str, Any], include_tools: bool = False
+        self,
+        config: dict[str, Any],
+        include_tools: bool = False,
+        config_base: dict[str, Any] | None = None,
     ) -> SkillUseRail | None:
         """Build SkillUseRail.
 
         skills_dir seeds with the agent's main skills dir PLUS the connected
         MCPs' skill dirs (derived from state.json), so a freshly started agent
         sees connected MCP skills immediately.
+
+        Args:
+            config: The ``react`` sub-configuration. ``skills.external_only``
+                is read from ``config_base`` (the root config), NOT from this
+                mapping — ``skills`` lives at the root, sibling to ``react``.
+            include_tools: Whether the rail registers read_file / bash tools.
+            config_base: The root configuration cache. Falls back to
+                ``self._config_base_cache`` when omitted.
         """
         try:
             skill_mode = self._resolve_skill_mode(
@@ -6442,9 +6470,33 @@ class JiuWenSwarmDeepAdapter:
                 ),
             )
             logger.info("[JiuWenSwarmDeepAdapter] current skill_mode: %s", skill_mode)
-            skills_dirs = self._skill_scan_dirs()
+            # Build the skill directory list for SkillUseRail.
+            # Base roots = the centralized scan roots (main personal skills dir +
+            # this session's selected MCP skill dirs). On top of that, append any
+            # external dirs from config. With skills.external_only=true and
+            # non-empty external_dirs: use only the external dirs (skip the
+            # personal + MCP dirs) so only task-provided skills are visible to
+            # the agent (prevents unrelated installed skills acting as distractors).
+            scan_dirs = self._skill_scan_dirs()
+            external_dirs: list[str] = []
+            get_external = getattr(self._skill_manager, "get_external_skill_dirs", None)
+            if callable(get_external):
+                external_dirs = [str(p) for p in get_external()]
+
+            _root_cfg = config_base or self._config_base_cache or {}
+            _skills_cfg = _root_cfg.get("skills") or {}
+            _external_only = bool(_skills_cfg.get("external_only", False))
+
+            if _external_only and external_dirs:
+                # Benchmark / CI mode: show only task-provided skills.
+                all_skill_dirs = external_dirs
+            else:
+                all_skill_dirs = list(scan_dirs)
+                for d in external_dirs:
+                    if d not in all_skill_dirs:
+                        all_skill_dirs.append(d)
             skill_rail = SkillUseRail(
-                skills_dir=skills_dirs,
+                skills_dir=all_skill_dirs,
                 skill_mode=skill_mode,
                 include_tools=include_tools,
                 disabled_skills=self._skill_manager.list_execution_disabled_skills(),
@@ -7345,7 +7397,11 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo(
                 "_skill_rail",
                 self._build_skill_rail,
-                {"config": config, "include_tools": self._skill_include_tools_for_profile()},
+                {
+                    "config": config,
+                    "include_tools": self._skill_include_tools_for_profile(),
+                    "config_base": config_base,
+                },
             ),
         )
         rail_infos.insert(
@@ -7532,6 +7588,7 @@ class JiuWenSwarmDeepAdapter:
             self._skill_rail = self._build_skill_rail(
                 config,
                 include_tools=self._skill_include_tools_for_profile(),
+                config_base=config_base or self._config_base_cache,
             )
         else:
             # Update existing rail's skill_mode if changed.
