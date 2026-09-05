@@ -18,6 +18,10 @@ The configuration panel is organized into three tabs:
 - **Security**: Tool security guardrails, sensitive-info filtering (see [7. Tool Security Guardrails](#7-tool-security-guardrails))
 - **Other**: Third-party services, self-evolution, context compression, skill symphony, etc.
 
+Additional backend configuration sections include:
+
+- **Shell Command Output Limits**: Head+tail truncation for large command output (see [11. Shell Command Output Limits](#11-shell-command-output-limits))
+
 > 💡 **Tip**: Model configuration (`api_base`, `api_key`, `model`, `model_provider`) is required; all other configurations are optional.
 
 ---
@@ -450,6 +454,8 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `shell_output.max_chars` | Maximum characters returned per command output (`0` = no limit) | `20000` |
+| `shell_output.head_ratio` | Fraction of the output budget kept from the beginning; the remainder is the tail | `0.6` |
 
 <a id="dotenv-configuration"></a>
 
@@ -462,6 +468,51 @@ Fine-grained options for browser automation, network proxies, or some search pat
 Generally, from highest to lowest: **values you save in the web Configuration UI** → **environment-injected variables** → **built-in product defaults**. Exact behavior depends on your version and deployment.
 
 > 💡 **Tip**: If changes do not seem to apply immediately, wait briefly or ask an admin whether services have reloaded.
+
+---
+
+## 11. Shell Command Output Limits
+
+The `shell_output` section controls how much command output is returned to the model after running a shell command (via `BashTool` or `mcp_exec_command`). This prevents large output from flooding the context window while ensuring that error messages at the **end** of output (e.g. pytest failure details) are always visible.
+
+### 11.1 Config keys
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `shell_output.max_chars` | integer | `20000` | Maximum characters returned per command output. `0` = no limit (not recommended for long-running commands). |
+| `shell_output.head_ratio` | float | `0.6` | Fraction of the budget kept from the **beginning** of output. The remainder (`1 - head_ratio`) is kept from the **end** (tail). |
+
+### 11.2 Truncation strategy
+
+When output exceeds `max_chars`, a **head+tail** view is returned:
+
+```
+[first head_ratio × max_chars chars of output]
+
+... [N lines omitted] ...
+
+[last (1 - head_ratio) × max_chars chars of output]
+```
+
+With the default ratio of `0.6`, 60 % of the budget goes to the head (setup/context lines) and 40 % to the tail (where errors and final status appear). This is intentionally tail-heavy compared to a simple 80/20 split because tool failures and test assertions always appear last.
+
+For `BashTool` specifically: when the underlying engine persists very large output to a temp file (its internal limit is also 20 000 chars by default), jiuwenswarm reads the persisted file and applies the head+tail view inline, with a note pointing to the full file for reference.
+
+### 11.3 Example — tighter limit for bandwidth-constrained deployments
+
+```yaml
+shell_output:
+  max_chars: 8000
+  head_ratio: 0.5   # equal split; show more of the tail
+```
+
+### 11.4 Opting out per command
+
+Pass a large explicit `max_output_chars` value to `mcp_exec_command` to get near-unlimited output for a single call:
+
+```
+max_output_chars: 999999
+```
 
 ---
 

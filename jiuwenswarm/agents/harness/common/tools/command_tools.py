@@ -275,10 +275,33 @@ def _translate_posix_for_powershell(command: str) -> str | None:
     return _translate_posix_segment_for_powershell(segments[0])
 
 
-def _clip_text(value: str, max_chars: int) -> str:
+def _clip_head_tail(value: str, max_chars: int, *, head_ratio: float = 0.6) -> str:
+    """Truncate keeping both the beginning and end so errors at the tail are preserved.
+
+    When *value* fits within *max_chars* it is returned unchanged.
+    Otherwise ``head_ratio`` of the budget is allocated to the head (context /
+    setup lines) and the remainder to the tail (typically where errors appear).
+    A gap indicator shows how many lines were omitted.
+    """
     if max_chars <= 0 or len(value) <= max_chars:
         return value
-    return f"{value[:max_chars]}\n...[truncated]"
+    head_budget = int(max_chars * head_ratio)
+    tail_budget = max_chars - head_budget
+    head = value[:head_budget]
+    tail = value[-tail_budget:] if tail_budget > 0 else ""
+    omitted = value[head_budget: len(value) - tail_budget] if tail_budget > 0 else value[head_budget:]
+    omitted_lines = omitted.count("\n")
+    return f"{head}\n\n... [{omitted_lines} lines omitted] ...\n\n{tail}"
+
+
+def _get_shell_output_config() -> tuple[int, float]:
+    """Return (max_chars, head_ratio) from config, falling back to safe defaults."""
+    try:
+        from jiuwenswarm.common.config import get_config
+        cfg = (get_config() or {}).get("shell_output") or {}
+        return int(cfg.get("max_chars", 20000)), float(cfg.get("head_ratio", 0.6))
+    except Exception:
+        return 20000, 0.6
 
 
 def _check_command_safety(command: str) -> str | None:
@@ -894,7 +917,9 @@ async def _run_command_in_bound_sandbox(
         "Optional shell_type=auto|cmd|powershell|bash|sh. "
         "Set background=True to run non-blocking (e.g. start a server); "
         "returns immediately on success, error on failure. "
-        "Set max_output_chars=0 to disable output clipping. "
+        "max_output_chars=0 uses the global config default (shell_output.max_chars); "
+        "pass a large explicit value (e.g. 999999) to get near-unlimited output. "
+        "Output is truncated head+tail so both setup context and end errors are visible. "
         "Use a larger timeout_seconds for long-running commands. "
         "Returns JSON: exit_code/stdout/stderr (blocking) or pid/status (background)."
     ),
@@ -946,6 +971,11 @@ async def mcp_exec_command(
         max_output_chars = 0
     if max_output_chars < 0:
         max_output_chars = 0
+    # 0 means "use global config default"; read it now so callers get
+    # safe truncation without having to pass an explicit limit.
+    _cfg_max_chars, _head_ratio = _get_shell_output_config()
+    if max_output_chars == 0:
+        max_output_chars = _cfg_max_chars
     normalized_shell_type = _normalize_shell_type(shell_type)
     execution_binding = current_command_execution()
 
@@ -1015,8 +1045,8 @@ async def mcp_exec_command(
         "shell_type": normalized_shell_type,
         "resolved_shell": resolved_shell,
         "exit_code": result.returncode,
-        "stdout": _clip_text(result.stdout or "", max_output_chars),
-        "stderr": _clip_text(result.stderr or "", max_output_chars),
+        "stdout": _clip_head_tail(result.stdout or "", max_output_chars, head_ratio=_head_ratio),
+        "stderr": _clip_head_tail(result.stderr or "", max_output_chars, head_ratio=_head_ratio),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 

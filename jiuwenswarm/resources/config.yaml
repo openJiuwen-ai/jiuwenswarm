@@ -709,6 +709,21 @@ tools:
   - todo
   - skill
 
+# ============================================================
+# Shell command output limits
+# ============================================================
+# max_chars: max total characters returned to the model from any shell
+#   command output (BashTool and mcp_exec_command).
+#   0 = no limit; default 20000 (~200 lines).
+# head_ratio: fraction of the budget kept from the beginning of output
+#   (the remainder is kept from the end / tail).
+#   Default 0.6 (60% head, 40% tail). Errors appear at the end, so a
+#   40% tail ensures failure messages are never lost to truncation.
+# ============================================================
+shell_output:
+  max_chars: 20000
+  head_ratio: 0.6
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}

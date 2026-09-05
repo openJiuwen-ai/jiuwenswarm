@@ -9,9 +9,74 @@ unless we hook the harness tools here.
 
 from __future__ import annotations
 
+import re as _re
 from typing import Any, Awaitable, Callable
 
 _installed = False
+
+# ---------------------------------------------------------------------------
+# Output post-processing: replace BashTool's <persisted-output> head-only
+# preview with an inline head+tail view so error messages at the end of
+# large command output (e.g. pytest failures) are always visible.
+# ---------------------------------------------------------------------------
+
+_PERSISTED_PATH_RE = _re.compile(r"Full output saved to:\s*(.+?)(?:\n|$)")
+
+
+def _shell_output_config() -> tuple[int, float]:
+    """Return (max_chars, head_ratio) from config, with safe fallback."""
+    try:
+        from jiuwenswarm.common.config import get_config
+        cfg = (get_config() or {}).get("shell_output") or {}
+        return int(cfg.get("max_chars", 20000)), float(cfg.get("head_ratio", 0.6))
+    except Exception:
+        return 20000, 0.6
+
+
+def _post_process_bash_output(tool_output: Any, max_chars: int, head_ratio: float) -> Any:
+    """Replace a <persisted-output> block with an inline head+tail truncated view.
+
+    BashTool persists output >max_output_chars to a temp file and shows only
+    the first 2 KB (head only).  We read the persisted file and return a
+    head+tail view instead so that error messages near the end are preserved.
+    Falls back to the original output on any error.
+    """
+    try:
+        from openjiuwen.harness.tools.base_tool import ToolOutput
+        if not (
+            isinstance(tool_output, ToolOutput)
+            and tool_output.data
+            and isinstance(tool_output.data.get("content"), str)
+            and "<persisted-output>" in tool_output.data["content"]
+        ):
+            return tool_output
+
+        match = _PERSISTED_PATH_RE.search(tool_output.data["content"])
+        if not match:
+            return tool_output
+
+        filepath = match.group(1).strip()
+        try:
+            from openjiuwen.harness.tools.shell.bash._output import truncate_output
+            with open(filepath, encoding="utf-8", errors="replace") as fh:
+                full_content = fh.read()
+            total_chars = len(full_content)
+            truncated = truncate_output(full_content, max_chars, head_ratio=head_ratio)
+            new_content = (
+                f"[Output truncated — {total_chars:,} chars total; "
+                f"head+tail shown below. Full output: {filepath}]\n\n"
+                f"{truncated}"
+            )
+        except Exception:
+            return tool_output  # cannot read file — keep original persisted-output block
+
+        return ToolOutput(
+            success=tool_output.success,
+            data={"content": new_content},
+            error=tool_output.error,
+        )
+    except Exception:
+        return tool_output
 
 
 def _pre_execute_shell_command(command: str) -> str | None:
@@ -49,7 +114,9 @@ def _wrap_invoke(
             err = _pre_execute_shell_command(parsed.command)
             if err:
                 return ToolOutput(success=False, error=err)
-        return await original(self, inputs, **kwargs)
+        result = await original(self, inputs, **kwargs)
+        max_chars, head_ratio = _shell_output_config()
+        return _post_process_bash_output(result, max_chars, head_ratio)
 
     invoke.jiuwenswarm_safety_wrapped = True
     return invoke
@@ -67,7 +134,11 @@ def _wrap_stream(
             if err:
                 yield ToolOutput(success=False, error=err)
                 return
+        max_chars, head_ratio = _shell_output_config()
         async for item in original(self, inputs, **kwargs):
+            # Final summary chunk has "content"; intermediate chunks have "text"/"type".
+            if item.data and "content" in item.data:
+                item = _post_process_bash_output(item, max_chars, head_ratio)
             yield item
 
     stream.jiuwenswarm_safety_wrapped = True
