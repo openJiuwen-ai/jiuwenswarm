@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
 from typing import Any
 
@@ -54,6 +55,39 @@ def normalize_cron_expr(raw: str) -> str:
         f"cron_expr must have 5 or 7 fields, got {n} fields. "
         "5-field: minute hour day month dow. "
         "7-field (Quartz): second minute hour day month dow year."
+    )
+
+
+def is_oneshot_cron_expr(expr: str) -> bool:
+    """判断 7 字段 Quartz 表达式是否为「单次」，与前端 ``cronExprToSchedule`` 的
+    ``once`` 判定逐条对齐：
+
+    - 秒/分/时/日/月 均为单个非负整数（前端 ``parseSingleInt`` 即 ``/^\\d+$/``）；
+    - 周字段为通配（``*`` 或 ``?``，前端 ``isWildcard``）；
+    - 年份为单个固定整数（非通配）。
+
+    仅用于在 AgentServer 侧创建任务时补全缺失的 ``delete_after_run``，
+    使对话创建与手动创建的规格对齐。
+    """
+    parts = str(expr or "").strip().split()
+    if len(parts) != 7:
+        return False
+    second, minute, hour, day, month, week, year = parts
+
+    def _wildcard(field: str) -> bool:
+        return field in ("*", "?")
+
+    def _single_int(field: str) -> bool:
+        # 与前端 parseSingleInt(/^\d+$/) 等价：仅 [0-9]+
+        return re.fullmatch(r"[0-9]+", field) is not None
+
+    if _wildcard(year):
+        return False
+    if not _wildcard(week):
+        return False
+    return all(
+        _single_int(f)
+        for f in (second, minute, hour, day, month, year)
     )
 
 
