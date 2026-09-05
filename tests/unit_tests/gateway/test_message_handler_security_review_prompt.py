@@ -61,7 +61,16 @@ def test_build_security_review_prompt_chinese_from_config(
 
 def _make_repo(path: str) -> None:
     """建一个带 origin/HEAD 指向的本地 git 仓库（用本地 bare 仓库当 origin）。"""
-    subprocess.run([_GIT, "init", "-q", path], check=True)
+    # 显式指定初始分支 master：不能依赖 init.defaultBranch 默认值——
+    # 如 Apple Command Line Tools 的 git 在系统级 gitconfig 里把它设成了 main，
+    # 会导致 _add_origin_head 里 `remote set-head origin master` 失败。
+    # 用 `-c init.defaultBranch=master` 而不是 `init -b master`：-b 是 git 2.28
+    # 才加的开关，更老的 git（如部分 CI 镜像）会直接报 unknown switch；
+    # `-c` 全版本可用，老 git 不识别该配置键也会静默接受（其默认分支本就是 master）。
+    subprocess.run(
+        [_GIT, "-c", "init.defaultBranch=master", "init", "-q", path],
+        check=True,
+    )
     subprocess.run([_GIT, "-C", path, "config", "user.email", "t@t.t"], check=True)
     subprocess.run([_GIT, "-C", path, "config", "user.name", "t"], check=True)
     subprocess.run([_GIT, "-C", path, "config", "commit.gpgsign", "false"], check=True)
