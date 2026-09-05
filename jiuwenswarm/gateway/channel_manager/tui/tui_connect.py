@@ -3665,6 +3665,20 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return cron_controller_ref.get("value")
         return cron_controller_ref
 
+    def _cron_job_field(job, name, default=""):
+        """Read a field from ``CronController.get_job`` output (dict or object).
+
+        Real ``get_job`` returns ``CronJob.to_dict()``.  ``getattr`` on a dict
+        always yields the default and would reject every authenticated update
+        with "job not found".  Keep the object fallback for tests and callers
+        that return ``CronJob``-like objects.
+        """
+        if job is None:
+            return default
+        if isinstance(job, dict):
+            return job.get(name, default)
+        return getattr(job, name, default)
+
     async def _cron_job_list(ws, req_id, params, session_id):
         cc = _get_cron()
         if cc is None:
@@ -3814,10 +3828,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             existing = None
             if uid:
                 existing = await cc.get_job(job_id)
-                if (
-                    existing is None
-                    or str(getattr(existing, "user_id", "") or "").strip() != uid
-                ):
+                # 与 Web _get_owned_cron_job 相同的 dict/object 双态读取：
+                # 真实 CronController.get_job 返回 to_dict() 的 dict。
+                owner_field = _cron_job_field(existing, "user_id", "")
+                if existing is None or str(owner_field or "").strip() != uid:
                     await channel.send_response(
                         ws, req_id, ok=False, error="job not found", code="NOT_FOUND"
                     )
@@ -3837,12 +3851,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     existing = await cc.get_job(job_id)
                 binding_params = dict(patch)
                 binding_params.setdefault(
-                    "work_mode", getattr(existing, "work_mode", "") or "code"
+                    "work_mode", _cron_job_field(existing, "work_mode", "") or "code"
                 )
                 bound, binding = await resolve_agent_cron_project_binding(
                     agent_client=_resolve_agent_client(agent_client), params=binding_params,
                     user_id=uid or None, channel_id="tui",
-                    session_id=getattr(existing, "session_id", None),
+                    session_id=_cron_job_field(existing, "session_id", None),
                 )
                 if not bound:
                     await channel.send_response(

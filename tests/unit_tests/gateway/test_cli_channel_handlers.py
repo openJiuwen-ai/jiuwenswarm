@@ -1568,3 +1568,154 @@ async def test_session_rebind_project_does_not_read_gateway_state_for_remote_cli
 
     assert server.responses[-1]["ok"] is False
     assert server.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
+
+
+class _DictOwnedCronController:
+    """Mimics the real ``CronController.get_job`` which returns ``to_dict()``."""
+
+    def __init__(self) -> None:
+        self.job = {
+            "id": "cron-dict-owner",
+            "user_id": "user-owner",
+            "description": "old",
+            "work_mode": "work",
+            "session_id": "sess-1",
+        }
+        self.update_calls: list[tuple[str, dict]] = []
+
+    async def get_job(self, job_id):
+        return dict(self.job) if job_id == self.job["id"] else None
+
+    async def update_job(self, job_id, patch):
+        self.update_calls.append((job_id, dict(patch)))
+        return {"id": job_id, **self.job, **patch}
+
+
+@pytest.mark.asyncio
+async def test_cron_job_update_accepts_matching_owner_with_dict_job() -> None:
+    """I-IP5-16: TUI cron.job.update must accept the creator when get_job returns a dict.
+
+    Real CronController.get_job returns CronJob.to_dict().  Reading user_id
+    via getattr(dict, ...) always yields "" and rejected every authenticated
+    update with "job not found", even though create/get succeeded.
+    """
+    server = FakeGatewayServer()
+    cron = _DictOwnedCronController()
+    register_cli_handlers(
+        CliHandlersBindParams(channel=server, cron_controller=cron, path="/tui")
+    )
+
+    await server.local_handlers["/tui"]["cron.job.update"](
+        object(),
+        "req-cron-update",
+        {"id": "cron-dict-owner", "patch": {"description": "new"}},
+        "sess-1",
+        "user-owner",
+    )
+
+    assert server.responses[-1]["ok"] is True, server.responses[-1]
+    assert cron.update_calls, "controller.update_job must be invoked"
+    assert cron.update_calls[0][1]["description"] == "new"
+    assert server.responses[-1]["payload"]["job"]["description"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_cron_job_update_rejects_a_different_authenticated_owner() -> None:
+    server = FakeGatewayServer()
+    cron = _DictOwnedCronController()
+    register_cli_handlers(
+        CliHandlersBindParams(channel=server, cron_controller=cron, path="/tui")
+    )
+
+    await server.local_handlers["/tui"]["cron.job.update"](
+        object(),
+        "req-cron-owner",
+        {"id": "cron-dict-owner", "patch": {"description": "stolen"}},
+        "sess-1",
+        "user-other",
+    )
+
+    assert cron.update_calls == []
+    assert server.responses[-1]["ok"] is False
+    assert server.responses[-1]["error"] == "job not found"
+    assert server.responses[-1]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_cron_job_update_accepts_matching_owner_with_object_job() -> None:
+    """Object-shaped jobs (tests / CronJob-like callers) must still pass owner check."""
+    from types import SimpleNamespace
+
+    class _ObjectOwnedCronController:
+        def __init__(self) -> None:
+            self.job = SimpleNamespace(id="cron-obj-owner", user_id="user-owner")
+            self.update_calls = 0
+
+        async def get_job(self, job_id):
+            return self.job if job_id == self.job.id else None
+
+        async def update_job(self, job_id, patch):
+            self.update_calls += 1
+            return {"id": job_id, **patch}
+
+    server = FakeGatewayServer()
+    cron = _ObjectOwnedCronController()
+    register_cli_handlers(
+        CliHandlersBindParams(channel=server, cron_controller=cron, path="/tui")
+    )
+
+    await server.local_handlers["/tui"]["cron.job.update"](
+        object(),
+        "req-cron-obj",
+        {"id": "cron-obj-owner", "patch": {"description": "new"}},
+        "sess-1",
+        "user-owner",
+    )
+
+    assert cron.update_calls == 1
+    assert server.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> None:
+    """AgentOS update with project fields must work with dict-shaped jobs."""
+
+    class _AgentOSClient:
+        server_ready = True
+
+    server = FakeGatewayServer()
+    cron = _DictOwnedCronController()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server, agent_client=_AgentOSClient(), cron_controller=cron, path="/tui"
+        )
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.e2a_proxy.is_agentos_routing_client",
+        lambda _client: True,
+    )
+
+    async def _fake_resolve_agent_cron_project_binding(**kwargs):
+        assert kwargs.get("session_id") == "sess-1"
+        assert kwargs["params"].get("work_mode") == "work"
+        return True, {"project_id": "user-proj-1", "work_mode": "code"}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.routing.e2a_proxy.resolve_agent_cron_project_binding",
+        _fake_resolve_agent_cron_project_binding,
+    )
+
+    await server.local_handlers["/tui"]["cron.job.update"](
+        object(),
+        "req-cron-update-proj",
+        {"id": "cron-dict-owner", "patch": {"project_id": "user-proj-1"}},
+        "sess-1",
+        "user-owner",
+    )
+
+    assert server.responses[-1]["ok"] is True, server.responses[-1]
+    assert cron.update_calls, "controller.update_job must be invoked"
+    patch = cron.update_calls[0][1]
+    assert patch["project_id"] == "user-proj-1"
+    assert patch["work_mode"] == "code"
+    assert patch["_agentos_project_binding_verified"] is True
