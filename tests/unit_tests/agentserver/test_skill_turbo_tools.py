@@ -10,6 +10,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+    _prepare_parent_stream_output,
     _without_inner_task_routing,
     reset_skill_turbo_outer_todo_active,
     set_skill_turbo_outer_todo_active,
@@ -59,6 +60,34 @@ def test_without_inner_task_routing_preserves_stage_content() -> None:
     assert "task_id" not in cleaned
     assert cleaned["content"] == payload["content"]
     assert payload["task_id"] == "task_6d61d336"
+
+
+def test_bubble_progress_uses_immediate_parent_content_chunk() -> None:
+    payload = {
+        "event_type": "chat.delta",
+        "content": "开始执行 Stage 8: 深度研究（8/14）",
+        "task_id": "task_research",
+        "_bubble_progress": True,
+    }
+
+    output_type, forwarded = _prepare_parent_stream_output("chat.delta", payload)
+
+    assert output_type == "content_chunk"
+    assert forwarded == {
+        "event_type": "chat.delta",
+        "content": "开始执行 Stage 8: 深度研究（8/14）",
+    }
+    assert payload["_bubble_progress"] is True
+    assert payload["task_id"] == "task_research"
+
+
+def test_regular_delta_keeps_parent_llm_output_path() -> None:
+    payload = {"event_type": "chat.delta", "content": "正在准备图片..."}
+
+    output_type, forwarded = _prepare_parent_stream_output("chat.delta", payload)
+
+    assert output_type == "llm_output"
+    assert forwarded is payload
 
 
 @pytest.mark.asyncio

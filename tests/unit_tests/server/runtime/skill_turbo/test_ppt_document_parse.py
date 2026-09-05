@@ -18,11 +18,21 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.document_parse impor
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
     PPTGenRootNode,
 )
+from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt import ppt_gen_root
 from jiuwenswarm.server.runtime.skill_turbo.validator import PlanCodeValidator
 
 
 def test_document_parse_passes_builtin_skill_validation() -> None:
     source = Path(document_parse.__file__).read_text(encoding="utf-8")
+    validator = PlanCodeValidator.for_builtin_skill_code(
+        ["jiuwenswarm.server.runtime.skill_turbo.skill_codes"]
+    )
+
+    assert validator.validate(source) == []
+
+
+def test_ppt_gen_root_passes_builtin_skill_validation() -> None:
+    source = Path(ppt_gen_root.__file__).read_text(encoding="utf-8")
     validator = PlanCodeValidator.for_builtin_skill_code(
         ["jiuwenswarm.server.runtime.skill_turbo.skill_codes"]
     )

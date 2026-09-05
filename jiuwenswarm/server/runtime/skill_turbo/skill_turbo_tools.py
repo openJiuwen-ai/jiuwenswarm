@@ -73,6 +73,7 @@ _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE: dict[str, str] = {
     "chat.tool_calls.delta": "tool_calls.delta",
     "chat.error": "error",
 }
+_BUBBLE_PROGRESS_FIELD = "_bubble_progress"
 
 # ── 不转发给父会话的事件类型 ──
 # plan/node 生命周期事件：前端无对应 handler，DeepAgent 也无显式处理。
@@ -105,6 +106,18 @@ def _without_inner_task_routing(payload: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(payload)
     cleaned.pop("task_id", None)
     return cleaned
+
+
+def _prepare_parent_stream_output(
+    event_type: str, payload: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Map a SkillTurbo event to the parent stream without delaying bubble progress."""
+    if event_type == "chat.delta" and payload.get(_BUBBLE_PROGRESS_FIELD):
+        cleaned = dict(payload)
+        cleaned.pop(_BUBBLE_PROGRESS_FIELD, None)
+        cleaned.pop("task_id", None)
+        return "content_chunk", cleaned
+    return _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE.get(event_type, event_type), payload
 
 
 # ── ContextVar：在 before_tool_call 中注入，供工具函数读取 ──
@@ -754,7 +767,9 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                 # SkillTurbo executor 产出的 event_type 带 "chat." 前缀（如 "chat.tool_call"），
                 # 但 DeepAgent 的 _parse_stream_chunk 期望原始 OutputSchema.type（如 "tool_call"）。
                 # 若直接用 event_type 作 type，会因类型不匹配被静默丢弃，需反向映射回原始 type。
-                output_type = _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE.get(event_type, event_type)
+                output_type, payload = _prepare_parent_stream_output(
+                    event_type, payload
+                )
                 output = OutputSchema(
                     type=output_type,
                     index=0,

@@ -233,6 +233,29 @@ class PPTGenRootNode(PlanNode):
         _merge_subplan_result(inputs, last_chunk)
         _append_subplan_step(results, subplan, last_chunk)
 
+    def _stage_progress_banner(
+        self,
+        subplan: PlanNode,
+        *,
+        index: int,
+        total_steps: int,
+        done: bool,
+    ) -> dict[str, Any]:
+        verb = "完成执行" if done else "开始执行"
+        return {
+            "node": self.plan_name,
+            "status": "progress",
+            "message": f"{verb} {subplan.plan_name}（{index}/{total_steps}）",
+            "current_node": subplan.plan_name,
+            "step": index,
+            "total_steps": total_steps,
+            # 横幅属于主回答气泡，不属于 stage taskRuns。Executor 识别该标记后
+            # 立即发送，并把 task.start 推迟到横幅之后，避免双协程排空时
+            # task.start 反超横幅、左下气泡停滞在旧 Stage。
+            "_bubble_progress": True,
+            "_bubble_progress_done": bool(done),
+        }
+
     async def _run_subplan_stream(
         self,
         subplan: PlanNode,
@@ -249,31 +272,27 @@ class PPTGenRootNode(PlanNode):
                 yield chunk
             return
 
+        # 横幅刻意放在 task.start 之前、task.complete 之后：它们应进入左下
+        # 主回答气泡，而 stage 内部输出仍由 task 上下文路由到左上任务区域。
         if not await self.should_suppress_subplan_start_banner(subplan, inputs):
-            yield {
-                "node": self.plan_name,
-                "status": "progress",
-                "message": f"开始执行 {subplan.plan_name}（{index}/{total_steps}）",
-                "current_node": subplan.plan_name,
-                "step": index,
-                "total_steps": total_steps,
-            }
+            yield self._stage_progress_banner(
+                subplan, index=index, total_steps=total_steps, done=False
+            )
 
         last_chunk: Any = None
-        async for chunk in self.execute_subplan_stream(subplan, inputs):
-            last_chunk = chunk
-            yield chunk
+        stream = self.execute_subplan_stream(subplan, inputs)
+        try:
+            async for chunk in stream:
+                last_chunk = chunk
+                yield chunk
+        finally:
+            await stream.aclose()
 
         _merge_subplan_result(inputs, last_chunk)
         _append_subplan_step(results, subplan, last_chunk)
-        yield {
-            "node": self.plan_name,
-            "status": "progress",
-            "message": f"完成执行 {subplan.plan_name}（{index}/{total_steps}）",
-            "current_node": subplan.plan_name,
-            "step": index,
-            "total_steps": total_steps,
-        }
+        yield self._stage_progress_banner(
+            subplan, index=index, total_steps=total_steps, done=True
+        )
 
     async def _skip_p3_subplan_stream(
         self,
@@ -290,36 +309,31 @@ class PPTGenRootNode(PlanNode):
                 yield chunk
             return
 
-        if not await self.should_suppress_subplan_start_banner(self._p3, inputs):
-            yield {
-                "node": self.plan_name,
-                "status": "progress",
-                "message": f"开始执行 {self._p3.plan_name}（{index}/{total_steps}）",
-                "current_node": self._p3.plan_name,
-                "step": index,
-                "total_steps": total_steps,
-            }
-
-        last_chunk: Any = None
-        async for chunk in self.skip_subplan_stream(
-            self._p3,
-            inputs,
-            message=_P3_SKIP_MESSAGE,
-            extra=_P3_SKIP_FIELDS,
-        ):
-            last_chunk = chunk
-            yield chunk
-
-        _merge_subplan_result(inputs, last_chunk)
-        _append_subplan_step(results, self._p3, last_chunk)
-        yield {
-            "node": self.plan_name,
-            "status": "progress",
-            "message": f"完成执行 {self._p3.plan_name}（{index}/{total_steps}）",
-            "current_node": self._p3.plan_name,
-            "step": index,
-            "total_steps": total_steps,
+        skip_result: dict[str, Any] = {
+            "node": self._p3.plan_name,
+            "status": "ok",
+            "message": _P3_SKIP_MESSAGE,
+            "skipped": True,
+            **_P3_SKIP_FIELDS,
         }
+        if not await self.should_suppress_subplan_start_banner(self._p3, inputs):
+            yield self._stage_progress_banner(
+                self._p3, index=index, total_steps=total_steps, done=False
+            )
+
+        if self._before_subplan_execute is not None:
+            await self._before_subplan_execute(self._p3, inputs)
+        try:
+            yield skip_result
+        finally:
+            if self._after_subplan_execute is not None:
+                await self._after_subplan_execute(self._p3, inputs, skip_result)
+
+        _merge_subplan_result(inputs, skip_result)
+        _append_subplan_step(results, self._p3, skip_result)
+        yield self._stage_progress_banner(
+            self._p3, index=index, total_steps=total_steps, done=True
+        )
 
     async def _run_p3_and_p2_stream(
         self,

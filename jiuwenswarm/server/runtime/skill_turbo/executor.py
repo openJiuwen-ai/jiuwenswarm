@@ -192,6 +192,9 @@ _SKILL_TURBO_STREAM_FLUSH_INTERVAL_SECONDS: float = 3.0
 
 # 需要缓冲的事件类型
 _BUFFERABLE_EVENT_TYPES: frozenset[str] = frozenset({"chat.delta", "chat.reasoning"})
+# 主回答气泡进度横幅：由 PPT root 标记，经过 Executor 时立即发送；
+# 父会话包装层识别后会移除该内部字段。
+_BUBBLE_PROGRESS_FIELD = "_bubble_progress"
 
 # Request上下文
 _request_id_var: ContextVar[str] = ContextVar("skill_turbo_request_id", default="")
@@ -509,6 +512,11 @@ class SkillTurboExecutor:
         # 当前任务状态（用于跨协程共享当前 task_id，解决 asyncio.create_task 复制 ContextVar 的问题）
         self._current_task_id_holder: dict[str, str | None] = {"task_id": None}
         self._task_states_holder: dict[str, dict[str, Any]] = {}
+        # PPT 开始横幅必须先于 task.start 进入输出流。before_subplan 先把
+        # start/update 暂存于此，等 start 横幅入队后再 flush，避免
+        # produce_node_output 与 drain_session_stream 双排空时 start 反超横幅。
+        self._deferred_task_lifecycle_events: list[dict[str, Any]] = []
+        self._task_event_drain_lock = asyncio.Lock()
 
         # 节点产物记录 holder：plan_name → 产物 dict。
         # 运行期在 _after_subplan_execute 中累积，仅在中断前/流末 finally 落盘，
@@ -768,6 +776,20 @@ class SkillTurboExecutor:
                 if event_type == "chat.error":
                     plan_failed = True
                     plan_error = str(payload.get("error") or "") or None
+
+                # PPT stage 的开始/完成横幅属于主回答气泡。它们必须保持在
+                # task.start 之前 / task.complete 之后立即发送，不能进入通用
+                # chat.delta 缓冲桶，否则跨阶段 flush 时会被当前 task 栈误归组，
+                # 或在右侧 task_progress 已推进后仍滞留旧 Stage。
+                if event_type == "chat.delta" and payload.get(
+                    _BUBBLE_PROGRESS_FIELD, False
+                ):
+                    async for flushed in self._flush_all_buffer_chunks(
+                        buffer_state, request_id, channel_id
+                    ):
+                        yield flushed
+                    yield chunk
+                    continue
 
                 # 非缓冲事件类型：先 flush 所有缓冲，再透传当前事件
                 if event_type not in _BUFFERABLE_EVENT_TYPES:
@@ -2242,33 +2264,65 @@ class SkillTurboExecutor:
         session = _session_var.get()
 
         async def enqueue_chunk(chunk: Any) -> None:
-            async for task_chunk in self._drain_task_event_chunks():
-                await output_queue.put(task_chunk)
-            current_task_id = self._current_task_id()
+            is_bubble = isinstance(chunk, dict) and bool(
+                chunk.get(_BUBBLE_PROGRESS_FIELD)
+            )
+            bubble_done = bool(chunk.get("_bubble_progress_done")) if is_bubble else False
 
-            # 处理 fallback_stream 返回的 dict 格式（包含 event_type）
-            if isinstance(chunk, dict) and "event_type" in chunk:
-                await output_queue.put(
-                    self._make_event_chunk(request_id, channel_id, chunk, current_task_id)
+            async with self._task_event_drain_lock:
+                if is_bubble and not bubble_done:
+                    # 先排空上一阶段残留的 complete/update，再发开始横幅。
+                    # 本阶段的 task.start 仍由 before_subplan 延期，等横幅入队后再 flush。
+                    self._flush_deferred_task_lifecycle_events()
+                    async for task_chunk in self._drain_task_event_chunks():
+                        await output_queue.put(task_chunk)
+                    await output_queue.put(
+                        self._make_node_delta_chunk(
+                            request_id, channel_id, node, chunk, None
+                        )
+                    )
+                    return
+
+                self._flush_deferred_task_lifecycle_events()
+                async for task_chunk in self._drain_task_event_chunks():
+                    await output_queue.put(task_chunk)
+
+                current_task_id = (
+                    None if is_bubble else self._current_task_id()
                 )
-            else:
-                await output_queue.put(
-                    self._make_node_delta_chunk(request_id, channel_id, node, chunk, current_task_id)
-                )
+                if isinstance(chunk, dict) and "event_type" in chunk:
+                    await output_queue.put(
+                        self._make_event_chunk(
+                            request_id, channel_id, chunk, current_task_id
+                        )
+                    )
+                else:
+                    await output_queue.put(
+                        self._make_node_delta_chunk(
+                            request_id, channel_id, node, chunk, current_task_id
+                        )
+                    )
 
         async def drain_session_stream() -> None:
             if session is None:
                 return
             async for stream_chunk in session.stream_iterator():
                 # 先发送 task 事件（确保 task.start 在 chat 事件之前）
-                async for task_chunk in self._drain_task_event_chunks():
-                    await output_queue.put(task_chunk)
-                payload = parse_stream_chunk(stream_chunk)
-                if payload is None:
-                    continue
-                await output_queue.put(
-                    self._make_session_event_chunk(request_id, channel_id, payload, self._current_task_id())
-                )
+                async with self._task_event_drain_lock:
+                    self._flush_deferred_task_lifecycle_events()
+                    async for task_chunk in self._drain_task_event_chunks():
+                        await output_queue.put(task_chunk)
+                    payload = parse_stream_chunk(stream_chunk)
+                    if payload is None:
+                        continue
+                    await output_queue.put(
+                        self._make_session_event_chunk(
+                            request_id,
+                            channel_id,
+                            payload,
+                            self._current_task_id(),
+                        )
+                    )
 
         async def produce_node_output() -> None:
             try:
@@ -2277,8 +2331,10 @@ class SkillTurboExecutor:
                 ))
                 async for chunk in node.run_stream(inputs):
                     await enqueue_chunk(chunk)
-                async for task_chunk in self._drain_task_event_chunks():
-                    await output_queue.put(task_chunk)
+                async with self._task_event_drain_lock:
+                    self._flush_deferred_task_lifecycle_events()
+                    async for task_chunk in self._drain_task_event_chunks():
+                        await output_queue.put(task_chunk)
                 await output_queue.put(self._make_node_finished_chunk(
                     request_id, channel_id, node, self._current_task_id()
                 ))
@@ -2301,6 +2357,7 @@ class SkillTurboExecutor:
                         "[SkillTurboExecutor] _execute_node_stream FallbackLimitExceededError: %s",
                         item,
                     )
+                    self._flush_deferred_task_lifecycle_events()
                     async for task_chunk in self._drain_task_event_chunks():
                         yield task_chunk
                     raise item
@@ -2332,10 +2389,12 @@ class SkillTurboExecutor:
                             "[SkillTurboExecutor] _execute_node_stream propagate HITL AbortError: %s",
                             item,
                         )
+                        self._flush_deferred_task_lifecycle_events()
                         async for task_chunk in self._drain_task_event_chunks():
                             yield task_chunk
                         raise item
                     logger.error("[SkillTurboExecutor] _execute_node_stream error: %s", item)
+                    self._flush_deferred_task_lifecycle_events()
                     async for task_chunk in self._drain_task_event_chunks():
                         yield task_chunk
                     yield self._make_node_error_chunk(
@@ -2571,7 +2630,14 @@ class SkillTurboExecutor:
         # 提取实际内容和正确的 plan_name
         actual_content = content
         plan_name = node.plan_name  # 默认使用传入的 node
-        data_payload = content if isinstance(content, dict) else None
+        data_payload = dict(content) if isinstance(content, dict) else None
+        bubble_progress = bool(
+            data_payload.pop(_BUBBLE_PROGRESS_FIELD, False)
+            if data_payload is not None
+            else False
+        )
+        if data_payload is not None:
+            data_payload.pop("_bubble_progress_done", None)
         
         if isinstance(content, dict):
             # 从 chunk 中提取正确的 plan_name（如果存在），并转为显示名
@@ -2593,9 +2659,8 @@ class SkillTurboExecutor:
             if chunk_status in ("progress", "ok") and actual_content:
                 actual_content = actual_content.rstrip("\n") + "\n"
 
-            # 将 data_payload 中的 current_node 转为显示名（浅拷贝避免修改原始 chunk）
+            # 将 data_payload 中的 current_node 转为显示名（已浅拷贝，避免修改原始 chunk）
             if data_payload is not None and "current_node" in data_payload:
-                data_payload = dict(data_payload)
                 data_payload["current_node"] = self._display_name(data_payload["current_node"])
         
         payload = {
@@ -2605,7 +2670,10 @@ class SkillTurboExecutor:
         }
         if data_payload is not None:
             payload["data"] = data_payload
-        if task_id:
+        if bubble_progress:
+            payload[_BUBBLE_PROGRESS_FIELD] = True
+        # 气泡进度横幅绝不能带 task_id，否则可能被归入左上 taskRuns。
+        if task_id and not bubble_progress:
             payload["task_id"] = task_id
         return self._make_chunk(request_id, channel_id, payload)
 
@@ -2660,6 +2728,17 @@ class SkillTurboExecutor:
             self._normalize_task_event_type(task_event)
             yield self._make_task_event_chunk(task_event)
 
+    def _flush_deferred_task_lifecycle_events(self) -> None:
+        """将延期的 task.start/update 追加到 FIFO，供下一次 drain 发送。"""
+        if not self._deferred_task_lifecycle_events:
+            return
+        events_queue = _task_events_queue_var.get()
+        if events_queue is None:
+            self._deferred_task_lifecycle_events.clear()
+            return
+        events_queue.extend(self._deferred_task_lifecycle_events)
+        self._deferred_task_lifecycle_events.clear()
+
     @staticmethod
     def _normalize_task_event_type(task_event: dict[str, Any]) -> None:
         payload = task_event.get("payload", {})
@@ -2680,6 +2759,7 @@ class SkillTurboExecutor:
 
         # 清空实例属性（新请求开始）
         self._task_states_holder.clear()
+        self._deferred_task_lifecycle_events.clear()
         self._current_task_id_holder["task_id"] = None
 
         saved = self._take_resume_task_states()
@@ -2785,6 +2865,13 @@ class SkillTurboExecutor:
             )
             return
 
+        events_queue.append(self._build_task_update_event(task_states))
+
+    @staticmethod
+    def _build_task_update_event(
+        task_states: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        """构建 task.update 事件（不入队）。"""
         # 深拷贝任务状态（避免后续修改影响已发送的事件）；按 index 排序保证前端稳定
         all_tasks = sorted(
             (copy.deepcopy(state) for state in task_states.values()),
@@ -2829,14 +2916,12 @@ class SkillTurboExecutor:
             status_preview,
         )
 
-        # 添加到事件队列
-        task_update_event = {
+        return {
             "request_id": _request_id_var.get(),
             "channel_id": _channel_id_var.get(),
             "payload": payload,
             "is_complete": False,
         }
-        events_queue.append(task_update_event)
 
     async def _should_skip_subplan_execute(
         self,
@@ -2976,10 +3061,13 @@ class SkillTurboExecutor:
             subplan.depth,
         )
 
-        events_queue.append(
+        # 延期到开始横幅入队后再写入 FIFO，避免双协程排空时 start 抢在横幅前。
+        self._deferred_task_lifecycle_events.append(
             self._build_task_start_event(subplan, task_id, task_state, task_states, timestamp)
         )
-        await self._emit_task_update_event()
+        self._deferred_task_lifecycle_events.append(
+            self._build_task_update_event(task_states)
+        )
 
     async def _after_subplan_execute(
         self,
@@ -3065,6 +3153,10 @@ class SkillTurboExecutor:
                 duration_ms,
                 result_or_error if is_error else None,
             )
+
+        # 子节点若未 yield 任何 chunk 就结束，enqueue_chunk 不会触发 flush；
+        # 必须先释放延期的 task.start，再入队 complete，避免 complete 抢在 start 前。
+        self._flush_deferred_task_lifecycle_events()
 
         events_queue.append(
             self._build_task_complete_event(
