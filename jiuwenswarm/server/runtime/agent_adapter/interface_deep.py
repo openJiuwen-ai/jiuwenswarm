@@ -8077,7 +8077,8 @@ class JiuWenSwarmDeepAdapter:
         self._sys_operation = sys_operation
         configured_subagents, should_add_general_agent = self._build_configured_subagents(model, config, config_base)
         should_enable_general_agent = should_add_general_agent and (
-            sub_mode == "plan" or (isinstance(mode, str) and mode.startswith("agent"))
+            sub_mode == "plan"
+            or (isinstance(mode, str) and (mode.startswith("agent") or mode in ("team", "team.plan", "code.team")))
         )
         common_kwargs = dict(
             model=model,

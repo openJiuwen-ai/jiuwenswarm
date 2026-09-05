@@ -749,6 +749,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             context_engine_config.model_name,
             context_engine_config.model_context_window_tokens,
         )
+        # 通用子代理（general_agent）仅在 team 子模式下按配置启用，
+        # 与 deep 模式保持一致的 gate 逻辑（sub_mode == "team"）。
+        subagents_cfg = config.get("subagents") if isinstance(config, dict) else None
+        general_agent_cfg = (
+            subagents_cfg.get("general_agent")
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        add_general_purpose_agent = (
+            getattr(self, "_session_instance_sub_mode", None) == "team"
+            and self._is_subagent_enabled(general_agent_cfg)
+        )
         return code_agent_spec.convert_code_config_to_deep_agent_spec(
             adapter=self,
             config_base=config_base,
@@ -770,6 +782,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             completion_timeout=resolve_task_loop_completion_timeout(config),
             session_id=str(self._parent_session_id or ""),
             channel_id=self._channel_id,
+            add_general_purpose_agent=add_general_purpose_agent,
             sys_operation_card=self._sys_operation_card,
         )
 
