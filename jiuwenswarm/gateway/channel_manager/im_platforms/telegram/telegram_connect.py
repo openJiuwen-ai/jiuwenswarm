@@ -12,6 +12,7 @@ from typing import Any, Callable
 import logging
 
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
+from jiuwenswarm.gateway.channel_manager.sdk.capabilities import ChannelCapabilities
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
@@ -58,6 +59,10 @@ class TelegramChannel(BaseChannel):
     """
 
     name = "telegram"
+    capabilities = ChannelCapabilities(          
+        rich_text=True,
+        max_message_length=4096,
+    )
 
     def __init__(self, config: TelegramChannelConfig, router: RobotMessageRouter):
         super().__init__(config, router)

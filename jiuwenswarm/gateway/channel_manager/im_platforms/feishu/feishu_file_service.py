@@ -3,7 +3,6 @@
 """飞书文件服务，负责文件的下载与上传。"""
 
 import asyncio
-import mimetypes
 import os
 import re
 from pathlib import Path
@@ -15,6 +14,10 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
 )
 from jiuwenswarm.server.runtime.attachments.upload_storage import (
     atomic_write_unique,
+)
+from jiuwenswarm.gateway.channel_manager.sdk.file_transfer import (
+    DEFAULT_MAX_FILE_SIZE,
+    FileTransferService,
 )
 
 # 类型别名，用于类型提示
@@ -189,8 +192,8 @@ class FeishuFileService:
     @classmethod
     def _guess_mime_type(cls, file_name: str) -> str:
         """根据文件名推断 MIME 类型。"""
-        mime_type, _ = mimetypes.guess_type(file_name)
-        return mime_type or "application/octet-stream"
+        return FileTransferService.guess_mime_type(file_name)
+
 
     def _get_download_timeout(self) -> int:
         """获取下载超时时间（秒）。"""
@@ -607,7 +610,7 @@ class FeishuFileService:
             from lark_oapi.api.im.v1 import CreateImageRequest, CreateImageRequestBody
 
             file_size = os.path.getsize(file_path)
-            if file_size > 20 * 1024 * 1024:
+            if file_size > DEFAULT_MAX_FILE_SIZE:
                 logger.error("图片超过飞书限制 20MB: %s (%d)", file_path, file_size)
                 return None
 
