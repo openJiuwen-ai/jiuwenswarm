@@ -1,14 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""McpProjectIdRail -- 在 MCP 工具调用前自动注入 project_id 隔离键。
+"""McpProjectIdRail -- 在 MCP 工具调用前自动注入项目隔离绑定。
 
 GaussPD 记忆系统需要 project_id 按 project 隔离数据，但 MCP stdio server
 是长驻进程，无法通过环境变量动态切换 project_id。此 Rail 从当前 session
-的元数据中获取 project_id，在 MCP 工具调用前自动注入到 tool_args 中，
-确保 MCP server 始终拿到正确的 project_id。
+的元数据中获取 project_id / project_dir，在 MCP 工具调用前自动注入到
+tool_args 中。对于旧桌面会话的 ``project_id=default``，GaussPD 胶水会以
+project_dir 作为实际动态隔离值。
 
 优先级 55：在 StreamEventRail(80) 与 UserHookRail(60) 之后执行。
 StreamEventRail 先清理 call_goal 并发送工具调用事件，用户 hook 随后处理，
-本 Rail 最后注入 project_id。
+本 Rail 最后注入项目绑定。
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class McpProjectIdRail(DeepAgentRail):
-    """自动为 MCP 工具调用注入 project_id 隔离键。
+    """自动为 MCP 工具调用注入项目隔离绑定。
 
     MCP 工具 ID 格式为 ``{server_id}.{server_name}.{tool_name}``（含 ``.``），
     由 ``ToolMgr.generate_mcp_tool_id()`` 生成。据此识别 MCP 工具调用并注入
@@ -34,11 +35,13 @@ class McpProjectIdRail(DeepAgentRail):
 
     priority = 55
 
-    # project_id 的参数键名（注入到 MCP 工具参数中）
+    # 会话与项目绑定的参数键名（注入到 MCP 工具参数中）
+    SESSION_ID_KEY = "session_id"
     PROJECT_ID_KEY = "project_id"
+    PROJECT_DIR_KEY = "project_dir"
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """在 MCP 工具调用前注入 project_id。"""
+        """在 MCP 工具调用前注入 session_id / project_id / project_dir。"""
         tool_name = str(getattr(ctx.inputs, "tool_name", "") or "").strip()
 
         # 仅处理 MCP 工具调用（名称含 ``.``）
@@ -49,16 +52,20 @@ class McpProjectIdRail(DeepAgentRail):
         if not isinstance(tool_args, dict):
             return
 
-        # 已有 project_id 则不覆盖（可能是用户 hook 显式设置）
-        if self.PROJECT_ID_KEY in tool_args:
+        # 已有字段绝不覆盖（可能是用户 hook 显式设置）。其余缺失字段从会话补齐。
+        binding = self._resolve_project_binding(ctx)
+        session_id = self._resolve_session_id(ctx)
+        if session_id:
+            binding[self.SESSION_ID_KEY] = session_id
+        injected = {
+            key: value
+            for key, value in binding.items()
+            if key not in tool_args and value
+        }
+        if not injected:
             return
 
-        # 从 session 元数据获取 project_id
-        project_id = self._resolve_project_id(ctx)
-        if not project_id:
-            return
-
-        tool_args[self.PROJECT_ID_KEY] = project_id
+        tool_args.update(injected)
         ctx.inputs.tool_args = tool_args
 
         # 同步修改 ToolCall.arguments（与 StreamEventRail 同模式，
@@ -69,7 +76,7 @@ class McpProjectIdRail(DeepAgentRail):
             try:
                 existing_args = getattr(tc, "arguments", None)
                 if isinstance(existing_args, dict):
-                    existing_args[self.PROJECT_ID_KEY] = project_id
+                    existing_args.update(injected)
                 else:
                     tc.arguments = tool_args
             except (AttributeError, TypeError) as exc:
@@ -77,9 +84,14 @@ class McpProjectIdRail(DeepAgentRail):
                     "[McpProjectIdRail] rewrite ToolCall.arguments failed: %s", exc
                 )
 
-        logger.debug(
-            "[McpProjectIdRail] injected project_id=%s for tool=%s",
-            project_id, tool_name,
+        logger.info(
+            "[GaussPD][MCP Scope] tool=%s session=%s project_id=%s "
+            "project_dir=%s injected=%s",
+            tool_name,
+            binding.get(self.SESSION_ID_KEY, "<missing>"),
+            binding.get(self.PROJECT_ID_KEY, "<missing>"),
+            binding.get(self.PROJECT_DIR_KEY, "<missing>"),
+            ",".join(sorted(injected)),
         )
 
     # ------------------------------------------------------------------
@@ -116,17 +128,19 @@ class McpProjectIdRail(DeepAgentRail):
         return None
 
     # ------------------------------------------------------------------
-    # Internal: project_id 解析
+    # Internal: 项目绑定解析
     # ------------------------------------------------------------------
 
-    def _resolve_project_id(self, ctx: AgentCallbackContext) -> str:
-        """从 session 元数据获取 project_id。
+    def _resolve_project_binding(self, ctx: AgentCallbackContext) -> dict[str, str]:
+        """从 session 元数据获取 project_id / project_dir。
 
         优先级：
-        1. ctx 关联的 session_metadata["project_id"]
+        1. ctx 关联的 session_metadata["project_id" / "project_dir"]
         2. 运行时 contextvar 中的 cron metadata
         3. 环境变量 GSPD_CELIAWORK_PROJECT_ID（兜底）
         """
+        binding: dict[str, str] = {}
+
         # 路径 1: session 元数据
         session_id = self._resolve_session_id(ctx)
         if session_id:
@@ -136,9 +150,10 @@ class McpProjectIdRail(DeepAgentRail):
                 )
                 metadata = get_session_metadata(session_id)
                 if isinstance(metadata, dict):
-                    pid = str(metadata.get("project_id", "") or "").strip()
-                    if pid:
-                        return pid
+                    for key in (self.PROJECT_ID_KEY, self.PROJECT_DIR_KEY):
+                        value = str(metadata.get(key, "") or "").strip()
+                        if value:
+                            binding[key] = value
             except Exception as exc:
                 logger.debug(
                     "[McpProjectIdRail] session metadata lookup failed: %s", exc
@@ -151,14 +166,25 @@ class McpProjectIdRail(DeepAgentRail):
             )
             cron_meta = _CRON_TOOL_METADATA.get()
             if isinstance(cron_meta, dict):
-                pid = str(cron_meta.get("project_id", "") or "").strip()
-                if pid:
-                    return pid
+                for key in (self.PROJECT_ID_KEY, self.PROJECT_DIR_KEY):
+                    if key in binding:
+                        continue
+                    value = str(cron_meta.get(key, "") or "").strip()
+                    if value:
+                        binding[key] = value
         except (ImportError, AttributeError):
             pass
 
-        # 路径 3: 环境变量兜底
-        return os.getenv("GSPD_CELIAWORK_PROJECT_ID", "").strip()
+        # 路径 3: 环境变量兜底（仅旧单项目 project_id，无目录可用）。
+        if self.PROJECT_ID_KEY not in binding:
+            value = os.getenv("GSPD_CELIAWORK_PROJECT_ID", "").strip()
+            if value:
+                binding[self.PROJECT_ID_KEY] = value
+        return binding
+
+    def _resolve_project_id(self, ctx: AgentCallbackContext) -> str:
+        """兼容旧调用方：只读取 project_id。"""
+        return self._resolve_project_binding(ctx).get(self.PROJECT_ID_KEY, "")
 
 
 __all__ = ["McpProjectIdRail"]
