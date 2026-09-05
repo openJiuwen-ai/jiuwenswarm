@@ -237,7 +237,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         panelRef={panelRef}
         className="chat-extension-picker"
         direction={direction}
-        testId="chat-extension-picker-panel"
+        testId="chat-panel-extension-picker-panel"
         rowHeight={LIST_ROW_HEIGHT}
         itemCount={Math.max(filteredPlugins.length, filteredMcps.length)}
         tabs={
@@ -250,6 +250,8 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 aria-selected={tab === key}
                 onClick={() => setTab(key)}
                 className={clsx(tab === key && 'is-active')}
+                data-testid="chat-panel-extension-picker-tab"
+                data-variant={key}
               >
                 {t(key === 'plugin' ? 'connectorMarket.tabs.plugin' : 'connectorMarket.tabs.mcp')}
               </button>
@@ -265,17 +267,17 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('chat.extensionSearchPlaceholder')}
-                data-testid="chat-extension-search"
+                data-testid="chat-panel-extension-picker-search-input"
               />
             </div>
           </div>
         }
         footer={{ label: t('chat.extensionMore'), onClick: handleManageClick }}
       >
-        {loading && <div className="chat-skill-select__state">{t('skills.detailLoading')}</div>}
+        {loading && <div className="chat-skill-select__state" data-testid="chat-panel-extension-picker-state" data-variant="loading">{t('skills.detailLoading')}</div>}
 
         {!loading && tab === 'plugin' && filteredPlugins.length === 0 && (
-          <div className="chat-skill-select__state">
+          <div className="chat-skill-select__state" data-testid="chat-panel-extension-picker-state" data-variant="no-plugin">
             {t('chat.extensionEmpty')}
           </div>
         )}
@@ -289,7 +291,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
           const isConnectingThis = connectingPluginIdRef.current === pkg.id && (pluginInstallFlow.active || pluginReconnectFlow.active);
           const busy = pluginBusyId === pkg.id || isConnectingThis;
           return (
-            <div key={pkg.id} className="chat-skill-select__item chat-extension-picker__item">
+            <div key={pkg.id} className="chat-skill-select__item chat-extension-picker__item" data-testid="chat-panel-extension-picker-item" data-variant={pkg.id}>
               <div className={`chat-skill-select__avatar ${avatar.color}`}>
                 {avatar.firstChar}
               </div>
@@ -310,7 +312,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         })}
 
         {!loading && tab === 'mcp' && filteredMcps.length === 0 && (
-          <div className="chat-skill-select__state">
+          <div className="chat-skill-select__state" data-testid="chat-panel-extension-picker-state" data-variant="no-mcp">
             {t('chat.extensionEmpty')}
           </div>
         )}
@@ -320,7 +322,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
           const isEnabled = enabledMcps.includes(connector.name);
           const busy = Boolean(busyMap[connector.name]);
           return (
-            <div key={connector.name} className="chat-skill-select__item chat-extension-picker__item">
+            <div key={connector.name} className="chat-skill-select__item chat-extension-picker__item" data-testid="chat-panel-extension-picker-item" data-variant={connector.name}>
               <EntityAvatar
                 iconUrl={connector.icon ?? undefined}
                 avatar={avatar}

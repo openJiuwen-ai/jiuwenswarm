@@ -25,7 +25,7 @@ export function XiaoyiChannelForm({ controller }: { controller: ChannelFormContr
       rules={rules}
       hint={
         showApiIdHint ? (
-          <div className="settings-channel-form__warning">
+          <div className="settings-channel-form__warning" data-testid="settings-channels-panel-xiaoyi-api-id-hint">
             <p>{t('channels.placeholders.xiaoyiApiIdRequiredForCron')}</p>
             <Button
               variant="quiet"
@@ -33,6 +33,7 @@ export function XiaoyiChannelForm({ controller }: { controller: ChannelFormContr
               icon={<X size={14} aria-hidden />}
               aria-label={t('common.close')}
               onClick={() => setHintDismissed(true)}
+              data-testid="settings-channels-panel-xiaoyi-api-id-hint-dismiss-btn"
             />
           </div>
         ) : null

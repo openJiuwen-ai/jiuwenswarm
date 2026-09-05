@@ -151,6 +151,8 @@ function IterationStrip<T extends { status: WorkflowStatus }>({
             i === selectedIndex ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-card' : ''
           }`}
           title={`第${i + 1}轮 · ${member.status}`}
+          data-testid="team-area-swarmflow-iteration-dot"
+          data-variant={i}
           onClick={(e) => {
             e.stopPropagation();
             onSelect(i);
@@ -190,6 +192,8 @@ function AgentLoopNode({
         className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-secondary/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
         onClick={() => setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-loop-header"
+        data-variant={name}
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
@@ -231,6 +235,8 @@ function AgentLoopNode({
                   e.stopPropagation();
                   setSelectedIdx(i);
                 }}
+                data-testid="team-area-swarmflow-iteration-row"
+                data-variant={i}
               >
                 <div className="w-[18px] shrink-0" />
                 <StatusIcon status={member.status} className="w-3.5 h-3.5" />
@@ -281,6 +287,8 @@ function PhaseLoopNode({
         className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-secondary/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
         onClick={() => setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-loop-header"
+        data-variant={baseName}
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
@@ -321,6 +329,8 @@ function PhaseLoopNode({
                   e.stopPropagation();
                   setSelectedIdx(i);
                 }}
+                data-testid="team-area-swarmflow-iteration-row"
+                data-variant={i}
               >
                 <div className="w-[18px] shrink-0" />
                 <StatusIcon status={phase.status} className="w-3.5 h-3.5" />
@@ -450,6 +460,8 @@ function AgentNode({
         onClick={handleAgentClick}
         role={agent.status === 'waiting_for_human' ? 'button' : undefined}
         title={agent.status === 'waiting_for_human' ? t('swarmflow.clickToReply') : undefined}
+        data-testid="team-area-swarmflow-agent-row"
+        data-variant={agent.id}
       >
         {hasSessionTree && (
           <button
@@ -469,7 +481,7 @@ function AgentNode({
         )}
         {!hasSessionTree && <div className="w-[18px] shrink-0" />}
         <StatusIcon status={agent.status} />
-        <span className="text-sm text-text break-words flex-1">{agent.name}</span>
+        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{agent.name}</span>
         {agent.model && (
           <span className="text-xs text-text-muted shrink-0">{agent.model}</span>
         )}
@@ -478,6 +490,8 @@ function AgentNode({
           <button
             type="button"
             className="shrink-0 p-0.5 rounded hover:bg-secondary"
+            data-testid="team-area-swarmflow-agent-detail-toggle"
+            data-variant={agent.id}
             onClick={(e) => {
               e.stopPropagation();
               setShowDetail((v) => !v);
@@ -491,7 +505,7 @@ function AgentNode({
           </button>
         )}
         {agent.status === 'waiting_for_human' && (
-          <span className="text-xs text-amber-500 shrink-0 animate-pulse">
+          <span className="text-xs text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-agent-waiting-hint">
             {t('swarmflow.clickToReply')}
           </span>
         )}
@@ -502,6 +516,8 @@ function AgentNode({
         <div
           className="mx-2 mb-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-border/50 bg-card/50 px-2 py-1.5"
           style={{ marginLeft: `${depth * 20 + 28}px` }}
+          data-testid="team-area-swarmflow-agent-detail-chips"
+          data-variant={agent.id}
         >
           {/* Meta 信息 */}
           {(agent.model || agent.token_count != null || agent.duration_ms != null || agent.started_at) && (
@@ -518,6 +534,8 @@ function AgentNode({
               key={sec.key}
               type="button"
               aria-label={`${sec.label} (${formatCharCount(sec.content)} 字符)`}
+              data-testid="team-area-swarmflow-agent-detail-chip"
+              data-variant={sec.key}
               onClick={(e) => {
                 e.stopPropagation();
                 setModalState({ sections: detailSections, activeKey: sec.key });
@@ -547,6 +565,7 @@ function AgentNode({
         <div
           className="flex items-start gap-1.5 px-2 pb-1 text-xs text-text-muted/60"
           style={{ paddingLeft: `${depth * 20 + 28}px` }}
+          data-testid="team-area-swarmflow-agent-outcome-preview"
         >
           <span className="shrink-0 text-text-muted/40">└</span>
           <span className="min-w-0 flex-1 truncate">{agent.outcome ?? agent.outcome_preview}</span>
@@ -556,6 +575,7 @@ function AgentNode({
         <div
           className="flex items-start gap-1.5 px-2 pb-1 text-xs text-red-400/80"
           style={{ paddingLeft: `${depth * 20 + 28}px` }}
+          data-testid="team-area-swarmflow-agent-error-preview"
         >
           <span className="shrink-0 text-red-400/40">└</span>
           <span className="min-w-0 flex-1 truncate">{agent.error ?? agent.error_preview}</span>
@@ -567,13 +587,15 @@ function AgentNode({
         <div
           className="border-l border-border/30 ml-4"
           style={{ marginLeft: `${depth * 20 + 16}px` }}
+          data-testid="team-area-swarmflow-agent-turns"
+          data-variant={agent.id}
         >
           {sessionMembers.map((member) => {
             const turn = parseTurnFromCorrelationId(member.correlation_id);
             return (
               <div key={member.id} className="relative pl-4">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-3 border-t border-border/30" />
-                <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50">
+                <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50" data-testid="team-area-swarmflow-agent-turn" data-variant={member.id}>
                   <StatusIcon status={member.status} className="w-3.5 h-3.5" />
                   <span className="text-xs text-text-muted">
                     Turn {turn ?? '?'}
@@ -651,6 +673,8 @@ function PhaseNode({
         className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-secondary/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
         onClick={() => hasChildren && setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-phase-header"
+        data-variant={phase.id}
       >
         {hasChildren ? (
           expanded ? (
@@ -662,11 +686,11 @@ function PhaseNode({
           <div className="w-4 shrink-0" />
         )}
         <StatusIcon status={phase.status} />
-        <span className="text-sm font-medium text-text break-words flex-1">
+        <span className="text-sm font-medium text-text break-words flex-1" data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
           {phase.name}
         </span>
         {phase.phase_type === 'child' && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500 shrink-0">
+          <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500 shrink-0" data-testid="team-area-swarmflow-phase-sub-workflow-badge">
             {t('swarmflow.subWorkflow')}
           </span>
         )}
@@ -788,10 +812,12 @@ function RunNode({
         : null);
 
   return (
-    <div className="border border-border rounded-lg overflow-hidden bg-card/50">
+    <div className="border border-border rounded-lg overflow-hidden bg-card/50" data-testid="team-area-swarmflow-run" data-variant={run.id}>
       <div
         className="flex items-center gap-2 px-3 py-2.5 bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors"
         onClick={() => setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-run-header"
+        data-variant={run.id}
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
@@ -801,19 +827,19 @@ function RunNode({
         <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text-strong truncate">
+            <span className="text-sm font-semibold text-text-strong truncate" data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
               {run.name}
             </span>
-            <span className="text-xs text-text-muted shrink-0">
+            <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>
               {statusText(run.status, t)}
             </span>
           </div>
           {run.summary && (
-            <p className="text-xs text-text-muted truncate mt-0.5">{run.summary}</p>
+            <p className="text-xs text-text-muted truncate mt-0.5" data-testid="team-area-swarmflow-run-summary" data-variant={run.id}>{run.summary}</p>
           )}
         </div>
         {waitingCount > 0 && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse">
+          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-run-waiting-badge" data-variant={run.id}>
             {t('swarmflow.waitingForHuman', { count: waitingCount })}
           </span>
         )}
@@ -826,6 +852,8 @@ function RunNode({
                 : 'bg-blue-500/10 text-blue-500'
             }`}
             title={t('swarmflow.sessionBudget')}
+            data-testid="team-area-swarmflow-run-budget"
+            data-variant="session"
           >
             {t('swarmflow.sessionBudgetShort')} {formatBudgetK(run.budget)}
             {run.budget.total == null && ` · ${t('swarmflow.budgetUnlimited')}`}
@@ -862,6 +890,8 @@ function RunNode({
               type="button"
               title={t('swarmflow.pauseResumeHint')}
               className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors"
+              data-testid="team-area-swarmflow-run-pause-btn"
+              data-variant={run.status === 'running' ? 'pause' : 'resume'}
               onClick={() => {
                 const method =
                   run.status === 'running' ? 'swarmflow.pause' : 'swarmflow.resume';
@@ -880,6 +910,7 @@ function RunNode({
               type="button"
               title={t('swarmflow.stopHint')}
               className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors"
+              data-testid="team-area-swarmflow-run-stop-btn"
               onClick={() => {
                 void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
                   (err) => console.error('[swarmflow] control failed:', err),
@@ -904,6 +935,7 @@ function RunNode({
             })
           }
           className="flex w-full items-start gap-1.5 px-3 py-1.5 text-left text-xs text-red-400/90 hover:bg-red-500/5"
+          data-testid="team-area-swarmflow-run-error"
         >
           <CircleX className="w-3.5 h-3.5 shrink-0 mt-0.5 text-red-400/70" />
           <span className="flex-1 min-w-0 truncate">{run.error}</span>
@@ -921,6 +953,7 @@ function RunNode({
             })
           }
           className="flex w-full items-start gap-1.5 px-3 py-1.5 text-left text-xs text-text-muted hover:bg-emerald-500/5"
+          data-testid="team-area-swarmflow-run-result"
         >
           <CircleCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-500/70" />
           <span className="flex-1 min-w-0 truncate">{run.result}</span>
@@ -981,14 +1014,14 @@ export function SwarmflowTreeView({ runs, sessionId }: SwarmflowTreeViewProps) {
 
   if (runs.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-sm text-text-muted">
+      <div className="flex items-center justify-center h-full text-sm text-text-muted" data-testid="team-area-swarmflow-tree-empty">
         {t('swarmflow.noWorkflow')}
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-testid="team-area-swarmflow-tree-view">
       <div className="flex-1 overflow-auto">
         <div className="flex flex-col gap-2 p-2">
           {runs.map((run) => (

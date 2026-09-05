@@ -76,12 +76,14 @@ function ProactiveLimitsDialog({
         submitting={closeBlocked}
         confirmLabel={t('common.confirm')}
         cancelLabel={t('common.cancel')}
+        testIdPrefix="settings-proactive-limits-dialog"
         onConfirm={() => void submit()}
         onCancel={requestClose}
       >
         <Form
           form={form}
           optionalText={t('common.optional')}
+          testIdPrefix="settings-proactive-limits-dialog"
           rules={{ daily: [{ validator }], rounds: [{ validator }] }}
           items={[
             {
@@ -101,7 +103,7 @@ function ProactiveLimitsDialog({
           ]}
         />
         {saveError ? (
-          <div className="settings-page__error" role="alert">
+          <div className="settings-page__error" role="alert" data-testid="settings-proactive-limits-dialog-error">
             {saveError}
           </div>
         ) : null}
@@ -210,22 +212,22 @@ function ExternalCliSettings({
   if (config.external_cli_agents_supported !== undefined && !parseConfigBoolean(config.external_cli_agents_supported))
     return null;
   return (
-    <div className="settings-experimental-cli">
+    <div className="settings-experimental-cli" data-testid="settings-experimental-cli">
       <span className="settings-experimental-cli__scope">
         {t('settingsPanel.experimental.externalCliAgentsDescription')}
       </span>
       {installBusy ? (
-        <div className="settings-experimental-cli__install-running" role="status">
+        <div className="settings-experimental-cli__install-running" role="status" data-testid="settings-experimental-cli-install-status" data-variant="running">
           <span>
             {t('config.externalCli.installInProgress', {
               agents: installAgentNames || t('config.externalCli.claudeCodex'),
             })}
           </span>
-          <Button onClick={onOpenExternalCliInstallDialog}>{t('config.externalCli.installViewProgress')}</Button>
+          <Button onClick={onOpenExternalCliInstallDialog} data-testid="settings-experimental-cli-install-view-progress-btn">{t('config.externalCli.installViewProgress')}</Button>
         </div>
       ) : null}
       {saveError ? (
-        <div className="settings-page__error" role="alert">
+        <div className="settings-page__error" role="alert" data-testid="settings-experimental-cli-error">
           {saveError}
         </div>
       ) : null}
@@ -240,17 +242,18 @@ function ExternalCliSettings({
         t={t}
         disabled={disabled}
       />
-      <div className="settings-experimental-cli__actions">
+      <div className="settings-experimental-cli__actions" data-testid="settings-experimental-cli-actions">
         <Button
           disabled={disabled || !changed}
           onClick={() => {
             setDraftValues(savedValues);
             setSaveError('');
           }}
+          data-testid="settings-experimental-cli-cancel-btn"
         >
           {t('common.cancel')}
         </Button>
-        <Button variant="primary" disabled={disabled || !changed} onClick={() => void submit()}>
+        <Button variant="primary" disabled={disabled || !changed} onClick={() => void submit()} data-testid="settings-experimental-cli-save-btn">
           {t('common.save')}
         </Button>
       </div>
@@ -290,6 +293,7 @@ export function A2UISetting({ disabled }: SettingsCustomItemProps) {
         checked={a2ui}
         disabled={disabled || !isConnected || source.savingKeys.has('a2ui_enabled')}
         onChange={(next) => void updateA2UI(next).catch(() => undefined)}
+        data-testid="settings-a2ui-switch"
       />
     </SettingRow>
   );
@@ -341,7 +345,7 @@ export function ProactiveLimitsSetting({ disabled }: SettingsCustomItemProps) {
           },
         )}
       >
-        <Button disabled={disabled || !isConnected} onClick={() => setLimitsOpen(true)}>
+        <Button disabled={disabled || !isConnected} onClick={() => setLimitsOpen(true)} data-testid="settings-proactive-limits-modify-btn">
           {t('common.modify')}
         </Button>
       </SettingRow>

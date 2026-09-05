@@ -19,7 +19,7 @@ export function ConnectionStatusSetting() {
       title={t('settingsPanel.general.connection')}
       description={t('settingsPanel.general.connectionDescription')}
       meta={
-        <Tag variant={connectionVariant} role="status">
+        <Tag variant={connectionVariant} role="status" data-testid="settings-connection-status-tag" data-variant={connectionKey}>
           {t(`settingsPanel.general.connectionStatus.${connectionKey}`)}
         </Tag>
       }

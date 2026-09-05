@@ -119,12 +119,14 @@ function AgentConfigDialog({
         confirmDisabled={!isConnected}
         confirmLabel={t('common.confirm')}
         cancelLabel={t('common.cancel')}
+        testIdPrefix="settings-agent-config-dialog"
+        testVariant={titleKey}
         onConfirm={() => void confirm()}
         onCancel={requestClose}
       >
-        <Form form={form} items={items} rules={rules} optionalText={t('common.optional')} />
+        <Form form={form} items={items} rules={rules} optionalText={t('common.optional')} testIdPrefix="settings-agent-config-dialog" />
         {saveError ? (
-          <div className="settings-page__error" role="alert">
+          <div className="settings-page__error" role="alert" data-testid="settings-agent-config-dialog-error">
             {saveError}
           </div>
         ) : null}
@@ -157,6 +159,8 @@ export function AgentSearchSettings({ disabled }: SettingsCustomItemProps) {
           <Button
             disabled={disabled || !isConnected}
             onClick={() => setDialog({ titleKey: `settingsPanel.fields.${name}.title`, fields: [name] })}
+            data-testid="settings-agent-key-configure-btn"
+            data-variant={name}
           >
             {t('settingsPanel.common.configure')}
           </Button>
@@ -204,7 +208,7 @@ export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
   return (
     <>
       {restartRequired ? (
-        <div className="settings-agent-media__restart-notice" role="status">
+        <div className="settings-agent-media__restart-notice" role="status" data-testid="settings-agent-media-restart-notice">
           {t('settingsPanel.agent.savedRestartRequired')}
         </div>
       ) : null}
@@ -234,6 +238,8 @@ export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
                       aria-label={`${t('common.modify')} ${name}`}
                       disabled={disabled || !isConnected || busy}
                       onClick={() => setDialog({ modality, enableOnSave: false })}
+                      data-testid="settings-agent-modality-edit-btn"
+                      data-variant={modality}
                     />
                   </div>
                 </div>
@@ -245,6 +251,8 @@ export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
               disabled={disabled || !isConnected || busy}
               aria-label={t('settingsPanel.agent.toggleCapability', { name })}
               onChange={(nextEnabled) => void toggleCapability(modality, nextEnabled)}
+              data-testid="settings-agent-modality-toggle"
+              data-variant={modality}
             />
           </SettingRow>
         );

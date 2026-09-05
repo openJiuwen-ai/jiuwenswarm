@@ -204,24 +204,27 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
       className="fixed inset-0 z-[2200] flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
+      data-testid="team-area-swarmflow-detail-modal"
     >
       <button
         type="button"
         className="absolute inset-0 bg-black/60"
         onClick={onClose}
         aria-label="关闭"
+        data-testid="team-area-swarmflow-detail-modal-backdrop"
       />
       <div className="relative w-full max-w-4xl max-h-[85vh] overflow-hidden rounded-xl border border-border bg-card shadow-2xl animate-rise flex flex-col">
         {/* 标题：Agent 名 · 当前 section label */}
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-panel shrink-0">
           <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold text-text truncate">{agentName}</h3>
-            <p className="text-xs text-text-muted mt-0.5">{activeSection?.label}</p>
+            <h3 className="text-base font-semibold text-text truncate" data-testid="team-area-swarmflow-detail-modal-title">{agentName}</h3>
+            <p className="text-xs text-text-muted mt-0.5" data-testid="team-area-swarmflow-detail-modal-section-label" data-variant={activeSection?.key}>{activeSection?.label}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="px-2.5 py-1.5 rounded-md border border-border bg-secondary/50 text-text-muted hover:text-text hover:bg-secondary text-sm shrink-0"
+            data-testid="team-area-swarmflow-detail-modal-close-btn"
           >
             {t('common.close')}
           </button>
@@ -229,7 +232,7 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
 
         {/* Tab 栏：可在输入/提问/回复/输出/错误间切换，无需反复开关 */}
         {state.sections.length > 1 && (
-          <div className="flex items-center gap-1 px-3 py-2 border-b border-border/60 bg-secondary/20 shrink-0 overflow-x-auto">
+          <div className="flex items-center gap-1 px-3 py-2 border-b border-border/60 bg-secondary/20 shrink-0 overflow-x-auto" data-testid="team-area-swarmflow-detail-modal-tabs">
             {state.sections.map((sec) => {
               const active = sec.key === state.activeKey;
               return (
@@ -237,6 +240,8 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
                   key={sec.key}
                   type="button"
                   onClick={() => onTabChange(sec.key)}
+                  data-testid="team-area-swarmflow-detail-modal-tab"
+                  data-variant={sec.key}
                   className={`shrink-0 inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
                     active
                       ? accentTabActiveClass[sec.accent]
@@ -253,12 +258,14 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
         )}
 
         {/* 内容区：JSON 树 / Markdown 自适应 + 原始切换 */}
-        <div className="p-5 overflow-auto flex-1">
+        <div className="p-5 overflow-auto flex-1" data-testid="team-area-swarmflow-detail-modal-content">
           {jsonData !== null && (
             <div className="flex justify-end gap-1 mb-2">
               <button
                 type="button"
                 onClick={() => setRawMode(false)}
+                data-testid="team-area-swarmflow-detail-modal-format-toggle"
+                data-variant="formatted"
                 className={`px-2 py-0.5 rounded text-[11px] border transition-colors ${
                   !rawMode
                     ? 'border-blue-500/50 bg-blue-500/10 text-blue-600 dark:text-blue-300'
@@ -270,6 +277,8 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
               <button
                 type="button"
                 onClick={() => setRawMode(true)}
+                data-testid="team-area-swarmflow-detail-modal-format-toggle"
+                data-variant="raw"
                 className={`px-2 py-0.5 rounded text-[11px] border transition-colors ${
                   rawMode
                     ? 'border-blue-500/50 bg-blue-500/10 text-blue-600 dark:text-blue-300'
