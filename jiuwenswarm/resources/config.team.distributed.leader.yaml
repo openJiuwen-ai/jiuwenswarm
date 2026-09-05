@@ -709,6 +709,10 @@ modes:
     rails:
     tools:
   code:
+    # 关闭 code 模式内置记忆，避免加载 ProjectMemoryRail / CodingMemoryRail
+    memory:
+      enabled: false
+
     # 动态 Rails — 列表中出现的 = 启用；不出现的 = 不启用
     # 固定 Rails（以下 Rails 已在代码中固定挂载，无需在此配置）：
     #   RuntimePromptRail, ResponsePromptRail, JiuSwarmStreamEventRail, SecurityRail,
