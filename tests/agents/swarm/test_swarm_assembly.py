@@ -2192,6 +2192,19 @@ def test_code_team_plan_approval_only_mounts_on_leader() -> None:
     assert registry.CODE_CONFIRM_INTERRUPT in {spec.type for spec in teammate_rails}
 
 
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_code_team_memory_disabled_omits_both_memory_rails(role: str) -> None:
+    """A disabled code memory config must not leak an external memory path."""
+    register_swarm_providers()
+    config = {"modes": {"code": {"memory": {"enabled": False}}}}
+
+    rails, _ = build_member_capability_specs(config, "code.team", role)
+    rail_types = {spec.type for spec in rails}
+
+    assert registry.CODE_PROJECT_MEMORY not in rail_types
+    assert registry.CODE_CODING_MEMORY not in rail_types
+
+
 def test_normal_team_plan_leader_uses_deepagent_plan_profile() -> None:
     """Normal Team Plan adds Work plan rails without mounting Code profile rails."""
     register_swarm_providers()

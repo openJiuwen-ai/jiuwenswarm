@@ -42,6 +42,7 @@ from openjiuwen.harness.rails import SkillUseRail
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.common.config import (
     get_default_model_provider,
     get_evolution_auto_save_enabled,
@@ -491,7 +492,7 @@ def _team_common_rail_names(role: str) -> tuple[str, ...]:
     return _COMMON_RAIL_NAMES
 
 
-def _code_base_rail_names(role: str) -> tuple[str, ...]:
+def _code_base_rail_names(config: dict[str, Any], role: str) -> tuple[str, ...]:
     """Code-profile rails minus permission interrupt; leaders omit code todo planning.
 
     ``PERMISSION_INTERRUPT`` is excluded for all team members: it relies on a
@@ -501,6 +502,9 @@ def _code_base_rail_names(role: str) -> tuple[str, ...]:
     names = tuple(
         name for name in _CODE_RAIL_NAMES if name != registry.PERMISSION_INTERRUPT
     )
+    if not is_memory_enabled("code", config):
+        memory_rails = {registry.CODE_PROJECT_MEMORY, registry.CODE_CODING_MEMORY}
+        names = tuple(name for name in names if name not in memory_rails)
     if role == "leader":
         return tuple(name for name in names if name != registry.CODE_TASK_PLANNING)
     return names
@@ -605,7 +609,7 @@ def _build_code_capability_specs(
 
     rails_specs: list[RailSpec] = [
         RailSpec(type=name, params=_rail_params(name, config))
-        for name in _code_base_rail_names(role)
+        for name in _code_base_rail_names(config, role)
     ]
 
     if is_team_plan_leader:
