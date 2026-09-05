@@ -22,14 +22,6 @@ import './AgentSettings.css';
 const keyFields = ['jina_api_key', 'bocha_api_key', 'perplexity_api_key', 'serper_api_key'] as const;
 const modalities = ['vision', 'audio', 'video'] as const;
 
-function isSearchKeyField(name: string): name is (typeof keyFields)[number] {
-  return keyFields.some((field) => field === name);
-}
-
-function isRequiredAgentConfigField(name: string): boolean {
-  return isSearchKeyField(name);
-}
-
 type SaveConfig = (updates: Record<string, string>, operation: string) => Promise<unknown>;
 
 function AgentConfigDialog({
@@ -63,7 +55,6 @@ function AgentConfigDialog({
     () =>
       fields.map((name) => {
         const key = name.includes('key');
-        const required = isRequiredAgentConfigField(name);
         return {
           name,
           label: t(`settingsPanel.fields.${name}.title`),
@@ -73,24 +64,8 @@ function AgentConfigDialog({
             ? { show: t('settingsPanel.common.showValue'), hide: t('settingsPanel.common.hideValue') }
             : undefined,
           placeholder: t('config.enterValue'),
-          required,
         };
       }),
-    [fields, t],
-  );
-  const rules = useMemo(
-    () =>
-      Object.fromEntries(
-        fields.filter(isRequiredAgentConfigField).map((name) => [
-          name,
-          [
-            {
-              validator: (value: unknown) =>
-                String(value ?? '').trim() ? undefined : t('settingsPanel.validation.required'),
-            },
-          ],
-        ]),
-      ),
     [fields, t],
   );
   const confirm = async () => {
@@ -122,7 +97,7 @@ function AgentConfigDialog({
         onConfirm={() => void confirm()}
         onCancel={requestClose}
       >
-        <Form form={form} items={items} rules={rules} optionalText={t('common.optional')} />
+        <Form form={form} items={items} optionalText={t('common.optional')} />
         {saveError ? (
           <div className="settings-page__error" role="alert">
             {saveError}
@@ -177,10 +152,35 @@ export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
     modality: MediaCapabilityModality;
     enableOnSave: boolean;
   } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MediaCapabilityModality | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [restartRequired, setRestartRequired] = useState(false);
   const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
   const handleSaveResult = (result: unknown) => {
     setRestartRequired(!wasConfigAppliedWithoutRestart(result));
+  };
+
+  const confirmDeleteModel = async () => {
+    if (!deleteTarget) return;
+    const enabledField = mediaCapabilityEnabledField(deleteTarget);
+    const updates: Record<string, string> = Object.fromEntries(
+      mediaCapabilityPersistenceFields(deleteTarget).map((field) => [field, '']),
+    );
+    if (parseConfigBoolean(values[enabledField])) {
+      updates[enabledField] = toConfigBoolean(false);
+    }
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const result = await saveConfig(updates, `settingsPanel.agent.${deleteTarget}`);
+      handleSaveResult(result);
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const toggleCapability = async (modality: MediaCapabilityModality, nextEnabled: boolean) => {
@@ -235,6 +235,18 @@ export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
                       disabled={disabled || !isConnected || busy}
                       onClick={() => setDialog({ modality, enableOnSave: false })}
                     />
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      icon={<settingsActionIcons.delete aria-hidden />}
+                      title={t('common.delete')}
+                      aria-label={`${t('common.delete')} ${name}`}
+                      disabled={disabled || !isConnected || busy}
+                      onClick={() => {
+                        setDeleteError('');
+                        setDeleteTarget(modality);
+                      }}
+                    />
                   </div>
                 </div>
               ) : null
@@ -259,6 +271,21 @@ export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
           onClose={() => setDialog(null)}
         />
       ) : null}
+      <SettingsConfirmDialog
+        open={deleteTarget !== null}
+        title={t('settingsPanel.agent.deleteModelTitle')}
+        message={
+          deleteTarget
+            ? t('settingsPanel.agent.deleteModelConfirm', { name: t(`settingsPanel.agent.${deleteTarget}`) })
+            : ''
+        }
+        confirming={deleting}
+        error={deleteError}
+        onConfirm={() => void confirmDeleteModel()}
+        onCancel={() => {
+          if (!deleting) setDeleteTarget(null);
+        }}
+      />
     </>
   );
 }
