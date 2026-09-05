@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 from jiuwenswarm.common.schema.message import Message
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.gateway.channel_manager.sdk.capabilities import ChannelCapabilities
 
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,7 @@ class BaseChannel(ABC):
     """
 
     name: str = "base"
+    capabilities: ChannelCapabilities = ChannelCapabilities()
 
     def __init__(self, config: Any, router: RobotMessageRouter):
         """
