@@ -450,6 +450,8 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `tool_dedup.enabled` | When true, intercepts duplicate tool calls within the same model turn and returns the cached result without invoking the tool again. Also tracks cross-turn repetitions and injects a system-prompt notice when a call is repeated more than `warn_after` times | `false` |
+| `tool_dedup.warn_after` | Number of identical cross-turn executions of the same tool+args before the agent receives a system-prompt reminder to stop repeating the call | `3` |
 
 <a id="dotenv-configuration"></a>
 

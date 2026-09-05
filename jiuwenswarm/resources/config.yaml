@@ -709,6 +709,10 @@ tools:
   - todo
   - skill
 
+tool_dedup:
+  enabled: false      # suppress identical repeat tool calls within a turn
+  warn_after: 3       # inject a system-prompt notice after this many cross-turn repeats
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}
