@@ -8,6 +8,7 @@ import pytest
 from openjiuwen.core.single_agent.rail.base import InvokeInputs, ModelCallInputs
 
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
+from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import BrowserTaskPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
 
@@ -243,6 +244,17 @@ async def test_response_prompt_rail_keeps_tui_runtime_channel_disabled(monkeypat
 
     assert {"input", "output"} <= rail.system_prompt_builder.sections.keys()
     assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+def test_browser_task_prompt_rail_accepts_runtime_channel_updates():
+    """The browser task rail must accept the same runtime channel sync used by other prompt rails."""
+    rail = BrowserTaskPromptRail()
+
+    rail.set_channel("web")
+    assert rail._channel == "web"
+
+    rail.set_channel(None)
+    assert rail._channel is None
 
 
 @pytest.mark.asyncio

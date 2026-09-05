@@ -27,6 +27,15 @@ class BrowserTaskPromptRail(SubagentRail):
             task_prompt_extension=self._task_prompt_extension,
         )
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._channel: str | None = None
+
+    def set_channel(self, channel: str | None) -> None:
+        """Store the active runtime channel for this prompt rail."""
+        value = str(channel or "").strip()
+        self._channel = value or None
+
     def _task_prompt_extension(
         self,
         ctx: AgentCallbackContext,
