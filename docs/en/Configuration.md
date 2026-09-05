@@ -450,6 +450,7 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `autonomy.enabled` | When `true`, injects autonomous-execution directives at the top of the system prompt, overriding interactive confirmation requests and hedging language. Suitable for CI pipelines, automated scripts, benchmark environments, or any deployment without a human supervisor | `false` |
 
 <a id="dotenv-configuration"></a>
 

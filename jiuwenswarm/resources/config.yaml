@@ -709,6 +709,14 @@ tools:
   - todo
   - skill
 
+# Autonomy settings: control agent behaviour when operating without a human in
+# the loop (CI pipelines, automated scripts, benchmark runs, etc.).
+autonomy:
+  # When true, injects decisive autonomous-mode directives at the top of the
+  # system prompt, overriding the default interactive language (confirmation
+  # requests, hedging, mid-task pauses). Keep false for normal interactive use.
+  enabled: false
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}
