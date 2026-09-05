@@ -6561,7 +6561,11 @@ class SkillManager:
             raise RuntimeError("Team Skills Hub API 错误 HTTP 404")
 
         if not resp.is_success:
-            # 不向调用方透传上游响应体，避免泄露敏感信息。
+            # 透传上游响应体前 300 字符，便于排查配置错误（如 401 认证失败时显示具体原因）。
+            # 与 _normalize_teamskills_hub_http_error 行为保持一致。
+            detail = (resp.text or "").strip()[:300]
+            if detail:
+                raise RuntimeError(f"Team Skills Hub API 错误 HTTP {resp.status_code}: {detail}")
             raise RuntimeError(f"Team Skills Hub API 错误 HTTP {resp.status_code}")
         try:
             payload = resp.json()
