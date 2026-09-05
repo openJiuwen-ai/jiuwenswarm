@@ -88,11 +88,6 @@ _FETCH_TIMEOUT_SECONDS = 10.0
 # ``limit.context``; we fall back to this when it is missing.
 _ZEN_FREE_CONTEXT_WINDOW = 200000
 
-# 用户自配的默认模型仍为 .env 占位符（首次启动）时，回退使用的免费模型。
-# 已确认 deepseek-v4-flash-free 长期匿名免费服务（models.dev cost.input==0），
-# 前端展示名为 "DeepSeek V4 Flash"。
-DEFAULT_FREE_MODEL_ID = "deepseek-v4-flash-free"
-
 # Process-wide in-memory cache of Zen free-model entries. Populated once at
 # AgentServer start-up; read by Gateway and AgentServer consumers. An empty
 # cache (start-up failure / disabled / no free models) means "no free models".
@@ -332,6 +327,100 @@ def _fetch_zen_free_models() -> list[dict[str, Any]]:
     return free
 
 
+# 探测单个模型可用性时的请求超时（秒）。Zen 返回 403 RegionError
+# 等需要先验证 key、查模型、再查地区限制，可能需要 3-5 秒。
+# 探测是并发的（最多 8 路），不阻塞启动，10 秒足够且不会太慢。
+_PROBE_TIMEOUT_SECONDS: float = 10.0
+
+
+def _probe_model_availability(model_id: str) -> bool:
+    """发一个最轻量 chat 请求探测模型是否真正可用。
+
+    Zen 的 /models 端点可能列出已下线/不可用的模型（如 deepseek 被标为
+    付费但未从列表删除），或对某些地区限制访问（403 RegionError）。
+    只有实际发请求才能确认可用性。
+
+    返回 True=可用；False=明确不可用（400/403/404/503）。
+    网络/超时等不确定错误返回 True（保守保留，避免误过滤可用模型）。
+    """
+    try:
+        resp = httpx.post(
+            f"{ZEN_API_BASE}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {ZEN_ANON_API_KEY}",
+                **ZEN_CLIENT_HEADERS,
+            },
+            json={
+                "model": model_id,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+                "stream": False,
+            },
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+        if resp.status_code == 200:
+            return True
+        if resp.status_code in (400, 403, 404, 503):
+            logger.info(
+                "[OpencodeZen] model %s probed unavailable (HTTP %d: %s)",
+                model_id,
+                resp.status_code,
+                resp.text[:200],
+            )
+            return False
+        logger.info(
+            "[OpencodeZen] model %s probe uncertain (HTTP %d), kept",
+            model_id,
+            resp.status_code,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - 网络/超时等不确定错误
+        logger.warning(
+            "[OpencodeZen] model %s probe failed (%s), kept", model_id, exc,
+        )
+        return True
+
+
+def _filter_available_models(
+    free_models: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """并发探测每个免费模型的实际可用性，过滤掉明确不可用的。
+
+    不可用模型（400/503）秒回，可用模型也很快返回 max_tokens=1 的响应，
+    并发探测总耗时通常 1-2 秒。全部探测失败时保留原始列表（降级）。
+    """
+    if not free_models:
+        return free_models
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    available: list[dict[str, Any]] = []
+    unavailable: list[str] = []
+    with ThreadPoolExecutor(max_workers=min(len(free_models), 8)) as executor:
+        future_to_model = {
+            executor.submit(_probe_model_availability, m["id"]): m
+            for m in free_models
+        }
+        for future in as_completed(future_to_model):
+            model = future_to_model[future]
+            try:
+                if future.result():
+                    available.append(model)
+                else:
+                    unavailable.append(model["id"])
+            except Exception:  # noqa: BLE001
+                available.append(model)
+    if unavailable:
+        logger.info(
+            "[OpencodeZen] probed %d model(s): %d available, %d filtered (%s)",
+            len(free_models),
+            len(available),
+            len(unavailable),
+            ", ".join(unavailable),
+        )
+    # 全部被过滤时保留原始列表（可能是网络问题导致探测失败）
+    return available if available else free_models
+
+
 def _populate_zen_free_entries() -> int:
     """Fetch Zen free models and store them in the in-memory cache.
 
@@ -362,6 +451,13 @@ def _populate_zen_free_entries() -> int:
             return 0
 
         free_models = _fetch_zen_free_models()
+        # 健康检查：并发探测每个模型，过滤掉在 Zen /models 列表中
+        # 但实际不可用的模型（如已转付费/已下线但未从列表删除）。
+        free_models = _filter_available_models(free_models)
+        # 按 context window 降序排序，优先选 context 大的模型作为默认。
+        # context 大通常意味着模型更强，避免选到能力不足的小模型导致
+        # skill 执行失败。排序后 entries[0] 就是 context 最大的可用模型。
+        free_models.sort(key=lambda m: m.get("context", 0), reverse=True)
         entries = [
             _build_zen_model_entry(m["id"], m["name"], m["context"])
             for m in free_models
@@ -523,16 +619,14 @@ def get_zen_free_context_window() -> int:
 
 
 def get_zen_default_free_model_entry() -> dict[str, Any] | None:
-    """Return the free-model entry that may act as the product default model.
+    """Return the first free-model entry to act as the product default model.
 
-    当用户自配的默认模型仍为占位符（首次启动）时，用该免费模型兜底：优先
-    ``DEFAULT_FREE_MODEL_ID``（DeepSeek V4 Flash），其次取第一个免费模型；
+    当用户自配的默认模型仍为占位符（首次启动）时，用第一个免费模型兜底；
     Zen 不可达/缓存为空/免费模型被关闭时返回 ``None``（调用方保持原行为）。
+    不硬编码优先选某个模型——免费模型会轮换，按上游 models.dev 返回顺序
+    取第一个最稳妥。
     """
     entries = get_zen_free_model_entries()
-    for entry in entries:
-        if (entry.get("model_client_config") or {}).get("model_name") == DEFAULT_FREE_MODEL_ID:
-            return entry
     return entries[0] if entries else None
 
 

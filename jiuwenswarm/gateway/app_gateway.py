@@ -3006,7 +3006,10 @@ async def _run(
         async def _on_zen_models_ready():
             try:
                 web_channel = channel_manager.get_channel("web")
-                if web_channel:
+                # 仅当 Web 通道已注册且有客户端时才直接广播；冷启动阶段
+                # （前端尚未连接）跳过，改由 _on_connect 在新客户端连接时补发，
+                # 避免 models.updated 早于前端连接而零客户端丢失。
+                if web_channel and getattr(web_channel, "clients", None):
                     await web_channel.broadcast_event("models.updated", {})
                     logger.info("[App] broadcasted models.updated: zen free models ready")
             except Exception as e:  # noqa: BLE001

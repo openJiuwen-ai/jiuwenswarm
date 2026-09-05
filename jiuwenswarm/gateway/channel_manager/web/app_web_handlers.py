@@ -2805,6 +2805,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         else:
             await channel.send(ack_msg)
 
+        # 冷启动修复：models.updated 若仅在 Gateway 启动预热时广播，会早于
+        # 前端连接而零客户端丢失；在新客户端连接后按需补发一次，确保前端
+        # 无论初始 models.list 快照如何都能自动刷新出已就绪的免费模型。
+        try:
+            from jiuwenswarm.server.runtime.opencode_zen import (
+                get_zen_free_model_entries,
+            )
+            if get_zen_free_model_entries():
+                await channel.broadcast_event("models.updated", {})
+                logger.info("[_on_connect] pushed models.updated: zen free models ready")
+        except Exception:  # noqa: BLE001 - 非阻塞，补发失败不影响连接
+            logger.debug("[_on_connect] push models.updated failed", exc_info=True)
+
     channel.on_connect(_on_connect)
 
     async def _on_disconnect(ws, _session_ids):
@@ -3674,8 +3687,29 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             except Exception:
                 logger.warning("[models.list] append Zen free models failed", exc_info=True)
 
-            # active_model 为列表首位的模型（主对话默认）
+            # active_model 为列表首位的模型（主对话默认）。若首位仍是 .env
+            # 模板占位符（首次启动未改配置），回退到 Zen 免费模型作为前端
+            # 默认选中，与 AgentServer/AgentAdapter 的占位回退逻辑一致，
+            # 避免前端选中占位符模型而需手动切换到免费模型。
             active_model = result[0]["model_name"] if result else ""
+            if active_model and result:
+                from jiuwenswarm.common.model_config_validation import (
+                    is_placeholder_model_entry,
+                )
+                if is_placeholder_model_entry(result[0]):
+                    try:
+                        from jiuwenswarm.server.runtime.opencode_zen import (
+                            get_zen_default_free_model_entry,
+                        )
+                        zen_default = get_zen_default_free_model_entry()
+                        if zen_default is not None:
+                            zmcc = zen_default.get("model_client_config") or {}
+                            active_model = zmcc.get("model_name", "") or active_model
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "[models.list] fallback active_model to zen free failed",
+                            exc_info=True,
+                        )
             await channel.send_response(ws, req_id, ok=True, payload={
                 "models": result,
                 "active_model": active_model,
