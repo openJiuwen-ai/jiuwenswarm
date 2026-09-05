@@ -8,7 +8,7 @@ import asyncio
 import os
 import re
 from html import unescape
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 import urllib3
@@ -188,6 +188,35 @@ def _normalize_url(url: str) -> str:
     return f"https://{decoded}"
 
 
+def _github_search_api_url(url: str) -> str | None:
+    """Rewrite GitHub repository-search HTML pages to the public JSON API.
+
+    github.com/search is a client-rendered (JS) page: a plain HTTP fetch only
+    receives the SPA shell, so agents cannot see any results. The public search
+    API (api.github.com/search/repositories) returns plain JSON and works
+    without a browser. Only ``type=repositories`` (or no type) is rewritten;
+    other tabs (issues, pull requests, ...) keep their original URL.
+    """
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    host = parsed.netloc.lower()
+    if host not in {"github.com", "www.github.com"} or parsed.path != "/search":
+        return None
+    query = parse_qs(parsed.query)
+    q = (query.get("q") or [""])[0]
+    if not q:
+        return None
+    search_type = (query.get("type") or [""])[0].lower()
+    if search_type and search_type != "repositories":
+        return None
+    try:
+        per_page = min(max(int((query.get("per_page") or ["10"])[0]), 1), 30)
+    except (TypeError, ValueError):
+        per_page = 10
+    return f"https://api.github.com/search/repositories?q={quote(q)}&per_page={per_page}"
+
+
 def _fetch_via_jina_reader_sync(url: str, timeout_seconds: int) -> dict[str, str | int]:
     reader_url = f"https://r.jina.ai/{url}"
     response = _http_get(reader_url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
@@ -201,7 +230,19 @@ def _fetch_via_jina_reader_sync(url: str, timeout_seconds: int) -> dict[str, str
 
 
 def _fetch_webpage_sync(url: str, timeout_seconds: int) -> dict[str, str | int]:
-    response = _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+    api_url = _github_search_api_url(url)
+    if api_url:
+        url = api_url
+    try:
+        response = _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+        # Network-level failures: try the reader fallback before giving up.
+        try:
+            return _fetch_via_jina_reader_sync(url, timeout_seconds)
+        except Exception:
+            # Preserve the original network error; suppress the Jina fallback
+            # failure from the traceback (it is a best-effort retry only).
+            raise exc from None
     if response.status_code in {401, 403, 429}:
         return _fetch_via_jina_reader_sync(url, timeout_seconds)
     response.raise_for_status()
@@ -226,12 +267,28 @@ def _fetch_webpage_sync(url: str, timeout_seconds: int) -> dict[str, str | int]:
     }
 
 
+def _classify_fetch_error(exc: Exception) -> str:
+    """Classify fetch failures so agents can tell access errors from empty results."""
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "connection"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return "http_error"
+    if isinstance(exc, requests.exceptions.RequestException):
+        return "request"
+    return "unknown"
+
+
 @tool(
     name="mcp_fetch_webpage",
     description=(
         "Fetch webpage text content from URL. Returns status/title/plain text content. "
         "Set max_chars=0 to disable output clipping. "
-        "Use a larger timeout_seconds for slow websites."
+        "Use a larger timeout_seconds for slow websites. "
+        "A result starting with [FETCH_ERROR: <category>] means the page could NOT be "
+        "ACCESSED (network/HTTP failure), not that the content does not exist — try an "
+        "alternative source (API endpoint, search engine) before concluding absence."
     ),
 )
 async def mcp_fetch_webpage(url: str, max_chars: int = 0, timeout_seconds: int = 30) -> str:
@@ -259,6 +316,14 @@ async def mcp_fetch_webpage(url: str, max_chars: int = 0, timeout_seconds: int =
 
     try:
         data = await asyncio.to_thread(_fetch_webpage_sync, url, timeout_seconds)
+    except requests.exceptions.RequestException as exc:
+        category = _classify_fetch_error(exc)
+        return (
+            f"[FETCH_ERROR: {category}] failed to fetch webpage: {exc}\n"
+            "This is an ACCESS failure (network/HTTP), not an empty result. "
+            "Retry with an alternative source (API endpoint, search engine) "
+            "before concluding the content does not exist."
+        )
     except Exception as exc:
         return f"[ERROR]: failed to fetch webpage: {exc}"
 
