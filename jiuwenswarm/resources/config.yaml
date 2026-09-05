@@ -936,7 +936,28 @@ channels:
     allow_from: []
     # 是否关闭私信功能
     block_dm: false
+    # What the bot answers in server channels (direct messages are never affected):
+    #   all     - every message in the channel
+    #   mention - only messages mentioning the bot (default)
+    #   reply   - the above, plus replies to the bot's own messages
+    #   off     - nothing in server channels
+    group_chat_mode: mention
     enabled: false
+  email:
+    # Answer users by e-mail. The account needs SMTP and IMAP access;
+    # with Gmail, use an app password rather than the account password.
+    enabled: false
+    email_address: ${EMAIL_ADDRESS}
+    token: ${EMAIL_TOKEN}
+    smtp_server: ${SMTP_SERVER:-smtp.gmail.com}
+    port: ${EMAIL_PORT:-587}
+    imap_server: ${IMAP_SERVER:-imap.gmail.com}
+    # Mail addresses allowed to talk to the bot. Empty allows everyone.
+    allow_from: []
+    # Where a reply goes when the session is unknown.
+    default_recipient:
+    # Seconds between two mailbox checks.
+    poll_interval: 30
   slack:
     # Slack Bot via Socket Mode. Tokens are created in the Slack app settings.
     bot_token:

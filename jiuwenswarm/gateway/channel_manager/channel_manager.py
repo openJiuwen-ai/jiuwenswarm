@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from jiuwenswarm.gateway.routing.keys import ChannelKey
-
+from jiuwenswarm.gateway.message_handler.delivery import (
+    degrade_card_if_unsupported,
+    get_default_registry,
+)
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -555,6 +558,7 @@ class ChannelManager(ABC):
                 )
                 if channel:
                     try:
+                        msg = degrade_card_if_unsupported(msg, channel, get_default_registry())
                         await channel.send(msg)
                     except Exception as e:
                         logger.error("send to channel %s: %s", msg.channel_id, e, exc_info=True)

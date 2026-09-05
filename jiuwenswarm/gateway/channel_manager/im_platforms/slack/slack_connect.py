@@ -16,8 +16,14 @@ from jiuwenswarm.gateway.channel_manager.base import (
     ChannelMetadata,
     RobotMessageRouter,
 )
+from jiuwenswarm.gateway.channel_manager.sdk.capabilities import ChannelCapabilities  
 from jiuwenswarm.gateway.routing.keys import SlackDeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.gateway.channel_manager.sdk.capabilities import ChannelCapabilities
+from jiuwenswarm.gateway.channel_manager.im_platforms.slack.slack_blocks import (
+    extract_action_value,
+    render_card_blocks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +60,7 @@ class SlackChannel(BaseChannel):
     """Slack Bot channel using Bolt's asynchronous Socket Mode adapter."""
 
     name = "slack"
+    capabilities = ChannelCapabilities(buttons=True, threads=True)
 
     def __init__(self, config: SlackChannelConfig, router: RobotMessageRouter):
         super().__init__(config, router)
@@ -96,6 +103,7 @@ class SlackChannel(BaseChannel):
         app = AsyncApp(token=self.config.bot_token.strip())
         app.event("app_mention")(self._handle_app_mention)
         app.event("message")(self._handle_message_event)
+        app.action(re.compile(r"^jiuwen_card_action"))(self._handle_card_action)
 
         handler = AsyncSocketModeHandler(app, self.config.app_token.strip())
         self._app = app
@@ -131,6 +139,24 @@ class SlackChannel(BaseChannel):
             return
         if msg.event_type == EventType.CHAT_DELTA:
             return
+        card_spec = (getattr(msg, "payload", None) or {}).get("interactive_card")
+        if card_spec:
+            channel_id, thread_ts = self._extract_delivery(msg, routing_target)
+            if not channel_id:
+                logger.warning("SlackChannel card send skipped: missing target channel id")
+                return
+            kwargs: dict[str, Any] = {
+                "channel": channel_id,
+                "text": card_spec.get("text", ""),
+                "blocks": render_card_blocks(card_spec),
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+            try:
+                await self._client.chat_postMessage(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SlackChannel card send failed: %s", exc)
+            return
 
         content = self._extract_outgoing_text(msg)
         if not content:
@@ -155,6 +181,14 @@ class SlackChannel(BaseChannel):
         self, event: dict[str, Any], body: dict[str, Any]
     ) -> None:
         await self._handle_slack_event(event, body, is_dm=False)
+
+    async def _handle_card_action(self, ack, body: dict[str, Any]) -> None:
+        await ack()
+        value = extract_action_value(body)
+        if not value:
+            return
+        chat_id = (body.get("channel") or {}).get("id", "")
+        await self._handle_message(chat_id, value, metadata={"slack_card_action": True}) 
 
     async def _handle_message_event(
         self, event: dict[str, Any], body: dict[str, Any]

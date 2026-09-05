@@ -251,6 +251,14 @@ async def test_start_and_stop_socket_mode_lifecycle(
 
             return register
 
+        def action(self, pattern):
+            registered_events.append(f"action:{pattern.pattern}")
+
+            def register(listener):
+                return listener
+
+            return register
+
     class FakeSocketModeHandler:
         def __init__(self, app: Any, app_token: str) -> None:
             assert isinstance(app, FakeAsyncApp)
@@ -279,8 +287,7 @@ async def test_start_and_stop_socket_mode_lifecycle(
     await asyncio.wait_for(started.wait(), timeout=1)
 
     assert channel.is_running
-    assert registered_events == ["app_mention", "message"]
-
+    assert registered_events == ["app_mention", "message", "action:^jiuwen_card_action"]
     await channel.stop()
     await asyncio.wait_for(task, timeout=1)
 
