@@ -960,8 +960,11 @@ function handleSubtaskUpdate(
 }
 
 function normalizeTodoStatus(status: unknown): TodoItem["status"] | null {
-  if (status === "deleted" || status === "cancelled" || status === "canceled") {
+  if (status === "deleted") {
     return null;
+  }
+  if (status === "cancelled" || status === "canceled") {
+    return "cancelled";
   }
   if (status === "in_progress" || status === "completed" || status === "error") {
     return status;

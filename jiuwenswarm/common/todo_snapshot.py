@@ -31,28 +31,27 @@ _STATUS_TO_FRONTEND = {
     TodoStatus.PENDING: "pending",
     TodoStatus.IN_PROGRESS: "in_progress",
     TodoStatus.COMPLETED: "completed",
+    TodoStatus.CANCELLED: "cancelled",
     "pending": "pending",
     "waiting": "pending",
     "in_progress": "in_progress",
     "running": "in_progress",
     "completed": "completed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
 }
 
-_CANCELLED_STATUSES = frozenset(
-    {
-        TodoStatus.CANCELLED,
-        "cancelled",
-        "canceled",
-        "deleted",
-    }
-)
+# Items removed via todo ``delete`` are gone from the workspace by design;
+# ``cancel`` keeps the item so the progress view can file it under "cancelled".
+_DELETED_STATUSES = frozenset({"deleted"})
 
 
 def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
     """Format todo items for frontend ``todo.updated`` payload.
 
     Accepts OpenJiuWen ``TodoItem`` objects or raw ``todo.json`` dicts.
-    Cancelled items are omitted; completed items are kept.
+    Cancelled items are kept with status ``cancelled``; deleted items are
+    omitted.
     """
     formatted: list[dict[str, Any]] = []
     for item in todos_data:
@@ -61,10 +60,8 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
 
         if isinstance(item, dict):
             status_raw = item.get("status", "pending")
-            if status_raw in _CANCELLED_STATUSES:
-                continue
             status_key = status_raw.value if hasattr(status_raw, "value") else str(status_raw).lower()
-            if status_key in ("cancelled", "canceled", "deleted"):
+            if status_key in _DELETED_STATUSES:
                 continue
             todo_id = item.get("id")
             if todo_id is None or todo_id == "":
@@ -84,10 +81,8 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
             continue
 
         status = getattr(item, "status", None)
-        if status in _CANCELLED_STATUSES:
-            continue
         status_value = getattr(status, "value", None)
-        if isinstance(status_value, str) and status_value.lower() in ("cancelled", "canceled", "deleted"):
+        if isinstance(status_value, str) and status_value.lower() in _DELETED_STATUSES:
             continue
 
         todo_id = getattr(item, "id", None)
