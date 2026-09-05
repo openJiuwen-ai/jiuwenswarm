@@ -2402,6 +2402,20 @@ class JiuWenSwarmDeepAdapter:
                     current_version,
                 )
                 return
+        # Prefer live on-disk config over the pending snapshot. A fire-and-forget
+        # permissions reload may have marked sessions stale with an older
+        # snapshot (e.g. tools updated while permissions.enabled was still
+        # false); re-reading here prevents that from undoing a later enable.
+        try:
+            live_config = get_config()
+            if isinstance(live_config, dict):
+                config_base = live_config
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] lazy session reload live get_config failed; "
+                "using pending snapshot",
+                exc_info=True,
+            )
         try:
             await adapter.reload_agent_config(
                 config_base,

@@ -898,6 +898,7 @@ async def test_deep_adapter_reload_keeps_fields_when_dependent_reload_inputs_cha
 
 @pytest.mark.asyncio
 async def test_deep_adapter_existing_session_lazy_reload_once(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
     )
@@ -908,6 +909,7 @@ async def test_deep_adapter_existing_session_lazy_reload_once(monkeypatch):
     parent._session_adapters = {"session-a": session}
     pending_config = {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}}
     parent._mark_session_adapters_stale_for_reload(pending_config, {"MODEL_NAME": "new-model"})
+    monkeypatch.setattr(interface_module, "get_config", lambda: pending_config)
 
     first_lookup = await parent._get_or_create_session_adapter("session-a")
     second_lookup = await parent._get_or_create_session_adapter("session-a")
@@ -923,7 +925,35 @@ async def test_deep_adapter_existing_session_lazy_reload_once(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_deep_adapter_lazy_reload_prefers_live_config_over_stale_pending(monkeypatch):
+    """Stale pending snapshots must not undo a later permissions.enabled toggle."""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    parent._instance = MagicMock()
+    session = FakeAgent()
+    parent._session_adapters = {"session-a": session}
+    stale_pending = {
+        "permissions": {"enabled": False, "tools": {"write_memory": "deny"}},
+    }
+    live_config = {
+        "permissions": {"enabled": True, "tools": {"write_memory": "deny"}},
+    }
+    parent._mark_session_adapters_stale_for_reload(stale_pending, None)
+    monkeypatch.setattr(interface_module, "get_config", lambda: live_config)
+
+    await parent._get_or_create_session_adapter("session-a")
+
+    assert len(session.reload_calls) == 1
+    assert session.reload_calls[0]["args"][0] == live_config
+
+
+@pytest.mark.asyncio
 async def test_deep_adapter_failed_lazy_reload_is_not_retried_immediately(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
     )
@@ -934,6 +964,7 @@ async def test_deep_adapter_failed_lazy_reload_is_not_retried_immediately(monkey
     parent._session_adapters = {"session-a": session}
     pending_config = {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}}
     parent._mark_session_adapters_stale_for_reload(pending_config, {})
+    monkeypatch.setattr(interface_module, "get_config", lambda: pending_config)
 
     await parent._get_or_create_session_adapter("session-a")
     await parent._get_or_create_session_adapter("session-a")
@@ -965,6 +996,12 @@ async def test_deep_adapter_new_session_applies_pending_reload(monkeypatch):
     parent._mark_session_adapters_stale_for_reload(pending_config, {"MODEL_NAME": "new-model"})
     pending_config["react"]["agent_name"] = "mutated_after_mark"
     assert parent._session_adapter_config_version == 1
+    # Lazy reload prefers live get_config(); keep it aligned with the mark-time snapshot.
+    monkeypatch.setattr(
+        interface_module,
+        "get_config",
+        lambda: {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}},
+    )
 
     new_session = FakeAgent()
     new_session.create_instance = _async_noop

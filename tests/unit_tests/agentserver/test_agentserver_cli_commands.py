@@ -1174,15 +1174,26 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
         lambda _req: _Resp(),
         raising=True,
     )
-    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {})
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"permissions": {"enabled": True}})
 
-    reload_calls = {"n": 0}
+    reload_calls = {"n": 0, "configs": []}
+    stale_marks = {"n": 0, "configs": []}
 
-    async def _slow_reload(_config, _env):
+    async def _slow_reload(config, _env):
         reload_calls["n"] += 1
+        reload_calls["configs"].append(config)
         await asyncio.sleep(0.2)  # 模拟慢 reload
 
+    def _mark_stale(config_base, env_overrides=None):
+        stale_marks["n"] += 1
+        stale_marks["configs"].append(config_base)
+
     monkeypatch.setattr(server.get_agent_manager(), "reload_agents_config", _slow_reload)
+    monkeypatch.setattr(
+        server.get_agent_manager(),
+        "mark_session_adapters_stale_for_config",
+        _mark_stale,
+    )
 
     request = AgentRequest(
         request_id="req-perm-update",
@@ -1200,7 +1211,77 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
     assert fake_ws.sent and fake_ws.sent[0]["ok"] is True
     assert fake_ws.sent[0]["response_id"] == "req-perm-update"
     assert elapsed < 0.2, f"RPC 被 reload 阻塞了 {elapsed:.3f}s, 期望 fire-and-forget"
+    # Existing chat sessions must be marked stale immediately (before background reload).
+    assert stale_marks["n"] == 1
+    assert stale_marks["configs"][0]["permissions"]["enabled"] is True
 
     # reload 在后台被调度: 等它跑完确认调用过一次
     await asyncio.sleep(0.3)
     assert reload_calls["n"] == 1, f"期望 reload 被调用 1 次, 实际 {reload_calls['n']}"
+    # Must not capture a stale get_config() snapshot at schedule time.
+    assert reload_calls["configs"] == [None]
+
+
+@pytest.mark.asyncio
+async def test_handle_permissions_config_reload_reads_config_when_task_runs(
+    server, fake_ws, monkeypatch
+):
+    """Background permissions reload must observe config written after scheduling.
+
+    Reproduces the first-task guardrail miss: tools.update schedules reload while
+    permissions.enabled is still false; the user then enables guardrails; a
+    delayed reload that reuses the schedule-time snapshot would undo enable on
+    the current task until "new task".
+    """
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_config_rpc as _rpc_mod
+
+    class _Resp:
+        ok = True
+        payload = {"ok": True}
+
+    monkeypatch.setattr(_rpc_mod, "dispatch_permissions_config_request", lambda _req: _Resp())
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.dispatch_permissions_config_request",
+        lambda _req: _Resp(),
+        raising=True,
+    )
+
+    live_config = {"permissions": {"enabled": False, "tools": {"write_memory": "deny"}}}
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: dict(live_config))
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    seen_configs: list[object] = []
+
+    async def _gated_reload(config, _env):
+        started.set()
+        await release.wait()
+        # reload_agents_config(None) re-reads via get_config inside the manager;
+        # our patched reload receives the deferred None from the handler.
+        seen_configs.append(config if config is not None else agent_ws_server_module.get_config())
+
+    monkeypatch.setattr(server.get_agent_manager(), "reload_agents_config", _gated_reload)
+    monkeypatch.setattr(
+        server.get_agent_manager(),
+        "mark_session_adapters_stale_for_config",
+        lambda *_a, **_k: None,
+    )
+
+    request = AgentRequest(
+        request_id="req-perm-race",
+        channel_id="web",
+        session_id="sess_first",
+        req_method=ReqMethod.PERMISSIONS_TOOLS_UPDATE,
+        params={"tool": "write_memory", "level": "deny"},
+    )
+    await server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock())
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    # Simulate enabling guardrails after the reload task was scheduled.
+    live_config["permissions"]["enabled"] = True
+    release.set()
+    await asyncio.sleep(0.05)
+
+    assert seen_configs == [
+        {"permissions": {"enabled": True, "tools": {"write_memory": "deny"}}}
+    ]

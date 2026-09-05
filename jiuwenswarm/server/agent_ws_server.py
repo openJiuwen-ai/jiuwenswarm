@@ -4874,12 +4874,30 @@ class AgentWebSocketServer:
             ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
         }
         if resp.ok and request.req_method not in read_only_methods:
+            # Eagerly mark existing session adapters stale with the post-mutation
+            # on-disk config. Chat uses session-scoped adapters; without this,
+            # the first message can race the fire-and-forget parent reload and
+            # still run with a pre-guardrail PermissionInterruptRail (or none).
+            try:
+                self._agent_manager.mark_session_adapters_stale_for_config(get_config())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[AgentWebSocketServer] eager permissions session stale-mark failed: %s",
+                    exc,
+                )
+
             # 后台异步重载: 不阻塞权限 RPC 回包(避免 reload 慢导致 AgentServer
             # request timed out)。reload_agents_config 内部有 _reload_lock 串行化
             # + fingerprint 去重,fire-and-forget 安全。
-            reload_task = asyncio.create_task(
-                self._agent_manager.reload_agents_config(get_config(), None)
-            )
+            # IMPORTANT: pass config=None so get_config() is read when the task
+            # actually runs. Capturing get_config() at schedule time can apply a
+            # stale snapshot (e.g. tools.update while permissions.enabled was
+            # still false) after a later enable toggle, undoing the guardrail
+            # on the current task until the user clicks "new task".
+            async def _reload_permissions_from_disk() -> None:
+                await self._agent_manager.reload_agents_config(None, None)
+
+            reload_task = asyncio.create_task(_reload_permissions_from_disk())
             _background_permission_reload_tasks.add(reload_task)
             reload_task.add_done_callback(_background_permission_reload_tasks.discard)
             reload_task.add_done_callback(_log_permission_reload_failure)
