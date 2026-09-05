@@ -528,8 +528,10 @@ function getDocumentValidationError(
   if (file && !isDocumentFile(file)) {
     return t('chat.inputAttachment.unsupportedFileType', { name: filename });
   }
-  if (!getLocalFilePath(file, options?.localPath)) {
-    return t('chat.inputAttachment.localPathUnavailable', { name: filename });
+  // Browser/Web (Docker) uploads carry file bytes as base64; desktop native
+  // pickers may also supply a local path. A real file is required in either case.
+  if (!file && !options?.localPath) {
+    return t('chat.inputAttachment.unsupportedFileType', { name: filename });
   }
   return null;
 }
@@ -1127,42 +1129,60 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     updateAttachment(attachment.id, { status: 'uploading', error: undefined });
 
-    // Documents: validate local path only — no base64 transfer / no disk persist / no parse.
+    // Documents: browser/Web (Docker) uploads carry file bytes as base64 and are
+    // persisted to the session uploads dir; desktop native pickers may instead
+    // supply an existing local absolute path.
     if (attachment.kind === 'document') {
       const localPath = getLocalFilePath(attachment.file, attachment.localPath);
-      if (!localPath) {
-        const error = t('chat.inputAttachment.localPathUnavailable', { name: attachment.filename || t('chat.inputAttachment.unnamedFile') });
+      const hasBase64 = Boolean(attachment.base64Data);
+      if (!localPath && !hasBase64 && !attachment.file) {
+        const error = t('chat.inputAttachment.unsupportedFileType', { name: attachment.filename || t('chat.inputAttachment.unnamedFile') });
         pushAttachmentAlert(error);
         updateAttachment(attachment.id, { status: 'error', error });
         return;
       }
       void (async () => {
+        let base64Data = hasBase64 ? attachment.base64Data : undefined;
+        if (!localPath && !base64Data && attachment.file) {
+          const payload = await readBinaryFileAsBase64(attachment.file);
+          base64Data = payload?.base64Data;
+        }
+        if (!localPath && !base64Data) {
+          const error = t('chat.inputAttachment.uploadFailed');
+          pushAttachmentAlert(error);
+          updateAttachment(attachment.id, { status: 'error', error });
+          return;
+        }
+        const docItem: Record<string, unknown> = {
+          type: 'document',
+          mimeType: attachment.mimeType,
+          filename: attachment.filename,
+          sizeBytes: attachment.size,
+          size_bytes: attachment.size,
+        };
+        if (localPath) {
+          docItem.path = localPath;
+          docItem.original_path = localPath;
+        } else if (base64Data) {
+          docItem.base64Data = base64Data;
+        }
         if (!canPersistAttachments) {
           updateAttachment(attachment.id, {
             persistedMediaItem: {
               type: 'document',
               filename: attachment.filename,
               mime_type: attachment.mimeType,
-              path: localPath,
-              original_path: localPath,
+              ...(localPath ? { path: localPath, original_path: localPath } : { base64Data }),
               size_bytes: attachment.size,
             },
+            ...(base64Data ? { base64Data } : {}),
             status: 'ready',
             error: undefined,
           });
           return;
         }
         try {
-          const persisted = await onPersistDocuments('', [
-            {
-              type: 'document',
-              mimeType: attachment.mimeType,
-              filename: attachment.filename,
-              path: localPath,
-              sizeBytes: attachment.size,
-              size_bytes: attachment.size,
-            },
-          ]);
+          const persisted = await onPersistDocuments('', [docItem as unknown as MediaItem]);
           const persistedMediaItem = persisted.media_items?.[0];
           if (!persistedMediaItem || !pickString(persistedMediaItem.path)) {
             throw new Error('document.persist did not return document path');
@@ -1405,9 +1425,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const openAttachmentPicker = useCallback(async () => {
     if (imageInputDisabled) return;
     setAttachMenuOpen(false);
-    // 文档上传依赖本机绝对路径：桌面 pywebview 或浏览器后端 path.select_files。
-    // 不要回落 HTML <input type="file">，浏览器拿不到 File.path，只会得到
-    // 「无法获取本地文件路径」的假失败。
+    // 桌面 pywebview 优先走原生选择器（返回带本地绝对路径的 picks）。
+    // 浏览器 / 远程 Web（Docker、无头 Linux）后端原生选择器不可用（返回
+    // unsupported），回落浏览器自带 <input type="file">：选中的 File 由
+    // uploadAttachment 读取为 base64 走 document.persist / media.persist
+    // 落盘到会话 uploads 目录，不再依赖本机绝对路径。
     const result = await selectLocalFiles(true);
     if (result.ok) {
       appendLocalFilePicks(result.files);
@@ -1416,10 +1438,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (result.reason === 'cancelled') {
       return;
     }
+    if (result.reason === 'unsupported') {
+      // 无头环境：改用浏览器文件选择器（客户端选文件，字节经 base64 上传）。
+      fileInputRef.current?.click();
+      return;
+    }
     const hint =
-      result.reason === 'unsupported'
-        ? t('chat.inputAttachment.filePickerUnsupported')
-        : (result.message || t('chat.inputAttachment.filePickerFailed'));
+      result.message || t('chat.inputAttachment.filePickerFailed');
     pushAttachmentAlert(hint);
   }, [appendLocalFilePicks, imageInputDisabled, pushAttachmentAlert, t]);
 

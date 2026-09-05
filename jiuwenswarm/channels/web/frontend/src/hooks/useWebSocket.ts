@@ -1333,13 +1333,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           documents: mediaItems.map((item) => ({
             filename: item.filename,
             mime_type: getMediaMimeType(item),
-            path: item.path,
-            original_path: item.path,
+            ...(item.path ? { path: item.path, original_path: item.path } : {}),
+            ...(item.base64Data ? { base64_data: item.base64Data } : {}),
             size_bytes: item.size_bytes ?? item.sizeBytes,
           })),
         },
-        // Path validation only — no base64 transfer / parse
-        { timeoutMs: 30_000 },
+        // Browser/Web (Docker) documents carry bytes as base64_data and are
+        // persisted by the server to the session uploads dir; desktop native
+        // pickers instead supply an existing local path.
+        { timeoutMs: 120_000 },
       );
     },
     [request],

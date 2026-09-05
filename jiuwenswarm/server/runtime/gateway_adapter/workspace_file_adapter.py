@@ -170,6 +170,11 @@ class WorkspaceFileAdapter(GatewayAdapter):
     async def _handle_document_persist(self, request: AgentRequest) -> AgentResponse:
         params = request.params if isinstance(request.params, dict) else {}
         normalized = dict(params)
+        # base64 文档需要会话目录（agent/sessions/<sid>/uploads）落盘；与
+        # _handle_media_persist 一致，显式注入 Gateway 解析出的 session_id，
+        # 避免依赖前端 params 里是否携带该键。
+        if not normalized.get("session_id") and request.session_id:
+            normalized["session_id"] = request.session_id
         try:
             # 文档校验含逐条 path.is_file/stat 同步 IO，放线程池避免阻塞事件循环。
             await asyncio.to_thread(persist_and_parse_documents, normalized)
