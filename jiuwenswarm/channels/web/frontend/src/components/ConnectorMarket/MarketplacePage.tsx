@@ -10,7 +10,12 @@ import { MyMarketCard } from './MyMarketCard';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import type { ConnectorConnectResponse } from '../../types/connector';
-import { deriveCardState, derivePluginCardState, deriveMcpAvailability, cardStateToStatusFilter } from './mcpState';
+import {
+  canOpenMcpDetail,
+  cardStateToStatusFilter,
+  deriveCardState,
+  derivePluginCardState,
+} from './mcpState';
 import { useClickOutside } from './useClickOutside';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
 import { CategoryTabs, PageHeader, PageToolbarSearch } from '../ui';
@@ -552,9 +557,8 @@ export function MarketplacePage({
           myKind === 'mcp' ? (
             paginatedConnectors.map((connector) => {
               const cs = mcpCardStates[connector.name];
-              // "我的MCP"卡片列表可达性：customize（我的MCP）恒可达，built_in 一旦不是从未
-              // 连接过的 idle 态也可达——见 mcpState.ts deriveMcpAvailability。
-              const { installed: mcpInstalled } = deriveMcpAvailability(connector.source, cs);
+              // 可达性由安装状态和连接状态共同决定；连接中的卡片不能打开详情页。
+              const canOpenDetail = canOpenMcpDetail(connector.source, cs);
               return (
                 <MyMarketCard
                   key={connector.name}
@@ -565,7 +569,7 @@ export function MarketplacePage({
                   state={cs}
                   busyKind={busyMap[connector.name]}
                   onOpenDetail={() => onOpenConnectorDetail(connector.name)}
-                  canOpenDetail={mcpInstalled}
+                  canOpenDetail={canOpenDetail}
                   onUse={() => onUse({ kind: 'mcp', id: connector.name })}
                   onQuickInstall={cs === 'connected' ? undefined : () => handleConnectorQuickAdd(connector.name)}
                 />
@@ -597,7 +601,7 @@ export function MarketplacePage({
         ) : topTab === 'mcp' ? (
           paginatedConnectors.map((connector) => {
             const cs = mcpCardStates[connector.name];
-            const { installed: mcpInstalled } = deriveMcpAvailability(connector.source, cs);
+            const canOpenDetail = canOpenMcpDetail(connector.source, cs);
             return (
               <MarketCard
                 key={connector.name}
@@ -607,7 +611,7 @@ export function MarketplacePage({
                 iconUrl={connector.icon ?? undefined}
                 state={cs}
                 busyKind={busyMap[connector.name]}
-                canOpenDetail={mcpInstalled}
+                canOpenDetail={canOpenDetail}
                 onOpenDetail={() => onOpenConnectorDetail(connector.name)}
                 onQuickAdd={() => handleConnectorQuickAdd(connector.name)}
                 onUse={() => onUse({ kind: 'mcp', id: connector.name })}

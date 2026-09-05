@@ -89,6 +89,14 @@ export function deriveMcpAvailability(
   return { installed: source === 'customize' || state !== 'idle', linked: state === 'connected' };
 }
 
+// 连接过程中卡片只展示进度反馈，详情页此时没有可执行操作，也不应响应卡片点击。
+export function canOpenMcpDetail(
+  source: ConnectorSummary['source'],
+  state: McpCardState,
+): boolean {
+  return state !== 'connecting' && deriveMcpAvailability(source, state).installed;
+}
+
 // 插件侧的卡片态派生。插件没有 connectionState 多值模型（plugin_packages.* 只有 installed boolean，
 // 没有连接中/连接失败态），但 MarketCard 是插件和 MCP 共用的展示壳，需要把插件的 installed/
 // connected 归一到同一套 McpCardState。插件恒不会进 connecting/error 分支。
