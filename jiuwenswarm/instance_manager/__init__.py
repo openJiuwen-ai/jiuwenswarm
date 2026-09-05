@@ -53,6 +53,7 @@ from jiuwenswarm.instance_manager.config import (
     is_port_available,
     PORT_ENV_NAMES,
     PORT_ENV_OVERRIDES,
+    pinned_port_types,
 )
 
 # YAML management from yaml
@@ -123,6 +124,7 @@ __all__ = [
     "find_available_ports",
     "PORT_ENV_NAMES",
     "PORT_ENV_OVERRIDES",
+    "pinned_port_types",
     # YAML management
     "get_instances_yaml_path",
     "get_instances_dir",
