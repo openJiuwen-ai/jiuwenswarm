@@ -14,6 +14,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     get_read_history_path,
     history_exists,
     load_history_records,
+    resolve_session_dir,
     write_history_records,
     _write_records_to_path,
 )
@@ -85,8 +86,20 @@ def fork_session(
     channel_id: str = "tui",
 ) -> dict[str, Any]:
     sessions_dir = get_agent_sessions_dir()
-    source_dir = sessions_dir / source_session_id
-    target_dir = sessions_dir / target_session_id
+    # session.fork is reachable through the AgentServer RPC boundary. Resolve
+    # both IDs before touching the filesystem so a caller cannot use an
+    # absolute or parent-traversing component to read outside the sessions
+    # root or create a directory elsewhere on the host.
+    source_dir, source_error = resolve_session_dir(
+        source_session_id, create=False, sessions_root=sessions_dir
+    )
+    target_dir, target_error = resolve_session_dir(
+        target_session_id, create=False, sessions_root=sessions_dir
+    )
+    if source_dir is None:
+        raise ValueError(source_error or "invalid source_session_id")
+    if target_dir is None:
+        raise ValueError(target_error or "invalid target_session_id")
 
     if not source_dir.exists():
         raise ValueError("source session not found")
