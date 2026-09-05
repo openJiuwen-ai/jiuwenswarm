@@ -936,6 +936,12 @@ channels:
     allow_from: []
     # 是否关闭私信功能
     block_dm: false
+    # What the bot answers in server channels (direct messages are never affected):
+    #   all     - every message in the channel
+    #   mention - only messages mentioning the bot (default)
+    #   reply   - the above, plus replies to the bot's own messages
+    #   off     - nothing in server channels
+    group_chat_mode: mention
     enabled: false
   slack:
     # Slack Bot via Socket Mode. Tokens are created in the Slack app settings.
