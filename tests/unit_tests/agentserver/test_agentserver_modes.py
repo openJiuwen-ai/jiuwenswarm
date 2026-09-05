@@ -59,16 +59,23 @@ def _is_regular_skill_evolution_rail(rail):
     ("raw_mode", "expected"),
     [
         ("team", ("team", None, "team")),
+        # MACRO / Web lanes preserve their canonical labels while manager mode
+        # stays compatible with the underlying agent implementation.
         ("agent", ("agent", None, "agent")),
-        ("plan", ("agent", None, "agent")),
+        ("plan", ("agent", None, "agent.plan")),
+        ("agent.plan", ("agent", "plan", "agent.plan")),
         ("fast", ("agent", None, "agent")),
-        ("code", ("code", "normal", "code.normal")),
         ("agent.fast", ("agent", None, "agent")),
+        ("code", ("code", "normal", "code.normal")),
         ("code.plan", ("code", "plan", "code.plan")),
         ("code.team", ("code", "team", "code.team")),
         ("team.plan", ("team", "plan", "team.plan.normal")),
         ("team.plan.normal", ("team", "plan", "team.plan.normal")),
         ("team.plan.code", ("code", "team", "team.plan.code")),
+        # Auto aliases stay canonical "auto" so the adapter can schedule later.
+        ("auto", ("auto", None, "auto")),
+        ("agent.auto", ("auto", None, "auto")),
+        ("macro.auto", ("auto", None, "auto")),
         (None, ("agent", None, "agent")),
     ],
 )
@@ -80,6 +87,7 @@ def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(raw_mode, e
     ("raw_mode", "work_mode", "expected"),
     [
         ("agent", "code", ("code", "normal", "code.normal")),
+        ("auto", "code", ("auto", None, "auto")),
         ("code.normal", "work", ("agent", None, "agent")),
         ("code.plan", "code", ("code", "plan", "code.plan")),
         ("team", "code", ("team", None, "team")),
@@ -94,6 +102,118 @@ def test_resolve_agent_request_mode_aligns_single_agent_with_work_mode(
         raw_mode,
         work_mode=work_mode,
     ) == expected
+
+
+def test_agent_manager_mode_maps_auto_to_agent_instance():
+    assert agent_ws_server_module._agent_manager_mode_for_request("auto") == "agent"
+    assert agent_ws_server_module._agent_manager_mode_for_request("auto_harness") == "agent"
+    assert agent_ws_server_module._agent_manager_mode_for_request("team") == "team"
+    assert agent_ws_server_module._agent_manager_mode_for_request("agent") == "agent"
+
+
+@pytest.mark.asyncio
+async def test_early_macro_then_compose_auto_code_to_code_normal(monkeypatch):
+    """Auto + work_mode=code must land on CodeAdapter after MACRO → agent."""
+    from jiuwenswarm.agents.harness.macro_routing.schemas import MacroRoutingDecision
+    from jiuwenswarm.common.mode_matrix import resolve_request_mode
+
+    async def fake_route(query, *, requested_mode, config_base=None):
+        del query, requested_mode, config_base
+        return MacroRoutingDecision(
+            mode="agent",
+            confidence=0.95,
+            rationale="unit-test agent",
+            source="llm",
+            features={},
+            gate_confident=True,
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.macro_routing.route_macro_mode",
+        fake_route,
+    )
+    request = AgentRequest(
+        request_id="req-auto-code-agent",
+        channel_id="tui",
+        params={
+            "mode": "auto",
+            "work_mode": "code",
+            "query": "Fix a UnicodeDecodeError in requests sessions.py",
+        },
+    )
+    routing = await agent_ws_server_module._resolve_auto_macro_lane_for_request(request)
+    assert routing is not None
+    assert routing["mode"] == "agent"
+    assert routing["source"] == "llm"
+    assert request.params["mode"] == "agent"
+    assert request.params["macro_mode_requested"] == "auto"
+
+    resolved = resolve_request_mode(
+        request.params,
+        agent_ws_server_module.resolve_agent_request_mode,
+        work_mode="code",
+    )
+    assert resolved.manager_mode == "code"
+    assert resolved.sub_mode == "normal"
+    assert resolved.canonical_mode == "code.normal"
+    assert resolved.is_code_profile is True
+
+
+@pytest.mark.asyncio
+async def test_early_macro_then_compose_auto_code_to_code_team(monkeypatch):
+    """Auto + work_mode=code must land on code.team after MACRO → team."""
+    from jiuwenswarm.agents.harness.macro_routing.schemas import MacroRoutingDecision
+    from jiuwenswarm.common.mode_matrix import resolve_request_mode
+
+    async def fake_route(query, *, requested_mode, config_base=None):
+        del query, requested_mode, config_base
+        return MacroRoutingDecision(
+            mode="team",
+            confidence=0.9,
+            rationale="unit-test team",
+            source="llm",
+            features={},
+            gate_confident=True,
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.macro_routing.route_macro_mode",
+        fake_route,
+    )
+    request = AgentRequest(
+        request_id="req-auto-code-team",
+        channel_id="tui",
+        params={
+            "mode": "auto",
+            "work_mode": "code",
+            "query": "Spawn a team of agents to ship a full-stack feature in parallel",
+        },
+    )
+    routing = await agent_ws_server_module._resolve_auto_macro_lane_for_request(request)
+    assert routing is not None
+    assert routing["mode"] == "team"
+
+    resolved = resolve_request_mode(
+        request.params,
+        agent_ws_server_module.resolve_agent_request_mode,
+        work_mode="code",
+    )
+    assert resolved.manager_mode == "code"
+    assert resolved.sub_mode == "team"
+    assert resolved.canonical_mode == "code.team"
+    assert resolved.is_team is True
+
+
+@pytest.mark.asyncio
+async def test_early_macro_skips_without_query():
+    request = AgentRequest(
+        request_id="req-auto-no-query",
+        channel_id="tui",
+        params={"mode": "auto", "work_mode": "code"},
+    )
+    routing = await agent_ws_server_module._resolve_auto_macro_lane_for_request(request)
+    assert routing is None
+    assert request.params["mode"] == "auto"
 
 
 def test_team_plan_params_are_team_mode():

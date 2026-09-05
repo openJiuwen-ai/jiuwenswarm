@@ -238,6 +238,9 @@ def resolve_agent_request_mode(
         work_mode.strip().lower() if isinstance(work_mode, str) else ""
     )
 
+    if mode_text in {"auto", "agent.auto", "macro.auto"}:
+        return "auto", None, "auto"
+
     if mode_text in ("plan", "fast"):
         if normalized_work_mode == "code":
             return "code", "normal", "code.normal"
@@ -282,6 +285,13 @@ def resolve_agent_request_mode(
     return mode, sub_mode, canonical_mode
 
 
+def agent_manager_mode_for_request(mode: str) -> str:
+    """Map virtual request modes onto concrete AgentManager lanes."""
+    if mode in {"auto", "auto_harness"}:
+        return "agent"
+    return mode
+
+
 def resolve_request_runtime_mode(
     request: AgentRequest,
     *,
@@ -312,6 +322,63 @@ def apply_resolved_mode_to_request(
     return resolved.manager_mode, resolved.sub_mode
 
 
+def _chat_turn_query_text(params: dict[str, Any]) -> str:
+    for key in ("query", "content"):
+        raw = params.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return ""
+
+
+async def resolve_auto_macro_lane_for_request(
+    request: AgentRequest,
+) -> dict[str, Any] | None:
+    """Classify Auto before work-profile composition and agent selection."""
+    from jiuwenswarm.agents.harness.macro_routing import (
+        is_auto_mode,
+        macro_mode_label,
+        normalize_macro_mode,
+        route_macro_mode,
+    )
+    from jiuwenswarm.common.config import get_config
+
+    params = request.params if isinstance(request.params, dict) else {}
+    requested = str(params.get("mode") or "").strip()
+    if not is_auto_mode(requested):
+        return None
+    query = _chat_turn_query_text(params)
+    if not query:
+        return None
+
+    decision = await route_macro_mode(
+        query,
+        requested_mode=requested,
+        config_base=get_config(),
+    )
+    resolved = normalize_macro_mode(decision.mode)
+    decision.mode = resolved
+    routing = decision.to_dict()
+
+    params = dict(params)
+    params["mode"] = resolved
+    params["macro_mode_requested"] = "auto"
+    params["macro_routing"] = routing
+    request.params = params
+    request.metadata = dict(request.metadata or {})
+    request.metadata["macro_routing"] = routing
+    request.metadata["mode"] = resolved
+    logger.info(
+        "[MacroRouter] Selected (pre-adapter): %s (%s) conf=%.2f "
+        "source=%s rationale=%s",
+        macro_mode_label(resolved),
+        resolved,
+        decision.confidence,
+        decision.source,
+        decision.rationale,
+    )
+    return routing
+
+
 async def prepare_chat_turn(
     agent_manager: AgentManager,
     request: AgentRequest,
@@ -324,6 +391,11 @@ async def prepare_chat_turn(
     params = request.params if isinstance(request.params, dict) else {}
     raw_mode = params.get("mode")
     explicit_mode_provided = isinstance(raw_mode, str) and bool(raw_mode.strip())
+    original_ui_mode = (
+        canonicalize_mode_text(raw_mode) if explicit_mode_provided else ""
+    )
+    if explicit_mode_provided and not hasattr(request, "_original_mode"):
+        setattr(request, "_original_mode", original_ui_mode)
     runtime_work_mode = None
     session_metadata: dict[str, Any] = {}
     session_id = str(request.session_id or "").strip()
@@ -388,11 +460,16 @@ async def prepare_chat_turn(
             )
 
     params["work_mode"] = runtime_work_mode
+    from jiuwenswarm.agents.harness.macro_routing import is_auto_mode
+
+    auto_requested = is_auto_mode(params.get("mode"))
+    await resolve_auto_macro_lane_for_request(request)
+    params = request.params if isinstance(request.params, dict) else {}
     mode, sub_mode = apply_resolved_mode_to_request(
         request,
         work_mode=runtime_work_mode,
     )
-    agent_mode = "agent" if mode == "auto_harness" else mode
+    agent_mode = agent_manager_mode_for_request(mode)
     requested_project_dir = resolve_request_project_dir(
         request,
         include_legacy_fallbacks=mode not in {"agent", "code"},
@@ -400,11 +477,12 @@ async def prepare_chat_turn(
     canonical_mode = (
         request.params.get("mode") if isinstance(request.params, dict) else None
     )
+    sync_mode = "auto" if auto_requested else (canonical_mode if canonical_mode else mode)
     if sync_metadata:
         project_dir = metadata_sync(
             request,
             requested_project_dir,
-            canonical_mode if canonical_mode else mode,
+            sync_mode,
             explicit_mode_provided=explicit_mode_provided,
             user_id=str(getattr(request, "user_id", "") or "").strip(),
         )
@@ -511,7 +589,7 @@ async def cancel_request(
             mode_param,
             work_mode=params.get("work_mode"),
         )
-        agent_mode = "agent" if mode == "auto_harness" else mode
+        agent_mode = agent_manager_mode_for_request(mode)
         agent = agent_manager.get_agent_nowait(
             channel_id,
             mode=agent_mode,
@@ -541,7 +619,7 @@ async def cancel_request(
 
     if agent is None:
         mode, sub_mode = apply_resolved_mode_to_request(request)
-        agent_mode = "agent" if mode == "auto_harness" else mode
+        agent_mode = agent_manager_mode_for_request(mode)
         agent = await agent_manager.get_agent(
             channel_id=channel_id,
             mode=agent_mode,
@@ -556,10 +634,12 @@ async def cancel_request(
 __all__ = [
     "CHAT_TURN_METHODS",
     "PREVIOUS_SESSION_MODE_KEY",
+    "agent_manager_mode_for_request",
     "apply_resolved_mode_to_request",
     "cancel_request",
     "prepare_chat_turn",
     "resolve_agent_request_mode",
+    "resolve_auto_macro_lane_for_request",
     "resolve_request_project_dir",
     "resolve_request_runtime_mode",
     "sync_chat_request_metadata",

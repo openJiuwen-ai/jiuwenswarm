@@ -25,7 +25,12 @@ import {
 } from "./types.js";
 import type { ConnectionStatus } from "./ws-client.js";
 import { createId, findLastIndex, isIgnorableHistoryRestoreError } from "./app-state-helpers.js";
-import { isClientMode, normalizeToClientMode, type ClientMode } from "./modes.js";
+import {
+  normalizeMacroLaneMode,
+  normalizeToClientMode,
+  type ClientMode,
+  type MacroLaneMode,
+} from "./modes.js";
 import type { WorkflowRun } from "./workflows.js";
 
 type PreferredLanguage = "zh" | "en";
@@ -125,6 +130,7 @@ export interface AppEventDelegate {
   setSessionId(sessionId: string): void;
   setMode(mode: ClientMode): void;
   getMode(): ClientMode;
+  setLastMacroRoutedMode(mode: MacroLaneMode | null): void;
   getPreferredLanguage(): PreferredLanguage;
   getEntries(): HistoryItem[];
   setEntries(entries: HistoryItem[]): void;
@@ -1119,6 +1125,33 @@ function handleWorkflowUpdated(
   return true;
 }
 
+function handleMacroRouting(
+  delegate: AppEventDelegate,
+  payload: Record<string, unknown>,
+  sessionId: string,
+): boolean {
+  const routing =
+    payload.routing && typeof payload.routing === "object" && !Array.isArray(payload.routing)
+      ? (payload.routing as Record<string, unknown>)
+      : payload;
+  const lane = normalizeMacroLaneMode(routing.mode) ?? normalizeMacroLaneMode(payload.mode) ?? "agent";
+  delegate.setLastMacroRoutedMode(lane);
+  const confidence =
+    typeof routing.confidence === "number" && Number.isFinite(routing.confidence)
+      ? Math.round(routing.confidence * 100)
+      : null;
+  const label = lane === "team" ? "Cluster" : "Agent";
+  const confPart = confidence === null ? "" : ` (${confidence}%)`;
+  appendEntry(delegate, {
+    kind: "info",
+    id: createId("macro-routing"),
+    sessionId,
+    content: `Auto → ${label}${confPart}`,
+    at: new Date().toISOString(),
+  });
+  return true;
+}
+
 export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFrame): boolean {
   const connectionChanged = handleConnectionAck(delegate, frame);
 
@@ -1136,6 +1169,9 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
   switch (effectiveEvent) {
     case "chat.delta":
       return handleDelta(delegate, payload, activeSessionId) || connectionChanged;
+
+    case "macro.routing":
+      return handleMacroRouting(delegate, payload, activeSessionId) || connectionChanged;
 
     case "chat.final":
       return handleFinal(delegate, payload, activeSessionId) || connectionChanged;
@@ -1376,9 +1412,10 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
       const mode = typeof payload.mode === "string" ? payload.mode : "";
       // 后端推送可能仍带旧 canonical 串（历史 session / cron 拓扑），
       // 走 normalizeToClientMode 归一到新 canonical 再 setMode，避免
-      // isClientMode 拒收导致 UI mode 与后端真实状态错位。
+      // UI mode 与后端真实状态错位。Auto 保持本地选择，后端回显的实际
+      // agent/team lane 只由 macro.routing 更新 lastMacroRoutedMode。
       const normalized = normalizeToClientMode(mode);
-      if (normalized) {
+      if (normalized && delegate.getMode() !== "auto") {
         delegate.setMode(normalized);
       }
       if (typeof payload.title === "string") {

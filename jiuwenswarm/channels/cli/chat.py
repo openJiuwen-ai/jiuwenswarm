@@ -43,6 +43,7 @@ from jiuwenswarm.channels.cli._terminal import write_stderr, write_stdout
 from jiuwenswarm.channels.cli.gateway_client import GatewayClient
 from jiuwenswarm.channels.cli.events import (
     event_kind,
+    extract_macro_routing,
     is_content_final,
     is_terminal_event,
     needs_user_input,
@@ -261,6 +262,8 @@ MODE_ALIASES: dict[str, str] = {
     "fast": "agent",
     "code": "code.normal",
     "team.plan": "team.plan.normal",
+    "agent.auto": "auto",
+    "macro.auto": "auto",
 }
 
 # plan / fast 已合并为单一 agent 模式；agent.plan / agent.fast 作为历史别名仍可接受，归一到 agent。
@@ -268,7 +271,7 @@ MODE_ALIASES: dict[str, str] = {
 # 它们是既成 canonical，resolve_mode 原样放行、不做归一化。
 VALID_MODES = frozenset({
     "agent", "agent.plan", "agent.fast", "code.plan", "code.normal", "code.team", "team",
-    "team.plan", "team.plan.normal", "team.plan.code",
+    "team.plan", "team.plan.normal", "team.plan.code", "auto",
 }) | set(NEW_CANONICAL_MODES)
 
 # Sources that require the answer to be sent via ``chat.send`` (streaming) to
@@ -279,6 +282,24 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "ask_user_interrupt",
     "evolution_interrupt",
 })
+
+
+def _apply_macro_routing_event(
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    team_mode: bool,
+    announce: bool = False,
+) -> bool:
+    """Update the effective CLI lane when an Auto routing event arrives."""
+    routing = extract_macro_routing(event_type, payload)
+    if routing is None:
+        return team_mode
+    chosen = str(routing.get("mode") or payload.get("mode") or "").strip().lower()
+    if announce:
+        source = str(routing.get("source") or "unknown")
+        write_stderr(f"\n[MACRO] selected {chosen or 'agent'} ({source})\n")
+    return chosen == "team"
 
 
 def resolve_mode(raw: str) -> str:
@@ -317,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--mode", default="code.normal",
-        help="Execution mode: agent|code|team|team.plan|team.plan.normal|team.plan.code|"
+        help="Execution mode: auto|agent|code|team|team.plan|team.plan.normal|team.plan.code|"
              "code.plan|code.normal|code.team|agent.work.normal|agent.work.plan|"
              "agent.code.normal|agent.code.plan|team.work.normal|team.work.plan|"
              "team.code.normal|team.code.plan"
@@ -695,6 +716,12 @@ async def _run_interactive_loop(
             event_type = data.get("event", "")
             payload = data.get("payload", {})
             kind = event_kind(event_type)
+            team_mode = _apply_macro_routing_event(
+                event_type,
+                payload,
+                team_mode=team_mode,
+                announce=True,
+            )
 
             # Any event arriving during the team idle-watch window means
             # the team is still active (member tool calls, reasoning, etc.).
@@ -963,6 +990,11 @@ async def _run_jsonl_loop(
             continue
         event_type = data.get("event", "")
         payload = data.get("payload", {})
+        team_mode = _apply_macro_routing_event(
+            event_type,
+            payload,
+            team_mode=team_mode,
+        )
         renderer.handle_event(event_type, payload)
         if needs_user_input(event_type) and not _request_supports_user_interaction(request):
             logger.error(
@@ -1000,6 +1032,11 @@ async def _run_json_loop(
             continue
         event_type = data.get("event", "")
         payload = data.get("payload", {})
+        team_mode = _apply_macro_routing_event(
+            event_type,
+            payload,
+            team_mode=team_mode,
+        )
         if event_type == "chat.final":
             # team.error is wrapped in chat.final by the gateway; route it
             # through the error path so has_error is set and the JSON output

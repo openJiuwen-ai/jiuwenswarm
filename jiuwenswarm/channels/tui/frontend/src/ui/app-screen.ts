@@ -59,7 +59,12 @@ import type { McpListItem, McpListPayload } from "../core/commands/builtins/mcp.
 import { buildModeAutocompleteItems } from "../core/commands/builtins/mode.js";
 import { MemoryViewController, type MemoryViewTab } from "./memory-view.js";
 import { PIPELINE_VALUES, PIPELINE_OPTIONS, INTERVAL_VALUES, INTERVAL_OPTIONS, FLAG_OPTIONS } from "../core/commands/builtins/auto-harness.js";
-import { formatModeForDisplay, isTeamMode, normalizeToClientMode } from "../core/modes.js";
+import {
+  formatModeForDisplay,
+  isEffectiveTeamMode,
+  isTeamMode,
+  normalizeToClientMode,
+} from "../core/modes.js";
 import {
   countWaitingForHuman,
   sessionTurnLabelNumber,
@@ -2603,7 +2608,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (!pendingQuestion && snapshot.cancellableWork && isCancelWorkKey) {
-      if (isTeamMode(snapshot.mode)) {
+      if (isEffectiveTeamMode(snapshot.mode, snapshot.lastMacroRoutedMode)) {
         this.state.pause();
       } else {
         this.state.cancel();
@@ -3188,7 +3193,7 @@ export class AppScreen implements Component, Focusable {
 
     const snapshot = this.state.getSnapshot();
     const teamWorking =
-      isTeamMode(snapshot.mode) &&
+      isEffectiveTeamMode(snapshot.mode, snapshot.lastMacroRoutedMode) &&
       isTeamWorking(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
     this.editor.borderColor = snapshot.pendingQuestion
       ? palette.border.question
@@ -3712,7 +3717,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     // Team 模式持续对话走 chat.send（interact），不通过 supplement 中断当前 stream。
-    if ((snapshot.isProcessing || snapshot.isPaused) && !isTeamMode(snapshot.mode)) {
+    if ((snapshot.isProcessing || snapshot.isPaused) && !isEffectiveTeamMode(snapshot.mode, snapshot.lastMacroRoutedMode)) {
       this.beginPendingSubmittedInput(text, snapshot);
       const requestId = this.state.supplement(content, attachments);
       if (!requestId) {
@@ -9276,7 +9281,7 @@ export class AppScreen implements Component, Focusable {
       (execution) => execution.tool.status === "running",
     );
     const teamWorking =
-      isTeamMode(snapshot.mode) &&
+      isEffectiveTeamMode(snapshot.mode, snapshot.lastMacroRoutedMode) &&
       isTeamWorking(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
     const teamStartedAt = teamWorkingStartedAtMs(
       snapshot.teamMemberEvents,

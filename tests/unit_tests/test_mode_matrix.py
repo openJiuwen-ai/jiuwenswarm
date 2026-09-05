@@ -269,7 +269,7 @@ def test_new_canonical_ignores_supplemented_work_mode(mode, work_mode, expected)
         ("agent", ("agent", None, "agent")),
         ("agent.plan", ("agent", "plan", "agent.plan")),
         ("agent.fast", ("agent", None, "agent")),
-        ("plan", ("agent", None, "agent")),
+        ("plan", ("agent", None, "agent.plan")),
         ("code.normal", ("code", "normal", "code.normal")),
         ("code.plan", ("code", "plan", "code.plan")),
         ("code.team", ("code", "team", "code.team")),

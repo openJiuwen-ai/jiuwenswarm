@@ -34,6 +34,21 @@ def needs_user_input(event_type: str) -> bool:
     return event_type in ("chat.ask_user_question", "plan.approval_required")
 
 
+def extract_macro_routing(
+    event_type: str,
+    payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return MACRO Auto routing payload, or None if this event is not routing."""
+    data = payload if isinstance(payload, dict) else {}
+    inner = str(data.get("event_type") or "")
+    if event_type != "macro.routing" and inner != "macro.routing":
+        return None
+    routing = data.get("routing")
+    if isinstance(routing, dict):
+        return routing
+    return data
+
+
 def event_kind(event_type: str) -> str:
     if event_type in ("chat.delta",):
         return "delta"
@@ -51,6 +66,8 @@ def event_kind(event_type: str) -> str:
         return "interactive"
     if event_type in ("chat.processing_status",):
         return "processing_status"
+    if event_type == "macro.routing":
+        return "macro_routing"
     if event_type.startswith("chat.") or event_type.startswith("plan."):
         return "chat"
     return "other"

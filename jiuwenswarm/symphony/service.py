@@ -52,7 +52,14 @@ class SwarmSymphonyService:
         config = load_symphony_config()
         skills_root = config.paths.skills_root
         graph_dir = config.paths.graph_dir
-        await self._repair_interrupted_build_state(graph_dir)
+        active_task = self._active_build_task
+        if active_task is None or active_task.done():
+            await self._repair_interrupted_build_state(graph_dir)
+        # Snapshot progress before yielding to the worker thread. Otherwise a
+        # process-local background build can advance several stages while
+        # graph_status() is waiting for its metadata read, producing a payload
+        # from two different points in time.
+        build_log_payload = _build_log_payload(graph_dir)
 
         def status() -> dict[str, Any]:
             payload = graph_status(
@@ -64,7 +71,7 @@ class SwarmSymphonyService:
                 llm_config=None,
                 symphony_config=config,
             ).to_dict()
-            payload.update(_build_log_payload(graph_dir))
+            payload.update(build_log_payload)
             _prefer_build_failure_detail(payload)
             return payload
 

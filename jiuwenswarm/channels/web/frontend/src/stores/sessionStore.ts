@@ -26,6 +26,7 @@ import {
   registerConfirmedTaskCreation,
   type TaskProgressBaseline,
 } from '../features/teamTaskProgressBaseline';
+import type { MacroLaneMode } from '../utils/agentMode';
 import type { AgentSelectionIntent } from '../features/agentManagement/types';
 import { isTeamAgentMode, stripPlanSuffix } from '../features/planMode/wireMode';
 import {
@@ -157,6 +158,10 @@ function normalizeAgentMode(mode: unknown): AgentMode {
   // 再归一化（旧 `team.plan.*` / `team.code.*` 已被上面的 isTeamAgentMode 拦截）。
   const normalized = stripPlanSuffix(mode.trim().toLowerCase());
   if (normalized === 'auto_harness') return 'auto_harness';
+  if (normalized === 'auto' || normalized === 'agent.auto' || normalized === 'macro.auto') {
+    return 'auto';
+  }
+  // agent.plan / agent.fast / bare agent → UI base mode Agent (Plan is a separate toggle).
   return 'agent';
 }
 
@@ -413,6 +418,8 @@ export interface TeamMemberExecutionEvent {
  */
 export interface SessionRuntime {
   mode: AgentMode;
+  /** Concrete MACRO lane chosen when UI mode is Auto (null until first route). */
+  lastMacroRoutedMode: MacroLaneMode | null;
   selectedModelName: string | null;
   projectDirectory: string | null;
   /** 新会话草稿值；真实 Session 创建后由后端 metadata 的权威值覆盖。 */
@@ -454,6 +461,7 @@ export interface SessionRuntime {
 function createEmptyRuntime(sessionId?: string): SessionRuntime {
   return {
     mode: loadModeFromStorage(),
+    lastMacroRoutedMode: null,
     selectedModelName: (() => {
       if (typeof localStorage === 'undefined') return null;
       try { return localStorage.getItem(MODEL_STORAGE_KEY); } catch { return null; }
@@ -519,6 +527,7 @@ interface SessionState {
 
   // B 类 actions（加 sessionId）
   setMode: (sessionId: string, mode: AgentMode) => void;
+  setLastMacroRoutedMode: (sessionId: string, mode: MacroLaneMode | null) => void;
   setProjectDirectory: (sessionId: string, directory: string | null) => void;
   setPersistSession: (sessionId: string, enabled: boolean) => void;
   setTeamTaskEvents: (sessionId: string, events: TeamTaskEvent[]) => void;
@@ -736,12 +745,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: {
             ...runtime,
             mode: normalizedMode,
+            // Clear stale Auto route when the user picks a concrete (or new Auto) mode.
+            lastMacroRoutedMode: null,
             contextUsageSnapshot: runtime.mode === normalizedMode ? runtime.contextUsageSnapshot : null,
             agentSelectionIntent,
             ...(closingSwarmflow
               ? { enableSwarmflow: false, swarmflowBudget: null }
               : {}),
           },
+        },
+      };
+    });
+  },
+
+  setLastMacroRoutedMode: (sessionId, mode) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, lastMacroRoutedMode: mode },
         },
       };
     });

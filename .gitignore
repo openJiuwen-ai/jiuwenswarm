@@ -97,6 +97,9 @@ reasonix.toml
 
 # Build-time Node runtime cache used by packaging scripts.
 vendor/node/
+
+# JiuwenSwarm runtime file operation logs
+.agent_history/
 /AGENTS.local.md
 report/index.html
 /tmp/

@@ -31,7 +31,13 @@ import {
   type HarnessExtensionReady,
   type HarnessActivateInteraction,
 } from "./core/event-handlers.js";
-import { isTeamMode, normalizeToClientMode, type ClientMode } from "./core/modes.js";
+import {
+  isEffectiveTeamMode,
+  isTeamMode,
+  normalizeToClientMode,
+  type ClientMode,
+  type MacroLaneMode,
+} from "./core/modes.js";
 import { isEventFrame, type EventFrame, type FileAttachment } from "./core/protocol.js";
 import {
   PLAN_ENTRY_SOURCE_SLASH_COMMAND,
@@ -133,6 +139,7 @@ export interface AppSnapshot {
   connectionStatus: ConnectionStatus;
   sessionId: string;
   mode: ClientMode;
+  lastMacroRoutedMode: MacroLaneMode | null;
   themeName: ThemeName;
   accentColor: AccentColorName;
   transcriptMode: "compact" | "detailed";
@@ -339,6 +346,8 @@ export class CliPiAppState {
   /** 普通启动的幂等创建 token；重连期间保持稳定。 */
   private readonly bootCreateToken = generateCreateToken();
   private mode: ClientMode = "agent.code.normal";
+  /** Last MACRO Auto lane; local mode stays "auto" so the next send still classifies. */
+  private lastMacroRoutedMode: MacroLaneMode | null = null;
   private themeName: ThemeName = getCurrentThemeName();
   private accentColor: AccentColorName = getCurrentAccentColor();
   private transcriptMode: "compact" | "detailed" = "compact";
@@ -511,8 +520,14 @@ export class CliPiAppState {
     },
     setMode: (mode) => {
       this.mode = mode;
+      if (mode !== "auto") {
+        this.lastMacroRoutedMode = null;
+      }
     },
     getMode: () => this.mode,
+    setLastMacroRoutedMode: (mode) => {
+      this.lastMacroRoutedMode = mode;
+    },
     getPreferredLanguage: () => this.preferredLanguage,
     getEntries: () => this.entries,
     setEntries: (entries) => {
@@ -1107,11 +1122,13 @@ export class CliPiAppState {
       hasActiveSubtasks ||
       this.evolutionStatus === "running" ||
       this.activeCommandRequestId !== null ||
-      (isTeamMode(this.mode) && isTeamWorking(this.teamMemberEvents, this.teamMessageEvents));
+      (isEffectiveTeamMode(this.mode, this.lastMacroRoutedMode) &&
+        isTeamWorking(this.teamMemberEvents, this.teamMessageEvents));
     return {
       connectionStatus: this.connectionStatus,
       sessionId: this.sessionId,
       mode: this.mode,
+      lastMacroRoutedMode: this.lastMacroRoutedMode,
       themeName: this.themeName,
       accentColor: this.accentColor,
       transcriptMode: this.transcriptMode,
@@ -2117,6 +2134,9 @@ export class CliPiAppState {
     if (!isPlanClientMode(mode)) {
       this.pendingPlanEntrySource = null;
     }
+    if (mode !== "auto") {
+      this.lastMacroRoutedMode = null;
+    }
     if (this.mode !== mode) {
       this.mode = mode;
       this.emitChange();
@@ -2284,7 +2304,7 @@ export class CliPiAppState {
       return null;
     }
     // Team 模式允许在 stream 未结束时直接 chat.send，不先发 cancel interrupt。
-    if (this.streamingState !== StreamingState.Idle && !isTeamMode(mode)) {
+    if (this.streamingState !== StreamingState.Idle && !isEffectiveTeamMode(mode, this.lastMacroRoutedMode)) {
       this.suppressInterruptResult = true;
       this.sendEventOnly("chat.interrupt", { intent: "cancel", mode: this.mode });
     }
@@ -3647,7 +3667,7 @@ export class CliPiAppState {
         this.emitChange();
       }
       const resolvedMode = res?.mode;
-      if (typeof resolvedMode === "string" && resolvedMode) {
+      if (typeof resolvedMode === "string" && resolvedMode && this.mode !== "auto") {
         // 后端可能回旧 canonical 串（历史 session 重连），走 normalizeToClientMode
         // 归一到新串；未知串丢弃，避免 ``as`` 强转把旧串写入 this.mode 让
         // isTeamMode / isPlanClientMode / formatModeForDisplay 误判。

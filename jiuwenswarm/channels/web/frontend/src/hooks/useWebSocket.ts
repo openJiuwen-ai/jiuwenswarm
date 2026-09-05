@@ -51,6 +51,7 @@ import {
 import { PLAN_ENTRY_SOURCE_PLAN_TOGGLE } from '../features/planMode/planEntrySource';
 import { flushPendingGoalObjectiveBubble } from '../features/goalPendingObjectiveBubble';
 import { normalizeTaskEvent } from '../stores/teamTaskNormalize';
+import { isSingleAgentMode, normalizeMacroLaneMode } from '../utils/agentMode';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
@@ -762,6 +763,10 @@ function normalizeAgentMode(rawMode: unknown): AgentMode {
   // 再归一化（旧 `team.plan.*` / `team.code.*` 已被上面的 isTeamAgentMode 拦截）。
   const normalized = stripPlanSuffix(rawMode.trim().toLowerCase());
   if (normalized === 'auto_harness') return 'auto_harness';
+  if (normalized === 'auto' || normalized === 'agent.auto' || normalized === 'macro.auto') {
+    return 'auto';
+  }
+  // agent.plan / agent.fast / bare agent → Agent (Plan is the + toggle, not a mode chip).
   return 'agent';
 }
 
@@ -772,7 +777,13 @@ function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): stri
     trimmed.startsWith('/evolve ') ||
     trimmed === '/evolve_simplify' ||
     trimmed.startsWith('/evolve_simplify ');
-  if (!isEvolutionCommand || mode === 'agent' || mode === 'team') {
+  if (
+    !isEvolutionCommand ||
+    mode === 'agent' ||
+    mode === 'agent.plan' ||
+    mode === 'team' ||
+    mode === 'auto'
+  ) {
     return null;
   }
   return `${mode} 模式下演进功能不可用。`;
@@ -3466,6 +3477,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('goal.updated', payload)) return;
         applyGoalSnapshot(payload);
       }),
+      webClient.on('macro.routing', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        if (shouldDropDuplicatedEvent('macro.routing', payload)) return;
+        const routing = payload.routing;
+        if (!routing || typeof routing !== 'object') return;
+        const requestId =
+          typeof payload.request_id === 'string' && payload.request_id.trim()
+            ? payload.request_id.trim()
+            : `${Date.now()}`;
+        const routedMode = normalizeMacroLaneMode((routing as { mode?: string }).mode);
+        if (routedMode) {
+          useSessionStore.getState().setLastMacroRoutedMode(sessionId, routedMode);
+        }
+        useChatStore.getState().addMessage(sessionId, {
+          id: `macro-routing-${requestId}`,
+          role: 'system',
+          content: `macro.routing:${JSON.stringify(routing)}`,
+          timestamp: new Date().toISOString(),
+          isHarnessMessage: true,
+        });
+      }),
       webClient.on('runtime.accepted', ({ payload }) => {
         if (shouldDropDuplicatedEvent('runtime.accepted', payload)) return;
         // Goal 的 loading 正常路径下统一以 goal.snapshot 为准（文档 §4 中 set/resume 均先于
@@ -3651,7 +3684,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
           if (
             !skipAutoDrain &&
-            currentMode === 'agent' &&
+            isSingleAgentMode(currentMode) &&
             !resumeAlreadyCompleted &&
             !queuePaused &&
             taskQueue.length > 0
@@ -3936,7 +3969,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               const runtime = useChatStore.getState().getRuntime(sessionId);
               const taskQueue = runtime?.taskQueue ?? [];
               const queuePaused = runtime?.queuePaused ?? false;
-              if (currentMode === 'agent' && !queuePaused && taskQueue.length > 0) {
+              if (isSingleAgentMode(currentMode) && !queuePaused && taskQueue.length > 0) {
                 const nextTask = taskQueue[0];
                 if (nextTask && sendMessageRef.current) {
                   useChatStore.getState().removeFromTaskQueue(sessionId, nextTask.id);

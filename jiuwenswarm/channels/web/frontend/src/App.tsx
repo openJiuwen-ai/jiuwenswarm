@@ -596,8 +596,13 @@ function AppContent({
     )) ?? null;
   }, [currentSession, projects, sessions, sessionId]);
   const mode = useSessionStore((s) => s.runtimes[sessionId]?.mode ?? 'agent');
+  const lastMacroRoutedMode = useSessionStore(
+    (s) => s.runtimes[sessionId]?.lastMacroRoutedMode ?? null,
+  );
+  const effectiveMode =
+    mode === 'auto' && lastMacroRoutedMode ? lastMacroRoutedMode : mode;
   const chatSurfaceView: ChatSurfaceView = trajectoryUiEnabled
-    && (mode === 'agent' || mode === 'team')
+    && (effectiveMode === 'agent' || effectiveMode === 'team')
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {
@@ -639,10 +644,11 @@ function AppContent({
       return;
     }
     setToolPanelHidden(false);
-    if (mode === 'team') {
+    if (effectiveMode === 'team') {
       // 真正处于 Team 模式时不动 teamAreaActiveTab：下面这段"陈旧 team tab 切回
       // planning"的兜底只是给单 Agent 面板用的。曾经按某版交接文档建议去掉这层
-      // mode 隔离，复核后确认那条建议的前提不成立（mode 是 zustand selector，
+      // mode 隔离，复核后确认那条建议的前提不成立（effectiveMode 是 zustand
+      // selector 派生值，
       // 渲染时始终最新，不存在"滞后短路"的竞态窗口），且会导致真正在 Team 模式、
       // 停留在 team tab 的用户每次收起/展开面板都被强制踢回 planning——teamArea
       // 组件把 'team' 当合法 tab，没有兜底。这个 early return 就是隔离本身。
@@ -653,20 +659,20 @@ function AppContent({
       setTeamAreaActiveTab('planning');
     }
     setSingleAgentPanelExpanded(expanded);
-  }, [mode, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, teamAreaActiveTab]);
+  }, [effectiveMode, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, setToolPanelHidden, teamAreaActiveTab]);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
     setHeartbeatPanelOpen(false);
     setCodeReviewTarget(target);
     setToolPanelHidden(false);
-    if (mode === 'team') {
+    if (effectiveMode === 'team') {
       setTeamAreaActiveTab('review');
       setTeamAreaExpanded(true);
     } else {
       setSingleAgentPanelActiveTab('review');
       setSingleAgentPanelExpanded(true);
     }
-  }, [mode, setSingleAgentPanelActiveTab, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, setToolPanelHidden]);
+  }, [effectiveMode, setSingleAgentPanelActiveTab, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, setToolPanelHidden]);
 
   const handleDividerPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || chatPanelResizeDragRef.current) return;
@@ -733,7 +739,7 @@ function AppContent({
   const replaceHistoryMessages = useChatStore((s) => s.replaceHistoryMessages);
   const restoreReasoningSegments = useChatStore((s) => s.restoreReasoningSegments);
   const isRestoringHistorySession = isLoadingHistory && !historyPagerMeta && messages.length === 0;
-  const isRestoringTeamHistory = mode === 'team' && isRestoringHistorySession;
+  const isRestoringTeamHistory = effectiveMode === 'team' && isRestoringHistorySession;
 
   const frontendPlatform = resolveFrontendPlatform(
     typeof window !== 'undefined' ? window.__JIWEN_PLATFORM__ : undefined,
@@ -820,7 +826,7 @@ function AppContent({
   const toolPanelHasContent = useMemo(() => {
     const hasMessages = messages.length > 0;
     const hasCodeEnvironment = sessionProject?.work_mode === 'code' && sessionId !== NEW_CONVERSATION_ID;
-    switch (mode) {
+    switch (effectiveMode) {
       case 'auto_harness':
         return Boolean(extensionReady?.runtimePath) || hasMessages;
       case 'team':
@@ -831,12 +837,12 @@ function AppContent({
           || hasMessages
           || hasCodeEnvironment;
     }
-  }, [mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
+  }, [effectiveMode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
-  const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
+  const panelExpanded = effectiveMode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
   // 心跳面板打开时，团队/代码审核面板让出右侧工作区（两者互斥，不共同占用宽度）。
-  const isTeamAreaExpanded = mode !== 'auto_harness' && panelExpanded && toolPanelHasContent && !heartbeatPanelOpen && !toolPanelHidden;
+  const isTeamAreaExpanded = effectiveMode !== 'auto_harness' && panelExpanded && toolPanelHasContent && !heartbeatPanelOpen && !toolPanelHidden;
 
   useEffect(() => {
     if (panelExpanded && toolPanelHidden) {
@@ -855,7 +861,7 @@ function AppContent({
   const trajectoryTaskPanelAvailable = toolPanelHasContent || isRestoringTeamHistory;
   const effectiveTeamAreaExpanded = isTeamAreaExpanded;
   const insetTrajectoryFloatingTasks = shouldInsetTrajectoryForFloatingTasks(
-    mode,
+    effectiveMode,
     chatSurfaceView,
     trajectoryTaskPanelAvailable,
     toolPanelHidden,
@@ -2547,13 +2553,17 @@ function AppContent({
     // 目标是否 active 决定停止按钮要不要顺带把目标转为 paused——约定行为：其它状态
     // （paused/blocked/completed/无目标）下，停止只结束会话，不碰目标本身。
     const isGoalActive = useGoalStore.getState().runtimes[currentSessionId]?.goal?.status === 'active';
-    if (mode === 'team') {
+    if (effectiveMode === 'team') {
       void pause(currentSessionId);
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }
-    // agent 模式下有队列任务时，暂停队列自动发送
-    if (mode === 'agent') {
+    // 单 Agent（Planning / Performance）模式下有队列任务时，暂停队列自动发送
+    if (
+      effectiveMode === 'agent' ||
+      effectiveMode === 'agent.plan' ||
+      effectiveMode === 'auto'
+    ) {
       const runtime = useChatStore.getState().getRuntime(currentSessionId);
       if (runtime && runtime.taskQueue.length > 0) {
         useChatStore.getState().setQueuePaused(currentSessionId, true);
@@ -2561,7 +2571,7 @@ function AppContent({
     }
     void cancel(currentSessionId);
     if (isGoalActive) void pauseGoal(currentSessionId);
-  }, [cancel, mode, pause, pauseGoal]);
+  }, [cancel, effectiveMode, pause, pauseGoal]);
 
   /**
    * 删除目标：active 时除了清目标，还要顺带结束当前会话输出——复用停止按钮同一套中断调用
@@ -2574,13 +2584,13 @@ function AppContent({
       const isGoalActive = useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
       void clearGoal(sessionId);
       if (!isGoalActive) return;
-      if (mode === 'team') {
+      if (effectiveMode === 'team') {
         void pause(sessionId);
       } else {
         void cancel(sessionId);
       }
     },
-    [cancel, clearGoal, mode, pause]
+    [cancel, clearGoal, effectiveMode, pause]
   );
 
   const handleUserAnswer = useCallback((requestId: string, answers: UserAnswer[], source?: string) => {
@@ -3113,7 +3123,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                       />
                     )}
                     chatLabel={t('nav.chat')}
-                    mode={mode}
+                    mode={effectiveMode}
                     onViewChange={selectChatSurfaceView}
                     tabListLabel={t('trajectory.tabs.aria')}
                     trajectory={(
@@ -3126,7 +3136,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                       >
                         <LazyTrajectoryPanel
                           active={chatSurfaceView === 'trajectory'}
-                          mode={mode}
+                          mode={effectiveMode}
                           sessionId={sessionId}
                         />
                       </Suspense>

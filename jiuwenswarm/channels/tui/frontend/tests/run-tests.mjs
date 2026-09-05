@@ -57,11 +57,12 @@ const planQuestion = "**Plan Approval**\n\nThe agent has completed a plan.";
 const planApprovalKind = "plan_approval";
 
 const modeItems = buildModeAutocompleteItems();
-// 6 行：2 组头 + 4 子项，无 .plan 段
-assert.equal(modeItems.length, 6);
+// 7 行：2 组头 + 4 子项 + Auto，无 .plan 段
+assert.equal(modeItems.length, 7);
 assert.ok(modeItems.some((item) => item.value === "agent.work" && item.label === "agent"));
 assert.ok(modeItems.some((item) => item.value === "agent.work" && item.label === "  agent.work"));
 assert.ok(modeItems.some((item) => item.value === "agent.code" && item.label === "  agent.code"));
+assert.ok(modeItems.some((item) => item.value === "auto" && item.label === "auto"));
 assert.ok(modeItems.some((item) => item.value === "team.work" && item.label === "team"));
 assert.ok(modeItems.some((item) => item.value === "team.work" && item.label === "  team.work"));
 assert.ok(modeItems.some((item) => item.value === "team.code" && item.label === "  team.code"));
@@ -82,6 +83,9 @@ assert.equal(resolveModeTarget("agent.plan"), "agent.work.plan");
 assert.equal(resolveModeTarget("code.normal"), "agent.code.normal");
 assert.equal(resolveModeTarget("code.plan"), "agent.code.plan");
 assert.equal(resolveModeTarget("team.normal"), "team.work.normal");
+assert.equal(resolveModeTarget("auto"), "auto");
+assert.equal(resolveModeTarget("agent.auto"), "auto");
+assert.equal(resolveModeTarget("macro.auto"), "auto");
 
 // formatModeForDisplay：小写 + 去掉 .normal 段；.plan 保留
 assert.equal(formatModeForDisplay("agent.work.normal"), "agent.work");
@@ -97,6 +101,7 @@ assert.equal(resolvePlanTarget("team.code.normal"), "team.code.plan");
 // /plan：已是 plan → 保持不变（action 不会再切）
 assert.equal(resolvePlanTarget("agent.work.plan"), "agent.work.plan");
 assert.equal(resolvePlanTarget("team.code.plan"), "team.code.plan");
+assert.equal(resolvePlanTarget("auto"), "auto");
 
 // /plan：对称退出 — plan → normal 变体
 assert.equal(resolveNormalTarget("agent.work.plan"), "agent.work.normal");
@@ -312,6 +317,7 @@ const teamSnapshot = {
   connectionStatus: "connected",
   sessionId: "team-session",
   mode: "agent.code.normal",
+  lastMacroRoutedMode: null,
   themeName: "default",
   accentColor: "blue",
   transcriptMode: "compact",

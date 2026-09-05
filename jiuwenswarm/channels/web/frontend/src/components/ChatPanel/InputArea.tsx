@@ -36,6 +36,7 @@ import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLi
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
+import { isSingleAgentMode } from '../../utils/agentMode';
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
 import ChatModelSelector from './ChatModelSelector';
@@ -734,6 +735,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const lastMacroRoutedMode = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.lastMacroRoutedMode ?? null,
+  );
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []) as InputAreaTeamMember[];
   const currentSession = useSessionStore((s) => s.currentSession);
@@ -761,8 +765,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 未完成目标：active/paused/blocked 都算，只有 completed（或没有目标）才能再设新目标
   const hasUnfinishedGoal = isUnfinishedGoal(currentGoal);
   const isInterruptible = isProcessing || isPaused || isGoalActive;
-  const isAgentMode = mode === 'agent';
-  const isTeamMode = mode === 'team';
+  const isAgentMode = isSingleAgentMode(mode);
+  const isTeamMode = mode === 'team' || (mode === 'auto' && lastMacroRoutedMode === 'team');
   const isAutoHarnessMode = mode === 'auto_harness';
 
   useEffect(() => {
@@ -780,8 +784,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
   const goalTagVisible = canUseGoalMenu && goalArmed;
   // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直用
-  // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
-  // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
+  // agent.plan / team.plan.* 发送，直到用户点叉或后端推 plan.mode_exited。
+  // agent 与 team 都提供 Plan 入口；Auto 不提供（MACRO 只路由到 agent / team）。
   const planActive = usePlanStore((s) => s.runtimes[activeSessionId ?? '']?.active ?? false);
   const planPendingExplicitEntry = usePlanStore(
     (s) => s.runtimes[activeSessionId ?? '']?.pendingExplicitEntry ?? false,
@@ -3331,7 +3335,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   : { position: 'fixed', top: modeMenuAnchor.bottom + 10, left: modeMenuAnchor.left, zIndex: 9999 }
                 }
               >
-                {AGENT_MODE_OPTIONS.map((m) => (
+                {AGENT_MODE_OPTIONS.filter((m) => !m.hidden).map((m) => (
                   <button
                     type="button"
                     key={m.value}

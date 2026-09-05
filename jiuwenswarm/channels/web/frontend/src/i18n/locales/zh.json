@@ -616,6 +616,7 @@
     "modePlan": "规划模式",
     "modeAgent": "性能模式",
     "modeAgentTeam": "集群模式",
+    "modeAuto": "自动",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
     "recording": "正在录音...（松开按钮自动发送）",
@@ -2373,6 +2374,13 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "macroRouting": {
+      "title": "路由模式",
+      "selected": "已选择：{{mode}}",
+      "source": "{{value}}",
+      "confidence": "置信度 {{value}}%"
+    },
+    "parallelProgress": "并行任务执行中 ({{completedCount}}/{{total}} 完成)",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",
