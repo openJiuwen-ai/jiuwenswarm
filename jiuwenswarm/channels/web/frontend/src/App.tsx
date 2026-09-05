@@ -66,6 +66,8 @@ import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session } from './ty
 import type {
   ExternalCliAgentKind,
   ExternalCliDependencyInstallStatus,
+  ExternalCliDetectResult,
+  ExternalCliPendingChoice,
 } from './components/ExternalCliAgentsSection';
 import {
   ensureSessionRuntimes,
@@ -324,6 +326,14 @@ function AppContent({
   const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
+  // Deferred CLI agent choices held here (not inside Settings) so they survive
+  // leaving/returning to the Settings page while a dependency install runs.
+  const [externalCliPendingChoices, setExternalCliPendingChoices] =
+    useState<Partial<Record<ExternalCliAgentKind, ExternalCliPendingChoice>>>({});
+  // Latest CLI detect results, also held at the App layer so returning to the
+  // Settings page shows the previous status instead of flashing "not checked".
+  const [externalCliDetectResults, setExternalCliDetectResults] =
+    useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>({});
   const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
   const [requestedSettingsModuleId, setRequestedSettingsModuleId] =
     useState<SettingsModuleTarget | null>(null);
@@ -3267,21 +3277,25 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         {activeNav === 'settings' && (
           <div className="app-section">
             <SettingsPage
-                definition={settingsPageDefinition}
-                isConnected={isConnected}
-                connectionState={connectionState}
-                request={settingsRequest}
-                onHasChangesChange={handleSettingsHasChangesChange}
-                onConfigSaved={handleSettingsConfigSaved}
-                onDetectExternalCli={detectExternalCli}
-                onSelectExternalCliPath={selectExternalCliPath}
-                onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
-                externalCliInstallStatuses={externalCliInstallStatuses}
-                externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-                  (status) => status?.status === 'running',
-                )}
-                onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
-                initialModuleId={requestedSettingsModuleId ?? undefined}
+              definition={settingsPageDefinition}
+              isConnected={isConnected}
+              connectionState={connectionState}
+              request={settingsRequest}
+              onHasChangesChange={handleSettingsHasChangesChange}
+              onConfigSaved={handleSettingsConfigSaved}
+              onDetectExternalCli={detectExternalCli}
+              onSelectExternalCliPath={selectExternalCliPath}
+              onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
+              externalCliInstallStatuses={externalCliInstallStatuses}
+              externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
+                (status) => status?.status === 'running',
+              )}
+              onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
+              externalCliPendingChoices={externalCliPendingChoices}
+              onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
+              externalCliDetectResults={externalCliDetectResults}
+              onExternalCliDetectResultsChange={setExternalCliDetectResults}
+              initialModuleId={requestedSettingsModuleId ?? undefined}
             />
           </div>
         )}

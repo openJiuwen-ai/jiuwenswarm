@@ -348,7 +348,6 @@ test('current Settings titles omit descriptions while the shared API retains opt
     'settingsPanel.agent.webSearchDescription',
     'settingsPanel.agent.mediaToolsDescription',
     'settingsPanel.agent.teamDescription',
-    'settingsPanel.experimental.externalCliAgentsDescription',
     'settingsPanel.experimental.a2uiDescription',
     'settingsPanel.experimental.proactiveDescription',
   ];
