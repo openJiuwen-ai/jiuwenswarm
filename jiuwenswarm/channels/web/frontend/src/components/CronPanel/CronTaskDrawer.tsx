@@ -70,7 +70,7 @@ function emptyForm(): CronTaskFormValue {
     targets: 'web',
     cronExpr: '',
     wakeOffsetSeconds: 0,
-    timezone: 'Asia/Shanghai',
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     effectiveDate: null,
     enabled: true,
   };
@@ -106,7 +106,7 @@ export function templateToForm(tpl: CronTemplateUI, title: string, description: 
     targets: 'web',
     cronExpr: tpl.cronExpr,
     wakeOffsetSeconds: 0,
-    timezone: 'Asia/Shanghai',
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     effectiveDate: null,
     enabled: true,
   };
@@ -147,6 +147,7 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
   };
 
   const submittedForm = form;
+  const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   const title = mode === 'edit' ? t('cron.drawer.titleEdit') : mode === 'template' ? t('cron.drawer.titleTemplate') : t('cron.drawer.titleCreate');
   // 显式加一条 value 为空串的"-"选项，代表"未选项目"，放在真实项目列表最后面（列表顺序：
@@ -158,7 +159,9 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
     ...filterNonDefaultProjects(projects).map((p) => ({ value: p.project_dir, label: getProjectDisplayName(p) })),
     { value: '', label: t('cron.drawer.placeholderProject') ?? '-' },
   ];
-  const timezoneOptions = TIMEZONE_OPTIONS.map((tz) => ({ value: tz, label: tz }));
+  const timezoneOptions = TIMEZONE_OPTIONS.includes(localTimeZone)
+    ? TIMEZONE_OPTIONS.map((tz) => ({ value: tz, label: tz }))
+    : [{ value: localTimeZone, label: localTimeZone }].concat(TIMEZONE_OPTIONS.map((tz) => ({ value: tz, label: tz })));
   // 必填项缺失时，收集清单用来在"确定"按钮旁给出具体提示（而不是只让按钮变灰、不说原因）
   const missingFieldLabels: string[] = [];
   if (!form.name.trim()) missingFieldLabels.push(t('cron.drawer.fieldName'));
