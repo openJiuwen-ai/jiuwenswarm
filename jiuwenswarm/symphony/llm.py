@@ -411,6 +411,38 @@ class JiuwenSwarmChatClient:
             for index, request in enumerate(requests, start=1)
         ]
 
+    async def complete_text_async(
+        self,
+        *,
+        system_prompt: str,
+        user_content: str,
+        timeout: Optional[int] = None,
+        error_context: str = "LLM",
+        request_overrides: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Return the raw text completion (no JSON repair).
+
+        Use this for free-form generation (e.g. executing a candidate prompt);
+        prefer :meth:`complete_json_async` when a JSON payload is expected.
+        """
+        try:
+            response = await self._invoke(
+                system_prompt=system_prompt,
+                user_content=user_content,
+                timeout=timeout,
+                request_overrides=request_overrides,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"{error_context} request failed: {exc}") from exc
+
+        content = extract_message_content(response)
+        _record_usage_from_response(
+            config=self.config,
+            response=response,
+            operation=error_context,
+        )
+        return content
+
     def _json_content_from_response(self, response: Any, error_context: str) -> str:
         from json_repair import repair_json
 

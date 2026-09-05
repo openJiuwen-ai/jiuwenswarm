@@ -105,6 +105,8 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
+    registry.PROMPT_OPTIMIZER_PROMPT,
+    registry.PROMPT_OPTIMIZER_REVIEW,
 )
 
 # Tools common to both roles. Each element self-gates on config, so all are
@@ -123,6 +125,7 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     # registrar.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
+    registry.OPTIMIZER_TOOLKIT,
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
@@ -158,6 +161,8 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     # ``core.team.skill_use``, shared with the chat profile.
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
+    registry.PROMPT_OPTIMIZER_PROMPT,
+    registry.PROMPT_OPTIMIZER_REVIEW,
 )
 
 # Rails shared with the team profile, appended to the code profile.
@@ -177,6 +182,7 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     # rail; declaring SKILL_TOOLKIT here too would double-register them.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
+    registry.OPTIMIZER_TOOLKIT,
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,

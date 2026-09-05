@@ -1,0 +1,10 @@
+id: optimization
+name: optimization
+version: 0.1.0
+description: RLAF-P runtime prompt optimizer — improve system prompts via an LLM feedback loop.
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.0"
+dependencies:
+  json-repair: ">=0.30.0"
+config_schema:
+  type: object

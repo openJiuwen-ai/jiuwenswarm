@@ -195,6 +195,8 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.MEMBER_SKILL_TOOLKIT,
         TEAM_SKILL_USE,
+        registry.PROMPT_OPTIMIZER_PROMPT,
+        registry.PROMPT_OPTIMIZER_REVIEW,
     }
 )
 
@@ -216,6 +218,7 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         # Skill retrieval is a separate self-gated tool provider.
         registry.SKILL_RETRIEVAL,
         registry.SYMPHONY_TOOLKIT,
+        registry.OPTIMIZER_TOOLKIT,
         registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
@@ -578,7 +581,9 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 18
+    # The common set has exactly 20 entries; the role adds only its explicit
+    # extra rails on top.
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 20
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -2172,6 +2177,7 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.IMAGE_GEN,
         registry.XIAOYI_PHONE,
         registry.SYMPHONY_TOOLKIT,
+        registry.OPTIMIZER_TOOLKIT,
         registry.CODE_EXTRA_TOOLS,
         registry.CRON_TOOLS,
         registry.SEND_FILE,

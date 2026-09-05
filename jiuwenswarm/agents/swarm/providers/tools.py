@@ -53,6 +53,7 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
 )
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+from jiuwenswarm.agents.harness.common.tools.optimizer_toolkits import PromptOptimizerToolkit
 from jiuwenswarm.agents.harness.common.tools.user_todo_tool import get_decorated_tools
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
@@ -101,6 +102,7 @@ VIDEO = "swarm.video"
 IMAGE_GEN = "swarm.image_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
 SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
+OPTIMIZER_TOOLKIT = "swarm.optimizer_toolkit"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
 
 # xiaoyi phone tool objects, gated by ``channels.xiaoyi.phone_tools_enabled``.
@@ -446,6 +448,17 @@ def _build_symphony_tools(ctx: SwarmBuildContext) -> list[Any]:
         return []
 
 
+def _build_optimizer_tools(ctx: SwarmBuildContext) -> list[Any]:
+    """Build prompt-optimizer tools for the team leader."""
+    if getattr(ctx, "role", "") != "leader":
+        return []
+    try:
+        return list(PromptOptimizerToolkit().get_tools(ctx.config or get_config()))
+    except Exception as exc:
+        logger.warning("[swarm.optimizer_toolkit] construction failed: %s", exc)
+        return []
+
+
 class SkillToolkitInput(ConstructionInput):
     """Construction inputs for the skill-toolkit tool."""
 
@@ -550,6 +563,16 @@ def build_symphony_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> li
     return _build_symphony_tools(ctx)
 
 
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=OPTIMIZER_TOOLKIT,
+    description="Prompt optimizer tools (leader only, gated by symphony.optimization.enabled).",
+)
+def build_optimizer_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build prompt-optimizer tools for the leader; teammates get no tools."""
+    return _build_optimizer_tools(ctx)
+
+
 class CodeExtraToolsInput(ConstructionInput):
     """Construction inputs for the code-extra tools."""
 
@@ -587,11 +610,13 @@ __all__ = [
     "IMAGE_GEN",
     "XIAOYI_PHONE",
     "SYMPHONY_TOOLKIT",
+    "OPTIMIZER_TOOLKIT",
     "CODE_EXTRA_TOOLS",
     "vision_model_config_params",
     "audio_dedicated_configured",
     "audio_model_config_params",
     "build_symphony_toolkit",
+    "build_optimizer_toolkit",
     "build_code_extra_tools",
     "skill_retrieval_toolkit_for_context",
     "visible_skill_names_for_list_skill",
