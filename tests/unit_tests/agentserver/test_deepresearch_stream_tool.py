@@ -32,6 +32,7 @@ from jiuwenswarm.common.local_env_config import (
     replace_active_env,
     reset_task_env_overlay,
 )
+from jiuwenswarm.server.runtime.session import session_history
 
 
 class _Stdin:
@@ -1524,7 +1525,15 @@ async def test_completed_marker_rejects_final_pipeline_that_only_started(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_completed_report_delivers_markdown_html_and_hidden_bundle(tmp_path: Path):
+async def test_completed_report_delivers_markdown_html_and_hidden_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        session_history,
+        "get_agent_sessions_dir",
+        lambda: tmp_path / "sessions",
+    )
     final_result = {"response_content": "# Final", "infer_messages": [], "chart_messages": []}
     proc = _Proc(
         [
@@ -1599,6 +1608,17 @@ async def test_completed_report_delivers_markdown_html_and_hidden_bundle(tmp_pat
     assert "/hidden/raw.md" in serialized
     assert "/hidden/citations.preview.json" in serialized
     assert "/must/not/expose.json" not in serialized
+
+    file_records = [
+        item
+        for item in session_history.load_history_records("S1")
+        if item.get("event_type") == "chat.file"
+    ]
+    assert len(file_records) == 1
+    assert file_records[0]["request_id"] == "R1"
+    assert file_records[0]["channel_id"] == "CH1"
+    assert file_records[0]["files"] == file_payload["files"]
+    assert file_records[0]["metadata"] == file_payload["metadata"]
 
 
 @pytest.mark.asyncio
@@ -2294,11 +2314,13 @@ async def test_file_delivery_failure_never_falls_back_to_report_chat(tmp_path: P
             raise RuntimeError("delivery failed")
 
     push.send_push.side_effect = fail_file
+    persist_history = Mock()
     patches = _stream_patches(proc, route=route)
     with ExitStack() as stack:
         for item in patches:
             stack.enter_context(item)
         stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        stack.enter_context(patch.object(dt, "append_history_record", persist_history))
         stack.enter_context(
             patch.object(
                 dt,
@@ -2311,6 +2333,7 @@ async def test_file_delivery_failure_never_falls_back_to_report_chat(tmp_path: P
     assert "secret final report" not in json.dumps(
         [call.args[0] for call in push.send_push.await_args_list]
     )
+    persist_history.assert_not_called()
 
 
 @pytest.mark.asyncio

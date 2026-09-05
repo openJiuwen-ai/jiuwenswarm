@@ -80,6 +80,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
+from jiuwenswarm.server.runtime.session.session_history import append_history_record
 
 logger = logging.getLogger(__name__)
 
@@ -2438,6 +2439,28 @@ async def _consume_stream(
                     "error": "Report files could not be delivered",
                     "report_path": artifacts.get("md", ""),
                 }, chunk)
+            try:
+                history_extra: dict[str, Any] = {"files": files}
+                if file_metadata:
+                    history_extra["metadata"] = file_metadata
+                append_history_record(
+                    session_id=str(route["session_id"]),
+                    request_id=str(route.get("request_id") or ""),
+                    channel_id=str(route["channel_id"]),
+                    role="assistant",
+                    event_type="chat.file",
+                    content="",
+                    timestamp=time.time(),
+                    extra=history_extra,
+                )
+            except Exception:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "[deepresearch_stream] persist chat.file history failed "
+                    "request_id=%s session_id=%s",
+                    _safe_log_correlation_id(route.get("request_id")),
+                    _safe_log_correlation_id(route.get("session_id")),
+                    exc_info=True,
+                )
             report_delivery_settled = True
             for payload in advance_stage(state, 4, complete=True):
                 await send(payload)
