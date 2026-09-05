@@ -11,7 +11,7 @@ import os
 import re
 import time
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -3397,20 +3397,41 @@ def _team_event_envelope(
     return {"event_type": category, "session_id": session_id, "event": event}
 
 
+@dataclass
+class _WorkflowEventDedup:
+    """Dedup/aggregation state shared across ``workflow.updated`` deltas for one session.
+
+    The ``workflow.updated`` delta repeatedly re-includes a running phase (once
+    per agent that starts inside it) and a running worker across its stream, so
+    these track last-observed status / spawned members / activity length to avoid
+    emitting duplicate ``team.task`` / ``team.member`` events.
+    """
+
+    seen_phase: dict[str, str] = field(default_factory=dict)
+    seen_agent: dict[str, str] = field(default_factory=dict)
+    spawned_members: set[str] = field(default_factory=set)
+    seen_activity: dict[str, int] = field(default_factory=dict)
+
+
 def _workflow_updated_to_team_events(
     event: dict[str, Any],
     session_id: str,
-    seen_phase: dict[str, str],
-    seen_agent: dict[str, str],
-    spawned_members: set[str],
+    state: _WorkflowEventDedup,
 ) -> list[dict[str, Any]]:
     """Convert one ``workflow.updated`` event into web ``team.member`` / ``team.task`` events.
 
     Each swarmflow phase becomes a ``team.task`` and each worker (agent) becomes a
     ``team.member``. Only status *changes* produce events — the ``workflow.updated``
     delta repeatedly re-includes a running phase (once per agent that starts inside
-    it), so ``seen_phase`` / ``seen_agent`` dedup by last-observed status.
+    it), so ``state.seen_phase`` / ``state.seen_agent`` dedup by last-observed
+    status. Live worker activity (appended to ``agent.activity`` between
+    start/completion) produces ``team.member.activity_changed`` events, deduped by
+    ``state.seen_activity`` (last-seen activity length per member).
     """
+    seen_phase = state.seen_phase
+    seen_agent = state.seen_agent
+    spawned_members = state.spawned_members
+    seen_activity = state.seen_activity
     if event.get("event_type") != "workflow.updated":
         return []
 
@@ -3475,6 +3496,7 @@ def _workflow_updated_to_team_events(
             if member_id not in spawned_members:
                 spawned_members.add(member_id)
                 seen_agent[member_id] = "running"
+                seen_activity[member_id] = len(agent.get("activity") or [])
                 out.append(
                     _team_event_envelope(
                         "team.member",
@@ -3486,6 +3508,9 @@ def _workflow_updated_to_team_events(
                             "name": agent.get("name") or agent_id,
                             "status": "busy",
                             "workflow_run_id": run_id,
+                            # Agent task prompt (set at agent_started) — surfaced on
+                            # the swarm-map lane so a running worker shows its task.
+                            "prompt": (agent.get("prompt") or "")[:80],
                         },
                     )
                 )
@@ -3505,9 +3530,37 @@ def _workflow_updated_to_team_events(
                                 "old_status": old_status,
                                 "new_status": agent_status,
                                 "workflow_run_id": run_id,
+                                # Agent result (set at agent_completed) — shown on the
+                                # swarm-map lane once the worker finishes.
+                                "outcome": (agent.get("outcome") or "")[:80],
                             },
                         )
                     )
+
+            # Live worker activity — emit one event per newly-appended entry so a
+            # spectator UI sees the worker's current action mid-run.
+            activity = agent.get("activity") or []
+            activity_count = len(activity)
+            last_seen = seen_activity.get(member_id, 0)
+            if activity_count > last_seen:
+                for act in activity[last_seen:activity_count]:
+                    content = str(act.get("content") or "").strip()
+                    if not content:
+                        continue
+                    out.append(
+                        _team_event_envelope(
+                            "team.member",
+                            session_id,
+                            {
+                                "type": "team.member.activity_changed",
+                                "team_id": team_id,
+                                "member_id": member_id,
+                                "name": agent.get("name") or agent_id,
+                                "activity": content[:120],
+                            },
+                        )
+                    )
+            seen_activity[member_id] = activity_count
 
     return out
 
@@ -3578,9 +3631,7 @@ async def _consume_workflow_events(
     并检测 ``waiting_for_human`` agent 生成 ``chat.ask_user_question`` 事件。
     """
     is_tui = _resolve_channel_id(channel_id) == "tui"
-    seen_phase: dict[str, str] = {}
-    seen_agent: dict[str, str] = {}
-    spawned_members: set[str] = set()
+    state = _WorkflowEventDedup()
     seen_human_waiting: set[str] = set()
     swarmflow_activated_sent = False
     try:
@@ -3638,9 +3689,7 @@ async def _consume_workflow_events(
                 continue
 
             # ── 非 TUI: 额外转换扁平 team.task/team.member 事件（向后兼容）──
-            for team_ev in _workflow_updated_to_team_events(
-                event, session_id, seen_phase, seen_agent, spawned_members
-            ):
+            for team_ev in _workflow_updated_to_team_events(event, session_id, state):
                 _persist_team_history_event(channel_id, session_id, team_ev)
                 await _broadcast_event(channel_id, session_id, team_ev)
 

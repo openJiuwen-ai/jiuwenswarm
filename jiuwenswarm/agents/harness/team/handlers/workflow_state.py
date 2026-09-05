@@ -116,8 +116,8 @@ class WorkflowAgentActivity(BaseModel):
     ``status`` / ``started_at`` / ``completed_at`` / ``outcome`` / ``error``
     / ``duration_ms`` on ``WorkflowAgentState`` itself, so no status-type
     activity is written. Tool-call activity (type="tool_call" /
-    "tool_result") requires upstream structured data which is not yet
-    available. ``activity`` on ``WorkflowAgentState`` is always empty.
+    "tool_result") arrives as ``agent_activity`` progress events emitted by the
+    worker backend mid-run and is appended here (see ``_on_agent_activity``).
 
     Human nodes never produce activity (their question/answer live on
     ``human_prompt`` / ``human_reply``); only agent nodes' tool_call /
@@ -125,7 +125,7 @@ class WorkflowAgentActivity(BaseModel):
     """
 
     timestamp: str  # required — every entry must be timestamped
-    type: str  # "tool_call" | "tool_result" (pending upstream)
+    type: str  # "tool_call" | "tool_result"
     content: str = ""
     # reserved — tool calls require upstream WorkflowProgressEvent extension
     tool_name: Optional[str] = None
@@ -241,6 +241,7 @@ class WorkflowRunState(BaseModel):
         "workflow_started": "_on_workflow_started",
         "phase": "_on_phase",
         "agent_started": "_on_agent_started",
+        "agent_activity": "_on_agent_activity",
         "agent_completed": "_on_agent_completed",
         "agent_failed": "_on_agent_failed",
         "human_prompt": "_on_human_prompt",
@@ -1133,6 +1134,39 @@ class WorkflowRunState(BaseModel):
         if sealed_phase is not None:
             return self._build_phases_delta([sealed_phase, target_phase])
         return self._build_phase_delta(target_phase)
+
+    def _on_agent_activity(self, progress: WorkflowProgress) -> Optional[dict[str, Any]]:
+        """Append one live activity entry to a running worker's node.
+
+        Emitted by the worker backend (via ``agent_activity`` progress events)
+        while the worker is mid-loop — e.g. each (throttled) tool call. Resolves
+        the node by ``agent_id`` (the same deterministic id ``agent_started``
+        used), so a no-op is returned when the node cannot be located. The
+        returned delta carries the phase with the updated ``activity`` list, so
+        the frontend sees the worker's latest action without waiting for
+        completion.
+        """
+        phase, agent = self._resolve_agent(
+            progress.phase or _UNNAMED_PHASE,
+            progress.label or "",
+            agent_id=progress.agent_id,
+        )
+        # Strict by id: ``_resolve_agent`` falls back to label-matching for
+        # legacy events, but an activity event always carries the exact node id,
+        # so a mismatched id must not append to the wrong (same-label) node.
+        if phase is None or agent is None or agent.id != progress.agent_id:
+            return None
+        content = (progress.text or "").strip()
+        if not content:
+            return None
+        agent.activity.append(
+            WorkflowAgentActivity(
+                timestamp=self._now_iso(),
+                type="tool_call",
+                content=content,
+            )
+        )
+        return self._build_phase_delta(phase)
 
     def _on_agent_completed(self, progress: WorkflowProgress) -> Optional[dict[str, Any]]:
         """Mark an agent as completed with outcome."""
