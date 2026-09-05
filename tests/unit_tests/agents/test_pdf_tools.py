@@ -188,7 +188,7 @@ async def test_read_pdf_subset_discloses_the_pages_it_skipped(tmp_path: Path):
     pdf_path = tmp_path / "sample.pdf"
     pdf_path.write_bytes(_build_minimal_pdf([f"Page {i} body" for i in range(1, 6)]))
 
-    result = await read_pdf.invoke({"inputs": {"pdf_path": str(pdf_path), "pages": "1-2"}})
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path), "pages": "1-2"})
 
     # The page text a caller passing `pages` already got is unchanged.
     assert "Page 1 body" in result
@@ -213,7 +213,7 @@ async def test_read_pdf_discloses_pages_lost_to_the_page_cap(tmp_path: Path):
     pdf_path = tmp_path / "big.pdf"
     pdf_path.write_bytes(_build_minimal_pdf([f"Page {i} body" for i in range(1, 102)]))
 
-    result = await read_pdf.invoke({"inputs": {"pdf_path": str(pdf_path)}})
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path)})
 
     assert "Partial read: 1 of 101 pages were NOT read" in result
     assert "pages 101" in result
@@ -231,7 +231,7 @@ async def test_read_pdf_page_cap_remedy_points_past_a_subset(tmp_path: Path):
     pdf_path = tmp_path / "big.pdf"
     pdf_path.write_bytes(_build_minimal_pdf([f"Page {i} body" for i in range(1, 102)]))
 
-    result = await read_pdf.invoke({"inputs": {"pdf_path": str(pdf_path), "pages": "1-2"}})
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path), "pages": "1-2"})
 
     assert "Partial read: 99 of 101 pages were NOT read" in result
     assert "Omit `pages` to read the whole document" not in result
@@ -245,11 +245,11 @@ async def test_read_pdf_full_read_adds_no_partial_note(tmp_path: Path):
     pdf_path.write_bytes(_build_minimal_pdf(["Alpha", "Bravo", "Charlie"]))
 
     # Default (no `pages`) reads everything, so there is nothing to disclose.
-    result = await read_pdf.invoke({"inputs": {"pdf_path": str(pdf_path)}})
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path)})
     assert "Partial read" not in result
 
     # An explicit range that happens to cover the document is a full read too.
-    result = await read_pdf.invoke({"inputs": {"pdf_path": str(pdf_path), "pages": "1-3"}})
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path), "pages": "1-3"})
     assert "Partial read" not in result
 
 
@@ -281,7 +281,7 @@ async def test_read_pdf_discloses_truncation_of_a_single_page(tmp_path: Path):
 
     # No page is left unread here, so only the max_chars cut-off is disclosed.
     result = await read_pdf.invoke(
-        {"inputs": {"pdf_path": str(pdf_path), "max_chars": 1000}}
+        {"pdf_path": str(pdf_path), "max_chars": 1000}
     )
     assert "the rest of the document was NOT read" in result
     assert "unread pages" not in result
