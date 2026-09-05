@@ -101,6 +101,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">System parameters, LLM APIs, and runtime environment configuration.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>IDE Plugins</strong></td>
+      <td width="28%"><a href="en/ide/jetbrains/JetBrains.md">JetBrains</a> / <a href="en/ide/vscode/VSCode.md">VS Code</a> (<a href="en/ide/jetbrains/JetBrainsGuide.md">Guide</a> · <a href="en/ide/vscode/VSCodeGuide.md">Guide</a>)</td>
+      <td width="50%">Embed the JiuwenSwarm agent in JetBrains IDEs and VS Code with a native chat panel.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Browser Service</strong></td>
       <td width="28%"><a href="en/Browser.md">Browser</a></td>
       <td width="50%">Web access, information retrieval, and browser tool invocation capabilities.</td>
