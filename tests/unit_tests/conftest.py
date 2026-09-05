@@ -18,6 +18,7 @@ functions, hence this hook.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -83,3 +84,38 @@ def pytest_runtest_setup(item) -> None:
     else:
         _utils.get_config_file = _REAL_GET_CONFIG_FILE
         _utils.get_agent_workspace_dir = _REAL_GET_AGENT_WORKSPACE_DIR
+
+
+def _close_orphaned_event_loop() -> None:
+    """Close a current-thread event loop left over after a test.
+
+    Sync tests calling ``asyncio.run()`` reset the current loop to ``None``
+    (``asyncio.Runner.close`` -> ``set_event_loop(None)``). The next async
+    test then makes pytest-asyncio's scoped-runner fixture call
+    ``asyncio.get_event_loop()`` while swapping loop policies, which silently
+    *creates* a loop that nobody ever closes. A later ``asyncio.run()``
+    dereferences that orphan and its ``__del__`` raises "unclosed event
+    loop" during whichever test happens to be running
+    (PytestUnraisableExceptionWarning, promoted to an error by
+    ``filterwarnings = error``). Closing the orphan deterministically after
+    every test removes the GC-timing flake.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        return
+    if loop.is_running():
+        return
+    if not loop.is_closed():
+        loop.close()
+    asyncio.set_event_loop(None)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    # tryfirst + wrapper: run after all fixture finalizers, so the
+    # pytest-asyncio scoped runner has already exited and restored (if any)
+    # the orphaned loop as the current one.
+    result = yield
+    _close_orphaned_event_loop()
+    return result
