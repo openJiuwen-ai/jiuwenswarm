@@ -233,6 +233,7 @@ const DEFERRED_TRANSCRIPT_EVENTS = new Set([
   "chat.error",
   "chat.tool_call",
   "chat.tool_result",
+  "chat.tool_update",
   "chat.symphony_status",
   "chat.interrupt_result",
   "chat.ask_user_question",
@@ -569,6 +570,9 @@ export class CliPiAppState {
     },
     addToolResultPayload: (payload, sessionId, requestId, updatedAt) => {
       this.addToolResultPayload(payload, sessionId, requestId, updatedAt);
+    },
+    applyToolUpdatePayload: (payload, sessionId) => {
+      this.applyToolUpdatePayload(payload, sessionId);
     },
     addSyntheticToolExecution: (tool, sessionId, requestId, at) => {
       this.addSyntheticToolExecution(tool, sessionId, requestId, at);
@@ -3143,6 +3147,56 @@ export class CliPiAppState {
     );
     this.applyTodoToolResult(nextTool);
     this.scheduleToolTimeoutCheck();
+  }
+
+  private applyToolUpdatePayload(payload: Record<string, unknown>, sessionId: string): void {
+    const update =
+      payload.tool_update && typeof payload.tool_update === "object"
+        ? (payload.tool_update as Record<string, unknown>)
+        : payload;
+    const toolCallId =
+      typeof update.tool_call_id === "string"
+        ? update.tool_call_id
+        : typeof payload.tool_call_id === "string"
+          ? payload.tool_call_id
+          : "";
+    if (!toolCallId) {
+      return;
+    }
+
+    const execution = this.toolExecutions.get(toolCallId);
+    if (!execution || execution.tool.status !== "running") {
+      return;
+    }
+
+    const beam = update.beam_search_event;
+    let summary = execution.tool.summary;
+    if (beam && typeof beam === "object") {
+      const event = (beam as Record<string, unknown>).event;
+      if (typeof event === "string" && event.trim()) {
+        summary = `Beam search: ${event.trim()}`;
+      }
+    }
+    if (summary === execution.tool.summary) {
+      return;
+    }
+
+    const nextTool: ToolCallDisplay = {
+      ...execution.tool,
+      summary,
+    };
+    const nowIso = new Date().toISOString();
+    this.toolExecutions.set(toolCallId, {
+      ...execution,
+      tool: nextTool,
+      updatedAt: nowIso,
+    });
+    this.entries = upsertToolGroupDisplay(
+      this.entries,
+      sessionId,
+      execution.requestId,
+      nextTool,
+    );
   }
 
   private applyTodoToolResult(tool: ToolCallDisplay): void {

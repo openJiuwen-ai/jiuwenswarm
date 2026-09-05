@@ -156,6 +156,7 @@ export interface AppEventDelegate {
     requestId?: string,
     updatedAt?: string,
   ): void;
+  applyToolUpdatePayload(payload: Record<string, unknown>, sessionId: string): void;
   addSyntheticToolExecution(
     tool: ToolCallDisplay,
     sessionId: string,
@@ -1162,6 +1163,10 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
         typeof payload.request_id === "string" ? payload.request_id : undefined,
       );
       _handleWorktreeToolResult(delegate, payload);
+      return true;
+
+    case "chat.tool_update":
+      delegate.applyToolUpdatePayload(payload, activeSessionId);
       return true;
 
     case "chat.symphony_status": {

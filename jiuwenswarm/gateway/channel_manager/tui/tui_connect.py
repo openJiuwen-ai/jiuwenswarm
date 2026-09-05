@@ -882,9 +882,37 @@ def resolve_3rdagent_switch_session_id(params: dict | None) -> str:
     return str(params.get("session_id") or "").strip()
 
 
+async def _cancel_session_work_before_rewind(
+    message_handler: Any,
+    target_sid: str,
+    *,
+    user_id: str | None = None,
+) -> None:
+    """Stop in-flight gateway streams and AgentServer work before /rewind."""
+    if message_handler is None:
+        return
+    sid = (target_sid or "").strip()
+    if not sid:
+        return
+    try:
+        await message_handler.cancel_agent_session_work(
+            "tui",
+            sid,
+            user_id=user_id,
+            publish_interrupt_result=False,
+        )
+    except Exception:
+        logger.warning(
+            "[cli rewind] cancel in-flight work failed: session_id=%s",
+            sid,
+            exc_info=True,
+        )
+
+
 def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     channel = bind.channel
     agent_client = bind.agent_client
+    message_handler = bind.message_handler
     on_config_saved = bind.on_config_saved
     path = bind.path
     cron_controller_ref = bind.cron_controller
@@ -1983,6 +2011,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
+        await _cancel_session_work_before_rewind(
+            message_handler, target_sid, user_id=user_id,
+        )
         if await _forward_rewind_e2a(
             ForwardRewindE2AParams(
                 ws=ws,
@@ -2062,6 +2093,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
+        await _cancel_session_work_before_rewind(
+            message_handler, target_sid, user_id=user_id,
+        )
         if await _forward_rewind_e2a(
             ForwardRewindE2AParams(
                 ws=ws,
