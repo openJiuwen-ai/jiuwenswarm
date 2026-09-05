@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -11,6 +12,11 @@ from jiuwenswarm.agents.harness.common.rails.permissions.send_file_approval_scop
     SendFileSessionApprovalStore,
     parse_human_approval_scope,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_audit import (
+    _parse_confirmation_payload,
+)
+
+
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
@@ -29,6 +35,24 @@ def test_confirmation_aliases_map_to_strict_human_scopes(
     payload: dict[str, Any], expected: str | None
 ) -> None:
     assert parse_human_approval_scope(payload) == expected
+
+
+def test_object_confirmation_parser_preserves_persist_allow_alias() -> None:
+    payload = _parse_confirmation_payload(
+        SimpleNamespace(
+            approved=True,
+            auto_confirm=True,
+            persist_allow=True,
+            feedback="remember",
+        )
+    )
+
+    assert payload == {
+        "approved": True,
+        "auto_confirm": True,
+        "persist_allow": True,
+        "feedback": "remember",
+    }
 
 
 def test_session_store_binds_owner_session_tool_and_exact_ask_paths() -> None:
