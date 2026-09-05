@@ -533,6 +533,31 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
     ]
 
 
+
+def _governance_rails(config: dict[str, Any]) -> list[RailSpec]:
+    """Return opt-in governance rail specs.
+
+    Every rail here is disabled by default; a team enables one via its own
+    ``config.<rail>.enabled`` flag. When none is set this returns ``[]`` so
+    default assembly is byte-identical to a build without this function.
+    """
+    specs: list[RailSpec] = []
+
+    usage = _config_section(config, "usage_report")
+    if usage.get("enabled"):
+        specs.append(
+            RailSpec(
+                type=registry.USAGE_REPORT,
+                params={
+                    key: usage[key]
+                    for key in ("report_path", "stage_label_key", "default_label")
+                    if key in usage
+                },
+            )
+        )
+    return specs
+
+
 def _build_team_capability_specs(
     config: dict[str, Any],
     mode: str,
@@ -575,6 +600,7 @@ def _build_team_capability_specs(
         )
 
     rails_specs.extend(_role_evolution_rails(config, role))
+    rails_specs.extend(_governance_rails(config))
 
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
@@ -643,6 +669,7 @@ def _build_code_capability_specs(
         for name in _CODE_SHARED_RAIL_NAMES
     )
     rails_specs.extend(_role_evolution_rails(config, role))
+    rails_specs.extend(_governance_rails(config))
 
     tool_specs: list[BuiltinToolSpec] = [
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
