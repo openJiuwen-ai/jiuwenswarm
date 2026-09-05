@@ -1564,7 +1564,7 @@ def _flatten_modes_team_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
                     "prompt_hint": str(member.get("prompt_hint") or ""),
                     "agent_key": agent_key,
                 })
-        flat[f"{team_prefix}predefined_members"] = json.dumps(members_out, ensure_ascii=False)
+        flat[f"team_predefined_members_{team_idx}"] = json.dumps(members_out, ensure_ascii=False)
 
     for agent_idx, (agent_key, spec) in enumerate(agent_specs.items()):
         if agent_idx >= 10:
