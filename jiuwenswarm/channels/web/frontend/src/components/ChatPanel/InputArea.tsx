@@ -78,6 +78,12 @@ import {
 import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
+import {
+  getClipboardImageFiles,
+  IMAGE_INPUT_DISABLED_ALERT_KEY,
+  isImageInputDisabled,
+  shouldAlertImagePasteDisabled,
+} from './clipboardImagePaste';
 import AgentPickerIcon from '../../assets/agent-management/智能体选择.svg?react';
 import AttachmentIcon from '../../assets/agent-management/attachment.svg?react';
 import GoalIcon from '../../assets/agent-management/goal.svg?react';
@@ -974,7 +980,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     },
   });
 
-  const imageInputDisabled = isListening || composerDisabled || (isInterruptible && !isTeamMode);
+  const imageInputDisabled = isImageInputDisabled({
+    isListening,
+    isCompactRunning,
+    isInterruptible,
+    isTeamMode,
+    isAgentMode,
+  });
   const isDesktopBridgeReady = useDesktopLocalFilePickerReady();
   // "+" 触发按钮本身不跟图片/目标的可用性挂钩：菜单以后可能挂其他跟图片/目标无关的功能，
   // 触发按钮只要不在录音就该能点开；具体某一项能不能选，交给菜单里每一项各自的禁用态处理。
@@ -2229,16 +2241,16 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
       const hasBrowserFiles = clipboardHasFileItems(event.clipboardData);
       // Capture File blobs before any await; clipboardData can become unavailable.
-      const imageFiles = hasBrowserFiles
-        ? Array.from(event.clipboardData?.items || [])
-            .filter((item) => item.kind === 'file')
-            .map((item) => item.getAsFile())
-            .filter((file): file is File => Boolean(file && isImageFile(file)))
-        : [];
+      const imageFiles = hasBrowserFiles ? getClipboardImageFiles(event.clipboardData) : [];
 
       if (hasBrowserFiles) {
         event.preventDefault();
-        if (imageInputDisabled) return true;
+        if (imageInputDisabled) {
+          if (shouldAlertImagePasteDisabled(true, imageFiles.length > 0)) {
+            pushAttachmentAlert(t(IMAGE_INPUT_DISABLED_ALERT_KEY));
+          }
+          return true;
+        }
         void (async () => {
           const clipboardPicks = await getClipboardFilePicks();
           if (clipboardPicks.length) {
@@ -2264,20 +2276,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }
       return false;
     },
-    [appendAttachmentFiles, appendLocalFilePicks, imageInputDisabled, isDesktopBridgeReady],
+    [
+      appendAttachmentFiles,
+      appendLocalFilePicks,
+      imageInputDisabled,
+      isDesktopBridgeReady,
+      pushAttachmentAlert,
+      t,
+    ],
   );
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) => {
-      if (event.clipboardData.getData('text/plain').trim()) {
+      const hasText = Boolean(event.clipboardData.getData('text/plain').trim());
+      if (hasText) {
         notifyKVCInputIntent();
       }
       if (handleDesktopFilePaste(event)) return;
-      if (clipboardHasFileItems(event.clipboardData)) {
+
+      const imageFiles = getClipboardImageFiles(event.clipboardData);
+      if (imageFiles.length && !hasText) {
+        event.preventDefault();
+        if (shouldAlertImagePasteDisabled(imageInputDisabled, true)) {
+          pushAttachmentAlert(t(IMAGE_INPUT_DISABLED_ALERT_KEY));
+          return;
+        }
+        appendAttachmentFiles(imageFiles);
+        return;
+      }
+
+      if (clipboardHasFileItems(event.clipboardData) && !hasText) {
         event.preventDefault();
       }
     },
-    [handleDesktopFilePaste, notifyKVCInputIntent],
+    [appendAttachmentFiles, handleDesktopFilePaste, imageInputDisabled, notifyKVCInputIntent, pushAttachmentAlert, t],
   );
 
   useEffect(() => {
