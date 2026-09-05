@@ -189,7 +189,12 @@ async def test_jsonrpc_initialize_and_session_new(monkeypatch):
     assert agent_info.get("name") == "jiuwenswarm"
     capabilities = init_result.get("agentCapabilities")
     assert isinstance(capabilities, dict)
-    assert capabilities.get("loadSession") is False
+    assert capabilities.get("loadSession") is True
+    assert capabilities.get("promptCapabilities") == {
+        "image": True,
+        "audio": False,
+        "embeddedContext": True,
+    }
     assert capabilities.get("sessionCapabilities") == {"list": {}}
     assert capabilities.get("mcpCapabilities") == {"http": False, "sse": False}
     assert "fs" not in capabilities
@@ -227,8 +232,15 @@ async def test_jsonrpc_session_list_returns_known_sessions(monkeypatch):
     }
 
 
+def _write_history_jsonl(sessions_dir, session_id: str, records: list[dict]) -> None:
+    session_dir = sessions_dir / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    lines = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+    (session_dir / "history.jsonl").write_text(lines, encoding="utf-8")
+
+
 @pytest.mark.asyncio
-async def test_jsonrpc_session_load_is_rejected_when_capability_is_disabled(monkeypatch):
+async def test_jsonrpc_session_load_rejects_unknown_session(tmp_path, monkeypatch):
     fake_stdin = FakeStdin(
         [
             json_line({"jsonrpc": "2.0", "id": 21, "method": "session/load", "params": {"sessionId": "sess-1"}}),
@@ -240,6 +252,10 @@ async def test_jsonrpc_session_load_is_rejected_when_capability_is_disabled(monk
     monkeypatch.setattr("sys.stdin", fake_stdin)
     monkeypatch.setattr("sys.stdout", fake_stdout)
     monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_history.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
 
     await channel.start()
 
@@ -248,10 +264,83 @@ async def test_jsonrpc_session_load_is_rejected_when_capability_is_disabled(monk
             "jsonrpc": "2.0",
             "id": 21,
             "error": {
-                "code": -32601,
-                "message": "Method not supported by agent capabilities: session/load",
+                "code": -32602,
+                "message": "Unknown session: sess-1",
             },
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_session_load_replays_history_chronologically(tmp_path, monkeypatch):
+    fake_stdin = FakeStdin(
+        [
+            json_line(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 22,
+                    "method": "session/load",
+                    "params": {"sessionId": "sess-replay"},
+                }
+            ),
+        ]
+    )
+    fake_stdout = FakeStdout()
+    channel = AcpChannelHarness(AcpChannelConfig(enabled=True), DummyBus())
+
+    monkeypatch.setattr("sys.stdin", fake_stdin)
+    monkeypatch.setattr("sys.stdout", fake_stdout)
+    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_history.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
+    _write_history_jsonl(
+        tmp_path,
+        "sess-replay",
+        [
+            {"role": "user", "content": "question", "timestamp": 1.0},
+            {
+                "role": "assistant",
+                "content": "answer",
+                "event_type": "chat.final",
+                "timestamp": 2.0,
+            },
+            {
+                "role": "assistant",
+                "content": "tool detail",
+                "event_type": "chat.tool_call",
+                "timestamp": 3.0,
+            },
+        ],
+    )
+
+    await channel.start()
+
+    assert fake_stdout.buffer.json_lines() == [
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sess-replay",
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "question"},
+                },
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sess-replay",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "answer"},
+                },
+            },
+        },
+        {"jsonrpc": "2.0", "id": 22, "result": {}},
     ]
 
 
@@ -361,6 +450,92 @@ async def test_jsonrpc_session_prompt_emits_updates_and_final_result(monkeypatch
     assert isinstance(result, dict)
     assert responses[3].get("id") == 3
     assert result.get("stopReason") == "end_turn"
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_session_prompt_maps_blocks_to_attachments_and_media(tmp_path, monkeypatch):
+    import base64
+    from pathlib import Path
+
+    image_b64 = base64.b64encode(b"stdio png bytes").decode("ascii")
+    fake_stdin = FakeStdin(
+        [
+            json_line(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 31,
+                    "method": "session/prompt",
+                    "params": {
+                        "sessionId": "sess-blocks",
+                        "prompt": [
+                            {"type": "text", "text": "check this"},
+                            {
+                                "type": "resource",
+                                "resource": {
+                                    "uri": "file:///workspace/a.py",
+                                    "text": "def a(): pass",
+                                },
+                            },
+                            {
+                                "type": "resource_link",
+                                "uri": "file:///workspace/b.py",
+                                "name": "b.py",
+                            },
+                            {"type": "image", "data": image_b64, "mimeType": "image/png"},
+                        ],
+                    },
+                }
+            )
+        ]
+    )
+    fake_stdout = FakeStdout()
+    channel = AcpChannel(AcpChannelConfig(enabled=True), DummyBus())
+    seen = []
+
+    monkeypatch.setattr("sys.stdin", fake_stdin)
+    monkeypatch.setattr("sys.stdout", fake_stdout)
+    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.media_attachments.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
+
+    async def _on_message(msg):
+        seen.append(msg)
+        await channel.send(
+            Message(
+                id=msg.id,
+                type="event",
+                channel_id="acp",
+                session_id=msg.session_id,
+                params={},
+                timestamp=time.time(),
+                ok=True,
+                payload={"is_processing": False},
+                event_type=EventType.CHAT_PROCESSING_STATUS,
+            )
+        )
+
+    channel.on_message(_on_message)
+    await channel.start()
+
+    assert len(seen) == 1
+    params = seen[0].params
+    expected_text = (
+        'check this\n<context uri="file:///workspace/a.py">\ndef a(): pass\n</context>'
+    )
+    assert params["content"] == expected_text
+    assert params["query"] == expected_text
+    assert params["prompt"] == [{"type": "text", "text": expected_text}]
+    assert params["attachments"] == [
+        {"path": "/workspace/b.py", "type": "file", "filename": "b.py"}
+    ]
+    media_items = params["media_items"]
+    assert len(media_items) == 1
+    assert "base64Data" not in media_items[0]
+    stored_path = Path(media_items[0]["path"])
+    assert (tmp_path / "sess-blocks" / "uploads") in stored_path.parents
+    assert stored_path.read_bytes() == b"stdio png bytes"
 
 
 @pytest.mark.asyncio

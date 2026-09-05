@@ -265,11 +265,11 @@ async def test_gateway_server_initialize_returns_current_acp_capabilities():
     assert result["protocolVersion"] == 1
     assert result["agentInfo"]["name"] == "jiuwenswarm"
     assert result["agentCapabilities"] == {
-        "loadSession": False,
+        "loadSession": True,
         "promptCapabilities": {
-            "image": False,
+            "image": True,
             "audio": False,
-            "embeddedContext": False,
+            "embeddedContext": True,
         },
         "sessionCapabilities": {"list": {}},
         "mcpCapabilities": {"http": False, "sse": False},
@@ -277,8 +277,19 @@ async def test_gateway_server_initialize_returns_current_acp_capabilities():
     assert result["authMethods"] == []
 
 
+def _write_history_jsonl(sessions_dir, session_id: str, records: list[dict]) -> None:
+    session_dir = sessions_dir / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    lines = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+    (session_dir / "history.jsonl").write_text(lines, encoding="utf-8")
+
+
 @pytest.mark.asyncio
-async def test_gateway_server_rejects_session_load_when_capability_is_disabled():
+async def test_gateway_server_session_load_rejects_unknown_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_history.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
     server = build_server()
     ws = FakeWebSocket()
 
@@ -300,10 +311,203 @@ async def test_gateway_server_rejects_session_load_when_capability_is_disabled()
             "jsonrpc": "2.0",
             "id": 2,
             "error": {
-                "code": -32601,
-                "message": "Method not supported by agent capabilities: session/load",
+                "code": -32602,
+                "message": "Unknown session: sess-load",
             },
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_server_session_load_replays_history_chronologically(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_history.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
+    _write_history_jsonl(
+        tmp_path,
+        "sess-replay",
+        [
+            {"role": "user", "content": "first question", "timestamp": 1.0},
+            {
+                "role": "assistant",
+                "content": "first answer",
+                "event_type": "chat.final",
+                "timestamp": 2.0,
+            },
+            {
+                "role": "assistant",
+                "content": "tool output",
+                "event_type": "chat.tool_result",
+                "timestamp": 3.0,
+            },
+            {"role": "user", "content": "second question", "timestamp": 4.0},
+        ],
+    )
+    server = build_server()
+    ws = FakeWebSocket()
+
+    await server.handle_raw_message_public(
+        ws,
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "session/load",
+                "params": {"sessionId": "sess-replay", "cwd": "/workspace"},
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert ws.sent_frames == [
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sess-replay",
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "first question"},
+                },
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sess-replay",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "first answer"},
+                },
+            },
+        },
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "sess-replay",
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "second question"},
+                },
+            },
+        },
+        {"jsonrpc": "2.0", "id": 5, "result": {}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_server_session_prompt_maps_blocks_to_attachments_and_media(
+    tmp_path, monkeypatch
+):
+    import base64
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.media_attachments.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
+    server = build_server()
+    ws = FakeWebSocket()
+    seen = []
+
+    async def on_message(msg):
+        seen.append(msg)
+
+    server.on_message(on_message)
+
+    image_b64 = base64.b64encode(b"fake png bytes").decode("ascii")
+    await server.handle_raw_message_public(
+        ws,
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": "sess-blocks",
+                    "prompt": [
+                        {"type": "text", "text": "explain this"},
+                        {
+                            "type": "resource",
+                            "resource": {
+                                "uri": "file:///workspace/a.py",
+                                "text": "def a(): pass",
+                            },
+                        },
+                        {
+                            "type": "resource_link",
+                            "uri": "file:///workspace/b.py",
+                            "name": "b.py",
+                        },
+                        {"type": "image", "data": image_b64, "mimeType": "image/png"},
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert len(seen) == 1
+    params = seen[0].params
+    assert "prompt" not in params
+    assert params["content"] == (
+        'explain this\n<context uri="file:///workspace/a.py">\ndef a(): pass\n</context>'
+    )
+    assert params["query"] == params["content"]
+    assert params["attachments"] == [
+        {"path": "/workspace/b.py", "type": "file", "filename": "b.py"}
+    ]
+    media_items = params["media_items"]
+    assert len(media_items) == 1
+    assert media_items[0]["type"] == "image"
+    assert "base64Data" not in media_items[0]
+    stored_path = Path(media_items[0]["path"])
+    assert (tmp_path / "sess-blocks" / "uploads") in stored_path.parents
+    assert stored_path.read_bytes() == b"fake png bytes"
+    assert params["files"]["uploaded_images"][0]["path"] == str(stored_path)
+
+
+@pytest.mark.asyncio
+async def test_gateway_server_session_prompt_accepts_attachment_only_prompt():
+    server = build_server()
+    ws = FakeWebSocket()
+    seen = []
+
+    async def on_message(msg):
+        seen.append(msg)
+
+    server.on_message(on_message)
+
+    await server.handle_raw_message_public(
+        ws,
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": "sess-attach-only",
+                    "prompt": [
+                        {
+                            "type": "resource_link",
+                            "uri": "file:///workspace/c.py",
+                            "name": "c.py",
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    assert len(seen) == 1
+    params = seen[0].params
+    assert params["content"] == "(see attached context)"
+    assert params["attachments"] == [
+        {"path": "/workspace/c.py", "type": "file", "filename": "c.py"}
     ]
 
 
