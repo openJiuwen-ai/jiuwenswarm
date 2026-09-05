@@ -1,0 +1,3 @@
+interface:
+  display_name: "Trustscore"
+  short_description: "Evaluate model answer consistency with paraphrased MCQs"
