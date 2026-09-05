@@ -119,7 +119,9 @@ _PRESETS: list[VendorPreset] = [
         default_model="qwen3.7-max",
         model_options=("qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.7-flash", "qwen3.6-max-preview"),
         icon_key="qwen",
-        models_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        # token-plan key 只在 token-plan 域名有效,通用 dashscope 域名 401 invalid_api_key,
+        # 所以拉列表也必须走 token-plan maas 域名(实测 200,12 个模型)。
+        models_endpoint="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models",
         models_needs_key=True,
         anthropic_base="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
     ),
@@ -160,8 +162,10 @@ _PRESETS: list[VendorPreset] = [
             "mimo-v2.5",
         ),
         icon_key="baidu",
-        models_endpoint="https://qianfan.baidubce.com/v2/models",
-        models_needs_key=True,  # 实测无 key 返回 403 AccessDenied;带 Bearer 才 200
+        # token plan key 走 tokenplan 端点;/v2/models 是通用端点。/v2/tokenplan/models 404,
+        # personal 变体 401(端点存在,对齐 api_base)。
+        models_endpoint="https://qianfan.baidubce.com/v2/tokenplan/personal/models",
+        models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
         anthropic_base="https://qianfan.baidubce.com/anthropic/tokenplan/personal",
     ),
     VendorPreset(
@@ -172,10 +176,9 @@ _PRESETS: list[VendorPreset] = [
         default_model="mimo-v2.5-pro",
         model_options=("mimo-v2.5-pro", "mimo-v2.5"),
         icon_key="mimo",
-        # 拉列表走通用域名:套餐域名 token-plan-cn.* 只认套餐 key,通用 key 实测 401;
-        # 通用 api.xiaomimimo.com/v1/models + 通用 key 实测 200。与 alibaba Token Plan 同款
-        # (套餐调用走 token-plan 域名、拉列表走通用 dashscope 域名)。
-        models_endpoint="https://api.xiaomimimo.com/v1/models",
+        # 拉列表也必须走套餐域名:通用 api.xiaomimimo.com 对套餐 key 返回 401 Invalid API Key,
+        # 套餐域名 token-plan-cn.xiaomimimo.com/v1/models 才 200。
+        models_endpoint="https://token-plan-cn.xiaomimimo.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://token-plan-cn.xiaomimimo.com/anthropic",
     ),
@@ -189,7 +192,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="qwen3-coder-next",
         model_options=("qwen3-coder-next", "qwen3.7-max", "qwen3.6-max-preview"),
         icon_key="qwen",
-        models_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        # coding key 只在 coding 域名有效,通用 dashscope 域名 401。coding 域名 /v1/models 实测 200(公开)。
+        models_endpoint="https://coding.dashscope.aliyuncs.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://coding.dashscope.aliyuncs.com/apps/anthropic",
     ),
@@ -200,7 +204,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="kimi-k2.7-code",
         model_options=("kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking"),
         icon_key="kimi",
-        models_endpoint="https://api.moonshot.cn/v1/models",
+        # coding key 只在 api.kimi.com 有效,moonshot.cn 是通用域。coding 域 /coding/v1/models 实测 401(端点存在,非 404)。
+        models_endpoint="https://api.kimi.com/coding/v1/models",
         models_needs_key=True,
         anthropic_base="https://api.kimi.com/coding",
     ),
@@ -211,7 +216,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="glm-4.7",
         model_options=("glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.7-flash", "codegeex-4"),
         icon_key="zhipu",
-        models_endpoint="https://open.bigmodel.cn/api/paas/v4/models",
+        # coding key 走 coding 路径;/api/paas/v4/models 是通用端点。/api/coding/paas/v4/models 实测 401(端点存在)。
+        models_endpoint="https://open.bigmodel.cn/api/coding/paas/v4/models",
         models_needs_key=True,
         anthropic_base="https://open.bigmodel.cn/api/anthropic",
     ),
@@ -222,7 +228,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="seed-2.0-mini",
         model_options=("seed-2.0-mini", "seed-2.0-lite", "seed-1.6", "seed-1.6-flash"),
         icon_key="doubao",
-        models_endpoint="https://ark.cn-beijing.volces.com/api/v3/models",
+        # coding key 走 coding 端点;/api/v3/models 是通用端点。/api/coding/v3/models 实测 401(端点存在)。
+        models_endpoint="https://ark.cn-beijing.volces.com/api/coding/v3/models",
         models_needs_key=True,
         anthropic_base="https://ark.cn-beijing.volces.com/api/coding",
     ),
@@ -233,8 +240,9 @@ _PRESETS: list[VendorPreset] = [
         default_model="deepseek-v4-pro",
         model_options=("deepseek-v4-pro", "deepseek-v4-flash", "glm-5.1", "kimi-k2.5"),
         icon_key="baidu",
-        models_endpoint="https://qianfan.baidubce.com/v2/models",
-        models_needs_key=True,  # 实测无 key 返回 403;带 Bearer 才 200
+        # coding key 走 /v2/coding 端点;/v2/models 是通用端点。/v2/coding/models 实测 401(端点存在)。
+        models_endpoint="https://qianfan.baidubce.com/v2/coding/models",
+        models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
         anthropic_base="https://qianfan.baidubce.com/anthropic/coding",
     ),
 

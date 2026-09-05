@@ -150,7 +150,9 @@
       "fetchReasons": {
         "noEndpoint": "当前为提供商预设列表：该提供商未提供模型列表接口",
         "apiKeyRequired": "当前为提供商预设列表：填写 API Key 后可拉取最新模型",
-        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空"
+        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空",
+        "remoteAuthFailed": "当前为提供商预设列表：API Key 无效或鉴权方式不符（HTTP 401/403）",
+        "remoteRateLimited": "当前为提供商预设列表：远端限流（HTTP 429），请稍后重试"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
