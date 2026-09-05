@@ -95,6 +95,8 @@ packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui-bin/
 
 .crossnote/
 .trae/
+.ua/
+.codegraph/
 
 # Build-time Node runtime cache used by packaging scripts.
 vendor/node/
