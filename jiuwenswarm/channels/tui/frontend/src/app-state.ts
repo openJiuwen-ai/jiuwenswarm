@@ -108,12 +108,26 @@ export interface ModelUsageEntry {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  input_cost?: number;
+  output_cost?: number;
+  total_cost?: number;
 }
 
 export interface SessionUsageSummary {
   total_input_tokens: number;
   total_output_tokens: number;
   total_tokens: number;
+  cost_available: boolean;
+  cost_feature_enabled?: boolean;
+  cost_source?: string;
+  currency?: string | null;
+  total_input_cost?: number;
+  total_output_cost?: number;
+  total_cost?: number;
+  cost_limit?: number | null;
+  limit_supported?: boolean;
+  limit_enforcement_enabled?: boolean;
+  cost_limit_exceeded: boolean;
   byModel: ModelUsageEntry[];
 }
 
@@ -1403,10 +1417,32 @@ export class CliPiAppState {
 
   getUsageSummary(): SessionUsageSummary {
     const entries = Array.from(this.usageByModel.values());
+    const inputCost = entries.reduce((s, e) => s + (e.input_cost ?? 0), 0);
+    const outputCost = entries.reduce((s, e) => s + (e.output_cost ?? 0), 0);
+    const totalCost = entries.reduce((s, e) => s + (e.total_cost ?? (e.input_cost ?? 0) + (e.output_cost ?? 0)), 0);
+    const costAvailable = entries.some((e) =>
+      typeof e.total_cost === "number" ||
+      typeof e.input_cost === "number" ||
+      typeof e.output_cost === "number"
+    );
     return {
       total_input_tokens: entries.reduce((s, e) => s + e.input_tokens, 0),
       total_output_tokens: entries.reduce((s, e) => s + e.output_tokens, 0),
       total_tokens: entries.reduce((s, e) => s + e.total_tokens, 0),
+      cost_available: costAvailable,
+      cost_feature_enabled: costAvailable,
+      cost_source: costAvailable ? "provider_reported" : "unavailable",
+      ...(costAvailable
+        ? {
+            total_input_cost: inputCost,
+            total_output_cost: outputCost,
+            total_cost: totalCost,
+          }
+        : {}),
+      cost_limit: null,
+      limit_supported: false,
+      limit_enforcement_enabled: false,
+      cost_limit_exceeded: false,
       byModel: entries,
     };
   }
@@ -1420,13 +1456,31 @@ export class CliPiAppState {
       typeof usage.total_tokens === "number" && Number.isFinite(usage.total_tokens)
         ? Math.max(0, usage.total_tokens)
         : inputDelta + outputDelta;
+    const inputCostDelta = this.safeCostValue(usage.input_cost);
+    const outputCostDelta = this.safeCostValue(usage.output_cost);
+    const explicitTotalCostDelta = this.safeCostValue(usage.total_cost);
+    const totalCostDelta = explicitTotalCostDelta ?? (
+      inputCostDelta !== undefined || outputCostDelta !== undefined
+        ? (inputCostDelta ?? 0) + (outputCostDelta ?? 0)
+        : undefined
+    );
     const entry: ModelUsageEntry = {
       model: key,
       input_tokens: (existing?.input_tokens ?? 0) + inputDelta,
       output_tokens: (existing?.output_tokens ?? 0) + outputDelta,
       total_tokens: (existing?.total_tokens ?? 0) + totalDelta,
     };
+    if (inputCostDelta !== undefined || existing?.input_cost !== undefined) {
+      entry.input_cost = (existing?.input_cost ?? 0) + (inputCostDelta ?? 0);
+    }
+    if (outputCostDelta !== undefined || existing?.output_cost !== undefined) {
+      entry.output_cost = (existing?.output_cost ?? 0) + (outputCostDelta ?? 0);
+    }
+    if (totalCostDelta !== undefined || existing?.total_cost !== undefined) {
+      entry.total_cost = (existing?.total_cost ?? 0) + (totalCostDelta ?? 0);
+    }
     this.usageByModel.set(key, entry);
+    this.emitChange();
   }
 
   private updateCurrentUsageTokens(usage: Record<string, unknown>): void {
@@ -1448,6 +1502,10 @@ export class CliPiAppState {
 
   private safeTokenCount(value: unknown): number {
     return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+  }
+
+  private safeCostValue(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined;
   }
 
   private resetCurrentUsageTokens(): void {
@@ -3475,6 +3533,18 @@ export class CliPiAppState {
         total_input_tokens: usage.total_input_tokens,
         total_output_tokens: usage.total_output_tokens,
         total_tokens: usage.total_tokens,
+        cost_available: usage.cost_available,
+        ...(usage.cost_available
+          ? {
+              cost_source: usage.cost_source ?? "provider_reported",
+              currency: usage.currency ?? null,
+              total_input_cost: usage.total_input_cost ?? 0,
+              total_output_cost: usage.total_output_cost ?? 0,
+              total_cost: usage.total_cost ?? 0,
+              cost_limit: usage.cost_limit ?? null,
+              cost_limit_exceeded: usage.cost_limit_exceeded,
+            }
+          : {}),
       },
       context_window: {
         context_window_size: snapshot.contextWindowLimit ?? 0,
