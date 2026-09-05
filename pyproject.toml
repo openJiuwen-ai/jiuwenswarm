@@ -210,3 +210,6 @@ lint = [
     "httpx[socks]>=0.28.1",
 ]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "ASYNC"]

@@ -1891,7 +1891,7 @@ class JiuWenSwarm:
                         shutil.copytree(child, dest)
                     elif child.is_file():
                         shutil.copy2(child, dest)
-                self._skill_manager.sync_workspace_from_version_content(skill_dir, content_root)
+                await self._skill_manager.sync_workspace_from_version_content(skill_dir, content_root)
 
             params = dict(request.params) if isinstance(request.params, dict) else {}
             params["query"] = followup
@@ -1924,7 +1924,7 @@ class JiuWenSwarm:
 
             if skill_dir is not None and content_root is not None and should_write_back:
                 # Agent 改写 workspace 后回写目标版本副本
-                self._skill_manager.copy_workspace_business_to_version(skill_dir, content_root)
+                await self._skill_manager.copy_workspace_business_to_version(skill_dir, content_root)
                 version = target.get("version")
                 if isinstance(version, str) and version.strip():
                     from jiuwenswarm.server.runtime.skill.archive_store import touch_version_metadata
@@ -2044,7 +2044,7 @@ class JiuWenSwarm:
             async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
                 pass
 
-            result = self._skill_manager.finalize_create_from_knowledge(output_dir)
+            result = await self._skill_manager.finalize_create_from_knowledge(output_dir)
             await self._refresh_skill_rails_after_change()
             return result
         finally:

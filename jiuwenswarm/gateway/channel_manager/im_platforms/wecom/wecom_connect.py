@@ -318,7 +318,7 @@ class WecomChannel(BaseChannel):
             return ""
         return normalized
 
-    def _generate_group_ack_sync(self, target_name: str, content: str) -> str:
+    async def _generate_group_ack(self, target_name: str, content: str) -> str:
         """调用轻量 LLM 生成群内简短确认文案。"""
         api_key = os.getenv("API_KEY", "").strip()
         api_base = os.getenv("API_BASE", "").strip()
@@ -339,12 +339,13 @@ class WecomChannel(BaseChannel):
             "- 更像'好的，我知道了，会准时参加会议''收到，我会跟进这件事'\n"
             "- 不要照搬原文，保留核心动作即可\n\n"
             "你私发给{name}的内容是：\n{content}"
-        ).format(   
+        ).format(
             name=target_name,
             content=content[:500],
         )
         try:
-            resp = requests.post(
+            resp = await asyncio.to_thread(
+                requests.post,
                 f"{api_base.rstrip('/')}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
@@ -378,9 +379,7 @@ class WecomChannel(BaseChannel):
             if not group_chat_id:
                 return
 
-            ack_text = await asyncio.to_thread(
-                self._generate_group_ack_sync, target_name, content
-            )
+            ack_text = await self._generate_group_ack(target_name, content)
             if ack_text and self._ws_client and getattr(self._ws_client, "is_connected", False):
                 await self._ws_client.send_message(
                     group_chat_id,

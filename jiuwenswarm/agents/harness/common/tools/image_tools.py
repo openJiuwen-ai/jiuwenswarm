@@ -187,7 +187,9 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
             data = None
             for attempt in range(4):
                 try:
-                    r = requests.get(src, headers={"User-Agent": ua}, verify=get_requests_verify())
+                    r = await asyncio.to_thread(
+                        requests.get, src, headers={"User-Agent": ua}, verify=get_requests_verify()
+                    )
                     r.raise_for_status()
                     data = r.content
                     break
@@ -423,7 +425,9 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
-            response = requests.get(image_url, headers={"User-Agent": ua})
+            response = await asyncio.to_thread(
+                requests.get, image_url, headers={"User-Agent": ua}
+            )
             response.raise_for_status()
 
             with open(output_path, "wb") as f:

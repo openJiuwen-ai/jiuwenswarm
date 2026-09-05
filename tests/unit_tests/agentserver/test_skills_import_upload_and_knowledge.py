@@ -198,14 +198,14 @@ async def test_create_from_knowledge_file_routes_router(
     assert str(doc) in payload["followup_prompt"] or str(doc.resolve()) in payload["followup_prompt"]
 
 
-def test_finalize_create_from_knowledge_installs(
+async def test_finalize_create_from_knowledge_installs(
     manager: SkillManager, tmp_path: Path
 ) -> None:
     out = tmp_path / "gen"
     skill_root = out / "new-skill"
     skill_root.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text(_skill_md("new-skill"), encoding="utf-8")
-    result = manager.finalize_create_from_knowledge(out)
+    result = await manager.finalize_create_from_knowledge(out)
     assert result["success"] is True
     assert result["skill"]["name"] == "new-skill"
     assert result["skill"]["version"] is None
@@ -278,7 +278,7 @@ async def test_create_from_knowledge_silent_runs_agent(
             "input_file": "",
         }
     )
-    swarm._skill_manager.finalize_create_from_knowledge = MagicMock(
+    swarm._skill_manager.finalize_create_from_knowledge = AsyncMock(
         return_value={
             "success": True,
             "skill": {

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -97,9 +98,11 @@ def _load_audio_as_base64(file_path: str) -> tuple[str, str]:
     return b64_str, fmt
 
 
-def _download_audio_to_tempfile(url: str) -> str:
+async def _download_audio_to_tempfile(url: str) -> str:
     hdrs = {"User-Agent": DEFAULT_USER_AGENT}
-    resp = requests.get(url, headers=hdrs, timeout=HTTP_TIMEOUT, stream=True, verify=get_requests_verify())
+    resp = await asyncio.to_thread(
+        requests.get, url, headers=hdrs, timeout=HTTP_TIMEOUT, stream=True, verify=get_requests_verify()
+    )
     resp.raise_for_status()
     ct = resp.headers.get("content-type", "")
     ext = _resolve_audio_extension(url, ct)
@@ -176,7 +179,7 @@ async def audio_question_answering(audio_path_or_url: str, question: str) -> str
         elif "home/user" in audio_path_or_url:
             return _build_sandbox_unavailable_msg("audio_question_answering")
         else:
-            target_path = _download_audio_to_tempfile(audio_path_or_url)
+            target_path = await _download_audio_to_tempfile(audio_path_or_url)
             cleanup_needed = True
 
         try:
@@ -241,7 +244,7 @@ async def audio_metadata(audio_path_or_url: str) -> str:
                 "the local path instead."
             )
         else:
-            local_path = _download_audio_to_tempfile(audio_path_or_url)
+            local_path = await _download_audio_to_tempfile(audio_path_or_url)
             cleanup = True
 
         duration = _compute_audio_length_seconds(local_path)
@@ -289,7 +292,8 @@ async def audio_metadata(audio_path_or_url: str) -> str:
             "signature_version": "1",
         }
 
-        r = requests.post(
+        r = await asyncio.to_thread(
+            requests.post,
             ACR_BASE_URL,
             files=files_payload,
             data=form_data,
