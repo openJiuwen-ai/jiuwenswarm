@@ -91,6 +91,7 @@ class MemoryIndexManager:
         self._interval_timer: Optional[asyncio.Task] = None
         self._watch_timer: Optional[asyncio.Task] = None
         self._session_timer: Optional[asyncio.Task] = None
+        self._sync_lock = asyncio.Lock()
         self._session_pending_files: Set[str] = set()
         self._session_deltas: Dict[str, SessionDeltaState] = {}
 
@@ -473,24 +474,25 @@ class MemoryIndexManager:
             force: bool = False
     ) -> None:
         """Synchronize memory index."""
-        if self.closed:
-            return
+        async with self._sync_lock:
+            if self.closed:
+                return
 
-        needs_full_reindex = force or await self._should_full_reindex()
+            needs_full_reindex = force or await self._should_full_reindex()
 
-        if needs_full_reindex:
-            logger.info(f"Running full reindex (reason: {reason or 'unknown'})...")
-            await self._run_reindex()
-            return
+            if needs_full_reindex:
+                logger.info(f"Running full reindex (reason: {reason or 'unknown'})...")
+                await self._run_reindex()
+                return
 
-        logger.debug("Memory sync (reason: %s)...", reason or 'unknown')
+            logger.debug("Memory sync (reason: %s)...", reason or 'unknown')
 
-        if "memory" in self.settings.sources and self.dirty:
-            await self._sync_memory_files()
-            self.dirty = False
+            if "memory" in self.settings.sources and self.dirty:
+                await self._sync_memory_files()
+                self.dirty = False
 
-        if "sessions" in self.settings.sources:
-            await self._sync_session_files()
+            if "sessions" in self.settings.sources:
+                await self._sync_session_files()
 
     async def _should_full_reindex(self) -> bool:
         """Check if full reindex is needed."""
@@ -1214,30 +1216,34 @@ class MemoryIndexManager:
         if self.closed:
             return
 
-        self.closed = True
+        async with self._sync_lock:
+            if self.closed:
+                return
 
-        if self._interval_timer:
-            self._interval_timer.cancel()
-        if self._watch_timer:
-            self._watch_timer.cancel()
-        if self._session_timer:
-            self._session_timer.cancel()
+            self.closed = True
 
-        if self._file_observer:
-            try:
-                self._file_observer.stop()
-                self._file_observer.join()
-            except Exception as e:
-                logger.warning(f"Failed to stop file observer cleanly: {e}")
+            if self._interval_timer:
+                self._interval_timer.cancel()
+            if self._watch_timer:
+                self._watch_timer.cancel()
+            if self._session_timer:
+                self._session_timer.cancel()
 
-        if self.db:
-            self.db.close()
+            if self._file_observer:
+                try:
+                    self._file_observer.stop()
+                    self._file_observer.join()
+                except Exception as e:
+                    logger.warning(f"Failed to stop file observer cleanly: {e}")
 
-        cache_key = f"{self.agent_id}:{self.workspace_dir}"
-        if cache_key in INDEX_CACHE:
-            del INDEX_CACHE[cache_key]
+            if self.db:
+                self.db.close()
 
-        logger.info("Memory manager closed")
+            cache_key = f"{self.agent_id}:{self.workspace_dir}"
+            if cache_key in INDEX_CACHE:
+                del INDEX_CACHE[cache_key]
+
+            logger.info("Memory manager closed")
 
 
 def clear_memory_manager_cache() -> None:
