@@ -516,7 +516,7 @@ function clearAttachmentAlertTimers(timers: Map<string, number>): void {
 function getDocumentValidationError(
   file: File | undefined,
   t: TFunction,
-  options?: { filename?: string; localPath?: string },
+  options?: { filename?: string; localPath?: string; requireLocalPath?: boolean },
 ): string | null {
   const filename = options?.filename || file?.name || t('chat.inputAttachment.unnamedFile');
   if (file && file.size > MAX_FILE_BYTES) {
@@ -528,7 +528,8 @@ function getDocumentValidationError(
   if (file && !isDocumentFile(file)) {
     return t('chat.inputAttachment.unsupportedFileType', { name: filename });
   }
-  if (!getLocalFilePath(file, options?.localPath)) {
+  // 浏览器无头/跨端拿不到 File.path 时，允许回落 base64 上传（requireLocalPath=false）。
+  if (options?.requireLocalPath !== false && !getLocalFilePath(file, options?.localPath)) {
     return t('chat.inputAttachment.localPathUnavailable', { name: filename });
   }
   return null;
@@ -1127,10 +1128,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     updateAttachment(attachment.id, { status: 'uploading', error: undefined });
 
-    // Documents: validate local path only — no base64 transfer / no disk persist / no parse.
+    // Documents: prefer local path; fall back to browser base64 upload when
+    // File.path is unavailable (headless/WebView2 has no File.path).
     if (attachment.kind === 'document') {
       const localPath = getLocalFilePath(attachment.file, attachment.localPath);
-      if (!localPath) {
+      if (!localPath && !attachment.base64Data) {
         const error = t('chat.inputAttachment.localPathUnavailable', { name: attachment.filename || t('chat.inputAttachment.unnamedFile') });
         pushAttachmentAlert(error);
         updateAttachment(attachment.id, { status: 'error', error });
@@ -1143,8 +1145,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               type: 'document',
               filename: attachment.filename,
               mime_type: attachment.mimeType,
-              path: localPath,
-              original_path: localPath,
+              path: localPath ?? attachment.filename,
+              original_path: localPath ?? attachment.filename,
               size_bytes: attachment.size,
             },
             status: 'ready',
@@ -1158,7 +1160,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               type: 'document',
               mimeType: attachment.mimeType,
               filename: attachment.filename,
-              path: localPath,
+              ...(localPath
+                ? { path: localPath }
+                : { base64_data: attachment.base64Data, base64Data: attachment.base64Data }),
               sizeBytes: attachment.size,
               size_bytes: attachment.size,
             },
@@ -1334,9 +1338,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setAttachments((prev) => [...prev, ...drafts]);
     drafts.forEach((draft) => {
       if (draft.status !== 'uploading') return;
+      // 浏览器无头/跨端拿不到 File.path：文档回落 base64 上传（读文件后补 base64Data 再上传）。
+      if (draft.kind === 'document' && !draft.localPath && draft.file) {
+        void readBinaryFileAsBase64(draft.file).then((payload) => {
+          if (!payload?.base64Data) {
+            updateAttachment(draft.id, {
+              status: 'error',
+              error: t('chat.inputAttachment.readFileFailed', { name: draft.filename }),
+            });
+            return;
+          }
+          updateAttachment(draft.id, { base64Data: payload.base64Data });
+          uploadAttachment({ ...draft, base64Data: payload.base64Data });
+        });
+        return;
+      }
       uploadAttachment(draft);
     });
-  }, [attachments, pushAttachmentAlert, uploadAttachment, t]);
+  }, [attachments, pushAttachmentAlert, uploadAttachment, updateAttachment, t]);
 
   const appendLocalFilePicks = useCallback((picks: LocalFilePick[]) => {
     if (!picks.length) return;
@@ -1384,10 +1403,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         size: pick.size,
         localPath: pick.path,
         status: 'uploading',
-        ...(pick.kind === 'image' && pick.base64
+        ...(pick.base64
           ? {
               base64Data: pick.base64,
-              previewUrl: `data:${pick.mime_type || 'application/octet-stream'};base64,${pick.base64}`,
+              ...(pick.kind === 'image'
+                ? { previewUrl: `data:${pick.mime_type || 'application/octet-stream'};base64,${pick.base64}` }
+                : {}),
             }
           : {}),
       };
@@ -1405,9 +1426,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const openAttachmentPicker = useCallback(async () => {
     if (imageInputDisabled) return;
     setAttachMenuOpen(false);
-    // 文档上传依赖本机绝对路径：桌面 pywebview 或浏览器后端 path.select_files。
-    // 不要回落 HTML <input type="file">，浏览器拿不到 File.path，只会得到
-    // 「无法获取本地文件路径」的假失败。
+    // 优先使用本机绝对路径选择器（桌面 pywebview / 浏览器后端 path.select_files）。
+    // 无头环境拿不到 File.path 时回落原生 <input type="file">，文档改走 base64 上传。
     const result = await selectLocalFiles(true);
     if (result.ok) {
       appendLocalFilePicks(result.files);
@@ -1416,11 +1436,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (result.reason === 'cancelled') {
       return;
     }
-    const hint =
-      result.reason === 'unsupported'
-        ? t('chat.inputAttachment.filePickerUnsupported')
-        : (result.message || t('chat.inputAttachment.filePickerFailed'));
-    pushAttachmentAlert(hint);
+    if (result.reason === 'unsupported') {
+      // 无头环境拿不到 File.path：回落原生 <input type="file">，文档走 base64 上传。
+      fileInputRef.current?.click();
+      return;
+    }
+    pushAttachmentAlert(
+      result.message || t('chat.inputAttachment.filePickerFailed'),
+    );
   }, [appendLocalFilePicks, imageInputDisabled, pushAttachmentAlert, t]);
 
   const acceptExternalLocalFilePicks = useCallback(

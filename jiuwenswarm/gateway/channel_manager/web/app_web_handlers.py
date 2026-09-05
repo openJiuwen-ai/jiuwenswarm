@@ -64,6 +64,7 @@ from jiuwenswarm.common.config import (
     update_default_model_provider_in_config,
     update_kv_cache_affinity_enabled_in_config,
     validate_persisted_kv_cache_affinity,
+    update_kv_cache_release_enabled_in_config,
     update_skill_retrieval_in_config,
     update_symphony_in_config,
     update_permissions_enabled_in_config,
@@ -83,8 +84,7 @@ from jiuwenswarm.common.config import (
 from jiuwenswarm.common.kv_cache_affinity_config import (
     ASCEND_AFFINITY_PROVIDER,
     KVC_CONFIG_KEYS,
-    default_model_client_config_from_entries,
-    has_kv_cache_affinity_capability,
+    default_model_provider_from_entries,
     is_affinity_enabled,
     normalize_affinity_request,
     parse_bool as parse_kvc_bool,
@@ -1056,6 +1056,7 @@ CONFIG_KEYS = tuple(_CONFIG_SET_ENV_MAP.keys())
 # 来自 config.yaml 的配置项（前端 param 名 -> config.yaml 路径）
 _CONFIG_YAML_KEYS = frozenset({
     "context_engine_enabled",
+    "kv_cache_release_enabled",
     "kv_cache_affinity_enabled",
     "permissions_enabled",
     "memory_forbidden_enabled",
@@ -1739,19 +1740,7 @@ def _snapshot_claude_dependency_install_status() -> dict[str, Any]:
     return _snapshot_external_cli_dependency_install_status("claude")
 
 
-def _activate_managed_external_cli_paths_if_needed() -> None:
-    """Expose managed SDKs only for an external-CLI configuration request."""
-    if not _is_frozen_runtime():
-        return
-    from jiuwenswarm.common.external_cli_runtime import (
-        activate_external_cli_runtime_paths,
-    )
-
-    activate_external_cli_runtime_paths()
-
-
 def _ensure_claude_dependency_available_or_start_install() -> dict[str, Any] | None:
-    _activate_managed_external_cli_paths_if_needed()
     if importlib.util.find_spec("claude_agent_sdk") is not None:
         with _CLAUDE_DEPENDENCY_INSTALL_LOCK:
             _CLAUDE_DEPENDENCY_INSTALL_STATUS.update(_external_cli_dependency_install_succeeded_updates())
@@ -1908,7 +1897,6 @@ def _append_codex_dependency_install_log(line: str) -> None:
 
 
 def _ensure_codex_dependency_available_or_start_install() -> dict[str, Any] | None:
-    _activate_managed_external_cli_paths_if_needed()
     if importlib.util.find_spec("openai_codex") is not None:
         _update_codex_dependency_install_status(_external_cli_dependency_install_succeeded_updates())
         return None
@@ -2683,6 +2671,129 @@ async def _pre_persist_large_media(
     return params
 
 
+async def _persist_large_document(
+    item: dict[str, Any],
+    data: bytes,
+    *,
+    session_id: str | None,
+    index: int,
+    agent_client: Any,
+    user_id: str | None,
+) -> dict[str, Any] | None:
+    """把单个浏览器文档经 HTTP bridge / 共享目录落盘，返回 ``_persisted`` 记录。
+
+    与图片 ``_upload_media_item_via_http`` 一致：AgentOS 走受认证 HTTP bridge
+    （E2A 转发 AgentServer 注入目录），单机/Docker 直接写共享用户目录，避免
+    超内部 WS 帧限制。落盘路径与 AgentServer 侧 ``_persist_base64_document``
+    一致（``agent/sessions/<safe_session_id>/uploads/<safe_filename>``）。
+    """
+    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
+    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
+    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+        is_forbidden_document,
+    )
+    from jiuwenswarm.server.runtime.attachments.upload_storage import (
+        safe_session_dirname,
+        safe_upload_filename,
+    )
+
+    filename_hint = str(item.get("filename") or item.get("name") or "").strip() or f"document-{index + 1}"
+    if is_forbidden_document(filename=filename_hint):
+        return None
+    safe_session_id = safe_session_dirname(session_id)
+    filename = safe_upload_filename(filename_hint, fallback=f"document-{index + 1}")
+    if not Path(filename).suffix:
+        filename = f"{filename}.bin"
+    rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
+    if is_agentos_routing_client(agent_client):
+        ok, payload = await upload_file_bytes_via_e2a(
+            data,
+            rel_path,
+            agent_client=agent_client,
+            user_id=user_id,
+            channel_id="web",
+            session_id=session_id,
+        )
+        if not ok:
+            logger.warning("[document.persist] 大文档 HTTP 上传失败: %s", payload.get("error"))
+            return None
+    else:
+        # Legacy single-user / Docker：AgentServer 无独立上传监听器，直接写共享用户目录。
+        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+        if not ok:
+            logger.warning("[document.persist] 大文档本地落盘失败: %s", payload.get("error"))
+            return None
+    return {
+        "type": "document",
+        "filename": filename,
+        "mime_type": str(item.get("mimeType") or item.get("mime_type") or "application/octet-stream"),
+        "path": str(payload.get("path") or ""),
+        "original_path": str(payload.get("path") or ""),
+        "size_bytes": len(data),
+        "_persisted": True,
+    }
+
+
+async def _pre_persist_large_documents(
+    params: dict[str, Any], *, session_id: str | None, agent_client: Any, user_id: str | None
+) -> dict[str, Any]:
+    """转发 document.persist 前，把超 E2A 帧预算的 base64 文档改为本地/HTTP 落盘。
+
+    小文档保留 base64 走 E2A（AgentServer 注入目录落盘）；大文档在 Gateway 侧
+    解码后落盘并标记 ``_persisted``，AgentServer 侧直接透传落盘记录。返回处理
+    后的 params（原对象就地修改 ``documents`` 列表）。
+    """
+    docs = params.get("documents")
+    if not isinstance(docs, list) or not docs:
+        return params
+    import json as _json
+
+    from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+
+    try:
+        base_payload = {k: v for k, v in params.items() if k != "documents"}
+        overhead = len(_json.dumps(base_payload, ensure_ascii=False, default=str))
+    except Exception:  # noqa: BLE001
+        overhead = 4096
+    remaining = E2A_PAYLOAD_MAX_BYTES - overhead
+    new_docs: list[Any] = []
+    for index, item in enumerate(docs):
+        if not isinstance(item, dict):
+            new_docs.append(item)
+            continue
+        raw = item.get("base64Data") or item.get("base64_data")
+        if not isinstance(raw, str) or not raw.strip():
+            new_docs.append(item)
+            continue
+        try:
+            data = base64.b64decode(raw, validate=True)
+        except Exception:  # noqa: BLE001
+            new_docs.append(item)
+            continue
+        if not data:
+            new_docs.append(item)
+            continue
+        if len(data) > remaining:
+            persisted = await _persist_large_document(
+                item,
+                data,
+                session_id=session_id,
+                index=index,
+                agent_client=agent_client,
+                user_id=user_id,
+            )
+            if persisted is not None:
+                new_docs.append(persisted)
+                continue
+            # 落盘失败：保留原 base64（若仍超帧限制，由下游链路返回可重试错误）
+            new_docs.append(item)
+            continue
+        remaining -= len(data)
+        new_docs.append(item)
+    params["documents"] = new_docs
+    return params
+
+
 def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     """注册 Web 前端需要的 method 与 on_connect。
     on_config_saved: 可选，config.set 写回后调用的回调；
@@ -2842,9 +2953,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     payload[key] = ExtensionRegistry.get_instance().get_crypto_provider().decrypt(val)
             react_cfg = raw.get("react") or {}
             ctx_cfg = react_cfg.get("context_engine_config") or {}
+            kv_cfg = react_cfg.get("kv_cache_affinity_config") or {}
             payload["context_engine_enabled"] = "true" if ctx_cfg.get("enabled", False) else "false"
+            payload["kv_cache_release_enabled"] = (
+                "true" if kv_cfg.get("enable_kv_cache_release", False) else "false"
+            )
             payload["kv_cache_affinity_enabled"] = (
-                "true" if is_affinity_enabled(raw) else "false"
+                "true" if kv_cfg.get("enable_kv_cache_affinity", False) else "false"
             )
             perm_cfg = raw.get("permissions") or {}
             payload["permissions_enabled"] = "true" if perm_cfg.get("enabled", False) else "false"
@@ -2880,6 +2995,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", True) else "false"
         except Exception:  # noqa: BLE001
             payload.setdefault("context_engine_enabled", "false")
+            payload.setdefault("kv_cache_release_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("setup_guide_enabled", "true")
@@ -3106,6 +3222,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             try:
                 if param_key == "context_engine_enabled":
                     update_context_engine_enabled_in_config(parsed)
+                elif param_key == "kv_cache_release_enabled":
+                    update_kv_cache_release_enabled_in_config(parsed)
                 elif param_key == "kv_cache_affinity_enabled":
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
@@ -3699,11 +3817,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             new_models = _build_models_defaults_from_frontend(params.get("models"))
+            default_provider = default_model_provider_from_entries(new_models)
             if (
                 is_affinity_enabled(get_config_raw())
-                and not has_kv_cache_affinity_capability(
-                    default_model_client_config_from_entries(new_models)
-                )
+                and default_provider != ASCEND_AFFINITY_PROVIDER
             ):
                 update_kv_cache_affinity_enabled_in_config(False)
             update_default_models_in_config(new_models)
@@ -3773,11 +3890,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 apply_result = _ConfigApplyResult({}, [])
 
             if new_models is not None:
+                default_provider = default_model_provider_from_entries(new_models)
                 if (
                     is_affinity_enabled(get_config_raw())
-                    and not has_kv_cache_affinity_capability(
-                        default_model_client_config_from_entries(new_models)
-                    )
+                    and default_provider != ASCEND_AFFINITY_PROVIDER
                 ):
                     update_kv_cache_affinity_enabled_in_config(False)
                     yaml_updated.append("kv_cache_affinity_enabled")
@@ -5245,13 +5361,27 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _document_persist(ws, req_id, params, session_id, user_id=None):
-        """文档附件路径黑名单校验（E2A 转发，路径判定由 AgentServer 注入目录执行）。"""
+        """文档附件落盘（E2A 转发 AgentServer 注入目录 uploads）。
+
+        小文件 base64 由 AgentServer 注入目录落盘；超过 E2A 帧预算的大文件在
+        Gateway 侧解码后落盘并标记 ``_persisted`` 透传（AgentOS 走受认证 HTTP
+        bridge，单机/Docker 走共享用户目录），避免超内部 WS 帧限制。
+        """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
+        real_client = _resolve(agent_client)
+        if isinstance(params, dict):
+            params = await _pre_persist_large_documents(
+                params,
+                session_id=session_id,
+                agent_client=real_client,
+                user_id=user_id,
+            )
+
         await proxy_unary_request(
             channel=channel,
-            agent_client=_resolve(agent_client),
+            agent_client=real_client,
             ws=ws,
             req_id=req_id,
             params=params,

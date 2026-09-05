@@ -1336,10 +1336,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             path: item.path,
             original_path: item.path,
             size_bytes: item.size_bytes ?? item.sizeBytes,
+            // 浏览器无头/跨端拿不到本地路径时走 base64 上传（AgentServer 落盘）。
+            ...(item.base64_data || item.base64Data
+              ? { base64_data: item.base64_data ?? item.base64Data }
+              : {}),
           })),
         },
-        // Path validation only — no base64 transfer / parse
-        { timeoutMs: 30_000 },
+        // 大 base64 文档解码落盘耗时更长，放宽超时
+        { timeoutMs: 60_000 },
       );
     },
     [request],
