@@ -1060,6 +1060,14 @@ class PageWorkerNode(PlanNode):
             "- B (60-64)：行业媒体\n"
             "- C (<60)：自媒体/内容农场（排除）\n\n"
             "排除条件：纯观点无数据、来源不明的二手转述、商业推广、可信度 <60。\n\n"
+            "### 快速直判规则（按域名后缀直接定级，禁止推理 URL 归属机构）\n"
+            "- `.gov.cn` / `.org.cn`(政府/国际组织) → A+\n"
+            "- `*.icbc.com.cn` / 企业官网 / 官方 PDF → A\n"
+            "- `edu.cn` / `edu.com.cn` → A-\n"
+            "- 权威媒体（sina/163/sohu/fx678/cs.com.cn/financialnews 等主流门户/财经媒体） → B+\n"
+            "- 行业媒体（knowcat/pinggu/gold678/uwnews 等垂直/地方媒体） → B\n"
+            "- 不明 / 自媒体 / 内容农场 / 1234567.com.cn 等域名 → C\n"
+            "- 域名识别不清时按 URL 特征直判，**禁止逐个列举机构比对**\n\n"
             '以 JSON 对象输出，key 为来源序号（数字字符串，从1开始），value 为评分等级（A+/A/A-/B+/B/C）。\n'
             '例如：{"1": "A", "2": "C", "3": "B+"}\n'
             "只输出 JSON 对象，不要输出其他内容，不要输出原始URL。"
@@ -1593,6 +1601,13 @@ class PageWorkerNode(PlanNode):
             "7. trend/data/comparison/technology 页必须有时序数据（≥3时间点）和对比数据（≥2对象×≥2维度）\n"
             f"8. 本页 ≥{min_words_per_page} 字\n"
             f"{'9. no_search 模式：数据有限页面标注「数据有限，基于用户素材」，关键数据清单 ≥3 行即可' if config.search_mode == 'no_search' else ''}\n\n"
+            "### 思考预算（强制约束）\n"
+            "- 内容规划**上限 500 字思考**：用要点列表描述核心论点和数据需求即可，禁止逐句推演\n"
+            "- **禁止做「读取→验证→发现不匹配→重新解释→再验证」循环**；"
+            "若来源数据与页面数据需求存在轻微不匹配，直接采用来源原文，不得反复解释\n"
+            "- 数据整合一次过：来源不足时直接标注 data_limited，禁止反复补搜验证\n"
+            "- 思考阶段产出 ≤800 tokens 即可开始写 Markdown；超过此量说明陷入过度研究，"
+            "应立即停止思考并输出内容\n\n"
             f"### 抓取内容\n{extraction_summary}"
             f"{material_section}"
         )
