@@ -97,6 +97,8 @@ except ImportError:
     FEISHU_AVAILABLE = False
     lark = None
     Emoji = None
+    P2CardActionTrigger = None
+    P2CardActionTriggerResponse = None
 
 # 非文本消息类型的显示占位符映射
 MSG_TYPE_MAP = {
