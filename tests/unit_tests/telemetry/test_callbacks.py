@@ -2709,6 +2709,103 @@ async def test_token_count_timeout_only_drops_context_breakdown(
 
 
 @pytest.mark.asyncio
+async def test_serialize_must_not_block_event_loop(
+    telemetry_env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bug-207 regression: ``_enrich_llm_input`` 的 serialize 必须不跑在
+    事件循环线程上。
+
+    现象：8/28 10:40 用户发送 query 后智能体长时间无响应，前端报
+    "智能体连接不稳定"。根因：对 ~10 万 token 上下文，
+    ``serialize_input_messages`` / ``serialize_tool_definitions`` 同步跑在
+    事件循环线程上，数十秒无法响应 WebSocket ping，最终连接被判定
+    ``close_code=1006`` 超时关闭。
+
+    判定方式：monkeypatch ``serialize_input_messages`` 为"记录当前线程并阻塞"
+    的桩，检查 serialize 实际跑在哪个线程：
+
+    * 未修复（同步 serialize）：桩跑在事件循环线程 →
+      ``serialize_on_loop=True`` → FAIL，错误信息点明 bug。
+    * 已修复（``asyncio.to_thread``）：桩跑在 worker thread →
+      ``serialize_on_loop=False`` → PASS。
+
+    这个判定不依赖 framework 的回调调度方式（同步 await 或 create_task），
+    只看 serialize 真正跑在哪个线程。
+    """
+    serialize_called = threading.Event()
+    serialize_release = threading.Event()
+    real_serialize = callbacks_module.serialize_input_messages
+
+    loop_thread = threading.get_ident()
+    serialize_ran_on: list[int] = []
+
+    def blocking_serialize(messages, *, max_chars):
+        serialize_called.set()
+        serialize_ran_on.append(threading.get_ident())
+        # 阻塞至测试放行，给主协程足够时间做判定
+        serialize_release.wait(timeout=10.0)
+        return real_serialize(messages, max_chars=max_chars)
+
+    monkeypatch.setattr(callbacks_module, "serialize_input_messages", blocking_serialize)
+    # 让 token count 立即返回，避免 tiktoken 对大 messages 真实计数拖慢/超时，
+    # 确保流程进入 log_messages 的 serialize 分支。
+    monkeypatch.setattr(
+        callbacks_module,
+        "count_context_tokens",
+        lambda messages, tools: callbacks_module.ContextTokenBreakdown(),
+    )
+
+    big_messages = [{"role": "user", "content": "x" * 8000}] * 64
+
+    trigger_task = asyncio.ensure_future(
+        telemetry_env.framework.trigger(
+            LLMCallEvents.LLM_STREAM_INPUT,
+            big_messages,
+            model="bug-207-model",
+        )
+    )
+
+    # 等 serialize 被触发（最多 3s）
+    for _ in range(60):
+        if serialize_called.is_set():
+            break
+        await asyncio.sleep(0.05)
+    assert serialize_called.is_set(), (
+        "serialize 桩未触发——未进入 _enrich_llm_input 的 serialize 分支。"
+        "检查：LLM span 是否已建立、log_messages 是否为 True。"
+    )
+
+    serialize_on_loop = serialize_ran_on[0] == loop_thread
+
+    serialize_release.set()  # 放行 serialize，让 trigger 收尾
+    await asyncio.wait_for(trigger_task, timeout=5.0)
+
+    # 补发 LLM_OUTPUT 让 span/metric state 正常收尾（input 单独 trigger 不收尾）
+    try:
+        await asyncio.wait_for(
+            telemetry_env.framework.trigger(
+                LLMCallEvents.LLM_OUTPUT,
+                is_stream=True,
+                response="ok",
+            ),
+            timeout=5.0,
+        )
+    except Exception:
+        pass
+
+    # serialize 必须不跑在事件循环线程上（否则会阻塞事件循环，导致
+    # WebSocket ping / 用户 query 无法被处理——bug-207）。
+    assert not serialize_on_loop, (
+        f"bug-207：_enrich_llm_input 的 serialize_input_messages 跑在事件循环"
+        f"线程上（serialize thread={serialize_ran_on[0]}, "
+        f"loop thread={loop_thread}），同步阻塞事件循环——WebSocket ping / "
+        f"用户 query 无法被处理，最终触发'智能体连接不稳定'。"
+        f"修复方向：serialize 改走 asyncio.to_thread。"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "control_error",
     [asyncio.CancelledError(), KeyboardInterrupt(), SystemExit()],

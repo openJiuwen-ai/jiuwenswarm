@@ -7,7 +7,9 @@ import json
 import logging
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from threading import RLock
 from typing import Any
 
@@ -111,6 +113,10 @@ CORE_NAMESPACE = "extensions.observability"
 INPUT_PRIORITY = -100
 OUTPUT_PRIORITY = 100
 _LOGGER = logging.getLogger(__name__)
+
+_TOKEN_COUNT_POOL = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="jiuwen-tlm-tok"
+)
 
 
 @dataclass
@@ -1319,12 +1325,22 @@ class RichTelemetryCallbacks:
         tools = kwargs.get("tools") or []
         try:
             try:
-                state.context_tokens = await asyncio.wait_for(
-                    asyncio.to_thread(count_context_tokens, messages, tools),
-                    timeout=float(
-                        getattr(self._config, "token_count_timeout_seconds", 0.5)
-                    ),
+                timeout = float(
+                    getattr(self._config, "token_count_timeout_seconds", 0.5)
                 )
+                token_task = asyncio.get_running_loop().run_in_executor(
+                    _TOKEN_COUNT_POOL,
+                    count_context_tokens,
+                    messages,
+                    tools,
+                )
+                try:
+                    state.context_tokens = await asyncio.wait_for(
+                        token_task, timeout=timeout
+                    )
+                except BaseException:
+                    token_task.cancel()
+                    raise
             except Exception:
                 _LOGGER.warning(warning, exc_info=True)
                 state.context_tokens = None
@@ -1388,12 +1404,12 @@ class RichTelemetryCallbacks:
             ):
                 source = self._best_effort(
                     warning,
-                    lambda: self._llm_config_value(kwargs, name),
+                    partial(self._llm_config_value, kwargs, name),
                 )
                 if source is not None:
                     self._best_effort(
                         warning,
-                        lambda: self._set_if_empty(span, key, source),
+                        partial(self._set_if_empty, span, key, source),
                     )
             self._best_effort(
                 warning,
@@ -1418,23 +1434,29 @@ class RichTelemetryCallbacks:
                 )
             if not self._config.log_messages:
                 return
+            max_chars = self._config.attribute_value_max_length
             serializable_messages: list[Any] | None = message_items
             if self._config.redact_prompts:
-                serializable_messages = self._best_effort(
-                    warning,
-                    lambda: [
-                        {"role": message_role(message), "content": "[REDACTED]"}
-                        for message in message_items
-                    ],
-                )
+                try:
+                    serializable_messages = await asyncio.to_thread(
+                        lambda: [
+                            {"role": message_role(message), "content": "[REDACTED]"}
+                            for message in message_items
+                        ]
+                    )
+                except Exception:
+                    _LOGGER.warning(warning, exc_info=True)
+                    serializable_messages = None
             if serializable_messages is not None:
-                serialized_messages = self._best_effort(
-                    warning,
-                    lambda: serialize_input_messages(
+                try:
+                    serialized_messages = await asyncio.to_thread(
+                        serialize_input_messages,
                         serializable_messages,
-                        max_chars=self._config.attribute_value_max_length,
-                    ),
-                )
+                        max_chars=max_chars,
+                    )
+                except Exception:
+                    _LOGGER.warning(warning, exc_info=True)
+                    serialized_messages = None
                 if serialized_messages is not None:
                     self._best_effort(
                         warning,
@@ -1445,17 +1467,19 @@ class RichTelemetryCallbacks:
                         ),
                     )
             if tools:
-                tool_definitions = self._best_effort(
-                    warning,
-                    lambda: (
-                        "[REDACTED]"
-                        if self._config.redact_prompts
-                        else serialize_tool_definitions(
-                            tools,
-                            max_chars=self._config.attribute_value_max_length,
+                try:
+                    tool_definitions = await asyncio.to_thread(
+                        lambda: (
+                            "[REDACTED]"
+                            if self._config.redact_prompts
+                            else serialize_tool_definitions(
+                                tools, max_chars=max_chars
+                            )
                         )
-                    ),
-                )
+                    )
+                except Exception:
+                    _LOGGER.warning(warning, exc_info=True)
+                    tool_definitions = None
                 if tool_definitions is not None:
                     self._best_effort(
                         warning,
@@ -1468,7 +1492,7 @@ class RichTelemetryCallbacks:
             for message in serializable_messages or []:
                 self._best_effort(
                     warning,
-                    lambda: self._add_input_message_event(span, message),
+                    partial(self._add_input_message_event, span, message),
                 )
         except BaseException as error:
             if isinstance(error, Exception):
