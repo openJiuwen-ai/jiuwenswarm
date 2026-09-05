@@ -68,7 +68,7 @@ _EMBED_MODEL_KEY_MAP = {
     "image_gen": "image_gen_model",
 }
 
-_MULTIMODAL_MODEL_TYPES = ("audio", "vision", "video")
+_MULTIMODAL_MODEL_TYPES = ("audio", "vision", "video", "image_gen")
 
 
 def _model_provider(model_config: dict[str, Any]) -> str:

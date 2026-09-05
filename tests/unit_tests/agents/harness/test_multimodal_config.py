@@ -46,3 +46,35 @@ def test_multimodal_enabled_prefers_explicit_switch_and_preserves_legacy_config(
 
     monkeypatch.setenv("VISION_ENABLED", "true")
     assert multimodal_model_enabled(config, "vision") is True
+
+
+def _image_gen_config() -> dict:
+    return {
+        "models": {
+            "image_gen": {
+                "model_client_config": {
+                    "api_base": "https://dashscope.aliyuncs.com/api/v1",
+                    "api_key": "secret",
+                    "model_name": "wanx-v1",
+                    "client_provider": "OpenAI",
+                }
+            }
+        }
+    }
+
+
+def test_image_gen_is_a_switchable_multimodal_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _image_gen_config()
+    assert complete_multimodal_model_configured(config, "image_gen") is True
+
+    monkeypatch.delenv("IMAGE_GEN_ENABLED", raising=False)
+    assert multimodal_model_enabled(config, "image_gen") is True
+    assert multimodal_model_enabled({}, "image_gen") is False
+
+    monkeypatch.setenv("IMAGE_GEN_ENABLED", "false")
+    assert multimodal_model_enabled(config, "image_gen") is False
+
+    monkeypatch.setenv("IMAGE_GEN_ENABLED", "true")
+    assert multimodal_model_enabled(config, "image_gen") is True

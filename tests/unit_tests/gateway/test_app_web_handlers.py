@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -2535,6 +2536,140 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
     assert forwarded == methods
     assert no_local == methods
     assert len(methods) == 24
+
+
+# =====================================================================
+# image_gen model config keys (config.get / config.set)
+# =====================================================================
+
+
+_IMAGE_GEN_ENV_CONTRACT = {
+    "image_gen_api_base": "IMAGE_GEN_API_BASE",
+    "image_gen_api_key": "IMAGE_GEN_API_KEY",
+    "image_gen_model": "IMAGE_GEN_MODEL_NAME",
+    "image_gen_provider": "IMAGE_GEN_PROVIDER",
+    "image_gen_endpoint_profile": "IMAGE_GEN_ENDPOINT_PROFILE",
+    "image_gen_vendor_key": "IMAGE_GEN_VENDOR_KEY",
+    "image_gen_plan": "IMAGE_GEN_PLAN",
+    "image_gen_enabled": "IMAGE_GEN_ENABLED",
+}
+
+
+@pytest.mark.parametrize(("param_key", "env_key"), sorted(_IMAGE_GEN_ENV_CONTRACT.items()))
+def test_image_gen_keys_are_settable_from_config_panel(param_key, env_key):
+    """image_gen must be readable/writable via config.get / config.set, same as vision."""
+    assert app_web_handlers._CONFIG_SET_ENV_MAP.get(param_key) == env_key
+    assert param_key in app_web_handlers.CONFIG_KEYS
+
+
+def test_image_gen_keys_trigger_multimodal_hot_reload():
+    """Saving image_gen config must use the multimodal scope so the tool is
+    re-synced without a restart; vendor identity alone does not reload."""
+    for env_key in (
+        "IMAGE_GEN_API_BASE",
+        "IMAGE_GEN_API_KEY",
+        "IMAGE_GEN_MODEL_NAME",
+        "IMAGE_GEN_PROVIDER",
+        "IMAGE_GEN_ENDPOINT_PROFILE",
+        "IMAGE_GEN_ENABLED",
+    ):
+        assert env_key in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+        assert env_key not in app_web_handlers._MODEL_RELOAD_ENV_KEYS
+        change = app_web_handlers._ConfigChangeSet(env_updates={env_key: "x"}, yaml_updated=[])
+        assert change.reload_scopes == {"multimodal"}
+    assert "IMAGE_GEN_VENDOR_KEY" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+    assert "IMAGE_GEN_PLAN" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+
+
+@pytest.fixture
+def extension_registry():
+    """config.set's encrypt branch needs an initialized ExtensionRegistry
+    (no crypto registered means values are written in plain text)."""
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+
+    ExtensionRegistry.reset_instance()
+    ExtensionRegistry.create_instance(callback_framework=None, config={}, logger=None)
+    yield
+    ExtensionRegistry.reset_instance()
+
+
+@pytest.mark.asyncio
+async def test_config_set_persists_image_gen_keys_to_env_file(tmp_path, monkeypatch, extension_registry):
+    """IMAGE_GEN_* written by config.set must land in .env and read back via config.get."""
+    env_file = tmp_path / ".env"
+    env_file.write_text('API_KEY="existing"\n', encoding="utf-8")
+    monkeypatch.setattr(app_web_handlers, "_ENV_FILE", env_file)
+    # setenv (not delenv) so monkeypatch restores/removes the value the handler writes.
+    for env_key in _IMAGE_GEN_ENV_CONTRACT.values():
+        monkeypatch.setenv(env_key, "")
+    reload_scopes_seen: list[list[str]] = []
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        reload_scopes_seen.append(reload_options["reload_scopes"])
+        return True
+
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved))
+
+    await channel.methods["config.set"](
+        object(),
+        "req-set",
+        {
+            "image_gen_api_base": "https://dashscope.aliyuncs.com/api/v1",
+            "image_gen_api_key": "sk-image-gen",
+            "image_gen_model": "wanx-v1",
+            "image_gen_provider": "OpenAI",
+            "image_gen_endpoint_profile": "dashscope",
+            "image_gen_enabled": "true",
+        },
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    updated = channel.responses[-1]["payload"]["updated"]
+    assert set(updated) == {
+        "image_gen_api_base",
+        "image_gen_api_key",
+        "image_gen_model",
+        "image_gen_provider",
+        "image_gen_endpoint_profile",
+        "image_gen_enabled",
+    }
+    assert reload_scopes_seen == [["multimodal"]]
+
+    written = env_file.read_text(encoding="utf-8")
+    assert 'IMAGE_GEN_API_KEY="sk-image-gen"' in written
+    assert 'IMAGE_GEN_ENDPOINT_PROFILE="dashscope"' in written
+    assert 'IMAGE_GEN_ENABLED="true"' in written
+    # Pre-existing content is preserved
+    assert 'API_KEY="existing"' in written
+
+    # This is the env var the tool registration gate reads
+    assert os.environ["IMAGE_GEN_API_KEY"] == "sk-image-gen"
+
+    await channel.methods["config.get"](object(), "req-get", {}, "sess-1")
+    payload = channel.responses[-1]["payload"]
+    assert payload["image_gen_model"] == "wanx-v1"
+    assert payload["image_gen_provider"] == "OpenAI"
+    assert payload["image_gen_endpoint_profile"] == "dashscope"
+    assert payload["image_gen_enabled"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_config_set_rejects_unknown_image_gen_provider(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(app_web_handlers, "_ENV_FILE", env_file)
+
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.set"](
+        object(), "req-set", {"image_gen_provider": "NotAProvider"}, "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
 
 
 # =====================================================================

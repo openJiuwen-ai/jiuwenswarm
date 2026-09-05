@@ -113,6 +113,14 @@ def _get_image_gen_api_credentials():
     return k, b, m, p
 
 
+def _normalize_image_size(size: str | None) -> str | None:
+    """Normalize "1024x1024" to the provider's "1024*1024" form; None when unset."""
+    s = (size or "").strip().lower()
+    if not s:
+        return None
+    return s.replace("x", "*")
+
+
 def _make_sandbox_error_msg() -> str:
     return (
         "The visual_question_answering tool cannot access to sandbox file, "
@@ -322,14 +330,13 @@ async def visual_question_answering(image_path_or_url: str, question: str) -> st
     return f"OCR results:\n{ocr_out}\n\nVQA result:\n{vqa_out}"
 
 
-async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", quality: str = "standard") -> dict:
+async def _invoke_model_image_generation(prompt: str, size: str | None = None) -> dict:
     """
     Generate image using internal Model class (DashScope, etc.).
 
     Args:
         prompt: The text description for image generation
-        size: Image size, e.g., "256x256", "512x512", "1024x1024"
-        quality: Image quality, "standard" or "hd"
+        size: Optional image size, e.g., "1024*1024"; None keeps the model default
 
     Returns:
         dict with 'image_path' or 'error' key
@@ -386,8 +393,13 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
 
         messages = [UserMessage(content=prompt)]
 
+        # Only forward size when the caller supplied one; otherwise agent-core's
+        # generate_image default applies, since some models accept a fixed size set only.
+        normalized_size = _normalize_image_size(size)
+        size_kwargs = {"size": normalized_size} if normalized_size else {}
+
         async def _call():
-            return await model_instance.generate_image(messages=messages, model=model)
+            return await model_instance.generate_image(messages=messages, model=model, **size_kwargs)
 
         result = await _RetryExecutor.with_backoff(_call, max_tries=3)
 
@@ -451,8 +463,7 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
 )
 async def generate_image(
     prompt: str,
-    size: str = "1024x1024",
-    quality: str = "standard",
+    size: str | None = None,
     save_dir: str | None = None,
 ) -> str:
     """
@@ -460,8 +471,7 @@ async def generate_image(
 
     Args:
         prompt: Text description of the image to generate
-        size: Image size, options: "256x256", "512x512", "1024x1024", "1792x1024", "1024x1792"
-        quality: Image quality, "standard" or "hd"
+        size: Optional image size such as "1024*1024" or "1664*928"; leave unset for the model default
         save_dir: Optional directory to save the image (defaults to "generated_images")
 
     Returns:
@@ -474,9 +484,9 @@ async def generate_image(
         logger.debug("Failed to apply image_gen model config from yaml", exc_info=True)
 
     _, _, model, provider = _get_image_gen_api_credentials()
-    logger.info("[generate_image] using model: %s, provider: %s, size: %s, quality: %s", model, provider, size, quality)
+    logger.info("[generate_image] using model: %s, provider: %s, size: %s", model, provider, size)
 
-    result = await _invoke_model_image_generation(prompt, size=size, quality=quality)
+    result = await _invoke_model_image_generation(prompt, size=size)
 
     if "error" in result:
         return result["error"]

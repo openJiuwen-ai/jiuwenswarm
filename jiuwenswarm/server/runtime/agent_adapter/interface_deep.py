@@ -4469,6 +4469,9 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any],
     ) -> bool:
         """Build DeepAgent image generation config from service config/env mapping."""
+        if not multimodal_model_enabled(config_base, "image_gen"):
+            logger.info("[JiuWenSwarmDeepAdapter] image_gen tool skipped: capability disabled")
+            return False
         apply_image_gen_model_config_from_yaml(config_base)
         if not os.getenv("IMAGE_GEN_API_KEY"):
             logger.info("[JiuWenSwarmDeepAdapter] image_gen tool skipped: incomplete config")

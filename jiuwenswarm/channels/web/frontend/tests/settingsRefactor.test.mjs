@@ -1287,6 +1287,17 @@ test('media capability configuration and hot-apply state use exact fields', () =
     'vision_vendor_key',
     'vision_plan',
   ]);
+  assert.deepEqual([...mediaCapabilityModalities], ['vision', 'audio', 'video', 'image_gen']);
+  assert.equal(mediaCapabilityEnabledField('image_gen'), 'image_gen_enabled');
+  assert.deepEqual(mediaCapabilityPersistenceFields('image_gen'), [
+    'image_gen_api_base',
+    'image_gen_api_key',
+    'image_gen_model',
+    'image_gen_provider',
+    'image_gen_endpoint_profile',
+    'image_gen_vendor_key',
+    'image_gen_plan',
+  ]);
   assert.equal(isMediaCapabilityConfigured(values, 'vision'), true);
   assert.equal(isMediaCapabilityConfigured({ ...values, vision_provider: '  ' }, 'vision'), false);
   assert.equal(wasConfigAppliedWithoutRestart({ applied_without_restart: true }), true);

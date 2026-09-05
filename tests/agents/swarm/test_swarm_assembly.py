@@ -1707,17 +1707,26 @@ def test_video_tool_gated_by_config(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_image_gen_tool_gated_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The image-generation tool is built only when IMAGE_GEN_API_KEY is set."""
+    """The image-generation tool needs the capability switch and IMAGE_GEN_API_KEY."""
     ctx = SwarmBuildContext(config={})
     monkeypatch.setattr(
         tools, "apply_image_gen_model_config_from_yaml", lambda cfg: None
     )
+    # Gate closed: no switch and no complete models.image_gen config.
+    monkeypatch.delenv("IMAGE_GEN_ENABLED", raising=False)
+    monkeypatch.setenv("IMAGE_GEN_API_KEY", "k")
+    assert tools._build_image_gen_tools(ctx) == []
+
+    monkeypatch.setenv("IMAGE_GEN_ENABLED", "true")
     monkeypatch.delenv("IMAGE_GEN_API_KEY", raising=False)
     assert tools._build_image_gen_tools(ctx) == []
 
     monkeypatch.setenv("IMAGE_GEN_API_KEY", "k")
     built = tools._build_image_gen_tools(ctx)
     assert [tool.card.name for tool in built] == ["generate_image"]
+
+    monkeypatch.setenv("IMAGE_GEN_ENABLED", "false")
+    assert tools._build_image_gen_tools(ctx) == []
 
 
 def test_symphony_toolkit_is_leader_only(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -20,7 +20,7 @@ import { MediaModelConfigDialog } from './MediaModelConfigDialog';
 import './AgentSettings.css';
 
 const keyFields = ['jina_api_key', 'bocha_api_key', 'perplexity_api_key', 'serper_api_key'] as const;
-const modalities = ['vision', 'audio', 'video'] as const;
+const modalities = ['vision', 'audio', 'video', 'image_gen'] as const;
 
 function isSearchKeyField(name: string): name is (typeof keyFields)[number] {
   return keyFields.some((field) => field === name);

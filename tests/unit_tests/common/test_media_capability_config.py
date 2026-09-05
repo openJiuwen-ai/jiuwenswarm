@@ -27,6 +27,7 @@ def test_startup_migration_persists_complete_and_incomplete_capabilities(
         "VISION_ENABLED": "true",
         "AUDIO_ENABLED": "false",
         "VIDEO_ENABLED": "false",
+        "IMAGE_GEN_ENABLED": "false",
     }
     assert {key: environ[key] for key in updates} == updates
     assert env_path.read_text(encoding="utf-8") == (
@@ -34,6 +35,7 @@ def test_startup_migration_persists_complete_and_incomplete_capabilities(
         'VISION_ENABLED="true"\n'
         'AUDIO_ENABLED="false"\n'
         'VIDEO_ENABLED="false"\n'
+        'IMAGE_GEN_ENABLED="false"\n'
     )
 
 
@@ -46,6 +48,7 @@ def test_startup_migration_preserves_explicit_switches_and_is_idempotent(
         'VISION_ENABLED="false"\n'
         'AUDIO_ENABLED="true"\n'
         'VIDEO_ENABLED="false"\n'
+        'IMAGE_GEN_ENABLED="true"\n'
     )
     env_path.write_text(original, encoding="utf-8")
     environ: dict[str, str] = {}
@@ -56,6 +59,7 @@ def test_startup_migration_preserves_explicit_switches_and_is_idempotent(
         "VISION_ENABLED": "false",
         "AUDIO_ENABLED": "true",
         "VIDEO_ENABLED": "false",
+        "IMAGE_GEN_ENABLED": "true",
     }
     assert env_path.read_text(encoding="utf-8") == original
 
@@ -68,6 +72,7 @@ def test_startup_migration_respects_process_environment_without_persisting_it(
         "VISION_ENABLED": "false",
         "AUDIO_ENABLED": "true",
         "VIDEO_ENABLED": "false",
+        "IMAGE_GEN_ENABLED": "false",
     }
 
     assert migrate_media_capability_switches(env_path, environ=environ) == {}

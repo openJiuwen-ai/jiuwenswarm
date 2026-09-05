@@ -97,6 +97,75 @@ def test_multimodal_switch_hot_reload_registers_and_removes_vision_tools(
     assert native_config.enable_read_image_multimodal is None
 
 
+def _image_gen_config() -> dict:
+    return {
+        "models": {
+            "image_gen": {
+                "model_client_config": {
+                    "api_base": "https://dashscope.aliyuncs.com/api/v1",
+                    "api_key": "secret",
+                    "model_name": "wanx-v1",
+                    "client_provider": "OpenAI",
+                }
+            }
+        }
+    }
+
+
+def test_multimodal_switch_hot_reload_registers_and_removes_image_gen_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registered: list[str] = []
+    unregistered: list[str] = []
+    monkeypatch.setattr(
+        interface_deep,
+        "register_tool",
+        lambda value, owner_id=None: registered.append(value.card.name),
+    )
+    monkeypatch.setattr(
+        interface_deep, "unregister_tool", lambda value: unregistered.append(value.card.name)
+    )
+    monkeypatch.setenv("VISION_ENABLED", "false")
+    monkeypatch.setenv("AUDIO_ENABLED", "false")
+    monkeypatch.setenv("VIDEO_ENABLED", "false")
+    # apply_image_gen_model_config_from_yaml writes these; pre-set them so monkeypatch restores them.
+    monkeypatch.setenv("IMAGE_GEN_API_KEY", "secret")
+    monkeypatch.setenv("IMAGE_GEN_API_BASE", "https://dashscope.aliyuncs.com/api/v1")
+    monkeypatch.setenv("IMAGE_GEN_MODEL_NAME", "wanx-v1")
+    monkeypatch.setenv("IMAGE_GEN_PROVIDER", "OpenAI")
+
+    adapter = JiuWenSwarmDeepAdapter()
+    ability_manager = _AbilityManager()
+    adapter._instance = SimpleNamespace(
+        ability_manager=ability_manager,
+        deep_config=SimpleNamespace(enable_read_image_multimodal=None),
+    )
+    adapter._tool_cards = []
+    config = _image_gen_config()
+
+    monkeypatch.setenv("IMAGE_GEN_ENABLED", "false")
+    adapter._refresh_multimodal_configs(config)
+    adapter._sync_multimodal_tools_for_runtime()
+    assert adapter._image_gen_tool_registered is False
+    assert registered == []
+
+    monkeypatch.setenv("IMAGE_GEN_ENABLED", "true")
+    adapter._refresh_multimodal_configs(config)
+    adapter._sync_multimodal_tools_for_runtime()
+    assert adapter._image_gen_tool_registered is True
+    assert registered == ["generate_image"]
+    assert ability_manager.added == ["generate_image"]
+    assert [item.name for item in adapter._tool_cards] == ["generate_image"]
+
+    monkeypatch.setenv("IMAGE_GEN_ENABLED", "false")
+    adapter._refresh_multimodal_configs(config)
+    adapter._sync_multimodal_tools_for_runtime()
+    assert adapter._image_gen_tool_registered is False
+    assert unregistered == ["generate_image"]
+    assert ability_manager.removed == ["generate_image"]
+    assert adapter._tool_cards == []
+
+
 def test_native_image_auto_uses_probe_cache_independently_of_vision_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
