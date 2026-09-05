@@ -461,6 +461,15 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         sid = session_id or "default"
         self._abort_requested.pop(sid, None)
 
+    def is_abort_requested(self, session_id: str = "") -> bool:
+        """Whether interrupt cancel/supplement armed the abort flag for *session_id*.
+
+        Lets the adapter's 0-token empty-run guard tell a user-cancelled round
+        (abort flag set) from a silently failed one (flag never set).
+        """
+        sid = session_id or "default"
+        return bool(self._abort_requested.get(sid, False))
+
     def reset_for_new_task(self, session_id: str = "") -> None:
         """Unblock the pause event for the next task without touching the abort flag.
 
