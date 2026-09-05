@@ -16,6 +16,7 @@ from jiuwenswarm.gateway.channel_manager.base import (
     ChannelMetadata,
     RobotMessageRouter,
 )
+from jiuwenswarm.gateway.channel_manager.sdk.capabilities import ChannelCapabilities  
 from jiuwenswarm.gateway.routing.keys import SlackDeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
@@ -54,6 +55,10 @@ class SlackChannel(BaseChannel):
     """Slack Bot channel using Bolt's asynchronous Socket Mode adapter."""
 
     name = "slack"
+    capabilities = ChannelCapabilities(         
+        threads=True,
+        max_message_length=40000,
+    )
 
     def __init__(self, config: SlackChannelConfig, router: RobotMessageRouter):
         super().__init__(config, router)
