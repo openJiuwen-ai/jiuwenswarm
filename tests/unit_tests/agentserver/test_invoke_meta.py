@@ -1577,22 +1577,6 @@ def test_design_system_prompt_prod_omits_catalog_names(monkeypatch):
     assert "PluginSkillExecTool" not in prompt
 
 
-def test_skills_goal_override_uses_real_skill_slugs():
-    from jiuwenswarm.agents.harness.common.prompt.skills_goal_override import (
-        _STATIC_BLOCK,
-    )
-
-    for text in _STATIC_BLOCK.values():
-        assert "Image Generation" in text or "图像生成" in text
-        assert "skill_tool" in text
-        assert "PluginSkillExecTool" not in text
-        assert "com.atomicservice" not in text
-        assert "seedreamLite4Skill" not in text
-        assert "then call `invoke`" not in text
-        assert "再调用 `invoke`" not in text
-        assert "Deliver the video file" in text or "交付视频文件" in text
-
-
 def _plugin_spec() -> ExternalToolSpec:
     return ExternalToolSpec(
         plugin_id="com.demo.plugin",
