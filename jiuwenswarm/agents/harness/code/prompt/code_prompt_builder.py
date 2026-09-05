@@ -11,9 +11,12 @@ Dynamic content (time, runtime state, memory) is injected per-request by Rails.
 
 from __future__ import annotations
 
+import logging
 from enum import IntEnum
 
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Priority ────────────────────────────────────
@@ -23,6 +26,7 @@ class CodePromptPriority(IntEnum):
     INTRO = 10
     SYSTEM = 15
     DOING_TASKS = 25
+    VERIFICATION = 28
     USING_YOUR_TOOLS = 31
     ACTIONS_WITH_CARE = 35
     TONE_AND_STYLE = 45
@@ -475,6 +479,54 @@ def _code_output_efficiency_prompt() -> PromptSection:
     )
 
 
+# ─── Verification (optional) ──────────────────────
+
+
+def _code_verification_prompt() -> "PromptSection | None":
+    """Optional section that instructs the agent to run a post-output verifier.
+
+    Only active when ``verification.verifier_cmd`` is set in config (e.g. by a
+    benchmark-specific config.yaml override). Returns ``None`` when not
+    configured so the section is simply omitted — no impact on normal usage.
+    """
+    try:
+        from jiuwenswarm.common.config import get_config  # local import — avoids circular deps at module load
+        cfg = get_config() or {}
+        verifier_cmd = (cfg.get("verification") or {}).get("verifier_cmd", "").strip()
+    except Exception:
+        logger.warning(
+            "Verification config failed to load; verification step disabled",
+            exc_info=True,
+        )
+        verifier_cmd = ""
+
+    if not verifier_cmd:
+        return None
+
+    content = (
+        "# Verification Step\n"
+        "\n"
+        "After you have written **all required output files**, validate your result "
+        "by running:\n"
+        "\n"
+        f"    {verifier_cmd}\n"
+        "\n"
+        "Read the output carefully:\n"
+        "- If all tests pass — your task is complete.\n"
+        "- If any test fails — diagnose the error message, fix your output or code, "
+        "and re-run the verifier.\n"
+        "- Repeat until all tests pass or you exhaust your remaining iterations.\n"
+        "- If the verifier command cannot be found or fails to execute for any reason, "
+        "skip this step and submit your best answer.\n"
+    )
+
+    return PromptSection(
+        name="code_verification",
+        content={"en": content},
+        priority=CodePromptPriority.VERIFICATION,
+    )
+
+
 # ─── Section Generators ────────────────────────────
 
 
@@ -503,5 +555,10 @@ def build_code_system_prompt() -> str:
 
     for generator in _CODE_SECTION_GENERATORS:
         builder.add_section(generator())
+
+    # Optional: inject verification step when verifier_cmd is configured.
+    verification_section = _code_verification_prompt()
+    if verification_section is not None:
+        builder.add_section(verification_section)
 
     return builder.build()

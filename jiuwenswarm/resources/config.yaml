@@ -709,6 +709,20 @@ tools:
   - todo
   - skill
 
+# ============================================================
+# Verification 配置
+# ============================================================
+# verifier_cmd：任务完成后 Agent 运行的验证命令。
+#   空字符串 = 禁用（默认）；benchmark 环境通过专属 config.yaml 覆盖。
+#   也可通过环境变量 VERIFICATION_CMD 设置。
+#
+# 示例（SkillsBench）：
+#   verification:
+#     verifier_cmd: "bash /verifier/test.sh"
+# ============================================================
+verification:
+  verifier_cmd: ${VERIFICATION_CMD:-}
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}
