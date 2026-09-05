@@ -110,6 +110,299 @@ def is_interrupt_resume_payload(params: Any) -> bool:
     )
 
 
+_SUBAGENT_PERMISSION_APPROVAL_TIMEOUT = 120.0
+
+_HOSTED_ALLOW_ONCE_LABELS = frozenset({
+    "本次允许",
+    "允许",
+    "Allow once",
+    "allow_once",
+    "allow-once",
+})
+_HOSTED_SESSION_REMEMBER_LABELS = frozenset({
+    "会话内记住",
+    "Session remember",
+    "allow_always_session",
+})
+_HOSTED_REJECT_LABELS = frozenset({
+    "拒绝",
+    "Reject",
+    "reject",
+    "reject-once",
+    "reject_once",
+})
+
+
+def _unwrap_session(session: Any) -> Any:
+    return getattr(session, "_parent", session) if session is not None else None
+
+
+def _session_id_of(session: Any) -> str | None:
+    if session is None:
+        return None
+    for attr_name in ("get_session_id", "session_id"):
+        attr = getattr(session, attr_name, None)
+        try:
+            value = attr() if callable(attr) else attr
+        except Exception:
+            value = None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def resolve_subagent_permission_parent_session(ctx: Any) -> Any | None:
+    """Return parent session when ``ctx`` is a child under ``task_tool``.
+
+    ``StreamEventRail`` binds the parent session ContextVar for the duration of
+    an outer tool call. ``PermissionInterruptRail`` (priority 90) runs before
+    that rail on the *same* agent, so main-agent ASK still sees no foreign
+    parent. On a child agent the ContextVar still points at the parent while
+    ``ctx.session`` is the child — that identity gap is the subagent signal.
+
+    Same-session bindings (parallel sibling tools on the main agent) must not
+    take the hosted path.
+    """
+    try:
+        from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
+            get_subagent_parent_session,
+        )
+
+        parent = get_subagent_parent_session()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[InterruptHelpers] subagent parent session read failed",
+            exc_info=True,
+        )
+        return None
+
+    parent = _unwrap_session(parent)
+    current = _unwrap_session(getattr(ctx, "session", None))
+    if parent is None or current is None or parent is current:
+        return None
+    parent_sid = _session_id_of(parent)
+    current_sid = _session_id_of(current)
+    if parent_sid and current_sid and parent_sid == current_sid:
+        return None
+    if not callable(getattr(parent, "write_stream", None)):
+        return None
+    return parent
+
+
+def _selected_option_labels(answer: Any) -> list[str]:
+    labels: list[str] = []
+    if isinstance(answer, list):
+        for item in answer:
+            labels.extend(_selected_option_labels(item))
+        return labels
+    if not isinstance(answer, dict):
+        return labels
+    selected = answer.get("selected_options")
+    if isinstance(selected, list):
+        for item in selected:
+            text = str(item).strip()
+            if text:
+                labels.append(text)
+    return labels
+
+
+def parse_hosted_permission_answer(answer: Any) -> Any:
+    """Map card answers to :class:`PermissionConfirmResponse` (or None if empty)."""
+    from openjiuwen.harness.security.models import PermissionConfirmResponse
+
+    labels = _selected_option_labels(answer)
+    if not labels:
+        return None
+    if any(label in _HOSTED_REJECT_LABELS for label in labels):
+        return PermissionConfirmResponse(
+            approved=False,
+            auto_confirm=False,
+            persist_allow=False,
+            feedback="[PERMISSION_REJECTED] User rejected the request.",
+        )
+    if any(
+        label in _PERMANENT_REMEMBER_LABELS or label == "永久记住"
+        for label in labels
+    ):
+        return PermissionConfirmResponse(
+            approved=True,
+            auto_confirm=True,
+            persist_allow=True,
+            feedback="",
+        )
+    if any(label in _HOSTED_SESSION_REMEMBER_LABELS for label in labels):
+        return PermissionConfirmResponse(
+            approved=True,
+            auto_confirm=True,
+            persist_allow=False,
+            feedback="",
+        )
+    if any(label in _HOSTED_ALLOW_ONCE_LABELS for label in labels):
+        return PermissionConfirmResponse(
+            approved=True,
+            auto_confirm=False,
+            persist_allow=False,
+            feedback="",
+        )
+    return None
+
+
+def _format_hosted_permission_question(
+    *,
+    tool_name: str,
+    tool_args: Any,
+    reason: str,
+    agent_scope_id: str,
+) -> str:
+    from jiuwenswarm.agents.harness.common.rails.subagent_permission_rail import (
+        _format_tool_args_preview,
+    )
+
+    parts = [
+        f"**工具 `{tool_name}` 需要授权才能执行**\n\n",
+        f"> 发起方：子 Agent `{agent_scope_id}`",
+        "\n\n**关键参数或命令：**\n\n",
+        _format_tool_args_preview(tool_name, tool_args),
+    ]
+    if reason:
+        parts.append(f"\n\n**权限原因：** {reason}")
+    return "".join(parts)
+
+
+async def request_subagent_hosted_permission_confirmation(
+    req: Any,
+    *,
+    parent_session: Any,
+    timeout: float = _SUBAGENT_PERMISSION_APPROVAL_TIMEOUT,
+) -> Any:
+    """Await parent-session card approval; never returns ``"interrupt"``."""
+    from openjiuwen.harness.security.models import PermissionConfirmResponse
+    from openjiuwen.harness.security.skill_authorization import (
+        SubagentApprovalKind,
+        get_subagent_approval_registry,
+    )
+    from openjiuwen.harness.security.skill_authorization.subagent_approval_registry import (
+        SubagentApprovalCancelled,
+        SubagentApprovalCapacityError,
+        SubagentApprovalTimeout,
+    )
+
+    from jiuwenswarm.agents.harness.common.rails.subagent_skill_authorization_rail import (
+        build_context_expiry_sender,
+        emit_subagent_approval,
+    )
+    from jiuwenswarm.openjiuwen_streaming_tool_patch import (
+        streaming_tool_wait_timeout_paused,
+    )
+
+    tool_call = req.tool_call
+    tool_name = str(getattr(tool_call, "name", "") or "").strip()
+    tool_call_id = str(
+        getattr(tool_call, "id", "") or f"permission_{tool_name or 'tool'}"
+    ).strip()
+    agent_scope_id = _session_id_of(getattr(req.ctx, "session", None))
+    parent_session_id = _session_id_of(parent_session)
+    if not agent_scope_id or not parent_session_id or not tool_call_id:
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission missing ids "
+            "parent=%s scope=%s tool_call=%s",
+            parent_session_id,
+            agent_scope_id,
+            tool_call_id,
+        )
+        return None
+
+    raw_args = getattr(tool_call, "arguments", None) if tool_call is not None else None
+    if isinstance(raw_args, str):
+        try:
+            tool_args = json.loads(raw_args) if raw_args.strip() else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            tool_args = {"_raw": raw_args}
+    elif isinstance(raw_args, dict):
+        tool_args = raw_args
+    else:
+        tool_args = {}
+
+    reason = str(getattr(getattr(req, "result", None), "reason", None) or "").strip()
+    question = _format_hosted_permission_question(
+        tool_name=tool_name,
+        tool_args=tool_args,
+        reason=reason or "Operation requires approval",
+        agent_scope_id=agent_scope_id,
+    )
+    options = _default_interrupt_options()
+
+    async def _send(request: Any) -> None:
+        await emit_subagent_approval(
+            parent_session,
+            request,
+            header=f"权限审批: {tool_name}",
+            question=question,
+            options=options,
+        )
+
+    try:
+        async with streaming_tool_wait_timeout_paused():
+            answer = await get_subagent_approval_registry().request(
+                kind=SubagentApprovalKind.TOOL_PERMISSION,
+                session_id=parent_session_id,
+                agent_scope_id=agent_scope_id,
+                tool_call_id=tool_call_id,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "reason": reason or "Operation requires approval",
+                    "auto_confirm_key": getattr(req, "auto_confirm_key", "") or "",
+                },
+                sender=_send,
+                expiry_sender=build_context_expiry_sender(),
+                timeout=timeout,
+            )
+    except SubagentApprovalTimeout:
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission timeout "
+            "session=%s scope=%s tool=%s",
+            parent_session_id,
+            agent_scope_id,
+            tool_name,
+        )
+        return PermissionConfirmResponse(
+            approved=False,
+            auto_confirm=False,
+            feedback="[PERMISSION_DENIED] 子 Agent 权限审批超时",
+        )
+    except (SubagentApprovalCancelled, SubagentApprovalCapacityError) as exc:
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission cancelled/capacity "
+            "session=%s scope=%s tool=%s error=%s",
+            parent_session_id,
+            agent_scope_id,
+            tool_name,
+            exc,
+        )
+        return PermissionConfirmResponse(
+            approved=False,
+            auto_confirm=False,
+            feedback="[PERMISSION_DENIED] 子 Agent 权限审批已取消或请求过多",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
+
+    parsed = parse_hosted_permission_answer(answer)
+    if parsed is not None:
+        return parsed
+    return PermissionConfirmResponse(
+        approved=False,
+        auto_confirm=False,
+        feedback="[PERMISSION_REJECTED] User rejected the request.",
+    )
+
+
 def build_permission_rail(
     config: dict[str, Any],
     llm: Any = None,
@@ -273,6 +566,13 @@ def build_permission_rail(
         async def _request_permission_confirmation(
             req: PermissionConfirmationRequest,
         ) -> PermissionConfirmResponse | str | None:
+            parent_session = resolve_subagent_permission_parent_session(req.ctx)
+            if parent_session is not None:
+                return await request_subagent_hosted_permission_confirmation(
+                    req,
+                    parent_session=parent_session,
+                )
+
             channel = TOOL_PERMISSION_CHANNEL_ID.get() or "web"
             if channel != "acp":
                 return "interrupt"
@@ -902,6 +1202,7 @@ def _normalize_question_preview(preview: Any) -> dict[str, Any] | None:
 
 _PERMANENT_REMEMBER_LABELS = frozenset({
     "永久记住",
+    "总是允许",  # OfficeClaw PermissionBridge global scope 回传标签
     "Always Allow",
     "always_allow",
     "allow_always",

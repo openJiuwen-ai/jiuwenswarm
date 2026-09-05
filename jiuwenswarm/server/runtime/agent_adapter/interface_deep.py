@@ -15907,6 +15907,39 @@ class JiuWenSwarmDeepAdapter:
         # Start of this adapter's own share of the turn; reported on the
         # "entering runner streaming" line so the pre-dispatch work is visible.
         stream_impl_started_at = time.monotonic()
+        # OfficeClaw / relay resume hosted subagent cards as streaming chat.send
+        # (answers + source), not chat.user_answer. Resolve the pending Future
+        # here and ACK — never steal the parent output lease / start a new round.
+        _params = request.params if isinstance(request.params, dict) else {}
+        _approval_id = str(_params.get("request_id") or "").strip()
+        if self._is_subagent_approval_answer(_approval_id, _params):
+            resolved = self._resolve_subagent_approval_answer(
+                request, _approval_id, _params.get("answers", [])
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] subagent approval resolved via chat.send: "
+                "request_id=%s approval_id=%s resolved=%s",
+                request.request_id,
+                _approval_id,
+                resolved,
+            )
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "runtime.accepted",
+                    "request_id": request.request_id,
+                    "resolved": resolved,
+                },
+                is_complete=False,
+            )
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload=None,
+                is_complete=True,
+            )
+            return
         if not self._is_session_scoped_adapter:
             # 提前绑定 LLM trace ContextVar，使 supervisor task（由
             # _get_or_create_session_adapter → start_interaction →
@@ -17646,8 +17679,19 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _is_ask_user_payload(payload: Any) -> bool:
-        """HITL 暂停判定：payload 是否为 ask_user 卡片事件。"""
-        return isinstance(payload, dict) and payload.get("event_type") == "chat.ask_user_question"
+        """HITL 暂停判定：是否为会打断外层流的 checkpoint ask_user 卡片。
+
+        子 Agent 托管审批（``subagent_tool_permission`` / ``subagent_skill_load``）
+        只是在父会话转发一张卡并 await Future，外层 round 仍在跑；不能置
+        ``suppress_stream_after_hitl`` / 发 ``chat.invocation_paused``，否则点击
+        作答后父流被误收口、任务看起来“直接结束”。
+        """
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("event_type") != "chat.ask_user_question":
+            return False
+        source = str(payload.get("source") or "").strip()
+        return source not in {"subagent_skill_load", "subagent_tool_permission"}
 
     @staticmethod
     def _is_hitl_suppress_noise_chunk(chunk: Any) -> bool:
