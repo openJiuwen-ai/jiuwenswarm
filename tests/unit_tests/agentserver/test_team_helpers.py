@@ -4584,6 +4584,10 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
 
+        @staticmethod
+        def get_active_team_name(session_id: str):
+            return ""
+
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(
         team_helpers,
@@ -4677,6 +4681,10 @@ async def test_broadcast_team_state_snapshot_task_event_carries_title_content_an
         @staticmethod
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_active_team_name(session_id: str):
+            return ""
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(
