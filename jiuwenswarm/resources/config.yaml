@@ -911,6 +911,8 @@ channels:
     send_file_allowed: true
   web:
     send_file_allowed: true
+  officeclaw:
+    send_file_allowed: true
   feishu:
     send_file_allowed: true
     apps:
