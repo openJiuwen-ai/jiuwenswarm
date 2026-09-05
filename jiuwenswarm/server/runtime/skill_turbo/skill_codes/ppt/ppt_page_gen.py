@@ -609,6 +609,7 @@ def _count_agenda_items(html: str) -> int:
 def _validate_agenda_item_count(
     outline_text: str,
     page_htmls: list[dict[str, Any]],
+    expected_item_count: int | None = None,
 ) -> list[int]:
     """校验 agenda 页条目数与大纲内容章节数是否一致。
 
@@ -618,17 +619,21 @@ def _validate_agenda_item_count(
     if not agenda_page:
         return []
 
-    content_chapters = _count_outline_content_chapters(outline_text)
-    if content_chapters == 0:
+    expected_count = (
+        expected_item_count
+        if isinstance(expected_item_count, int) and expected_item_count > 0
+        else _count_outline_content_chapters(outline_text)
+    )
+    if expected_count == 0:
         return []
 
     for p in page_htmls:
         if int(p.get("page_num", 0)) == agenda_page:
             item_count = _count_agenda_items(str(p.get("html") or ""))
-            if item_count != content_chapters:
+            if item_count != expected_count:
                 logger.warning(
-                    "[P8.1] agenda 条目数(%d) ≠ 大纲内容章节数(%d) page=%d",
-                    item_count, content_chapters, agenda_page,
+                    "[P8.1] agenda 条目数(%d) ≠ 期望章节数(%d) page=%d",
+                    item_count, expected_count, agenda_page,
                 )
                 return [agenda_page]
             break
@@ -4916,8 +4921,12 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 sorted(vote_deviant),
             )
 
-        # agenda 条目数校验：目录页条目数必须等于大纲内容章节数
-        agenda_deviant = _validate_agenda_item_count(outline_full, vote_pages)
+        # 用户指定页面清单存在时，ending 也可作为目录业务章节；否则沿用内容页数。
+        agenda_deviant = _validate_agenda_item_count(
+            outline_full,
+            vote_pages,
+            expected_item_count=inputs.get("required_agenda_item_count"),
+        )
         if agenda_deviant:
             missing_pages.extend(
                 p for p in agenda_deviant if p not in missing_pages
@@ -6299,12 +6308,14 @@ class PPTPageGenNode(PlanNode):
             agenda_path = f"{pages_dir}/page-{agenda_page_num}.pptx.html"
             agenda_html = await self._read_file(agenda_path)
             if agenda_html:
-                content_chapters = _count_outline_content_chapters(outline_text)
+                expected_count = inputs.get("required_agenda_item_count")
+                if not isinstance(expected_count, int) or expected_count <= 0:
+                    expected_count = _count_outline_content_chapters(outline_text)
                 item_count = _count_agenda_items(agenda_html)
-                if content_chapters > 0 and item_count != content_chapters:
+                if expected_count > 0 and item_count != expected_count:
                     logger.warning(
-                        "[P8-TP] agenda 条目数(%d) ≠ 大纲内容章节数(%d) page=%d，转 missing 走补写",
-                        item_count, content_chapters, agenda_page_num,
+                        "[P8-TP] agenda 条目数(%d) ≠ 期望章节数(%d) page=%d，转 missing 走补写",
+                        item_count, expected_count, agenda_page_num,
                     )
                     missing_pages.append(agenda_page_num)
 

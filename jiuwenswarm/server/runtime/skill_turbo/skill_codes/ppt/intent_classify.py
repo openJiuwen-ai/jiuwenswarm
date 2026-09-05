@@ -72,6 +72,12 @@ _LLM_PATH_AND_SLOTS_SYSTEM_PROMPT = """你是 PPT 任务分析助手。从用户
   普通章节结构、素材中的标题层级、模型自己觉得需要分节，都不构成触发条件 -> "none"。
   用户指定数量时（如"加 2 页章节页"），数量信息保留在 structural_page_count 中。
 - structural_page_count: 用户指定的中间结构页数量（整数；未指定或"每章一个"等需自动计算时为 null）。
+- requested_total_pages: 用户原文明确要求的总页数；未提及则为 null。保留原值，不换算成内容页数。
+- required_sections: 仅当用户用“包含/包括/含有/涵盖”等表达明确列出 PPT 页面或章节清单时填写。
+  数组元素格式为 {"title":"用户原文标题","page_type":"cover|agenda|content|ending"}。
+  标题页/封面归 cover，目录/议程归 agenda，可承担最终总结的展望/结论/致谢归 ending，其余明确业务章节归 content。
+  “包含销量数据、柱状图、案例”等页内素材或表现形式不属于页面清单，必须返回空数组。
+  当 required_sections 非空时，必须完整保留用户列出的所有页面/章节，不因 requested_total_pages 较小而删减或合并。
 
 重要：如果找到了文件路径，slots 各字段留空，不需要提取需求信息；
       如果没有找到任何文件路径，则必须提取 slots 信息。
@@ -79,7 +85,8 @@ _LLM_PATH_AND_SLOTS_SYSTEM_PROMPT = """你是 PPT 任务分析助手。从用户
 必须只输出 JSON，格式：
 {"doc_paths": ["路径1"], "slots": {"topic": "", "page_count": null, "audience": "",
 "presentation_purpose": "", "style_id": "", "pack_dir": "",
-"structural_page_request": "none", "structural_page_count": null}}
+"structural_page_request": "none", "structural_page_count": null,
+"requested_total_pages": null, "required_sections": []}}
 （page_count 为正整数或 null，禁止字符串）"""
 
 
@@ -279,6 +286,14 @@ def _parse_slots_from_llm_response(raw: str) -> dict[str, Any]:
             result[name] = value
         else:
             result[name] = "" if name != "page_count" else None
+    requested_total = slots_raw.get("requested_total_pages")
+    if isinstance(requested_total, (int, float)) and requested_total > 0:
+        result["requested_total_pages"] = int(requested_total)
+    else:
+        result["requested_total_pages"] = None
+    result["required_sections"] = PptCommon.normalize_required_sections(
+        slots_raw.get("required_sections")
+    )
     return result
 
 

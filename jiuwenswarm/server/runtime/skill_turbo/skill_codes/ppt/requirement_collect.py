@@ -84,6 +84,12 @@ _P21_SLOT_SYSTEM_PROMPT = ("""你是 PPT 需求槽位分析助手。从用户消
   普通章节结构、素材中的标题层级、模型自己觉得需要分节，都不构成触发条件 -> "none"。
   用户指定数量时（如"加 2 页章节页"），数量信息保留在 structural_page_count 中。
 - structural_page_count: 用户指定的中间结构页数量（整数；未指定或"每章一个"等需自动计算时为 null）。
+- requested_total_pages: 用户原文明确要求的总页数；未提及则为 null。保留原值，不换算。
+- required_sections: 仅当用户用“包含/包括/含有/涵盖”等表达明确列出页面或章节清单时填写。
+  数组元素格式为 {"title":"用户原文标题","page_type":"cover|agenda|content|ending"}。
+  标题页/封面归 cover，目录/议程归 agenda，可承担最终总结的展望/结论/致谢归 ending，其余明确业务章节归 content。
+  页内素材或表现形式（如销量数据、柱状图、案例）不是独立页面，required_sections 必须为空。
+  required_sections 非空时必须完整保留清单，不能为迁就总页数而删除或合并。
 - missing_fields: 仍缺失且需用户补充的字段名数组，取值限于 topic / page_count / audience / presentation_purpose / style_id
 - need_ask_style: 用户未明确风格时为 true，否则 false
 
@@ -102,6 +108,7 @@ _P21_SLOT_SYSTEM_PROMPT = ("""你是 PPT 需求槽位分析助手。从用户消
     + '{"topic":"","page_count":null,"audience":"","presentation_purpose":"",'
     + '"style_id":"","style_description":"","pack_dir":"",'
     + '"structural_page_request":"none","structural_page_count":null,'
+    + '"requested_total_pages":null,"required_sections":[],'
     + '"missing_fields":[],"need_ask_style":true}')
 
 _TOPIC_SUGGEST_COUNT = 4
@@ -275,6 +282,10 @@ def _set_requirement_artifact(ctx: dict[str, Any]) -> None:
             "style_id": ctx.get("style_id", ""),
             "audience": ctx.get("audience", ""),
             "presentation_purpose": ctx.get("presentation_purpose", ""),
+            "requested_total_pages": ctx.get("requested_total_pages"),
+            "required_sections": ctx.get("required_sections", []),
+            "resolved_total_pages": ctx.get("resolved_total_pages"),
+            "page_count_resolution": ctx.get("page_count_resolution", ""),
         },
     }
 
@@ -396,6 +407,15 @@ def _merge_slot_payload(
     else:
         inputs.setdefault("structural_page_count", None)
 
+    requested_total = payload.get("requested_total_pages")
+    if isinstance(requested_total, (int, float)) and requested_total > 0:
+        inputs["requested_total_pages"] = int(requested_total)
+    sections = PptCommon.normalize_required_sections(
+        payload.get("required_sections")
+    )
+    if sections:
+        inputs["required_sections"] = sections
+
     need_ask_style = payload.get("need_ask_style")
     if isinstance(need_ask_style, bool) and not inputs.get("pack_dir"):
         inputs["need_ask_style"] = need_ask_style
@@ -440,6 +460,8 @@ def _parse_slot_analysis_response(raw: str, *, preserve_topic: bool) -> dict[str
             "pack_dir": "",
             "structural_page_request": "none",
             "structural_page_count": None,
+            "requested_total_pages": None,
+            "required_sections": [],
             "missing_fields": default_missing,
             "need_ask_style": True,
         }
@@ -1556,6 +1578,15 @@ class RequirementCollectNode(PlanNode):
                 ctx["structural_page_count"] = _spc
             else:
                 ctx.setdefault("structural_page_count", None)
+            _requested_total = pre_slots.get("requested_total_pages")
+            if isinstance(_requested_total, (int, float)) and _requested_total > 0:
+                ctx["requested_total_pages"] = int(_requested_total)
+            _required_sections = PptCommon.normalize_required_sections(
+                pre_slots.get("required_sections")
+            )
+            if _required_sections:
+                ctx["required_sections"] = _required_sections
+            PptCommon.resolve_required_section_budget(ctx)
             await self.skip_subplan(self.sub_plans[0], ctx, message="slots pre-filled from query")
             await self.skip_subplan(self.sub_plans[1], ctx, message="slots pre-filled from query")
             await self.skip_subplan(self.sub_plans[2], ctx, message="slots pre-filled from query")
@@ -1593,11 +1624,20 @@ class RequirementCollectNode(PlanNode):
                     ctx["structural_page_count"] = _spc
                 else:
                     ctx.setdefault("structural_page_count", None)
+            _requested_total = pre_slots.get("requested_total_pages")
+            if isinstance(_requested_total, (int, float)) and _requested_total > 0:
+                ctx["requested_total_pages"] = int(_requested_total)
+            _required_sections = PptCommon.normalize_required_sections(
+                pre_slots.get("required_sections")
+            )
+            if _required_sections:
+                ctx["required_sections"] = _required_sections
 
         await self.execute_subplan(self.sub_plans[0], ctx)
-
-        for subplan in self.sub_plans[1:]:
+        for subplan in self.sub_plans[1:3]:
             await self.execute_subplan(subplan, ctx)
+        PptCommon.resolve_required_section_budget(ctx)
+        await self.execute_subplan(self.sub_plans[3], ctx)
 
         if not _has_nonempty_topic(ctx):
             raise RequirementCollectError("缺少演示主题 topic，无法继续 PPT 流水线")

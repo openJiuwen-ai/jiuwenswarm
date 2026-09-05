@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,9 @@ from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 _JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _CAT_N_PREFIX_RE = re.compile(r"^[ \t]*\d+[ \t]", re.MULTILINE)
 _OUTLINE_PAGE_HEADING_RE = re.compile(r"^### P(\d+):", re.MULTILINE)
+_REQUIRED_SECTION_PAGE_TYPES = frozenset({"cover", "agenda", "content", "ending"})
+
+logger = logging.getLogger(__name__)
 
 # ──────────────────────── 节点显示名映射 ────────────────────────
 # 将内部 plan_name（如 p0_pipeline_init）映射为界面上展示的中文名称。
@@ -100,6 +104,98 @@ class PptCommon:
             seen.add(dedupe_key)
             parts.append(normalized)
         return "\n".join(parts)
+
+    @staticmethod
+    def normalize_required_sections(value: Any) -> list[dict[str, str]]:
+        """规范化模型提取的用户指定页面清单，丢弃不完整或未知页型。"""
+        if not isinstance(value, list):
+            return []
+        sections: list[dict[str, str]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or "").strip()
+            page_type = str(item.get("page_type") or "").strip().lower()
+            if not title or page_type not in _REQUIRED_SECTION_PAGE_TYPES:
+                continue
+            sections.append({"title": title, "page_type": page_type})
+        return sections
+
+    @classmethod
+    def resolve_required_section_budget(cls, inputs: dict[str, Any]) -> None:
+        """按用户明确指定的页面清单统一解析页数冲突。
+
+        清单优先于普通总页数要求；只把 page_type=content 计入内部
+        page_count，cover/ending 由固定首尾页承载，agenda 走结构页。
+        """
+        sections = cls.normalize_required_sections(inputs.get("required_sections"))
+        if not sections:
+            inputs.pop("required_sections", None)
+            return
+        inputs["required_sections"] = sections
+
+        content_count = sum(
+            1 for section in sections if section["page_type"] == "content"
+        )
+        has_agenda = any(
+            section["page_type"] == "agenda" for section in sections
+        )
+        agenda_item_count = sum(
+            1
+            for section in sections
+            if section["page_type"] in {"content", "ending"}
+        )
+
+        try:
+            current_page_count = int(inputs.get("page_count") or 0)
+        except (TypeError, ValueError):
+            current_page_count = 0
+        resolved_page_count = max(current_page_count, content_count)
+        if resolved_page_count > 0:
+            inputs["page_count"] = resolved_page_count
+
+        if has_agenda:
+            structural_request = str(
+                inputs.get("structural_page_request") or "none"
+            ).strip().lower()
+            if structural_request in {"", "none"}:
+                inputs["structural_page_request"] = "agenda"
+                inputs["structural_page_count"] = 1
+
+        structural_count = inputs.get("structural_page_count")
+        if not isinstance(structural_count, int) or structural_count <= 0:
+            structural_count = (
+                1
+                if str(inputs.get("structural_page_request") or "none").lower()
+                != "none"
+                else 0
+            )
+        resolved_total = resolved_page_count + 2 + structural_count
+        requested_total = inputs.get("requested_total_pages")
+        try:
+            requested_total_int = (
+                int(requested_total) if requested_total is not None else None
+            )
+        except (TypeError, ValueError):
+            requested_total_int = None
+
+        inputs["required_agenda_item_count"] = agenda_item_count
+        inputs["resolved_total_pages"] = resolved_total
+        inputs["page_count_resolution"] = (
+            "required_sections_override"
+            if requested_total_int is not None
+            and resolved_total > requested_total_int
+            else "required_sections_fit"
+        )
+        logger.info(
+            "[PptCommon] required sections resolved requested_total=%s "
+            "content_page_count=%d resolved_total=%d agenda_items=%d resolution=%s",
+            requested_total_int,
+            resolved_page_count,
+            resolved_total,
+            agenda_item_count,
+            inputs["page_count_resolution"],
+        )
 
     @classmethod
     def parse_json_payload(cls, raw: str) -> Any:
