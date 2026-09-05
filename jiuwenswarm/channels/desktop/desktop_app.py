@@ -25,7 +25,10 @@ from typing import Any, BinaryIO, Callable
 
 from logging.handlers import RotatingFileHandler
 
-import webview
+try:
+    import webview  # pywebview — optional, desktop extra only
+except ImportError:  # pragma: no cover - exercised when pywebview is not installed
+    webview = None  # type: ignore[assignment]
 
 from jiuwenswarm.common._build_config import (
     APP_BUNDLE_NAME,
@@ -2321,6 +2324,12 @@ nohup {q_executable} >/dev/null 2>&1 &
             logger.info("[desktop] cleared WKWebView HTTP cache: %s", cache_dir)
 
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
+        if webview is None:
+            raise RuntimeError(
+                "pywebview is not installed. Install the desktop extra with: "
+                "pip install jiuwenswarm[desktop]"
+            )
+
         self._clear_wkwebview_system_cache()
 
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
