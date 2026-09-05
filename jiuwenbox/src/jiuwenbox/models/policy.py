@@ -796,12 +796,11 @@ class WindowsToolPaths(BaseModel):
 class WindowsFilesystemPolicy(BaseModel):
     """Windows 文件系统 ACL 配置.
 
-    语义对齐 docs/window沙箱.md 6.7:
-      - read_acl_preinstall: 一次性预装读 ACL 的路径 (安装阶段).
-      - allow_write: allow-only 模式下允许写入的路径 (合成 SID 授 Allow ACE).
-      - deny_write: 在 allow 覆盖范围内精细化封锁 (如 .git/.env).
-      - allow_read: allow 列表施加 Allow Read ACE (deny-then-allow 覆盖 deny).
-      - deny_read:  deny 列表施加 Deny Read ACE.
+          读黑名单 / 写白名单:
+            - allow_write: 写白名单. 目录递归传播 Allow Write 到已有子树.
+            - deny_write: 目录递归传播 Deny Write (盖住 allow_write 已灌进子树的可写 ACE).
+            - allow_read: 额外 Allow Read. 空 = 不额外授读.
+            - deny_read: 读黑名单. 目录递归传播 Deny Read.
       - tool_paths: 非默认安装路径的工具目录/可执行. 受限 token 默认读不了这些
         路径 → CreateProcessAsUserW 返回 WinError 2/5. 在此配置后: ① 加进
         read ACL 预装 (含 Execute, FILE_GENERIC_READ 已含) ② 拼进子进程 PATH.

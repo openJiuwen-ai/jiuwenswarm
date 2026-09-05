@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from ctypes import wintypes
 
@@ -169,6 +170,12 @@ def _get_netapi32() -> ctypes.WinDLL:
             ctypes.POINTER(wintypes.DWORD),
         ]
         _netapi32.NetUserAdd.restype = wintypes.DWORD
+        _netapi32.NetUserGetLocalGroups.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p), wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        ]
+        _netapi32.NetUserGetLocalGroups.restype = wintypes.DWORD
         _netapi32.NetLocalGroupAddMembers.argtypes = [
             wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
             ctypes.c_void_p, wintypes.DWORD,
@@ -223,6 +230,23 @@ def _get_advapi32() -> ctypes.WinDLL:
             wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
         ]
         _advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+        _advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+        ]
+        _advapi32.GetTokenInformation.restype = wintypes.BOOL
+        _advapi32.LookupAccountSidW.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_void_p,
+            wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        _advapi32.LookupAccountSidW.restype = wintypes.BOOL
+        _advapi32.LogonUserW.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR,
+            wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        _advapi32.LogonUserW.restype = wintypes.BOOL
         _advapi32.RegCreateKeyExW.argtypes = [
             wintypes.HKEY, wintypes.LPCWSTR, wintypes.DWORD,
             wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
@@ -815,6 +839,79 @@ def _add_user_to_group() -> None:
         f"NetLocalGroupAddMembers 失败 ret={last_ret} "
         f"(user={const.SANDBOX_USER_NAME} group={const.SANDBOX_USER_GROUP} "
         f"tried={tried})"
+    )
+
+
+def _lookup_sid_account_name(sid_str: str) -> str | None:
+    """LookupAccountSidW 拿本地名 (如 Users)."""
+    advapi32 = _get_advapi32()
+    psid = ctypes.c_void_p()
+    if not advapi32.ConvertStringSidToSidW(sid_str, ctypes.byref(psid)):
+        return None
+    try:
+        name_sz = wintypes.DWORD(0)
+        dom_sz = wintypes.DWORD(0)
+        use = wintypes.DWORD(0)
+        # 首次调用只为拿缓冲区大小 (必然失败, 填 name_sz/dom_sz).
+        advapi32.LookupAccountSidW(
+            None, psid, None, ctypes.byref(name_sz),
+            None, ctypes.byref(dom_sz), ctypes.byref(use),
+        )
+        if name_sz.value == 0:
+            return None
+        name_buf = ctypes.create_unicode_buffer(name_sz.value)
+        dom_buf = ctypes.create_unicode_buffer(dom_sz.value or 1)
+        if not advapi32.LookupAccountSidW(
+            None, psid, name_buf, ctypes.byref(name_sz),
+            dom_buf, ctypes.byref(dom_sz), ctypes.byref(use),
+        ):
+            return None
+        return name_buf.value
+    finally:
+        get_kernel32().LocalFree(psid)
+
+
+def _ensure_user_in_builtin_users() -> None:
+    """幂等确认 jbx-sandbox 在 BUILTIN\\Users (防御性, 非性能项).
+
+    NetUserAdd 本机账户通常已在 Users; 用 SID S-1-5-32-545 解析本地组名再加成员.
+    Authenticated Users (S-1-5-11) 是伪组, 不能也不应 NetLocalGroupAddMembers.
+    """
+    netapi32 = _get_netapi32()
+    group_name = _lookup_sid_account_name(const.SID_BUILTIN_USERS) or "Users"
+    last_ret = -1
+    tried: list[str] = []
+    try:
+        sid = _lookup_user_sid(const.SANDBOX_USER_NAME)
+        last_ret = _net_local_group_add_member_sid(netapi32, group_name, sid)
+        tried.append(f"SID:{sid}")
+        if last_ret in _ADD_LOCALGROUP_MEMBER_OK:
+            logger.info(
+                "用户 %s 已确认在组 %s (BUILTIN\\Users via SID)",
+                const.SANDBOX_USER_NAME, group_name,
+            )
+            invalidate_sandbox_token_groups()
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("BUILTIN\\Users SID 加组失败, 回退名字: %s", exc)
+
+    for member_name in _sandbox_group_member_names():
+        tried.append(member_name)
+        last_ret = _net_local_group_add_member_name(netapi32, group_name, member_name)
+        if last_ret in _ADD_LOCALGROUP_MEMBER_OK:
+            logger.info(
+                "用户 %s 已确认在组 %s (member=%s)",
+                const.SANDBOX_USER_NAME, group_name, member_name,
+            )
+            invalidate_sandbox_token_groups()
+            return
+        logger.warning(
+            "NetLocalGroupAddMembers Users ret=%d member=%s", last_ret, member_name,
+        )
+    # 非致命: 默认已在 Users 时某些环境可能返回其它码
+    logger.warning(
+        "确认 BUILTIN\\Users 成员失败 ret=%d tried=%s (非致命, 默认账户通常已在组内)",
+        last_ret, tried,
     )
 
 
@@ -1726,6 +1823,10 @@ def install(
             # 用户已存在 (force 重装): 失败回滚不删用户 (避免误删既有账户影响并发沙箱).
             steps_done.add("user_existed")
         _add_user_to_group()
+        try:
+            _ensure_user_in_builtin_users()
+        except Exception:  # noqa: BLE001
+            logger.warning("确认 BUILTIN\\Users 成员失败 (非致命)", exc_info=True)
         # 从登录界面隐藏 jbx-sandbox 用户 (非致命).
         try:
             _reg_set_dword_under(
@@ -2301,6 +2402,302 @@ def get_sandbox_user_password() -> str | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# 沙箱有效 SID 集合 (启动时动态取, 不硬编码 Authenticated Users / Users)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SandboxTokenGroups:
+    """jbx-sandbox 登录 token 上的有效组 SID 集合."""
+
+    user_sid: str
+    allow_sids: frozenset[str]
+    deny_only_sids: frozenset[str]
+    logon_type: str  # network | interactive | localgroups | fallback
+    source: str
+
+
+_token_groups_cache: SandboxTokenGroups | None = None
+# 整个计算过程 (LogonUserW / NetUserGetLocalGroups) 都在锁内: 并发 create 时
+# 只做一次登录. 可重入以防内部辗转再调 get.
+_token_groups_lock = threading.RLock()
+
+
+def invalidate_sandbox_token_groups() -> None:
+    """组成员变更后清进程内缓存, 下次 get 时重算."""
+    global _token_groups_cache
+    with _token_groups_lock:
+        _token_groups_cache = None
+
+
+def _sid_ptr_to_string(psid: object) -> str | None:
+    advapi32 = _get_advapi32()
+    out = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(psid, ctypes.byref(out)):
+        return None
+    try:
+        return out.value
+    finally:
+        if out:
+            get_kernel32().LocalFree(out)
+
+
+# 随登录方式变的伪组: 我们是用 LogonUserW(NETWORK) 探测的, 这些 SID 只出现在
+# 探测 token 里, 真正的沙箱进程 token 上没有 (或反过来). 拿它们判"已经可读"会
+# 多跳过传播 → 沙箱实际读不到. 一律不进 allow 集合.
+_LOGON_METHOD_SIDS = frozenset({
+    "S-1-2-0",   # LOCAL
+    "S-1-2-1",   # CONSOLE LOGON
+    "S-1-5-2",   # NETWORK
+    "S-1-5-3",   # BATCH
+    "S-1-5-4",   # INTERACTIVE
+    "S-1-5-14",  # REMOTE INTERACTIVE LOGON
+})
+# S-1-5-64-*: 认证包 (NTLM / SChannel / Digest), 同样随登录方式变.
+_LOGON_METHOD_SID_PREFIX = "S-1-5-64-"
+
+
+def _is_logon_method_sid(sid_str: str) -> bool:
+    return (
+        sid_str in _LOGON_METHOD_SIDS
+        or sid_str.startswith(_LOGON_METHOD_SID_PREFIX)
+    )
+
+
+def _filter_token_group_sid(sid_str: str) -> bool:
+    """丢掉登录会话 SID、完整性标签、随登录方式变的伪组."""
+    if not sid_str:
+        return False
+    # Logon session: S-1-5-5-X-Y
+    if sid_str.startswith("S-1-5-5-"):
+        return False
+    # Integrity levels: S-1-16-*
+    if sid_str.startswith("S-1-16-"):
+        return False
+    if _is_logon_method_sid(sid_str):
+        return False
+    return True
+
+
+def _token_groups_from_handle(h_token: object) -> tuple[set[str], set[str]]:
+    """从已打开的 token 读 TOKEN_GROUPS, 返回 (allow_sids, deny_only_sids)."""
+    from jiuwenbox.supervisor.win_exec import SidAndAttr, TokenGroup
+
+    advapi32 = _get_advapi32()
+    ret_len = wintypes.DWORD(0)
+    advapi32.GetTokenInformation(
+        h_token, const.TOKEN_GROUPS, None, 0, ctypes.byref(ret_len),
+    )
+    if ret_len.value == 0:
+        raise ctypes.WinError(ctypes.get_last_error() or 87)
+    buf = (ctypes.c_byte * ret_len.value)()
+    if not advapi32.GetTokenInformation(
+        h_token, const.TOKEN_GROUPS, buf, ret_len, ctypes.byref(ret_len),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    groups_struct = ctypes.cast(buf, ctypes.POINTER(TokenGroup)).contents
+    count = int(groups_struct.GroupCount)
+    arr_t = SidAndAttr * count
+    groups = ctypes.cast(
+        ctypes.addressof(groups_struct) + TokenGroup.Groups.offset,
+        ctypes.POINTER(arr_t),
+    ).contents
+
+    allow_sids: set[str] = set()
+    deny_only: set[str] = set()
+    for g in groups:
+        sid_str = _sid_ptr_to_string(g.Sid)
+        if not sid_str or not _filter_token_group_sid(sid_str):
+            continue
+        attrs = int(g.Attributes)
+        if attrs & const.SE_GROUP_USE_FOR_DENY_ONLY:
+            deny_only.add(sid_str)
+        elif attrs & const.SE_GROUP_ENABLED or attrs & const.SE_GROUP_MANDATORY:
+            allow_sids.add(sid_str)
+        else:
+            # 未 enabled 也未 deny-only: 保守放进 deny_only, 避免误判可读
+            deny_only.add(sid_str)
+    return allow_sids, deny_only
+
+
+def _logon_sandbox_user_token(password: str) -> tuple[object, str] | None:
+    """LogonUserW 拿 token. 返回 (handle, logon_type) 或 None."""
+    advapi32 = _get_advapi32()
+    token = ctypes.c_void_p()
+    provider = const.LOGON32_PROVIDER_DEFAULT
+    ok = advapi32.LogonUserW(
+        const.SANDBOX_USER_NAME, None, password,
+        const.LOGON32_LOGON_NETWORK, provider, ctypes.byref(token),
+    )
+    if ok:
+        return token, "network"
+    network_err = ctypes.get_last_error()
+    logger.debug(
+        "jbx-sandbox network logon 取 TOKEN_GROUPS 失败 (WinError %d), 回退 interactive",
+        network_err,
+    )
+    ok = advapi32.LogonUserW(
+        const.SANDBOX_USER_NAME, None, password,
+        const.LOGON32_LOGON_INTERACTIVE, provider, ctypes.byref(token),
+    )
+    if ok:
+        return token, "interactive"
+    return None
+
+
+def _local_groups_fallback(user_sid: str) -> set[str]:
+    """NetUserGetLocalGroups 兜底 (拿不到 Authenticated Users 等伪组)."""
+    netapi32 = _get_netapi32()
+    buf = ctypes.c_void_p()
+    entries_read = wintypes.DWORD(0)
+    total = wintypes.DWORD(0)
+    # LEVEL 0: LOCALGROUP_USERS_INFO_0 { LPWSTR lgrui0_name }
+    try:
+        ret = netapi32.NetUserGetLocalGroups(
+            None, const.SANDBOX_USER_NAME, 0, 0,
+            ctypes.byref(buf), 0xFFFFFFFF,
+            ctypes.byref(entries_read), ctypes.byref(total),
+        )
+        if ret != 0 or not buf:
+            return set()
+
+        class LocalGroupUsersInfo0(ctypes.Structure):
+            _fields_ = [("lgrui0_name", wintypes.LPWSTR)]
+
+        arr = ctypes.cast(
+            buf, ctypes.POINTER(LocalGroupUsersInfo0 * entries_read.value),
+        ).contents
+        sids: set[str] = set()
+        advapi32 = _get_advapi32()
+        for i in range(entries_read.value):
+            name = arr[i].lgrui0_name
+            if not name:
+                continue
+            # LookupAccountName → SID string
+            sid_size = wintypes.DWORD(0)
+            dom_size = wintypes.DWORD(0)
+            use = wintypes.DWORD(0)
+            advapi32.LookupAccountNameW(
+                None, name, None, ctypes.byref(sid_size),
+                None, ctypes.byref(dom_size), ctypes.byref(use),
+            )
+            if sid_size.value == 0:
+                continue
+            sid_buf = (ctypes.c_byte * sid_size.value)()
+            dom_buf = ctypes.create_unicode_buffer(dom_size.value or 1)
+            if not advapi32.LookupAccountNameW(
+                None, name, sid_buf, ctypes.byref(sid_size),
+                dom_buf, ctypes.byref(dom_size), ctypes.byref(use),
+            ):
+                continue
+            sid_str = _sid_ptr_to_string(sid_buf)
+            if sid_str and _filter_token_group_sid(sid_str):
+                sids.add(sid_str)
+        if user_sid:
+            sids.add(user_sid)
+        return sids
+    finally:
+        if buf:
+            netapi32.NetApiBufferFree(buf)
+
+
+def get_sandbox_token_groups(*, force: bool = False) -> SandboxTokenGroups:
+    """启动时动态取 jbx-sandbox 有效 SID 集合 (进程内缓存).
+
+    主路径: LogonUserW + TOKEN_GROUPS (含 Authenticated Users 等伪组).
+    失败退 LocalGroups, 再退 {user_sid, synthetic_sid}.
+    """
+    global _token_groups_cache
+    _require_windows()
+    with _token_groups_lock:
+        if _token_groups_cache is not None and not force:
+            return _token_groups_cache
+        return _compute_sandbox_token_groups()
+
+
+def _compute_sandbox_token_groups() -> SandboxTokenGroups:
+    """实际探测有效 SID 集合. 调用方须持 _token_groups_lock."""
+    global _token_groups_cache
+    user_sid = get_sandbox_user_sid() or ""
+    synth = get_synthetic_write_sid() or ""
+    base: set[str] = set()
+    if user_sid:
+        base.add(user_sid)
+    if synth:
+        base.add(synth)
+
+    password = get_sandbox_user_password()
+    result: SandboxTokenGroups | None = None
+
+    if password:
+        tok = _logon_sandbox_user_token(password)
+        if tok is not None:
+            h_token, logon_type = tok
+            try:
+                allow_sids, deny_only = _token_groups_from_handle(h_token)
+                allow_sids |= base
+                result = SandboxTokenGroups(
+                    user_sid=user_sid,
+                    allow_sids=frozenset(allow_sids),
+                    deny_only_sids=frozenset(deny_only - allow_sids),
+                    logon_type=logon_type,
+                    source="token",
+                )
+                logger.info(
+                    "沙箱 TOKEN_GROUPS: logon=%s allow=%d deny_only=%d "
+                    "(含 Authenticated Users 等伪组; 随登录方式变的 NETWORK / "
+                    "认证包等 SID 已滤掉, 不参与跳过判定)",
+                    logon_type, len(result.allow_sids), len(result.deny_only_sids),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("读 TOKEN_GROUPS 失败, 尝试 LocalGroups 兜底", exc_info=True)
+            finally:
+                try:
+                    get_kernel32().CloseHandle(h_token)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    if result is None:
+        try:
+            local = _local_groups_fallback(user_sid)
+            local |= base
+            result = SandboxTokenGroups(
+                user_sid=user_sid,
+                allow_sids=frozenset(local),
+                deny_only_sids=frozenset(),
+                logon_type="localgroups",
+                source="localgroups",
+            )
+            logger.warning(
+                "沙箱 SID 集合走 LocalGroups 兜底 (无 Authenticated Users 等伪组), "
+                "allow=%d — 跳过判定偏保守",
+                len(result.allow_sids),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("LocalGroups 兜底失败, 只用 user+synthetic SID", exc_info=True)
+            result = SandboxTokenGroups(
+                user_sid=user_sid,
+                allow_sids=frozenset(base),
+                deny_only_sids=frozenset(),
+                logon_type="fallback",
+                source="fallback",
+            )
+
+    # 自检: 读黑名单的前提是沙箱能借组权限读宿主文件. 集合里除了自己的
+    # user/synthetic SID 再无可用组 (或组全被降级成 deny-only) 就告警.
+    if not (result.allow_sids - base):
+        logger.warning(
+            "沙箱有效 SID 集合里没有任何可用组 (source=%s logon=%s allow=%s "
+            "deny_only=%d); 读黑名单模型前提不成立, allow_read 空列表时"
+            "沙箱可能读不到宿主文件",
+            result.source, result.logon_type,
+            sorted(result.allow_sids), len(result.deny_only_sids),
+        )
+
+    _token_groups_cache = result
+    return result
+
+
 def get_synthetic_write_sid() -> str | None:
     """从注册表读合成写 SID."""
     _require_windows()
@@ -2410,6 +2807,11 @@ def _load_applied_acl_paths() -> list[str]:
     return []
 
 
+# 施加清单 / 指纹缓存都是「读-改-写」整份文件. 并发 create 各自在 ACL 线程里
+# 记录, 不串行化会互相覆盖丢条目 (后果是下次少跳过一次传播, 但没必要).
+_acl_record_lock = threading.Lock()
+
+
 def _save_applied_acl_paths(paths: list[str]) -> None:
     """写历史施加路径清单到文件 (用户目录, 普通用户可写)."""
     f = _applied_acl_paths_file()
@@ -2437,17 +2839,171 @@ def record_applied_acl_paths(paths: list[str], workspace: str) -> None:
     if not new_paths:
         return
 
-    existing = _load_applied_acl_paths()
-    # 合并去重保序: seen 用小写键判断存在性, merged 保留首次出现的原始大小写.
-    merged: list[str] = []
-    seen: set[str] = set()
-    for p in existing + new_paths:
-        key = p.lower()
-        if key in seen:
-            continue  # 已有同一路径 (任意大小写), 跳过重复添加
-        seen.add(key)
-        merged.append(p)
-    _save_applied_acl_paths(merged)
+    with _acl_record_lock:
+        existing = _load_applied_acl_paths()
+        # 合并去重保序: seen 用小写键判断存在性, merged 保留首次出现的原始大小写.
+        merged: list[str] = []
+        seen: set[str] = set()
+        for p in existing + new_paths:
+            key = p.lower()
+            if key in seen:
+                continue  # 已有同一路径 (任意大小写), 跳过重复添加
+            seen.add(key)
+            merged.append(p)
+        _save_applied_acl_paths(merged)
+
+
+# ---------------------------------------------------------------------------
+# ACL 指纹缓存 (path|kind → mask/flags/propagated); sandbox_user_sid 变则整体作废
+# ---------------------------------------------------------------------------
+
+_ACL_FP_VERSION = 2
+
+
+def _acl_fingerprint_file() -> Path:
+    return _applied_acl_paths_file().with_name("acl_fingerprints.json")
+
+
+def _save_acl_fingerprints(
+    entries: "list[dict]",
+    sandbox_user_sid: str | None,
+) -> None:
+    """整份覆盖写指纹缓存. 调用方须持 _acl_record_lock."""
+    payload = {
+        "version": _ACL_FP_VERSION,
+        "sandbox_user_sid": sandbox_user_sid or get_sandbox_user_sid() or "",
+        "entries": entries,
+    }
+    f = _acl_fingerprint_file()
+    try:
+        f.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("写 ACL 指纹缓存失败 path=%s: %s", f, exc)
+
+
+def _fingerprint_entry_key(path: str, kind: str) -> str:
+    """缓存 key. 复用 win_acl 的实现: 写入端和读取端漂了就永远不命中."""
+    from jiuwenbox.supervisor import win_acl
+
+    return win_acl._fingerprint_key(path, kind)  # noqa: SLF001
+
+
+def load_acl_fingerprint_cache(
+    *,
+    sandbox_user_sid: str | None = None,
+) -> dict[str, dict]:
+    """读指纹缓存. SID 不匹配或格式旧则返回空 (不跳过传播)."""
+    _require_windows()
+    f = _acl_fingerprint_file()
+    if not f.exists():
+        return {}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    if not isinstance(data, dict) or int(data.get("version", 0)) != _ACL_FP_VERSION:
+        return {}
+    cached_sid = str(data.get("sandbox_user_sid") or "")
+    if sandbox_user_sid and cached_sid and cached_sid != sandbox_user_sid:
+        logger.info(
+            "ACL 指纹缓存 SID 已变 (cache=%s now=%s), 作废跳过",
+            cached_sid, sandbox_user_sid,
+        )
+        return {}
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        return {}
+    out: dict[str, dict] = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        path = e.get("path")
+        kind = e.get("kind")
+        if not isinstance(path, str) or not isinstance(kind, str):
+            continue
+        out[_fingerprint_entry_key(path, kind)] = {
+            "path": path,
+            "kind": kind,
+            "mask": int(e.get("mask") or 0),
+            "flags": int(e.get("flags") or 0),
+            "propagated": bool(e.get("propagated")),
+        }
+    return out
+
+
+def record_acl_fingerprints(
+    grants: list,
+    *,
+    sandbox_user_sid: str | None = None,
+) -> None:
+    """合并写入指纹缓存. ``grants`` 为 AclGrantRecord 列表 (或同结构对象)."""
+    _require_windows()
+    if not grants:
+        return
+    with _acl_record_lock:
+        _record_acl_fingerprints_locked(grants, sandbox_user_sid)
+
+
+def _record_acl_fingerprints_locked(
+    grants: list,
+    sandbox_user_sid: str | None,
+) -> None:
+    existing = load_acl_fingerprint_cache(sandbox_user_sid=sandbox_user_sid)
+    for g in grants:
+        path = getattr(g, "path", None) or (g.get("path") if isinstance(g, dict) else None)
+        kind = getattr(g, "kind", None) or (g.get("kind") if isinstance(g, dict) else None)
+        if not path or not kind:
+            continue
+        # skipped 且未传播成功的条目不覆盖已有 propagated=True
+        propagated = bool(
+            getattr(g, "propagated", None)
+            if not isinstance(g, dict) else g.get("propagated")
+        )
+        skipped = bool(
+            getattr(g, "skipped", None)
+            if not isinstance(g, dict) else g.get("skipped")
+        )
+        key = _fingerprint_entry_key(str(path), str(kind))
+        if skipped and not propagated:
+            continue
+        mask = int(
+            getattr(g, "mask", 0) if not isinstance(g, dict) else (g.get("mask") or 0)
+        )
+        flags = int(
+            getattr(g, "flags", 0) if not isinstance(g, dict) else (g.get("flags") or 0)
+        )
+        prev = existing.get(key)
+        if prev and prev.get("propagated") and not propagated:
+            # 保留已有传播成功记录
+            continue
+        existing[key] = {
+            "path": str(path),
+            "kind": str(kind),
+            "mask": mask,
+            "flags": flags,
+            "propagated": propagated,
+        }
+
+    payload = {
+        "version": _ACL_FP_VERSION,
+        "sandbox_user_sid": sandbox_user_sid or get_sandbox_user_sid() or "",
+        "entries": list(existing.values()),
+    }
+    f = _acl_fingerprint_file()
+    try:
+        f.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("写 ACL 指纹缓存失败 path=%s: %s", f, exc)
+
+
+def clear_acl_fingerprint_cache() -> None:
+    """卸载 / force 重装时清指纹."""
+    f = _acl_fingerprint_file()
+    try:
+        if f.exists():
+            f.unlink()
+    except OSError:
+        logger.debug("清 ACL 指纹缓存失败", exc_info=True)
 
 
 def revoke_stale_acl(
@@ -2490,6 +3046,28 @@ def revoke_stale_acl(
     remaining = [p for p in historical if p.replace("\\", "/").rstrip("/").lower() not in stale_set]
     remaining = _gc_applied_acl_paths(remaining, current)
     _save_applied_acl_paths(remaining)
+
+    # 同步裁掉指纹缓存里对应路径 (任意 kind). 策略变更时可能与并发 create 的
+    # record_acl_fingerprints 撞车, 同一把锁串行化.
+    try:
+        with _acl_record_lock:
+            fp = load_acl_fingerprint_cache(sandbox_user_sid=sandbox_user_sid)
+            kept = {
+                k: v for k, v in fp.items()
+                if str(v.get("path", "")).replace("\\", "/").rstrip("/").lower()
+                not in stale_set
+            }
+            if fp and len(kept) != len(fp):
+                payload = {
+                    "version": _ACL_FP_VERSION,
+                    "sandbox_user_sid": sandbox_user_sid or get_sandbox_user_sid() or "",
+                    "entries": list(kept.values()),
+                }
+                _acl_fingerprint_file().write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+    except Exception:  # noqa: BLE001
+        logger.debug("差集清理后裁指纹缓存失败", exc_info=True)
 
     logger.info("启动差集清理: 清除 %d 个残留路径的 ACE: %s", len(stale), stale)
     return stale
@@ -2583,6 +3161,11 @@ def uninstall() -> None:
         win_wfp.uninstall_firewall_rule_fallback()
     except Exception:  # noqa: BLE001
         logger.warning("WFP/防火墙卸载失败", exc_info=True)
+    try:
+        clear_acl_fingerprint_cache()
+        invalidate_sandbox_token_groups()
+    except Exception:  # noqa: BLE001
+        logger.debug("卸载时清 ACL 指纹/SID 缓存失败", exc_info=True)
     _remove_sandbox_user_and_profile()
     logger.info("Windows 沙箱卸载完成")
 

@@ -77,6 +77,11 @@ WRITE_RESTRICTED = 0x8
 # primary token). _create_restricted_token 仍被 runner_main 构造但 exec 不消费
 # (dead code). WRITE_RESTRICTED 暂不 OR 进 flags, 待受限 token 0xC0000142 根因
 # (desktop/全局对象机制) 解决后再恢复.
+#
+# 护栏: 若将来恢复完整受限 token (含非 WRITE_RESTRICTED 的 restricting SID
+# 列表), 必须把沙箱赖以读文件的组 SID (Authenticated Users / Users / Everyone
+# 等, 以启动时 TOKEN_GROUPS 动态结果为准) 放进 restricting 列表; 永远不要把
+# 它们放进 disabling SIDs, 否则读会被二次 ACL 检查全部挡掉.
 RESTRICTED_TOKEN_FLAGS = DISABLE_MAX_PRIVILEGE | SANDBOX_INERT  # 去掉 WRITE_RESTRICTED(0x8)
 
 # ---------------------------------------------------------------------------
@@ -91,9 +96,20 @@ WIN_WORLD_SID = 1  # WinWorldSid -> Everyone
 # LogonUser / CreateProcessWithLogonW / CreateProcessAsUser 标志.
 # ---------------------------------------------------------------------------
 LOGON32_LOGON_INTERACTIVE = 2
+LOGON32_LOGON_NETWORK = 3
 LOGON32_PROVIDER_DEFAULT = 0
 # CreateProcessWithLogonW / LogonUser(INTERACTIVE) 未授「允许本地登录」时的 Win32 码.
 ERROR_LOGON_TYPE_NOT_GRANTED = 1385
+
+# TOKEN_GROUPS SID 属性 (winnt.h).
+SE_GROUP_MANDATORY = 0x00000001
+SE_GROUP_ENABLED_BY_DEFAULT = 0x00000002
+SE_GROUP_ENABLED = 0x00000004
+SE_GROUP_OWNER = 0x00000008
+SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
+SE_GROUP_INTEGRITY = 0x00000020
+SE_GROUP_INTEGRITY_ENABLED = 0x00000040
+SE_GROUP_LOGON_ID = 0xC0000000
 
 # LSA 用户权利 (ntsecapi.h). 第一跳 LOGON_WITH_PROFILE 需要交互式登录权利.
 # 对齐 secpol.msc → 本地策略 → 用户权限分配 → 允许本地登录.
@@ -230,15 +246,23 @@ FILE_WRITE_DATA       = 0x00000002
 FILE_APPEND_DATA      = 0x00000004
 FILE_WRITE_EA         = 0x00000010
 FILE_WRITE_ATTRIBUTES = 0x00000100
+# 目录上删除子对象 (icacls Dc). 白名单目录上有它才能 del 已有子文件, 不必给每个文件打 ACE.
+FILE_DELETE_CHILD     = 0x00000040
 
-# allow_write 路径授予的写权限组合.
-ALLOW_WRITE_RIGHTS = FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | FILE_DELETE_ACCESS
+# allow_write 白名单节点: 写+执行+删对象+删子项. (OI)(CI) 只改该节点, 不扫树.
+ALLOW_WRITE_RIGHTS = (
+    FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE
+    | FILE_DELETE_ACCESS | FILE_DELETE_CHILD
+)
 # 工具目录 / python.exe 预装: FILE_GENERIC_READ 不含 FILE_EXECUTE/FILE_TRAVERSE,
 # 只授 Read 时 jbx-sandbox 无法 CreateProcessWithLogonW (WinError 5).
 ALLOW_READ_EXECUTE_RIGHTS = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
 # deny_write 路径封锁的写权限组合: 只拒绝写特定位, 不含 SYNCHRONIZE/READ_CONTROL
 # (这两个位也属于 FILE_GENERIC_READ, 若出现在 Deny mask 中会阻断读访问).
-DENY_WRITE_RIGHTS = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
+DENY_WRITE_RIGHTS = (
+    FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
+    | FILE_DELETE_ACCESS | FILE_DELETE_CHILD
+)
 # read 控制中 deny 施加的读权限.
 DENY_READ_RIGHTS = FILE_GENERIC_READ
 

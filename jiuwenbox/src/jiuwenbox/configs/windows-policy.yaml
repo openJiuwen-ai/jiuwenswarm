@@ -24,13 +24,12 @@ windows:
     # 实际预装只有 tool_paths 展开的工具目录 (D:\Files\Git 等, owner=Administrators 不在系统目录下, 默认 ACL 不放行 Users → 需预装; 目录小递归快).
     # 由 collect_preinstall_paths 自动合并 read_acl_preinstall + tool_paths, 故这里留空即可.
     read_acl_preinstall: []
-    # 沙箱可写路径 (合成 SID 授 Allow Write+Execute+Delete). 第一个路径作为沙箱 workspace 根.
+    # 写白名单: 目录打 (OI)(CI) Allow Write 并传播到已有子树. 第一项同时是 workspace 根.
     allow_write:
       - "{{ workspace }}"
-    # 沙箱可读路径 (合成 SID + 真实 SID 授 Allow Read+Execute).
-    # 不再单独授 skills: 可读范围由 allow_write + claw-desktop 数据目录 ACL 覆盖.
+    # 读: 黑名单. Users 默认可读的不必列; 本列表只补默认读不到的路径. 空 = 不额外授读.
     allow_read: []
-    # 在 allow 范围内精细化封锁 (Deny Write).
+    # 写白名单内的 Deny, 或对其它路径的明确禁写.
     deny_write:
       - "{{ workspace }}/.git"
       - "{{ workspace }}/.env"

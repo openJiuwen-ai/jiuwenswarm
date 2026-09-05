@@ -1,10 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Windows 文件系统 ACL 控制 (合成 SID + NTFS DACL).
 
-对齐 docs/window沙箱.md 6.7:
-  - 读控制: deny-then-allow (依赖安装阶段预装读 ACL; 本模块施加 Deny/Allow Read).
-  - 写控制: allow-only (合成 SID JHXSandboxWrite 对 allow_write 授 Allow Write
-    + Execute + Delete; 对 deny_write 施加 Deny Write ACE 精细化封锁).
+读写不对称:
+  - 读: 黑名单. Users/Everyone 默认 RX 不必再授 Allow; deny_read 在名单
+    目录上打 Deny Read, 并用 SetNamedSecurityInfo 传播到已有子树.
+  - 写: 白名单. allow_write (及 workspace 缺省) 打 Allow Write 并传播到已有子树;
+    deny_write 同样传播 (否则 allow_write 已把可写 ACE 灌进 .git 等已有子树).
+    未列出的路径默认写不了.
 
 DACL 只增删沙箱 SID (jbx-sandbox + 合成写 SID) 的 ACE. 不删 Users / Everyone /
 宿主用户 / SYSTEM 的已有条目, 不改盘符根和 ``X:\\Users``. 宿主主用户权限不受影响.
@@ -21,6 +23,7 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -34,6 +37,27 @@ from jiuwenbox.server.workspace import (
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AclGrantRecord:
+    """单次 grant 的指纹记录, 供下次启动跳过传播."""
+
+    path: str
+    kind: str  # allow_write | deny_write | allow_read | deny_read
+    mask: int
+    flags: int
+    propagated: bool
+    skipped: bool = False
+
+
+@dataclass
+class ApplyAclResult:
+    """apply_sandbox_acl 返回值."""
+
+    paths: list[str] = field(default_factory=list)
+    grants: list[AclGrantRecord] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
 
 
 def _require_windows() -> None:
@@ -197,6 +221,22 @@ def _expand_fs_path(raw: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(str(raw)))).resolve()
 
 
+def _path_key(raw: str) -> str:
+    try:
+        return os.path.normcase(str(_expand_fs_path(raw)))
+    except OSError:
+        return os.path.normcase(os.path.abspath(os.path.expandvars(os.path.expanduser(raw))))
+
+
+def _path_covered_by_roots(path_key: str, roots: set[str]) -> bool:
+    for root in roots:
+        if not root:
+            continue
+        if path_key == root or path_key.startswith(root + os.sep):
+            return True
+    return False
+
+
 def resolve_desktop_data_dir() -> str:
     """桌面数据目录 (claw-desktop), 供 ACL / traverse 共用.
 
@@ -245,8 +285,8 @@ def _parent_traverse_plan(is_profile: bool, is_desktop: bool) -> dict[str, objec
     只追加/替换沙箱 SID 的 ACE, 不删 Users / 宿主条目.
     - 数据目录 (claw-desktop): 可继承读写 (含 FILE_LIST_DIRECTORY), 禁止继承,
       否则 AppData 受保护 DACL 会把沙箱 ACE 冲掉, list_files 报 WinError 5.
-    - 主目录: 只授非继承 traverse; 沙箱 SID 显式 Deny List (不含 READ_ATTRIBUTES,
-      避免挡住穿过 AppData). 不改 Users/宿主 ACE, 不强制 protect.
+    - 主目录: 只授非继承 traverse, 不打 Deny List / Deny Read
+      (默认跟 NTFS; 黑名单用 policy deny_*). 不改 Users/宿主 ACE.
     - 中间目录 (AppData/Roaming): 只授非继承 traverse, 不改继承, 旁边其它目录不授权.
     """
     if is_desktop:
@@ -265,7 +305,7 @@ def _parent_traverse_plan(is_profile: bool, is_desktop: bool) -> dict[str, objec
             "protect": None,
             "skip_inherited": False,
             "drop_world": False,
-            "deny_list": True,
+            "deny_list": False,
         }
     return {
         "rights": const.FILE_GENERIC_EXECUTE,
@@ -312,58 +352,18 @@ def _host_keeper_aces(owner_sid) -> list[tuple[int, int, int, object]]:
     return aces
 
 
-_PROFILE_TRAVERSE_CHILD_NAMES = frozenset({"appdata", "application data"})
-
 
 def _harden_profile_children(profile: str, sid_obj) -> None:
-    """主目录直接子目录对沙箱 SID 显式 Deny Read, 不递归, 不动 Users/宿主 ACE.
-
-    jbx-sandbox 在 Users 组, Desktop 上 ``Users:(I)(RX)`` 会让它列桌面;
-    用沙箱 SID 的 Deny 压过组 Allow. 不改 AppData (穿过 claw-desktop 仍靠 traverse).
+    """不再给主目录子项打 Deny. 保留函数名供测试 monkeypatch.
     """
-    drop_keys = {_sid_dedup_key(sid_obj)}
-    new_aces = [
-        (
-            const.ACCESS_DENIED_ACE_TYPE,
-            const.RECURSIVE_ACE_FLAGS,
-            const.FILE_GENERIC_READ,
-            sid_obj,
-        ),
-    ]
-    win32security, _, _ = _ensure_pywin32()
-    try:
-        entries = os.scandir(profile)
-    except OSError:
-        return
-    with entries:
-        for ent in entries:
-            try:
-                if not ent.is_dir(follow_symlinks=False):
-                    continue
-            except OSError:
-                continue
-            if ent.name.lower() in _PROFILE_TRAVERSE_CHILD_NAMES:
-                continue
-            try:
-                sd = win32security.GetFileSecurity(
-                    ent.path, win32security.DACL_SECURITY_INFORMATION,
-                )
-                acl = _rebuild_acl_with_order(
-                    sd.GetSecurityDescriptorDacl(),
-                    new_aces,
-                    skip_inherited=False,
-                    drop_sid_keys=drop_keys,
-                )
-                _write_file_dacl(ent.path, acl, protect=None, sd=sd)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("harden profile child 失败 path=%s: %s", ent.path, exc)
+    del profile, sid_obj
 
 
 def reconcile_install_acl(sandbox_user_sid: str | None = None) -> None:
     """安装/重装 exe 时把沙箱 SID 的 ACE 收敛到默认隔离态.
 
     - 去掉残留: 主目录上沙箱 (OI)(CI)(R)
-    - 主目录 / AppData / Roaming: 沙箱只能穿过 (显式 Deny List + Allow Traverse)
+    - 主目录 / AppData / Roaming: 沙箱只补 Allow Traverse (不打 Deny List)
     - claw-desktop: 沙箱可读可写
     - 不删 Users / 宿主 / SYSTEM / Administrators 已有 ACE
     """
@@ -422,6 +422,61 @@ def _write_file_dacl(
     win32security.SetFileSecurity(
         path, win32security.DACL_SECURITY_INFORMATION, sd,
     )
+
+
+def _write_file_dacl_propagate(path: str, acl, *, sd=None) -> None:
+    """用 SetNamedSecurityInfo 写 DACL, 把可继承 ACE 推到已有子对象.
+
+    保留对象自身的 SE_DACL_PROTECTED (禁止从再上一级继承), 避免 Documents
+    解开保护后被主目录 Users (OI)(CI) 灌入. 已禁止继承的子目录系统不会改.
+    """
+    win32security, _, _ = _ensure_pywin32()
+    if sd is None:
+        sd = win32security.GetFileSecurity(
+            path, win32security.DACL_SECURITY_INFORMATION,
+        )
+    try:
+        ctrl, _rev = sd.GetSecurityDescriptorControl()
+    except Exception:  # noqa: BLE001
+        ctrl = 0
+    info = win32security.DACL_SECURITY_INFORMATION
+    protected_bit = getattr(
+        win32security, "SE_DACL_PROTECTED", const.SE_DACL_PROTECTED,
+    )
+    if ctrl & protected_bit:
+        info |= getattr(
+            win32security, "PROTECTED_DACL_SECURITY_INFORMATION",
+            const.PROTECTED_DACL_SECURITY_INFORMATION,
+        )
+    else:
+        info |= getattr(
+            win32security, "UNPROTECTED_DACL_SECURITY_INFORMATION",
+            const.UNPROTECTED_DACL_SECURITY_INFORMATION,
+        )
+    t0 = time.perf_counter()
+    win32security.SetNamedSecurityInfo(
+        path,
+        win32security.SE_FILE_OBJECT,
+        info,
+        None, None, acl, None,
+    )
+    logger.info(
+        "SetNamedSecurityInfo 已传播 DACL path=%s elapsed=%.2fs",
+        path, time.perf_counter() - t0,
+    )
+
+
+def _warn_if_heavy_propagate(path: str, kind: str) -> None:
+    """对 USERPROFILE 整树传播时打警告 (Documents 等子目录不警告)."""
+    try:
+        home = os.path.normcase(str(Path.home().resolve()))
+        key = os.path.normcase(str(Path(path).resolve()))
+    except OSError:
+        return
+    if key == home:
+        logger.warning(
+            "%s 将对整个 USERPROFILE 传播 ACE, 可能很慢: %s", kind, path,
+        )
 
 
 def _rebuild_acl_with_order(
@@ -510,10 +565,20 @@ def _rebuild_acl_with_order(
     return acl
 
 
-def purge_sid_aces(path: str, sid_objs: "list[object]") -> int:
+def purge_sid_aces(
+    path: str,
+    sid_objs: "list[object]",
+    *,
+    propagate: bool = False,
+) -> int:
     """清除 ``path`` 上属于 ``sid_objs`` 任一 SID 的所有 ACE (不管 Allow/Deny).
-        配置切换 (路径从 deny_read 移到 allow_read) 时, apply 前先清掉旧 ACE,
-        避免同 SID 上 Deny+Allow 共存导致 Deny 压过 Allow (NTFS 显式 Deny 优先).
+
+    配置切换 (路径从 deny_read 移到 allow_read) 时, apply 前先清掉旧 ACE,
+    避免同 SID 上 Deny+Allow 共存导致 Deny 压过 Allow (NTFS 显式 Deny 优先).
+
+    ``propagate=True`` 且 path 为目录时走 SetNamedSecurityInfo, 把清掉沙箱
+    ACE 后的 DACL 推到已有子树 (传播式 grant 之后子对象上的 (I) 副本不会
+    随根上 SetFileSecurity 自动消失).
     """
     win32security, _, _ = _ensure_pywin32()
     if not sid_objs:
@@ -521,10 +586,8 @@ def purge_sid_aces(path: str, sid_objs: "list[object]") -> int:
     if _is_acl_forbidden_path(path):
         logger.warning("拒绝改盘符根/Users 的 DACL (purge): %s", path)
         return 0
-    sd = win32security.GetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION,
+    sd = win32security.GetFileSecurity(
+        path, win32security.DACL_SECURITY_INFORMATION,
     )
     existing_dacl = sd.GetSecurityDescriptorDacl()
     if existing_dacl is None:
@@ -553,12 +616,10 @@ def purge_sid_aces(path: str, sid_objs: "list[object]") -> int:
     for flags, mask, sid in allow_aces:
         acl.AddAccessAllowedAceEx(2, flags, mask, sid)
     _t0 = time.perf_counter()
-    win32security.SetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION,
-        None, None, acl, None,
-    )
+    if propagate and os.path.isdir(path):
+        _write_file_dacl_propagate(path, acl, sd=sd)
+    else:
+        _write_file_dacl(path, acl, sd=sd)
     _t1 = time.perf_counter()
     logger.debug(
         "purge ACE: path=%s removed=%d remaining=%d t_set=%.3fs",
@@ -582,59 +643,22 @@ def grant_ace(
         sid: SID 字符串或 pywin32 SID 对象.
         rights: 访问掩码 (FILE_GENERIC_WRITE 等组合).
         mode: "ALLOW" -> ACCESS_ALLOWED_ACE_TYPE; "DENY" -> ACCESS_DENIED_ACE_TYPE.
-        recursive: 目录时是否让子对象继承.
+        recursive: True 时 ACE 带 (OI)(CI), 只写本节点, 新对象继承, 不扫已有子树.
     """
     _require_windows()
     if _is_acl_forbidden_path(path):
         logger.warning("拒绝改盘符根/Users 的 DACL (grant_ace): %s", path)
         return
-    win32security, win32con, _ = _ensure_pywin32()
 
     if isinstance(sid, str):
         sid_obj = _resolve_sid(sid)
     else:
         sid_obj = sid
 
-    ace_type = (
-        const.ACCESS_ALLOWED_ACE_TYPE if mode == "ALLOW"
-        else const.ACCESS_DENIED_ACE_TYPE
-    )
-    inherit_flags = (
-        const.RECURSIVE_ACE_FLAGS if recursive else 0
-    )
-
-    if recursive and _path_is_heavy_acl_target(path):
-        _set_ace_no_propagate(
-            path, sid_obj, rights=int(rights), mode=mode, inheritable=True,
-        )
-        return
-
-    sd = win32security.GetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION,
-    )
-    existing_dacl = sd.GetSecurityDescriptorDacl()
-
-    acl = _rebuild_acl_with_order(
-        existing_dacl,
-        (ace_type, inherit_flags, rights, sid_obj),
-    )
-
-    flags = win32security.DACL_SECURITY_INFORMATION
-
-    win32security.SetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        flags,
-        None,
-        None,
-        acl,
-        None,
-    )
-    logger.debug(
-        "施加 ACE: path=%s mode=%s rights=0x%X recursive=%s",
-        path, mode, rights, recursive,
+    # 只改 path 自身. recursive=True 时 ACE 带 (OI)(CI), 新对象继承;
+    # 不用 SetNamedSecurityInfo, 避免扫已有子树.
+    _set_ace_no_propagate(
+        path, sid_obj, rights=int(rights), mode=mode, inheritable=recursive,
     )
 
 
@@ -652,65 +676,57 @@ def grant_aces(
     if _is_acl_forbidden_path(path):
         logger.warning("拒绝改盘符根/Users 的 DACL (grant_aces): %s", path)
         return
-    win32security, _, _ = _ensure_pywin32()
-    inherit_flags = const.RECURSIVE_ACE_FLAGS if recursive else 0
-    new_aces: list[tuple[int, int, int, object]] = []
-    for sid, rights, mode in aces:
-        sid_obj = _resolve_sid(sid) if isinstance(sid, str) else sid
-        ace_type = (
-            const.ACCESS_ALLOWED_ACE_TYPE if mode == "ALLOW"
-            else const.ACCESS_DENIED_ACE_TYPE
-        )
-        new_aces.append((ace_type, inherit_flags, int(rights), sid_obj))
-    if recursive and _path_is_heavy_acl_target(path):
-        for sid, rights, mode in aces:
-            _set_ace_no_propagate(
-                path, sid, rights=int(rights), mode=mode, inheritable=True,
-            )
-        return
-    sd = win32security.GetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION,
-    )
-    acl = _rebuild_acl_with_order(sd.GetSecurityDescriptorDacl(), new_aces)
-    win32security.SetNamedSecurityInfo(
-        path,
-        win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION,
-        None,
-        None,
-        acl,
-        None,
-    )
-    logger.debug("施加 %d 条 ACE: path=%s recursive=%s", len(new_aces), path, recursive)
+    replace_aces_no_propagate(path, aces, inheritable=recursive)
 
 
-def grant_parent_traverse(path: str, sid: str | object) -> None:
-    """给 ``path`` 到用户目录的每一级父目录授非递归 traverse.
+def grant_parent_traverse(
+    path: str,
+    sid: str | object,
+    *,
+    readable_roots: list[str] | None = None,
+    preserve_roots: list[str] | None = None,
+) -> None:
+    """给 ``path`` 的祖先授 traverse, 一直到 USERPROFILE.
 
-    必须用 SetFileSecurity (不向子对象传播). SetNamedSecurityInfo 即使
-    inherit_flags=0 也会把可继承 ACE 自动传播到全部子文件, 在 AppData /
-    CPython 安装目录上会卡数分钟.
+    **不改 ``path`` 自身 DACL** (从父目录起走). ``allow_write`` / claw-desktop
+    已在目标节点打了可继承写 ACE; 若再从目标自己走, 中间目录规则会把写 ACE
+    覆盖成 traverse-only, 沙箱在该目录创建文件会「拒绝访问」.
 
+    ``preserve_roots`` 里的祖先同样跳过 (例如目标是白名单目录下的文件,
+    父目录就是 allow_write 根).
+
+    必须用 SetFileSecurity (不向子对象传播).
     停在 USERPROFILE (含), **禁止改盘符根 / ``X:\\Users`` 的 DACL**.
-    只增删当前沙箱 SID 的 ACE, 不删 Users / 宿主条目.
-    规则见 ``_parent_traverse_plan``:
-      - 主目录: 非继承 traverse + 沙箱 Deny List; 直接子目录对沙箱 Deny Read.
-      - 数据目录 claw-desktop: 可继承读写 (含列目录), 禁止继承; 否则
-        AppData 的保护 DACL 只把宿主 F 传给子目录, 沙箱 list_files 会 5.
-      - 中间目录: 只追加沙箱 traverse ACE, 不删已有条目 (尤其 Users 列目录).
     """
     _require_windows()
     win32security, _, _ = _ensure_pywin32()
     try:
-        current = Path(path).resolve()
+        resolved = Path(path).resolve()
     except OSError:
         return
-    if current.is_file():
-        current = current.parent
     stop_keys = _user_profile_stop_keys()
+    current = resolved
+    # 非主目录的目录/文件: 从父级开始, 避免覆盖 allow_write 打在目标上的写 ACE.
+    # USERPROFILE 自身仍要打 traverse (install reconcile 会直接传主目录).
+    if current.is_file() or os.path.normcase(str(current)) not in stop_keys:
+        current = current.parent
     desktop_keys = _desktop_data_dir_keys()
+    readable_keys: set[str] = set()
+    for raw in readable_roots or []:
+        if not raw:
+            continue
+        try:
+            readable_keys.add(_path_key(raw))
+        except OSError:
+            continue
+    preserve_keys: set[str] = set()
+    for raw in preserve_roots or []:
+        if not raw:
+            continue
+        try:
+            preserve_keys.add(_path_key(raw))
+        except OSError:
+            continue
     sid_obj = _resolve_sid(sid) if isinstance(sid, str) else sid
     our_key = _sid_dedup_key(sid_obj)
     seen: set[str] = set()
@@ -724,7 +740,23 @@ def grant_parent_traverse(path: str, sid: str | object) -> None:
         seen.add(key)
         is_profile = key in stop_keys
         is_desktop = key in desktop_keys
+        if key in preserve_keys and not is_profile:
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+            continue
         plan = _parent_traverse_plan(is_profile, is_desktop)
+        profile_is_readable = is_profile and _path_covered_by_roots(key, readable_keys)
+        if profile_is_readable:
+            plan = {
+                "rights": const.ALLOW_READ_EXECUTE_RIGHTS,
+                "ace_flags": const.RECURSIVE_ACE_FLAGS,
+                "protect": None,
+                "skip_inherited": False,
+                "drop_world": False,
+                "deny_list": False,
+            }
         try:
             sd = win32security.GetFileSecurity(
                 str(current), win32security.DACL_SECURITY_INFORMATION,
@@ -738,15 +770,6 @@ def grant_parent_traverse(path: str, sid: str | object) -> None:
                     sid_obj,
                 ),
             ]
-            if plan.get("deny_list"):
-                new_aces.append(
-                    (
-                        const.ACCESS_DENIED_ACE_TYPE,
-                        0,
-                        const.FILE_LIST_DIRECTORY,
-                        sid_obj,
-                    ),
-                )
             acl = _rebuild_acl_with_order(
                 existing_dacl,
                 new_aces,
@@ -758,8 +781,6 @@ def grant_parent_traverse(path: str, sid: str | object) -> None:
                 protect=True if plan["protect"] else None,
                 sd=sd,
             )
-            if is_profile:
-                _harden_profile_children(str(current), sid_obj)
         except Exception as exc:  # noqa: BLE001
             logger.debug("parent traverse 失败 path=%s: %s", current, exc)
         if is_profile:
@@ -768,64 +789,6 @@ def grant_parent_traverse(path: str, sid: str | object) -> None:
         if parent == current:
             break
         current = parent
-
-
-_LOG_DIR_NAMES = frozenset({"log", "logs", ".logs"})
-_SKIP_BASENAMES = frozenset({"runtime_state"})
-# SetNamedSecurityInfo 会向已有子文件传播可继承 ACE, 这些目录体量大会卡启动.
-# 只给目录自身打可继承 ACE (SetFileSecurity): 新文件自动继承, 不扫已有树.
-_HEAVY_DIR_NAMES = frozenset({
-    "runtime",
-    "isolation_venv",
-    "node_modules",
-    "python-win",
-    "__pycache__",
-    ".git",
-    ".venv",
-    "venv",
-    "site-packages",
-    "cache",
-    "code cache",
-    "gpucache",
-    "dawngraphitecache",
-    "dawnwebgpucache",
-    "shadercache",
-    "grshadercache",
-    "local storage",
-    "session storage",
-    "indexeddb",
-    "blob_storage",
-    "service worker",
-    "cacheddata",
-    "crashpad",
-    "desktop",
-    "documents",
-    "downloads",
-    "pictures",
-    "videos",
-    "music",
-    "onedrive",
-})
-
-
-def _path_is_heavy_acl_target(path: str) -> bool:
-    """Desktop / python-win 等大体量目录: 只改自身 DACL."""
-    if not path:
-        return False
-    try:
-        if not os.path.isdir(path):
-            return False
-    except OSError:
-        return False
-    name = os.path.basename(path.rstrip("\\/")).lower()
-    if name in _HEAVY_DIR_NAMES:
-        return True
-    try:
-        home = os.path.normcase(str(Path.home().resolve()))
-        key = os.path.normcase(str(_expand_fs_path(path)))
-        return key == home
-    except OSError:
-        return False
 
 
 # 桌面 dataDir 整树读写: Write+Execute+Delete + Read (WRITE ACE 不含 FILE_READ_DATA).
@@ -858,6 +821,62 @@ def _set_ace_no_propagate(
         (ace_type, inherit_flags, int(rights), sid_obj),
     )
     _write_file_dacl(path, acl, sd=sd)
+
+
+def replace_aces_no_propagate(
+    path: str,
+    aces: list[tuple[str | object, int, Literal["ALLOW", "DENY"]]],
+    *,
+    drop_sids: list[str | object] | None = None,
+    inheritable: bool = False,
+    propagate: bool = False,
+) -> None:
+    """一次 Get DACL / 重建 / 写入.
+
+    ``inheritable=True`` 给 ACE 打 (OI)(CI).
+    ``propagate=True`` 且 path 为目录时用 SetNamedSecurityInfo 推到已有子树;
+    否则 SetFileSecurity 只改本节点.
+    """
+    _require_windows()
+    if _is_acl_forbidden_path(path):
+        logger.warning("拒绝改盘符根/Users 的 DACL (no-propagate replace): %s", path)
+        return
+    if not aces and not drop_sids:
+        return
+    win32security, _, _ = _ensure_pywin32()
+    inherit_flags = const.RECURSIVE_ACE_FLAGS if inheritable else 0
+    new_aces: list[tuple[int, int, int, object]] = []
+    for sid, rights, mode in aces:
+        sid_obj = _resolve_sid(sid) if isinstance(sid, str) else sid
+        ace_type = (
+            const.ACCESS_ALLOWED_ACE_TYPE if mode == "ALLOW"
+            else const.ACCESS_DENIED_ACE_TYPE
+        )
+        new_aces.append((ace_type, inherit_flags, int(rights), sid_obj))
+    drop_keys: set[str] | None = None
+    if drop_sids:
+        drop_keys = {
+            _sid_dedup_key(_resolve_sid(s) if isinstance(s, str) else s)
+            for s in drop_sids
+        }
+    sd = win32security.GetFileSecurity(path, win32security.DACL_SECURITY_INFORMATION)
+    acl = _rebuild_acl_with_order(
+        sd.GetSecurityDescriptorDacl(),
+        new_aces or None,
+        drop_sid_keys=drop_keys,
+    )
+    if propagate and os.path.isdir(path):
+        _write_file_dacl_propagate(path, acl, sd=sd)
+        logger.info(
+            "replace ACE propagate: path=%s aces=%d drop=%s inheritable=%s",
+            path, len(new_aces), bool(drop_keys), inheritable,
+        )
+    else:
+        _write_file_dacl(path, acl, sd=sd)
+        logger.debug(
+            "replace ACE no-propagate: path=%s aces=%d drop=%s inheritable=%s",
+            path, len(new_aces), bool(drop_keys), inheritable,
+        )
 
 
 def _current_process_user_sid():
@@ -903,20 +922,10 @@ def apply_desktop_data_rw(
     sandbox_user_sid: str | None = None,
     preserve_write_roots: list[str] | None = None,
 ) -> list[str]:
-    """给桌面 dataDir (claw-desktop) 整树可读可写, 不做 deny / 只读限制.
+    """给桌面 dataDir (claw-desktop) 授可继承读写 ACE, 不扫子树.
 
-    授 Allow Write+Execute+Delete+Read. 含 agent workspace / skills 等
-    allow_write 子树也会走访并改成 RW (不再跳过): 旧版曾对这些子树打只读
-    ACE, 且 apply_sandbox_acl 的 Write ACE 不含 FILE_READ_DATA, 跳过会导致
-    写入 skills 等目录时 WinError 5.
-
-    preserve_write_roots 仍用于给可写根预授当前用户 WRITE_DAC, 以及给祖先
-    补 RW; 不作为「跳过不授权」的名单.
-
-    性能: SetNamedSecurityInfo 会扫已有子树, 因此
-      - 干净子树: 一次内核传播
-      - runtime / venv / node_modules / Electron Cache / logs 等: 只改目录自身
-        (可继承 ACE, 新文件自动继承, 不扫已有文件)
+    只改名单上的目录自身, ACE 带 (OI)(CI). 新文件继承; 已有文件不逐个更新.
+    preserve_write_roots 给可写根预授 WRITE_DAC, 并给到 dataDir 的祖先补 RW.
     """
     _require_windows()
     try:
@@ -944,13 +953,6 @@ def apply_desktop_data_rw(
         except OSError:
             continue
     t0 = time.perf_counter()
-
-    def _is_log_or_state(name: str) -> bool:
-        lower = name.lower()
-        return lower in _LOG_DIR_NAMES or lower in _SKIP_BASENAMES
-
-    def _is_heavy(name: str) -> bool:
-        return name.lower() in _HEAVY_DIR_NAMES
 
     def _acl_replace_our_allow(existing_dacl, inherit_flags: int):
         """去掉本 SID 的旧 Allow/Deny (含上次只读或 logs Deny), 再写上读写 Allow."""
@@ -980,67 +982,8 @@ def apply_desktop_data_rw(
         )
         _write_file_dacl(str(path), acl, protect=True, sd=sd)
 
-    def _grant_tree(path: Path) -> None:
-        win32security, _, _ = _ensure_pywin32()
-        sd = win32security.GetNamedSecurityInfo(
-            str(path),
-            win32security.SE_FILE_OBJECT,
-            win32security.DACL_SECURITY_INFORMATION,
-        )
-        acl = _acl_replace_our_allow(
-            sd.GetSecurityDescriptorDacl(), const.RECURSIVE_ACE_FLAGS,
-        )
-        win32security.SetNamedSecurityInfo(
-            str(path),
-            win32security.SE_FILE_OBJECT,
-            win32security.DACL_SECURITY_INFORMATION
-            | const.PROTECTED_DACL_SECURITY_INFORMATION,
-            None, None, acl, None,
-        )
-
-    def _subtree_dirty(path: Path) -> bool:
-        """子树是否含日志/体量目录. 碰到第一个即返回, 不进入这些目录."""
-        try:
-            for _dirpath, dirnames, _files in os.walk(path, topdown=True):
-                for d in dirnames:
-                    if _is_log_or_state(d) or _is_heavy(d):
-                        return True
-        except OSError:
-            return True
-        return False
-
-    def _visit(path: Path) -> None:
-        if not path.exists():
-            return
-        try:
-            if path.is_file():
-                _grant_tree(path)
-                return
-            if _is_log_or_state(path.name) or _is_heavy(path.name):
-                _grant_here(path)
-                applied.append(str(path))
-                return
-            if not _subtree_dirty(path):
-                _grant_tree(path)
-                applied.append(str(path))
-                return
-            _grant_here(path)
-            applied.append(str(path))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("desktop data RW grant 失败 path=%s: %s", path, exc)
-            return
-        try:
-            children = list(path.iterdir())
-        except OSError:
-            return
-        for child in children:
-            _visit(child)
-
     def _grant_bridge_ancestors() -> None:
-        """preserve 子树祖先 (claw-desktop / agent) 补打读写 ACE.
-
-        祖先若本身也是 preserve 根, 只追加 RW, 不走 _grant_here, 以免重建 DACL.
-        """
+        """preserve 子树祖先 (claw-desktop / agent) 补打可继承读写 ACE. 只向上走."""
         root_key = os.path.normcase(str(root_path))
         preserve_exact = set(preserve_keys)
         seen: set[str] = set()
@@ -1066,7 +1009,6 @@ def apply_desktop_data_rw(
                     break
                 seen.add(key)
                 try:
-                    # preserve 根本身已有写 ACE; 中间目录同样授 RW.
                     if key in preserve_exact:
                         for one in sid_objs:
                             _set_ace_no_propagate(
@@ -1108,12 +1050,6 @@ def apply_desktop_data_rw(
             logger.warning("desktop dataDir 根目录读写授权失败 path=%s: %s", root_path, exc)
         _grant_bridge_ancestors()
         _grant_preserved_write_dac()
-        _visit(root_path)
-        # agent workspace / skills: 不全树 SetNamedSecurityInfo (避开 node_modules
-        # 受保护文件导致整段失败). 改为按目录走访:
-        #   - 每个 skill 子目录本身打可继承 RW ACE → 目录内新建/改文件可写
-        #   - 干净子树 (无 node_modules) 才对该子树传播
-        #   - node_modules 等大体量目录只改目录自身, 不扫内部文件
         for preserved in preserve_keys:
             try:
                 p = Path(preserved)
@@ -1125,23 +1061,21 @@ def apply_desktop_data_rw(
                     continue
                 _grant_here(p)
                 applied.append(str(p))
-                skills = p / "skills"
-                if skills.is_dir():
-                    _visit(skills)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("desktop preserve RW grant 失败 path=%s: %s", preserved, exc)
-        # 旧版曾对这些路径打 Deny; 现在整树读写, 补授以清掉残留 Deny.
         for rel in (
             "logs",
             os.path.join("jiuwenswarm", "logs"),
             os.path.join("jiuwenswarm", "agent", ".logs"),
             os.path.join("jiuwenswarm", "config", "runtime_state"),
+            os.path.join("jiuwenswarm", "agent", "skills"),
         ):
             target = root_path / rel
             if not target.exists():
                 continue
             try:
                 _grant_here(target)
+                applied.append(str(target))
             except Exception as exc:  # noqa: BLE001
                 logger.debug("desktop data RW grant 失败 path=%s: %s", target, exc)
     except Exception as exc:  # noqa: BLE001
@@ -1155,6 +1089,115 @@ def apply_desktop_data_rw(
     return applied
 
 
+
+def _ace_applies_to_object(ace_flags: int) -> bool:
+    """继承-only ACE (INHERIT_ONLY) 不作用于本对象本身."""
+    return (int(ace_flags) & const.INHERIT_ONLY_ACE) == 0
+
+
+def effective_grant(
+    path: str,
+    mask: int,
+    allow_sids: "set[str] | frozenset[str]",
+    deny_only_sids: "set[str] | frozenset[str] | None" = None,
+) -> bool:
+    """只读根节点 DACL, 判断沙箱有效 SID 集合是否已被授予 ``mask``.
+
+    Deny 优先: 任一匹配 SID (含 deny-only) 的 Deny 位挡住对应权限;
+    Allow 仅统计 ``allow_sids`` (deny-only 组匹配不了 Allow ACE).
+    """
+    _require_windows()
+    if not path or not os.path.exists(path) or not mask:
+        return False
+    if not allow_sids and not deny_only_sids:
+        return False
+    deny_only = deny_only_sids or frozenset()
+    match_sids = set(allow_sids) | set(deny_only)
+    try:
+        win32security, _, _ = _ensure_pywin32()
+        sd = win32security.GetFileSecurity(
+            path, win32security.DACL_SECURITY_INFORMATION,
+        )
+        dacl = sd.GetSecurityDescriptorDacl()
+    except Exception:  # noqa: BLE001
+        return False
+    if dacl is None:
+        return False
+
+    denied = 0
+    granted = 0
+    for i in range(dacl.GetAceCount()):
+        ace_type, ace_flags, ace_mask, ace_sid = _parse_getace_tuple(dacl.GetAce(i))
+        if not _ace_applies_to_object(ace_flags):
+            continue
+        sid_key = _sid_dedup_key(ace_sid)
+        if sid_key not in match_sids:
+            continue
+        if ace_type == const.ACCESS_DENIED_ACE_TYPE:
+            denied |= int(ace_mask)
+        elif sid_key in allow_sids:
+            granted |= int(ace_mask)
+
+    needed = int(mask)
+    if (denied & needed) != 0:
+        return False
+    return (granted & needed) == needed
+
+
+def _root_has_our_inheritable_ace(
+    path: str,
+    rights: int,
+    mode: Literal["ALLOW", "DENY"],
+    our_sid_keys: "set[str]",
+) -> bool:
+    """根上是否已有沙箱 SID 的等价 (OI)(CI) ACE (不证明已传播到子树)."""
+    if not our_sid_keys or not os.path.exists(path):
+        return False
+    want_type = (
+        const.ACCESS_ALLOWED_ACE_TYPE if mode == "ALLOW"
+        else const.ACCESS_DENIED_ACE_TYPE
+    )
+    want_flags = const.RECURSIVE_ACE_FLAGS
+    try:
+        win32security, _, _ = _ensure_pywin32()
+        sd = win32security.GetFileSecurity(
+            path, win32security.DACL_SECURITY_INFORMATION,
+        )
+        dacl = sd.GetSecurityDescriptorDacl()
+    except Exception:  # noqa: BLE001
+        return False
+    if dacl is None:
+        return False
+    for i in range(dacl.GetAceCount()):
+        ace_type, ace_flags, ace_mask, ace_sid = _parse_getace_tuple(dacl.GetAce(i))
+        if ace_type != want_type:
+            continue
+        if _sid_dedup_key(ace_sid) not in our_sid_keys:
+            continue
+        if (int(ace_flags) & want_flags) != want_flags:
+            continue
+        if int(ace_flags) & const.INHERITED_ACE:
+            continue
+        if (int(ace_mask) & int(rights)) == int(rights):
+            return True
+    return False
+
+
+def _fingerprint_key(path: str, kind: str) -> str:
+    return f"{path.replace(chr(92), '/').rstrip('/').lower()}|{kind}"
+
+
+def _dir_is_effectively_empty(path: str) -> bool:
+    """刚创建或空目录: 无已有子对象, 不必 SetNamedSecurityInfo 传播."""
+    if not os.path.isdir(path):
+        return False
+    try:
+        with os.scandir(path) as it:
+            return next(it, None) is None
+    except OSError:
+        return False
+
+
 def apply_sandbox_acl(
     workspace: str,
     allow_write: list[str],
@@ -1165,36 +1208,50 @@ def apply_sandbox_acl(
     recursive: bool = True,
     sandbox_user_sid: str | None = None,
     preinstalled_read_paths: "set[str] | None" = None,
-) -> list[str]:
-    """对沙箱工作区施加文件 ACL (写控制 allow-only + 读控制 deny-then-allow).
+    fingerprint_cache: "dict[str, dict] | None" = None,
+) -> ApplyAclResult:
+    """对沙箱工作区施加文件 ACL.
 
-    Returns: 施加过 ACE 的顶层路径列表, 供 revoke_sandbox_acl 按清单撤销.
+    写白名单 allow_write: 目录用 SetNamedSecurityInfo 把写 ACE 传到已有子树.
+    deny_write / deny_read: 同样传播 (allow_write 已把可写 ACE 灌进子树后,
+    deny_write 必须传播才能盖住 .git 等已有文件). allow_read 仍只改节点.
+
+    ``fingerprint_cache``: 上次传播成功的指纹 (key=path|kind), 与
+    effective_grant / 根 ACE 双命中时可跳过整树传播.
+
+    Returns: ApplyAclResult (paths / grants / failed).
     """
     _require_windows()
     sid = get_synthetic_write_sid()
     allow_read = list(allow_read) if allow_read else []
     deny_read = list(deny_read) if deny_read else []
+    fp_cache = fingerprint_cache or {}
 
+    result = ApplyAclResult()
     applied: list[str] = []
     _purged: set[str] = set()
 
-    # 待清 SID 对象列表 (合成 + 真实). 每个路径首次遇到时先 purge 旧 ACE,
-    # 避免配置切换 (路径从 deny_read 移到 allow_read) 时同 SID 上 Deny + Allow
     purge_sids = [_resolve_sid(sid)]
     if sandbox_user_sid:
         purge_sids.append(_resolve_sid(sandbox_user_sid))
+    our_sid_keys = {_sid_dedup_key(s) for s in purge_sids}
 
-    # 段级耗时埋点: 记录每个 ACL 段 (allow_write / deny_write / deny_read /
-    # allow_read / traverse) 的总耗时与命中路径数
-    seg_stats: dict[str, list[float]] = {}  # 每段 [耗时, 命中数], 由 _seg_end 填
+    allow_sids: set[str] = set(our_sid_keys)
+    deny_only_sids: set[str] = set()
+    try:
+        from jiuwenbox.supervisor import win_setup as _win_setup
+        groups = _win_setup.get_sandbox_token_groups()
+        allow_sids |= set(groups.allow_sids)
+        deny_only_sids |= set(groups.deny_only_sids)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "取沙箱 TOKEN_GROUPS 失败, 跳过判定退化为只看沙箱 SID",
+            exc_info=True,
+        )
+
+    seg_stats: dict[str, list[float]] = {}
 
     def _purge_before_grant(path: str) -> None:
-        """先清该路径上合成+真实 SID 的所有旧 ACE (best-effort).
-
-        仅在本次 apply_sandbox_acl 调用中首次遇到该路径时执行,
-        后续循环对同一路径不再 purge, 避免清掉之前循环刚写入的 ACE
-        (如 deny_write 写入的 Deny ACE 被 allow_read 的 purge 误删).
-        """
         if path in _purged:
             return
         _purged.add(path)
@@ -1203,150 +1260,220 @@ def apply_sandbox_acl(
         except Exception as exc:  # noqa: BLE001
             logger.debug("purge 旧 ACE 失败 path=%s: %s", path, exc)
 
+    def _grant_our_aces(
+        path: str,
+        rights: int,
+        mode: Literal["ALLOW", "DENY"],
+        *,
+        ace_recursive: bool | None = None,
+        propagate: bool = False,
+    ) -> None:
+        rec = recursive if ace_recursive is None else ace_recursive
+        aces: list[tuple[object, int, Literal["ALLOW", "DENY"]]] = [
+            (sid, rights, mode),
+        ]
+        if sandbox_user_sid:
+            aces.append((sandbox_user_sid, rights, mode))
+        first = path not in _purged
+        if first:
+            _purged.add(path)
+        replace_aces_no_propagate(
+            path, aces,
+            drop_sids=purge_sids if first else None,
+            inheritable=rec,
+            propagate=propagate,
+        )
+
     def _seg_begin() -> float:
         return time.perf_counter()
 
     def _seg_end(seg: str, t0: float, n: int) -> None:
         seg_stats[seg] = [time.perf_counter() - t0, n]
 
-    # --- 写控制 ---
+    def _should_skip_propagate(
+        path: str,
+        kind: str,
+        rights: int,
+        mode: Literal["ALLOW", "DENY"],
+    ) -> bool:
+        if mode == "DENY":
+            return False
+        entry = fp_cache.get(_fingerprint_key(path, kind))
+        if not entry or not entry.get("propagated"):
+            return False
+        if int(entry.get("mask", 0)) != int(rights):
+            return False
+        if not _root_has_our_inheritable_ace(path, rights, mode, our_sid_keys):
+            return False
+        if kind in ("allow_write", "allow_read"):
+            return effective_grant(path, rights, allow_sids, deny_only_sids)
+        return False
+
+    def _note_grant(
+        path: str,
+        kind: str,
+        rights: int,
+        *,
+        propagated: bool,
+        skipped: bool = False,
+    ) -> None:
+        # flags 记实际写下的 ACE 继承标志 (由 recursive 决定), 与是否传播无关.
+        flags = const.RECURSIVE_ACE_FLAGS if recursive else 0
+        result.grants.append(AclGrantRecord(
+            path=path, kind=kind, mask=int(rights), flags=flags,
+            propagated=propagated, skipped=skipped,
+        ))
+
     write_targets = list(allow_write) or [workspace]
     _t_seg = _seg_begin()
     _n_seg = 0
     for path in write_targets:
         expanded = os.path.expandvars(path)
+        created_empty = False
         if not os.path.exists(expanded):
             try:
                 os.makedirs(expanded, exist_ok=True)
+                created_empty = True
                 logger.info("allow_write 路径不存在, 已预创建: %s", expanded)
             except OSError as exc:
                 logger.warning(
                     "allow_write 路径不存在且预创建失败, 跳过 ACL: %s (%s)",
                     expanded, exc,
                 )
+                result.failed.append(expanded)
                 continue
-        try:
-            _purge_before_grant(expanded)
-            grant_ace(
-                expanded, sid,
-                rights=const.ALLOW_WRITE_RIGHTS | const.FILE_GENERIC_READ,
-                mode="ALLOW",
-                recursive=recursive,
+        write_rights = const.ALLOW_WRITE_RIGHTS | const.FILE_GENERIC_READ
+        if _should_skip_propagate(expanded, "allow_write", write_rights, "ALLOW"):
+            logger.info("allow_write 指纹命中, 跳过传播: %s", expanded)
+            # 标记已处理: 同一路径若又出现在 deny_write, 其 first-purge 会
+            # 把这里保留下来的 Allow ACE 一起清掉.
+            _purged.add(expanded)
+            _note_grant(
+                expanded, "allow_write", write_rights,
+                propagated=True, skipped=True,
             )
-            if sandbox_user_sid:
-                grant_ace(
-                    expanded, sandbox_user_sid,
-                    rights=const.ALLOW_WRITE_RIGHTS | const.FILE_GENERIC_READ,
-                    mode="ALLOW",
-                    recursive=recursive,
-                )
+            applied.append(expanded)
+            _n_seg += 1
+            continue
+        do_propagate = not (created_empty or _dir_is_effectively_empty(expanded))
+        try:
+            if do_propagate:
+                _warn_if_heavy_propagate(expanded, "allow_write")
+            _grant_our_aces(
+                expanded, write_rights, "ALLOW", propagate=do_propagate,
+            )
         except Exception as exc:
             logger.warning(
                 "allow_write grant_ace 失败, 跳过该路径 (隔离降级): path=%s mode=ALLOW "
                 "原因=%s; 沙箱内该路径写权限不受控",
                 expanded, exc,
             )
+            result.failed.append(expanded)
             continue
         try:
-            grant_current_user_write_dac(expanded, inheritable=True)
+            cur_key = _sid_dedup_key(_current_process_user_sid())
+            if not effective_grant(
+                expanded,
+                const.WRITE_DAC | const.READ_CONTROL,
+                {cur_key},
+                None,
+            ):
+                grant_current_user_write_dac(expanded, inheritable=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "allow_write WRITE_DAC 预授失败 path=%s: %s", expanded, exc,
             )
+        _note_grant(expanded, "allow_write", write_rights, propagated=do_propagate)
         applied.append(expanded)
         _n_seg += 1
     _seg_end("allow_write", _t_seg, _n_seg)
+
     _t_seg = _seg_begin()
     _n_seg = 0
     for path in deny_write:
         expanded = os.path.expandvars(path)
+        created_empty = False
         if not os.path.exists(expanded):
             try:
                 os.makedirs(expanded, exist_ok=True)
+                created_empty = True
                 logger.info("deny_write 路径不存在, 已预创建: %s", expanded)
             except OSError as exc:
                 logger.warning(
                     "deny_write 路径不存在且预创建失败, 跳过 ACL: %s (%s)",
                     expanded, exc,
                 )
+                result.failed.append(expanded)
                 continue
+        do_propagate = not (created_empty or _dir_is_effectively_empty(expanded))
         try:
-            _purge_before_grant(expanded)
-            grant_ace(
-                expanded, sid,
-                rights=const.DENY_WRITE_RIGHTS,
-                mode="DENY",
-                recursive=recursive,
+            if do_propagate:
+                _warn_if_heavy_propagate(expanded, "deny_write")
+            _grant_our_aces(
+                expanded, const.DENY_WRITE_RIGHTS, "DENY",
+                propagate=do_propagate,
             )
-            if sandbox_user_sid:
-                grant_ace(
-                    expanded, sandbox_user_sid,
-                    rights=const.DENY_WRITE_RIGHTS,
-                    mode="DENY",
-                    recursive=recursive,
-                )
         except Exception as exc:
             logger.error(
                 "deny_write grant_ace 失败, 跳过该路径 (隔离降级): path=%s mode=DENY "
                 "原因=%s; 沙箱内该路径写未被拦截", expanded, exc,
             )
+            result.failed.append(expanded)
             continue
+        _note_grant(
+            expanded, "deny_write", const.DENY_WRITE_RIGHTS,
+            propagated=do_propagate,
+        )
         applied.append(expanded)
         _n_seg += 1
     _seg_end("deny_write", _t_seg, _n_seg)
 
-    # --- 读控制: deny_read (先施加 Deny Read) ---
     _t_seg = _seg_begin()
     _n_seg = 0
     for path in deny_read:
         expanded = os.path.expandvars(path)
+        created_empty = False
         if not os.path.exists(expanded):
             try:
                 os.makedirs(expanded, exist_ok=True)
+                created_empty = True
                 logger.info("deny_read 路径不存在, 已预创建: %s", expanded)
             except OSError as exc:
                 logger.warning(
                     "deny_read 路径不存在且预创建失败, 跳过 ACL: %s (%s)",
                     expanded, exc,
                 )
+                result.failed.append(expanded)
                 continue
+        do_propagate = not (created_empty or _dir_is_effectively_empty(expanded))
         try:
-            _purge_before_grant(expanded)
-            grant_ace(
-                expanded, sid,
-                rights=const.DENY_READ_RIGHTS,
-                mode="DENY",
-                recursive=recursive,
+            if do_propagate:
+                _warn_if_heavy_propagate(expanded, "deny_read")
+            _grant_our_aces(
+                expanded, const.DENY_READ_RIGHTS, "DENY",
+                propagate=do_propagate,
             )
-            # child 用 jbx-sandbox 真实 SID + token 未受限 (受限 token 暂时弃用, 0xC0000142),
-            # 合成 SID 的 deny 对它不生效, 必须给真实 SID 也下 DENY 才能拦截.
-            if sandbox_user_sid:
-                grant_ace(
-                    expanded, sandbox_user_sid,
-                    rights=const.DENY_READ_RIGHTS,
-                    mode="DENY",
-                    recursive=recursive,
-                )
         except Exception as exc:
             logger.error(
                 "deny_read grant_ace 失败, 跳过该路径 (隔离降级): path=%s mode=DENY "
                 "原因=%s; 沙箱内该路径读未被拦截", expanded, exc,
             )
+            result.failed.append(expanded)
             continue
+        _note_grant(
+            expanded, "deny_read", const.DENY_READ_RIGHTS,
+            propagated=do_propagate,
+        )
         applied.append(expanded)
         _n_seg += 1
     _seg_end("deny_read", _t_seg, _n_seg)
 
-    # --- 读控制: allow_read (再施加 Allow Read 覆盖 deny) ---
     _preinstalled = preinstalled_read_paths or set()
 
     def _is_preinstalled(p: str) -> bool:
         return p.rstrip("\\/").lower() in _preinstalled
 
     read_targets = allow_read
-    if not read_targets:
-        # workspace 默认: 独立用户沙箱至少能读自己工作区.
-        read_targets = [workspace]
     _t_seg = _seg_begin()
     _n_seg = 0
     for path in read_targets:
@@ -1360,6 +1487,7 @@ def apply_sandbox_acl(
                     "allow_read 路径不存在且预创建失败, 跳过 ACL: %s (%s)",
                     expanded, exc,
                 )
+                result.failed.append(expanded)
                 continue
         if _is_preinstalled(expanded):
             logger.debug(
@@ -1369,44 +1497,36 @@ def apply_sandbox_acl(
             applied.append(expanded)
             _n_seg += 1
             continue
-        try:
-            _purge_before_grant(expanded)
-            grant_ace(
-                expanded, sid,
-                rights=const.FILE_GENERIC_READ,
-                mode="ALLOW",
-                recursive=recursive,
+        if effective_grant(
+            expanded, const.FILE_GENERIC_READ, allow_sids, deny_only_sids,
+        ):
+            logger.info("allow_read 已有有效读权限, 跳过 grant: %s", expanded)
+            _purged.add(expanded)
+            _note_grant(
+                expanded, "allow_read", const.FILE_GENERIC_READ,
+                propagated=False, skipped=True,
             )
+            applied.append(expanded)
+            _n_seg += 1
+            continue
+        try:
+            _grant_our_aces(expanded, const.FILE_GENERIC_READ, "ALLOW")
         except Exception as exc:
             logger.warning(
                 "allow_read grant_ace 失败, 跳过该路径 (隔离降级): path=%s mode=ALLOW "
                 "原因=%s; 沙箱内该路径读可能受限",
                 expanded, exc,
             )
+            result.failed.append(expanded)
             applied.append(expanded)
             continue
-        # runner (jbx-sandbox 真实 SID, token 未受限) 读不了合成 SID 授权路径
-        # 须给真实 SID 也 grant Read (含 Execute), 否则 runner 读不了 venv python/DLL.
-        if sandbox_user_sid:
-            try:
-                grant_ace(
-                    expanded, sandbox_user_sid,
-                    rights=const.FILE_GENERIC_READ,
-                    mode="ALLOW",
-                    recursive=recursive,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "allow_read grant_ace (sandbox SID) 失败, 跳过: path=%s 原因=%s; "
-                    "runner 可能读不了该路径",
-                    expanded, exc,
-                )
+        _note_grant(
+            expanded, "allow_read", const.FILE_GENERIC_READ, propagated=False,
+        )
         applied.append(expanded)
         _n_seg += 1
     _seg_end("allow_read", _t_seg, _n_seg)
 
-    # 不再给 ~/.office-claw 整树/根特殊授权. 清掉旧版根 ACE, 子继承 ACE 随源头失效.
-    # workspace 祖先 traverse 由 grant_parent_traverse 覆盖 (停在 USERPROFILE).
     try:
         _office = str(OFFICE_CLAW_DATA_ROOT) if OFFICE_CLAW_DATA_ROOT else ""
         if _office and os.path.isdir(_office):
@@ -1415,9 +1535,6 @@ def apply_sandbox_acl(
     except Exception as exc:  # noqa: BLE001
         logger.warning("去掉 ~/.office-claw 特殊 ACL 失败 (非致命): %s", exc)
 
-    # 数据根 traverse (非递归 Allow Read): child 访问 workspace/venv/产物时路径上每级父目录需 traverse,
-    # 残缺会 lstat EPERM 导致 playwright install 失败. 非递归 (只目录本身) 避免跨沙箱读其他 workspace.
-    # 非递归 ACE 不进 applied 清单 (revoke 会 rglob 递归扫误删其他沙箱 ACE). traverse read 残留无害.
     _traverse_roots: list[Path] = []
     for _root in (JIUWENCLAW_DATA_DIR_PATH, JIUWENBOX_HOME):
         if _root and _root not in _traverse_roots and os.path.isdir(str(_root)):
@@ -1426,20 +1543,9 @@ def apply_sandbox_acl(
     _n_seg = 0
     for _root in _traverse_roots:
         try:
-            _purge_before_grant(str(_root))
-            grant_ace(
-                str(_root), sid,
-                rights=const.FILE_GENERIC_READ,
-                mode="ALLOW",
-                recursive=False,
+            _grant_our_aces(
+                str(_root), const.FILE_GENERIC_READ, "ALLOW", ace_recursive=False,
             )
-            if sandbox_user_sid:
-                grant_ace(
-                    str(_root), sandbox_user_sid,
-                    rights=const.FILE_GENERIC_READ,
-                    mode="ALLOW",
-                    recursive=False,
-                )
             _n_seg += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -1453,27 +1559,25 @@ def apply_sandbox_acl(
             [str(r) for r in _traverse_roots],
         )
 
-    # ~/.office-claw 不再每次建沙箱 (也不在 install) 递归 grant Read.
-    # 子目录 traverse 由 grant_parent_traverse 覆盖, 不在此对数据根整树授权.
-
-    # 段级耗时汇总: 定位 ACL 黑箱归属 (哪个段最慢, 即问题路径集).
     _seg_lines = " ".join(
-        f"{seg}={v[1]}paths/{v[0]:.2f}s" for seg, v in seg_stats.items() if v[1] or v[0] > 0.01
+        f"{seg}={v[1]}paths/{v[0]:.2f}s"
+        for seg, v in seg_stats.items() if v[1] or v[0] > 0.01
     )
     logger.info(
         "施加沙箱 ACL 完成: workspace=%s allow_write=%d deny_write=%d "
-        "allow_read=%d deny_read=%d %s",
+        "allow_read=%d deny_read=%d failed=%d %s",
         workspace, len(write_targets), len(deny_write),
-        len(read_targets), len(deny_read), _seg_lines,
+        len(read_targets), len(deny_read), len(result.failed), _seg_lines,
     )
-    # 去重保序 (同一路径可能同时出现在 allow_write 与 allow_read).
     seen: set[str] = set()
     unique: list[str] = []
     for p in applied:
         if p not in seen:
             seen.add(p)
             unique.append(p)
-    return unique
+    result.paths = unique
+    return result
+
 
 
 def revoke_sandbox_acl(
@@ -1488,7 +1592,6 @@ def revoke_sandbox_acl(
         sandbox_user_sid: 真实 jbx-sandbox SID 字符串.
     """
     _require_windows()
-    win32security, win32con, _ = _ensure_pywin32()
     sid_str = get_synthetic_write_sid()
     target_sids = [_resolve_sid(sid_str)]
     if sandbox_user_sid:
@@ -1499,19 +1602,19 @@ def revoke_sandbox_acl(
     else:
         root_list = list(paths)
 
-    # 只对根路径本身 purge. 不再 rglob 展开。
-    # - 子对象上的继承 ACE 是只读快照, 单独 purge 删不掉 (Windows 立即从父重继承);
-    # - 只要删掉根的显式源头 ACE, 子的继承 ACE 自动消失.
+    # 对根路径 purge 并用 SetNamedSecurityInfo 传播到已有子树.
+    # 传播式 grant 之后, 子对象上已有 (I) 副本; 只 SetFileSecurity 改根
+    # 不会让这些副本消失, 必须同样传播撤销.
     cleaned = 0
     for root_path in root_list:
         p = os.path.expandvars(root_path)
         if not os.path.exists(p):
             continue
         try:
-            removed = purge_sid_aces(p, target_sids)
+            removed = purge_sid_aces(p, target_sids, propagate=True)
             if removed > 0:
                 cleaned += 1
-                logger.debug("revoke: 清理 %s 上 %d 个 ACE", p, removed)
+                logger.debug("revoke: 清理 %s 上 %d 个 ACE (propagated)", p, removed)
         except Exception:  # noqa: BLE001 - ACL 清理是 best-effort
             logger.debug("revoke 单个路径失败: %s", p, exc_info=True)
     logger.info("撤销沙箱 ACL 完成: 清理根路径数=%d", cleaned)

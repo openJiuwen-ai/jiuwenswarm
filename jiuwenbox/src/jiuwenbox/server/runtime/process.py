@@ -3010,7 +3010,7 @@ class ProcessRuntime(RuntimeAdapter):
                 sandbox_id, workspace, exc,
             )
 
-        # 1. 施加文件 ACL (读控制 deny-then-allow + workspace 默认 Allow Read). 返回 ACE 路径清单, 存供 stop 时撤销.
+        # 1. 施加文件 ACL (读黑名单 deny_read + 写白名单 allow_write). 返回 ACE 路径清单, 存供 stop 时撤销.
         #
         # 动态路径注入 (docs §4.3): 打包 python 目录 + venv 目录是每机器/每用户不同的运行时路径, 不能写死在 policy yaml,
         # 由 agent-server 拉起本进程时经 env 注入:
@@ -3154,7 +3154,10 @@ class ProcessRuntime(RuntimeAdapter):
                 sandbox_id, _runner_py,
             )
             try:
-                win_acl.grant_parent_traverse(_runner_py, sandbox_user_sid)
+                win_acl.grant_parent_traverse(
+                    _runner_py, sandbox_user_sid,
+                    readable_roots=allow_read_paths,
+                )
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "[SandboxWin] %s grant_parent_traverse 失败 python=%s",
@@ -3183,72 +3186,97 @@ class ProcessRuntime(RuntimeAdapter):
         except Exception:  # noqa: BLE001 - best-effort, 读注册表失败不阻断创建
             _preinstalled = set()
         _t_acl0 = time.perf_counter()
-        desktop_data_dir = win_acl.resolve_desktop_data_dir()
 
-        def _under_desktop(p: str) -> bool:
-            if not desktop_data_dir or not p:
-                return False
-            try:
-                left = os.path.normcase(str(Path(os.path.expandvars(os.path.expanduser(desktop_data_dir))).resolve()))
-                right = os.path.normcase(str(Path(os.path.expandvars(os.path.expanduser(p))).resolve()))
-            except OSError:
-                return False
-            return right == left or right.startswith(left + os.sep)
+        def _apply_acl_sync() -> tuple[list[str], list]:
+            """同步施加 ACL (含传播). 在线程里跑, 避免堵住事件循环."""
+            desktop_data_dir = win_acl.resolve_desktop_data_dir()
 
-        # agent workspace / skills 在桌面 dataDir 下, 由 apply_desktop_data_rw
-        # 按目录走访授权 (每个 skill 子目录打 RW ACE; node_modules 只改自身不扫内部).
-        # 不对整棵 workspace 做 SetNamedSecurityInfo 全树传播: 扫到受保护文件会
-        # WinError 5 导致整段失败, 所有 skill 都拿不到写权限.
-        _acl_write = [p for p in allow_write_paths if not _under_desktop(p)]
-        _acl_read = [p for p in allow_read_paths if not _under_desktop(p)]
-        acl_paths = win_acl.apply_sandbox_acl(
-            workspace,
-            _acl_write,
-            deny_write_paths,
-            allow_read=_acl_read,
-            deny_read=deny_read_paths,
-            sandbox_user_sid=sandbox_user_sid,
-            preinstalled_read_paths=_preinstalled,
-        )
-        if desktop_data_dir:
-            try:
-                # 桌面 dataDir 整树可读可写, 不做 deny / 只读限制 (含 skills).
-                _desktop_acl = win_acl.apply_desktop_data_rw(
-                    desktop_data_dir,
-                    sandbox_user_sid=sandbox_user_sid,
-                    preserve_write_roots=allow_write_paths,
-                )
-                if _desktop_acl:
-                    acl_paths = list(acl_paths or []) + _desktop_acl
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "[SandboxWin] %s apply_desktop_data_rw 失败 dir=%s",
-                    sandbox_id, desktop_data_dir, exc_info=True,
-                )
-        if sandbox_user_sid:
-            _traverse_targets = []
-            if desktop_data_dir:
-                _traverse_targets.append(desktop_data_dir)
-            _traverse_targets.append(workspace)
-            _traverse_targets.extend(allow_write_paths)
-            _seen_traverse: set[str] = set()
-            for _tp in _traverse_targets:
-                if not _tp:
-                    continue
-                _tk = os.path.normcase(os.path.abspath(_tp))
-                if _tk in _seen_traverse:
-                    continue
-                _seen_traverse.add(_tk)
+            def _under_desktop(p: str) -> bool:
+                if not desktop_data_dir or not p:
+                    return False
                 try:
-                    win_acl.grant_parent_traverse(_tp, sandbox_user_sid)
-                    win_acl.grant_parent_traverse(_tp, win_acl.get_synthetic_write_sid())
+                    left = os.path.normcase(str(Path(os.path.expandvars(os.path.expanduser(desktop_data_dir))).resolve()))
+                    right = os.path.normcase(str(Path(os.path.expandvars(os.path.expanduser(p))).resolve()))
+                except OSError:
+                    return False
+                return right == left or right.startswith(left + os.sep)
+
+            # agent workspace / skills 在桌面 dataDir 下, 由 apply_desktop_data_rw
+            # 按目录走访授权. 不对整棵 workspace 做 SetNamedSecurityInfo 全树传播.
+            _acl_write = [p for p in allow_write_paths if not _under_desktop(p)]
+            _acl_read = [p for p in allow_read_paths if not _under_desktop(p)]
+            fp_cache = win_setup.load_acl_fingerprint_cache(
+                sandbox_user_sid=sandbox_user_sid,
+            )
+            acl_result = win_acl.apply_sandbox_acl(
+                workspace,
+                _acl_write,
+                deny_write_paths,
+                allow_read=_acl_read,
+                deny_read=deny_read_paths,
+                sandbox_user_sid=sandbox_user_sid,
+                preinstalled_read_paths=_preinstalled,
+                fingerprint_cache=fp_cache,
+            )
+            acl_paths = list(acl_result.paths)
+            grants = list(acl_result.grants)
+            if acl_result.failed:
+                logger.warning(
+                    "[SandboxWin] %s ACL 部分失败 paths=%s",
+                    sandbox_id, acl_result.failed,
+                )
+            if desktop_data_dir:
+                try:
+                    _desktop_acl = win_acl.apply_desktop_data_rw(
+                        desktop_data_dir,
+                        sandbox_user_sid=sandbox_user_sid,
+                        preserve_write_roots=allow_write_paths,
+                    )
+                    if _desktop_acl:
+                        acl_paths = acl_paths + list(_desktop_acl)
                 except Exception:  # noqa: BLE001
                     logger.warning(
-                        "[SandboxWin] %s grant_parent_traverse 失败 path=%s",
-                        sandbox_id, _tp, exc_info=True,
+                        "[SandboxWin] %s apply_desktop_data_rw 失败 dir=%s",
+                        sandbox_id, desktop_data_dir, exc_info=True,
                     )
+            if sandbox_user_sid:
+                _traverse_targets = []
+                if desktop_data_dir:
+                    _traverse_targets.append(desktop_data_dir)
+                _traverse_targets.append(workspace)
+                _traverse_targets.extend(allow_write_paths)
+                _seen_traverse: set[str] = set()
+                for _tp in _traverse_targets:
+                    if not _tp:
+                        continue
+                    _tk = os.path.normcase(os.path.abspath(_tp))
+                    if _tk in _seen_traverse:
+                        continue
+                    _seen_traverse.add(_tk)
+                    try:
+                        _preserve = list(allow_write_paths)
+                        _preserve.append(workspace)
+                        if desktop_data_dir:
+                            _preserve.append(desktop_data_dir)
+                        win_acl.grant_parent_traverse(
+                            _tp, sandbox_user_sid,
+                            readable_roots=allow_read_paths,
+                            preserve_roots=_preserve,
+                        )
+                        win_acl.grant_parent_traverse(
+                            _tp, win_acl.get_synthetic_write_sid(),
+                            readable_roots=allow_read_paths,
+                            preserve_roots=_preserve,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "[SandboxWin] %s grant_parent_traverse 失败 path=%s",
+                            sandbox_id, _tp, exc_info=True,
+                        )
+            return acl_paths or [workspace], grants
+
+        acl_paths, acl_grants = await asyncio.to_thread(_apply_acl_sync)
         _t_acl1 = time.perf_counter()
-        # apply_sandbox_acl 整体耗时打点
         logger.info(
             "[SandboxWin] %s apply_sandbox_acl 总耗时=%.2fs (paths=%d); "
             "段级分解见 win_acl 段汇总日志",
@@ -3256,9 +3284,12 @@ class ProcessRuntime(RuntimeAdapter):
         )
         self._win_acl_paths[sandbox_id] = acl_paths or [workspace]
         self._win_sandbox_sids[sandbox_id] = sandbox_user_sid
-        # 记录施加路径到历史清单, 供启动时差集清理兜底 (避免配置变更后旧 ACE 残留放行).
+        # 记录施加路径 + 指纹到历史清单 (stop 不再 revoke, 靠启动差集 / 策略变更清理).
         try:
             win_setup.record_applied_acl_paths(acl_paths or [], workspace)
+            win_setup.record_acl_fingerprints(
+                acl_grants, sandbox_user_sid=sandbox_user_sid,
+            )
         except Exception:  # noqa: BLE001
             logger.debug("record_applied_acl_paths 失败 sandbox=%s", sandbox_id, exc_info=True)
         logger.debug(
@@ -3408,7 +3439,7 @@ class ProcessRuntime(RuntimeAdapter):
             await asyncio.sleep(WIN_RUNNER_READY_PROBE_INTERVAL)
 
     async def _stop_windows(self, sandbox_id: str, timeout: float = 10.0) -> None:
-        from jiuwenbox.supervisor import win_acl, win_exec, win_job
+        from jiuwenbox.supervisor import win_exec, win_job
 
         runner = self._win_runners.pop(sandbox_id, None)
         if runner is not None:
@@ -3443,14 +3474,10 @@ class ProcessRuntime(RuntimeAdapter):
             if job is not None:
                 win_job.teardown(job)
 
-        # 5. 撤销文件 ACL (按 apply 时返回的施加路径清单撤销, review MAJOR #6).
-        acl_paths = self._win_acl_paths.pop(sandbox_id, None)
-        sandbox_user_sid = self._win_sandbox_sids.pop(sandbox_id, None)
-        if acl_paths:
-            try:
-                win_acl.revoke_sandbox_acl(acl_paths, sandbox_user_sid=sandbox_user_sid)
-            except Exception:  # noqa: BLE001
-                logger.debug("撤销 ACL 失败 sandbox=%s", sandbox_id, exc_info=True)
+        # 5. 不再 revoke 文件 ACL: ACE 常驻, 由 box-server 启动差集 /
+        #    策略变更 / uninstall 传播式撤销. 只清本沙箱内存态清单.
+        self._win_acl_paths.pop(sandbox_id, None)
+        self._win_sandbox_sids.pop(sandbox_id, None)
         # 清理 per-sandbox pipe lock.
         self._win_pipe_locks.pop(sandbox_id, None)
 
@@ -3507,10 +3534,21 @@ class ProcessRuntime(RuntimeAdapter):
                 exit_code=1,
                 stderr=f"sandbox {sandbox_id!r} runner IPC 失败",
             )
+        # runner 起进程失败走 {"ok": false, "detail": "..."}, 没有 stdout/stderr.
+        # 不把 detail 映射出去时前端只看到 exit=1 空输出.
+        ok = response.get("ok", True)
+        stdout = str(response.get("stdout", "") or "")
+        stderr = str(response.get("stderr", "") or "")
+        detail = str(response.get("detail") or "")
+        if not ok and not stderr:
+            stderr = detail or str(response.get("error") or "exec failed")
+        exit_code = response.get("exit_code")
+        if exit_code is None:
+            exit_code = 0 if ok else 1
         return ExecResult(
-            exit_code=int(response.get("exit_code", 1)),
-            stdout=str(response.get("stdout", "")),
-            stderr=str(response.get("stderr", "")),
+            exit_code=int(exit_code),
+            stdout=stdout,
+            stderr=stderr,
         )
 
     async def _exec_background_windows(
