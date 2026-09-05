@@ -485,6 +485,8 @@ class AgentRuntime:
         kvc_task_started = False
         kvc_task_succeeded = False
         admitted = foreground and not self._request_targets_team(request)
+        if admitted and self._is_interrupt_resume_request(request):
+            admitted = self._should_admit_interrupt_resume(request)
         foreground_started = False
         admission_started = False
         events: list[RuntimeEvent] = []
@@ -718,6 +720,8 @@ class AgentRuntime:
             and not background
             and not self._request_targets_team(request)
         )
+        if admitted and self._is_interrupt_resume_request(request):
+            admitted = self._should_admit_interrupt_resume(request)
         foreground_started = False
         admission_started = False
         agent: Any = None
@@ -984,6 +988,39 @@ class AgentRuntime:
         from jiuwenswarm.runtime.request import CHAT_TURN_METHODS
 
         return CHAT_TURN_METHODS
+
+    @staticmethod
+    def _is_interrupt_resume_request(request: AgentRequest) -> bool:
+        """Do not re-admit answers that inject into an active interaction.
+
+        ``ask_user`` / permission answers are transported as ``chat.send``
+        with an interrupt payload.  The original chat turn still owns the
+        session admission while it waits for that answer, so making the
+        answer wait for a second user admission deadlocks the interaction and
+        blocks Heartbeat indefinitely.
+        """
+        # Keep this dependency lazy with the request-shape inspection path.
+        # pylint: disable-next=import-outside-toplevel
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            is_interrupt_resume_payload,
+        )
+
+        return is_interrupt_resume_payload(request.params)
+
+    def _should_admit_interrupt_resume(self, request: AgentRequest) -> bool:
+        """Admit a stale answer, but let a live turn inject without waiting.
+
+        A valid interrupt answer normally arrives while the original user turn
+        still owns the session admission.  Only that case skips a second
+        admission.  If no user work is active, retain the normal admission
+        barrier so an expired answer cannot race a Heartbeat run.
+        """
+        controller = self._admission_controller
+        if controller is None:
+            return False
+        if not callable(getattr(controller, "is_user_active", None)):
+            return False
+        return not bool(controller.is_user_active(request.session_id or "default"))
 
     @staticmethod
     def _request_targets_team(request: AgentRequest) -> bool:

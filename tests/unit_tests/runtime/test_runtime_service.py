@@ -109,6 +109,23 @@ class FakeAgent:
         )
 
 
+class FakeAdmissionController:
+    def __init__(self, *, user_active: bool) -> None:
+        self.user_active = user_active
+        self.calls: list[str] = []
+
+    def is_user_active(self, session_id: str) -> bool:
+        return self.user_active
+
+    async def begin_user(self, session_id: str) -> None:
+        self.calls.append("begin")
+        if self.user_active:
+            raise AssertionError("interrupt resume must not wait for active user")
+
+    async def end_user(self, session_id: str) -> None:
+        self.calls.append("end")
+
+
 class TerminalSentinelAgent(FakeAgent):
     async def process_message_stream(self, request: AgentRequest):
         yield AgentResponseChunk(
@@ -856,6 +873,132 @@ async def test_answer_interaction_forwards_runtime_execution_options() -> None:
         trigger_hook=False,
         on_control_event=control_handler,
     )
+
+
+@pytest.mark.asyncio
+async def test_interrupt_resume_does_not_wait_for_existing_user_admission() -> None:
+    admission = FakeAdmissionController(user_active=True)
+    manager = FakeAgentManager()
+
+    class InterruptRuntime(AgentRuntime):
+        async def prepare_chat_turn(
+            self,
+            request: AgentRequest,
+            channel_id: str,
+            *,
+            sync_metadata: bool = True,
+        ) -> tuple[str, str | None, object]:
+            return "agent", "normal", manager.agent
+
+    runtime = InterruptRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+        admission_controller=admission,
+    )
+    session_id = "ask-user-session"
+
+    request = AgentRequest(
+        request_id="answer-dispatch",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "request_id": "call_ask_user",
+            "answers": [{"question": "选择方案", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+    )
+
+    await asyncio.wait_for(runtime.invoke(request, trigger_hook=False), timeout=0.2)
+    assert admission.calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_interrupt_resume_retains_normal_admission() -> None:
+    admission = FakeAdmissionController(user_active=False)
+    manager = FakeAgentManager()
+
+    class InterruptRuntime(AgentRuntime):
+        async def prepare_chat_turn(
+            self,
+            request: AgentRequest,
+            channel_id: str,
+            *,
+            sync_metadata: bool = True,
+        ) -> tuple[str, str | None, object]:
+            return "agent", "normal", manager.agent
+
+    runtime = InterruptRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+        admission_controller=admission,
+    )
+    request = AgentRequest(
+        request_id="stale-answer-dispatch",
+        channel_id="web",
+        session_id="stale-answer-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "request_id": "call_stale_ask_user",
+            "answers": [{"question": "选择方案", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+    )
+
+    await runtime.invoke(request, trigger_hook=False)
+    assert admission.calls == ["begin", "end"]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_resume_stream_does_not_wait_for_existing_user_admission() -> None:
+    admission = FakeAdmissionController(user_active=True)
+    manager = FakeAgentManager()
+
+    class InterruptRuntime(AgentRuntime):
+        async def prepare_chat_turn(
+            self,
+            request: AgentRequest,
+            channel_id: str,
+            *,
+            sync_metadata: bool = True,
+        ) -> tuple[str, str | None, object]:
+            return "agent", "normal", manager.agent
+
+    runtime = InterruptRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+        admission_controller=admission,
+    )
+    session_id = "ask-user-stream-session"
+
+    request = AgentRequest(
+        request_id="answer-stream-dispatch",
+        channel_id="tui",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={
+            "query": "",
+            "request_id": "call_ask_user_stream",
+            "answers": [{"question": "选择方案", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+    )
+
+    events = [event async for event in runtime.stream(request, trigger_hook=False)]
+    assert [event.event_type for event in events] == ["chat.delta", "chat.final"]
+    assert admission.calls == []
 
 
 @pytest.mark.asyncio
