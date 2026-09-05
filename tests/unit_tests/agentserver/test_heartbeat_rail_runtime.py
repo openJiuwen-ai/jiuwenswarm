@@ -161,6 +161,32 @@ def test_session_identity_keeps_empty_legacy_owner_session_scoped() -> None:
         assert HeartbeatRailRuntime._validated_session_user_id("session-1", "") == ""
 
 
+def test_runtime_applies_heartbeat_timeout_config(tmp_path) -> None:
+    with (
+        patch(
+            "jiuwenswarm.agents.harness.code.rails.heartbeat.runtime.get_config",
+            return_value={
+                "heartbeat": {
+                    "jobs": {
+                        "execution_timeout_seconds": 45.5,
+                        "user_preemption_timeout_seconds": 2.5,
+                    }
+                }
+            },
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.code.rails.heartbeat.runtime.get_heartbeat_jobs_path",
+            return_value=tmp_path / "heartbeat_jobs.json",
+        ),
+    ):
+        runtime = HeartbeatRailRuntime(object())
+
+    assert runtime.execution._execution_timeout_seconds == 45.5
+    assert runtime.admission._user_preemption_timeout_seconds == 2.5
+    assert runtime.controller.limits["execution_timeout_seconds"] == 45.5
+    assert runtime.controller.limits["user_preemption_timeout_seconds"] == 2.5
+
+
 async def test_user_waiter_has_priority_over_next_heartbeat() -> None:
     admission = SessionRunAdmission()
     assert await admission.try_begin_heartbeat("s1", "hb-1") is True
@@ -475,6 +501,198 @@ async def test_execution_cancel_is_exact() -> None:
     assert service.has_active_run("run-1") is True
     assert await service.cancel("run-1") is True
     assert service.has_active_run("run-1") is False
+
+
+@pytest.mark.parametrize("team_request", [False, True])
+async def test_user_request_preempts_active_heartbeat(team_request: bool) -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    completed: list[tuple[str, str, str, str | None, bool]] = []
+
+    class Server:
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    class Scheduler:
+        async def on_run_finished(
+            self, job_id, run_id, *, outcome, error=None, consume_queue=True, **kwargs
+        ):  # noqa: ANN001
+            completed.append((job_id, run_id, outcome, error, consume_queue))
+            return True
+
+    admission = SessionRunAdmission(user_preemption_timeout_seconds=0.5)
+    service = HeartbeatExecutionService(Server(), admission)
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-preempt", name="follow up", enabled=True, channel_id="web",
+        session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-preempt", message) is True
+    await started.wait()
+    if team_request:
+        await asyncio.wait_for(admission.begin_team_user("s1"), timeout=0.5)
+        await admission.complete_team_user_submission("s1", accepted=False)
+    else:
+        await asyncio.wait_for(admission.begin_user("s1"), timeout=0.5)
+        await admission.end_user("s1")
+
+    assert cancelled.is_set()
+    assert completed == [(
+        "job-preempt", "run-preempt", "cancelled",
+        "heartbeat preempted by user request", True,
+    )]
+    assert service.active_session_ids() == set()
+
+
+async def test_heartbeat_execution_timeout_releases_session() -> None:
+    cancelled = asyncio.Event()
+    completed: list[tuple[str, str, str, str | None]] = []
+
+    class Server:
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    class Scheduler:
+        async def on_run_finished(
+            self, job_id, run_id, *, outcome, error=None, **kwargs
+        ):  # noqa: ANN001
+            completed.append((job_id, run_id, outcome, error))
+            return True
+
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(
+        Server(), admission, execution_timeout_seconds=0.02
+    )
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-timeout", name="follow up", enabled=True, channel_id="web",
+        session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-timeout", message) is True
+    await asyncio.gather(*list(service._tasks.values()))
+
+    assert cancelled.is_set()
+    assert completed == [(
+        "job-timeout", "run-timeout", "failed",
+        "heartbeat execution timed out after 0.02 seconds",
+    )]
+    await asyncio.wait_for(admission.begin_user("s1"), timeout=0.1)
+    await admission.end_user("s1")
+    assert service.active_session_ids() == set()
+
+
+async def test_user_preemption_timeout_fails_fast_and_drops_waiter() -> None:
+    admission = SessionRunAdmission(user_preemption_timeout_seconds=0.01)
+    assert await admission.try_begin_heartbeat("s1", "run-stuck") is True
+
+    async def stuck_preemptor(run_id: str) -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    admission.set_heartbeat_preemptor(stuck_preemptor)
+
+    with pytest.raises(
+        RuntimeError, match="heartbeat preemption timed out after 0.01 seconds"
+    ):
+        await admission.begin_user("s1")
+
+    assert admission.is_user_active("s1") is False
+    await admission.end_heartbeat("s1", "run-stuck")
+
+
+async def test_concurrent_users_share_one_heartbeat_preemption() -> None:
+    started = asyncio.Event()
+
+    class Server:
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            started.set()
+            await asyncio.Event().wait()
+
+    admission = SessionRunAdmission(user_preemption_timeout_seconds=0.5)
+    service = HeartbeatExecutionService(Server(), admission)
+    job = HeartbeatJob(
+        id="job-shared-preempt", name="follow up", enabled=True,
+        channel_id="web", session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-shared-preempt", message) is True
+    await started.wait()
+    users = [asyncio.create_task(admission.begin_user("s1")) for _ in range(2)]
+    await asyncio.wait_for(asyncio.gather(*users), timeout=0.5)
+
+    assert service.active_session_ids() == set()
+    await admission.end_user("s1")
+    await admission.end_user("s1")
+
+
+async def test_cancel_before_execution_task_starts_releases_admission() -> None:
+    completed: list[tuple[str, str, str]] = []
+
+    class Server:
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            await asyncio.Event().wait()
+
+    class Scheduler:
+        async def on_run_finished(self, job_id, run_id, *, outcome, **kwargs):  # noqa: ANN001
+            completed.append((job_id, run_id, outcome))
+            return True
+
+    admission = SessionRunAdmission()
+    service = HeartbeatExecutionService(Server(), admission)
+    service.set_scheduler(Scheduler())
+    job = HeartbeatJob(
+        id="job-cancel-before-start", name="follow up", enabled=True,
+        channel_id="web", session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        next_run_at=1.0,
+    )
+    message = SimpleNamespace(
+        channel_id="web", chat_id=None, req_method=None, params={}, timestamp=1.0,
+        metadata={}, user_id="", agent_ref=None,
+    )
+
+    assert await service.dispatch(job, "run-before-start", message) is True
+    assert await service.cancel("run-before-start") is True
+
+    assert completed == [(
+        "job-cancel-before-start", "run-before-start", "cancelled"
+    )]
+    assert service.active_session_ids() == set()
 
 
 async def test_gateway_disconnect_does_not_abort_protected_heartbeat_session() -> None:

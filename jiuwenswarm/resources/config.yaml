@@ -794,6 +794,10 @@ heartbeat:
     default_max_runs: 12
     default_concurrency_policy: skip
     default_session_deleted_policy: disable
+    # 单次心跳任务的最长执行时间；超时后取消并记录 failed。
+    execution_timeout_seconds: 300
+    # 用户请求抢占心跳时，等待精确取消和清理完成的最长时间。
+    user_preemption_timeout_seconds: 10
 
 health_check:
   # 业务探活间隔（秒），默认 3600

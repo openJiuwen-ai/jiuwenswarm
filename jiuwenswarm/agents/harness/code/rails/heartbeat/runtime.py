@@ -13,7 +13,12 @@ from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import get_heartbeat_jobs_path
 
 from .controller import HeartbeatController
-from .execution import HeartbeatExecutionService, SessionRunAdmission
+from .execution import (
+    DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS,
+    HeartbeatExecutionService,
+    SessionRunAdmission,
+)
 from .scheduler import HeartbeatSchedulerService
 from .store import HeartbeatJobStore
 
@@ -33,6 +38,8 @@ def _load_limits() -> dict[str, Any]:
             "default_max_runs",
             "default_concurrency_policy",
             "default_session_deleted_policy",
+            "execution_timeout_seconds",
+            "user_preemption_timeout_seconds",
         ):
             if key in jobs:
                 limits[key] = jobs[key]
@@ -48,6 +55,12 @@ def _load_limits() -> dict[str, Any]:
         ),
         "default_session_deleted_policy": os.getenv(
             "HEARTBEAT_JOBS_DEFAULT_SESSION_DELETED_POLICY"
+        ),
+        "execution_timeout_seconds": os.getenv(
+            "HEARTBEAT_JOBS_EXECUTION_TIMEOUT"
+        ),
+        "user_preemption_timeout_seconds": os.getenv(
+            "HEARTBEAT_JOBS_USER_PREEMPTION_TIMEOUT"
         ),
     }
     for key, value in env_limits.items():
@@ -68,8 +81,25 @@ class HeartbeatRailRuntime:
 
     def __init__(self, server: Any) -> None:
         self._server = server
-        self.admission = SessionRunAdmission()
-        self.execution = HeartbeatExecutionService(server, self.admission)
+        limits = _load_limits()
+        self.admission = SessionRunAdmission(
+            user_preemption_timeout_seconds=float(
+                limits.get(
+                    "user_preemption_timeout_seconds",
+                    DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS,
+                )
+            )
+        )
+        self.execution = HeartbeatExecutionService(
+            server,
+            self.admission,
+            execution_timeout_seconds=float(
+                limits.get(
+                    "execution_timeout_seconds",
+                    DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+                )
+            ),
+        )
         self.store = HeartbeatJobStore(path=get_heartbeat_jobs_path())
         self.scheduler = HeartbeatSchedulerService(
             store=self.store,
@@ -80,7 +110,7 @@ class HeartbeatRailRuntime:
         self.controller = HeartbeatController(
             store=self.store,
             scheduler=self.scheduler,
-            limits=_load_limits(),
+            limits=limits,
         )
         self._available = False
         self._start_lock = asyncio.Lock()

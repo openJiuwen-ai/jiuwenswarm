@@ -302,6 +302,8 @@ heartbeat:
     default_max_runs: 12
     default_concurrency_policy: skip
     default_session_deleted_policy: disable
+    execution_timeout_seconds: 300
+    user_preemption_timeout_seconds: 10
 
 health_check:
   # 探活间隔（秒）

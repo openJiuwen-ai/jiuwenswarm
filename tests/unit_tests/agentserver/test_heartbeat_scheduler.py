@@ -660,6 +660,53 @@ async def test_two_real_heartbeats_share_sixty_second_busy_deadline(
     assert len(requests) == 1
 
 
+async def test_real_execution_timeout_finishes_persisted_run(
+    tmp_path: Path,
+) -> None:
+    cancelled = asyncio.Event()
+
+    class Server:
+        async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    store = HeartbeatJobStore(path=tmp_path / "execution-timeout.json")
+    admission = SessionRunAdmission()
+    execution = HeartbeatExecutionService(
+        Server(), admission, execution_timeout_seconds=0.02
+    )
+    scheduler = HeartbeatSchedulerService(
+        store=store,
+        execution_service=execution,
+        session_resolver=_FakeResolver(),
+        now_fn=lambda: 1.0,
+    )
+    execution.set_scheduler(scheduler)
+    job = await store.create_job(
+        name="timeout", channel_id="web", session_id="s1", prompt="continue",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        source="web_rpc", next_run_at=1.0, now=0.0,
+    )
+
+    await scheduler._tick_once()
+    await asyncio.gather(*list(execution._tasks.values()))
+
+    finished = await store.get_job(job.id)
+    assert finished is not None
+    assert cancelled.is_set()
+    assert finished.run_state.current_run_id is None
+    assert finished.run_state.last_run_status == "failed"
+    assert finished.run_state.last_error == (
+        "heartbeat execution timed out after 0.02 seconds"
+    )
+    assert finished.run_count == 1
+    assert execution.active_session_ids() == set()
+
+
 async def test_run_now_rejects_busy_manual_session(setup) -> None:
     store, mh, sched = setup
     mh.busy_sessions.add("s1")

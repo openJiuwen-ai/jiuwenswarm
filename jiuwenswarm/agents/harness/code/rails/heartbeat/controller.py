@@ -17,6 +17,10 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
+    DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS,
+)
 from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
     DEFAULT_CONCURRENCY_POLICY,
     DEFAULT_MAX_RUNS,
@@ -68,6 +72,8 @@ _DEFAULT_LIMITS: dict[str, Any] = {
     "default_max_runs": DEFAULT_MAX_RUNS,
     "default_concurrency_policy": DEFAULT_CONCURRENCY_POLICY,
     "default_session_deleted_policy": DEFAULT_SESSION_DELETED_POLICY,
+    "execution_timeout_seconds": DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+    "user_preemption_timeout_seconds": DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS,
 }
 
 
@@ -118,6 +124,14 @@ class HeartbeatController:
             except (TypeError, ValueError) as exc:
                 raise ValueError("default_max_runs must be null or integer") from exc
         normalized["default_max_runs"] = default_max
+        for key in (
+            "execution_timeout_seconds",
+            "user_preemption_timeout_seconds",
+        ):
+            try:
+                normalized[key] = float(normalized.get(key))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{key} must be number") from exc
         return normalized
 
     @staticmethod
@@ -141,6 +155,12 @@ class HeartbeatController:
             raise ValueError("invalid default_concurrency_policy")
         if limits.get("default_session_deleted_policy") not in HEARTBEAT_SESSION_DELETED_POLICIES:
             raise ValueError("invalid default_session_deleted_policy")
+        for key in (
+            "execution_timeout_seconds",
+            "user_preemption_timeout_seconds",
+        ):
+            if float(limits.get(key)) <= 0:
+                raise ValueError(f"{key} must be greater than zero")
 
     @property
     def limits(self) -> dict[str, Any]:
