@@ -197,7 +197,7 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
   const isJsonSection = activeSection?.key === 'prompt' || activeSection?.key === 'outcome';
   // 错误/结果为纯文本（traceback / 摘要），不套 Markdown
   const isPlainTextSection = activeSection?.key === 'error' || activeSection?.key === 'result';
-  const jsonData = isJsonSection && !rawMode ? tryParseJson(content) : null;
+  const jsonData = isJsonSection ? tryParseJson(content) : null;
 
   return (
     <div
