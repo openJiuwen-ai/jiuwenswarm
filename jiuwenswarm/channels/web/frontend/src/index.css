@@ -1701,21 +1701,6 @@ body.workspace-resize-active iframe {
     transition: opacity 0.28s ease, transform 0.28s ease;
   }
 
-  .completed-work-chip__badge {
-    flex-shrink: 0;
-    padding: 0;
-    margin-left: 2px;
-    border-radius: 0;
-    font-size: var(--font-size-2xs, 11px);
-    font-weight: 500;
-    line-height: inherit;
-  }
-
-  .completed-work-chip__badge.is-partial {
-    background: transparent;
-    color: var(--color-feedback-warning);
-  }
-
   .completed-work-chip .tool-tree-item__disclosure {
     opacity: 0.7;
     transition: transform 0.22s ease, opacity 0.18s ease;
@@ -2035,8 +2020,9 @@ body.workspace-resize-active iframe {
     font-weight: 500;
   }
 
+  /* 失败态与「已完成思考」同色，不再用红色强调 */
   .tool-tree__header-line-text.is-failed {
-    color: rgba(185, 28, 28, 0.78);
+    color: var(--tool-muted, var(--color-text-secondary));
   }
 
   .tool-tree-item__detail-pre.is-failed {
