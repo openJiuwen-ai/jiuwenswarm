@@ -25,6 +25,10 @@ AGENT_ROOT = "root"
 AGENT_CODE = "code_agent"
 VALID_AGENTS = (AGENT_ROOT, AGENT_CODE)
 
+INTERFACE_CLASSIC = "classic"
+INTERFACE_FOCUSED = "focused"
+VALID_INTERFACES = (INTERFACE_CLASSIC, INTERFACE_FOCUSED)
+
 
 @dataclass(frozen=True)
 class CodeGraphFlags:
@@ -32,6 +36,7 @@ class CodeGraphFlags:
 
     profile: str = PROFILE_OFF
     agent: str = AGENT_CODE
+    retrieval_interface: str = INTERFACE_CLASSIC
 
     @property
     def enabled(self) -> bool:
@@ -44,6 +49,11 @@ class CodeGraphFlags:
     @property
     def on_code_agent(self) -> bool:
         return self.enabled and self.agent == AGENT_CODE
+
+    @property
+    def uses_focused(self) -> bool:
+        """ACI observation. Ignored when the profile is off."""
+        return self.enabled and self.retrieval_interface == INTERFACE_FOCUSED
 
     @property
     def root_prompt_profile(self) -> str:
@@ -75,6 +85,16 @@ def resolve_agent(value: Any, *, default: str = AGENT_CODE) -> str:
         return default
     text = str(value).strip().lower()
     if text in VALID_AGENTS:
+        return text
+    return default
+
+
+def resolve_retrieval_interface(value: Any, *, default: str = INTERFACE_CLASSIC) -> str:
+    """Accept ``classic`` / ``focused``. Missing or unknown values use ``classic``."""
+    if value is None or isinstance(value, bool):
+        return default
+    text = str(value).strip().lower()
+    if text in VALID_INTERFACES:
         return text
     return default
 
@@ -202,9 +222,14 @@ def resolve_code_graph_flags(config_base: dict[str, Any] | None) -> CodeGraphFla
     raw = (config_base or {}).get("code_graph") if isinstance(config_base, dict) else None
     if not isinstance(raw, dict):
         return CodeGraphFlags()
+    profile = resolve_profile(raw.get("profile"))
+    interface = resolve_retrieval_interface(raw.get("retrieval_interface"))
+    if profile == PROFILE_OFF:
+        interface = INTERFACE_CLASSIC
     return CodeGraphFlags(
-        profile=resolve_profile(raw.get("profile")),
+        profile=profile,
         agent=resolve_agent(raw.get("agent")),
+        retrieval_interface=interface,
     )
 
 
@@ -293,6 +318,7 @@ def enable_code_agent_subagent(config: dict[str, Any]) -> None:
 def apply_code_graph_profile(
     config_base: dict[str, Any],
     profile: str,
+    retrieval_interface: str | None = None,
 ) -> dict[str, Any]:
     """Eval overlay: set ``code_graph.profile`` and keep ``code_agent`` on.
 
@@ -305,6 +331,12 @@ def apply_code_graph_profile(
     cfg = deepcopy(config_base)
     graph = dict(cfg.get("code_graph") or {})
     graph["profile"] = resolve_profile(profile)
+    if retrieval_interface is not None:
+        graph["retrieval_interface"] = (
+            INTERFACE_CLASSIC
+            if graph["profile"] == PROFILE_OFF
+            else resolve_retrieval_interface(retrieval_interface)
+        )
     cfg["code_graph"] = graph
     react = dict(cfg.get("react") or {})
     subagents = dict(react.get("subagents") or {})

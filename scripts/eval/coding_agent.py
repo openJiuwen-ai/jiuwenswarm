@@ -53,6 +53,7 @@ from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config  # n
 from openjiuwen.harness.workspace.workspace import Workspace  # noqa: E402
 
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa: E402
+    INTERFACE_CLASSIC,
     PROFILE_GRAPH,
     PROFILE_OFF,
     CodeGraphFlags,
@@ -60,6 +61,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     product_code_graph_config,
     resolve_code_graph_flags,
     resolve_profile,
+    resolve_retrieval_interface,
 )
 from trajectory import EvalTrace  # noqa: E402
 
@@ -121,12 +123,16 @@ def config_dir_name(
     prefix: str = "",
     task_mode: str = TASK_MODE_LOCATE,
     benchmark: str = "contextbench",
+    retrieval_interface: str = INTERFACE_CLASSIC,
 ) -> str:
     """Folder name that states the profile, e.g. ``cfg_b__graph``."""
     resolved = (profile or "off").strip().lower()
     head = f"cfg_{prefix}" if prefix else "cfg_b"
     tag = "graph-off" if resolved == "off" else resolved
     name = f"{head}__{tag}"
+    iface = resolve_retrieval_interface(retrieval_interface)
+    if iface != INTERFACE_CLASSIC and resolved != "off":
+        name = f"{name}__{iface}"
     if (benchmark or "contextbench").strip().lower() == "swe":
         return f"{name}__swe"
     mode = (task_mode or TASK_MODE_LOCATE).strip().lower()
@@ -307,6 +313,21 @@ def _graph_config(
     )
 
 
+def _profile_rail_kwargs(flags: CodeGraphFlags, graph_config: Any, prompt_mode: str) -> dict[str, Any]:
+    """Pass retrieval_interface only when this engine's rail accepts it."""
+    import inspect
+
+    kwargs: dict[str, Any] = {"config": graph_config, "prompt_mode": prompt_mode}
+    try:
+        from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+        if "retrieval_interface" in inspect.signature(CodeGraphProfileRail.__init__).parameters:
+            kwargs["retrieval_interface"] = flags.retrieval_interface
+    except Exception:  # noqa: BLE001 — product engines ignore the extra knob
+        pass
+    return kwargs
+
+
 def _code_agent_profile_kwargs(
     flags: CodeGraphFlags,
     graph_config: Any,
@@ -320,6 +341,16 @@ def _code_agent_profile_kwargs(
     }
     if flags.enabled:
         kwargs["code_graph_config"] = graph_config
+    if flags.uses_focused:
+        import inspect
+
+        try:
+            from openjiuwen.harness.subagents.code_agent import create_code_agent
+
+            if "code_graph_retrieval_interface" in inspect.signature(create_code_agent).parameters:
+                kwargs["code_graph_retrieval_interface"] = flags.retrieval_interface
+        except Exception:  # noqa: BLE001 — older engines stay classic
+            pass
     if not inject_builtin_plan_agents:
         kwargs["inject_builtin_plan_agents"] = False
     return kwargs
@@ -368,6 +399,7 @@ def create_coding_agent(
     extra_hide_on_code_agent: tuple[str, ...] | None = None,
     enable_task_loop: bool = False,
     enable_task_planning: bool = False,
+    retrieval_interface: str | None = None,
 ) -> CodingAgentHandle:
     """Create the UI Single Coding Agent with an in-memory profile overlay.
 
@@ -389,6 +421,7 @@ def create_coding_agent(
     product = apply_code_graph_profile(
         config_base if isinstance(config_base, dict) else load_product_config(),
         resolved_profile,
+        retrieval_interface=retrieval_interface,
     )
     flags = resolve_code_graph_flags(product)
     graph_config = _graph_config(product, work, cache_dir)
@@ -397,6 +430,7 @@ def create_coding_agent(
         repo_root=str(repo),
         flags={
             "profile": flags.profile,
+            "retrieval_interface": flags.retrieval_interface,
         },
     )
     capture = trace.make_rail()
@@ -517,8 +551,7 @@ def create_coding_agent(
                 capture,
                 CodeGraphProfileRail(
                     flags.profile,
-                    config=graph_config,
-                    prompt_mode=prompt_mode,
+                    **_profile_rail_kwargs(flags, graph_config, prompt_mode),
                 ),
             )
     import inspect
