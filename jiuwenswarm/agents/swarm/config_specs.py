@@ -97,6 +97,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.TASK_PLANNING,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
+    registry.PAPER_GUARD,
     registry.HEARTBEAT,
     registry.AVATAR_PROMPT,
     registry.MULTIMODAL_IMAGE,
@@ -129,6 +130,8 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     registry.XIAOYI_PHONE,
     registry.CRON_TOOLS,
     registry.SEND_FILE,
+    registry.DEEPSEARCH_TOOLS,
+    registry.MEMORY_EVAL_TOOLS,
 )
 
 # Parameterless code-profile rails (the code variant of the common rails plus
@@ -184,6 +187,8 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     registry.CODE_EXTRA_TOOLS,
     registry.CRON_TOOLS,
     registry.SEND_FILE,
+    registry.DEEPSEARCH_TOOLS,
+    registry.MEMORY_EVAL_TOOLS,
 )
 
 # code_agent sub-agents are always-on (explore / plan) or config-gated.
@@ -404,6 +409,13 @@ def _model_anomaly_detection_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _paper_guard_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Attribute params for the research-paper guard rails."""
+    return {
+        "paper_guard_config": _config_section(config, "paper_guard"),
+    }
+
+
 def _permission_params(config: dict[str, Any]) -> dict[str, Any]:
     """Attribute params for the permission-interrupt rail."""
     return {
@@ -431,6 +443,7 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.CONTEXT_PROCESSOR: _context_processor_params,
     registry.MODEL_ANOMALY_DETECTION: _model_anomaly_detection_params,
+    registry.PAPER_GUARD: _paper_guard_params,
     registry.CODE_PROJECT_MEMORY: lambda c: {
         "additional_directories": _additional_directories(c)
     },
@@ -462,11 +475,23 @@ def _audio_tool_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _research_tool_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Attribute params for the research-pipeline tools (deepsearch / memory_eval)."""
+    section = _config_section(config, "research_tools")
+    return {
+        "enabled": bool(section.get("enabled", False)),
+        "deepsearch_config": section.get("deepsearch", {}) or {},
+        "memory_eval_config": section.get("memory_eval", {}) or {},
+    }
+
+
 _TOOL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.SEND_FILE: lambda c: {"channels_config": _config_section(c, "channels")},
     registry.CODE_EXTRA_TOOLS: lambda c: {"acp_enabled": _acp_enabled(c)},
     registry.VISION: _vision_tool_params,
     registry.AUDIO: _audio_tool_params,
+    registry.DEEPSEARCH_TOOLS: _research_tool_params,
+    registry.MEMORY_EVAL_TOOLS: _research_tool_params,
 }
 
 

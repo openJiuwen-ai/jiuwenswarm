@@ -70,6 +70,8 @@ TEAM_SKILL_LIBRARY_RELOAD = "swarm.team_skill_library_reload"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 CONTEXT_PROCESSOR = "swarm.context_processor"
 MODEL_ANOMALY_DETECTION = "swarm.model_anomaly_detection"
+# Research-paper quality guard (hallucination check + academic format).
+PAPER_GUARD = "swarm.paper_guard"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
@@ -574,6 +576,51 @@ def _build_plugin_rails(
     return rails
 
 
+class PaperGuardInput(ConstructionInput):
+    """Construction inputs for the paper-guard rails."""
+
+    paper_guard_config: dict[str, Any] = param_field(
+        default_factory=dict,
+        description="paper_guard config section.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=PAPER_GUARD,
+    description="Research-paper quality guard: hallucination check + academic "
+    "format rails. Mounted when paper_guard.enabled is true; validates "
+    "quantitative claims against ground-truth results and enforces complete "
+    "paper sections.",
+    input_model=PaperGuardInput,
+)
+def _build_paper_guard_rails(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> list[Any] | None:
+    """Build paper-guard rails (hallucination + academic format) per member."""
+    from jiuwenswarm.agents.harness.common.rails.paper_guard import (
+        AcademicFormatRail,
+        HallucinationCheckRail,
+    )
+
+    inp = PaperGuardInput.resolve(params, context)
+    cfg = inp.paper_guard_config if isinstance(inp.paper_guard_config, dict) else {}
+    if cfg.get("enabled", False) is not True:
+        return None
+    rails: list[Any] = []
+    results_path = cfg.get("results_path") or None
+    try:
+        rails.append(HallucinationCheckRail(results_path=results_path))
+    except Exception as exc:
+        logger.warning("[SwarmRails] HallucinationCheckRail create failed: %s", exc)
+    try:
+        rails.append(AcademicFormatRail())
+    except Exception as exc:
+        logger.warning("[SwarmRails] AcademicFormatRail create failed: %s", exc)
+    return rails or None
+
+
 __all__ = [
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",
@@ -581,6 +628,7 @@ __all__ = [
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
     "MODEL_ANOMALY_DETECTION",
+    "PAPER_GUARD",
     "PLUGIN_RAILS",
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",

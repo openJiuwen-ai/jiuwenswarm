@@ -844,6 +844,30 @@ execution_guard:
     # 未知/错误工具连续调用达到该次数时停止重试并中断
     unknown_tool_threshold: 10
 
+# 科研论文护栏：幻觉校验 + 学术结构规范（科研论文自动生成场景）
+paper_guard:
+  # 总开关。开启后为每个团队成员挂载 HallucinationCheckRail + AcademicFormatRail
+  enabled: false
+  # 真实实验结果基准文件（JSON）。模型输出中的量化断言必须可溯源到该文件，
+  # 否则注入告警。留空时使用默认路径 ~/.jiuwenswarm/agent/workspace/output/results.json
+  # results_path: /path/to/results.json
+
+research_tools:
+  # 科研流水线工具总开关。开启后为团队成员挂载 deepsearch_literature 与
+  # run_memory_eval 两个工具 (paper-lab 科研论文流水线使用)
+  enabled: false
+  deepsearch:
+    # openJiuwen-DeepSearch 仓库路径 (https://atomgit.com/openJiuwen/deepsearch)
+    # repo_dir: D:/path/to/deepsearch
+    # python: python
+    # extra_args: []          # 追加到 DeepSearch CLI 的参数 (LLM 密钥等)
+    # timeout_sec: 900
+  memory_eval:
+    # LongMemEval 记忆策略评测 harness 目录 (paper-lab/experiments/longmemeval)
+    # harness_dir: D:/path/to/paper-lab/experiments/longmemeval
+    # python: python
+    # timeout_sec: 7200
+
 channels:
   web:
     send_file_allowed: true
