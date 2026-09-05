@@ -114,6 +114,8 @@ TOOL_WHITELIST = frozenset({
     "image_ocr",
     "visual_question_answering",
     "generate_image",
+    "generate_video",
+    "check_video_status",
     "audio_transcription",
     "audio_question_answering",
     "audio_metadata",

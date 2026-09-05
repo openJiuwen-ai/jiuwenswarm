@@ -307,6 +307,11 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 )
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
+from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
+    generate_video,
+    check_video_status,
+    _get_video_gen_api_credentials,
+)
 
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
@@ -1525,6 +1530,7 @@ class JiuWenSwarmDeepAdapter:
         self._audio_tools_registered: bool = False
         self._video_tool_registered: bool = False
         self._image_gen_tool_registered: bool = False
+        self._video_gen_tool_registered: bool = False
         self._model: Model | None = None
         self._model_client_config: ModelClientConfig | None = None
         self._model_request_config: ModelRequestConfig | None = None
@@ -1613,6 +1619,7 @@ class JiuWenSwarmDeepAdapter:
         self._audio_model_config: AudioModelConfig | None = None
         self._video_model_config: bool = False
         self._image_gen_model_config: bool = False
+        self._video_gen_model_config: bool = False
         self._vision_tools: list[Any] = []
         self._audio_tools: list[Any] = []
         self._instance_overrides: dict[str, Any] = {}
@@ -4475,6 +4482,18 @@ class JiuWenSwarmDeepAdapter:
             return False
         return True
 
+    @staticmethod
+    def _build_video_gen_model_config(
+        config_base: dict[str, Any],
+    ) -> bool:
+        """Build DeepAgent video generation config from service config/env mapping."""
+        _ = config_base
+        api_key, api_base, model = _get_video_gen_api_credentials()
+        if not (api_key and api_base and model):
+            logger.info("[JiuWenSwarmDeepAdapter] video_gen tools skipped: Video Model config incomplete")
+            return False
+        return True
+
     def _iter_runtime_audio_tools(self, agent_id: str | None) -> list[Any]:
         """Return audio tools only while the audio capability is enabled."""
         if self._audio_model_config is None:
@@ -4496,6 +4515,7 @@ class JiuWenSwarmDeepAdapter:
         self._audio_model_config = self._build_audio_model_config(config_base)
         self._video_model_config = self._build_video_model_config(config_base)
         self._image_gen_model_config = self._build_image_gen_model_config(config_base)
+        self._video_gen_model_config = self._build_video_gen_model_config(config_base)
 
         for tool in self._vision_tools:
             tool.vision_model_config = self._vision_model_config
@@ -4976,6 +4996,14 @@ class JiuWenSwarmDeepAdapter:
             enabled=bool(self._image_gen_model_config),
             create_fn=lambda: mark_stateless([generate_image]),
             warn_label="generate_image tool",
+        )
+
+        _, self._video_gen_tool_registered = self._sync_tool_group(
+            current_tools=mark_stateless([generate_video, check_video_status]),
+            registered=self._video_gen_tool_registered,
+            enabled=bool(self._video_gen_model_config),
+            create_fn=lambda: mark_stateless([generate_video, check_video_status]),
+            warn_label="generate_video tools",
         )
 
     def _sync_paid_search_tool_for_runtime(self) -> None:
@@ -7726,6 +7754,21 @@ class JiuWenSwarmDeepAdapter:
             except Exception as exc:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] generate_image tool registration failed: %s",
+                    exc,
+                )
+
+        # generate_video/check_video_status tools: dedicated video_gen model config
+        self._video_gen_tool_registered = False
+        if self._video_gen_model_config:
+            try:
+                self._register_shared_tool(generate_video)
+                tool_cards.append(generate_video.card)
+                self._register_shared_tool(check_video_status)
+                tool_cards.append(check_video_status.card)
+                self._video_gen_tool_registered = True
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] generate_video tools registration failed: %s",
                     exc,
                 )
 

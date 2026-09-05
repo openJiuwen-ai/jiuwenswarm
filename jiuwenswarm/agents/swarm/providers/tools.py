@@ -11,6 +11,7 @@ elements, each self-gated by the config source and filtered against the swarm
 * ``swarm.user_todos`` — the personal todo tool.
 * ``swarm.video`` — the video-understanding tool (``models.video`` gated).
 * ``swarm.image_gen`` — the image-generation tool (``IMAGE_GEN_API_KEY`` gated).
+* ``swarm.video_gen`` — the video-generation tools (``models.video`` gated).
 * ``swarm.xiaoyi_phone`` — the xiaoyi phone tools (channel-switch gated).
 * ``swarm.code_extra_tools`` — code-mode-exclusive ``acp_chat``.
 
@@ -55,6 +56,11 @@ from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
 from jiuwenswarm.agents.harness.common.tools.user_todo_tool import get_decorated_tools
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
+from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
+    generate_video,
+    check_video_status,
+    _get_video_gen_api_credentials,
+)
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     add_collection,
     call_phone,
@@ -99,6 +105,7 @@ SKILL_RETRIEVAL = "swarm.skill_retrieval"
 USER_TODOS = "swarm.user_todos"
 VIDEO = "swarm.video"
 IMAGE_GEN = "swarm.image_gen"
+VIDEO_GEN = "swarm.video_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
 SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
@@ -423,6 +430,15 @@ def _build_image_gen_tools(ctx: SwarmBuildContext) -> list[Any]:
     return _mark_stateless([generate_image])
 
 
+def _build_video_gen_tools(ctx: SwarmBuildContext) -> list[Any]:
+    """Build the video-generation tools when the Video Model config is complete."""
+    _ = ctx
+    api_key, api_base, model = _get_video_gen_api_credentials()
+    if not (api_key and api_base and model):
+        return []
+    return _mark_stateless([generate_video, check_video_status])
+
+
 def _build_xiaoyi_phone_tools(ctx: SwarmBuildContext) -> list[Any]:
     """Build xiaoyi phone tools when ``channels.xiaoyi.phone_tools_enabled``."""
     config = ctx.config or {}
@@ -528,6 +544,16 @@ def build_video_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[An
 def build_image_gen_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
     """Build the whitelist-filtered image-generation tools."""
     return _filter_whitelist(_build_image_gen_tools(ctx))
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=VIDEO_GEN,
+    description="Video-generation tools (built only when the Video Model config is complete).",
+)
+def build_video_gen_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the whitelist-filtered video-generation tools."""
+    return _filter_whitelist(_build_video_gen_tools(ctx))
 
 
 @harness_element(
