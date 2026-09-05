@@ -12,6 +12,14 @@ setup_guide:
 auto_recap:
   enabled: true
 
+# 沙箱（与 officeAce 充分联调后再默认开启）
+sandbox:
+  enabled: false
+  startup_mode: internal
+  url: http://127.0.0.1:8321
+  type: jiuwenbox
+  policy_file: windows-policy.yaml
+
 a2ui:
   enabled: false
   protocol_version: "0.8"

@@ -586,15 +586,15 @@ class AgentWebSocketServer:
           产品起不来, 也无从修复)。
         """
         try:
-            # 非 Linux 平台直接跳过 auto-start: jiuwenbox 依赖 bwrap / Landlock /
-            # 命名空间, Windows / macOS 起不来; 即便 spawn 成功后续 /sandbox 命
-            # 令也会被 :func:`_require_sandbox_supported` 拒掉, 留着只会浪费一
-            # 次失败的子进程启动。
-            if not sys.platform.startswith("linux"):
+            # sandbox.enabled 门控: false 时整个跳过 (不拉起 box-server, 不触发
+            # install/创建 jbx-sandbox 用户)。优先级高于 startup_mode — enabled=false
+            # 即使用户配了 startup_mode=internal 也不拉起。默认 false: shipped 模板
+            # enabled=false, 用户不显式写 sandbox.enabled: true 就不拉起 (opt-in,
+            # 避免开箱即 install + 建进程)。
+            if not get_sandbox_runtime().get("enabled"):
                 logger.info(
-                    "[AgentWebSocketServer] skipping jiuwenbox auto-start: "
-                    "/sandbox is only supported on Linux (current platform: %r)",
-                    sys.platform,
+                    "[AgentWebSocketServer] sandbox.enabled=false, "
+                    "skipping jiuwenbox auto-start",
                 )
                 return
             explicit_mode = get_sandbox_startup_mode_explicit()

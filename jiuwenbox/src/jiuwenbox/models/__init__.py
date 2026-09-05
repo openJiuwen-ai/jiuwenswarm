@@ -28,6 +28,11 @@ from jiuwenbox.models.policy import (
     ProcessPolicy,
     SecurityPolicy,
     SyscallPolicy,
+    WindowsPolicy,
+    WindowsFilesystemPolicy,
+    WindowsNetworkPolicy,
+    WindowsProxyPolicy,
+    WindowsResourcePolicy,
 )
 from jiuwenbox.models.common import (
     AuditEvent,
@@ -61,6 +66,11 @@ __all__ = [
     "ProcessPolicy",
     "SecurityPolicy",
     "SyscallPolicy",
+    "WindowsPolicy",
+    "WindowsFilesystemPolicy",
+    "WindowsNetworkPolicy",
+    "WindowsProxyPolicy",
+    "WindowsResourcePolicy",
     "AuditEvent",
     "AuditEventType",
     "HealthResponse",

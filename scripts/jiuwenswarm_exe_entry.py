@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 import ctypes
+import shutil
 import subprocess
 import traceback
 from pathlib import Path
@@ -97,13 +98,16 @@ if getattr(sys, "frozen", False):
 
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
+_DESKTOP_RUN_JIUWENBOX = "--desktop-run-jiuwenbox"
+_DESKTOP_RUN_WIN_SETUP = "--desktop-run-win-setup"
 
 # 子进程 flag 集合，这些模式下需要将错误写入日志文件，
 # 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
 _DESKTOP_INSTALL_UPDATE = "--desktop-install-update"
 
 _CHILD_FLAGS = {"--desktop-run-app", "--desktop-run-web",
-        _DESKTOP_RUN_AGENT, _DESKTOP_RUN_GATEWAY, _DESKTOP_INSTALL_UPDATE}
+        _DESKTOP_RUN_AGENT, _DESKTOP_RUN_GATEWAY, _DESKTOP_RUN_JIUWENBOX,
+        _DESKTOP_RUN_WIN_SETUP, _DESKTOP_INSTALL_UPDATE}
 
 # ── 单实例锁（在重量级 import 之前执行） ──────────────────────────
 _SINGLE_INSTANCE_LOCK_FD: int | None = None
@@ -177,7 +181,7 @@ def _show_already_running_message() -> None:
 def _write_child_error(exc: BaseException) -> None:
     """将子进程的未捕获异常写入日志文件。"""
     try:
-        log_dir = Path(os.environ.get("JIUWENSARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+        log_dir = Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "jiuwenswarm_exe_error.log"
         with open(log_file, "a", encoding="utf-8", errors="replace") as f:
@@ -200,9 +204,62 @@ def _pop_flag(flag: str) -> bool:
     return True
 
 
+def _unshadow_frozen_jiuwenbox_namespace() -> None:
+    """挪走 ``_MEIPASS/jiuwenbox/``, 避免磁盘目录盖住 PYZ 包."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return
+    pkg = Path(meipass) / "jiuwenbox"
+    if not pkg.is_dir():
+        return
+    dest = Path(meipass) / "jiuwenbox_legacy_overlay"
+    try:
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        pkg.rename(dest)
+    except OSError:
+        pass
+
+
+def _run_win_setup() -> int:
+    """安装器已提权时调用: 在本进程内跑 win_setup, 不再 ShellExecuteW(runas)."""
+    # import 失败时也能确认安装器调到了这里.
+    try:
+        log_dir = Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "win_setup_invoke.log").write_text(
+            f"argv={sys.argv!r}\ncwd={os.getcwd()}\n", encoding="utf-8",
+        )
+    except OSError:
+        pass
+    _unshadow_frozen_jiuwenbox_namespace()
+    from jiuwenbox.supervisor.win_setup import _main as win_setup_main
+
+    return win_setup_main(sys.argv[1:])
+
+
+def _run_jiuwenbox_server() -> None:
+    import argparse
+    import uvicorn
+
+    _unshadow_frozen_jiuwenbox_namespace()
+    from jiuwenbox.server.app import app as jiuwenbox_app
+
+    parser = argparse.ArgumentParser(prog="jiuwenswarm --desktop-run-jiuwenbox")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8321)
+    args, _unknown = parser.parse_known_args()
+    uvicorn.run(
+        jiuwenbox_app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+    )
+
+
 def main() -> None:
     try:
-        _dispatch()
+        code = _dispatch()
     except SystemExit:
         # SystemExit 是正常的退出请求（如 sys.exit()），直接传递，不弹窗
         raise
@@ -213,6 +270,8 @@ def main() -> None:
         # 其他未捕获异常：记录日志后静默退出，避免 PyInstaller exe 弹窗
         _write_child_error(exc)
         raise SystemExit(1) from None
+    if code is not None:
+        raise SystemExit(code)
 
 
 def _find_bundled_binary(name: str) -> str | None:
@@ -322,7 +381,7 @@ def _ensure_stdio() -> None:
             pass
 
 
-def _dispatch() -> None:
+def _dispatch() -> int | None:
     # frozen exe (console=False) 主进程的 sys.stdout/stderr 可能为 None
     if getattr(sys, "frozen", False):
         _ensure_stdio()
@@ -331,32 +390,37 @@ def _dispatch() -> None:
         sys.argv.pop(1)
         from jiuwenswarm.init_workspace import main as init_main
         init_main()
-        return
+        return None
     # 子命令：CLI 命令分发
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "acp":
         from jiuwenswarm.channels.acp.app_acp import main as acp_main
         acp_main()
-        return
+        return None
     if _pop_flag("--desktop-run-app"):
         from jiuwenswarm.app import main as app_main
         app_main()
-        return
+        return None
     if _pop_flag("--desktop-run-web"):
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()
-        return
+        return None
     if _pop_flag(_DESKTOP_RUN_AGENT):
         from jiuwenswarm.server.app_agentserver import main as agent_main
         agent_main()
-        return
+        return None
     if _pop_flag(_DESKTOP_RUN_GATEWAY):
         from jiuwenswarm.gateway.app_gateway import main as gateway_main
         gateway_main()
-        return
+        return None
+    if _pop_flag(_DESKTOP_RUN_JIUWENBOX):
+        _run_jiuwenbox_server()
+        return None
+    if _pop_flag(_DESKTOP_RUN_WIN_SETUP):
+        return _run_win_setup()
     if _DESKTOP_INSTALL_UPDATE in sys.argv:
         from jiuwenswarm.channels.desktop.desktop_app import main as desktop_main
         desktop_main()
-        return
+        return None
     # 子进程模式：argv 有任何参数（.py 脚本或 -m 等），不检查单实例锁
     if getattr(sys, "frozen", False) and len(sys.argv) >= 2:
         script_path = next((arg for arg in sys.argv[1:] if arg.endswith(".py") or arg.endswith(".pyw")), None)
@@ -380,8 +444,10 @@ def _dispatch() -> None:
             # via the rebound stdio so callers receive it.
             if sys.argv[2] == "ruff":
                 raise SystemExit(_forward_to_ruff_binary(sys.argv[3:]))
+            module_name = sys.argv[2]
+            sys.argv = [sys.argv[0], *sys.argv[3:]]
             import runpy
-            runpy.run_module(sys.argv[2], run_name="__main__", alter_sys=True)
+            runpy.run_module(module_name, run_name="__main__", alter_sys=True)
             raise SystemExit(0)
 
         # 其他有参数的情况：直接执行，不检查单实例锁
@@ -399,6 +465,7 @@ def _dispatch() -> None:
         desktop_main()
     finally:
         _release_single_instance_lock()
+    return None
 
 
 if __name__ == "__main__":
