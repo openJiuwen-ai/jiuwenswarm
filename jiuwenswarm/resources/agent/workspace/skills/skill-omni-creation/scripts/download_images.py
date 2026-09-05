@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # The shared environment gate runs before common.py or any third-party module.
 # It selects/re-executes the project interpreter and repairs requests/Pillow.
-from environment_gate import EnvironmentGateError, ensure_environment
+from environment_gate import ensure_environment
 
 requests = None
 Image = None
@@ -97,7 +97,7 @@ def download_image_blocks(blocks: list[dict]) -> tuple[list[dict], dict[str, tup
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download images from stage01.json.")
-    parser.add_argument("slug", nargs="?", help="Skill slug — reads work/<slug>/stage01.json")
+    parser.add_argument("run_id", nargs="?", help="run_id — reads the UUID runtime stage01.json")
     parser.add_argument("--out", default=None)
     parser.add_argument(
         "--check-deps",
@@ -106,26 +106,23 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    try:
-        _load_runtime_dependencies()
-    except EnvironmentGateError:
-        sys.exit(2)
+    _load_runtime_dependencies()
     if args.check_deps:
         logger.info("[download_images] DEPENDENCIES_OK: %s", Path(sys.executable).resolve())
         return
-    if not args.slug:
-        parser.error("slug is required unless --check-deps is used")
+    if not args.run_id:
+        parser.error("run_id is required unless --check-deps is used")
 
-    in_path = common.work_path(args.slug, "stage01.json")
+    in_path = common.work_path(args.run_id, "stage01.json")
     data = common.load_json(in_path)
-    slug = data["slug"]
+    run_id = data.get("run_id") or args.run_id
 
-    out = Path(args.out) if args.out else common.work_path(slug, "stage02.json")
-    asset_dir = common.work_path(slug, "raw_images")
+    out = Path(args.out) if args.out else common.work_path(run_id, "stage02.json")
+    asset_dir = common.work_path(run_id, "raw_images")
 
-    # A repeated slug must not expose images from an earlier run. Dependency
-    # validation has already passed, so cleanup cannot turn a package problem
-    # into a misleading empty references/ result.
+    # A resumed UUID run must not expose raw images left by an earlier download
+    # attempt. Dependency validation has already passed, so reset only this run's
+    # image-download outputs before rebuilding stage02.
     if asset_dir.exists():
         shutil.rmtree(asset_dir)
     if out.exists():

@@ -3,10 +3,10 @@
 analyze_video.py — 下载视频并进行单阶段粗扫抽帧，供 agent 按顺序分析
 
 用法：
-  python analyze_video.py <video_url_or_slug> [--title "视频标题"]
+  python analyze_video.py <video_url_or_run_id> [--title "视频标题"]
 
-  传视频 URL  → 自动复用 stage01 的 slug，下载保存到 work/<slug>/downloads/，帧保存到 work/<slug>/frames/
-  传 slug    → 直接读取 work/<slug>/video.mp4 或 work/<slug>/downloads/video.*（跳过下载）
+  传视频 URL  → 自动解析当前 UUID run_id，下载保存到 <skills>/.skill-omni-creation/<run_id>/runtime/downloads/，帧保存到 runtime/frames/
+  传 run_id → 优先复用当前 UUID 已下载视频；若尚未下载，则从该 run 的 metadata 恢复原始视频 URL 并自动下载
 
 抽帧规则：
   - 短视频按 0.5fps（每 2 秒 1 帧）抽取
@@ -14,8 +14,8 @@ analyze_video.py — 下载视频并进行单阶段粗扫抽帧，供 agent 按�
   - 仅进行一次粗扫，不执行细扫
 
 输出：
-  原始 PNG 帧保存到 work/<slug>/frames/，供最终 Skill 使用；
-  低分辨率 JPEG 审核帧保存到 work/<slug>/review_frames/，只供 agent 按固定 5 帧批次顺序查看。
+  原始 PNG 帧保存到 UUID runtime/frames/，供最终 Skill 选择；
+  低分辨率 JPEG 审核帧保存到 UUID runtime/review_frames/，只供 agent 按固定 8 帧批次顺序查看。
 """
 import argparse
 import json
@@ -26,18 +26,30 @@ import tempfile
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
+# The standard-library-only gate is loaded before Pillow/common; main() runs it
+# after argparse so --help stays side-effect free, but before any video work.
+from environment_gate import ensure_environment
 
-import common
+Image = None
+common = None
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+
+def _load_video_runtime() -> None:
+    global Image, common
+    ensure_environment("video")
+    from PIL import Image as ImageClass
+    import common as common_module
+
+    Image = ImageClass
+    common = common_module
+    common.configure_console_output()
+
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 BASE_FPS = 0.5
 MAX_FRAMES = 90
-BATCH_SIZE = 5
+BATCH_SIZE = 8
 REVIEW_BATCH_STATE = "review_batch_state.json"
 
 # 仅供模型理解的审核帧预算。原始 PNG 帧保持不变，最终仍从 frames/ 保存。
@@ -211,27 +223,27 @@ def build_review_frames(frames: list[Path], review_dir: Path) -> list[Path]:
     return review_frames
 
 
-def _review_state_path(slug: str) -> Path:
-    return common.work_path(slug, REVIEW_BATCH_STATE)
+def _review_state_path(run_id: str) -> Path:
+    return common.work_path(run_id, REVIEW_BATCH_STATE)
 
 
-def _write_review_state(slug: str, current_batch: int, total_frames: int) -> None:
+def _write_review_state(run_id: str, current_batch: int, total_frames: int) -> None:
     state = {
         "version": 1,
         "current_batch": current_batch,
         "batch_size": BATCH_SIZE,
         "total_frames": total_frames,
     }
-    path = _review_state_path(slug)
+    path = _review_state_path(run_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_review_state(slug: str) -> dict:
-    path = _review_state_path(slug)
+def _load_review_state(run_id: str) -> dict:
+    path = _review_state_path(run_id)
     if not path.is_file():
         raise RuntimeError(
-            f"review batch state not found for slug {slug!r}; run analyze_video.py normally first"
+            f"review batch state not found for run_id {run_id!r}; run analyze_video.py normally first"
         )
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -246,12 +258,12 @@ def _load_review_state(slug: str) -> dict:
     return state
 
 
-def _print_review_batch(slug: str, batch_number: int, total_frames: int) -> None:
-    review_dir = common.work_path(slug, "review_frames").resolve()
+def _print_review_batch(run_id: str, batch_number: int, total_frames: int) -> None:
+    review_dir = common.work_path(run_id, "review_frames").resolve()
     review_frames = sorted(review_dir.glob("frame_*.jpg"))
     if len(review_frames) != total_frames:
         raise RuntimeError(
-            f"review frame count changed for slug {slug!r}: state={total_frames}, files={len(review_frames)}"
+            f"review frame count changed for run_id {run_id!r}: state={total_frames}, files={len(review_frames)}"
         )
 
     total_batches = (total_frames + BATCH_SIZE - 1) // BATCH_SIZE
@@ -279,7 +291,7 @@ def _print_review_batch(slug: str, batch_number: int, total_frames: int) -> None
             "完成本批理解后，运行：%s %s %s --next-review-batch",
             sys.executable,
             Path(__file__).resolve(),
-            slug,
+            run_id,
         )
     else:
         logger.info("这是最后一个审核批次。")
@@ -287,8 +299,37 @@ def _print_review_batch(slug: str, batch_number: int, total_frames: int) -> None
     logger.info("%s", "=" * 60)
 
 
-def _show_or_advance_review_batch(slug: str, advance: bool) -> None:
-    state = _load_review_state(slug)
+def _recover_video_url(run_id: str) -> str | None:
+    """Recover the source video URL for a UUID run without requiring the agent to resend it."""
+    stage01_path = common.work_path(run_id, "stage01.json")
+    if stage01_path.is_file():
+        try:
+            stage01 = common.load_json(stage01_path)
+        except (OSError, ValueError, TypeError):
+            stage01 = {}
+        for candidate in stage01.get("video_urls") or []:
+            value = str(candidate).strip()
+            if value.startswith(("http://", "https://")):
+                return value
+
+    for metadata_path in (
+        common.work_path(run_id, "run.json"),
+        stage01_path,
+    ):
+        if not metadata_path.is_file():
+            continue
+        try:
+            metadata = common.load_json(metadata_path)
+        except (OSError, ValueError, TypeError):
+            continue
+        value = str(metadata.get("url") or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return None
+
+
+def _show_or_advance_review_batch(run_id: str, advance: bool) -> None:
+    state = _load_review_state(run_id)
     current_batch = int(state["current_batch"])
     total_frames = int(state["total_frames"])
     total_batches = (total_frames + BATCH_SIZE - 1) // BATCH_SIZE
@@ -296,19 +337,19 @@ def _show_or_advance_review_batch(slug: str, advance: bool) -> None:
     if advance:
         if current_batch >= total_batches:
             logger.info("[analyze_video] review batches already complete: %d/%d", current_batch, total_batches)
-            _print_review_batch(slug, current_batch, total_frames)
+            _print_review_batch(run_id, current_batch, total_frames)
             return
         current_batch += 1
-        _write_review_state(slug, current_batch, total_frames)
+        _write_review_state(run_id, current_batch, total_frames)
 
-    _print_review_batch(slug, current_batch, total_frames)
+    _print_review_batch(run_id, current_batch, total_frames)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="视频 → 最多 90 帧的单阶段粗扫抽帧")
-    parser.add_argument("target", help="视频 URL 或已下载视频的 slug")
-    parser.add_argument("--title", default=None, help="视频标题（可选，默认用 slug）")
-    parser.add_argument("--slug", default=None, help="显式复用 stage01 的 slug；省略时按 URL 自动查找")
+    parser.add_argument("target", help="视频 URL 或当前 UUID run_id")
+    parser.add_argument("--title", default=None, help="视频标题（可选，默认用 run_id）")
+    parser.add_argument("--run-id", "--slug", dest="run_id", default=None, help="显式复用 UUID run_id；--slug 仅作旧调用兼容")
     batch_group = parser.add_mutually_exclusive_group()
     batch_group.add_argument(
         "--current-review-batch",
@@ -322,45 +363,54 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    _load_video_runtime()
+
     is_url = args.target.startswith("http://") or args.target.startswith("https://")
-    resolved_slug = args.slug or (common.resolve_work_slug_for_url(args.target) if is_url else args.target)
+    resolved_run_id = args.run_id or (common.resolve_run_id_for_url(args.target) if is_url else args.target)
 
     if args.current_review_batch or args.next_review_batch:
-        _show_or_advance_review_batch(resolved_slug, advance=args.next_review_batch)
+        _show_or_advance_review_batch(resolved_run_id, advance=args.next_review_batch)
         return
 
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp_dir = Path(tmp_str)
 
         if is_url:
-            slug = resolved_slug
-            logger.info("[analyze_video] resolved slug: %s", slug)
+            run_id = resolved_run_id
+            logger.info("[analyze_video] resolved run_id: %s", run_id)
             logger.info("[analyze_video] downloading: %s", args.target)
-            download_dir = common.work_path(slug, "downloads")
+            download_dir = common.work_path(run_id, "downloads")
             video_path = common.download_video(args.target, download_dir)
         else:
-            slug = resolved_slug
+            run_id = resolved_run_id
             candidates = [
-                common.work_path(slug, "video.mp4"),
-                common.work_path(slug, "downloads/video.mp4"),
-                *sorted(common.work_path(slug, "downloads").glob("video.*")),
+                common.work_path(run_id, "video.mp4"),
+                common.work_path(run_id, "downloads/video.mp4"),
+                *sorted(common.work_path(run_id, "downloads").glob("video.*")),
             ]
             video_path = next(
                 (candidate for candidate in candidates if candidate.is_file() and not candidate.name.endswith(".part")),
                 candidates[0],
             )
             if not video_path.exists():
-                logger.error("[analyze_video] ERROR: no completed video found for slug %s", slug)
-                sys.exit(1)
+                source_url = _recover_video_url(run_id)
+                if not source_url:
+                    logger.error(
+                        "[analyze_video] ERROR: no completed video or recoverable source URL found for run_id %s",
+                        run_id,
+                    )
+                    sys.exit(1)
+                download_dir = common.work_path(run_id, "downloads")
+                video_path = common.download_video(source_url, download_dir)
 
-        title = args.title or slug.replace("_", " ")
+        title = args.title or run_id
         logger.info("[analyze_video] title: %r", title)
 
         duration = probe_duration(video_path)
         fps = choose_fps(duration)
         interval = 1.0 / fps
 
-        frames_dir = common.work_path(slug, "frames")
+        frames_dir = common.work_path(run_id, "frames")
         abs_frames_dir = frames_dir.resolve()
         logger.info(
             "[analyze_video] coarse scan at %.6gfps (about 1 frame every %.2fs) → %s",
@@ -374,7 +424,7 @@ def main() -> None:
             logger.error("[analyze_video] ERROR: no frames extracted from %s", video_path)
             sys.exit(1)
 
-        review_dir = common.work_path(slug, "review_frames")
+        review_dir = common.work_path(run_id, "review_frames")
         review_frames = build_review_frames(frames, review_dir)
         abs_review_dir = review_dir.resolve()
         n_batches = (n + BATCH_SIZE - 1) // BATCH_SIZE
@@ -392,8 +442,8 @@ def main() -> None:
         logger.info("  批次门禁:  一次只暴露当前批次的精确文件路径")
         logger.info("%s", "=" * 60)
 
-        _write_review_state(slug, current_batch=1, total_frames=n)
-        _print_review_batch(slug, batch_number=1, total_frames=n)
+        _write_review_state(run_id, current_batch=1, total_frames=n)
+        _print_review_batch(run_id, batch_number=1, total_frames=n)
 
 
 if __name__ == "__main__":

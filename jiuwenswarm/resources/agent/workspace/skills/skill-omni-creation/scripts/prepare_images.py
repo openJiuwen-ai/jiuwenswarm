@@ -10,7 +10,7 @@ from environment_gate import ensure_environment
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="download_images -> print_blocks(stage02), strictly sequential")
-    parser.add_argument("slug")
+    parser.add_argument("run_id")
     args = parser.parse_args()
 
     # Re-exec this orchestrator under the selected project interpreter before
@@ -20,8 +20,8 @@ def main() -> None:
 
     script_dir = Path(__file__).resolve().parent
     commands = [
-        [sys.executable, str(script_dir / "download_images.py"), args.slug],
-        [sys.executable, str(script_dir / "print_blocks.py"), args.slug, "--stage", "stage02"],
+        [sys.executable, str(script_dir / "download_images.py"), args.run_id],
+        [sys.executable, str(script_dir / "print_blocks.py"), args.run_id, "--stage", "stage02"],
     ]
     for command in commands:
         result = subprocess.run(command, check=False)

@@ -4,8 +4,15 @@
 
 ## 前置依赖
 
-开始写代码前，先确认目标语言的运行时可用（如 `python3 --version` / `node --version`）。
-脚本用到的第三方库此时不必安装——安装与验证统一由 `agents/code-verifier.md` 负责，但你必须在写作时记录每个脚本用到的全部第三方依赖，形成依赖清单交给验证环节。
+开始写代码前，先确认目标语言的运行时可用（如 `python3 --version` / `node --version` / `bash --version`）。
+脚本用到的第三方依赖此时不必安装——安装与验证统一由 `agents/code-verifier.md` 负责，但你必须记录每个脚本用到的全部依赖并交给验证环节。
+
+依赖清单不要默认等同于 pip。每项至少标明：
+
+- 类型：语言运行时 / 语言包 / 系统工具
+- 生态或包管理器：如 pip、npm、pnpm、yarn、系统包管理器；不适用时写「无」
+- 依赖名与最低必要版本（只有内容或脚本确实要求时才写版本）
+- 安装或就绪命令；系统工具无法安全自动安装时给出检查命令与所需工具名
 
 ## Role
 
@@ -16,27 +23,27 @@
 - code-detector 输出的脚本规划清单
 - 内容 blocks（网页）或操作步骤列表（视频）——脚本逻辑的唯一依据
 - `{skill_directory}` — 本 skill 安装路径（`skill_tool` 返回）
-- `<slug>` — 生成 skill 的目录名
+- `<run_id>` — 当前 UUID 工作空间 ID；最终 Skill 名此时尚未确定
 
 ## Process
 
 ### Step 1: 确定脚本目录
 
-- 默认：`{skill_directory}/../<slug>/scripts/`（skills 根目录即本 skill 安装目录的上一级）
-- 若本次运行过 `save_images.py`：以其打印的 `SKILL_DIR` 为准，脚本目录为 `SKILL_DIR/scripts/`
-- 创建目录：`mkdir -p <脚本目录>`
+- 脚本必须写入当前 UUID 的 `package/scripts/`，不要创建或猜测最终 Skill folder。
+- 若本次运行过 `save_images.py`：以其打印的 `PACKAGE_DIR` 为准，脚本目录为 `PACKAGE_DIR/scripts/`。
+- 最终 folder name 只由最后一次写入 `package/SKILL.md` 的 frontmatter `name:` 决定。
 
 ### Step 2: 逐个编写脚本
 
 每个脚本遵守：
 
 - 自包含：单文件可运行，不 import 同目录下其他自写模块
-- CLI 风格：Python 用 argparse（其他语言用等价物），入参显式声明，支持 `--help`
+- CLI 风格：Python 用 argparse；Node/Bash 等使用等价的显式参数解析与 `--help`
 - 文件头注释：用途、一条完整的用法示例命令、依赖列表
 - 不含任何 LLM 调用
-- 输出对 agent 友好：关键结果打印到 stdout；出错时说清缺什么（文件不存在、缺依赖时给出安装命令）
+- 输出对 agent 友好：关键结果打印到 stdout；出错时说清缺什么（文件不存在、缺依赖时给出与该语言/生态匹配的安装命令）
 - **模板脚本**（detector 规划中标注的类型）额外要求：文件头第一行注明「模板脚本」，
-  用 `# TODO(使用时修改)` 注释逐处标出需要按场景调整的位置；
+  用该语言对应的 TODO 注释逐处标出需要按场景调整的位置；
   模板必须以示例值可直接运行，保证能通过 verifier 的验证
 
 语言选择：教程内容用什么语言就写什么语言；内容没有明确语言指向时默认 Python 3。
@@ -52,27 +59,29 @@
 
 ### Step 4: 汇总依赖清单
 
-列出所有脚本用到的第三方依赖（pip 包名、外部工具名）与安装命令，交给验证环节；
-同时留作生成 SKILL.md「前置依赖」一节的底稿（最终以 verifier 实测结果为准）。
+按「前置依赖」中的统一字段，列出所有脚本实际使用的运行时、语言包和系统工具，交给 verifier。
+对于语言包必须使用对应生态的安装方式，例如 Python 包用 pip、Node 包用 npm/pnpm/yarn；不得把非 Python 依赖写成 pip 包。
+此清单只是验证输入；最终 SKILL.md 的「前置依赖」只能使用 verifier 对幸存脚本实测确认后的清单。
 
 ## Output
 
-- <脚本目录>/ 下的脚本文件（用 write_file 写入）
-- 依赖清单（对话中列出：包名 + 安装命令）
+- `<package>/scripts/` 下的脚本文件（用 write_file 写入）
+- 依赖清单（对话中按统一字段列出）
 
-后续动作：读 `agents/code-verifier.md` 逐个验证脚本，再调用 `finalize_scripts.py` 收口。生成的 SKILL.md 此时还不能写——最终只能引用收口后幸存的脚本；若零脚本幸存，则改写为纯文本+图片版。
+后续动作：读 `agents/code-verifier.md` 逐个验证。**verifier 自己负责调用内部收口脚本并返回最终 `KEPT` 与 `SKILL_SCRIPT_MODE`，writer 或主流程不得再次调用收口脚本。** 生成的 SKILL.md 此时还不能写——最终只能引用 verifier 返回的幸存脚本；若零脚本幸存，则最终一次性写成纯文本+图片版，不存在先写后“改写” SKILL.md。
 
-## 对生成 SKILL.md 的要求（验证收口后适用）
+## 对生成 SKILL.md 的要求（以主 SKILL.md 的统一文档 schema 为准）
 
-- 「前置依赖」一节必须紧跟标题、位于正文最前，一次列全 verifier 实测确认的所有 pip 包与外部工具及安装命令，使用方 agent 先装齐再执行，避免边跑边发现缺依赖
-- Steps 中引用脚本用相对路径 `scripts/xxx.py`，并给出完整可复制的运行命令（含示例参数）
-- 每个脚本在 SKILL.md 中有一小节说明：做什么、怎么调、输出什么
-- 模板脚本须在其小节中说明定位：「以此为起点按需改写，需修改的位置见文件内 TODO 标记」，
-  不得包装成拿来即用的工具脚本
-- 只能引用验证幸存的脚本；被 verifier 删除的脚本，其对应内容退回纯文字步骤
+- 只有 verifier 返回 `SKILL_SCRIPT_MODE: with_scripts` 时才使用含脚本文档 schema
+- 此时 `## 前置依赖` 必须紧跟 `# 标题`，作为正文第一节；只列 verifier 实测确认的幸存脚本依赖
+- `## Steps` 中引用脚本时，只使用 verifier 返回的 canonical `KEPT` 路径；路径已经是 `scripts/...`，不得自行补前缀或重写
+- `## Scripts` 放在 Steps 之后；每个幸存脚本各有一个小节，说明做什么、怎么运行、输出什么
+- 模板脚本须说明定位：「以此为起点按需改写，需修改的位置见文件内 TODO 标记」，不得包装成拿来即用的工具脚本
+- verifier 淘汰的脚本不得出现在依赖、Steps 或 Scripts 中；其对应内容退回普通文字步骤
+- verifier 返回 `text_images_only` 或 detector 判定不需要脚本时，不输出 `## 前置依赖` 和 `## Scripts`
 
 ## Guidelines
 
 - 少而可靠优于多而脆弱；规划里可要可不要的功能，不要
-- 命名与参数风格向本 skill `scripts/` 下的现有脚本看齐（argparse、日志打到 stdout）
+- 命名与参数风格向本 skill `scripts/` 下的现有脚本看齐（CLI、stdout 日志）
 - 脚本之间不共享状态或临时文件约定，各自独立可运行

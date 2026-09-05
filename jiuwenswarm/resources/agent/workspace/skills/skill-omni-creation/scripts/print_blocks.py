@@ -16,8 +16,7 @@ ensure_environment("requests")
 
 import common
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+common.configure_console_output()
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
@@ -166,8 +165,11 @@ def _print_bounded(data: dict, found_stage: str) -> None:
             if path_field:
                 line = f"  IMG  [{src}]: path={path_field}  alt={block.get('alt', '')[:80]}"
             elif raw_path:
-                alt = block.get("alt", "")[:80]
-                line = f"  IMG#{image_index:03d} [{src}]: review={status or 'UNREVIEWED'}  alt={alt}"
+                line = (
+                    f"  IMG#{image_index:03d} [{src}]: "
+                    f"review={status or 'UNREVIEWED'}  "
+                    f"alt={block.get('alt', '')[:80]}"
+                )
             else:
                 line = f"  IMG#{image_index:03d} [{src}]: alt={block.get('alt', '')[:80]}"
             records.append({"kind": "fixed", "line": line})
@@ -198,7 +200,7 @@ def _print_bounded(data: dict, found_stage: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("slug")
+    parser.add_argument("run_id")
     parser.add_argument("--stage", choices=("stage01", "stage02", "stage03"), default=None)
     args = parser.parse_args()
 
@@ -206,14 +208,14 @@ def main() -> None:
     found_stage = None
     stage_files = (f"{args.stage}.json",) if args.stage else ("stage03.json", "stage02.json", "stage01.json")
     for stage_file in stage_files:
-        candidate = common.work_path(args.slug, stage_file)
+        candidate = common.work_path(args.run_id, stage_file)
         if candidate.exists():
             path = candidate
             found_stage = stage_file
             break
 
     if path is None:
-        logger.error("[print_blocks] ERROR: no stage JSON found for slug '%s'", args.slug)
+        logger.error("[print_blocks] ERROR: no stage JSON found for run_id '%s'", args.run_id)
         sys.exit(1)
 
     data = common.load_json(path)
