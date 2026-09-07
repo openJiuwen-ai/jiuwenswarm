@@ -1201,3 +1201,52 @@ def test_model_dump_default_has_none_script_path_when_unset():
 def test_model_dump_exclude_none_omits_unset_script_path():
     state = WorkflowRunState.model_validate({"id": "r1"})
     assert "script_path" not in state.model_dump(exclude_none=True)
+
+
+# ---------------------------------------------------------------------------
+# SDD-0018 §5.1: pause_if_running — park a running run as paused (non-terminal)
+# ---------------------------------------------------------------------------
+
+def test_pause_if_running_parks_running_run_as_paused():
+    """running → paused (non-terminal, resumable), returns True.
+
+    Mirrors _on_workflow_paused but returns a bool instead of a delta; no
+    completed_at / duration_ms stamps (a paused run is not finished).
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert state.status == "running"
+    changed = state.pause_if_running()
+    assert changed is True
+    assert state.status == "paused"
+    assert state.is_terminal is False
+    assert state.completed_at is None
+    assert state.duration_ms is None
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+    assert state.phases[0].agents[0].completed_at is None
+
+
+def test_pause_if_running_returns_false_when_terminal():
+    """A terminal run is never un-paused nor resurrected — returns False."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_completed", text="done"))
+    assert state.is_terminal is True
+    changed = state.pause_if_running()
+    assert changed is False
+    assert state.status == "completed"
+
+
+def test_pause_if_running_returns_false_when_already_paused():
+    """An already-paused run stays paused — returns False (no double-park)."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    changed = state.pause_if_running()
+    assert changed is False
+    assert state.status == "paused"
+    assert state.is_terminal is False

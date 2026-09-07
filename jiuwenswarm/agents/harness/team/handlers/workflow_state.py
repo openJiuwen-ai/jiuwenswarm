@@ -364,6 +364,21 @@ class WorkflowRunState(BaseModel):
         self._finalize_workflow(status=terminal_status)
         return True
 
+    def pause_if_running(self) -> bool:
+        """Mark a non-terminal run as paused (non-terminal, resumable). Returns True if changed.
+
+        Mirrors ``_on_workflow_paused`` but returns a bool instead of a delta —
+        used by teardown to park a run without stamping completed_at/duration.
+        """
+        if self.is_terminal or self.status == "paused":
+            return False
+        self.status = "paused"
+        for phase in self.phases:
+            if phase.status == "running":
+                phase.status = "paused"
+            self._pause_running_agents(phase)
+        return True
+
     def _stamp_workflow_terminal(self, status: str) -> None:
         """Set workflow to a terminal status with completion timestamp and duration."""
         self.status = status

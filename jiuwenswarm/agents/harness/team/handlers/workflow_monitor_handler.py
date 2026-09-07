@@ -12,7 +12,7 @@ Lifecycle mirrors TeamMonitorHandler via BaseMonitorHandler.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from openjiuwen.agent_teams.monitor.team_monitor import TeamMonitor
 from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import BaseMonitorHandler
@@ -184,18 +184,22 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         """Return a list of all workflow run dicts for ``command.workflows``."""
         return [run.to_workflow_run_dict() for run in self._runs.values()]
 
-    def finalize_pending_runs(self, terminal_status: str = "stopped") -> None:
-        """Mark every non-terminal run as terminal and persist the result.
+    def finalize_pending_runs(self, *, disposition: Literal["stop", "pause"] = "stop") -> None:
+        """Finalize every non-terminal run by real state, not one-size stopped.
 
-        Called on non-resumable teardown (session cancel / stop / destroy) so a
-        torn-down runtime never leaves a workflow stuck in ``running`` on the
-        checkpoint — once the runtime is gone no further ``workflow.updated``
-        events can arrive, so a restored snapshot must show a terminal status.
+        Called on non-resumable teardown. ``disposition="stop"`` (user
+        termination) stamps non-terminal runs to ``stopped``; ``disposition=
+        "pause"`` (disconnect/crash reclaim) parks them to ``paused`` so the
+        journal cache prefix stays resumable on cold start.
         """
         changed = False
         for run in self._runs.values():
-            if run.finalize_if_running(terminal_status):
-                changed = True
+            if run.is_terminal or run.status == "paused":
+                continue  # terminal / already parked → nothing to do
+            if disposition == "pause":
+                changed = run.pause_if_running() or changed
+            else:
+                changed = run.finalize_if_running("stopped") or changed
         if changed:
             self._persist()
 

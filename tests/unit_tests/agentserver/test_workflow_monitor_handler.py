@@ -587,3 +587,141 @@ class TestWorkflowStartedScriptPath:
         assert len(runs) == 1
         run = next(iter(runs.values()))
         assert run.script_path == "/abs/path/foo.py"
+
+
+# ---------------------------------------------------------------------------
+# finalize_pending_runs: disposition-aware finalize (not one-size stopped)
+# ---------------------------------------------------------------------------
+
+def _running_run(run_id: str = "wf_run_running") -> WorkflowRunState:
+    """A running run with one running phase carrying one running agent."""
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+        WorkflowRunState, WorkflowPhaseState, WorkflowAgentState,
+    )
+    return WorkflowRunState(
+        id=run_id,
+        name="flow",
+        status="running",
+        started_at="2026-09-07T10:00:00+08:00",
+        phases=[
+            WorkflowPhaseState(
+                id="p1",
+                name="Phase 1",
+                status="running",
+                agents=[WorkflowAgentState(id="a1", name="agent-a", status="running")],
+            )
+        ],
+    )
+
+
+class TestFinalizePendingRunsDisposition:
+    """SDD-0018 §5.1: finalize by disposition, not one-size stopped.
+
+    A session teardown must not stamp a paused (resumable) run to the terminal
+    ``stopped`` — pause reclaim parks it as ``paused`` so the journal cache
+    prefix survives cold start; only an explicit user stop stamps ``stopped``.
+    """
+
+    def test_paused_run_stays_paused_under_stop_disposition(self, monkeypatch) -> None:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused")},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        assert handler.get_run_states()["wf_paused"].status == "paused"
+
+    def test_paused_run_stays_paused_under_pause_disposition(self, monkeypatch) -> None:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused")},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="pause")
+        assert handler.get_run_states()["wf_paused"].status == "paused"
+
+    def test_running_run_stopped_under_stop_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_run": _running_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        run = handler.get_run_states()["wf_run"]
+        assert run.status == "stopped"
+        assert run.is_terminal is True
+        assert run.completed_at is not None
+        assert run.phases[0].status == "stopped"
+        assert run.phases[0].agents[0].status == "stopped"
+        assert run.phases[0].agents[0].completed_at is not None
+        assert run.completed_agent_count == 1
+
+    def test_running_run_paused_under_pause_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_run": _running_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="pause")
+        run = handler.get_run_states()["wf_run"]
+        assert run.status == "paused"
+        assert run.is_terminal is False
+        assert run.completed_at is None  # paused parks, never stamps terminal fields
+        assert run.duration_ms is None
+        assert run.phases[0].status == "paused"
+        assert run.phases[0].agents[0].status == "paused"
+        assert run.phases[0].agents[0].completed_at is None
+
+    @staticmethod
+    def _make_terminal_run(run_id: str = "wf_completed") -> WorkflowRunState:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        return WorkflowRunState(
+            id=run_id, name="flow", status="completed",
+            completed_at="2026-09-07T10:05:00+08:00",
+        )
+
+    def test_terminal_run_untouched_under_stop_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_completed": self._make_terminal_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        run = handler.get_run_states()["wf_completed"]
+        assert run.status == "completed"
+        assert run.completed_at == "2026-09-07T10:05:00+08:00"
+
+    def test_terminal_run_untouched_under_pause_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_completed": self._make_terminal_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="pause")
+        run = handler.get_run_states()["wf_completed"]
+        assert run.status == "completed"
+
+    def test_mixed_runs_finalize_by_disposition(self, monkeypatch) -> None:
+        """One running + one already-paused run under stop: only the running one is stopped."""
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={
+                "wf_run": _running_run("wf_run"),
+                "wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused"),
+            },
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        runs = handler.get_run_states()
+        assert runs["wf_run"].status == "stopped"
+        assert runs["wf_paused"].status == "paused"
