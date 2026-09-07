@@ -88,6 +88,47 @@ class _FakeAgent:
         self.added_rails.append(rail)
 
 
+class _FakeWorkflowHandler:
+    """Workflow handler recording finalize dispositions for cleanup tests."""
+
+    def __init__(self) -> None:
+        self.finalize_dispositions: list[str] = []
+        self.stopped = False
+
+    def finalize_pending_runs(self, *, disposition: str = "stop") -> None:
+        self.finalize_dispositions.append(disposition)
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class _FakeBackgroundTaskController:
+    """Spy BackgroundTaskController recording full-scope pause/stop calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None]] = []
+
+    async def pause(self, run_id: str | None = None) -> bool:
+        self.calls.append(("pause", run_id))
+        return True
+
+    async def stop(self, run_id: str | None = None) -> bool:
+        self.calls.append(("stop", run_id))
+        return True
+
+
+def _patch_background_task_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> _FakeBackgroundTaskController:
+    controller = _FakeBackgroundTaskController()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "get_background_task_controller",
+        lambda _session_id: controller,
+    )
+    return controller
+
+
 def setup_function() -> None:
     reset_team_manager()
 
@@ -1058,8 +1099,9 @@ async def test_finalize_runtime_cleanup_releases_session_markers(
         _session_id: str,
         *,
         finalize_workflows: bool = True,
+        workflow_disposition: str = "stop",
     ) -> None:
-        _ = _session_id, finalize_workflows
+        _ = _session_id, finalize_workflows, workflow_disposition
         manager._clear_team_rail_registries(session_id)
 
     monkeypatch.setattr(manager, "_cleanup_runtime_locals", fake_cleanup)
@@ -2034,3 +2076,127 @@ def test_pop_workflow_handler() -> None:
 def test_get_workflow_handler_returns_none_for_unknown() -> None:
     tm = TeamManager()
     assert tm.get_workflow_handler("unknown_sess") is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_runtime_locals_stop_disposition_dispatches_controller_stop_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-cleanup-stop"
+    handler = _FakeWorkflowHandler()
+    controller = _patch_background_task_controller(monkeypatch)
+    manager.register_workflow_handler(session_id, handler)
+
+    await manager._cleanup_runtime_locals(session_id)
+
+    assert controller.calls == [("stop", None)]
+    assert handler.finalize_dispositions == ["stop"]
+    assert handler.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_cleanup_runtime_locals_pause_disposition_dispatches_controller_pause_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-cleanup-pause"
+    handler = _FakeWorkflowHandler()
+    controller = _patch_background_task_controller(monkeypatch)
+    manager.register_workflow_handler(session_id, handler)
+
+    await manager._cleanup_runtime_locals(session_id, workflow_disposition="pause")
+
+    assert controller.calls == [("pause", None)]
+    assert handler.finalize_dispositions == ["pause"]
+    assert handler.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_cleanup_runtime_locals_pause_path_skips_finalize_but_pauses_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-cleanup-pause-path"
+    handler = _FakeWorkflowHandler()
+    controller = _patch_background_task_controller(monkeypatch)
+    manager.register_workflow_handler(session_id, handler)
+
+    await manager._cleanup_runtime_locals(session_id, finalize_workflows=False)
+
+    assert controller.calls == [("pause", None)]
+    assert handler.finalize_dispositions == []  # paused runs stay parked, not finalized
+    assert handler.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_runtime_cleanup_forwards_pause_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-finalize-pause"
+    controller = _patch_background_task_controller(monkeypatch)
+
+    await manager._finalize_runtime_cleanup(
+        session_id,
+        "cancel",
+        workflow_disposition="pause",
+    )
+
+    assert controller.calls == [("pause", None)]
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_runtime_forwards_default_stop_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-cancel-stop"
+    done_task = asyncio.create_task(asyncio.sleep(0))
+    await done_task
+    manager.register_stream_task(session_id, done_task)
+    finalize_spy = AsyncMock()
+    monkeypatch.setattr(manager, "_finalize_runtime_cleanup", finalize_spy)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    cancelled = await manager.cancel_session_runtime(session_id, reason="user-stop")
+
+    assert cancelled is True
+    finalize_spy.assert_awaited_once_with(
+        session_id,
+        "cancel",
+        workflow_disposition="stop",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_runtime_forwards_pause_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _TeamManagerHarness()
+    session_id = "sess-cancel-pause"
+    done_task = asyncio.create_task(asyncio.sleep(0))
+    await done_task
+    manager.register_stream_task(session_id, done_task)
+    finalize_spy = AsyncMock()
+    monkeypatch.setattr(manager, "_finalize_runtime_cleanup", finalize_spy)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    cancelled = await manager.cancel_session_runtime(
+        session_id,
+        reason="client-disconnect",
+        workflow_disposition="pause",
+    )
+
+    assert cancelled is True
+    finalize_spy.assert_awaited_once_with(
+        session_id,
+        "cancel",
+        workflow_disposition="pause",
+    )

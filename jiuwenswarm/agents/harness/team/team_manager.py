@@ -11,7 +11,7 @@ import re
 import time
 import weakref
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from openjiuwen.agent_teams.agent.team_agent import TeamAgent
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
@@ -2168,7 +2168,11 @@ class TeamManager:
             )
 
     async def _cleanup_runtime_locals(
-        self, session_id: str, *, finalize_workflows: bool = True
+        self,
+        session_id: str,
+        *,
+        finalize_workflows: bool = True,
+        workflow_disposition: Literal["stop", "pause"] = "stop",
     ) -> None:
         await self._cancel_team_evolution_watcher(session_id)
 
@@ -2207,7 +2211,9 @@ class TeamManager:
                 # would keep it 'running' forever. Pause keeps the runtime
                 # parked and resumable in place, so it opts out.
                 if finalize_workflows:
-                    workflow_handler.finalize_pending_runs()
+                    workflow_handler.finalize_pending_runs(
+                        disposition=workflow_disposition
+                    )
                 await workflow_handler.stop()
                 logger.info(
                     "[WF_DBG cleanup] workflow handler stopped: session_id=%s "
@@ -2223,6 +2229,36 @@ class TeamManager:
                 )
 
         self._clear_team_rail_registries(session_id)
+
+        # Swarmflow background coroutines hang off the process-local
+        # BackgroundTaskController registries keyed by session_id; team
+        # lifecycle teardown is the single point that must drive them, or a
+        # paused/destroyed team leaves dangling handles still burning tokens.
+        # Pause keeps the relaunch ticket (resumable); stop drops it (seal).
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            get_background_task_controller,
+        )
+
+        controller = get_background_task_controller(session_id)
+        try:
+            if not finalize_workflows:
+                # Web stop-square / TUI Esc: park the runtime, keep run resume.
+                await controller.pause(None)
+            elif workflow_disposition == "pause":
+                # Client-disconnect reclaim: park so cold start can resume.
+                await controller.pause(None)
+            else:
+                # User termination / session switch: terminal stop_all.
+                await controller.stop(None)
+        except Exception as exc:
+            logger.warning(
+                "[TeamManager] background task controller dispatch failed: "
+                "session_id=%s disposition=%s finalize_workflows=%s error=%s",
+                session_id,
+                workflow_disposition,
+                finalize_workflows,
+                exc,
+            )
 
     async def _stop_runner_team_runtime(
         self, session_id: str, team_name: str, caller: str
@@ -2270,14 +2306,23 @@ class TeamManager:
             )
             return False
 
-    async def _finalize_runtime_cleanup(self, session_id: str, caller: str) -> None:
+    async def _finalize_runtime_cleanup(
+        self,
+        session_id: str,
+        caller: str,
+        *,
+        workflow_disposition: Literal["stop", "pause"] = "stop",
+    ) -> None:
         """Finalize runtime cleanup: cleanup locals and clear active/pending registrations."""
         logger.info(
             "[TeamManager] %s: executing cleanup, session_id=%s",
             caller,
             session_id,
         )
-        await self._cleanup_runtime_locals(session_id)
+        await self._cleanup_runtime_locals(
+            session_id,
+            workflow_disposition=workflow_disposition,
+        )
         logger.info(
             "[TeamManager] %s: cleanup done, clearing active, session_id=%s",
             caller,
@@ -2401,7 +2446,13 @@ class TeamManager:
         )
         return True
 
-    async def cancel_session_runtime(self, session_id: str, reason: str = "") -> bool:
+    async def cancel_session_runtime(
+        self,
+        session_id: str,
+        reason: str = "",
+        *,
+        workflow_disposition: Literal["stop", "pause"] = "stop",
+    ) -> bool:
         """Cancel the current team session runtime, removing it from Runner pool.
 
         Unlike pause/terminate, this fully stops the Runner-owned team runtime
@@ -2474,7 +2525,11 @@ class TeamManager:
 
             cleaned = False
 
-            await self._finalize_runtime_cleanup(session_id, "cancel")
+            await self._finalize_runtime_cleanup(
+                session_id,
+                "cancel",
+                workflow_disposition=workflow_disposition,
+            )
 
         logger.info(
             "[TeamManager] %steam session cancelled: session_id=%s cleaned=%s runner_stopped=%s",
