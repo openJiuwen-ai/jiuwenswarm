@@ -15,6 +15,12 @@ import pytest
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
 from openjiuwen.agent_teams.schema.team import TeamRole
 
+from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+    WorkflowAgentState,
+    WorkflowPhaseState,
+    WorkflowRunState,
+)
+
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
@@ -6381,3 +6387,50 @@ def test_resolve_session_swarmflow_config_falls_back_to_metadata(
         "enable_swarmflow": True,
         "swarmflow_budget": 30000,
     }
+
+
+def _wf_run_with_agents(*agent_statuses: str) -> WorkflowRunState:
+    """Build a running single-phase run whose agents carry the given statuses."""
+    return WorkflowRunState(
+        status="running",
+        phases=[
+            WorkflowPhaseState(
+                id="phase-1",
+                name="Phase 1",
+                agents=[
+                    WorkflowAgentState(id=f"agent-{i}", name=f"agent-{i}", status=status)
+                    for i, status in enumerate(agent_statuses)
+                ],
+            )
+        ],
+    )
+
+
+def test_run_lamp_active_terminal_run_does_not_hold_lamp() -> None:
+    run = WorkflowRunState(status="completed", phases=[_wf_run_with_agents("running").phases[0]])
+
+    assert team_helpers._run_lamp_active(run) is False
+
+
+def test_run_lamp_active_paused_run_does_not_hold_lamp() -> None:
+    run = WorkflowRunState(status="paused", phases=[_wf_run_with_agents("running").phases[0]])
+
+    assert team_helpers._run_lamp_active(run) is False
+
+
+def test_run_lamp_active_running_agent_holds_lamp() -> None:
+    run = _wf_run_with_agents("completed", "running")
+
+    assert team_helpers._run_lamp_active(run) is True
+
+
+def test_run_lamp_active_waiting_for_human_holds_lamp() -> None:
+    run = _wf_run_with_agents("waiting_for_human")
+
+    assert team_helpers._run_lamp_active(run) is True
+
+
+def test_run_lamp_active_all_completed_agents_do_not_hold_lamp() -> None:
+    run = _wf_run_with_agents("completed", "failed")
+
+    assert team_helpers._run_lamp_active(run) is False

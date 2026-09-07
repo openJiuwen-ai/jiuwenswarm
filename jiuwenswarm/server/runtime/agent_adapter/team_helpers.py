@@ -2899,6 +2899,22 @@ async def _process_team_message_stream(
             await _complete_user_submission(accepted=False)
 
 
+def _run_lamp_active(run: WorkflowRunState) -> bool:
+    """Whether ``run`` still produces output, judged at agent level.
+
+    Run-level ``not is_terminal`` over-holds the lamp: a paused run is not
+    terminal yet produces nothing, so the frontend square would spin forever.
+    Only an agent actually running or awaiting a human reply keeps the lamp on.
+    """
+    if run.is_terminal or run.status == "paused":
+        return False
+    return any(
+        a.status in ("running", "waiting_for_human")
+        for phase in run.phases
+        for a in phase.agents
+    )
+
+
 async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
@@ -3150,7 +3166,7 @@ async def _consume_stream_with_query(
                     # is idle; do not end the round until it reaches terminal.
                     wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
                     if wf_handler is not None and any(
-                        not run.is_terminal for run in wf_handler.get_run_states().values()
+                        _run_lamp_active(run) for run in wf_handler.get_run_states().values()
                     ):
                         logger.info(
                             "[TeamHelpers] team idle ignored (workflow still running): "
