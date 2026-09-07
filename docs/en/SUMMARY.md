@@ -9,6 +9,7 @@
 - [A2UI generated UI](A2UI.md)
 - [Project & Session Management (Web)](Project-Session-Management.md)
 - [Configuration](Configuration.md)
+- [Config layers and upgrades (dev)](ConfigLayersAndUpgrade.md)
 - [Distributed Team](DistributedTeam.md)
 - [Agent Team Human in the Team (HITT)](AgentTeamHumanInTheTeam.md)
 - [Multi-Instance](MultiInstance.md)

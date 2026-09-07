@@ -24,7 +24,15 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     validate_affinity_invariant,
 )
 from jiuwenswarm.common.connectors import connector_excluded_commands
-from jiuwenswarm.common.utils import get_config_dir, get_config_file
+from jiuwenswarm.common.utils import (
+    get_config_dir,
+    get_config_file,
+    get_user_overlay_file,
+)
+from jiuwenswarm.common.config_split import (
+    overlay_sibling_of,
+    resolve_user_config_io_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +226,8 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
         解析后的字典；文件为空时返回空字典。
     """
     stamp = _yaml_file_stamp(filepath)
+    if stamp is None and not filepath.is_file():
+        return {}
     cache_key = str(filepath)
     if stamp is not None:
         with _YAML_PARSE_CACHE_LOCK:
@@ -241,9 +251,96 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     return {}
 
 
+_SYSTEM_LIST_KEYS = frozenset(
+    {
+        "progressive_tool_always_visible_tools",
+        "progressive_tool_default_visible_tools",
+    }
+)
+
+
+def _is_system_list_path(path: tuple[str, ...]) -> bool:
+    if not path:
+        return False
+    if path[-1] in _SYSTEM_LIST_KEYS:
+        return True
+    # modes.<name>.tools 以及更深一层（如 modes.team.<team>.tools）跟版本
+    return path[0] == "modes" and path[-1] == "tools"
+
+
+def _merge_indexed_dict_lists(
+    base_list: list[Any],
+    overlay_list: list[Any],
+    *,
+    path: tuple[str, ...],
+) -> list[Any]:
+    result = deepcopy(base_list)
+    for index, item in enumerate(overlay_list):
+        if index >= len(result):
+            result.append(deepcopy(item))
+        elif isinstance(result[index], dict) and isinstance(item, dict):
+            result[index] = merge_config_layers(
+                result[index], item, sparse=True, path=path
+            )
+        elif item not in ({}, None):
+            result[index] = deepcopy(item)
+    return result
+
+
+def merge_config_layers(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+    *,
+    sparse: bool = False,
+    path: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """内存合并：用户系统 yaml + 用户 overlay。用户叶覆盖；overlay 独有路径保留。
+
+    ``sparse=True``（``config.user.yaml``）：系统 list 整段用基底；
+    ``models.defaults`` 按下标深合并（只叠 temperature 等用户叶）；
+    用户 list（``mcp.servers`` / ``hooks``）overlay 有则整段采用。
+    不修改入参。
+    """
+    if not isinstance(base, dict):
+        return deepcopy(overlay) if isinstance(overlay, dict) else {}
+    if not isinstance(overlay, dict):
+        return deepcopy(base)
+    result = deepcopy(base)
+    for key, value in overlay.items():
+        child = path + (key,)
+        current = result.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            result[key] = merge_config_layers(
+                current, value, sparse=sparse, path=child
+            )
+        elif sparse and isinstance(current, list) and isinstance(value, list):
+            if _is_system_list_path(child):
+                continue
+            if child == ("models", "defaults"):
+                result[key] = _merge_indexed_dict_lists(current, value, path=child)
+            else:
+                result[key] = deepcopy(value)
+        else:
+            result[key] = deepcopy(value)
+    return result
+
+
 def get_config():
-    """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
-    config_base = _read_with_retry(get_config_file())
+    """读取并解析配置：用户 ``config.yaml``；若有 ``config.user.yaml`` 再稀疏叠上。"""
+    user_file = get_config_file()
+    overlay = get_user_overlay_file()
+    config_base = _read_with_retry(user_file)
+    if overlay.is_file():
+        try:
+            same = overlay.resolve() == user_file.resolve()
+        except OSError:
+            same = False
+        if not same:
+            config_base = merge_config_layers(
+                config_base,
+                _read_with_retry(overlay),
+                sparse=True,
+            )
     # resolve_env_vars 和 _normalize_config 只操作内存数据，在锁外执行以缩短锁持有时间
     config_base = resolve_env_vars(config_base)
     _normalize_config(config_base)
@@ -288,8 +385,49 @@ def is_file_operation_history_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def get_config_raw():
-    """读 config.yaml 原始内容（不解析环境变量），供局部更新后写回。"""
-    return _read_with_retry(CONFIG_YAML_PATH)
+    """未解析环境变量的配置视图。
+
+    读 ``CONFIG_YAML_PATH``（用户系统 yaml）；有 sibling ``config.user.yaml`` 则稀疏叠上。
+    禁止把合并结果 dump 回系统文件。
+    """
+    user_file = Path(CONFIG_YAML_PATH)
+    config_base = _read_with_retry(user_file) if user_file.is_file() else {}
+    overlay = overlay_sibling_of(user_file)
+    if overlay.is_file():
+        try:
+            same = overlay.resolve() == user_file.resolve()
+        except OSError:
+            same = False
+        if not same:
+            return merge_config_layers(
+                config_base, _read_with_retry(overlay), sparse=True
+            )
+    return config_base
+
+
+def get_user_config() -> dict[str, Any]:
+    """只读用户 overlay（不存在则为空 dict）。"""
+    overlay = get_user_overlay_file()
+    if not overlay.is_file():
+        return {}
+    data = load_yaml_round_trip(overlay)
+    return data if isinstance(data, dict) else {}
+
+
+def patch_user_config(mutator) -> dict[str, Any]:
+    """读-改-写 ``config.user.yaml``。``mutator`` 就地改或返回新 dict。"""
+    overlay = get_user_overlay_file()
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    data = load_yaml_round_trip(overlay) if overlay.is_file() else {}
+    if not isinstance(data, dict):
+        data = {}
+    new_data = mutator(data)
+    if new_data is None:
+        new_data = data
+    if not isinstance(new_data, dict):
+        raise TypeError("patch_user_config mutator must return a dict")
+    dump_yaml_round_trip(overlay, new_data)
+    return new_data
 
 
 def get_default_model_provider(config: dict[str, Any] | None) -> str:
@@ -303,7 +441,9 @@ def validate_persisted_kv_cache_affinity() -> tuple[bool, list[str]]:
 
 
 def set_config(config):
-    with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
+    path = resolve_user_config_io_path(CONFIG_YAML_PATH, CONFIG_YAML_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
 
@@ -472,16 +612,35 @@ def set_auto_memory_enabled(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def load_yaml_round_trip(config_path: Path):
-    """ruamel 加载 config，保留注释与格式。"""
+def load_yaml_round_trip(config_path: Path, *, follow_overlay: bool = True):
+    """ruamel 加载 config，保留注释与格式。
+
+    对用户 ``config.yaml`` 路径：默认已有 overlay 则读 overlay；文件缺失返回 ``{}``。
+    ``follow_overlay=False`` 读系统 yaml 本身（permissions 等暂不进 overlay 的段）。
+    """
+    config_path = Path(config_path)
+    if follow_overlay:
+        config_path = resolve_user_config_io_path(config_path, CONFIG_YAML_PATH)
+    if not config_path.is_file():
+        return {}
     rt = YAML()
     rt.preserve_quotes = True
     with open(config_path, "r", encoding="utf-8") as f:
         return rt.load(f)
 
 
-def dump_yaml_round_trip(config_path: Path, data: Any) -> None:
-    """ruamel 写回 config，保留注释与格式（原子写入：临时文件 + os.replace）。"""
+def dump_yaml_round_trip(
+    config_path: Path, data: Any, *, follow_overlay: bool = True
+) -> None:
+    """ruamel 写回 config，保留注释与格式（原子写入：临时文件 + os.replace）。
+
+    对用户 ``config.yaml`` 路径：默认已有 overlay 或新装无旧文件时只写 overlay。
+    ``follow_overlay=False`` 写系统 yaml 本身。
+    """
+    config_path = Path(config_path)
+    if follow_overlay:
+        config_path = resolve_user_config_io_path(config_path, CONFIG_YAML_PATH)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     rt = YAML()
     rt.preserve_quotes = True
     rt.default_flow_style = False
@@ -538,9 +697,10 @@ def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     否则同进程二次获取锁将死锁。如需在写盘后读取展示数据，请在 update_config
     返回后另起一次独立调用（此时锁已释放，安全）。
     """
+    write_path = resolve_user_config_io_path(CONFIG_YAML_PATH, CONFIG_YAML_PATH)
     with _CONFIG_WRITE_LOCK:
         with portalocker.Lock(
-            str(_config_lock_path(CONFIG_YAML_PATH)),
+            str(_config_lock_path(write_path)),
             timeout=lock_timeout,
         ):
             data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -550,6 +710,28 @@ def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
             if new_data is None:
                 return data
             dump_yaml_round_trip(CONFIG_YAML_PATH, new_data)
+            return new_data
+
+
+def update_system_config(mutator, *, lock_timeout: float = 10.0) -> Any:
+    """跨进程互斥读写用户系统 ``config.yaml``，不重定向到 overlay。
+
+    permissions 暂不进 overlay，档位 / persist_allow_rule 走这条。
+    锁语义与 ``update_config`` 相同且共用 ``_CONFIG_WRITE_LOCK``（不可重入）。
+    """
+    write_path = Path(CONFIG_YAML_PATH)
+    with _CONFIG_WRITE_LOCK:
+        with portalocker.Lock(
+            str(_config_lock_path(write_path)),
+            timeout=lock_timeout,
+        ):
+            data = load_yaml_round_trip(write_path, follow_overlay=False)
+            if data is None:
+                data = {}
+            new_data = mutator(data)
+            if new_data is None:
+                return data
+            dump_yaml_round_trip(write_path, new_data, follow_overlay=False)
             return new_data
 
 
@@ -755,9 +937,12 @@ def set_preferred_language_in_config_file(config_path: Path, lang: str) -> None:
     lang = str(lang or "zh").strip().lower()
     if lang not in ("zh", "en"):
         lang = "zh"
-    if not config_path.exists():
-        return
-    data = load_yaml_round_trip(config_path)
+    if config_path.exists():
+        data = load_yaml_round_trip(config_path)
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {}
     data["preferred_language"] = lang
     dump_yaml_round_trip(config_path, data)
 
@@ -849,12 +1034,15 @@ def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
-    """更新 permissions.enabled（工具安全护栏开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """更新 permissions.enabled（工具安全护栏开关）并写回系统 yaml。"""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        if "permissions" not in data or not isinstance(data.get("permissions"), dict):
+            data["permissions"] = {}
+        data["permissions"]["enabled"] = value
+        return data
+
+    update_system_config(mutator)
 
 
 def update_permission_profile_in_config(profile: str) -> bool:
@@ -906,7 +1094,7 @@ def update_permission_profile_in_config(profile: str) -> bool:
         _set(defaults, "write", patch["file_guard_rw"])
         return data
 
-    update_config(mutator)
+    update_system_config(mutator)
     return changed
 
 
@@ -2069,57 +2257,30 @@ def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
 ) -> bool:
-    """Sync user config with template structure, preserving user values.
+    """三路 merge 模板与用户 yaml（补新 key、保留用户标量/list、删模板没有的 key）。
 
-    Three-way merge:
-    - Add: new fields from template (new config options)
-    - Keep: user values for fields that exist in template
-    - Remove: deprecated fields not in template (cleanup)
-
-    This preserves user settings like:
-    - models.*.model_config_obj.temperature
-    - react.context_engine_config.enabled
-    - react.context_engine_config.message_summary_offloader_config.*
-
-    Args:
-        template_path: Path to template config.yaml
-        user_config_path: Path to user config.yaml
-
-    Returns:
-        True if migration was performed, False otherwise.
+    ``prepare_workspace`` 升级路径不再调用；保留函数体供 CLI / 单测。
     """
-    if not user_config_path.exists():
+    if not template_path.is_file() or not user_config_path.is_file():
         return False
-
-    if not template_path.exists():
+    try:
+        template = yaml.safe_load(template_path.read_text(encoding="utf-8")) or {}
+        user = yaml.safe_load(user_config_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        logger.exception("migrate_config_from_template failed to parse yaml")
         return False
-
-    template_data = load_yaml_round_trip(template_path)
-    user_data = load_yaml_round_trip(user_config_path)
-
-    if not isinstance(template_data, dict):
+    if not isinstance(template, dict) or not isinstance(user, dict):
         return False
-
-    if user_data is None:
-        user_data = {}
-
-    # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
-    # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
-    _migrate_legacy_agent_submode_memory(user_data)
-
-    # Deep merge: template provides defaults, user values preserved
-    merged_data = _deep_merge(template_data, user_data)
-
-    # Guard against empty merged_data overwriting valid user config
-    if merged_data is None or not merged_data:
+    _migrate_legacy_agent_submode_memory(user)
+    merged = _deep_merge(template, user)
+    if merged == user:
         return False
-
-    # Only write if there are actual changes
-    if merged_data != user_data:
-        dump_yaml_round_trip(user_config_path, merged_data)
-        return True
-
-    return False
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    user_config_path.write_text(
+        yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return True
 
 
 # ---------- 模型配置管理 ----------

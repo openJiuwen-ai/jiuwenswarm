@@ -283,7 +283,7 @@ models:
         # 流式：分片之间的最大空闲等待时间（秒）
         stream_idle_timeout: 120
         verify_ssl: true
-        custom_headers: {}
+        custom_headers: ${CUSTOM_HEADERS}
       model_config_obj:
         temperature: 0.95
       is_default: true

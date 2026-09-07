@@ -482,23 +482,38 @@ def _find_package_root() -> Path | None:
     return current
 
 
+def _preferred_language_from_yaml(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    try:
+        rt = YAML()
+        with open(path, "r", encoding="utf-8") as f:
+            data = rt.load(f) or {}
+        lang = str(data.get("preferred_language") or "").strip().lower()
+        if lang in ("zh", "en"):
+            return lang
+    except Exception as e:
+        logger.error(f"Failed to load config yaml {path}: {e}")
+    return None
+
+
 def _resolve_preferred_language(
-    config_yaml_dest: Path, explicit: Optional[str]
+    config_yaml_dest: Path,
+    explicit: Optional[str],
+    overlay_yaml: Optional[Path] = None,
 ) -> str:
-    """确定初始化使用的语言：显式参数优先，否则读已复制的 config，默认 zh。"""
+    """确定初始化使用的语言：显式参数优先，否则 overlay / 旧 yaml / 包内，默认 zh。"""
     if explicit is not None:
         lang = str(explicit).strip().lower()
         return lang if lang in ("zh", "en") else "zh"
-    if config_yaml_dest.exists():
-        try:
-            rt = YAML()
-            with open(config_yaml_dest, "r", encoding="utf-8") as f:
-                data = rt.load(f) or {}
-            lang = str(data.get("preferred_language") or "zh").strip().lower()
-            if lang in ("zh", "en"):
-                return lang
-        except Exception as e:
-            logger.error(f"Failed to load config.yaml: {e}")
+    candidates = [p for p in (overlay_yaml, config_yaml_dest) if p is not None]
+    package = get_package_config_file()
+    if package is not None:
+        candidates.append(package)
+    for path in candidates:
+        lang = _preferred_language_from_yaml(path)
+        if lang:
+            return lang
     return "zh"
 
 
@@ -1173,7 +1188,7 @@ def prepare_workspace(
     # buggy migration — merge them back into agent/home/cron_jobs.json.
     _recover_gateway_cron_jobs(workspace_dir)
 
-    # ----- config: copy config.yaml -----
+    # ----- config：缺则拷模板；与模板内容不同则整文件覆盖（含 permissions） -----
     resources_dir = package_root / "resources"
     config_yaml_src_candidates = [
         resources_dir / "config.yaml",
@@ -1191,28 +1206,38 @@ def prepare_workspace(
     config_dest_dir = workspace_dir / "config"
     config_dest_dir.mkdir(parents=True, exist_ok=True)
     config_yaml_dest = config_dest_dir / "config.yaml"
+    overlay_yaml_dest = config_dest_dir / "config.user.yaml"
 
-    if overwrite or not config_yaml_dest.exists():
+    from jiuwenswarm.common.config_split import extract_user_overlay
+
+    extract_user_overlay(
+        user_yaml=config_yaml_dest,
+        overlay_yaml=overlay_yaml_dest,
+        package_yaml=config_yaml_src,
+    )
+
+    def _copy_system_file(src: Path, dest: Path) -> None:
+        if not src.is_file():
+            return
+        if not overwrite and dest.is_file() and dest.read_bytes() == src.read_bytes():
+            return
         with TrackCopyDiff(
-            dest=config_yaml_dest,
+            dest=dest,
             is_file=True,
             cumulative=cumulative_diff,
             overwrite=overwrite,
         ):
-            shutil.copy2(config_yaml_src, config_yaml_dest)
+            shutil.copy2(src, dest)
+
+    _copy_system_file(config_yaml_src, config_yaml_dest)
 
     builtin_rules_src = resources_dir / "builtin_rules.yaml"
     builtin_rules_dest = config_dest_dir / "builtin_rules.yaml"
-    if builtin_rules_src.is_file() and (overwrite or not builtin_rules_dest.exists()):
-        with TrackCopyDiff(
-            dest=builtin_rules_dest,
-            is_file=True,
-            cumulative=cumulative_diff,
-            overwrite=overwrite,
-        ):
-            shutil.copy2(builtin_rules_src, builtin_rules_dest)
+    _copy_system_file(builtin_rules_src, builtin_rules_dest)
 
-    resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
+    resolved_lang = _resolve_preferred_language(
+        config_yaml_dest, preferred_language, overlay_yaml_dest
+    )
 
     # ----- 内置模板根目录：<package>/resources（含 agent/、skills_state.json）-----
     template_root = resources_dir
@@ -1356,10 +1381,9 @@ def prepare_workspace(
     agent_sessions.mkdir(parents=True, exist_ok=True)
     default_project_workspace.mkdir(parents=True, exist_ok=True)
 
-    from jiuwenswarm.common.config import migrate_config_from_template, set_preferred_language_in_config_file
+    from jiuwenswarm.common.config import set_preferred_language_in_config_file
 
-    migrate_config_from_template(config_yaml_src, config_yaml_dest)
-    set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
+    set_preferred_language_in_config_file(overlay_yaml_dest, resolved_lang)
 
     if celia_preserve is not None:
         preserve_root = Path(celia_preserve.name)
@@ -1443,12 +1467,13 @@ def init_user_workspace(
     """Initialize ~/.jiuwenswarm from package or source resources.
 
     资源布局:
-    - 模板配置:   <package_root>/resources/config.yaml
+    - 模板配置:   <package_root>/resources/config.yaml（拷到用户根；内容不同则覆盖）
     - .env 模板: <package_root>/resources/.env.template
     - 数据模板:   <package_root>/resources/agent（含各技能模板）、skills_state.json
 
-    上述内容会被复制到:
-    - ~/.jiuwenswarm/config/config.yaml（含 preferred_language）
+    用户根:
+    - ~/.jiuwenswarm/config/config.yaml（系统默认副本）
+    - ~/.jiuwenswarm/config/config.user.yaml（稀疏 overlay）
     - ~/.jiuwenswarm/config/builtin_rules.yaml（内置 shell 安全规则模板，与 config 同目录）
     - ~/.jiuwenswarm/config/.env
     - ~/.jiuwenswarm/agent/...
@@ -1902,6 +1927,51 @@ def reset_free_search_runtime_flags() -> None:
 def get_config_file() -> Path:
     """Get the config.yaml file path."""
     return get_config_dir() / "config.yaml"
+
+
+def get_builtin_rules_file() -> Path:
+    """用户根 ``builtin_rules.yaml``（模板拷贝；内容不同则覆盖）。"""
+    return get_config_dir() / "builtin_rules.yaml"
+
+
+def get_user_overlay_file() -> Path:
+    """用户稀疏 overlay（``config.user.yaml``）。阶段 A 文件可不存在。"""
+    return get_config_dir() / "config.user.yaml"
+
+
+def get_package_resources_dir() -> Path | None:
+    """安装包 / 源码里的 ``jiuwenswarm/resources``，不是用户 DATA_DIR。
+
+    onedir：``_internal/jiuwenswarm/resources``（与 ``common/utils.py`` 同包）。
+    源码：``<仓>/jiuwenswarm/jiuwenswarm/resources``。
+    """
+    package_root = _find_package_root()
+    if package_root is not None:
+        res = package_root / "resources"
+        if (res / "config.yaml").is_file():
+            return res
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        for cand in (
+            Path(meipass) / "jiuwenswarm" / "resources",
+            Path(meipass) / "resources",
+        ):
+            if (cand / "config.yaml").is_file():
+                return cand
+    source_root = _find_source_root()
+    res = source_root / "jiuwenswarm" / "resources"
+    if (res / "config.yaml").is_file():
+        return res
+    return None
+
+
+def get_package_config_file() -> Path | None:
+    """包内 ``config.yaml`` 拷贝源。运行时 ``get_config`` 不读此路径。"""
+    res = get_package_resources_dir()
+    if res is None:
+        return None
+    path = res / "config.yaml"
+    return path if path.is_file() else None
 
 
 def is_package_installation() -> bool:

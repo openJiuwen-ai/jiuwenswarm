@@ -27,6 +27,8 @@ class ReqMethod(Enum):
     COMMAND_COMPACT = "command.compact"
     COMMAND_COMPACT_PARTIAL = "command.compact_partial"
     COMMAND_CONTEXT = "command.context"
+    # 模型信息只读查询：按模型名解析上下文窗口上限
+    MODEL_CONTEXT_WINDOW = "model.context_window"
     COMMAND_RECAP = "command.recap"
     COMMAND_DIFF = "command.diff"
     COMMAND_SIMPLIFY = "command.simplify"

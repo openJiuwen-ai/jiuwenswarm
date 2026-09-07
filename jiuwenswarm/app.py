@@ -39,6 +39,9 @@ _old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
 # 始终清理 Team 旧版本遗留文件（幂等操作，在 prepare_workspace 之前执行）
 cleanup_team_files(_workspace_dir)
 
+from jiuwenswarm.common.config_split import maybe_extract_user_overlay
+
+maybe_extract_user_overlay()
 # Initialize if config doesn't exist, or if legacy workspace exists but new doesn't (migration)
 if not _config_file.exists() or (_old_workspace.exists() and not _new_workspace.exists()):
     prepare_workspace(overwrite=False)

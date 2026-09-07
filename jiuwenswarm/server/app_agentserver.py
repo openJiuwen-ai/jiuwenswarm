@@ -47,6 +47,9 @@ _old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
 
 # Initialize if config doesn't exist, a legacy workspace needs migration, or any
 # standard workspace context file is missing.
+from jiuwenswarm.common.config_split import maybe_extract_user_overlay
+
+maybe_extract_user_overlay()
 if should_prepare_workspace(_config_file, _new_workspace, _old_workspace):
     prepare_workspace(overwrite=False)
 

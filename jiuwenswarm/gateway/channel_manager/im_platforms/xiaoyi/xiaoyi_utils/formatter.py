@@ -496,12 +496,12 @@ def should_send_as_reasoning_text(event_type: EventType | None) -> bool:
         return False
 
     # Reasoning text 用于以下事件：
-    # - CHAT_DELTA: 流式输出中的增量文本
-    # - CHAT_TOOL_RESULT: 工具结果
+    # - CHAT_REASONING: 模型推理/思考过程增量（llm_reasoning chunk）
     # - CHAT_SUBTASK_UPDATE: 子任务更新
     # - CHAT_PROCESSING_STATUS: 处理状态
+    # 注：CHAT_DELTA 是正文增量（llm_output chunk），走 text 管道，不在此集合。
     reasoning_text_events = {
-        EventType.CHAT_DELTA,
+        EventType.CHAT_REASONING,
         EventType.CHAT_SUBTASK_UPDATE,
         EventType.CHAT_PROCESSING_STATUS,
     }
@@ -524,11 +524,13 @@ def should_send_as_text(event_type: EventType | None) -> bool:
 
     # Text 用于以下事件：
     # - CHAT_FINAL: 最终完整回复
+    # - CHAT_DELTA: 正文流式增量（llm_output chunk，与 CHAT_FINAL 同走 text part）
     # - CHAT_MEDIA: 媒体消息
     # - CHAT_ERROR: 错误消息
     # - CHAT_INTERRUPT_RESULT: 中断结果
     text_events = {
         EventType.CHAT_FINAL,
+        EventType.CHAT_DELTA,
         EventType.CHAT_MEDIA,
         EventType.CHAT_ERROR,
         EventType.CHAT_INTERRUPT_RESULT,

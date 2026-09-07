@@ -308,3 +308,7 @@ bash scripts/build-macos.sh
 4. 使用 `hdiutil` 创建 DMG 安装镜像
 
 产物：`dist/JiuwenSwarm-<version>.dmg`
+
+## 7. 配置分层
+
+用户数据根里的 `config.yaml` / `config.user.yaml` 如何升级覆盖、哪些键进 overlay、改配置该写哪条 API，见 [配置分层与升级](配置分层与升级.md)。

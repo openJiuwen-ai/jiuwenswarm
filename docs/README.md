@@ -106,6 +106,11 @@
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>配置分层与升级</strong></td>
+      <td width="28%"><a href="zh/配置分层与升级.md">配置分层与升级</a></td>
+      <td width="50%">系统 yaml / overlay 分层、强制覆盖、写路径与新增配置项步骤（开发）。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>浏览器服务</strong></td>
       <td width="28%"><a href="zh/浏览器.md">浏览器</a></td>
       <td width="50%">网页访问、信息获取与浏览器工具调用能力。</td>

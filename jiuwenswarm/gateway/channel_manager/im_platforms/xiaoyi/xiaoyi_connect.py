@@ -924,13 +924,44 @@ class XiaoyiChannel(BaseChannel):
             self._clear_team_session(session_id)
             return
 
-        # Xiaoyi exposes chat.delta/subtask updates as reasoningText. Keep that
-        # live process leader-only while preserving teammate final/error output.
+        # Team 模式仅保留 leader 的思考过程与正文；teammate 的 delta/reasoning/
+        # subtask_update 是中间过程，不投递给端侧（对齐飞书 team 卡片语义）。
+        # teammate 的 final/error 仍保留（作为 member 输出）。
         if (
             is_team_session
             and team_role == "teammate"
-            and event_name in {"chat.delta", "chat.subtask_update"}
+            and event_name in {"chat.delta", "chat.reasoning", "chat.subtask_update"}
         ):
+            return
+
+        # chat.reasoning 是模型推理/思考过程增量（llm_reasoning chunk），逐块流式
+        # 投递为 reasoningText part（A2A 端侧支持该 kind，与其他三方 IM 不同）。
+        # 必须在下方 SKIPPED 兜底（:791 not reasoning or text）之前截获，否则
+        # CHAT_REASONING 不在任何分类集合里会被当 non_user_visible 丢弃。
+        # reasoning chunk 不带 is_complete（见 interface_deep.py:6193），末块靠
+        # chat.final / 下一个 chat.delta 到来作为思考结束信号——逐块 append=True、
+        # lastChunk=False，端侧实时拼接思考流。
+        if msg.event_type == EventType.CHAT_REASONING:
+            reasoning_content = ""
+            if isinstance(msg.payload, dict):
+                reasoning_content = str(msg.payload.get("content", "") or "")
+            if not reasoning_content:
+                return
+            for url_key, ws in self._ws_connections.items():
+                if ws:
+                    try:
+                        await self._send_text_response(
+                            session_id,
+                            task_id,
+                            reasoning_content,
+                            url_key,
+                            append=True,
+                            last_chunk=False,
+                            is_final=False,
+                            kind="reasoningText",
+                        )
+                    except Exception as e:
+                        logger.warning(f"XiaoyiChannel 发送思考消息失败 ({url_key}): {e}")
             return
 
         # Handle chat.file event
@@ -1325,7 +1356,17 @@ class XiaoyiChannel(BaseChannel):
         accumulated_text = self._accumulated_texts.get(team_task_key, "")
         self._accumulated_texts[team_task_key] = content
 
-        # Send to all active connections
+        # Send to all connections
+        # 走到这里的事件 = should_send_as_reasoning_text or should_send_as_text 为真
+        # 且未被前置 status_update / ask_user_question 分流者。当前 reasoning 集合里
+        # 能落到此处的只有 CHAT_SUBTASK_UPDATE（CHAT_REASONING 在 :640 前置分流、
+        # CHAT_PROCESSING_STATUS 在 :724 status_update 分流）。
+        # kind 按 event_type 选，与 formatter 分类对齐。
+        part_kind = (
+            "reasoningText"
+            if should_send_as_reasoning_text(msg.event_type)
+            else "text"
+        )
         for url_key, ws in self._ws_connections.items():
             if ws:
                 try:
@@ -1336,7 +1377,8 @@ class XiaoyiChannel(BaseChannel):
                         url_key,
                         append=append,
                         last_chunk=last_chunk,
-                        is_final=final
+                        is_final=final,
+                        kind=part_kind,
                     )
                 except Exception as e:
                     logger.warning(f"XiaoyiChannel 发送消息失败 ({url_key}): {e}")
@@ -3196,12 +3238,21 @@ class XiaoyiChannel(BaseChannel):
             append: bool = False,
             last_chunk: bool = True,
             is_final: bool = True,
+            kind: str | None = None,
     ) -> None:
-        """发送文本响应（A2A 格式）到指定通道."""
-        if last_chunk:
-            data = {"kind": "text", "text": text}
-        else:
+        """发送文本响应（A2A 格式）到指定通道.
+
+        ``kind`` 显式指定 part 类型（``"text"`` 或 ``"reasoningText"``）。
+        默认 ``None`` 时按 ``last_chunk`` 推导（``True``→text，``False``→reasoningText），
+        向后兼容旧调用点。新调用点应按 event_type 显式传 ``kind``，避免
+        ``last_chunk`` 与 part kind 的语义耦合。
+        """
+        if kind is None:
+            kind = "text" if last_chunk else "reasoningText"
+        if kind == "reasoningText":
             data = {"kind": "reasoningText", "reasoningText": text}
+        else:
+            data = {"kind": "text", "text": text}
         response = {
             "jsonrpc": "2.0",
             "id": f"msg_{int(time.time() * 1000)}",

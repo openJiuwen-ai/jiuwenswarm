@@ -5,7 +5,9 @@
 
 无论是通过 pip/whl 安装，还是在源码目录里直接运行：
 - 运行本脚本会先询问语言偏好（zh/en），写入 config 的 preferred_language；
-- 同时复制 config.yaml、builtin_rules.yaml、将 ``.env.template`` 复制为 ``<用户数据根>/config/.env``、agent 模板等到 ``<用户数据根>``；
+- 将包内 ``config.yaml`` / ``builtin_rules.yaml`` 拷到用户根（已存在且与模板不同则覆盖），
+  将 ``.env.template`` 复制为 ``<用户数据根>/config/.env``、agent 模板等到 ``<用户数据根>``；
+  小艺 UI / 桌面补丁写入稀疏 ``config.user.yaml``；
 - 根据语言偏好复制多语言文件（AGENT.md、HEARTBEAT.md、IDENTITY.md、SOUL.md 等），
   源文件使用 _ZH/_EN 后缀，目标文件不带后缀。
 

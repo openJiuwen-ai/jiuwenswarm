@@ -43,17 +43,17 @@ _AXIS_RANK = {"deny": 0, "ask": 1, "allow": 2}
 
 
 def _load_config_yaml_round_trip() -> tuple[Any, Any]:
-    """Load config.yaml and return (data, yaml_path)."""
+    """Load 系统 config.yaml（不读 overlay）and return (data, yaml_path)."""
     from jiuwenswarm.common.config import _CONFIG_YAML_PATH, _load_yaml_round_trip
 
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = _load_yaml_round_trip(_CONFIG_YAML_PATH, follow_overlay=False)
     return data, _CONFIG_YAML_PATH
 
 
 def _dump_config_yaml_round_trip(yaml_path: Any, data: Any) -> None:
     from jiuwenswarm.common.config import _dump_yaml_round_trip
 
-    _dump_yaml_round_trip(yaml_path, data)
+    _dump_yaml_round_trip(yaml_path, data, follow_overlay=False)
 
 
 def _ensure_permissions_dict(data: Any) -> dict[str, Any]:

@@ -59,6 +59,9 @@ _config_file = _workspace_dir / "config" / "config.yaml"
 _new_workspace = _workspace_dir / "agent" / "workspace"
 _old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
 
+from jiuwenswarm.common.config_split import maybe_extract_user_overlay
+
+maybe_extract_user_overlay()
 # Initialize if config doesn't exist, or if legacy workspace exists but new doesn't (migration)
 if not _config_file.exists() or (_old_workspace.exists() and not _new_workspace.exists()):
     prepare_workspace(overwrite=False)

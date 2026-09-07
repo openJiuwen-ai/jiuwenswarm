@@ -308,3 +308,8 @@ The script will execute the following steps in order:
 4. Create a DMG installer image using `hdiutil`
 
 Output: `dist/JiuwenSwarm-<version>.dmg`
+
+## 7. Config layers
+
+How user `config.yaml` / `config.user.yaml` are overwritten on upgrade, which keys belong in the overlay, and which write API to use: [Config layers and upgrades](ConfigLayersAndUpgrade.md).
+

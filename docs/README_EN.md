@@ -106,6 +106,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">System parameters, LLM APIs, and runtime environment configuration.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Config layers</strong></td>
+      <td width="28%"><a href="en/ConfigLayersAndUpgrade.md">Config layers and upgrades</a></td>
+      <td width="50%">System yaml / overlay split, force overwrite, write paths, and how to add keys (dev).</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Browser Service</strong></td>
       <td width="28%"><a href="en/Browser.md">Browser</a></td>
       <td width="50%">Web access, information retrieval, and browser tool invocation capabilities.</td>

@@ -10,6 +10,7 @@
 - [A2UI 生成式界面](A2UI.md)
 - [项目与会话管理（Web 端）](项目与会话管理.md)
 - [配置说明](配置信息.md)
+- [配置分层与升级（开发）](配置分层与升级.md)
 - [分布式 Team](分布式Team.md)
 - [Agent Team 使用指南](AgentTeam.md)
 - [AgentTeam 人类成员联机协作（HITT）](AgentTeam人类成员联机协作.md)
