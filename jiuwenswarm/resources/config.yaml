@@ -702,6 +702,11 @@ react:
     inject_enabled: true    # 是否注入系统 prompt
     inject_mode: disk_catalog  # disk_catalog | legacy_system | trailing_attach（默认 disk_catalog：P:45 只写指引，FACT/TIP 走 ttse_consult）
     store_path: ""          # 空则落到 workspace/.ttse/bank.json
+    # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
+    dream_enabled: true     # 是否启用静默 Auto-dream
+    dream_interval: 20      # 每 N 次非 follow-up 任务迭代尝试一次 dream
+    dream_min_hours: 24.0   # 距上次成功 dream 的最短间隔（小时）
+    dream_ttl_days: 90      # 超过该天数未注入展示则剪枝
     # 语义检索 / dedup；三段齐全时启用 top-K 注入，否则回退整库
     embedding:
       api_key: "lhqBVy952vGXQJshDBGvN5wtIbrkGTUzL0Pt-vyDxCuLDPe6wJM5LosjD-Sn0oVsy_GUQx28qpbNVu_dIXG8gw"

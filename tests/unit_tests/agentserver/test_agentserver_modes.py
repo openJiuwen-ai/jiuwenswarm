@@ -2772,7 +2772,17 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     adapter._model = Mock()
     adapter._default_model_name = "test-model"
 
-    rail = adapter._build_ttse_rail({"ttse": {"evolve_enabled": False}})
+    rail = adapter._build_ttse_rail(
+        {
+            "ttse": {
+                "evolve_enabled": False,
+                "dream_enabled": False,
+                "dream_interval": 5,
+                "dream_min_hours": 12,
+                "dream_ttl_days": 30,
+            }
+        }
+    )
 
     assert isinstance(rail, FakeTTSERail)
     assert captured["config"]["store_path"] == str(tmp_path / ".ttse" / "bank.json")
@@ -2780,8 +2790,11 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     assert captured["config"]["inject_enabled"] is True
     assert captured["config"]["inject_mode"] == "disk_catalog"
     assert captured["config"]["embedding"] is None
+    assert captured["config"]["dream_enabled"] is False
+    assert captured["config"]["dream_interval"] == 5
+    assert captured["config"]["dream_min_hours"] == 12.0
+    assert captured["config"]["dream_ttl_days"] == 30
     assert captured["rail"]["model"] == "test-model"
-    assert isinstance(captured["rail"]["success_detector"], FakeDetector)
 
 
 def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):

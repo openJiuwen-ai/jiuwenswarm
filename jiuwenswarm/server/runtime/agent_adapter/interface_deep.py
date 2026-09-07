@@ -80,12 +80,10 @@ from openjiuwen.harness.rails import (
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 try:
     from openjiuwen.harness.rails.evolution import (
-        SignalBasedSuccessDetector,
         TTSEConfig,
         TTSERail,
     )
 except ImportError:
-    SignalBasedSuccessDetector = None  # type: ignore[misc, assignment]
     TTSEConfig = None  # type: ignore[misc, assignment]
     TTSERail = None  # type: ignore[misc, assignment]
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
@@ -7144,6 +7142,10 @@ class JiuWenSwarmDeepAdapter:
             "inject_enabled",
             "inject_mode",
             "enabled",
+            "dream_enabled",
+            "dream_interval",
+            "dream_min_hours",
+            "dream_ttl_days",
         ):
             value = yaml_ttse.get(key)
             if value not in (None, ""):
@@ -7156,7 +7158,7 @@ class JiuWenSwarmDeepAdapter:
         Returns None when agent-core lacks TTSE, construction fails, or
         the feature is unavailable. Does not register the rail.
         """
-        if TTSERail is None or TTSEConfig is None or SignalBasedSuccessDetector is None:
+        if TTSERail is None or TTSEConfig is None:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] TTSERail unavailable: agent-core missing ttse"
             )
@@ -7168,6 +7170,35 @@ class JiuWenSwarmDeepAdapter:
             store_path = str(ttse_cfg.get("store_path") or "").strip() or str(
                 get_agent_workspace_dir() / ".ttse" / "bank.json"
             )
+            evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
+            inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
+            inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
+            dream_enabled = self._coerce_ttse_bool(ttse_cfg.get("dream_enabled"), True)
+            try:
+                dream_interval = int(ttse_cfg.get("dream_interval", 20))
+            except (TypeError, ValueError):
+                dream_interval = 20
+            try:
+                dream_min_hours = float(ttse_cfg.get("dream_min_hours", 24.0))
+            except (TypeError, ValueError):
+                dream_min_hours = 24.0
+            try:
+                dream_ttl_days = int(ttse_cfg.get("dream_ttl_days", 90))
+            except (TypeError, ValueError):
+                dream_ttl_days = 90
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] TTSEConfig: store_path=%s evolve_enabled=%s "
+                "inject_enabled=%s inject_mode=%s dream_enabled=%s dream_interval=%s "
+                "dream_min_hours=%s dream_ttl_days=%s",
+                store_path,
+                evolve_enabled,
+                inject_enabled,
+                inject_mode,
+                dream_enabled,
+                dream_interval,
+                dream_min_hours,
+                dream_ttl_days,
+            )
             emb_cfg = get_ttse_embedding_config({"react": {"ttse": ttse_cfg}})
             embedding = None
             if emb_cfg:
@@ -7176,9 +7207,8 @@ class JiuWenSwarmDeepAdapter:
                     base_url=emb_cfg["base_url"],
                     model=emb_cfg["model"],
                 )
-            evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
-            inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
-            inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
+            # TTSERail defaults to SignalBasedSuccessDetector(llm=..., model=..., config=...).
+            # Do not construct the detector without those required kwargs.
             ttse_rail = TTSERail(
                 llm=self._model,
                 model=self._default_model_name or config.get("model_name", "gpt-4"),
@@ -7188,8 +7218,11 @@ class JiuWenSwarmDeepAdapter:
                     inject_enabled=inject_enabled,
                     inject_mode=inject_mode,
                     embedding=embedding,
+                    dream_enabled=bool(dream_enabled),
+                    dream_interval=dream_interval,
+                    dream_min_hours=dream_min_hours,
+                    dream_ttl_days=dream_ttl_days,
                 ),
-                success_detector=SignalBasedSuccessDetector(),
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] TTSERail create success, "

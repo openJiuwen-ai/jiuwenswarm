@@ -119,6 +119,11 @@ react:
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     store_path: ""          # 空则落到 workspace/.ttse/bank.json
+    # Auto-dream（静默整理经验库，不劫持用户回合）
+    dream_enabled: true     # 是否启用 Auto-dream
+    dream_interval: 20      # 每 N 次非 follow-up 任务迭代尝试一次
+    dream_min_hours: 24.0   # 距上次成功 dream 的最短间隔（小时）
+    dream_ttl_days: 90      # 超过该天数未注入展示则剪枝
     # 语义检索 / dedup；api_key、base_url、model 三段齐全时启用 top-K 注入，否则回退整库
     embedding:
       api_key: "${MAAS_API_KEY}"
@@ -127,6 +132,8 @@ react:
 ```
 
 规则库默认路径为 agent workspace 下的 `.ttse/bank.json`。`embedding` 可选；未配置或字段不全时不调用向量服务，注入整库 FACT/TIP。
+
+Auto-dream 对已有 FACT/TIP bank 做卫生（TTL 剪枝、近重合并、低质量 TIP 清洗），与在线 `induce`/`blame` 独立；上述四个 `dream_*` 字段可在配置中覆盖默认值。
 
 ## 3. 案例实践：通过文字对话字段触发代码修改
 
