@@ -27,10 +27,8 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
 )
 from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
 from jiuwenswarm.extensions.agentos.auth.common import (
-    extract_headers,
-    extract_token,
     extract_token_from_path_and_headers,
-    get_remote_addr,
+    headers_to_dict,
 )
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
@@ -508,29 +506,16 @@ class AgentOSRouterClient(AgentServerClient):
 
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
-        """Subscribe Web/TUI connect hooks (token auth) and channel disconnect events."""
+        """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
         web_channel = channel_manager.get_channel(ChannelType.WEB)
         tui_channel = channel_manager.get_channel(ChannelType.CLI)
 
         if web_channel:
-            on_connect = getattr(web_channel, "on_connect", None)
-            if callable(on_connect):
-                on_connect(self.on_connect)
+            web_channel.set_handshake_auth(self.authenticate_http)
         if tui_channel:
-            on_connect = getattr(tui_channel, "on_connect", None)
-            if callable(on_connect):
-                on_connect(self.on_connect)
+            tui_channel.set_handshake_auth(self.authenticate_http)
 
         channel_manager.subscribe_channel_events(self._on_channel_event)
-
-    @staticmethod
-    def _ws_channel_name(ws: Any) -> str:
-        path = str(getattr(ws, "path", "") or "")
-        if "/tui" in path:
-            return "tui"
-        if "/ws" in path:
-            return "web"
-        return str(getattr(ws, "channel_id", "") or "")
 
     @staticmethod
     def _runtime_log_fields(runtime: AgentRuntime) -> dict[str, Any]:
@@ -654,31 +639,14 @@ class AgentOSRouterClient(AgentServerClient):
         credential; callers must pass ``allow_query_token=False`` on that path.
         """
         token_path = path if allow_query_token else urllib.parse.urlparse(path).path
-        token = extract_token_from_path_and_headers(token_path, headers)
+        header_map = headers_to_dict(headers)
+        token = extract_token_from_path_and_headers(token_path, header_map or headers)
         return await self._verify_request_token(
             token=token,
-            headers=headers,
+            headers=header_map,
             remote=remote,
             channel=channel,
         )
-
-    async def on_connect(self, ws: Any) -> AuthResult | None:
-        channel = self._ws_channel_name(ws)
-        remote = get_remote_addr(ws)
-        headers = extract_headers(ws)
-        result = await self._verify_request_token(
-            token=extract_token(ws),
-            headers=headers,
-            remote=remote,
-            channel=channel,
-        )
-        if not result.success:
-            close = getattr(ws, "close", None)
-            if callable(close):
-                ret = close(code=1008, reason="unauthorized")
-                if hasattr(ret, "__await__"):
-                    await ret
-        return result
 
     def set_key_issuer(
         self,

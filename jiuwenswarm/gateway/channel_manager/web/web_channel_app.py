@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _FORBIDDEN_ORIGIN_BODY = "Forbidden: Origin not allowed\n"
+_UNAUTHORIZED_BODY = "Unauthorized\n"
 _GIT_WS_PATH = "/ws/git"
 
 
@@ -130,6 +131,8 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:
     if await _reject_disallowed_origin(websocket):
         return
+    if await _reject_unauthorized_handshake(channel, websocket):
+        return
 
     adapter = StarletteWsAdapter(websocket)
     await adapter.accept()
@@ -177,6 +180,37 @@ async def _reject_disallowed_origin(websocket: WebSocket) -> bool:
     )
     await websocket.send_denial_response(
         PlainTextResponse(_FORBIDDEN_ORIGIN_BODY, status_code=403),
+    )
+    return True
+
+
+def _websocket_handshake_path(websocket: WebSocket) -> str:
+    path = str(websocket.url.path or "")
+    query = str(websocket.url.query or "")
+    return f"{path}?{query}" if query else path
+
+
+async def _reject_unauthorized_handshake(channel: WebChannel, websocket: WebSocket) -> bool:
+    """Return True when IAM rejected the Upgrade (HTTP 401, no WS)."""
+    remote = ""
+    client = getattr(websocket, "client", None)
+    if client is not None:
+        host = getattr(client, "host", "") or ""
+        port = getattr(client, "port", "")
+        remote = f"{host}:{port}" if host else ""
+    if not await channel.handshake_auth_denied(
+        path=_websocket_handshake_path(websocket),
+        headers=websocket.headers,
+        remote=remote,
+        channel="web",
+    ):
+        return False
+    logger.warning(
+        "WebChannel 握手拒绝 path=%s reason=unauthorized",
+        websocket.url.path,
+    )
+    await websocket.send_denial_response(
+        PlainTextResponse(_UNAUTHORIZED_BODY, status_code=401),
     )
     return True
 
