@@ -1446,11 +1446,6 @@ def _try_finish_cron_team_stream(
         )
 
 
-_TEAM_BUILDING_EVENT_TYPES = frozenset({
-    "team.member", "team.task", "workflow.updated",
-})
-
-
 async def _broadcast_event(
     channel_id: str | None, session_id: str, event: dict[str, Any]
 ) -> None:
@@ -1461,9 +1456,6 @@ async def _broadcast_event(
     result = tm.broadcast_event(session_id, event)
     if inspect.isawaitable(result):
         await result
-    # Track team-building events so chat.final can be gated correctly.
-    if (not tm.has_seen_team_events(session_id)) and event.get("event_type") in _TEAM_BUILDING_EVENT_TYPES:
-        tm.mark_seen_team_events(session_id)
     _try_finish_cron_team_stream(channel_id, session_id, event)
 
 
@@ -2935,8 +2927,6 @@ async def _process_team_message_stream(
         # 当前 stream 已结束，清除初始化标记，
         # 下次请求需重新创建 stream task（gate 在 stream 结束时已关闭）。
         team_manager.clear_session_initialized(session_id)
-        team_manager.reset_seen_team_events(session_id)
-        team_manager.reset_workflow_completed(session_id)
         logger.info(
             "[TeamHelpers] stream ended, cleared round markers: "
             "channel_id=%s session_id=%s",
@@ -3018,11 +3008,6 @@ async def _consume_stream_with_query(
     # only emits what is new. See _announce_team_roster.
     announced_members: set[str] = set()
     roster_team_name = str(getattr(team_spec, "team_name", "") or "")
-    # Reset the team-events flag at the start of a new round so chat.final
-    # can correctly determine whether the team is active.
-    tm_ = get_team_manager(channel_id)
-    tm_.reset_seen_team_events(session_id)
-    tm_.reset_workflow_completed(session_id)
     lg: TeamStreamLogger | None = None
     stream_cancelled = False
     try:
@@ -3328,16 +3313,6 @@ async def _consume_stream_with_query(
                         )
                         terminal_broadcasted = True
                     continue
-                # chat.final: if team events (team.member / team.task /
-                # workflow.updated) have already been broadcast (tracked
-                # via TeamManager.seen_team_events), the team is still
-                # running — suppress chat.final so the frontend does not
-                # prematurely set isProcessing=false.  Exception: once the
-                # workflow has completed (workflow_completed=True), chat.final
-                # is no longer suppressed and serves as the normal
-                # end-of-round signal.  In non-swarmflow mode,
-                # workflow_completed stays False so the original behavior
-                # is preserved.
                 if parsed.get("event_type") == "chat.final":
                     # A persistent Team stream may emit several leader finals
                     # within one real round.  They are result content, not a
@@ -3723,7 +3698,6 @@ async def _consume_workflow_events(
     seen_agent: dict[str, str] = {}
     spawned_members: set[str] = set()
     seen_human_waiting: set[str] = set()
-    swarmflow_activated_sent = False
     try:
         logger.info(
             "[TeamHelpers] workflow event loop started: channel_id=%s session_id=%s is_tui=%s",
@@ -3751,20 +3725,6 @@ async def _consume_workflow_events(
             )
             wf_status = (wf.get("status") or "").strip()
 
-            # ── swarmflow.activated: 首次收到活跃 workflow 时通知前端切树视图 ──
-            if (
-                not swarmflow_activated_sent
-                and wf_status in ("running", "planned", "pending")
-                and wf.get("id")
-            ):
-                swarmflow_activated_sent = True
-                await _broadcast_event(channel_id, session_id, {
-                    "event_type": "swarmflow.activated",
-                    "session_id": session_id,
-                    "run_id": wf.get("id", ""),
-                    "workflow_name": wf.get("name", ""),
-                })
-
             # ── 所有通道都广播原始 workflow.updated（供 web 树视图渲染）──
             await _broadcast_event(channel_id, session_id, event)
 
@@ -3775,7 +3735,6 @@ async def _consume_workflow_events(
                         "[TeamHelpers] workflow terminal: channel_id=%s session_id=%s wf_status=%s",
                         _resolve_channel_id(channel_id), session_id, wf_status,
                     )
-                    get_team_manager(channel_id).mark_workflow_completed(session_id)
                 continue
 
             # ── 非 TUI: 额外转换扁平 team.task/team.member 事件（向后兼容）──
@@ -3795,12 +3754,6 @@ async def _consume_workflow_events(
                     "[TeamHelpers] workflow terminal: channel_id=%s session_id=%s wf_status=%s",
                     _resolve_channel_id(channel_id), session_id, wf_status,
                 )
-                get_team_manager(channel_id).mark_workflow_completed(session_id)
-                await _broadcast_event(channel_id, session_id, {
-                    "event_type": "swarmflow.deactivated",
-                    "session_id": session_id,
-                    "run_id": wf.get("id", ""),
-                })
         logger.info(
             "[TeamHelpers] workflow event loop ended: channel_id=%s session_id=%s",
             _resolve_channel_id(channel_id),

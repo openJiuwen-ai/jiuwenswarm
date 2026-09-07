@@ -28,11 +28,6 @@ from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 def _broadcast_recorder(events: list[dict], manager=None):
     async def _record(_channel_id, session_id: str, event: dict) -> None:
         events.append(event)
-        if (
-            manager is not None
-            and event.get("event_type") in team_helpers._TEAM_BUILDING_EVENT_TYPES
-        ):
-            manager.mark_seen_team_events(session_id)
 
     return _record
 
@@ -373,31 +368,11 @@ class _InactiveTeamRuntimeManagerMixin:
     """Provide the session-scoped runtime state API for inactive test managers."""
 
     def __init__(self) -> None:
-        self._seen_team_events: dict[str, bool] = {}
-        self._workflow_completed: dict[str, bool] = {}
         self._test_rounds: dict[str, str] = {}
         self._test_startup_locks: dict[str, asyncio.Lock] = {}
 
     def get_startup_lock(self, session_id: str) -> asyncio.Lock:
         return self._test_startup_locks.setdefault(session_id, asyncio.Lock())
-
-    def mark_seen_team_events(self, session_id: str) -> None:
-        self._seen_team_events[session_id] = True
-
-    def has_seen_team_events(self, session_id: str) -> bool:
-        return self._seen_team_events.get(session_id, False)
-
-    def reset_seen_team_events(self, session_id: str) -> None:
-        self._seen_team_events.pop(session_id, None)
-
-    def mark_workflow_completed(self, session_id: str) -> None:
-        self._workflow_completed[session_id] = True
-
-    def is_workflow_completed(self, session_id: str) -> bool:
-        return self._workflow_completed.get(session_id, False)
-
-    def reset_workflow_completed(self, session_id: str) -> None:
-        self._workflow_completed.pop(session_id, None)
 
     @staticmethod
     def is_runtime_active(session_id: str) -> bool:
@@ -5350,12 +5325,10 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
         "web", "sess-wf-web", handler,
     )
 
-    # All channels receive the raw workflow.updated (web tree view) plus the
-    # activation notice; web additionally receives converted team.* envelopes.
+    # All channels receive the raw workflow.updated (web tree view); web
+    # additionally receives converted team.* envelopes.
     assert broadcasted
-    raw_types = [e["event_type"] for e in broadcasted]
-    assert "swarmflow.activated" in raw_types
-    assert "workflow.updated" in raw_types
+    assert "workflow.updated" in [e["event_type"] for e in broadcasted]
     team_events = [e for e in broadcasted if e["event_type"] in ("team.member", "team.task")]
     assert team_events
     types = [e["event"]["type"] for e in team_events]
