@@ -11,6 +11,7 @@ import pytest
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentManager,
     AgentRuntime,
@@ -609,6 +610,64 @@ async def test_swarm_request_repeated_reuses_single_runtime() -> None:
     agents = await agent_manager.list_user_agents("u1")
     assert len(agents) == 1
     assert agents[0].info.agent_type == "jiuwenswarm"
+
+
+@pytest.mark.asyncio
+async def test_chat_interrupt_does_not_cold_start_when_no_runtime() -> None:
+    """chat.interrupt 在没有就绪实例时不得冷启动沙箱（no-op 成功）。"""
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+
+    cancel = E2AEnvelope(
+        request_id="req-cancel",
+        channel="tui",
+        user_id="u1",
+        session_id="sess-1",
+        method=ReqMethod.CHAT_CANCEL.value,
+        params={"intent": "cancel", "session_id": "sess-1"},
+    )
+
+    response = await client.send_request(cancel)
+
+    assert response.ok
+    assert response.payload == {
+        "event_type": "chat.interrupt_result",
+        "success": True,
+        "session_id": "sess-1",
+    }
+    assert yuanrong.create_calls == 0
+    assert await agent_manager.list_user_agents("u1") == []
+
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chat_interrupt_forwards_to_ready_runtime() -> None:
+    """chat.interrupt 在已有 READY builtin 时正常转发，不额外建沙箱。"""
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+
+    # 正常 chat 先冷启动 builtin 实例。
+    await client.send_request(_envelope())
+    await asyncio.sleep(0.05)
+
+    cancel = E2AEnvelope(
+        request_id="req-cancel",
+        channel="tui",
+        user_id="u1",
+        session_id="sess-1",
+        method=ReqMethod.CHAT_CANCEL.value,
+        params={"intent": "cancel", "session_id": "sess-1"},
+    )
+
+    response = await client.send_request(cancel)
+
+    assert response.ok
+    assert yuanrong.create_calls == 1
+    assert yuanrong.send_calls == 2
+    await client.shutdown()
 
 
 def test_resolve_agent_workspace_requires_existing_writable_dir(tmp_path) -> None:

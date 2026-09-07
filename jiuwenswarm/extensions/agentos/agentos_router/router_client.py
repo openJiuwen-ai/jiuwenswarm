@@ -1467,11 +1467,24 @@ class AgentOSRouterClient(AgentServerClient):
         if self._is_ssh_relay_request(envelope):
             return await self._handle_ssh_relay(envelope)
         await self._inject_external_cli_agents(envelope)
-        try:
-            runtime = await self._resolve_agent(envelope, acquire=True)
-        except (ValueError, AgentCreatingTimeout, AgentCreateFailed) as exc:
-            self._log_route("route.error", envelope, level=logging.WARNING, error=str(exc))
-            return self._routing_error_response(envelope, str(exc))
+
+        # chat.interrupt（含断连延迟 cancel）不得冷启动沙箱：没有就绪的
+        # builtin 实例时直接视为成功 no-op，避免与断连清理竞态重建出孤儿沙箱。
+        if self._is_cancel_method(envelope):
+            runtime = await self._agent_manager.get_agent(
+                self._extract_user_id(envelope),
+                self._extract_agent_type(envelope),
+                key_values={"session_id": envelope.session_id},
+                acquire=True,
+            )
+            if runtime is None or not runtime.is_ready():
+                return self._cancel_noop_response(envelope)
+        else:
+            try:
+                runtime = await self._resolve_agent(envelope, acquire=True)
+            except (ValueError, AgentCreatingTimeout, AgentCreateFailed) as exc:
+                self._log_route("route.error", envelope, level=logging.WARNING, error=str(exc))
+                return self._routing_error_response(envelope, str(exc))
         try:
             runtime.attach_to_envelope(envelope)
             if not self._uses_direct_yuanrong(runtime.info.agent_type):
@@ -2698,6 +2711,23 @@ class AgentOSRouterClient(AgentServerClient):
             return AgentRuntime.normalize_agent_type(raw)
         except ValueError as exc:
             raise UnsupportedAgentType(str(exc)) from exc
+
+    @staticmethod
+    def _is_cancel_method(envelope: E2AEnvelope) -> bool:
+        return str(envelope.method or "") == ReqMethod.CHAT_CANCEL.value
+
+    @staticmethod
+    def _cancel_noop_response(envelope: E2AEnvelope) -> AgentResponse:
+        return AgentResponse(
+            request_id=str(envelope.request_id or ""),
+            channel_id=str(envelope.channel or ""),
+            ok=True,
+            payload={
+                "event_type": "chat.interrupt_result",
+                "success": True,
+                "session_id": str(envelope.session_id or ""),
+            },
+        )
 
     @staticmethod
     def _routing_error_response(
