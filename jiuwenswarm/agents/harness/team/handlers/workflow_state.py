@@ -68,6 +68,9 @@ class WorkflowProgress(BaseModel):
     run_id: Optional[str] = None
     workflow_name: Optional[str] = None
     description: Optional[str] = None
+    # Absolute path of the script driving this run, carried on workflow_started;
+    # advisory context for a cold-start resume (None on legacy events).
+    script_path: Optional[str] = None
     phase: Optional[str] = None
     label: Optional[str] = None
     prompt: Optional[str] = None
@@ -210,6 +213,9 @@ class WorkflowRunState(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     script: Optional[str] = None
+    # Absolute path of the script driving this run, set from the workflow_started
+    # event for advisory cold-start context; distinct from ``script`` above.
+    script_path: Optional[str] = None
     result: Optional[str] = None
     error: Optional[str] = None
     logs: list[str] = []
@@ -853,6 +859,7 @@ class WorkflowRunState(BaseModel):
         self.id = progress.run_id
         self.name = progress.workflow_name or "workflow"
         self.summary = progress.description or ""
+        self.script_path = progress.script_path
         self.status = "running"
         if self.started_at is None:
             self.started_at = self._now_iso()

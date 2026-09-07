@@ -546,6 +546,7 @@ class TestExtractProgressPassthrough:
             phase_type = "child"
             nested_phase = "▸ intro #0"
             parent_phase = "review"
+            script_path = "/abs/path/foo.py"
 
         class _Ev:
             def get_payload(self):  # noqa: ANN202
@@ -557,3 +558,32 @@ class TestExtractProgressPassthrough:
         assert p.phase_type == "child"
         assert p.nested_phase == "▸ intro #0"
         assert p.parent_phase == "review"
+        assert p.script_path == "/abs/path/foo.py"
+
+
+# ---------------------------------------------------------------------------
+# SDD-0018: workflow_started script_path passthrough (冷启动续跑情境注入)
+# ---------------------------------------------------------------------------
+
+class TestWorkflowStartedScriptPath:
+    @pytest.mark.anyio
+    async def test_workflow_started_carries_script_path_to_run_state(self) -> None:
+        """workflow_started 携带 script_path → handler 的 run state 记录该路径。
+
+        The engine carries the script's absolute path on workflow_started so a
+        cold-start resume can inject it as context to the leader; the handler
+        must surface it on the WorkflowRunState, not drop it.
+        """
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+
+        await _run_handler_with_events(
+            handler, monitor,
+            [_FakeRawEvent(kind="workflow_started", workflow_name="research-flow",
+                           script_path="/abs/path/foo.py")],
+        )
+
+        runs = handler.get_run_states()
+        assert len(runs) == 1
+        run = next(iter(runs.values()))
+        assert run.script_path == "/abs/path/foo.py"

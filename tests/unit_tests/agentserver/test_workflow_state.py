@@ -1157,3 +1157,47 @@ def test_workflow_stopped_preserves_budget_and_scope():
     assert state.budget == budget
     assert state.workflow_budget == wf_budget
     assert state.budget_exhausted_scope == "session"
+
+
+# ---------------------------------------------------------------------------
+# SDD-0018: WorkflowRunState.script_path — 冷启动续跑情境注入
+# ---------------------------------------------------------------------------
+
+def test_workflow_started_carries_script_path():
+    """workflow_started 携带 script_path → apply 后写入 run state（情境注入用）。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", script_path="/abs/path/foo.py"))
+    assert state.script_path == "/abs/path/foo.py"
+
+
+def test_workflow_started_without_script_path_defaults_none():
+    """旧事件（无 script_path）→ state.script_path 默认 None，向后兼容。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.script_path is None
+
+
+def test_model_validate_keeps_script_path():
+    state = WorkflowRunState.model_validate({"id": "r1", "script_path": "/a/b.py"})
+    assert state.script_path == "/a/b.py"
+
+
+def test_model_validate_without_script_path_defaults_none():
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert state.script_path is None
+
+
+def test_model_dump_includes_script_path_when_set():
+    state = WorkflowRunState.model_validate({"id": "r1", "script_path": "/a/b.py"})
+    dump = state.model_dump()
+    assert dump["script_path"] == "/a/b.py"
+
+
+def test_model_dump_default_has_none_script_path_when_unset():
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert state.model_dump()["script_path"] is None
+
+
+def test_model_dump_exclude_none_omits_unset_script_path():
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert "script_path" not in state.model_dump(exclude_none=True)

@@ -254,6 +254,7 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 workflow_budget=getattr(payload, "workflow_budget", None),
                 budget_exhausted_scope=getattr(payload, "budget_exhausted_scope", None),
                 relaunch_kind=getattr(payload, "relaunch_kind", None),
+                script_path=getattr(payload, "script_path", None),
                 phase_type=getattr(payload, "phase_type", None),
                 nested_phase=getattr(payload, "nested_phase", None),
                 parent_phase=getattr(payload, "parent_phase", None),
