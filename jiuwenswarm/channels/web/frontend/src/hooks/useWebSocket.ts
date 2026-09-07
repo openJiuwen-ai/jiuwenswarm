@@ -4158,22 +4158,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
 
-      // ── SwarmFlow: swarmflow.activated → 前端切换树视图（黏性视图标志，不触碰用户配置）──
-      webClient.on('swarmflow.activated', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
-        if (!sessionId) return;
-        useSessionStore.getState().setSwarmflowViewActive(sessionId);
-      }),
-
-      // ── SwarmFlow: swarmflow.deactivated → 不切回看板 ──
-      // 一旦会话出现过 swarmflow 事件，就保持树视图布局。
-      // deactivated 事件仅用于日志/状态标记，不改变视图。
-      webClient.on('swarmflow.deactivated', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
-        if (!sessionId) return;
-        // 粘性标志：不设回 false，保持树视图
-      }),
-
       webClient.on('team.task', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;

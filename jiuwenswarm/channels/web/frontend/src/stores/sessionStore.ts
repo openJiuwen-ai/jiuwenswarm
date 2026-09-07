@@ -442,8 +442,6 @@ export interface SessionRuntime {
   enabledMcps: string[];
   /** 是否已从后端快照恢复，或已由用户在本地明确修改。 */
   extensionsHydrated: boolean;
-  /** SwarmFlow 是否激活（曾收到过 swarmflow 事件即置真，粘性） */
-  swarmflowActive: boolean;
   /** 本会话是否启用 swarmflow（会话级，随 chat.send 下发） */
   enableSwarmflow: boolean;
   /** 本会话 swarmflow token 上限（留空=不限） */
@@ -477,7 +475,6 @@ function createEmptyRuntime(sessionId?: string): SessionRuntime {
     enabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
-    swarmflowActive: false,
     enableSwarmflow: false,
     swarmflowBudget: null,
     workflowRuns: [],
@@ -587,8 +584,7 @@ interface SessionState {
   /** 增量合并一条 workflow 更新到 workflowRuns */
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
-  setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;  /** 置位 swarmflowActive 粘性视图标志（置真后不再回 false）；后端 swarmflow.activated 事件专用 */
-  setSwarmflowViewActive: (sessionId: string) => void;
+  setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
   /** 懒加载 phase 完整 agents（command.workflows get_phase） */
   loadPhaseAgents: (
     sessionId: string,
@@ -1591,7 +1587,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            swarmflowActive: true,
             workflowRuns: applyWorkflowUpdateImpl(runtime.workflowRuns, workflow),
           },
         },
@@ -1660,19 +1655,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             enableSwarmflow: active,
             swarmflowBudget: nextBudget,
           },
-        },
-      };
-    });
-  },
-
-  setSwarmflowViewActive: (sessionId) => {
-    set((state) => {
-      const rt = state.runtimes[sessionId];
-      if (!rt) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...rt, swarmflowActive: true },
         },
       };
     });
