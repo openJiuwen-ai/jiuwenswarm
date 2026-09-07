@@ -78,6 +78,7 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     YuanrongAgentFileError,
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
+    apply_trace_header,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
 from jiuwenswarm.gateway import ChannelManager
@@ -125,6 +126,23 @@ _WS_CONNECT_RETRYABLE_TEXT_TOKENS = (
 def _should_log_ws_retry(attempt: int) -> bool:
     """Log retry WARNING sparsely: first attempt + every 10th attempt."""
     return attempt == 1 or attempt % 10 == 0
+
+
+async def _connect_ws_client(
+    client: Any,
+    uri: str,
+    *,
+    extra_headers: Mapping[str, str] | None = None,
+) -> None:
+    """Connect a WS client; test doubles may not accept extra_headers."""
+    connect = client.connect
+    if extra_headers:
+        try:
+            await connect(uri, extra_headers=extra_headers)
+            return
+        except TypeError:
+            pass
+    await connect(uri)
 
 
 def _is_team_mode(params: Any) -> bool:
@@ -1231,7 +1249,11 @@ class AgentOSRouterClient(AgentServerClient):
                 attempt=attempt,
             )
             try:
-                await client.connect(uri)
+                await _connect_ws_client(
+                    client,
+                    uri,
+                    extra_headers=apply_trace_header({}),
+                )
                 log_agentos(
                     logger,
                     logging.INFO,
@@ -2262,6 +2284,7 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_info.agent_type,
             instance=instance_id,
             latency_ms=latency_ms,
+            trace_id=str(sandbox.metadata.get("trace_id") or ""),
         )
 
         task = asyncio.create_task(

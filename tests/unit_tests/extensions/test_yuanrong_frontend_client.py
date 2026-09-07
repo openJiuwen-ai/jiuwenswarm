@@ -13,13 +13,25 @@ from jiuwenswarm.extensions import yuanrong_frontend_client as yuanrong_mod
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    TRACE_ID_HEADER,
     RuntimeProbeSettings,
     YuanrongAgentApiError,
     YuanrongAgentFileError,
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
     _is_agent_running,
+    apply_trace_header,
+    extract_trace_id,
+    normalize_trace_id,
 )
+
+
+def _header(captured: dict[str, str], name: str) -> str:
+    target = name.lower()
+    for key, value in captured.items():
+        if str(key).lower() == target:
+            return str(value)
+    return ""
 
 _CREATE_INSTANCE_ID = "0b6c6322-6533-4901-8000-00000000bb0b"
 
@@ -30,12 +42,15 @@ def _fake_agent_get_urlopen(
     *,
     requests: list[tuple[str, str, bytes | None]] | None = None,
     get_bodies: list[bytes] | None = None,
+    headers: list[dict[str, str]] | None = None,
 ):
     """Mock urlopen for GET /api/agent/:id (and ignore timeout)."""
     del timeout
     body = req.data
     if requests is not None:
         requests.append((req.method, req.full_url, body))
+    if headers is not None:
+        headers.append(dict(req.header_items()))
     resp = MagicMock()
     resp.status = 200
     if req.method == "GET" and "/api/agent/" in req.full_url:
@@ -62,12 +77,14 @@ class YuanrongFrontendAgentClientProbe(YuanrongFrontendAgentClient):
         user_id: str | None = None,
         req_method: str | None = None,
         stream: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, str]:
         return self._invoke_headers(
             session_id,
             user_id=user_id,
             req_method=req_method,
             stream=stream,
+            request_id=request_id,
         )
 
     def parse_agent_file_list_response(
@@ -95,19 +112,31 @@ def client() -> YuanrongFrontendAgentClientProbe:
     )
 
 
+def test_normalize_and_extract_trace_id():
+    assert normalize_trace_id("t-20260903-001") == "t-20260903-001"
+    assert len(normalize_trace_id("")) == 36
+    assert extract_trace_id({"X-Trace-Id": "abc"}) == "abc"
+    assert extract_trace_id({"x-trace-id": "abc"}) == "abc"
+    assert apply_trace_header({"Content-Type": "application/json"}, "req-1")[
+        TRACE_ID_HEADER
+    ] == "req-1"
+
+
 def test_invoke_headers_without_user_id(client: YuanrongFrontendAgentClientProbe):
-    headers = client.invoke_headers("sess-1")
+    headers = client.invoke_headers("sess-1", request_id="req-1")
 
     assert "X-Session-Context" not in headers
     instance = json.loads(headers["X-Instance-Session"])
     assert instance == {"sessionID": "sess-1", "sessionTTL": 900, "concurrency": 2}
+    assert headers[TRACE_ID_HEADER] == "req-1"
 
 
 def test_invoke_headers_with_user_id(client: YuanrongFrontendAgentClientProbe):
-    headers = client.invoke_headers("sess-1", user_id="alice")
+    headers = client.invoke_headers("sess-1", user_id="alice", request_id="req-2")
 
     assert json.loads(headers["X-Session-Context"]) == {"sessionCtx": "alice"}
     assert json.loads(headers["X-Instance-Session"]) == {"sessionID": "sess-1", "sessionTTL": 900, "concurrency": 2}
+    assert headers[TRACE_ID_HEADER] == "req-2"
 
 
 def test_invoke_headers_stream_accepts_sse(client: YuanrongFrontendAgentClientProbe):
@@ -115,6 +144,7 @@ def test_invoke_headers_stream_accepts_sse(client: YuanrongFrontendAgentClientPr
 
     assert headers["Accept"] == "text/event-stream"
     assert json.loads(headers["X-Session-Context"]) == {"sessionCtx": "bob"}
+    assert headers[TRACE_ID_HEADER]
 
 
 @pytest.mark.asyncio
@@ -145,6 +175,9 @@ async def test_send_request_passes_user_id_in_session_context(client: YuanrongFr
 
     assert response.ok is True
     assert json.loads(captured["X-session-context"]) == {"sessionCtx": "alice"}
+    minted = _header(captured, TRACE_ID_HEADER)
+    assert minted
+    assert minted != "req-1"
 
 
 @pytest.mark.asyncio
@@ -278,9 +311,86 @@ async def test_create_and_delete_sandbox_calls_agent_api(client: YuanrongFronten
 
 
 @pytest.mark.asyncio
+async def test_agent_api_sends_x_trace_id(client: YuanrongFrontendAgentClientProbe):
+    await client.connect("http://127.0.0.1:8080")
+    captured: list[dict[str, str]] = []
+
+    def fake_urlopen(req, timeout=0):
+        del timeout
+        captured.append(dict(req.header_items()))
+        resp = MagicMock()
+        resp.status = 200
+        if req.method == "POST" and req.full_url.endswith("/api/agent"):
+            resp.read.return_value = (
+                b'{"code":200,"instance_id":"0b6c6322-6533-4901-8000-00000000bb0b"}'
+            )
+        else:
+            resp.read.return_value = b'{"code":200}'
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        sandbox = await client.create_sandbox(
+            namespace="default",
+            name="alice+coder",
+            workspace="/home/agentos",
+            runtime_spec=_INLINE_RUNTIME_SPEC,
+            trace_id="t-20260903-001",
+        )
+        await client.delete_sandbox(sandbox.sandbox_id, trace_id="t-20260903-001")
+        await client.get_agent_info(sandbox.sandbox_id, trace_id="t-20260903-001")
+
+    assert sandbox.metadata.get("trace_id") == "t-20260903-001"
+    assert [_header(item, TRACE_ID_HEADER) for item in captured] == [
+        "t-20260903-001",
+        "t-20260903-001",
+        "t-20260903-001",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_api_mints_unique_trace_id_per_call(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+    captured: list[dict[str, str]] = []
+
+    def fake_urlopen(req, timeout=0):
+        del timeout
+        captured.append(dict(req.header_items()))
+        resp = MagicMock()
+        resp.status = 200
+        if req.method == "POST" and req.full_url.endswith("/api/agent"):
+            resp.read.return_value = (
+                b'{"code":200,"instance_id":"0b6c6322-6533-4901-8000-00000000bb0b"}'
+            )
+        else:
+            resp.read.return_value = b'{"code":200}'
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        sandbox = await client.create_sandbox(
+            namespace="default",
+            name="alice+coder",
+            workspace="/home/agentos",
+            runtime_spec=_INLINE_RUNTIME_SPEC,
+        )
+        await client.delete_sandbox(sandbox.sandbox_id)
+        await client.get_agent_info(sandbox.sandbox_id)
+
+    ids = [_header(item, TRACE_ID_HEADER) for item in captured]
+    assert all(ids)
+    assert len(set(ids)) == 3
+    assert sandbox.metadata.get("trace_id") == ids[0]
+
+
+@pytest.mark.asyncio
 async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgentClientProbe):
     await client.connect("http://127.0.0.1:8080")
-    client._do_agent_delete = lambda instance_id: (  # noqa: ARG005
+    client._do_agent_delete = lambda instance_id, trace_id=None: (  # noqa: ARG005
         404,
         '{"code":404,"message":"not found"}',
     )
@@ -490,6 +600,7 @@ async def test_wait_until_running_polls_get_until_status_running(
 ):
     await client.connect("http://127.0.0.1:8080")
     requests: list[tuple[str, str, bytes | None]] = []
+    captured_headers: list[dict[str, str]] = []
     get_bodies = [
         b'{"code":404,"message":"instance not found or not running"}',
         b'{"code":200,"instance":{"instance_id":"'
@@ -507,7 +618,11 @@ async def test_wait_until_running_polls_get_until_status_running(
 
     def fake_urlopen(req, timeout=0):
         return _fake_agent_get_urlopen(
-            req, timeout, requests=requests, get_bodies=get_bodies
+            req,
+            timeout,
+            requests=requests,
+            get_bodies=get_bodies,
+            headers=captured_headers,
         )
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
@@ -521,6 +636,45 @@ async def test_wait_until_running_polls_get_until_status_running(
         item[1] == f"http://127.0.0.1:8080/api/agent/{_CREATE_INSTANCE_ID}"
         for item in get_calls
     )
+    poll_ids = [_header(item, TRACE_ID_HEADER) for item in captured_headers]
+    assert len(poll_ids) == 3
+    assert all(poll_ids)
+    assert len(set(poll_ids)) == 1
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_reuses_explicit_trace_id(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await client.connect("http://127.0.0.1:8080")
+    captured_headers: list[dict[str, str]] = []
+    get_bodies = [
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"creating"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running"}}',
+    ]
+
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(yuanrong_mod.asyncio, "sleep", instant_sleep)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req, timeout, get_bodies=get_bodies, headers=captured_headers
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        await client.wait_until_running(
+            _CREATE_INSTANCE_ID, trace_id="t-20260903-001"
+        )
+
+    poll_ids = [_header(item, TRACE_ID_HEADER) for item in captured_headers]
+    assert poll_ids == ["t-20260903-001", "t-20260903-001"]
 
 
 @pytest.mark.asyncio
@@ -848,6 +1002,7 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
         captured["url"] = req.full_url
         captured["method"] = req.get_method()
         captured["authorization"] = dict(req.header_items()).get("Authorization")
+        captured["headers"] = dict(req.header_items())
         resp = MagicMock()
         resp.status = 200
         resp.read.return_value = json.dumps(
@@ -864,6 +1019,7 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
             mode="0755",
             recursive=True,
             auth_headers={"Authorization": "Bearer tok-mkdir"},
+            trace_id="t-mkdir-1",
         )
 
     assert result["created"] is True
@@ -873,6 +1029,7 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
     assert "path=%2Fhome%2Fagentos%2Fsub" in captured["url"]
     assert "mode=0755" in captured["url"]
     assert "recursive=true" in captured["url"]
+    assert _header(captured["headers"], TRACE_ID_HEADER) == "t-mkdir-1"
 
 
 @pytest.mark.asyncio

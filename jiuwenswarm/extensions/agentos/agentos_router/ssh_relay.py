@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
+from jiuwenswarm.extensions.yuanrong_frontend_client import normalize_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -176,11 +177,15 @@ class YuanrongSshRelay:
     def client_keys_dir(self) -> str:
         return self._settings.client_keys_dir
 
-    def backend_username(self, instance_id: str) -> str:
+    def backend_username(self, instance_id: str, *, trace_id: str = "") -> str:
         instance = str(instance_id or "").strip()
         if not instance:
             raise ValueError("instance_id is required for YuanRong SSH relay")
-        return self._settings.user_template.format(instance=instance)
+        username = self._settings.user_template.format(instance=instance)
+        tid = str(trace_id or "").strip()
+        if tid:
+            username = f"{username}:trace={urllib.parse.quote(tid, safe='')}"
+        return username
 
     async def run(
         self,
@@ -287,7 +292,6 @@ class YuanrongSshRelay:
                 "yuanrong ssh host is empty "
                 "(set gateway.agent_client.frontend_endpoint with a hostname)"
             )
-        username = self.backend_username(instance_id)
         client_keys = self._resolve_client_keys(user_id)
         keys_dir = resolve_client_keys_dir(self._settings.client_keys_dir, user_id)
         deadline = (
@@ -296,6 +300,9 @@ class YuanrongSshRelay:
         attempt = 0
         while True:
             attempt += 1
+            username = self.backend_username(
+                instance_id, trace_id=normalize_trace_id()
+            )
             log_agentos(
                 logger,
                 logging.DEBUG,

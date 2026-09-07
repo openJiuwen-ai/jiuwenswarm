@@ -120,6 +120,14 @@ def test_backend_username_uses_yr_instance_template() -> None:
         relay.backend_username("inst-42")
         == "yr:instance:inst-42:port=2222"
     )
+    assert (
+        relay.backend_username("inst-42", trace_id="t-20260903-001")
+        == "yr:instance:inst-42:port=2222:trace=t-20260903-001"
+    )
+    assert (
+        relay.backend_username("default-alice+coder", trace_id="a b")
+        == "yr:instance:default-alice+coder:port=2222:trace=a%20b"
+    )
     assert relay.backend_host == "frontend.yuanrong.test"
     assert relay.backend_port == 2222
 

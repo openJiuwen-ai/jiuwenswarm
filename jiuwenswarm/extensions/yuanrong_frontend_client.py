@@ -20,6 +20,41 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Mapping, TypedDict
 
+TRACE_ID_HEADER = "X-Trace-Id"
+_TRACE_ID_MAX_LEN = 128
+
+
+def normalize_trace_id(value: str | None = None) -> str:
+    """Use the caller value, or mint a UUID (frontend also caps at 128 chars)."""
+    text = str(value or "").strip()
+    if not text:
+        text = str(uuid.uuid4())
+    return text[:_TRACE_ID_MAX_LEN]
+
+
+def extract_trace_id(headers: Mapping[str, Any] | None) -> str:
+    """Read ``X-Trace-Id`` from headers (any case). Empty when absent."""
+    if not headers:
+        return ""
+    for key, raw in headers.items():
+        if str(key).lower() == "x-trace-id":
+            return str(raw or "").strip()
+    return ""
+
+
+def apply_trace_header(
+    headers: Mapping[str, str] | None,
+    trace_id: str | None = None,
+) -> dict[str, str]:
+    """Set canonical ``X-Trace-Id``; prefer explicit, then existing header, then mint."""
+    merged = {str(key): str(value) for key, value in dict(headers or {}).items()}
+    resolved = normalize_trace_id(trace_id or extract_trace_id(merged))
+    return {
+        key: value
+        for key, value in merged.items()
+        if str(key).lower() != "x-trace-id"
+    } | {TRACE_ID_HEADER: resolved}
+
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import (
@@ -300,6 +335,28 @@ class AgentFileDownloadChunk:
     eof: bool
 
 
+@dataclass(frozen=True)
+class _AgentFileRequest:
+    """Shared identity/auth for agent file HTTP calls (G.FNM.03)."""
+
+    instance_id: str
+    path: str
+    auth_headers: dict[str, str]
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _InvokeStreamCall:
+    """Inputs for one threaded stream invoke (G.FNM.03)."""
+
+    payload: dict[str, Any]
+    session_id: str
+    out_queue: asyncio.Queue[tuple[str, str | None]]
+    loop: asyncio.AbstractEventLoop
+    user_id: str | None = None
+    request_id: str | None = None
+
+
 class YuanrongAgentFileError(RuntimeError):
     """Raised when YuanRong agent file upload/download/list/mkdir fails."""
 
@@ -454,6 +511,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         runtime_spec: AgentRuntimeSpec | Mapping[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[AgentMount] | None = None,
+        trace_id: str | None = None,
     ) -> SandboxInfo:
         """Create a detached agent instance via POST /api/agent (inline mode).
 
@@ -495,7 +553,10 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if mounts:
             payload["mounts"] = list(mounts)
 
-        status, body = await asyncio.to_thread(self._do_agent_create, payload)
+        resolved_trace_id = normalize_trace_id(trace_id)
+        status, body = await asyncio.to_thread(
+            self._do_agent_create, payload, resolved_trace_id
+        )
         parsed = self._parse_agent_api_response(body, status)
         instance_id = str(parsed.get("instance_id") or "").strip()
         if not instance_id:
@@ -515,20 +576,25 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 "env_vars": dict(payload.get("env_vars") or {}),
                 "mounts": list(payload.get("mounts") or []),
                 "provisioning": "yuanrong_agent_api_inline",
+                "trace_id": resolved_trace_id,
             },
         )
         logger.info(
             "[YuanrongFrontendAgentClient] create_sandbox: "
-            "instance_id=%s name=%s namespace=%s runtime=%s imageurl=%s",
+            "instance_id=%s name=%s namespace=%s runtime=%s imageurl=%s "
+            "trace_id=%s",
             instance_id,
             normalized_name,
             normalized_namespace,
             normalized_runtime_spec.get("runtime"),
             (normalized_runtime_spec.get("rootfs") or {}).get("imageurl"),
+            resolved_trace_id,
         )
         return info
 
-    async def delete_sandbox(self, sandbox_id: str) -> None:
+    async def delete_sandbox(
+        self, sandbox_id: str, *, trace_id: str | None = None
+    ) -> None:
         """Destroy a detached agent instance via DELETE /api/agent/:instanceId."""
         self._ensure_connected()
         normalized_sandbox_id = str(sandbox_id or "").strip()
@@ -538,6 +604,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         status, body = await asyncio.to_thread(
             self._do_agent_delete,
             normalized_sandbox_id,
+            trace_id,
         )
         if self._agent_api_not_found(status, body):
             logger.info(
@@ -551,7 +618,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             normalized_sandbox_id,
         )
 
-    async def get_agent_info(self, instance_id: str) -> dict[str, Any]:
+    async def get_agent_info(
+        self, instance_id: str, *, trace_id: str | None = None
+    ) -> dict[str, Any]:
         """Query agent instance info via GET /api/agent/:instanceId.
 
         Returns the ``instance`` dict (contains node_ip, sandbox_ip,
@@ -561,7 +630,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         normalized_id = str(instance_id or "").strip()
         if not normalized_id:
             raise ValueError("instance_id is required to get agent info")
-        status, body = await asyncio.to_thread(self._do_agent_get, normalized_id)
+        status, body = await asyncio.to_thread(
+            self._do_agent_get, normalized_id, trace_id
+        )
         parsed = self._parse_agent_api_response(body, status)
         instance = parsed.get("instance")
         if not isinstance(instance, dict):
@@ -573,7 +644,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             instance["status"] = top_status
         return instance
 
-    async def wait_until_running(self, instance_id: str) -> dict[str, Any]:
+    async def wait_until_running(
+        self, instance_id: str, *, trace_id: str | None = None
+    ) -> dict[str, Any]:
         """Poll GET /api/agent/:id until ``status`` is explicitly ``running``.
 
         Create is asynchronous: the port probe completes after POST returns
@@ -599,11 +672,15 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         attempt = 0
         last_error: BaseException | None = None
         last_status = ""
+        # Only GET poll retries share one id; every other YuanRong call mints.
+        poll_trace_id = normalize_trace_id(trace_id)
         while True:
             attempt += 1
             instance: dict[str, Any] = {}
             try:
-                instance = await self.get_agent_info(normalized_id)
+                instance = await self.get_agent_info(
+                    normalized_id, trace_id=poll_trace_id
+                )
                 last_error = None
             except YuanrongAgentApiError as exc:
                 last_error = exc
@@ -618,10 +695,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 if attempt > 1:
                     logger.info(
                         "[YuanrongFrontendAgentClient] instance running after GET poll: "
-                        "instance_id=%s attempt=%s status=%s",
+                        "instance_id=%s attempt=%s status=%s trace_id=%s",
                         normalized_id,
                         attempt,
                         status or _AGENT_RUNNING_STATUS,
+                        poll_trace_id,
                     )
                 return instance
             remaining = deadline - asyncio.get_running_loop().time()
@@ -634,17 +712,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 raise YuanrongAgentApiError(
                     f"agent instance not running after "
                     f"{timeout_s:.0f}s: "
-                    f"instance_id={normalized_id}, last={detail}"
+                    f"instance_id={normalized_id}, last={detail}, "
+                    f"trace_id={poll_trace_id}"
                 )
             sleep_for = min(interval_s, remaining)
             logger.debug(
                 "[YuanrongFrontendAgentClient] GET not running yet: "
-                "instance_id=%s attempt=%s status=%s sleep=%.1fs last_error=%s",
+                "instance_id=%s attempt=%s status=%s sleep=%.1fs last_error=%s "
+                "trace_id=%s",
                 normalized_id,
                 attempt,
                 status or "empty",
                 sleep_for,
                 type(last_error).__name__ if last_error is not None else "-",
+                poll_trace_id,
             )
             await asyncio.sleep(sleep_for)
 
@@ -655,6 +736,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         data: bytes,
         *,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Upload a file into an agent container via POST /api/agent/:id/files/upload."""
         self._ensure_connected()
@@ -670,6 +752,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             normalized_path,
             data,
             dict(auth_headers or {}),
+            trace_id,
         )
         return self._parse_agent_file_upload_response(body, status, normalized_path, len(data))
 
@@ -681,6 +764,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         offset: int = 0,
         limit: int = 65536,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> AgentFileDownloadChunk:
         """Download a file chunk from GET /api/agent/:id/files/download (Range)."""
         self._ensure_connected()
@@ -694,11 +778,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         resolved_limit = max(int(limit), 1)
         status, data, content_type, total_size = await asyncio.to_thread(
             self._do_agent_file_download,
-            normalized_id,
-            normalized_path,
+            _AgentFileRequest(
+                instance_id=normalized_id,
+                path=normalized_path,
+                auth_headers=dict(auth_headers or {}),
+                trace_id=trace_id,
+            ),
             resolved_offset,
             resolved_limit,
-            dict(auth_headers or {}),
         )
         if status in {404, 413} or status >= 500 or not (200 <= status < 300):
             self._raise_agent_file_http_error(status, data)
@@ -724,6 +811,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         recursive: bool = False,
         max_depth: int = 0,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """List files in an agent container via GET /api/agent/:id/files/list."""
         self._ensure_connected()
@@ -737,11 +825,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise ValueError("max_depth must be >= 0")
         status, body = await asyncio.to_thread(
             self._do_agent_file_list,
-            normalized_id,
-            normalized_path,
+            _AgentFileRequest(
+                instance_id=normalized_id,
+                path=normalized_path,
+                auth_headers=dict(auth_headers or {}),
+                trace_id=trace_id,
+            ),
             bool(recursive),
             int(max_depth),
-            dict(auth_headers or {}),
         )
         return self._parse_agent_file_list_response(body, status)
 
@@ -753,6 +844,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         mode: str | None = None,
         recursive: bool = False,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a directory in an agent container via POST /api/agent/:id/files/mkdir."""
         self._ensure_connected()
@@ -771,11 +863,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         normalized_mode = self._normalize_mkdir_mode(mode)
         status, body = await asyncio.to_thread(
             self._do_agent_file_mkdir,
-            normalized_id,
-            normalized_path,
+            _AgentFileRequest(
+                instance_id=normalized_id,
+                path=normalized_path,
+                auth_headers=dict(auth_headers or {}),
+                trace_id=trace_id,
+            ),
             normalized_mode,
             bool(recursive),
-            dict(auth_headers or {}),
         )
         return self._parse_agent_file_mkdir_response(body, status, normalized_path)
 
@@ -854,12 +949,16 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         return text
 
     @staticmethod
-    def _merge_auth_headers(base_headers: dict[str, str], auth_headers: dict[str, str]) -> dict[str, str]:
+    def _merge_auth_headers(
+        base_headers: dict[str, str],
+        auth_headers: dict[str, str],
+        trace_id: str | None = None,
+    ) -> dict[str, str]:
         merged = dict(base_headers)
         for key, value in auth_headers.items():
             if value is not None and str(value).strip():
                 merged[str(key)] = str(value)
-        return merged
+        return apply_trace_header(merged, trace_id)
 
     @staticmethod
     def _encode_multipart_form(
@@ -1075,6 +1174,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         path: str,
         data: bytes,
         auth_headers: dict[str, str],
+        trace_id: str | None = None,
     ) -> tuple[int, str]:
         payload, content_type = self._encode_multipart_form(
             {"path": path},
@@ -1082,7 +1182,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             file_bytes=data,
             filename=path.rsplit("/", 1)[-1] or "file",
         )
-        headers = self._merge_auth_headers({"Content-Type": content_type}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Content-Type": content_type}, auth_headers, trace_id
+        )
         req = urllib.request.Request(
             self._agent_files_upload_url(instance_id),
             data=payload,
@@ -1097,17 +1199,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
 
     def _do_agent_file_download(
         self,
-        instance_id: str,
-        path: str,
+        request: _AgentFileRequest,
         offset: int,
         limit: int,
-        auth_headers: dict[str, str],
     ) -> tuple[int, bytes, str, int]:
-        headers = self._merge_auth_headers({"Accept": "*/*"}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Accept": "*/*"}, request.auth_headers, request.trace_id
+        )
         end = offset + limit - 1
         headers["Range"] = f"bytes={offset}-{end}"
         req = urllib.request.Request(
-            self._agent_files_download_url(instance_id, path),
+            self._agent_files_download_url(request.instance_id, request.path),
             headers=headers,
             method="GET",
         )
@@ -1130,8 +1232,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             logger.error(
                 "[YuanrongFrontendAgentClient] file download HTTP error: "
                 "instance=%s path=%s code=%d",
-                instance_id,
-                path,
+                request.instance_id,
+                request.path,
                 status,
             )
             return status, body, "application/octet-stream", 0
@@ -1139,8 +1241,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             logger.error(
                 "[YuanrongFrontendAgentClient] file download failed: "
                 "instance=%s path=%s error=%s",
-                instance_id,
-                path,
+                request.instance_id,
+                request.path,
                 err,
             )
             if self._is_timeout_error(err):
@@ -1151,17 +1253,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
 
     def _do_agent_file_list(
         self,
-        instance_id: str,
-        path: str,
+        request: _AgentFileRequest,
         recursive: bool,
         max_depth: int,
-        auth_headers: dict[str, str],
     ) -> tuple[int, str]:
-        headers = self._merge_auth_headers({"Accept": "application/json"}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Accept": "application/json"}, request.auth_headers, request.trace_id
+        )
         req = urllib.request.Request(
             self._agent_files_list_url(
-                instance_id,
-                path,
+                request.instance_id,
+                request.path,
                 recursive=recursive,
                 max_depth=max_depth,
             ),
@@ -1176,17 +1278,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
 
     def _do_agent_file_mkdir(
         self,
-        instance_id: str,
-        path: str,
+        request: _AgentFileRequest,
         mode: str | None,
         recursive: bool,
-        auth_headers: dict[str, str],
     ) -> tuple[int, str]:
-        headers = self._merge_auth_headers({"Accept": "application/json"}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Accept": "application/json"}, request.auth_headers, request.trace_id
+        )
         req = urllib.request.Request(
             self._agent_files_mkdir_url(
-                instance_id,
-                path,
+                request.instance_id,
+                request.path,
                 mode=mode,
                 recursive=recursive,
             ),
@@ -1278,12 +1380,16 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         text = str(err).lower()
         return "timed out" in text or "timeout" in type(err).__name__.lower()
 
-    def _do_agent_create(self, payload: dict[str, Any]) -> tuple[int, str]:
+    def _do_agent_create(
+        self, payload: dict[str, Any], trace_id: str | None = None
+    ) -> tuple[int, str]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             self._agent_create_url(),
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=apply_trace_header(
+                {"Content-Type": "application/json"}, trace_id
+            ),
             method="POST",
         )
         return self._urlopen_request(
@@ -1292,10 +1398,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise_on_timeout=True,
         )
 
-    def _do_agent_delete(self, instance_id: str) -> tuple[int, str]:
+    def _do_agent_delete(
+        self, instance_id: str, trace_id: str | None = None
+    ) -> tuple[int, str]:
         req = urllib.request.Request(
             self._agent_delete_url(instance_id),
-            headers={"Content-Type": "application/json"},
+            headers=apply_trace_header(
+                {"Content-Type": "application/json"}, trace_id
+            ),
             method="DELETE",
         )
         return self._urlopen_request(
@@ -1304,10 +1414,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise_on_timeout=True,
         )
 
-    def _do_agent_get(self, instance_id: str) -> tuple[int, str]:
+    def _do_agent_get(
+        self, instance_id: str, trace_id: str | None = None
+    ) -> tuple[int, str]:
         req = urllib.request.Request(
             self._agent_delete_url(instance_id),  # same URL: /api/agent/{instanceId}
-            headers={"Content-Type": "application/json"},
+            headers=apply_trace_header(
+                {"Content-Type": "application/json"}, trace_id
+            ),
             method="GET",
         )
         return self._urlopen_request(
@@ -1505,6 +1619,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         user_id: str | None = None,
         req_method: str | None = None,
         stream: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, str]:
         """构造 faas invocation 请求头.
 
@@ -1547,18 +1662,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 session_id,
                 stream,
             )
-        return headers
+        return apply_trace_header(headers, request_id)
 
     def _do_invoke(
         self,
         payload: dict[str, Any],
         session_id: str,
         user_id: str | None = None,
+        request_id: str | None = None,
     ) -> tuple[int, str]:
         headers = self._invoke_headers(
             session_id,
             user_id=user_id,
             req_method=payload.get("method"),
+            request_id=request_id,
         )
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
@@ -1622,11 +1739,13 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         reader_task = asyncio.create_task(
             asyncio.to_thread(
                 self._do_invoke_stream,
-                payload,
-                session_id,
-                queue,
-                loop,
-                envelope.user_id,
+                _InvokeStreamCall(
+                    payload=payload,
+                    session_id=session_id,
+                    out_queue=queue,
+                    loop=loop,
+                    user_id=envelope.user_id,
+                ),
             )
         )
         try:
@@ -1668,30 +1787,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             except asyncio.CancelledError:
                 pass
 
-    def _do_invoke_stream(
-        self,
-        payload: dict[str, Any],
-        session_id: str,
-        out_queue: asyncio.Queue[tuple[str, str | None]],
-        loop: asyncio.AbstractEventLoop,
-        user_id: str | None = None,
-    ) -> None:
+    def _do_invoke_stream(self, call: _InvokeStreamCall) -> None:
         """执行流式 HTTP 调用（在线程中运行）.
 
         Args:
-            payload: 请求负载
-            session_id: 会话ID
-            out_queue: 输出队列
-            loop: 事件循环
-            user_id: 用户ID（透传给 faas 的 X-Session-Context）
+            call: 流式调用的请求负载、会话上下文与输出通道
         """
         headers = self._invoke_headers(
-            session_id,
-            user_id=user_id,
-            req_method=payload.get("method"),
+            call.session_id,
+            user_id=call.user_id,
+            req_method=call.payload.get("method"),
             stream=True,
+            request_id=call.request_id,
         )
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        data = json.dumps(call.payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
 
         try:
@@ -1701,8 +1810,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 if not (200 <= status < 300):
                     text = resp.read().decode("utf-8", errors="replace")
                     logger.error("[YuanrontFrontendAgentClient] HTTP错误状态码: %d, 响应: %s", status, text[:500])
-                    loop.call_soon_threadsafe(
-                        out_queue.put_nowait,
+                    call.loop.call_soon_threadsafe(
+                        call.out_queue.put_nowait,
                         ("error", json.dumps({"http_status": status, "body": text}, ensure_ascii=False)),
                     )
                     return
@@ -1716,7 +1825,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                     if not chunk:
                         # 处理缓冲区中剩余的数据
                         if sse_line_buffer.strip():
-                            self._process_sse_chunk(sse_line_buffer, out_queue, loop)
+                            self._process_sse_chunk(
+                                sse_line_buffer, call.out_queue, call.loop
+                            )
                         break
 
                     chunk_text = chunk.decode("utf-8", errors="replace")
@@ -1733,16 +1844,18 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                         line_stripped = line.strip()
                         if line_stripped.startswith('data: '):
                             data_content = line_stripped[6:]  # 去掉 "data: " 前缀
-                            self._process_sse_chunk(data_content, out_queue, loop)
+                            self._process_sse_chunk(
+                                data_content, call.out_queue, call.loop
+                            )
         except urllib.error.HTTPError as err:
             text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
             logger.error(
                 "[YuanrontFrontendAgentClient] stream HTTP error: session_id=%s, code=%d",
-                session_id,
+                call.session_id,
                 getattr(err, "code", 500),
             )
-            loop.call_soon_threadsafe(
-                out_queue.put_nowait,
+            call.loop.call_soon_threadsafe(
+                call.out_queue.put_nowait,
                 (
                     "error",
                     json.dumps({
@@ -1754,12 +1867,16 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         except Exception as err:
             logger.error(
                 "[YuanrontFrontendAgentClient] stream request failed: session_id=%s, error=%s",
-                session_id,
+                call.session_id,
                 str(err),
             )
-            loop.call_soon_threadsafe(out_queue.put_nowait, ("exception", str(err)))
+            call.loop.call_soon_threadsafe(
+                call.out_queue.put_nowait, ("exception", str(err))
+            )
         finally:
-            loop.call_soon_threadsafe(out_queue.put_nowait, ("done", None))
+            call.loop.call_soon_threadsafe(
+                call.out_queue.put_nowait, ("done", None)
+            )
 
     def _process_sse_chunk(
         self,
