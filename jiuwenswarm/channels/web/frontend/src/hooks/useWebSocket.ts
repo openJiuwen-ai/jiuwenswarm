@@ -4155,6 +4155,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           | undefined;
         if (workflow && typeof workflow === 'object' && workflow.id) {
           useSessionStore.getState().applyWorkflowUpdate(sessionId, workflow);
+          // 终态清除交互卡：run 已结束但卡片仍在（stop/断连被杀的 waiting）时按 run_id 丢弃，
+          // 否则输入框会一直锁死。
+          if (
+            workflow.status === 'completed' ||
+            workflow.status === 'failed' ||
+            workflow.status === 'stopped'
+          ) {
+            const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestion;
+            if (pendingQuestion?.swarmflowMeta?.run_id === workflow.id) {
+              useChatStore.getState().setPendingQuestion(sessionId, null);
+            }
+          }
         }
       }),
 

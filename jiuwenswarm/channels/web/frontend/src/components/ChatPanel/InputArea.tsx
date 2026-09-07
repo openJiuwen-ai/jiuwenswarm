@@ -689,7 +689,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isCompactRunning = Boolean(
     activeSessionId && compactingSessionIds.has(activeSessionId),
   );
-  const composerDisabled = isCompactRunning || hasPendingQuestion;
+  // 并行场景：一个 agent 等人工、其它 agent 还在跑时开放输入以便 supplement，故要
+  // pendingQuestion 且无 running agent 才锁（而不是有 pendingQuestion 即锁）。
+  const hasRunningAgent = useSessionStore((s) => {
+    const runs = s.runtimes[activeSessionId ?? '']?.workflowRuns ?? [];
+    return runs.some((run) =>
+      run.phases?.some((phase) =>
+        phase.agents?.some((agent) => agent.status === 'running'),
+      ),
+    );
+  });
+  const composerDisabled = isCompactRunning || (hasPendingQuestion && !hasRunningAgent);
   const selectedAgentId = useSessionStore((s) => {
     const runtime = s.runtimes[activeSessionId ?? ''];
     if (runtime?.mode !== 'agent') return null;
