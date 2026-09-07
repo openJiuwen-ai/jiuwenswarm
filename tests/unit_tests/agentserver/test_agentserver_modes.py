@@ -2766,6 +2766,7 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "SignalBasedSuccessDetector", FakeDetector)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
 
     adapter = JiuWenSwarmDeepAdapter()
     adapter._model = Mock()
@@ -2777,6 +2778,7 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     assert captured["config"]["store_path"] == str(tmp_path / ".ttse" / "bank.json")
     assert captured["config"]["evolve_enabled"] is False
     assert captured["config"]["inject_enabled"] is True
+    assert captured["config"]["inject_mode"] == "legacy_system"
     assert captured["config"]["embedding"] is None
     assert captured["rail"]["model"] == "test-model"
     assert isinstance(captured["rail"]["success_detector"], FakeDetector)
@@ -2796,7 +2798,8 @@ def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
             captured["rail"] = kwargs
 
     class FakeDetector:
-        pass
+        def __init__(self, *args, **kwargs):
+            pass
 
     class FakeProvider:
         def __init__(self, **kwargs):
@@ -2806,6 +2809,7 @@ def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "SignalBasedSuccessDetector", FakeDetector)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
     monkeypatch.setattr(
         "openjiuwen.core.memory.lite.embeddings.OpenAICompatibleEmbeddingProvider",
         FakeProvider,
@@ -2851,12 +2855,14 @@ def test_build_ttse_rail_skips_embedding_when_incomplete(monkeypatch, tmp_path):
             captured["rail"] = kwargs
 
     class FakeDetector:
-        pass
+        def __init__(self, *args, **kwargs):
+            pass
 
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
     monkeypatch.setattr(interface_deep_module, "SignalBasedSuccessDetector", FakeDetector)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
 
     adapter = JiuWenSwarmDeepAdapter()
     adapter._model = Mock()

@@ -472,6 +472,7 @@ from jiuwenswarm.common.config import (
     get_sandbox_runtime,
     get_sandbox_startup_mode,
     get_skill_create_enabled,
+    _get_ttse_config,
     get_ttse_embedding_config,
     get_ttse_enabled,
     resolve_env_vars,
@@ -7100,6 +7101,55 @@ class JiuWenSwarmDeepAdapter:
             skill_evolution_rail = None
         return skill_evolution_rail
 
+    @staticmethod
+    def _coerce_ttse_inject_mode(value: Any) -> str:
+        """Normalize ``react.ttse.inject_mode``; unknown values keep legacy P:45."""
+        text = str(value or "").strip() or "legacy_system"
+        if text in {"legacy_system", "disk_catalog", "trailing_attach"}:
+            return text
+        return "legacy_system"
+
+    @staticmethod
+    def _coerce_ttse_bool(value: Any, default: bool) -> bool:
+        """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off", ""}:
+                return False
+        return default
+
+    def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """User yaml ``react.ttse`` plus adapter cache (yaml wins on known keys).
+
+        Catalog/adapter cache often has ``enabled`` without ``store_path``; falling
+        back only to workspace ``bank.json`` then splits inject vs induce.
+        """
+        merged: dict[str, Any] = {}
+        merged.update(_get_ttse_config(config if config is not None else self._config_cache))
+        try:
+            yaml_ttse = _get_ttse_config(get_config())
+        except Exception:
+            yaml_ttse = {}
+        for key in (
+            "store_path",
+            "evolve_enabled",
+            "inject_enabled",
+            "inject_mode",
+            "enabled",
+        ):
+            value = yaml_ttse.get(key)
+            if value not in (None, ""):
+                merged[key] = value
+        return merged
+
     def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
         """Build TTSERail for FACT/TIP dual-track self-evolution.
 
@@ -7114,13 +7164,11 @@ class JiuWenSwarmDeepAdapter:
         try:
             from openjiuwen.core.memory.lite.embeddings import OpenAICompatibleEmbeddingProvider
 
-            ttse_cfg = config.get("ttse") or {}
-            if not isinstance(ttse_cfg, dict):
-                ttse_cfg = {}
+            ttse_cfg = self._resolved_ttse_config(config)
             store_path = str(ttse_cfg.get("store_path") or "").strip() or str(
                 get_agent_workspace_dir() / ".ttse" / "bank.json"
             )
-            emb_cfg = get_ttse_embedding_config(config)
+            emb_cfg = get_ttse_embedding_config({"react": {"ttse": ttse_cfg}})
             embedding = None
             if emb_cfg:
                 embedding = OpenAICompatibleEmbeddingProvider(
@@ -7128,20 +7176,28 @@ class JiuWenSwarmDeepAdapter:
                     base_url=emb_cfg["base_url"],
                     model=emb_cfg["model"],
                 )
+            evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
+            inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
+            inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
             ttse_rail = TTSERail(
                 llm=self._model,
                 model=self._default_model_name or config.get("model_name", "gpt-4"),
                 ttse_config=TTSEConfig(
                     store_path=store_path,
-                    evolve_enabled=ttse_cfg.get("evolve_enabled", True),
-                    inject_enabled=ttse_cfg.get("inject_enabled", True),
+                    evolve_enabled=evolve_enabled,
+                    inject_enabled=inject_enabled,
+                    inject_mode=inject_mode,
                     embedding=embedding,
                 ),
                 success_detector=SignalBasedSuccessDetector(),
             )
             logger.info(
-                "[JiuWenSwarmDeepAdapter] TTSERail create success, store_path=%s has_embedding=%s",
+                "[JiuWenSwarmDeepAdapter] TTSERail create success, "
+                "store_path=%s evolve_enabled=%s inject_enabled=%s inject_mode=%s has_embedding=%s",
                 store_path,
+                evolve_enabled,
+                inject_enabled,
+                inject_mode,
                 embedding is not None,
             )
         except Exception as exc:
@@ -7149,9 +7205,48 @@ class JiuWenSwarmDeepAdapter:
             ttse_rail = None
         return ttse_rail
 
+    def _sync_ttse_rail_config(self, config: dict[str, Any] | None = None) -> None:
+        """Refresh live TTSERail flags/store from current react.ttse (no remount)."""
+        rail = self._ttse_rail
+        if rail is None:
+            return
+        ttse_cfg = self._resolved_ttse_config(config)
+        store_path = str(ttse_cfg.get("store_path") or "").strip() or str(
+            get_agent_workspace_dir() / ".ttse" / "bank.json"
+        )
+        evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
+        inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
+        inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
+        cfg = getattr(rail, "_ttse_config", None)
+        path_changed = False
+        if cfg is not None:
+            old_path = str(getattr(cfg, "store_path", "") or "")
+            cfg.store_path = store_path
+            cfg.evolve_enabled = evolve_enabled
+            cfg.inject_enabled = inject_enabled
+            cfg.inject_mode = inject_mode
+            path_changed = old_path != store_path
+        store = getattr(rail, "_ttse_store", None)
+        if path_changed and store is not None and hasattr(store, "_load_sync"):
+            store._load_sync()  # noqa: SLF001
+        sync_mode = getattr(rail, "sync_inject_mode", None)
+        if callable(sync_mode):
+            sync_mode()
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
+            "store_path=%s evolve_enabled=%s inject_enabled=%s inject_mode=%s",
+            store_path,
+            evolve_enabled,
+            inject_enabled,
+            inject_mode,
+        )
+
     async def _ensure_ttse_rail_registered(self) -> None:
-        """Build and register TTSERail when missing."""
-        if self._instance is None or self._ttse_rail is not None:
+        """Build and register TTSERail when missing; else refresh flags from yaml."""
+        if self._instance is None:
+            return
+        if self._ttse_rail is not None:
+            self._sync_ttse_rail_config(self._config_cache)
             return
         rail = self._build_ttse_rail(self._config_cache)
         if rail is None:
@@ -10112,9 +10207,12 @@ class JiuWenSwarmDeepAdapter:
         ):
             await self._unconfigure_active_evolution_rails()
 
-        if get_ttse_enabled(self._config_cache):
+        ttse_wrap = {"react": {"ttse": self._resolved_ttse_config()}}
+        if get_ttse_enabled(ttse_wrap):
             if self._ttse_rail is None:
                 await self._ensure_ttse_rail_registered()
+            else:
+                self._sync_ttse_rail_config(self._config_cache)
         elif self._ttse_rail is not None:
             await self._unconfigure_ttse_rail()
 

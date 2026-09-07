@@ -700,6 +700,7 @@ react:
     enabled: true          # agent 模式是否挂载 TTSERail
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
+    inject_mode: legacy_system  # legacy_system | disk_catalog | trailing_attach（默认 legacy_system，P:45 仍写 FACT/TIP）
     store_path: ""          # 空则落到 workspace/.ttse/bank.json
     # 语义检索 / dedup；三段齐全时启用 top-K 注入，否则回退整库
     embedding:
