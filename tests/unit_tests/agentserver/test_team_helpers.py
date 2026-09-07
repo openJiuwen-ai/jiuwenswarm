@@ -6506,3 +6506,94 @@ def test_normalize_recovered_runs_empty_and_none_returned_unchanged(monkeypatch)
     assert team_helpers._normalize_recovered_runs({}, "sess-empty") == {}
     assert team_helpers._normalize_recovered_runs(None, "sess-empty") is None
     assert persist_calls == []
+
+
+# ---------------------------------------------------------------------------
+# SDD-0018 §4.4-B: _inject_swarmflow_context — resume-advisory text prefix
+# ---------------------------------------------------------------------------
+
+def _advisory_turn(text: object) -> Any:
+    """Build a minimal UserTurn so _inject_swarmflow_context has a .text/.with_text."""
+    from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
+
+    return UserTurn(text=text, channel="web", language="zh", files={})
+
+
+def test_inject_swarmflow_context_cold_start_lists_non_terminal_runs() -> None:
+    turn = _advisory_turn("继续生成财务报表")
+    runs = {
+        "run-running": WorkflowRunState(
+            id="run-running", status="running", script_path="/abs/wf.py"
+        ),
+        "run-done": WorkflowRunState(id="run-done", status="completed"),
+    }
+
+    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=True)
+
+    assert isinstance(injected, team_helpers.UserTurn)
+    assert injected is not turn
+    assert isinstance(injected.text, str)
+    assert injected.text.startswith("[swarmflow-advisory]")
+    assert "[/swarmflow-advisory]" in injected.text
+    assert "可恢复状态" in injected.text
+    assert "run-running" in injected.text
+    assert "/abs/wf.py" in injected.text
+    assert 'swarmflow(resume_id="run-running", script_path="/abs/wf.py")' in injected.text
+    assert "run-done" not in injected.text
+    assert injected.text.endswith("\n\n继续生成财务报表")
+    # frozen turn untouched: original text preserved on the source object
+    assert turn.text == "继续生成财务报表"
+
+
+def test_inject_swarmflow_context_followup_lists_only_paused_runs() -> None:
+    turn = _advisory_turn("hi")
+    runs = {
+        "run-paused": WorkflowRunState(
+            id="run-paused", status="paused", script_path="/abs/w2.py"
+        ),
+        "run-running": WorkflowRunState(id="run-running", status="running"),
+        "run-done": WorkflowRunState(id="run-done", status="completed"),
+    }
+
+    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=False)
+
+    assert isinstance(injected.text, str)
+    assert "run-paused" in injected.text
+    assert "/abs/w2.py" in injected.text
+    assert "run-running" not in injected.text
+    assert "run-done" not in injected.text
+
+
+def test_inject_swarmflow_context_no_eligible_runs_returns_same_turn() -> None:
+    turn = _advisory_turn("hi")
+    all_terminal = {
+        "a": WorkflowRunState(id="a", status="completed"),
+        "b": WorkflowRunState(id="b", status="stopped"),
+    }
+
+    assert team_helpers._inject_swarmflow_context(turn, all_terminal, cold_start=True) is turn
+    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=True) is turn
+    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=False) is turn
+
+
+def test_inject_swarmflow_context_non_string_text_returns_same_turn() -> None:
+    turn = _advisory_turn({"type": "a2ui_event"})
+    runs = {
+        "run-paused": WorkflowRunState(
+            id="run-paused", status="paused", script_path="/abs/wf.py"
+        )
+    }
+
+    assert team_helpers._inject_swarmflow_context(turn, runs, cold_start=False) is turn
+
+
+def test_inject_swarmflow_context_run_without_script_path_has_no_resume_line() -> None:
+    turn = _advisory_turn("hi")
+    runs = {"legacy": WorkflowRunState(id="legacy-run", status="paused", script="wf.legacy")}
+
+    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=False)
+
+    assert isinstance(injected.text, str)
+    assert "legacy-run" in injected.text
+    assert "wf.legacy" in injected.text
+    assert "恢复调用" not in injected.text

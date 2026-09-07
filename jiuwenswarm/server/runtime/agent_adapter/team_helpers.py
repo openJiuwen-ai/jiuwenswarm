@@ -958,6 +958,44 @@ def _resolve_user_turn(
     )
 
 
+# 历史渲染过滤锚点：advisory 文本进历史时按此标记剔除（渲染层/摘要层各自过滤）。
+_ADVISORY_MARK = ("[swarmflow-advisory]", "[/swarmflow-advisory]")
+
+
+def _inject_swarmflow_context(
+    turn: UserTurn,
+    runs: dict[str, WorkflowRunState],
+    *,
+    cold_start: bool,
+) -> UserTurn:
+    """Prepend a resume-advisory prefix to the leader's user turn.
+
+    ``cold_start`` lists every non-terminal run; otherwise only paused runs.
+    Returns ``turn`` unchanged when there is nothing to inject or the text is
+    not a plain string (A2UI / InteractiveInput keep their own payload).
+    """
+    eligible = [
+        r for r in runs.values()
+        if ((not r.is_terminal) if cold_start else (r.status == "paused"))
+    ]
+    if not eligible or not isinstance(turn.text, str):
+        return turn
+    lines = [
+        _ADVISORY_MARK[0],
+        f"当前有 {len(eligible)} 个 swarmflow 工作流处于可恢复状态（已暂停）：",
+    ]
+    for r in eligible:
+        script = r.script_path or r.script or ""
+        lines.append(f"- run_id: {r.id}  脚本: {script}")
+        if r.script_path:
+            lines.append(
+                f"  恢复调用: swarmflow(resume_id=\"{r.id}\", script_path=\"{r.script_path}\")"
+            )
+    lines.append("以上信息仅在你认为需要恢复工作流时使用；与当前任务无关请直接忽略。")
+    lines.append(_ADVISORY_MARK[1])
+    return turn.with_text("\n".join(lines) + "\n\n" + turn.text)
+
+
 def _request_trusted_dirs(request: Any) -> list[str]:
     """Return the trusted directories declared by this request.
 
@@ -2546,6 +2584,14 @@ async def _process_team_message_stream(
             if query:
                 # Follow-up rounds carry their own attachments and context, so
                 # they are rendered exactly like the first one.
+                # 暂停后恢复裁决：仅把 paused run 清单前缀注入路由到 leader 的
+                # team-wide 纯文本；member/A2UI/InteractiveInput 保持原路径。
+                # args 由 agent-core 从 journal 自动恢复，提示只含 resume_id+script_path。
+                wf_handler = team_manager.get_workflow_handler(session_id)
+                runs = wf_handler.get_run_states() if wf_handler is not None else {}
+                if isinstance(query, str) and runs and not _is_member_addressed(query):
+                    turn = _inject_swarmflow_context(turn.with_text(query), runs, cold_start=False)
+                    query = turn.text if isinstance(turn.text, str) else query
                 followup_payload = _deliverable(turn, query)
                 await _begin_team_round()
                 success, reason = await team_manager.interact(
@@ -2748,6 +2794,13 @@ async def _process_team_message_stream(
             # Detaching it before prepare_runtime_activation() leaves a window
             # where another follow-up installs a second persistent consumer.
             await _begin_team_round()
+            # 冷启动恢复裁决：可恢复 run 清单以文本前缀注入 leader 上下文——非终态
+            # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
+            wf_handler = team_manager.get_workflow_handler(session_id)
+            runs = wf_handler.get_run_states() if wf_handler is not None else {}
+            if isinstance(query, str) and runs and not _is_member_addressed(query):
+                turn = _inject_swarmflow_context(turn.with_text(query), runs, cold_start=True)
+                query = turn.text if isinstance(turn.text, str) else query
             try:
                 request_queue = await _start_team_stream_round(
                     channel_id=channel_id,
