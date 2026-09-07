@@ -78,6 +78,10 @@ class AgentCreateFailed(RuntimeError):
     """Previous create failed; automatic retry is disabled to avoid double create."""
 
 
+class AgentPreCreateError(ValueError):
+    """Creator failed before any sandbox creation; safe to retry."""
+
+
 @dataclass
 class AgentRuntime:
     """In-process agent record: business info plus create-wait signaling."""
@@ -522,6 +526,25 @@ class AgentManager:
             extra={k: v for k, v in (("session_id", session_id), ("sandbox_id", sandbox_id)) if v},
         )
 
+    async def _discard_precreate_failure(
+        self,
+        key: AgentKey,
+        *,
+        owner_runtime: AgentRuntime,
+    ) -> None:
+        """丢弃创建前失败的内存 runtime，让下一次请求重新走 owner 路径重试。
+
+        与 ``mark_failed`` 不同：pre-create 失败发生在 YuanRong ``create`` 之前，
+        不存在“可能已建了一半沙箱”的双创建风险。此时若缓存为 FAILED，瞬时错误
+        （如 workspace 目录未就绪）会被永久钉死，故直接移除 runtime，并唤醒等待者
+        使其重新参与 single-flight 创建。
+        """
+        async with self._runtimes_lock:
+            if self._runtimes.get(key) is not owner_runtime:
+                return
+            self._runtimes.pop(key, None)
+            owner_runtime.creating_event.set()
+
     async def _run_creator(
         self,
         key: AgentKey,
@@ -558,6 +581,13 @@ class AgentManager:
             )
             raise
         except AgentDeleted:
+            raise
+        except AgentPreCreateError:
+            # 沙箱创建前失败（如 workspace 校验）：尚未调用 YuanRong create，
+            # 不存在“半创建”沙箱，直接丢弃内存 runtime 让下一次请求重试。
+            await self._discard_precreate_failure(
+                key, owner_runtime=owner_runtime
+            )
             raise
         except Exception as exc:
             await self._mark_creator_failed(
