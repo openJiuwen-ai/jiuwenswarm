@@ -42,6 +42,20 @@ class _FakeController:
         return self.acted
 
 
+class _FakeWorkflowHandler:
+    """Fake WorkflowMonitorHandler exposing only what the stop path touches."""
+
+    def __init__(self, runs: dict[str, Any]) -> None:
+        self._runs = runs
+        self.persist_calls = 0
+
+    def get_run_states(self) -> dict[str, Any]:
+        return dict(self._runs)
+
+    def _persist(self) -> None:
+        self.persist_calls += 1
+
+
 def _make_request(
     session_id: str = "sess-1",
     channel_id: str = "web",
@@ -160,6 +174,34 @@ class TestHandleSwarmflowControl:
         assert controller.calls == []
         assert resp["ok"] is False
         assert resp["payload"].get("error") == "run_id is required"
+
+    async def test_stop_marks_paused_run_terminal_in_snapshot(self) -> None:
+        """Stopping a paused run (no engine event) must mark the snapshot stopped."""
+        from unittest.mock import patch
+
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        run = WorkflowRunState(status="paused")
+        run.id = "wf_1"
+        handler = _FakeWorkflowHandler({"wf_1": run})
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(
+            req_method=ReqMethod.SWARMFLOW_STOP, params={"run_id": "wf_1"}
+        )
+        team_manager = SimpleNamespace(get_workflow_handler=lambda session_id: handler)
+        with patch(
+            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.get_background_task_controller",
+            return_value=_FakeController(acted=True),
+        ), patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=team_manager,
+        ):
+            await _run_handler(server, ws, request)
+
+        assert run.status == "stopped"
+        assert handler.persist_calls == 1
 
     async def test_controller_false_returns_not_found(self) -> None:
         resp, controller = await self._invoke(

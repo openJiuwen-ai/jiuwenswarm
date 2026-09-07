@@ -6613,6 +6613,18 @@ class AgentWebSocketServer:
                 acted = await controller.resume(run_id)
             elif action == "stop":
                 acted = await controller.stop(run_id)
+                # 已解栈的 paused run 没有引擎回发的 WORKFLOW_STOPPED，快照会永远停在
+                # paused；此处补一个 stopped 终态标记且不写 journal seal（SDD-0018
+                # §5.10 方案 B）。active run 由 WORKFLOW_STOPPED 事件路径自动更新。
+                if acted:
+                    from jiuwenswarm.agents.harness.team import get_team_manager
+
+                    wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
+                    if wf_handler is not None:
+                        run_state = wf_handler.get_run_states().get(run_id)
+                        if run_state is not None and run_state.status == "paused":
+                            if run_state.finalize_if_running("stopped"):
+                                wf_handler._persist()
             else:  # pragma: no cover - internal dispatch only
                 acted = False
             if not acted:
