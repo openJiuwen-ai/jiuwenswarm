@@ -1273,3 +1273,19 @@ def test_workflow_started_clears_recovered():
     state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
     state.apply(_make_progress("workflow_started", workflow_name="test"))
     assert state.recovered is False
+
+
+def test_workflow_started_delta_carries_recovered_clear():
+    """The started delta carries recovered=False so the frontend clears the grey."""
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert delta is not None
+    assert delta.get("recovered") is False
+
+
+def test_workflow_started_delta_omits_recovered_when_never_set():
+    """A non-recovered run's started delta omits recovered (no noise)."""
+    state = WorkflowRunState()
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert delta is not None
+    assert "recovered" not in delta

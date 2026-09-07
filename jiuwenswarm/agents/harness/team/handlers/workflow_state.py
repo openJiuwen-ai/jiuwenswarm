@@ -882,6 +882,7 @@ class WorkflowRunState(BaseModel):
         self.status = "running"
         # A (re)launched run has a live controller handle again — clear the
         # cold-start recovered marker so its control buttons are re-enabled.
+        was_recovered = self.recovered
         self.recovered = False
         if self.started_at is None:
             self.started_at = self._now_iso()
@@ -932,6 +933,11 @@ class WorkflowRunState(BaseModel):
             self.workflow_budget = progress.workflow_budget
 
         delta = self._build_top_level_delta()
+        # A recovered run just got a live handle back — carry the clear in THIS
+        # started delta so the frontend's incremental merge re-enables its buttons
+        # (the merge keeps the old value for any field the delta omits).
+        if was_recovered:
+            delta["recovered"] = False
         # Carry the relaunch kind on THIS started delta only, so the frontend can
         # distinguish "replace the whole phase tree" (relaunch) from "continue
         # merging" (resume / fresh). Not persisted on the run state.
