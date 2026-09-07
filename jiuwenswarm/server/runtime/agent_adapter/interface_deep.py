@@ -7103,11 +7103,11 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _coerce_ttse_inject_mode(value: Any) -> str:
-        """Normalize ``react.ttse.inject_mode``; unknown values keep legacy P:45."""
-        text = str(value or "").strip() or "legacy_system"
+        """Normalize ``react.ttse.inject_mode``; empty/unknown defaults to disk_catalog."""
+        text = str(value or "").strip() or "disk_catalog"
         if text in {"legacy_system", "disk_catalog", "trailing_attach"}:
             return text
-        return "legacy_system"
+        return "disk_catalog"
 
     @staticmethod
     def _coerce_ttse_bool(value: Any, default: bool) -> bool:

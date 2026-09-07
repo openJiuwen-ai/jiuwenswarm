@@ -2778,7 +2778,7 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     assert captured["config"]["store_path"] == str(tmp_path / ".ttse" / "bank.json")
     assert captured["config"]["evolve_enabled"] is False
     assert captured["config"]["inject_enabled"] is True
-    assert captured["config"]["inject_mode"] == "legacy_system"
+    assert captured["config"]["inject_mode"] == "disk_catalog"
     assert captured["config"]["embedding"] is None
     assert captured["rail"]["model"] == "test-model"
     assert isinstance(captured["rail"]["success_detector"], FakeDetector)
