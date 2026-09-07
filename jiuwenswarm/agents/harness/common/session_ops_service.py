@@ -24,6 +24,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _get_context_processors(react_agent: Any) -> list[tuple[str, Any]] | None:
+    """Return the configured context processors for lifecycle-created contexts.
+
+    Warmup and rewind run outside ``ReActAgent._init_context``.  They must
+    explicitly carry the rail-populated processor chain when they create a
+    context, otherwise the context is cached with no compressor/debug
+    processor and later ReAct calls keep reusing that incomplete object.
+    """
+    config = getattr(react_agent, "_config", None)
+    processors = getattr(config, "context_processors", None)
+    if not isinstance(processors, (list, tuple)) or not processors:
+        return None
+    return list(processors)
+
+
 def _derive_first_prompt(history: list[dict[str, Any]]) -> str:
     for record in history:
         if record.get("role") != "user":
@@ -1015,6 +1030,7 @@ async def warmup_session_context(
     try:
         await context_engine.create_context(
             session=session,
+ 	        processors=_get_context_processors(react_agent),
             history_messages=context_messages,
         )
     except Exception as exc:
@@ -1256,6 +1272,7 @@ async def _apply_rewound_context(
     try:
         await context_engine.create_context(
             session=session,
+ 	        processors=_get_context_processors(react_agent),
             history_messages=context_messages,
         )
     except Exception as exc:

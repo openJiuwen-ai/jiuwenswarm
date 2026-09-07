@@ -2336,8 +2336,6 @@ class XiaoyiChannel(BaseChannel):
                         is_text_mime_type, extract_text_from_url
                     if is_text_mime_type(mime_type):
                         try:
-                            text_content = await extract_text_from_url(uri, 5_000_000, 30_000)
-                            text += f"\n\n[文件内容: {name}]\n{text_content}"
                             file_attachments.append(f"[文件: {name}]")
                             logger.info(f"XiaoYi: Successfully extracted text from: {name}")
                         except Exception:

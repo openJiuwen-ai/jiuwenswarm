@@ -144,6 +144,16 @@ def invoke_arguments_description() -> str:
     return (
         "必含 bundleName（当前区表中的包名）以及该能力的业务字段，原样透传。"
         "functionName 写在顶层，不要把业务参数包进 content，除非 SKILL.md 要求数组。"
+        "不要把 timeout_s 写进 arguments（顶层可选字段）。"
+    )
+
+
+def invoke_timeout_s_description() -> str:
+    """ToolCard timeout_s.description — optional local wait budget."""
+    return (
+        "可选。云插件单次等待上限（秒）。组图/成曲可加大；"
+        "不传则：组图 60×max_images，成曲 600s，其余 300s。上限 3600。"
+        "只作用于本地墙钟，不会送给云端插件。"
     )
 
 
@@ -164,7 +174,8 @@ def invoke_tool_description() -> str:
         f"functionName 与 bundleName 必须使用已加载 skill 中「{zone}」表；"
         f"禁止混用{other}名字。"
         "业务字段原样透传。"
-        "调用形态：顶层 functionName 为真实云端能力名，arguments 必含 bundleName。"
+        "调用形态：顶层 functionName 为真实云端能力名，arguments 必含 bundleName；"
+        "可选顶层 timeout_s。"
         "远程 Agent：functionName=agent_as_a_tool。"
     )
 
@@ -174,6 +185,7 @@ __all__ = [
     "extract_seedance_task_id",
     "invoke_arguments_description",
     "invoke_function_name_description",
+    "invoke_timeout_s_description",
     "invoke_tool_description",
     "is_prod_plugin_runtime",
     "plugin_runtime_zone_label",

@@ -274,7 +274,7 @@ async def _run_live_capture(
 
 
 def _assert_common_prompt_structure(first_system_prompt: str) -> None:
-    assert "# 安全原则" in first_system_prompt
+    assert "# Safety" in first_system_prompt
     assert "# 可用工具" in first_system_prompt
     assert "- bash: 执行 Shell 命令" in first_system_prompt
     assert "- code: 执行 Python 或 JavaScript 代码" in first_system_prompt

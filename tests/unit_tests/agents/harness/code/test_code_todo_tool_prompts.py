@@ -33,6 +33,8 @@ def test_todo_create_schema_describes_outcome_milestones():
 
 def test_code_system_prompt_has_task_planning_section():
     text = build_code_system_prompt()
+    assert "# Identity\n\nYou are 小艺Work" in text
+    assert "# Code mode\n\nAct as an interactive coding agent." in text
     assert "## Task planning (todos)" in text
     assert "2–3 outcome-based milestones" in text
     assert "4–6 milestones max" in text

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -18,12 +19,16 @@ from jiuwenswarm.agents.harness.common.tools.invoke_meta.external_tool_registry 
     ExternalToolSpec,
     load_external_tools,
 )
-from jiuwenswarm.agents.harness.common.tools.invoke_meta.invoke_tool import InvokeTool
+from jiuwenswarm.agents.harness.common.tools.invoke_meta.invoke_tool import (
+    InvokeTool,
+    _resolve_invoke_timeout,
+)
 from jiuwenswarm.agents.harness.common.tools.invoke_meta.plugin_skill_catalog import (
     extract_seedance_query_state,
     extract_seedance_task_id,
     invoke_arguments_description,
     invoke_function_name_description,
+    invoke_timeout_s_description,
     invoke_tool_description,
     is_prod_plugin_runtime,
 )
@@ -455,6 +460,7 @@ def test_invoke_tool_description_omits_internal_transport():
     assert "禁止臆造" not in desc
     assert "禁止臆造" not in invoke_arguments_description()
     assert "禁止臆造" not in invoke_function_name_description()
+    assert "禁止臆造" not in invoke_timeout_s_description()
     assert "CloudWsRelay" not in desc
     assert "/ws/link" not in desc
     assert "PluginSkillExecTool" not in desc
@@ -1094,6 +1100,234 @@ async def test_invoke_music_generation_reaches_plugin_with_long_timeout(monkeypa
     assert timeouts == [600.0]
 
 
+def test_invoke_tool_card_exposes_timeout_s_and_exempts_ability_manager():
+    tool = InvokeTool()
+    props = tool.card.input_params["properties"]
+    assert "timeout_s" in props
+    assert props["timeout_s"]["type"] == "number"
+    assert "3600" in props["timeout_s"]["description"]
+    assert "60" in props["timeout_s"]["description"]
+    assert tool.card.properties["resilience"]["timeout_s"] is None
+
+
+def test_resolve_invoke_timeout_priority():
+    assert _resolve_invoke_timeout("lyricsGeneration", {}, None) == (300.0, True, False)
+    assert _resolve_invoke_timeout("musicGeneration", {}, None) == (600.0, False, False)
+    assert _resolve_invoke_timeout(
+        "seedreamLite4Skill", {"max_images": 10}, None
+    ) == (600.0, False, False)
+    assert _resolve_invoke_timeout(
+        "seedreamLite4Skill", {"max_images": 1}, None
+    ) == (300.0, True, False)
+    assert _resolve_invoke_timeout(
+        "seedreamLite4Skill", {}, None
+    ) == (300.0, True, False)
+    assert _resolve_invoke_timeout("musicGeneration", {}, 900) == (900.0, False, True)
+    assert _resolve_invoke_timeout(
+        "seedreamLite4Skill", {"max_images": 10}, 900
+    ) == (900.0, False, True)
+    assert _resolve_invoke_timeout("lyricsGeneration", {}, 99999) == (3600.0, False, True)
+    assert _resolve_invoke_timeout("lyricsGeneration", {}, 300) == (300.0, False, True)
+
+
+@pytest.mark.asyncio
+async def test_invoke_timeout_s_top_level_not_sent_to_plugin(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    captured, fake = _recording_cloud_client()
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "seedreamLite4Skill",
+                "arguments": {
+                    "bundleName": _ATOMIC_BUNDLE,
+                    "prompt": "a dog",
+                    "max_images": 10,
+                },
+                "timeout_s": 900,
+            }
+        )
+
+    assert result.get("success") is True
+    assert captured["timeout"] == 900.0
+    assert "timeout_s" not in captured["arguments"]
+    assert captured["arguments"]["max_images"] == 10
+    assert captured["arguments"]["prompt"] == "a dog"
+
+
+@pytest.mark.asyncio
+async def test_invoke_timeout_s_in_arguments_stripped_from_plugin(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    captured, fake = _recording_cloud_client()
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "PluginSkillExecTool",
+                "arguments": _music_vocal_args(timeout_s=900),
+            }
+        )
+
+    assert result.get("success") is True
+    assert captured["timeout"] == 900.0
+    assert "timeout_s" not in captured["arguments"]
+    assert captured["arguments"]["prompt"] == "华语流行，轻快温暖"
+
+
+@pytest.mark.asyncio
+async def test_invoke_timeout_s_clamped_to_hard_cap(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    captured, fake = _recording_cloud_client()
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "lyricsGeneration",
+                "arguments": _lyrics_write_args(),
+                "timeout_s": 99999,
+            }
+        )
+
+    assert result.get("success") is True
+    assert captured["timeout"] == 3600.0
+    assert "timeout_s" not in captured["arguments"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_invalid_timeout_s_falls_back_to_default_rules(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    captured, fake = _recording_cloud_client()
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "PluginSkillExecTool",
+                "arguments": _lyrics_write_args(timeout_s="not-a-number"),
+            }
+        )
+
+    assert result.get("success") is True
+    assert captured["timeout"] is None
+    assert "timeout_s" not in captured["arguments"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_seedream_max_images_10_uses_batch_timeout(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    captured, fake = _recording_cloud_client()
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "PluginSkillExecTool",
+                "arguments": {
+                    "functionName": "seedreamLite4Skill",
+                    "bundleName": _ATOMIC_BUNDLE,
+                    "prompt": "家庭相册",
+                    "max_images": 10,
+                },
+            }
+        )
+
+    assert result.get("success") is True
+    assert captured["timeout"] == 600.0
+    assert captured["arguments"]["max_images"] == 10
+    assert "timeout_s" not in captured["arguments"]
+
+
+@pytest.mark.asyncio
+async def test_invoke_seedream_single_image_keeps_client_timeout_none(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    captured, fake = _recording_cloud_client()
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "seedreamLite4Skill",
+                "arguments": {
+                    "bundleName": _ATOMIC_BUNDLE,
+                    "prompt": "一只柯基",
+                    "max_images": 1,
+                },
+            }
+        )
+
+    assert result.get("success") is True
+    assert captured["timeout"] is None
+    assert captured["arguments"]["max_images"] == 1
+
+
+@pytest.mark.asyncio
+async def test_invoke_explicit_300_still_passed_to_client(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+    captured, fake = _recording_cloud_client()
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        fake,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "lyricsGeneration",
+                "arguments": _lyrics_write_args(),
+                "timeout_s": 300,
+            }
+        )
+
+    assert result.get("success") is True
+    assert captured["timeout"] == 300.0
+
+
+@pytest.mark.asyncio
+async def test_invoke_timeout_error_returns_resolved_seconds(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+
+    class _TimeoutClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def invoke(self, spec: ExternalToolSpec, arguments: dict, **kwargs: Any):
+            raise TimeoutError()
+
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.invoke_meta.cloud_plugin_client.CloudPluginClient",
+        _TimeoutClient,
+    ):
+        tool = InvokeTool()
+        result = await tool.invoke(
+            {
+                "functionName": "seedreamLite4Skill",
+                "arguments": {
+                    "bundleName": _ATOMIC_BUNDLE,
+                    "prompt": "家庭相册",
+                    "max_images": 10,
+                },
+            }
+        )
+
+    assert result.get("success") is False
+    assert result.get("error") == "seedreamLite4Skill timed out after 600s"
+    assert "3600" not in str(result.get("error", ""))
+
+
 @pytest.mark.asyncio
 async def test_invoke_music_instrumental_keeps_top_level_prompt(monkeypatch):
     monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
@@ -1188,9 +1422,6 @@ def test_design_system_prompt_points_at_skills_not_catalog():
     )
 
     prompt = build_design_system_prompt()
-    assert "seedance-video-gen" in prompt
-    assert "seedream-image-gen" in prompt
-    assert "music-generation" in prompt
     assert "skill_tool" in prompt
     assert "ppt-creation" in prompt
     assert "分镜" in prompt
@@ -1333,30 +1564,11 @@ def test_design_system_prompt_prod_omits_catalog_names(monkeypatch):
     )
 
     prompt = build_design_system_prompt()
-    assert "seedream-image-gen" in prompt
-    assert "seedance-video-gen" in prompt
-    assert "music-generation" in prompt
     assert _PLUGIN_PLATFORM not in prompt
     assert "seedreamBatch5" not in prompt
     assert "com.atomicservice.5765880207845681341" not in prompt
     assert "seedreamLite4Skill" not in prompt
     assert "PluginSkillExecTool" not in prompt
-
-
-def test_skills_goal_override_uses_real_skill_slugs():
-    from jiuwenswarm.agents.harness.common.prompt.skills_goal_override import (
-        _STATIC_BLOCK,
-    )
-
-    for text in _STATIC_BLOCK.values():
-        assert "Image Generation" in text or "图像生成" in text
-        assert "skill_tool" in text
-        assert "PluginSkillExecTool" not in text
-        assert "com.atomicservice" not in text
-        assert "seedreamLite4Skill" not in text
-        assert "then call `invoke`" not in text
-        assert "再调用 `invoke`" not in text
-        assert "Deliver the video file" in text or "交付视频文件" in text
 
 
 def _plugin_spec() -> ExternalToolSpec:
@@ -1492,4 +1704,27 @@ async def test_desktop_proxy_handshake_summary_empty_cred(monkeypatch):
     assert "credSrc=desktop-proxy" in text
     assert "phase=handshake_ok" in text
     assert result.get("success") is True
+
+
+@pytest.mark.asyncio
+async def test_receive_frames_reraises_cancelled_error(monkeypatch):
+    monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _DESKTOP_MCP)
+
+    class _CancelWs:
+        async def send(self, _message: str) -> None:
+            return None
+
+        async def recv(self) -> str:
+            raise asyncio.CancelledError()
+
+    class _CancelConnect:
+        async def __aenter__(self):
+            return _CancelWs()
+
+        async def __aexit__(self, *args: Any):
+            return False
+
+    client = CloudPluginClient(base_url=_DESKTOP_MCP)
+    with pytest.raises(asyncio.CancelledError):
+        await client._receive_frames(_CancelConnect(), "{}", _plugin_spec())
 

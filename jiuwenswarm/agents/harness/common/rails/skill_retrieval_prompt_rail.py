@@ -33,7 +33,10 @@ class SkillRetrievalPromptRail(DeepAgentRail):
     # and a stale constant silently reverses the order rather than failing.
     priority = SkillUseRail.priority - 1
     SECTION_NAME = "skill_retrieval"
-    SECTION_PRIORITY = 41
+    # Keep the agentic-retrieval replacement in the same post-static slot as
+    # the native Skills section (static prompts end at 55; runtime context is
+    # injected from 60 onward).
+    SECTION_PRIORITY = 56
 
     def __init__(
         self,

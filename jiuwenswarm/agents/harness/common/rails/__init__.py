@@ -25,6 +25,9 @@ from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmSt
 from jiuwenswarm.agents.harness.common.rails.invocation_context_rail import (
     InvocationContextRail,
 )
+from jiuwenswarm.agents.harness.common.rails.tool_usage_prompt_rail import (
+    ToolUsagePromptRail,
+)
 
 __all__ = [
     "JiuSwarmStreamEventRail",
@@ -37,6 +40,7 @@ __all__ = [
     "ResponsePromptRail",
     "RuntimePromptRail",
     "SymphonyOrchestrationRail",
+    "ToolUsagePromptRail",
     "MemberSkillToolkitRail",
     "StructuredAskUserRail",
 ]

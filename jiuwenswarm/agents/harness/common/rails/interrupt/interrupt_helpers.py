@@ -753,6 +753,26 @@ def _resolve_interrupt_source(tool_name: str, message: str) -> str:
     return "confirm_interrupt"
 
 
+def _interrupt_tool_call_id(value_obj: Any, request_id: str) -> str:
+    """Return the real tool call id attached to an interrupt value.
+
+    ``ToolCallInterruptRequest`` carries ``tool_call_id`` (the original
+    ``tool_call.id``), which is what ``chat.tool_call`` emitted and what the
+    frontend uses to correlate the stepinfo tool entry.  Fall back to the
+    interaction ``request_id`` when the value object does not carry one.
+    """
+    if hasattr(value_obj, "tool_call_id"):
+        candidate = str(getattr(value_obj, "tool_call_id", "") or "").strip()
+        if candidate:
+            return candidate
+    if isinstance(value_obj, dict):
+        for key in ("tool_call_id", "toolCallId"):
+            candidate = str(value_obj.get(key) or "").strip()
+            if candidate:
+                return candidate
+    return str(request_id or "").strip()
+
+
 def convert_interactions_to_ask_user_questions(state_outputs: list) -> list[dict]:
     """Convert every valid ``__interaction__`` into frontend question events.
 
@@ -796,6 +816,7 @@ def convert_interactions_to_ask_user_questions(state_outputs: list) -> list[dict
         request_id, value_obj = _extract_interaction_parts(interaction)
         if not request_id:
             continue
+        resolved_tool_call_id = _interrupt_tool_call_id(value_obj, request_id)
 
         questions_raw = _extract_questions_from_value(value_obj)
         if questions_raw is not None:
@@ -806,7 +827,7 @@ def convert_interactions_to_ask_user_questions(state_outputs: list) -> list[dict
                 # interrupt rather than on each question item.  Keep it attached to
                 # the emitted item so consumers can correlate the approval with the
                 # exact tool call instead of a conversation-level "last tool".
-                question.setdefault("tool_call_id", request_id)
+                question.setdefault("tool_call_id", resolved_tool_call_id)
                 if tool_name:
                     question.setdefault("tool_name", tool_name)
                 if tool_args is not None:
@@ -824,6 +845,7 @@ def convert_interactions_to_ask_user_questions(state_outputs: list) -> list[dict
 
         plain_question = _build_plain_ask_user_question(value_obj)
         if plain_question:
+            plain_question.setdefault("tool_call_id", resolved_tool_call_id)
             append_payload(
                 {
                     "event_type": "chat.ask_user_question",
@@ -1111,6 +1133,7 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
 
     tool_name, message, tool_args = _read_interrupt_fields(value_obj)
     source = _resolve_interrupt_source(tool_name, message)
+    tool_call_id = _interrupt_tool_call_id(value_obj, request_id)
 
     generic_confirm_message = message.strip() in {"", "Please approve or reject?"}
     needs_message = not message or (source == "confirm_interrupt" and generic_confirm_message)
@@ -1158,7 +1181,7 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
     return {
         "question": question,
         "header": header,
-        "tool_call_id": request_id,
+        "tool_call_id": tool_call_id,
         "tool_name": tool_name,
         "tool_args": tool_args,
         "skill_name": skill_name,

@@ -4947,7 +4947,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         try:
             from jiuwenswarm.server.hooks.mcp_project_id_rail import McpProjectIdRail
 
-            rails_list.append(McpProjectIdRail())
+            rails_list.append(McpProjectIdRail(session_id=self._parent_session_id))
         except Exception as exc:
             logger.warning("%s Failed to attach McpProjectIdRail: %s", log_prefix, exc)
         stage_timer.mark("mcp_project_id_rail")

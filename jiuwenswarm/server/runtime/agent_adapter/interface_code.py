@@ -73,6 +73,7 @@ from jiuwenswarm.agents.harness.code.rails import (
 from jiuwenswarm.agents.harness.common.rails import (
     ProjectMemoryRail,
     StructuredAskUserRail,
+    ToolUsagePromptRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.agents.harness.common.tools import (
@@ -365,6 +366,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     _FIXED_RAIL_NAMES = frozenset({
         "RuntimePromptRail", "ResponsePromptRail",
         "JiuSwarmStreamEventRail", "SecurityRail", "CsplSentinelRail",
+        "ToolUsagePromptRail",
         "LspRail", "ProjectMemoryRail", "PermissionInterruptRail",
         "ContextProcessorRail",
         "SysOperationRail", "CodingMemoryRail",
@@ -380,6 +382,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._project_memory_rail: ProjectMemoryRail | None = None
         self._coding_memory_rail: CodingMemoryRail | None = None
         self._worktree_rail: WorktreeRail | None = None
+        self._tool_usage_prompt_rail: ToolUsagePromptRail | None = None
         # 单点 source-of-truth, 让 sysop_builder 的"主写入根"分支
         # (project_dir vs get_agent_workspace_dir) 落到 code-agent 这一支。
         # 父类默认 False (deep agent → workspace), Code adapter override 成
@@ -626,6 +629,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
+            _RailBuildInfo("_tool_usage_prompt_rail", self._build_tool_usage_prompt_rail),
             _RailBuildInfo("_cspl_sentinel_rail", self._build_cspl_sentinel_rail),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
@@ -927,6 +931,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     def _build_context_assemble_rail(self) -> Any:
         """构建 ContextEngineeringRail."""
         return ContextAssembleRail()
+
+    @staticmethod
+    def _build_tool_usage_prompt_rail() -> ToolUsagePromptRail:
+        """Inject tool rules without enabling workspace-context injection."""
+        return ToolUsagePromptRail()
 
     def _build_context_processor_rail(self) -> Any:
         """构建 ContextProcessorRail — 复用父类逻辑."""

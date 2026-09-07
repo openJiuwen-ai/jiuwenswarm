@@ -28,6 +28,8 @@ import openjiuwen.harness.prompts.sections.safety as _safety
 from openjiuwen.harness.prompts.builder import PromptSection
 from openjiuwen.harness.prompts.sections import SectionName
 
+from jiuwenswarm.common.utils import logger
+
 _PATCHED = False
 
 # ---------------------------------------------------------------------------
@@ -147,13 +149,14 @@ SAFETY_PROMPT: Dict[str, str] = {
 
 
 def build_safety_section(language: str = "en") -> Optional[PromptSection]:
-    """Build the safety prompt section (mirrors openjiuwen's signature)."""
-    content = SAFETY_PROMPT.get(language, SAFETY_PROMPT_EN)
-    return PromptSection(
-        name=SectionName.SAFETY,
-        content={language: content},
-        priority=12,
-    )
+    """Build the safety prompt section (mirrors openjiuwen's signature).
+
+    Returns None so SafetyPromptRail becomes a no-op — safety content is now
+    injected directly by each prompt builder as a section within the static
+    prompt block, ensuring correct priority ordering relative to other
+    mode-specific sections.
+    """
+    return None
 
 
 def apply_patch() -> None:
@@ -168,6 +171,18 @@ def apply_patch() -> None:
     _safety.SAFETY_PROMPT_CN = SAFETY_PROMPT_CN
     _safety.SAFETY_PROMPT_EN = SAFETY_PROMPT_EN
     _safety.build_safety_section = build_safety_section
+
+    # Defensive: prompt_security_rail.py binds build_safety_section via
+    # `from ... import`, capturing the original function at import time
+    # (before this patch runs). Rebind the rail's local reference too.
+    try:
+        import openjiuwen.harness.rails.security.prompt_security_rail as _rail
+        _rail.build_safety_section = build_safety_section
+    except Exception:
+        logger.debug(
+            "[safety_override] patch prompt_security_rail failed", exc_info=True
+        )
+
     _PATCHED = True
 
 

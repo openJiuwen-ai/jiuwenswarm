@@ -63,6 +63,16 @@ def clear_sent_files_for_session(session_id: str | None) -> None:
     _SENT_FILE_PATHS_BY_SESSION.pop(sid, None)
 
 
+def _tool_fail(message: str) -> str:
+    """失败信封，供 stream_event_rail / 桌面步骤卡认 is_error。
+
+    不要带 data=None：桌面把 success=False + data=None + 空 error 当成 HITL 占位
+    （步骤卡停在「运行中」）。多行 error 还会让空 error 正则误判。
+    """
+    escaped = message.replace("\\", "\\\\").replace("'", "\\'")
+    return f"success=False error='{escaped}'"
+
+
 class SendFileToolkit:
     """Toolkit for sending files to users."""
 
@@ -199,7 +209,7 @@ class SendFileToolkit:
             msg_parts = ["发送文件失败：所有文件均不存在"]
             for mf in missing_files:
                 msg_parts.append(f"  - {mf}")
-            return "\n".join(msg_parts)
+            return _tool_fail("\n".join(msg_parts))
 
         valid_files, skipped_files = _partition_sent_files(self.session_id, valid_files)
         if not valid_files:
@@ -340,7 +350,7 @@ class SendFileToolkit:
                 self.session_id,
                 str(e),
             )
-            return f"提交文件失败: {str(e)}"
+            return _tool_fail(f"提交文件失败: {str(e)}")
 
     def get_tools(self) -> List[Tool]:
         """Return tools for registration in Runner.

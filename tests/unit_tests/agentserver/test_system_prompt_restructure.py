@@ -156,6 +156,8 @@ def _tool_call_ctx(
 def test_build_agent_identity_prompt_contains_stable_identity_and_task_strategy():
     prompt = build_agent_identity_prompt(language="zh")
 
+    assert "You are 小艺Work, a personal agent" in prompt
+    assert "小艺 work" not in prompt
     assert "# Identity" in prompt
     assert "# Task Execution Strategy" in prompt
     assert "# JiuwenSwarm 内部数据" not in prompt
@@ -164,6 +166,109 @@ def test_build_agent_identity_prompt_contains_stable_identity_and_task_strategy(
     assert "## Symphony Orchestration" not in prompt
     assert "`symphony_compose_score`" not in prompt
     assert "# 消息说明" not in prompt
+
+
+def test_work_code_and_design_share_the_same_static_prefix():
+    from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
+        build_code_system_prompt,
+    )
+    from jiuwenswarm.agents.harness.design.prompt.design_prompt_builder import (
+        build_design_system_prompt,
+    )
+
+    work_prompt = build_agent_identity_prompt(language="zh")
+    code_prompt = build_code_system_prompt()
+    design_prompt = build_design_system_prompt()
+    shared_prefix = work_prompt[: work_prompt.index("# Task Execution Strategy")]
+
+    assert code_prompt.startswith(shared_prefix)
+    assert design_prompt.startswith(shared_prefix)
+    assert code_prompt[len(shared_prefix) :].startswith("# Code mode")
+    assert design_prompt[len(shared_prefix) :].startswith("# Design mode")
+
+
+def test_all_modes_place_the_shared_system_section_before_regional_conventions():
+    from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
+        build_code_system_prompt,
+    )
+    from jiuwenswarm.agents.harness.design.prompt.design_prompt_builder import (
+        build_design_system_prompt,
+    )
+
+    prompts = (
+        build_agent_identity_prompt(language="zh"),
+        build_code_system_prompt(),
+        build_design_system_prompt(),
+    )
+    for prompt in prompts:
+        assert prompt.index("# Content policy") < prompt.index("# System")
+        assert prompt.index("# System") < prompt.index("# Regional conventions")
+
+
+def test_design_mode_static_section_priorities_are_explicitly_ordered():
+    from jiuwenswarm.agents.harness.design.prompt.design_prompt_builder import (
+        DesignPromptPriority,
+    )
+
+    ordered = [
+        DesignPromptPriority.SYSTEM,
+        DesignPromptPriority.INTRO,
+        DesignPromptPriority.CORE_CAPABILITIES,
+    ]
+
+    assert ordered == sorted(ordered)
+    assert len(ordered) == len(set(ordered))
+
+
+def test_code_session_guidance_precedes_executing_actions_with_care():
+    from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
+        build_code_system_prompt,
+    )
+
+    prompt = build_code_system_prompt()
+    assert prompt.index("# Session-specific guidance") < prompt.index(
+        "# Executing actions with care"
+    )
+
+
+def test_find_skills_policy_lives_in_tool_usage_rules_not_skills_preamble():
+    from openjiuwen.core.foundation.tool.base import ToolCard
+    from openjiuwen.harness.prompts.sections import context
+    from jiuwenswarm.agents.harness.common.prompt import skills_goal_override
+
+    ability_manager = SimpleNamespace(list=lambda: [ToolCard(name="read_file")])
+    tools_content = context.build_tools_content(ability_manager, language="en")
+
+    assert tools_content is not None
+    assert "# Tool Usage Rules" in tools_content
+    assert "## Skill Discovery and Installation (`find-skills-win`)" in tools_content
+    assert "Skill Discovery and Installation" not in skills_goal_override._SKILLS_PREAMBLE_EN
+    assert skills_goal_override._SKILLS_PREAMBLE_EN.startswith("# Skills")
+
+
+@pytest.mark.asyncio
+async def test_code_tool_usage_rail_injects_rules_after_safety():
+    from openjiuwen.core.foundation.tool.base import ToolCard
+    from jiuwenswarm.agents.harness.common.rails.tool_usage_prompt_rail import (
+        ToolUsagePromptRail,
+    )
+
+    builder = SystemPromptBuilder(language="en")
+    builder.add_section(
+        PromptSection(name="safety", content={"en": "# Safety\n"}, priority=12)
+    )
+    agent = SimpleNamespace(
+        system_prompt_builder=builder,
+        ability_manager=SimpleNamespace(list=lambda: [ToolCard(name="read_file")]),
+    )
+    rail = ToolUsagePromptRail()
+    rail.init(agent)
+
+    await rail.before_model_call(SimpleNamespace())
+
+    prompt = builder.build()
+    assert prompt.index("# Safety") < prompt.index("# Tool Usage Rules")
+    assert "## Skill Discovery and Installation (`find-skills-win`)" in prompt
 
 
 @pytest.mark.asyncio
@@ -230,6 +335,12 @@ async def test_runtime_env_section_includes_message_rules_subsections():
     assert not builder.has_section("input")
     assert not builder.has_section("output")
     assert "# 消息说明" not in prompt
+    # Text output (does not apply to tool calls) was relocated from the
+    # per-mode prompt builders (code/design) into the shared Runtime
+    # Environment ``env`` section so all three modes (office/code/design)
+    # receive the same output-efficiency guidance.
+    assert "## Text output (does not apply to tool calls)" in prompt
+    assert "Go straight to the point." in prompt
 
 
 @pytest.mark.asyncio
@@ -1040,6 +1151,7 @@ async def test_skill_retrieval_prompt_hides_legacy_list_skill(monkeypatch):
     prompt = builder.build()
     assert "旧 list_skill 提示" not in prompt
     assert "Agentic 技能检索" in prompt
+    assert builder.get_section(rail.SECTION_NAME).priority == 56
 
     await rail.after_model_call(ctx)
 

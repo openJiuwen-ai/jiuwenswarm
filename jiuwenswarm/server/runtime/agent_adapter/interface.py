@@ -162,6 +162,55 @@ def _should_record_user_history(params: Any) -> bool:
     return str(params.get("source") or "") != "proactive_recommendation"
 
 
+def _memory_hook_extra(request: AgentRequest) -> dict[str, Any]:
+    """构造 Memory Hook 的请求参数，并补齐会话已锁定的项目绑定。
+
+    常规续聊只携带 ``session_id``，不会重复传 ``project_id``。项目归属已经在
+    AgentServer 收包时写入 session metadata；Memory Hook 若只透传
+    ``request.params``，GaussPD 的 MemoryAdd 会退化到默认隔离桶。MCP Rail 已按
+    session metadata 取值，此处使用同一真源，保持两条记忆链路一致。
+
+    ``project_id`` 与 ``project_dir`` 都优先采用本轮请求值。后者是桌面工作区
+    的稳定隔离候选值：旧桌面会话仍可能只有 ``project_id=default``，GaussPD
+    胶水会在这种情况下以该目录作为动态 ``project_id``。
+    """
+    extra = dict(request.params) if isinstance(request.params, dict) else {}
+    project_id = extra.get("project_id")
+    project_dir = extra.get("project_dir")
+    has_project_id = isinstance(project_id, str) and bool(project_id.strip())
+    has_project_dir = isinstance(project_dir, str) and bool(project_dir.strip())
+    if has_project_id and has_project_dir:
+        return extra
+
+    session_id = str(request.session_id or "").strip()
+    if not session_id:
+        return extra
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).debug(
+            "[JiuWenSwarm] Memory Hook project binding metadata lookup failed: %s",
+            exc,
+        )
+        return extra
+
+    if not isinstance(metadata, dict):
+        return extra
+    if not has_project_id:
+        project_id = metadata.get("project_id")
+        if isinstance(project_id, str) and project_id.strip():
+            extra["project_id"] = project_id.strip()
+    if not has_project_dir:
+        project_dir = metadata.get("project_dir")
+        if isinstance(project_dir, str) and project_dir.strip():
+            extra["project_dir"] = project_dir.strip()
+    return extra
+
+
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = item.get(key)
@@ -2118,7 +2167,7 @@ class JiuWenSwarm:
                 channel_id=request.channel_id,
                 agent_name="main_agent",
                 workspace_dir=str(get_agent_home_dir()),
-                extra=request.params,
+                extra=_memory_hook_extra(request),
             )
             await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
@@ -2173,7 +2222,7 @@ class JiuWenSwarm:
                     agent_name="main_agent",
                     workspace_dir=str(get_agent_home_dir()),
                     assistant_message=content_str,
-                    extra=request.params,
+                    extra=_memory_hook_extra(request),
                 )
                 await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_AFTER_CHAT, after_ctx)
 
@@ -2386,7 +2435,7 @@ class JiuWenSwarm:
                 channel_id=request.channel_id,
                 agent_name="main_agent",
                 workspace_dir=str(get_agent_home_dir()),
-                extra=request.params,
+                extra=_memory_hook_extra(request),
             )
             await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
@@ -3039,7 +3088,7 @@ class JiuWenSwarm:
                 agent_name="main_agent",
                 workspace_dir=str(get_agent_home_dir()),
                 assistant_message=assistant_message,
-                extra=request.params,
+                extra=_memory_hook_extra(request),
             )
             await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_AFTER_CHAT, after_ctx)
 

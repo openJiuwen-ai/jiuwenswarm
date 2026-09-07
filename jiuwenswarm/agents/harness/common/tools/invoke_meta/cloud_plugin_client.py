@@ -445,7 +445,7 @@ class CloudPluginClient(AgentRuntimeClient):
                 self.plugin_session_id,
                 message,
             )
-            frames.append(self._build_error_frame(spec, "WebSocket 连接任务被取消"))
+            raise
         except asyncio.TimeoutError:
             logger.error(
                 "[session=%s] [%s] [CloudPluginClient] WS timeout; last request body=%s",
