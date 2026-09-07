@@ -35,11 +35,13 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryConflictError,
     RegistryConnectionError,
     RegistryValidationError,
+    instance_service_id,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     USER_DIRECTORY_ENV_KEY,
     AgentOSRouterClient,
     resolve_agent_workspace,
+    _extract_placement_ips,
     _is_agent_network_error,
     _is_ws_connect_retryable,
     _third_agent_ssh_probe_port,
@@ -394,7 +396,18 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
         "ws://yuanrong.test:8888/serverless/v1/ws"
         f"?instance=sbx-1&tenant_id=default&port={fixed_port}"
     ]
-    assert yuanrong.wait_running_calls == ["sbx-1"]
+    # WS 连前 wait running；后台注册再 wait 一次，把 placeholder address
+    # PATCH 成 YuanRong/jiuwenbox 的实际 node/sandbox IP。
+    assert yuanrong.wait_running_calls == ["sbx-1", "sbx-1"]
+    assert registry.updated_instances == [
+        {
+            "service_id": instance_service_id("u1", "jiuwenswarm"),
+            "node": "127.0.0.1",
+            "address": "127.0.0.1",
+            "instance_id": "sbx-1",
+            "status": None,
+        }
+    ]
     # Agent is registered with the registry (fire-and-forget background task).
     assert len(registry.registered) == 1
     assert registry.registered[0].agent_type == "jiuwenswarm"
@@ -1772,6 +1785,129 @@ async def test_register_agent_gives_up_at_backoff_cap() -> None:
     # 共 5 次退避重试 + 第 6 次达封顶后放弃，不再追加尝试；未成功注册、无 placement 更新。
     assert registry.register_calls == 6
     assert registry.registered == []
+    assert registry.updated_instances == []
+    await client.shutdown()
+
+
+def test_extract_placement_ips_accepts_jiuwenbox_aliases() -> None:
+    assert _extract_placement_ips(None) == ("", "")
+    assert _extract_placement_ips({}) == ("", "")
+    assert _extract_placement_ips(
+        {"node_ip": "10.0.0.5", "sandbox_ip": "10.64.0.2"}
+    ) == ("10.0.0.5", "10.64.0.2")
+    assert _extract_placement_ips(
+        {"nodeIp": "10.0.0.5", "ip_address": "10.64.0.2"}
+    ) == ("10.0.0.5", "10.64.0.2")
+    assert _extract_placement_ips(
+        {"sandboxIp": "10.64.0.2", "ipAddress": "198.51.100.9"}
+    ) == ("", "10.64.0.2")
+
+
+class DelayedPlacementYuanRongClient(FakeYuanRongClient):
+    """GET before running has no IPs; wait_until_running then returns real IPs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._running = False
+        self.get_info_calls = 0
+
+    async def get_agent_info(self, instance_id: str) -> dict:
+        self.get_info_calls += 1
+        if not self._running:
+            return {"instance_id": instance_id, "status": "creating"}
+        return {
+            "instance_id": instance_id,
+            "status": "running",
+            "node_ip": "10.0.0.5",
+            "sandbox_ip": "10.64.0.2",
+        }
+
+    async def wait_until_running(self, instance_id: str) -> dict:
+        self.wait_running_calls.append(instance_id)
+        self._running = True
+        return await self.get_agent_info(instance_id)
+
+
+class JiuwenboxIpYuanRongClient(FakeYuanRongClient):
+    """YuanRong GET exposes jiuwenbox ``ip_address`` instead of sandbox_ip."""
+
+    async def get_agent_info(self, instance_id: str) -> dict:
+        return {
+            "instance_id": instance_id,
+            "status": "running",
+            "node_ip": "192.168.1.10",
+            "ip_address": "10.64.12.34",
+        }
+
+    async def wait_until_running(self, instance_id: str) -> dict:
+        self.wait_running_calls.append(instance_id)
+        return await self.get_agent_info(instance_id)
+
+
+@pytest.mark.asyncio
+async def test_register_agent_patches_placement_after_running() -> None:
+    """create 后立即 GET 没有 IP；等到 running 再 PATCH 真实 node/sandbox IP."""
+    yuanrong = DelayedPlacementYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    await client._register_agent(info)
+
+    assert yuanrong.wait_running_calls == ["sbx-1"]
+    assert registry.updated_instances == [
+        {
+            "service_id": instance_service_id("u1", "jiuwenswarm"),
+            "node": "10.0.0.5",
+            "address": "10.64.0.2",
+            "instance_id": "sbx-1",
+            "status": None,
+        }
+    ]
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_register_agent_patches_jiuwenbox_ip_address() -> None:
+    """YuanRong 透传 jiuwenbox ip_address 时，注册中心 address 仍 patch 为实际 IP."""
+    yuanrong = JiuwenboxIpYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    await client._register_agent(info)
+
+    assert registry.updated_instances == [
+        {
+            "service_id": instance_service_id("u1", "jiuwenswarm"),
+            "node": "192.168.1.10",
+            "address": "10.64.12.34",
+            "instance_id": "sbx-1",
+            "status": None,
+        }
+    ]
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_register_agent_skips_placement_when_ips_missing() -> None:
+    """running 后仍无 IP：不 PATCH，保留注册时的 placeholder address."""
+    yuanrong = FakeYuanRongClient()
+
+    async def _empty_info(instance_id: str) -> dict:
+        return {"instance_id": instance_id, "status": "running"}
+
+    yuanrong.get_agent_info = _empty_info  # type: ignore[method-assign]
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    await client._register_agent(info)
+
+    assert len(registry.registered) == 1
     assert registry.updated_instances == []
     await client.shutdown()
 

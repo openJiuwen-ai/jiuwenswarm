@@ -221,6 +221,37 @@ def _is_agent_network_error(exc: BaseException) -> bool:
     return False
 
 
+def _first_nonempty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
+    """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
+
+    Register writes a placeholder ``address`` (instance_id) because the
+    registry rejects empty address. Placement must be PATCHed once the
+    actual IPs exist. YuanRong may use ``node_ip`` / ``sandbox_ip`` or
+    pass through jiuwenbox ``ip_address``.
+    """
+    if not isinstance(instance_info, Mapping):
+        return "", ""
+    node_ip = _first_nonempty(
+        instance_info.get("node_ip"),
+        instance_info.get("nodeIp"),
+    )
+    sandbox_ip = _first_nonempty(
+        instance_info.get("sandbox_ip"),
+        instance_info.get("sandboxIp"),
+        instance_info.get("ip_address"),
+        instance_info.get("ipAddress"),
+    )
+    return node_ip, sandbox_ip
+
+
 class UnsupportedAgentType(ValueError):
     pass
 
@@ -1294,18 +1325,21 @@ class AgentOSRouterClient(AgentServerClient):
         user_id: str = "",
         session_id: str = "",
         agent_type: str = "",
-    ) -> None:
+    ) -> dict[str, Any]:
         """GET /api/agent/:id until YuanRong reports ``status=running``.
 
-        Create 端口探针成功后实例才 running；在此之前连 WS/SSH 会失败。
+        Create 端口探针成功后实例才 running；在此之前连 WS/SSH 会失败，
+        且 node_ip / sandbox_ip 通常也尚未写入。返回最后一次 GET 的
+        instance dict，供注册中心 placement PATCH 使用。
         Test doubles without ``wait_until_running`` fall back to one GET.
         """
         waiter = getattr(self._yuanrong, "wait_until_running", None)
         if not callable(waiter):
             getter = getattr(self._yuanrong, "get_agent_info", None)
             if callable(getter):
-                await getter(instance_id)
-            return
+                info = await getter(instance_id)
+                return info if isinstance(info, dict) else {}
+            return {}
         log_agentos(
             logger,
             logging.DEBUG,
@@ -1316,7 +1350,8 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_type,
             instance=instance_id,
         )
-        await waiter(instance_id)
+        info = await waiter(instance_id)
+        return info if isinstance(info, dict) else {}
 
     async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:
         """获取（或建立）到该 agent instance 的 WS 直连，不走 invoke 链路.
@@ -2582,14 +2617,28 @@ class AgentOSRouterClient(AgentServerClient):
             ):
                 return
 
-            # 创建后查询 YuanRong 获取 node_ip / sandbox_ip，更新注册中心 instance
-            # 的 placement 字段（node + address）与 instance_id，供调度/路由使用。
-            instance_info = await self._yuanrong.get_agent_info(
-                agent_info.sandbox_id
+            # create 返回时沙箱通常还在探针中：placeholder address=instance_id。
+            # 等到 status=running 后再读 node_ip / sandbox_ip（含 jiuwenbox
+            # ip_address），PATCH 注册中心 placement，供调度/路由使用。
+            sandbox_id = str(agent_info.sandbox_id or "").strip()
+            instance_info = await self._wait_yuanrong_running(
+                sandbox_id,
+                user_id=str(agent_info.user_id or ""),
+                session_id=str(agent_info.metadata.get("session_id") or ""),
+                agent_type=str(agent_info.agent_type or ""),
             )
-            node_ip = str(instance_info.get("node_ip") or "").strip()
-            sandbox_ip = str(instance_info.get("sandbox_ip") or "").strip()
+            node_ip, sandbox_ip = _extract_placement_ips(instance_info)
             if not (node_ip or sandbox_ip):
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    "registry.instance.skip_no_ip",
+                    user_id=agent_info.user_id,
+                    session_id=str(agent_info.metadata.get("session_id") or ""),
+                    sandbox_id=sandbox_id,
+                    agent_type=agent_info.agent_type,
+                    instance=sandbox_id,
+                )
                 return
             service_id = instance_service_id(
                 agent_info.user_id, agent_info.agent_type

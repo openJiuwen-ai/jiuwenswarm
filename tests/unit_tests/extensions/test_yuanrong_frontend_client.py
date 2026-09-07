@@ -20,6 +20,7 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
     _is_agent_running,
+    _merge_agent_instance_payload,
     apply_trace_header,
     extract_trace_id,
     normalize_trace_id,
@@ -741,6 +742,44 @@ def test_is_agent_running_requires_explicit_running_when_status_present():
     assert _is_agent_running({"instance_id": "x"}) is False
     assert _is_agent_running({"instance_id": "x", "node_ip": "10.0.0.1"}) is False
     assert _is_agent_running({"instance_id": "x", "state": ""}) is False
+
+
+def test_merge_agent_instance_payload_promotes_top_level_ips() -> None:
+    nested = _merge_agent_instance_payload(
+        {
+            "code": 200,
+            "instance": {
+                "instance_id": "sbx-1",
+                "status": "running",
+                "node_ip": "10.0.0.1",
+                "sandbox_ip": "10.64.0.2",
+            },
+        }
+    )
+    assert nested["node_ip"] == "10.0.0.1"
+    assert nested["sandbox_ip"] == "10.64.0.2"
+
+    promoted = _merge_agent_instance_payload(
+        {
+            "code": 200,
+            "status": "running",
+            "node_ip": "10.0.0.5",
+            "ip_address": "10.64.12.34",
+            "instance": {"instance_id": "sbx-2"},
+        }
+    )
+    assert promoted["instance_id"] == "sbx-2"
+    assert promoted["status"] == "running"
+    assert promoted["node_ip"] == "10.0.0.5"
+    assert promoted["ip_address"] == "10.64.12.34"
+
+    nested_wins = _merge_agent_instance_payload(
+        {
+            "sandbox_ip": "198.51.100.9",
+            "instance": {"sandbox_ip": "10.64.0.2", "status": "running"},
+        }
+    )
+    assert nested_wins["sandbox_ip"] == "10.64.0.2"
 
 
 @pytest.mark.asyncio

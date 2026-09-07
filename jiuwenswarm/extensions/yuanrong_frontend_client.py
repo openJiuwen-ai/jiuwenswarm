@@ -276,6 +276,38 @@ def _is_agent_running(instance: Mapping[str, Any] | None) -> bool:
     return _instance_status(instance) == _AGENT_RUNNING_STATUS
 
 
+# Placement / status fields YuanRong may put on ``instance`` or at the top
+# level (legacy GET, jiuwenbox ``ip_address`` passthrough).
+_AGENT_INSTANCE_PROMOTE_KEYS = (
+    "status",
+    "state",
+    "node_ip",
+    "nodeIp",
+    "sandbox_ip",
+    "sandboxIp",
+    "ip_address",
+    "ipAddress",
+)
+
+
+def _merge_agent_instance_payload(parsed: Mapping[str, Any]) -> dict[str, Any]:
+    """Flatten GET /api/agent payload into the instance dict used by callers.
+
+    Nested ``instance`` values win; missing placement/status fields are
+    copied from the top-level body so registry PATCH can see sandbox IP
+    even when YuanRong/jiuwenbox emit them outside ``instance``.
+    """
+    raw = parsed.get("instance")
+    instance = dict(raw) if isinstance(raw, dict) else {}
+    for key in _AGENT_INSTANCE_PROMOTE_KEYS:
+        if str(instance.get(key) or "").strip():
+            continue
+        value = parsed.get(key)
+        if value is not None and str(value).strip():
+            instance[key] = value
+    return instance
+
+
 class AgentMount(TypedDict, total=False):
     """Bind mount for POST /api/agent ``mounts``."""
 
@@ -634,15 +666,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             self._do_agent_get, normalized_id, trace_id
         )
         parsed = self._parse_agent_api_response(body, status)
-        instance = parsed.get("instance")
-        if not isinstance(instance, dict):
-            instance = {}
-        else:
-            instance = dict(instance)
-        top_status = str(parsed.get("status") or parsed.get("state") or "").strip()
-        if top_status and not str(instance.get("status") or "").strip():
-            instance["status"] = top_status
-        return instance
+        return _merge_agent_instance_payload(parsed)
 
     async def wait_until_running(
         self, instance_id: str, *, trace_id: str | None = None
