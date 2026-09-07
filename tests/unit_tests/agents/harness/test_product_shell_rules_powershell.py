@@ -113,14 +113,14 @@ def test_product_powershell_unlisted_cmdlets_follow_tool_allow() -> None:
 
 
 _PS_DELETE_ASK_CASES = (
-    ("Remove-Item test", "shell_ask_remove_item"),
-    ("Remove-Item -Recurse -Force tmp", "shell_ps_recursive_or_forced_delete"),
-    ("ri test.txt", "shell_ask_ri"),
-    ("rmdir olddir", "shell_ask_rmdir"),
-    ("erase temp.log", "shell_ask_erase"),
-    ("del temp.log", "shell_ask_del"),
-    ("rd olddir", "shell_ask_rd"),
-    ("rm temp.log", "shell_ask_rm"),
+    ("Remove-Item test", ("shell_ask_remove_item",)),
+    ("Remove-Item -Recurse -Force tmp", ("shell_ps_recursive_or_forced_delete",)),
+    ("ri test.txt", ("shell_ask_ri",)),
+    ("rmdir olddir", ("shell_ask_rmdir",)),
+    ("erase temp.log", ("shell_ask_erase",)),
+    ("del temp.log", ("shell_ask_del",)),
+    ("rd olddir", ("shell_ask_rd",)),
+    ("rm temp.log", ("shell_ask_rm",)),
 )
 
 
@@ -128,9 +128,9 @@ def test_product_powershell_delete_cmdlets_ask() -> None:
     effective = compose_host_effective_permissions(
         global_permissions=_load_permissions(_PRODUCT_CONFIGS[0]),
     )
-    for command, rule_id in _PS_DELETE_ASK_CASES:
+    for command, rule_ids in _PS_DELETE_ASK_CASES:
         level, matched = evaluate_tiered_policy(
             effective, "powershell", {"command": command},
         )
         assert level == PermissionLevel.ASK, (command, matched)
-        assert rule_id in matched, (command, matched)
+        assert any(rule_id in matched for rule_id in rule_ids), (command, matched)
