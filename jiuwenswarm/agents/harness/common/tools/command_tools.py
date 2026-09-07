@@ -138,19 +138,6 @@ def _enforce_tui_spawn_budget(command: str, session_id: str) -> str | None:
 
 
 _DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\brm\s+-rf\b", re.IGNORECASE), "blocked pattern: rm -rf"),
-    (re.compile(r"\bdel\s+/[a-z]*[fsq][a-z]*\b", re.IGNORECASE), "blocked pattern: del /f /s /q"),
-    (re.compile(r"\brd\s+/s\s+/q\b", re.IGNORECASE), "blocked pattern: rd /s /q"),
-    (re.compile(r"\bformat\s+[a-z]:", re.IGNORECASE), "blocked pattern: format drive"),
-    (re.compile(r"\bshutdown\b", re.IGNORECASE), "blocked pattern: shutdown"),
-    (re.compile(r"\breboot\b", re.IGNORECASE), "blocked pattern: reboot"),
-    (re.compile(r"\bdiskpart\b", re.IGNORECASE), "blocked pattern: diskpart"),
-    (re.compile(r"\bmkfs\b", re.IGNORECASE), "blocked pattern: mkfs"),
-    (re.compile(r"\breg\s+delete\b", re.IGNORECASE), "blocked pattern: reg delete"),
-    (
-        re.compile(r"\bremove-item\b[^\n\r]*-recurse[^\n\r]*-force", re.IGNORECASE),
-        "blocked pattern: Remove-Item -Recurse -Force",
-    ),
     (
         re.compile(r"\bpkill\b[^\n\r;|&]*jiuwenswarm", re.IGNORECASE),
         "blocked pattern: pkill targeting jiuwenswarm (includes user TUI)",

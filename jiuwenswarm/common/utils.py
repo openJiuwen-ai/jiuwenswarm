@@ -1073,17 +1073,6 @@ def prepare_workspace(
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
 
-    builtin_rules_src = resources_dir / "builtin_rules.yaml"
-    builtin_rules_dest = config_dest_dir / "builtin_rules.yaml"
-    if builtin_rules_src.is_file() and (overwrite or not builtin_rules_dest.exists()):
-        with TrackCopyDiff(
-            dest=builtin_rules_dest,
-            is_file=True,
-            cumulative=cumulative_diff,
-            overwrite=overwrite,
-        ):
-            shutil.copy2(builtin_rules_src, builtin_rules_dest)
-
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
     # ----- 内置模板根目录：<package>/resources（含 agent/、skills_state.json）-----
@@ -1578,7 +1567,6 @@ def init_user_workspace(
 
     上述内容会被复制到:
     - ~/.jiuwenswarm/config/config.yaml（含 preferred_language）
-    - ~/.jiuwenswarm/config/builtin_rules.yaml（内置 shell 安全规则模板，与 config 同目录）
     - ~/.jiuwenswarm/config/.env
     - ~/.jiuwenswarm/agent/...
 

@@ -1032,6 +1032,13 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # Host-only. Inject agent-core package builtin_rules.yaml (command rules +
+  # sensitive_paths + net_urls). Default true; User/Session cannot override.
+  package_builtin_rules: true
+  # 缺省两项为 true。产品关闭结构地板与解释器汇点；危险命令仍走 builtin / rules。
+  shell_guard:
+    unknown_structure: false
+    interpreter_sink: false
   # manual keeps the existing approval flow; auto enables Smart Approval.
   mode: manual
 
@@ -1231,22 +1238,6 @@ permissions:
     - id: shell_ask_erase
       tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "erase *"
-      severity: HIGH
-    - id: shell_ask_mv
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "mv *"
-      severity: HIGH
-    - id: shell_ask_cp
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "cp *"
-      severity: HIGH
-    - id: shell_ask_chmod
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "chmod *"
-      severity: HIGH
-    - id: shell_ask_chown
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "chown *"
       severity: HIGH
     - id: shell_ask_sensitive_file_reads
       tools: [bash, powershell, mcp_exec_command, create_terminal]

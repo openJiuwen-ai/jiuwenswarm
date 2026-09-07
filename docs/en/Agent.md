@@ -208,7 +208,6 @@ C:\Users\<username>\.jiuwenswarm\
 │
 ├── config/                          # Configuration
 │   ├── config.yaml                  # Main config (models, channels, permissions)
-│   ├── builtin_rules.yaml           # Built-in rules
 │   ├── .env                         # Environment variables
 │   └── runtime_state/               # Runtime state directory (per-session / per-task files)
 │
@@ -242,7 +241,6 @@ C:\Users\<username>\.jiuwenswarm\
 | Path | Purpose | Edit? | If you change it |
 |------|---------|-------|------------------|
 | `config/config.yaml` | Models, channels, permissions, memory | Advanced users, carefully | Affects models, channels, security; restart required |
-| `config/builtin_rules.yaml` | Built-in rules | Not recommended | Changes default system behavior |
 | `agent/sessions/` | Session history storage | Auto-managed by system | Affects session history; manage via Web UI |
 | `agent/workspace/AGENT_ZH.md` | Bootstrap config (Chinese) | Yes, when needed | Affects startup behavior |
 | `agent/workspace/IDENTITY_ZH.md` | Identity (Chinese) | Customizable | Affects how the agent sees its role |
@@ -259,7 +257,6 @@ C:\Users\<username>\.jiuwenswarm\
 ```text
 C:\Users\Administrator\.jiuwenswarm\
 ├── config\config.yaml
-├── config\builtin_rules.yaml
 ├── config\runtime_state\           # Runtime state directory (per-session / per-task files)
 ├── .agent_teams\                    # Team-related data
 ├── todo\                            # Global todo items

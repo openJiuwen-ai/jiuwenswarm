@@ -10,6 +10,9 @@ from openjiuwen.harness.rails.security.tool_security_rail import PermissionInter
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+    JiuwenSwarmPermissionInterruptRail,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface, interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import BrowserRuntimeSecurityProfile
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
@@ -239,6 +242,7 @@ async def test_busy_transition_preserves_old_mode_until_settlement(lifecycle, tr
     await h.reload()
     assert h.adapter._enable_auto_permission is (transition == "enter")
     if transition == "exit":
-        assert type(h.adapter._permission_rail) is PermissionInterruptRail
+        assert type(h.adapter._permission_rail) is JiuwenSwarmPermissionInterruptRail
+        assert isinstance(h.adapter._permission_rail, PermissionInterruptRail)
     elif transition == "disable":
         assert h.permissions() == []
