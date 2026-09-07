@@ -2304,7 +2304,6 @@
     "skillApproval": {
       "title": "Skill 加载审批",
       "trustBuiltin": "内置",
-      "trustOther": "非官方",
       "versionLocal": "本地（无版本）",
       "source": "来源",
       "version": "版本",
@@ -2320,7 +2319,7 @@
       "approveSession": "会话内允许",
       "approveSessionDesc": "会话内保留审批记录，Skill 结束后失活",
       "continueWithout": "仅加载不授权",
-      "continueWithoutDesc": "仅加载 Skill，不授予额外权限（按原有权限运行）"
+      "continueWithoutDesc": "仅加载 Skill，不授予额外权限"
     }
   },
   "share": {

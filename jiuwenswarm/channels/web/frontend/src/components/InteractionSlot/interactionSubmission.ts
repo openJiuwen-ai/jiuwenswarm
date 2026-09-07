@@ -30,3 +30,11 @@ export function buildEmptyAskUserAnswers(questions: Pick<Question, 'question'>[]
     custom_input: '',
   }));
 }
+
+/** Re-enable an approval card when its request is still pending after submission. */
+export function shouldUnlockPendingApproval(
+  pendingRequestId: string | null | undefined,
+  submittedRequestId: string,
+): boolean {
+  return pendingRequestId === submittedRequestId;
+}

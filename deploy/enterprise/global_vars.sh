@@ -220,7 +220,6 @@ declare -A DEPLOY_VARS=(
     ["REDIS_MODE"]="standalone"
     ["RENDER_ONLY"]="false"
     ["SECRET_CM_NAME"]="jiuwenclaw-secret-configmap"
-    ["SKILL_AUTHORIZATION_ENABLED"]="false"
     ["TIMEZONE"]="Asia/Shanghai"
     ["VECTOR_NAME"]="vector-receiver"
     ["VECTOR_IMAGE"]="timberio/vector:0.40.0-alpine"

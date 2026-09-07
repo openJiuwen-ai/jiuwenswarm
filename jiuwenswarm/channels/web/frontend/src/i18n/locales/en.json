@@ -2317,7 +2317,6 @@
     "skillApproval": {
       "title": "Skill load approval",
       "trustBuiltin": "builtin",
-      "trustOther": "unofficial",
       "versionLocal": "local (no version)",
       "source": "Source",
       "version": "Version",
@@ -2333,7 +2332,7 @@
       "approveSession": "Allow for session",
       "approveSessionDesc": "Approval cached for this session; revoked when the skill ends",
       "continueWithout": "Continue without extra permissions",
-      "continueWithoutDesc": "Load the skill under existing permissions"
+      "continueWithoutDesc": "Load the skill without granting additional permissions"
     }
   },
   "share": {

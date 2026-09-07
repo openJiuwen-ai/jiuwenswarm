@@ -37,6 +37,7 @@
     "test:artifact-collection": "esbuild src/components/ArtifactsPanel/artifactCollection.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/artifact-collection/artifactCollection.mjs && node --test tests/artifactCollection.test.mjs",
     "test:desktop-save": "esbuild src/utils/desktopSave.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/desktop-save/desktopSave.mjs && node --test tests/desktopSave.test.mjs",
     "test:ask-user-submission": "tsc src/components/InteractionSlot/interactionSubmission.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/ask-user-submission --skipLibCheck --noEmitOnError && node --test tests/askUserSubmission.test.mjs",
+    "test:skill-approval-presentation": "tsc src/components/ChatPanel/skillApprovalPresentation.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/skill-approval-presentation --skipLibCheck --noEmitOnError && node --test tests/skillApprovalPresentation.test.mjs",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
