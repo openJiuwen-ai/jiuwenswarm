@@ -6434,3 +6434,75 @@ def test_run_lamp_active_all_completed_agents_do_not_hold_lamp() -> None:
     run = _wf_run_with_agents("completed", "failed")
 
     assert team_helpers._run_lamp_active(run) is False
+
+
+# ---------------------------------------------------------------------------
+# SDD-0018: _normalize_recovered_runs — park disk-restored zombies on cold start
+# ---------------------------------------------------------------------------
+
+def test_normalize_recovered_runs_parks_running_and_marks_recovered(monkeypatch):
+    """A crash-left running run is parked to paused and marked recovered.
+
+    A restored running run has no live controller (registries are empty after a
+    restart), so parking it keeps the frontend lamp off while recovered=True
+    greys its control buttons.
+    """
+    persist_calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        team_helpers,
+        "persist_workflow_runs",
+        lambda runs, session_id, **kwargs: persist_calls.append((session_id, runs)),
+    )
+
+    runs = {
+        "running": WorkflowRunState(status="running"),
+        "paused": WorkflowRunState(status="paused"),
+        "done": WorkflowRunState(status="completed"),
+    }
+    result = team_helpers._normalize_recovered_runs(runs, session_id="sess-cold")
+
+    assert result is runs
+    # crash zombie: running -> paused (non-terminal, resumable via relaunch) + recovered
+    assert runs["running"].status == "paused"
+    assert runs["running"].recovered is True
+    # already parked: status untouched, recovered marker added
+    assert runs["paused"].status == "paused"
+    assert runs["paused"].recovered is True
+    # terminal run: neither parked nor marked — it truly finished
+    assert runs["done"].status == "completed"
+    assert runs["done"].recovered is False
+    # a change was persisted exactly once
+    assert persist_calls == [("sess-cold", runs)]
+
+
+def test_normalize_recovered_runs_only_terminal_no_persist(monkeypatch):
+    """All-terminal runs need no normalization — nothing written to disk."""
+    persist_calls: list = []
+    monkeypatch.setattr(
+        team_helpers,
+        "persist_workflow_runs",
+        lambda *args, **kwargs: persist_calls.append(args),
+    )
+
+    runs = {
+        "done": WorkflowRunState(status="completed"),
+        "failed": WorkflowRunState(status="failed"),
+    }
+    team_helpers._normalize_recovered_runs(runs, session_id="sess-noop")
+    assert runs["done"].recovered is False
+    assert runs["failed"].recovered is False
+    assert persist_calls == []
+
+
+def test_normalize_recovered_runs_empty_and_none_returned_unchanged(monkeypatch):
+    """Empty dict / None have nothing to normalize — returned as-is, no persist."""
+    persist_calls: list = []
+    monkeypatch.setattr(
+        team_helpers,
+        "persist_workflow_runs",
+        lambda *args, **kwargs: persist_calls.append(args),
+    )
+
+    assert team_helpers._normalize_recovered_runs({}, "sess-empty") == {}
+    assert team_helpers._normalize_recovered_runs(None, "sess-empty") is None
+    assert persist_calls == []

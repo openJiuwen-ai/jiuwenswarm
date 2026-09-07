@@ -1250,3 +1250,26 @@ def test_pause_if_running_returns_false_when_already_paused():
     assert changed is False
     assert state.status == "paused"
     assert state.is_terminal is False
+
+
+# ---------------------------------------------------------------------------
+# SDD-0018: recovered — cold-start per-run button greying marker
+# ---------------------------------------------------------------------------
+
+def test_model_validate_keeps_recovered_true():
+    """model_validate preserves a persisted recovered=True marker."""
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    assert state.recovered is True
+
+
+def test_model_validate_without_recovered_defaults_false():
+    """Fresh states default recovered=False (not a disk-restored run)."""
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert state.recovered is False
+
+
+def test_workflow_started_clears_recovered():
+    """A relaunched run has a live controller handle — the recovered marker is cleared."""
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.recovered is False

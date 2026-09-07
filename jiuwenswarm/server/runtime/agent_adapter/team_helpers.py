@@ -753,6 +753,32 @@ def restore_workflow_runs(session_id: str) -> dict[str, WorkflowRunState] | None
     }
 
 
+def _normalize_recovered_runs(
+    runs: dict[str, WorkflowRunState] | None, session_id: str,
+) -> dict[str, WorkflowRunState] | None:
+    """Normalize disk-restored runs after cold start.
+
+    Any non-terminal run is parked to ``paused`` (a crash left it ``running``
+    but no events will ever arrive) and marked ``recovered`` so the frontend
+    greys its control buttons — the controller registries are empty after a
+    restart, so only launch-plane recovery (leader advisory) can resume it.
+    """
+    if not runs:
+        return runs
+    changed = False
+    for run in runs.values():
+        if not run.is_terminal:
+            if run.status != "paused":
+                run.status = "paused"
+                changed = True
+            if not run.recovered:
+                run.recovered = True
+                changed = True
+    if changed:
+        persist_workflow_runs(runs, session_id)
+    return runs
+
+
 def persist_session_budget(session_id: str, snapshot: dict) -> None:
     """Persist the session-wide (leader-shared) budget snapshot to session metadata.
 
@@ -1115,7 +1141,9 @@ async def ensure_monitor_handlers_for_active_runtime(
         # Stopped handler still holds _runs in memory — prefer these
         initial_runs = existing_wf.get_run_states()
         # Merge disk-restored runs for any IDs not present in memory
-        restored_from_disk = restore_workflow_runs(session_id)
+        restored_from_disk = _normalize_recovered_runs(
+            restore_workflow_runs(session_id), session_id,
+        )
         if restored_from_disk:
             for run_id, run_state in restored_from_disk.items():
                 if run_id not in initial_runs:
@@ -1124,7 +1152,9 @@ async def ensure_monitor_handlers_for_active_runtime(
         tm.pop_workflow_handler(session_id)
     else:
         # No in-memory handler — restore from disk only
-        initial_runs = restore_workflow_runs(session_id)
+        initial_runs = _normalize_recovered_runs(
+            restore_workflow_runs(session_id), session_id,
+        )
 
     # Bind the explicit session_id so create_monitor freezes the real id
     # instead of an empty contextvar (same rationale as the TeamMonitor
