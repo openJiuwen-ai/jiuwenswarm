@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import Any, Awaitable, Callable, ClassVar, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
@@ -3732,12 +3732,25 @@ class AgentWebSocketServer:
             admitted = self._should_admit_interrupt_resume(request)
         if admitted:
             await self._heartbeat_runtime.admission.begin_user(session_id)
+        admission_released = False
+
+        async def _release_admission_once() -> None:
+            nonlocal admission_released
+            if not admitted or admission_released:
+                return
+            await self._heartbeat_runtime.admission.end_user(session_id)
+            admission_released = True
+
         try:
-            await self._handle_stream_impl(ws, request, send_lock)
+            await self._handle_stream_impl(
+                ws,
+                request,
+                send_lock,
+                on_response_stream_closed=_release_admission_once,
+            )
             kvc_task_succeeded = True
         finally:
-            if admitted:
-                await self._heartbeat_runtime.admission.end_user(session_id)
+            await _release_admission_once()
             if foreground:
                 await manager.end_foreground_chat()
             if tracks_kvc_task:
@@ -3949,7 +3962,12 @@ class AgentWebSocketServer:
                     await self._check_post_process_plan_exit(request, agent)
 
     async def _handle_stream_impl(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+        *,
+        on_response_stream_closed: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
         # 兜底确保 checkpointer 就绪 (见 _handle_unary 同名注释)。
@@ -4041,6 +4059,10 @@ class AgentWebSocketServer:
                 close_stream = getattr(response_stream, "aclose", None)
                 if callable(close_stream):
                     await close_stream()
+                # The user turn ends with its response stream. Transport
+                # keepalive cleanup must not retain Heartbeat admission.
+                if on_response_stream_closed is not None:
+                    await on_response_stream_closed()
             finally:
                 try:
                     # 显式停止并唤醒 keepalive；Task.cancel 只作为有界的兜底。

@@ -8,6 +8,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
+    SessionRunAdmission,
+)
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
@@ -212,6 +215,95 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
     assert send_count == 1
     assert stream_closed is True
     assert foreground_manager.events == ["begin", "end"]
+
+
+@pytest.mark.asyncio
+async def test_stream_releases_admission_before_transport_cleanup_finishes(
+    monkeypatch,
+):
+    keepalive_send_started = asyncio.Event()
+    keepalive_cancelled = asyncio.Event()
+    release_keepalive_send = asyncio.Event()
+
+    class FakeAgent:
+        async def process_message_stream(self, request):
+            await keepalive_send_started.wait()
+            if release_keepalive_send.is_set():
+                yield AgentResponseChunk(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                )
+
+    async def blocking_keepalive_send(ws, wire):
+        if wire.get("sequence") != -1:
+            return True
+        keepalive_send_started.set()
+        try:
+            await release_keepalive_send.wait()
+        except asyncio.CancelledError:
+            keepalive_cancelled.set()
+            await release_keepalive_send.wait()
+            raise
+        return True
+
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    admission = SessionRunAdmission()
+    server._agent_manager = None
+    server._heartbeat_runtime = SimpleNamespace(admission=admission)
+    server._session_stream_tasks = {}
+    server._should_trigger_before_chat_request_hook = lambda request: False
+    server._is_stateless_method_request = lambda request: True
+    server._is_readonly_goal_get_request = lambda request: False
+    server._try_start_heartbeat_runtime = AsyncMock()
+    server._check_post_process_plan_exit = AsyncMock()
+    server._get_stateless_agent = AsyncMock(return_value=FakeAgent())
+    monkeypatch.setattr(
+        agent_ws_server,
+        "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr(
+        agent_ws_server,
+        "send_wire_payload",
+        blocking_keepalive_send,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep."
+        "ensure_persistent_checkpointer",
+        AsyncMock(),
+    )
+    request = AgentRequest(
+        request_id="ask-user-stream",
+        channel_id="web",
+        session_id="ask-user-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={},
+        is_stream=True,
+    )
+    handler = asyncio.create_task(
+        server._handle_stream(FakeWebSocket(), request, asyncio.Lock())
+    )
+
+    try:
+        await asyncio.wait_for(keepalive_cancelled.wait(), timeout=1.0)
+        assert handler.done() is False
+        assert admission.is_user_active("ask-user-session") is False
+        assert (
+            await admission.try_begin_heartbeat(
+                "ask-user-session",
+                "heartbeat-after-answer",
+            )
+            is True
+        )
+        await admission.end_heartbeat(
+            "ask-user-session",
+            "heartbeat-after-answer",
+        )
+    finally:
+        release_keepalive_send.set()
+        await asyncio.wait_for(handler, timeout=1.0)
 
 
 @pytest.mark.asyncio
