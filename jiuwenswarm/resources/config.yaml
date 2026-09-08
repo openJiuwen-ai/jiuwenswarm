@@ -534,6 +534,9 @@ trajectory_ui:
   poll_interval_ms: 2000            # Web 端兜底轮询间隔
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
+experimental:
+  task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
+
 # ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
 # ============================================================

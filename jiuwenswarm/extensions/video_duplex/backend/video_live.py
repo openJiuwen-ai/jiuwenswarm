@@ -22,8 +22,17 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
     QwenOmniRealtimeConfig,
 )
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import qwen_omni_tools
+from jiuwenswarm.server.runtime.session.session_history import append_history_record
 _ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _LOG_WRITE_LOCK = threading.Lock()
+
+_CONVERSATION_EVENT_KINDS = {
+    "user",
+    "assistant",
+    "reasoning",
+    "tool_call",
+    "tool_result",
+}
 
 
 _REALTIME_TELEMETRY_EVENT = re.compile(
@@ -44,7 +53,7 @@ _REALTIME_TELEMETRY_FIELDS = {
     "image_append_sequence", "has_deferred_image", "response_id",
     "audio_level", "speech_threshold", "cancel_event_sent",
     "replacing_pending_prompt", "instruction_chars", "frame_time_range",
-    "audio_sequence", "image_sequence",
+    "audio_sequence", "image_sequence", "error_type", "raw_event",
 }
 
 
@@ -69,6 +78,12 @@ def _append_realtime_session_log(event: dict[str, Any]) -> None:
     _append_jsonl(path, event)
 
 
+def _append_qwen_realtime_error_log(event: dict[str, Any]) -> None:
+    path = Path.home() / ".jiuwenswarm" / "logs" / "qwen-realtime-errors.jsonl"
+    event = {"server_time": datetime.now(timezone.utc).isoformat(), **event}
+    _append_jsonl(path, event)
+
+
 def _append_video_event_log(event: dict[str, Any]) -> None:
     path = Path.home() / ".jiuwenswarm" / "logs" / "video-live-events.jsonl"
     event = {
@@ -88,12 +103,39 @@ def _append_asr_log(event: dict[str, Any]) -> None:
 
 
 def _append_joyai_log(event: dict[str, Any]) -> None:
+    event = dict(event)
+    model_raw_content = event.pop("model_raw_content", None)
     path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
     record = {
         "server_time": datetime.now(timezone.utc).isoformat(),
         **event,
     }
     _append_jsonl(path, record)
+
+    if event.get("stage") != "completed" or event.get("decision") == "silence":
+        return
+    raw_content = (
+        model_raw_content
+        if isinstance(model_raw_content, str)
+        else str(event.get("raw_content") or "")
+    )
+    if not raw_content.strip():
+        return
+    raw_path = Path.home() / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
+    raw_record = {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "request_id": event.get("request_id", ""),
+        "joyai_session_id": event.get("joyai_session_id", ""),
+        "instruction": event.get("instruction", ""),
+        "request_kind": event.get("request_kind", ""),
+        "frame_time_range": event.get("frame_time_range", ""),
+        "decision": event.get("decision", ""),
+        "raw_content": raw_content,
+    }
+    adapter_content = str(event.get("raw_content") or "")
+    if adapter_content != raw_content:
+        raw_record["adapter_content"] = adapter_content
+    _append_jsonl(raw_path, raw_record)
 
 
 def _is_allowed_image_data_url(value: str) -> bool:
@@ -329,6 +371,7 @@ def register_video_live_handler(
             "response": result["response"],
             "delegation": result["delegation"],
             "raw_content": result["raw_content"],
+            "model_raw_content": result.get("model_raw_content"),
             "latency_ms": result["latency_ms"],
             "timing": result["timing"],
             "tools_used": tools_used,
@@ -382,33 +425,138 @@ def register_video_live_handler(
         else:
             allowed["server_time"] = datetime.now(timezone.utc).isoformat()
             await asyncio.to_thread(_append_realtime_telemetry, allowed)
+            if event_name == "qwen_realtime_error":
+                await asyncio.to_thread(_append_qwen_realtime_error_log, allowed)
         await channel.send_response(ws, req_id, ok=True, payload={"logged": True})
 
-    def _require_enabled(handler):
-        async def _guarded(ws, req_id, params, session_id):
-            if not video_duplex_enabled():
+    async def _append_conversation(ws, req_id, params, session_id):
+        del session_id
+        visible_session_id = str(params.get("session_id") or "").strip()
+        event_id = str(params.get("event_id") or "").strip()
+        kind = str(params.get("kind") or "").strip().lower()
+        if not visible_session_id or visible_session_id == "new":
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                code="SESSION_NOT_READY",
+                message="A persisted session is required before appending Full-duplex history.",
+            )
+            return
+        if not event_id or len(event_id) > 160:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                code="INVALID_EVENT_ID",
+                message="event_id is required and must not exceed 160 characters.",
+            )
+            return
+        if kind not in _CONVERSATION_EVENT_KINDS:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                code="INVALID_EVENT_KIND",
+                message="Unsupported Full-duplex conversation event kind.",
+            )
+            return
+
+        raw_timestamp = params.get("timestamp")
+        try:
+            timestamp = float(raw_timestamp)
+        except (TypeError, ValueError):
+            timestamp = datetime.now(timezone.utc).timestamp()
+        if timestamp <= 0:
+            timestamp = datetime.now(timezone.utc).timestamp()
+
+        content = str(params.get("content") or "")
+        if len(content) > 100_000:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                code="CONTENT_TOO_LARGE",
+                message="Full-duplex history content exceeds 100000 characters.",
+            )
+            return
+
+        role = "user" if kind == "user" else "assistant"
+        event_type: str | None = None
+        extra: dict[str, Any] | None = None
+        if kind == "assistant":
+            event_type = "chat.final"
+        elif kind == "reasoning":
+            event_type = "chat.reasoning"
+            extra = {
+                "reasoning_content": content,
+                "reasoning_started_at": params.get("started_at"),
+                "reasoning_updated_at": params.get("updated_at"),
+            }
+            content = ""
+        elif kind == "tool_call":
+            tool_call = params.get("tool_call")
+            if not isinstance(tool_call, dict):
                 await channel.send_response(
                     ws,
                     req_id,
                     ok=False,
-                    error="全双工插件已禁用，请在插件设置中启用",
-                    code="APPLICATION_PLUGIN_DISABLED",
+                    code="INVALID_TOOL_CALL",
+                    message="tool_call must be an object.",
                 )
                 return
-            await handler(ws, req_id, params, session_id)
+            event_type = "chat.tool_call"
+            extra = {"tool_call": tool_call}
+            content = ""
+        elif kind == "tool_result":
+            tool_result = params.get("tool_result")
+            if not isinstance(tool_result, dict):
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    code="INVALID_TOOL_RESULT",
+                    message="tool_result must be an object.",
+                )
+                return
+            event_type = "chat.tool_result"
+            extra = {"tool_result": tool_result}
+            content = ""
 
-        return _guarded
+        append_history_record(
+            session_id=visible_session_id,
+            request_id=f"video-duplex-{event_id}",
+            channel_id="video_duplex",
+            role=role,
+            content=content,
+            timestamp=timestamp,
+            event_type=event_type,
+            extra=extra,
+            mode="agent",
+        )
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload={"persisted": True, "event_id": event_id},
+        )
 
     handlers = {
         "video.realtime.config": _realtime_config,
         "video.joyai.frame": _joyai_frame,
         "video.realtime.telemetry": _realtime_telemetry,
+        "video.conversation.append": _append_conversation,
         **voice_handlers,
         "video.qwen.tool": search_manager.handle_qwen_tool,
         "video.search.status": search_manager.handle_status,
     }
     for method, handler in handlers.items():
-        channel.register_method(method, _require_enabled(handler), local_only=True)
+        channel.register_method(
+            method,
+            handler,
+            local_only=True,
+            available_when_disabled=True,
+        )
     _append_video_event_log({
         "stage": "video_handlers_registered",
         "module_path": __file__,

@@ -6,6 +6,7 @@ import { Button, Switch } from '../../../../components/ui';
 import { Form, FormDialog, useForm } from '../../../../components/form';
 import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
 import { setTrajectoryUiEnabled } from '../../../../features/trajectory/featureConfig';
+import { setTaskFullDuplexEnabled } from '../../../../features/taskFullDuplex/featureFlag';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
   ExternalCliAgentsSection,
@@ -316,6 +317,32 @@ export function TrajectoryUiSetting({ disabled }: SettingsCustomItemProps) {
         checked={enabled}
         disabled={disabled || !isConnected || source.savingKeys.has('trajectory_ui_enabled')}
         onChange={(next) => void updateTrajectoryUi(next).catch(() => undefined)}
+      />
+    </SettingRow>
+  );
+}
+
+export function TaskFullDuplexSetting({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const source = useSettingsSource();
+  const enabled = parseConfigBoolean(source.values.task_full_duplex_enabled);
+
+  async function updateTaskFullDuplex(next: boolean): Promise<void> {
+    await source.save({ task_full_duplex_enabled: next }, 'task-full-duplex-enabled');
+    setTaskFullDuplexEnabled(next);
+  }
+
+  return (
+    <SettingRow
+      title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+      description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
+    >
+      <Switch
+        aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+        checked={enabled}
+        disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
+        onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
       />
     </SettingRow>
   );

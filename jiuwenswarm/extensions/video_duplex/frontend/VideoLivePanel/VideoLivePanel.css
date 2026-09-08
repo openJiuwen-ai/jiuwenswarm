@@ -747,3 +747,18 @@
     grid-template-columns: minmax(0, 1fr) minmax(120px, 38%);
   }
 }
+.video-live-headless {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.video-live-headless video,
+.video-live-headless canvas {
+  width: 1px;
+  height: 1px;
+}

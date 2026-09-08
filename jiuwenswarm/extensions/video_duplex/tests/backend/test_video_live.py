@@ -99,9 +99,11 @@ class FakeChannel:
         self.local_only = set()
         self.responses = []
         self.events = []
+        self.registration_options = {}
 
     def register_method(self, method, handler, **kwargs) -> None:
         self.handlers[method] = handler
+        self.registration_options[method] = kwargs
         if kwargs.get("local_only"):
             self.local_only.add(method)
 
@@ -153,24 +155,75 @@ def _joyai_result(
 
 
 @pytest.mark.asyncio
-async def test_video_plugin_disabled_rejects_runtime_requests(monkeypatch) -> None:
+async def test_video_runtime_remains_available_when_plugin_page_is_disabled(monkeypatch) -> None:
     monkeypatch.setenv("VIDEO_DUPLEX_ENABLED", "false")
     channel = _video_channel()
 
-    await channel.handlers["video.realtime.config"](
-        object(), "req-disabled", {}, "session"
+    assert all(
+        options.get("available_when_disabled") is True
+        for options in channel.registration_options.values()
     )
 
-    assert channel.responses == [
-        (
-            "req-disabled",
-            {
-                "ok": False,
-                "error": "全双工插件已禁用，请在插件设置中启用",
-                "code": "APPLICATION_PLUGIN_DISABLED",
-            },
-        )
-    ]
+
+@pytest.mark.asyncio
+async def test_full_duplex_conversation_events_append_visible_session_history(monkeypatch) -> None:
+    channel = _video_channel()
+    records = []
+    monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
+
+    await channel.handlers["video.conversation.append"](
+        object(),
+        "history-request",
+        {
+            "session_id": "visible-session",
+            "event_id": "event-1",
+            "kind": "assistant",
+            "content": "这是全双工回答。",
+            "timestamp": 1_700_000_000.25,
+        },
+        "transport-session",
+    )
+
+    assert channel.responses[-1][1]["payload"] == {
+        "persisted": True,
+        "event_id": "event-1",
+    }
+    assert records == [{
+        "session_id": "visible-session",
+        "request_id": "video-duplex-event-1",
+        "channel_id": "video_duplex",
+        "role": "assistant",
+        "content": "这是全双工回答。",
+        "timestamp": 1_700_000_000.25,
+        "event_type": "chat.final",
+        "extra": None,
+        "mode": "agent",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) -> None:
+    channel = _video_channel()
+    monkeypatch.setattr(
+        video_live,
+        "append_history_record",
+        lambda **_record: pytest.fail("placeholder session must not be persisted"),
+    )
+
+    await channel.handlers["video.conversation.append"](
+        object(),
+        "history-request",
+        {
+            "session_id": "new",
+            "event_id": "event-1",
+            "kind": "user",
+            "content": "你好",
+        },
+        "transport-session",
+    )
+
+    assert channel.responses[-1][1]["ok"] is False
+    assert channel.responses[-1][1]["code"] == "SESSION_NOT_READY"
 
 
 def test_tts_config_does_not_guess_other_endpoints(monkeypatch) -> None:
@@ -508,7 +561,7 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
 
 
 @pytest.mark.asyncio
-async def test_qwen_tool_rpc_starts_core_agent_search_without_router(
+async def test_qwen_tool_rpc_delegates_original_instruction_to_core_agent(
     monkeypatch,
 ) -> None:
     requests = []
@@ -526,10 +579,10 @@ async def test_qwen_tool_rpc_starts_core_agent_search_without_router(
         object(),
         "qwen-tool-request",
         {
-            "name": "jiuwen_research",
+            "name": "jiuwen_delegate",
             "call_id": "call-weather",
-            "arguments": '{"query":"香港今天的天气"}',
-            "question": "香港今天的天气",
+            "arguments": '{"task":"查询香港天气"}',
+            "question": "请查询香港今天的天气，并告诉我出门是否需要带伞",
             "search_session_id": "qwen-search-session",
         },
         "web-session",
@@ -540,15 +593,142 @@ async def test_qwen_tool_rpc_starts_core_agent_search_without_router(
     job = response["payload"]["search_job"]
     assert response["payload"]["call_id"] == "call-weather"
     assert job["tool_call_id"] == "call-weather"
-    assert job["tool_name"] == "jiuwen_research"
+    assert job["tool_name"] == "jiuwen_delegate"
 
     completed = await _wait_for_event(channel, "video.search.completed")
 
     assert len(requests) == 1
-    assert requests[0].params["video_query"] == "香港今天的天气"
+    assert requests[0].params["video_question"] == (
+        "请查询香港今天的天气，并告诉我出门是否需要带伞"
+    )
+    assert requests[0].params["video_query"] == "查询香港天气"
+    assert "用户原始指令：请查询香港今天的天气，并告诉我出门是否需要带伞" in (
+        requests[0].params["query"]
+    )
+    assert "Realtime 模型整理的执行目标：查询香港天气" in requests[0].params["query"]
+    assert "不要把任务限制为联网搜索" in requests[0].params["query"]
     assert completed["tool_call_id"] == "call-weather"
-    assert completed["tool_name"] == "jiuwen_research"
+    assert completed["tool_name"] == "jiuwen_delegate"
     assert completed["result"] == "香港今天有雨。"
+
+
+@pytest.mark.asyncio
+async def test_qwen_tasks_share_core_session_context_and_run_serially(monkeypatch) -> None:
+    requests = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class FakeAgentClient:
+        async def send_request(self, envelope):
+            requests.append(envelope)
+            if len(requests) == 1:
+                first_started.set()
+                await release_first.wait()
+                answer = "已找到文件：C:\\Users\\tester\\Desktop\\复习提纲.docx"
+            else:
+                answer = "作者习惯使用 1-based 下标。"
+            return SimpleNamespace(ok=True, payload={"content": answer})
+
+    event_logs = []
+    channel = _video_channel(FakeAgentClient())
+    monkeypatch.setattr(video_live, "_video_live_mode", lambda: "realtime")
+    monkeypatch.setattr(video_live, "_append_video_event_log", event_logs.append)
+
+    base = {
+        "name": "jiuwen_delegate",
+        "search_session_id": "shared-video-session",
+    }
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "first-rpc",
+        {
+            **base,
+            "call_id": "call-open",
+            "turn_id": "turn-open",
+            "arguments": '{"task":"打开桌面上的复习提纲"}',
+            "question": "打开桌面上的复习提纲",
+        },
+        "web-session",
+    )
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    await channel.handlers["video.qwen.tool"](
+        object(),
+        "second-rpc",
+        {
+            **base,
+            "call_id": "call-followup",
+            "turn_id": "turn-followup",
+            "arguments": '{"task":"列举该文档中作者的代码习惯"}',
+            "question": "作者有哪些代码习惯？",
+        },
+        "web-session",
+    )
+
+    await asyncio.sleep(0)
+    assert len(requests) == 1
+    release_first.set()
+
+    async def wait_for_both_requests() -> None:
+        while len(requests) < 2:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait_for_both_requests(), timeout=1)
+    assert requests[0].session_id == requests[1].session_id
+    assert requests[0].session_id.startswith("video-tool-")
+    assert "已找到文件：C:\\Users\\tester\\Desktop\\复习提纲.docx" in (
+        requests[1].params["query"]
+    )
+    assert requests[1].params["video_delegation_context"][0]["question"] == (
+        "打开桌面上的复习提纲"
+    )
+    completed_logs = [item for item in event_logs if item["stage"] == "core_agent_completed"]
+    assert completed_logs[0]["delegation_context_items"] == 0
+    assert completed_logs[1]["delegation_context_items"] == 1
+    assert completed_logs[0]["core_session_id"] == completed_logs[1]["core_session_id"]
+
+
+@pytest.mark.asyncio
+async def test_qwen_repeated_call_id_reuses_one_core_job(monkeypatch) -> None:
+    requests = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class FakeAgentClient:
+        async def send_request(self, envelope):
+            requests.append(envelope)
+            started.set()
+            await release.wait()
+            return SimpleNamespace(ok=True, payload={"content": "执行完成。"})
+
+    event_logs = []
+    channel = _video_channel(FakeAgentClient())
+    monkeypatch.setattr(video_live, "_video_live_mode", lambda: "realtime")
+    monkeypatch.setattr(video_live, "_append_video_event_log", event_logs.append)
+    params = {
+        "name": "jiuwen_delegate",
+        "call_id": "stable-call-id",
+        "turn_id": "stable-turn-id",
+        "arguments": '{"task":"读取指定文件"}',
+        "question": "读取指定文件",
+        "search_session_id": "dedupe-session",
+    }
+
+    await channel.handlers["video.qwen.tool"](
+        object(), "first-rpc", params, "web-session"
+    )
+    first_job = channel.responses[-1][1]["payload"]["search_job"]
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await channel.handlers["video.qwen.tool"](
+        object(), "retry-rpc", params, "web-session"
+    )
+    reused_job = channel.responses[-1][1]["payload"]["search_job"]
+
+    assert reused_job["id"] == first_job["id"]
+    assert reused_job["reused"] is True
+    assert len(requests) == 1
+    assert any(item["stage"] == "qwen_tool_reused" for item in event_logs)
+    release.set()
+    await _wait_for_event(channel, "video.search.completed")
 
 
 @pytest.mark.asyncio
@@ -623,6 +803,10 @@ async def test_request_joyai_frame_uses_stateful_chat_completion(monkeypatch) ->
             "streamingharness": {
                 "timing": {"vllm_inference_ms": 321.0},
                 "memory": {"long_term_memory": "remembered"},
+                "raw_content": (
+                    "</response> Checking.\n"
+                    "</delegation> Search current weather"
+                ),
             },
         }
     )
@@ -663,6 +847,9 @@ async def test_request_joyai_frame_uses_stateful_chat_completion(monkeypatch) ->
     assert result["decision"] == "delegation"
     assert result["response"] == "Checking."
     assert result["delegation"] == "Search current weather"
+    assert result["model_raw_content"] == (
+        "</response> Checking.\n</delegation> Search current weather"
+    )
     assert result["timing"] == {"vllm_inference_ms": 321.0}
     assert "memory" not in result
 
@@ -708,6 +895,56 @@ async def test_request_joyai_frame_without_instruction_sends_image_only(
     assert request["json"]["max_tokens"] == 128
     assert "extra_body" not in request["json"]
     assert result["decision"] == "silence"
+
+
+def test_joyai_raw_content_log_keeps_model_output_and_skips_silence(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(video_live.Path, "home", lambda: tmp_path)
+
+    video_live._append_joyai_log({
+        "request_id": "request-response",
+        "joyai_session_id": "session-1",
+        "instruction": "搜索今天的天气",
+        "request_kind": "user",
+        "frame_time_range": "1.0 seconds ~ 2.0 seconds",
+        "stage": "completed",
+        "decision": "response",
+        "raw_content": "</response> 我来搜索。",
+        "model_raw_content": "</response> 我来搜索。\n</delegation> 今天的天气",
+    })
+    video_live._append_joyai_log({
+        "request_id": "request-silence",
+        "joyai_session_id": "session-1",
+        "instruction": "",
+        "request_kind": "frame",
+        "stage": "completed",
+        "decision": "silence",
+        "raw_content": "</silence>",
+        "model_raw_content": "</silence>",
+    })
+
+    log_path = tmp_path / ".jiuwenswarm" / "logs" / "joyai-raw-content.jsonl"
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert records == [
+        {
+            "server_time": records[0]["server_time"],
+            "request_id": "request-response",
+            "joyai_session_id": "session-1",
+            "instruction": "搜索今天的天气",
+            "request_kind": "user",
+            "frame_time_range": "1.0 seconds ~ 2.0 seconds",
+            "decision": "response",
+            "raw_content": "</response> 我来搜索。\n</delegation> 今天的天气",
+            "adapter_content": "</response> 我来搜索。",
+        }
+    ]
+    main_log = tmp_path / ".jiuwenswarm" / "logs" / "joyai-video.jsonl"
+    main_records = [
+        json.loads(line) for line in main_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(main_records) == 2
+    assert all("model_raw_content" not in record for record in main_records)
 
 
 @pytest.mark.parametrize(
@@ -884,6 +1121,7 @@ def test_registers_only_realtime_support_methods() -> None:
         "video.realtime.config",
         "video.joyai.frame",
         "video.realtime.telemetry",
+        "video.conversation.append",
         "video.transcribe",
         "video.qwen.tool",
         "video.search.status",
@@ -1277,6 +1515,41 @@ async def test_realtime_telemetry_routes_sanitized_events(
     assert "secret" not in captured[0]
 
 
+@pytest.mark.asyncio
+async def test_qwen_realtime_error_preserves_raw_event_in_dedicated_log(
+    monkeypatch,
+) -> None:
+    channel = _video_channel()
+    telemetry = []
+    errors = []
+    monkeypatch.setattr(video_live, "_append_realtime_telemetry", telemetry.append)
+    monkeypatch.setattr(video_live, "_append_qwen_realtime_error_log", errors.append)
+    raw_event = (
+        '{"type":"error","error":{"code":"context_length_exceeded",'
+        '"message":"input is too long"}}'
+    )
+
+    await channel.handlers["video.realtime.telemetry"](
+        object(),
+        "telemetry-qwen-error",
+        {
+            "event": "qwen_realtime_error",
+            "code": "context_length_exceeded",
+            "message": "input is too long",
+            "error_type": "invalid_request_error",
+            "raw_event": raw_event,
+            "secret": "discard",
+        },
+        "session",
+    )
+
+    assert channel.responses[-1][1]["payload"] == {"logged": True}
+    assert telemetry[0]["raw_event"] == raw_event
+    assert errors[0]["raw_event"] == raw_event
+    assert errors[0]["code"] == "context_length_exceeded"
+    assert "secret" not in errors[0]
+
+
 def test_jsonl_appends_are_atomic_across_threads(tmp_path) -> None:
     path = tmp_path / "concurrent.jsonl"
 
@@ -1620,9 +1893,52 @@ async def test_video_search_uses_full_core_agent_rpc(monkeypatch) -> None:
         "answer",
     ]
     assert progress_events[0]["progress"]["title"] == "正在分析问题"
-    assert "hidden" not in str(progress_events)
+    assert progress_events[0]["progress"]["content"] == "hidden"
     assert progress_events[1]["progress"]["tool_name"] == "mcp_free_search"
+    assert progress_events[1]["progress"]["tool_call_id"] == "search-call"
+    assert progress_events[1]["progress"]["tool_arguments"] == {
+        "query": "Luckin Coffee company profile"
+    }
+    assert progress_events[2]["progress"]["tool_result"] == "找到可靠来源"
+    assert progress_events[2]["progress"]["tool_success"] is True
+    assert all("timestamp" in item["progress"] for item in progress_events)
     assert completed["progress_history"][-1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_execute_core_agent_streams_every_reasoning_delta() -> None:
+    progress = []
+
+    async def collect_progress(item):
+        progress.append(item)
+
+    class FakeAgentClient:
+        async def send_request_stream(self, envelope):
+            del envelope
+            for content in ("先检查", "，再核实"):
+                yield SimpleNamespace(
+                    payload={"event_type": "chat.reasoning", "content": content},
+                    is_complete=False,
+                )
+            yield SimpleNamespace(
+                payload={"event_type": "chat.final", "content": "完成"},
+                is_complete=True,
+            )
+
+    result = await video_search.execute_core_agent(
+        FakeAgentClient(),
+        question="测试",
+        query="测试",
+        visual_context="",
+        search_session_id="reasoning-session",
+        on_progress=collect_progress,
+    )
+
+    assert result["answer"] == "完成"
+    assert [item["content"] for item in progress if item["stage"] == "reasoning"] == [
+        "先检查",
+        "，再核实",
+    ]
 
 
 @pytest.mark.asyncio

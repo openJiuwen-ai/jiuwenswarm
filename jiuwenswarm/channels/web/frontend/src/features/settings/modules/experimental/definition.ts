@@ -4,6 +4,7 @@ import {
   A2UISetting,
   ExternalCliSettingsItem,
   ProactiveLimitsSetting,
+  TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
 
@@ -13,6 +14,20 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
+    {
+      id: 'asr',
+      titleKey: 'settingsPanel.experimental.taskAsr',
+      items: [
+        { id: 'asr-api-base', component: 'input', key: 'asr_api_base' },
+        { id: 'asr-api-key', component: 'input', key: 'asr_api_key', inputType: 'password' },
+        { id: 'asr-model', component: 'input', key: 'asr_model' },
+      ],
+    },
+    {
+      id: 'task-full-duplex',
+      titleKey: 'settingsPanel.experimental.taskFullDuplex',
+      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
+    },
     {
       id: 'external-cli-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',

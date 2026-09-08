@@ -18,6 +18,7 @@ export interface SearchJobPayload {
   progress_history?: SearchProgressEntry[];
   tool_call_id?: string;
   tool_name?: string;
+  turn_id?: string;
 }
 
 export interface SearchProgressEntry {
@@ -27,8 +28,17 @@ export interface SearchProgressEntry {
   status: 'running' | 'completed' | 'failed';
   sequence: number;
   elapsed_ms?: number;
+  timestamp?: number;
+  content?: string;
   tool_name?: string;
   tool_call_id?: string;
+  tool_arguments?: unknown;
+  tool_description?: string;
+  tool_formatted_args?: string;
+  tool_display_name?: string;
+  tool_result?: unknown;
+  tool_summary?: string;
+  tool_success?: boolean;
 }
 
 export interface SearchProgressJob {
@@ -42,6 +52,7 @@ export interface SearchProgressJob {
 export interface SearchJobState {
   id: string;
   searchSessionId: string;
+  turnId?: string;
   question: string;
   query: string;
   status: 'running' | 'queued' | 'failed';
@@ -57,6 +68,8 @@ export interface AgentAction {
     search_session_id?: string;
     tool_call_id?: string;
     tool_name?: string;
+    turn_id?: string;
+    reused?: boolean;
   } | null;
 }
 

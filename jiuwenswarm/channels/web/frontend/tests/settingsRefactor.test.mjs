@@ -1074,10 +1074,16 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     [...contractByCategory('models')].filter((key) => !key.startsWith('embed_')),
   );
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')), [
+    'asr_api_base',
+    'asr_api_key',
+    'asr_model',
     'proactive_recommendation_enabled',
   ]);
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
     'a2ui_enabled',
+    'asr_api_base',
+    'asr_api_key',
+    'asr_model',
     'external_cli_agent_claude_cli_path',
     'external_cli_agent_claude_enabled',
     'external_cli_agent_claude_use_builtin',
@@ -1087,6 +1093,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
+    'task_full_duplex_enabled',
     'trajectory_ui_enabled',
   ]);
 
@@ -1300,7 +1307,10 @@ test('multimodal dialogs reuse provider-first model configuration without model 
   assert.match(dialog, /'vendors\.list'/);
   assert.match(dialog, /'vendors\.fetch_models'/);
   assert.match(dialog, /showOptional=\{false\}/);
-  assert.doesNotMatch(dialog, /config\.validate_model|OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
+  assert.doesNotMatch(
+    dialog,
+    /config\.validate_model|OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/,
+  );
 });
 
 test('legacy multimodal configuration remains custom while provider selections persist exact catalog identity', () => {
@@ -1456,7 +1466,10 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
     tagCss,
     /\.ui-tag--danger\s*\{[^}]*var\(--color-feedback-danger\)[^}]*var\(--color-feedback-danger-subtle\)/s,
   );
-  assert.match(tagCss, /\.ui-tag--neutral\s*\{[^}]*var\(--color-tag-neutral-text\)[^}]*var\(--color-tag-neutral-surface\)/s);
+  assert.match(
+    tagCss,
+    /\.ui-tag--neutral\s*\{[^}]*var\(--color-tag-neutral-text\)[^}]*var\(--color-tag-neutral-surface\)/s,
+  );
   assert.match(modelsSettings, /className="settings-model-card__text-action"/);
   assert.match(
     settingsPageCss,
@@ -1575,10 +1588,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.equal((formDialog.match(/<Button\s+[\s\S]*?size="sm"/g) ?? []).length >= 2, true);
   assert.match(formDialogCss, /\.form-dialog__actions \.ui-button\s*\{[^}]*min-width:\s*84px/s);
   assert.equal((settingsConfirmDialog.match(/<Button[^>]*size="sm"/g) ?? []).length, 2);
-  assert.match(
-    settingsConfirmDialogCss,
-    /\.settings-confirm-dialog__footer \.ui-button\s*\{[^}]*min-width:\s*84px/s,
-  );
+  assert.match(settingsConfirmDialogCss, /\.settings-confirm-dialog__footer \.ui-button\s*\{[^}]*min-width:\s*84px/s);
   assert.match(lightTheme, /--color-settings-switch-checked:\s*#1476ff;/i);
   assert.match(
     settingsPageCss,
@@ -1835,9 +1845,7 @@ test('Settings channel implementation stays decomposed around shared form capabi
 
 test('Xiaoyi enable confirmation keeps continue, edit, and dismiss as distinct actions', () => {
   const controller = source('src/features/settings/modules/channels/useSettingsChannelsController.ts');
-  const xiaoyiConfirmation = source(
-    'src/features/settings/modules/channels/components/XiaoyiEnableConfirmDialog.tsx',
-  );
+  const xiaoyiConfirmation = source('src/features/settings/modules/channels/components/XiaoyiEnableConfirmDialog.tsx');
   const confirmDialog = source('src/features/settings/components/SettingsConfirmDialog.tsx');
 
   assert.match(controller, /shouldConfirmXiaoyiEnable\(enabled, xiaoyi\.form\.getValues\(\)\.api_id\)/);
@@ -1854,7 +1862,10 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   const settingsChannelsModule = source('src/features/settings/modules/channels/ChannelsModule.tsx');
   const settingsNavigation = source('src/features/settings/settingsNavigation.ts');
   const modelDialog = source('src/features/settings/modules/models/ModelDialog.tsx');
-  const mainNavItems = sidebar.slice(sidebar.indexOf('const mainNavItems'), sidebar.indexOf('export function SessionSidebar'));
+  const mainNavItems = sidebar.slice(
+    sidebar.indexOf('const mainNavItems'),
+    sidebar.indexOf('export function SessionSidebar'),
+  );
   assert.match(mainNavItems, /key: 'updatepanel'/);
   assert.match(mainNavItems, /key: 'settings'/);
   assert.doesNotMatch(mainNavItems, /key: 'channels'/);
@@ -1920,7 +1931,10 @@ test('legacy page translations and Harness package state are removed without del
   const utilityExports = source('src/utils/index.ts');
   assert.equal(existsSync(new URL('src/components/ToolPanel/HarnessExtensionTree.tsx', root)), false);
   assert.equal(existsSync(new URL('src/utils/harnessErrors.ts', root)), false);
-  assert.doesNotMatch(types, /interface (?:PackageInfo|NativeVersionInfo|PackagesPayload|ActivatePayload|DeactivatePayload)\b/);
+  assert.doesNotMatch(
+    types,
+    /interface (?:PackageInfo|NativeVersionInfo|PackagesPayload|ActivatePayload|DeactivatePayload)\b/,
+  );
   assert.doesNotMatch(harnessStore, /CachedFileTreeEntry/);
   assert.doesNotMatch(storeExports, /CachedFileTreeEntry/);
   assert.doesNotMatch(utilityExports, /harnessErrors/);

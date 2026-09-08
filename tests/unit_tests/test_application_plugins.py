@@ -161,6 +161,7 @@ def test_websocket_routes_use_the_registered_runtime_plugin_id() -> None:
 
     assert plugin_id == "runtime-plugin-id"
     assert route.path == "/ws/runtime-plugin"
+    assert route.available_when_disabled is False
 
 
 @pytest.mark.asyncio

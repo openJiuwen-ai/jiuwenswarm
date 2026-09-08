@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm';
 
 import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
 
-function createSession(videoFrame = null) {
+function createSession(videoFrame = null, callbackOverrides = {}) {
   const states = [];
   const posted = [];
   const sent = [];
@@ -18,15 +18,15 @@ function createSession(videoFrame = null) {
     { url: 'ws://example.test/realtime' },
     {
       getVideoFrame: () => videoFrame,
-      onAssistantText: (text, final, toolJobId) => (
-        assistantTexts.push({ text, final, toolJobId })
-      ),
+      onAssistantText: (text, final, toolJobId, responseId) =>
+        assistantTexts.push({ text, final, toolJobId, responseId }),
       onUserText: (text, final) => userTexts.push({ text, final }),
       onState: (state) => states.push(state),
       onError: () => undefined,
       onToolResultDispatched: (jobId) => dispatchedToolResults.push(jobId),
       onFunctionCall: (call) => functionCalls.push(call),
       onDiagnostic: (event) => diagnostics.push(event),
+      ...callbackOverrides,
     },
   );
   session.playbackNode = { port: { postMessage: (message) => posted.push(message) } };
@@ -63,7 +63,9 @@ test('playback waits for the target 400ms startup buffer and drains short tails'
     Int16Array,
     Math,
     sampleRate: 1_000,
-    registerProcessor: (_name, processor) => { PlaybackProcessor = processor; },
+    registerProcessor: (_name, processor) => {
+      PlaybackProcessor = processor;
+    },
   });
   const processor = new PlaybackProcessor();
   const send = (data) => processor.port.onmessage({ data });
@@ -104,17 +106,44 @@ test('native transcription events drive user text callbacks', () => {
   assert.equal(diagnostics.at(-1).event, 'qwen_native_asr_completed');
 });
 
+test('Qwen error diagnostics preserve the original websocket event', () => {
+  const errors = [];
+  const { session, diagnostics } = createSession(null, {
+    onError: (message) => errors.push(message),
+  });
+  const rawEvent = '{"type":"error","error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"input is too long"}}';
+
+  session.handleEvent(JSON.parse(rawEvent), rawEvent);
+
+  assert.equal(errors.at(-1), 'input is too long');
+  assert.deepEqual(
+    {
+      event: diagnostics.at(-1).event,
+      raw_event: diagnostics.at(-1).raw_event,
+      code: diagnostics.at(-1).code,
+      error_type: diagnostics.at(-1).error_type,
+      message: diagnostics.at(-1).message,
+    },
+    {
+      event: 'qwen_realtime_error',
+      raw_event: rawEvent,
+      code: 'context_length_exceeded',
+      error_type: 'invalid_request_error',
+      message: 'input is too long',
+    },
+  );
+});
+
 test('the first image is deferred until a previous audio append exists', () => {
   const { session, sent } = createSession('dGVzdC1qcGVn');
 
   session.sendAudio(new Int16Array([1, -1]), true);
   session.sendAudio(new Int16Array([2, -2]), true);
 
-  assert.deepEqual(sent.map((event) => event.type), [
-    'input_audio_buffer.append',
-    'input_audio_buffer.append',
-    'input_image_buffer.append',
-  ]);
+  assert.deepEqual(
+    sent.map((event) => event.type),
+    ['input_audio_buffer.append', 'input_audio_buffer.append', 'input_image_buffer.append'],
+  );
   assert.equal(sent[2].image, 'dGVzdC1qcGVn');
 });
 
@@ -134,6 +163,25 @@ test('user speech cancels an active response and preserves completed text', () =
   assert.equal(assistantTexts.at(-1).final, true);
   assert.equal(states.at(-1), 'listening');
   assert.equal(diagnostics.at(-1).event, 'qwen_response_interrupted_by_user');
+});
+
+test('server cancellation finalizes visible assistant text', () => {
+  const { session, assistantTexts } = createSession();
+  session.responseId = 'cancelled-answer';
+  session.responseActive = true;
+  session.assistantTranscript = '已经生成的部分回答';
+
+  session.handleEvent({
+    type: 'response.cancelled',
+    response_id: 'cancelled-answer',
+  });
+
+  assert.deepEqual(assistantTexts.at(-1), {
+    text: '已经生成的部分回答',
+    final: true,
+    toolJobId: undefined,
+    responseId: 'cancelled-answer',
+  });
 });
 
 test('text input uses a native conversation item and response request', async () => {
@@ -157,49 +205,81 @@ test('function calls are emitted once with parsed arguments', () => {
   const { session, functionCalls, diagnostics } = createSession();
   const event = {
     type: 'response.function_call_arguments.done',
-    name: 'jiuwen_research',
-    call_id: 'call-weather',
-    arguments: '{"query":"香港今天的天气"}',
+    name: 'jiuwen_delegate',
+    call_id: 'call-file',
+    arguments: '{"task":"打开桌面的复习提纲并转换为 PDF"}',
   };
 
   session.handleEvent(event);
   session.handleEvent(event);
 
-  assert.deepEqual(functionCalls, [{
-    name: 'jiuwen_research',
-    callId: 'call-weather',
-    arguments: '{"query":"香港今天的天气"}',
-    query: '香港今天的天气',
-  }]);
+  assert.deepEqual(functionCalls, [
+    {
+      name: 'jiuwen_delegate',
+      callId: 'call-file',
+      arguments: '{"task":"打开桌面的复习提纲并转换为 PDF"}',
+      task: '打开桌面的复习提纲并转换为 PDF',
+    },
+  ]);
   assert.equal(diagnostics.at(-1).event, 'qwen_tool_call_received');
 });
 
-test('tool results wait while busy then return through the native call id', () => {
-  const { session, sent, dispatchedToolResults, assistantTexts } = createSession();
-  session.responseActive = true;
-  assert.equal(session.enqueueToolResult({
-    jobId: 'search-weather',
-    question: '香港今天的天气',
-    result: '香港今天有雨。',
-    callId: 'call-weather',
-  }), true);
+test('delegate calls accept query aliases and object arguments from Qwen', () => {
+  const { session, functionCalls } = createSession();
 
-  session.dispatchQueuedToolResult();
+  session.handleEvent({
+    type: 'response.function_call_arguments.done',
+    name: 'jiuwen_delegate',
+    call_id: 'call-query-alias',
+    arguments: { query: '查询香港今天的天气' },
+  });
+
+  assert.equal(functionCalls.length, 1);
+  assert.equal(functionCalls[0].task, '查询香港今天的天气');
+  assert.equal(functionCalls[0].arguments, '{"query":"查询香港今天的天气"}');
+});
+
+test('tool results wait for active generation but dispatch during queued audio playback', () => {
+  const { session, sent, dispatchedToolResults, assistantTexts } = createSession();
+  session.responseId = 'acknowledgement';
+  session.responseActive = true;
+  session.assistantPlaying = true;
+  assert.equal(
+    session.enqueueToolResult({
+      jobId: 'search-weather',
+      question: '香港今天的天气',
+      result: '香港今天有雨。',
+      callId: 'call-weather',
+    }),
+    true,
+  );
+
   assert.equal(session.pendingToolResults.length, 1);
   assert.deepEqual(sent, []);
 
-  session.responseActive = false;
-  session.dispatchQueuedToolResult();
+  session.handleEvent({ type: 'response.done', response_id: 'acknowledgement' });
 
   assert.equal(session.pendingToolResults.length, 0);
+  assert.equal(session.assistantPlaying, true);
   assert.deepEqual(dispatchedToolResults, ['search-weather']);
-  assert.deepEqual(sent.map((event) => event.type), [
-    'conversation.item.create',
-    'conversation.item.create',
-    'response.create',
-  ]);
+  assert.deepEqual(
+    sent.map((event) => event.type),
+    ['conversation.item.create', 'conversation.item.create', 'response.create'],
+  );
 
   session.handleEvent({ type: 'response.created', response: { id: 'answer-weather' } });
+  session.handleEvent({
+    type: 'response.text.delta',
+    response_id: 'answer-weather',
+    delta: '香港今天有雨',
+  });
+  assert.deepEqual(assistantTexts.at(-1), {
+    text: '香港今天有雨',
+    final: false,
+    toolJobId: 'search-weather',
+    responseId: 'answer-weather',
+  });
+  assert.equal(session.assistantPlaying, true);
   session.handleEvent({
     type: 'response.text.done',
     response_id: 'answer-weather',
@@ -208,8 +288,74 @@ test('tool results wait while busy then return through the native call id', () =
   assert.equal(assistantTexts.at(-1).toolJobId, 'search-weather');
 });
 
+test('a stale tool result is delivered directly without starting another Qwen response', () => {
+  const staleToolResults = [];
+  const { session, sent, dispatchedToolResults, diagnostics } = createSession(null, {
+    isToolTurnCurrent: (turnId) => turnId === 'turn-current',
+    onStaleToolResult: (toolResult) => staleToolResults.push(toolResult),
+  });
+
+  assert.equal(
+    session.enqueueToolResult({
+      jobId: 'old-file-task',
+      turnId: 'turn-old',
+      question: '打开旧文件',
+      result: '旧文件的完整内容',
+      callId: 'call-old-file',
+    }),
+    true,
+  );
+
+  assert.deepEqual(dispatchedToolResults, ['old-file-task']);
+  assert.equal(staleToolResults.length, 1);
+  assert.equal(staleToolResults[0].result, '旧文件的完整内容');
+  assert.deepEqual(
+    sent.map((event) => event.type),
+    ['conversation.item.create'],
+  );
+  assert.equal(sent[0].item.type, 'function_call_output');
+  assert.doesNotMatch(sent[0].item.output, /旧文件的完整内容/);
+  assert.equal(session.responseActive, false);
+  assert.equal(diagnostics.at(-1).event, 'stale_tool_result_delivered_directly');
+});
+
+test('tool responses retain their own job id after another result is queued', () => {
+  const { session, assistantTexts } = createSession();
+
+  session.enqueueToolResult({
+    jobId: 'job-first',
+    question: '第一个问题',
+    result: '第一个结果',
+    callId: 'call-first',
+  });
+  session.enqueueToolResult({
+    jobId: 'job-second',
+    question: '第二个问题',
+    result: '第二个结果',
+    callId: 'call-second',
+  });
+  session.handleEvent({ type: 'response.created', response: { id: 'response-first' } });
+  session.handleEvent({
+    type: 'response.text.delta',
+    response_id: 'response-first',
+    delta: '第一个回答',
+  });
+
+  assert.equal(assistantTexts.at(-1).toolJobId, 'job-first');
+
+  session.handleEvent({ type: 'response.done', response_id: 'response-first' });
+  session.handleEvent({ type: 'response.created', response: { id: 'response-second' } });
+  session.handleEvent({
+    type: 'response.text.delta',
+    response_id: 'response-second',
+    delta: '第二个回答',
+  });
+
+  assert.equal(assistantTexts.at(-1).toolJobId, 'job-second');
+});
+
 test('session update includes Gateway-provided tools', async () => {
-  const tools = [{ type: 'function', function: { name: 'jiuwen_research' } }];
+  const tools = [{ type: 'function', function: { name: 'jiuwen_delegate' } }];
   let socket;
   class StartupSocket {
     static OPEN = 1;
@@ -219,7 +365,9 @@ test('session update includes Gateway-provided tools', async () => {
       this.sent = [];
     }
     close() {}
-    send(message) { this.sent.push(JSON.parse(message)); }
+    send(message) {
+      this.sent.push(JSON.parse(message));
+    }
   }
   globalThis.window = globalThis;
   globalThis.WebSocket = StartupSocket;
@@ -239,7 +387,14 @@ test('session update includes Gateway-provided tools', async () => {
   await opening;
 
   assert.deepEqual(socket.sent[0].session.tools, tools);
-  assert.match(socket.sent[0].session.instructions, /MUST call jiuwen_research in the same turn/);
+  assert.match(socket.sent[0].session.instructions, /MUST call jiuwen_delegate in the same turn/);
+  assert.match(socket.sent[0].session.instructions, /brief, natural acknowledgement that you are handling the request/);
+  assert.match(socket.sent[0].session.instructions, /acknowledgement describes work in progress only/);
+  assert.match(
+    socket.sent[0].session.instructions,
+    /Before the function result arrives, never say the task is complete/,
+  );
+  assert.match(socket.sent[0].session.instructions, /file access, document processing/);
 });
 
 test('decoded response chunks stay ordered before the playback drain', async () => {
@@ -258,7 +413,10 @@ test('decoded response chunks stay ordered before the playback drain', async () 
   await new Promise((resolve) => setTimeout(resolve, 15));
 
   assert.deepEqual(decoded, ['first', 'second']);
-  assert.deepEqual(posted.map((message) => message.type), ['audio', 'audio', 'drain']);
+  assert.deepEqual(
+    posted.map((message) => message.type),
+    ['audio', 'audio', 'drain'],
+  );
 });
 
 test('session.closed before session.created rejects startup with the backend reason', async () => {

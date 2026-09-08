@@ -79,6 +79,7 @@ from jiuwenswarm.common.config import (
     update_updater_in_config,
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
+    update_task_full_duplex_in_config,
     update_skill_evolution_enabled_in_config,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
@@ -119,6 +120,10 @@ from jiuwenswarm.common.work_mode import (
     is_default_project_id,
 )
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.gateway.channel_manager.web.task_asr import (
+    TaskAsrError,
+    transcribe_task_audio,
+)
 
 for _jiuwen_log in LogManager.get_all_loggers().values():
     _jiuwen_log.set_level(logging.INFO)
@@ -153,6 +158,11 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "AUDIO_ENABLED",
     "VIDEO_ENABLED",
 }
+_ASR_ENV_KEYS = {
+    "ASR_API_BASE",
+    "ASR_API_KEY",
+    "ASR_MODEL_NAME",
+}
 
 
 @dataclass(frozen=True)
@@ -176,6 +186,8 @@ class _ConfigChangeSet:
             scopes.add("model")
         if _MULTIMODAL_RELOAD_ENV_KEYS & set(self.env_updates):
             scopes.add("multimodal")
+        if _ASR_ENV_KEYS & set(self.env_updates):
+            scopes.add("web_ui")
         for key in self.yaml_updated:
             key_text = str(key)
             if key_text == "skill_retrieval_index_recommendation_shown":
@@ -192,6 +204,8 @@ class _ConfigChangeSet:
                 scopes.add("agent_runtime")
             elif key_text == "trajectory_ui_enabled":
                 scopes.update({"agent_runtime", "web_ui"})
+            elif key_text == "task_full_duplex_enabled":
+                scopes.add("web_ui")
             elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
                 scopes.add("web_ui")
             else:
@@ -1034,6 +1048,10 @@ _CONFIG_SET_ENV_MAP = {
     "free_search_ddg_enabled": "FREE_SEARCH_DDG_ENABLED",
     "free_search_bing_enabled": "FREE_SEARCH_BING_ENABLED",
     "free_search_proxy_url": "FREE_SEARCH_PROXY_URL",
+    # General ASR used by regular task chat. JoyAI keeps its VOICE_ASR_* settings.
+    "asr_api_base": "ASR_API_BASE",
+    "asr_api_key": "ASR_API_KEY",
+    "asr_model": "ASR_MODEL_NAME",
     # agents
     "skills": "SKILLS",
     "max_iterations": "MAX_ITERATIONS",
@@ -1063,6 +1081,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "trajectory_ui_enabled",
+    "task_full_duplex_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -2852,6 +2871,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["trajectory_ui_enabled"] = (
                 "true" if trajectory_cfg.get("enabled", False) else "false"
             )
+            experimental_cfg = raw.get("experimental") or {}
+            payload["task_full_duplex_enabled"] = (
+                "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
+            )
             payload.update(_flatten_swarmflow_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
@@ -2883,6 +2906,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             for key, value in get_default_a2ui_config_payload().items():
                 payload.setdefault(key, value)
             payload.setdefault("trajectory_ui_enabled", "false")
+            payload.setdefault("task_full_duplex_enabled", "false")
             for key, (_, value_type, default) in {
                 **_SYMPHONY_CONFIG_SPECS,
                 **_SKILL_RETRIEVAL_CONFIG_SPECS,
@@ -3152,6 +3176,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_a2ui_in_config(update)
                 elif param_key == "trajectory_ui_enabled":
                     update_trajectory_ui_in_config(parsed)
+                elif param_key == "task_full_duplex_enabled":
+                    update_task_full_duplex_in_config(parsed)
                 elif param_key == "proactive_recommendation_enabled":
                     update_proactive_recommendation_in_config({"enabled": parsed})
                 elif param_key == "proactive_recommendation_max_recommend_per_day":
@@ -3839,6 +3865,28 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         else:
             channels = []
         await channel.send_response(ws, req_id, ok=True, payload={"channels": channels})
+
+    async def _task_asr_transcribe(ws, req_id, params, session_id):
+        del session_id
+        if not isinstance(params, dict):
+            await channel.send_response(
+                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
+            )
+            return
+        try:
+            text = await transcribe_task_audio(params)
+        except TaskAsrError as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code=exc.code
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[task.asr.transcribe] unexpected failure")
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+            )
+            return
+        await channel.send_response(ws, req_id, ok=True, payload={"text": text})
 
     # ── vendors.* handlers ──────────────
 
@@ -6519,6 +6567,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("vendors.list", _vendors_list)
     channel.register_method("vendors.fetch_models", _vendors_fetch_models)
     channel.register_method("channel.get", _channel_get)
+    channel.register_method("task.asr.transcribe", _task_asr_transcribe)
     channel.register_method("openai_account.auth.status", _openai_account_auth_status)
     channel.register_method("openai_account.auth.start_login", _openai_account_auth_start_login)
     channel.register_method("openai_account.auth.pending_login", _openai_account_auth_pending_login)

@@ -1,3 +1,6 @@
+import type { ReactNode } from 'react';
+import type { ToolCall, ToolResult } from '../types';
+
 export type ApplicationPluginNavKey = `app:${string}`;
 
 export interface ApplicationPluginContribution {
@@ -24,4 +27,26 @@ export interface ApplicationPluginManifest {
 export interface ApplicationPluginSettingsProps {
   contribution: ApplicationPluginContribution;
   onManifestChanged: () => void;
+}
+
+export interface ApplicationPluginTaskInputActionProps {
+  fallback: ReactNode;
+  eligible: boolean;
+  sessionId: string | null;
+  ensureSession: (initialTitle?: string) => Promise<string | null>;
+  labels: {
+    start: string;
+    starting: string;
+    stop: string;
+  };
+}
+
+export interface ApplicationPluginTaskRuntimeProps {
+  sessionId: string | null;
+  onConversationItem: (sessionId: string, role: 'user' | 'assistant', text: string) => void;
+  onAssistantStream: (sessionId: string, update: { streamId: string; content: string; final: boolean }) => void;
+  onReasoning: (sessionId: string, content: string, atMs?: number) => void;
+  onReasoningClose: (sessionId: string, atMs?: number) => void;
+  onToolCall: (sessionId: string, toolCall: ToolCall, startedAt?: string) => void;
+  onToolResult: (sessionId: string, toolResult: ToolResult, updatedAt?: string) => void;
 }

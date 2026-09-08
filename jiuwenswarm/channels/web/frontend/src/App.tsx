@@ -2345,6 +2345,108 @@ function AppContent({
     useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: agentId });
   }, [enterNewConversation]);
 
+  const ensureApplicationPluginSession = useCallback(async (initialTitle = 'Application conversation') => {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) return null;
+    if (currentSessionId !== NEW_CONVERSATION_ID) return currentSessionId;
+    if (creatingSessionRef.current) return null;
+
+    creatingSessionRef.current = true;
+    useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
+    const newRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
+    const runtimeSettings = {
+      mode: newRuntime?.mode ?? mode,
+      selectedModelName: useSessionStore.getState().getEffectiveModelName(NEW_CONVERSATION_ID),
+      projectDir: newRuntime?.projectDirectory ?? null,
+      persistSession: false,
+    };
+    const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
+    const preservedProject = newConversationProjectRef.current;
+    const workContext = {
+      project_id: baseWorkContext.project_id || preservedProject?.project_id,
+      project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
+      work_mode: useWorkspaceStore.getState().workMode,
+    };
+
+    try {
+      const createParams: Record<string, unknown> = {
+        create_token: generateUuidV4(),
+        mode: runtimeSettings.mode,
+        is_swarm: runtimeSettings.mode === 'team',
+        title: createConversationTitle(initialTitle).slice(0, 100),
+        work_mode: workContext.work_mode,
+        view_id: kvcViewIdRef.current,
+        persist_session: false,
+      };
+      const previousSession = newConversationPreviousSessionRef.current;
+      if (previousSession) {
+        createParams.previous_session_id = previousSession.sessionId;
+        createParams.previous_mode = previousSession.mode;
+      }
+      if (runtimeSettings.selectedModelName) createParams.model_name = runtimeSettings.selectedModelName;
+      if (workContext.project_id) createParams.project_id = workContext.project_id;
+      if (workContext.project_dir) createParams.project_dir = workContext.project_dir;
+
+      const created = await createConversationSession(request, createParams);
+      const newSid = created.session_id;
+      const createdSession = registerCreatedConversation(
+        newSid,
+        { ...runtimeSettings, persistSession: created.persist_session },
+        Date.now(),
+        initialTitle,
+        {
+          project_id: created.project_id || workContext.project_id,
+          project_dir: created.project_dir || workContext.project_dir,
+          work_mode: created.work_mode || workContext.work_mode,
+          persist_session: created.persist_session,
+        },
+      );
+
+      const pendingRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
+      (pendingRuntime?.selectedSkills ?? []).forEach((skill) => useSessionStore.getState().addSelectedSkill(newSid, skill));
+      (pendingRuntime?.enabledPlugins ?? []).forEach((id) => useSessionStore.getState().addEnabledPlugin(newSid, id));
+      (pendingRuntime?.enabledMcps ?? []).forEach((name) => useSessionStore.getState().addEnabledMcp(newSid, name));
+      if (pendingRuntime?.metadata) useSessionStore.getState().setSessionMetadata(newSid, pendingRuntime.metadata);
+      useSessionStore.getState().setAgentSelectionIntent(
+        newSid,
+        pendingRuntime?.agentSelectionIntent ?? { kind: 'keep' as const },
+      );
+      if (pendingRuntime?.enableSwarmflow) {
+        useSessionStore.getState().setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
+      }
+      if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
+        usePlanStore.getState().setActive(newSid, true, {
+          explicitEntry: usePlanStore.getState().hasPendingExplicitEntry(NEW_CONVERSATION_ID),
+          entrySource: usePlanStore.getState().getPendingEntrySource(NEW_CONVERSATION_ID) ?? undefined,
+        });
+      }
+
+      pendingNewConversationRef.current = false;
+      useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+      usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+      useGoalStore.getState().setArmed(NEW_CONVERSATION_ID, false);
+      createdSession.is_processing = false;
+      useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
+      sessionIdsCreatedInThisPageRef.current.add(newSid);
+      useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+      useChatStore.getState().setProcessing(newSid, false);
+      sessionIdRef.current = newSid;
+      setSessionId(newSid);
+      navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
+      newConversationProjectRef.current = null;
+      newConversationPreviousSessionRef.current = null;
+      return newSid;
+    } catch (error) {
+      useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+      useChatStore.getState().setThinking(NEW_CONVERSATION_ID, false);
+      console.error('Failed to create application plugin conversation:', error);
+      window.alert(t('multiSession.errors.create'));
+      return null;
+    } finally {
+      creatingSessionRef.current = false;
+    }
+  }, [mode, navigate, request, t]);
+
   const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
@@ -3074,6 +3176,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     chat={(
                       <ChatPanel
                         onSendMessage={handleSendMessage}
+                        onEnsureSession={ensureApplicationPluginSession}
                         onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
