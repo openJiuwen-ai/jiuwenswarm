@@ -24,6 +24,12 @@ from .provider import CeliaMemoryProvider, _redact_diagnostic
 
 logger = logging.getLogger(__name__)
 
+# Safety is priority 13 and the runtime-built Tool Usage Rules section is 14.
+# Keep Celia's static memory contract immediately after those shared sections.
+# Per-request recalled memory remains an attachment at priority 55 because its
+# content is dynamic and must not be placed in the cacheable static prefix.
+_EXTERNAL_MEMORY_SECTION_PRIORITY = 15
+
 
 class CeliaMemoryRail(DeepAgentRail):
     priority = 75
@@ -86,6 +92,7 @@ class CeliaMemoryRail(DeepAgentRail):
                 language = getattr(self._system_prompt_builder, "language", "cn")
                 section = build_external_memory_section(block, language=language)
                 if section:
+                    section.priority = _EXTERNAL_MEMORY_SECTION_PRIORITY
                     self._system_prompt_builder.add_section(section)
 
     async def _prewarm(self, agent) -> None:

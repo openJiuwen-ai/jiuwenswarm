@@ -127,6 +127,7 @@ async def test_celia_rail_owns_prompt_injection_and_removal(monkeypatch):
 
     assert captured == [(prompt_text, "en")]
     assert len(builder.added) == 1
+    assert builder.added[0].priority == 15
 
     rail.uninit(agent)
     await asyncio.sleep(0)

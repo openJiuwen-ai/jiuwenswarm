@@ -585,7 +585,7 @@ react:
       tool_args_bailout_threshold: 2       # 工具入参规则压缩次数达此值后终止
   # Skills 在线自演进配置
   evolution:
-    enabled: true             # true = 启用在线 Skills 自演进
+    enabled: false            # true = 启用在线 Skills 自演进
     auto_scan: false           # 兼容开关：单 Agent / leader 触发 review，teammate 触发 signal
     signal_trigger:            # true / false = 显式覆盖规则触发；留空使用场景默认值
     review_trigger:            # true / false = 显式覆盖软触发；留空时按场景回退 auto_scan
