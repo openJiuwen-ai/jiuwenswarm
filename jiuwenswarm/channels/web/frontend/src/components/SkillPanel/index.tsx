@@ -21,7 +21,6 @@ import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
 import { ClawHubSearchModal } from '../../features/ClawHubSearchModal';
 import { TeamSkillsHubModal } from '../../features/TeamSkillsHubModal';
-import { parseConfigBoolean } from '../../features/settings/services/settingsContract';
 import { normalizeSkillNetUrl } from '../../utils/skillNetUrl';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { computeMySkills, filterEnabledMySkills } from '../../utils/mySkills';
@@ -605,9 +604,6 @@ export function SkillPanel({
   const [symphonySaving, setSymphonySaving] = useState(false);
   const [symphonySaveError, setSymphonySaveError] = useState<string | null>(null);
   const [graphActionError, setGraphActionError] = useState<string | null>(null);
-  const [indexRecommendationVisible, setIndexRecommendationVisible] = useState(false);
-  const [indexRecommendationBuilding, setIndexRecommendationBuilding] = useState(false);
-  const indexRecommendationRequestRef = useRef(0);
   const [knowledgeTaskCount, setKnowledgeTaskCount] = useState(0);
   const [openMenuSkillName, setOpenMenuSkillName] = useState<string | null>(null);
 
@@ -1410,13 +1406,10 @@ export function SkillPanel({
   );
 
   const startRetrievalIndexBuild = useCallback(
-    async (force: boolean, useDefaultProfile = false) => {
+    async (force: boolean) => {
       if (!isConnected) return false;
       try {
-        const statusPayload = await webRequest<unknown>(
-          'skills.retrieval.status',
-          useDefaultProfile ? {} : withSession(),
-        );
+        const statusPayload = await webRequest<unknown>('skills.retrieval.status', withSession());
         const status = parseSkillRetrievalStatus(statusPayload);
         if (status.build_status === 'running') return true;
         if (!canBuildSkillRetrievalIndex(status)) return false;
@@ -1426,7 +1419,7 @@ export function SkillPanel({
         };
         const payload = await webRequest<Record<string, unknown>>(
           'skills.retrieval.index_build',
-          useDefaultProfile ? buildParams : withSession(buildParams),
+          withSession(buildParams),
           { timeoutMs: 30_000 },
         );
         if (payload.success !== true) {
@@ -1445,64 +1438,6 @@ export function SkillPanel({
     },
     [isConnected, showMessage, t, withSession],
   );
-
-  useEffect(() => {
-    const requestRevision = ++indexRecommendationRequestRef.current;
-    if (!isActive || activeTab !== 'graph' || !isConnected) {
-      setIndexRecommendationVisible(false);
-      return;
-    }
-
-    setIndexRecommendationVisible(false);
-    void (async () => {
-      try {
-        const config = await webRequest<Record<string, unknown>>('config.get');
-        if (requestRevision !== indexRecommendationRequestRef.current) return;
-        if (
-          !parseConfigBoolean(config.skill_retrieval_enabled) ||
-          parseConfigBoolean(config.skill_retrieval_index_enabled) ||
-          parseConfigBoolean(config.skill_retrieval_index_recommendation_shown)
-        ) {
-          return;
-        }
-
-        const status = parseSkillRetrievalStatus(await webRequest<unknown>('skills.retrieval.status'));
-        if (requestRevision !== indexRecommendationRequestRef.current || !status.index_recommended) return;
-
-        await webRequest('config.set', {
-          skill_retrieval_index_recommendation_shown: 'true',
-        });
-        if (requestRevision === indexRecommendationRequestRef.current) {
-          setIndexRecommendationVisible(true);
-        }
-      } catch {
-        // The recommendation is advisory and must not affect the Skill graph.
-      }
-    })();
-  }, [activeTab, isActive, isConnected]);
-
-  const buildRecommendedIndex = useCallback(async () => {
-    if (indexRecommendationBuilding) return;
-    setIndexRecommendationBuilding(true);
-    try {
-      await webRequest('config.set', {
-        skill_retrieval_index_enabled: 'true',
-      });
-      const started = await startRetrievalIndexBuild(false, true);
-      if (started) {
-        setIndexRecommendationVisible(false);
-      } else {
-        await webRequest('config.set', {
-          skill_retrieval_index_enabled: 'false',
-        });
-      }
-    } catch (error) {
-      console.error('Failed to enable Skill taxonomy index:', error);
-      showMessage('error', t('skills.retrieval.buildFailed'));
-    } finally {
-      setIndexRecommendationBuilding(false);
-    }
-  }, [indexRecommendationBuilding, showMessage, startRetrievalIndexBuild, t]);
 
   // 当左边栏切换到技能页面时，或切换到"我的技能"页签时，调用 list 接口
   useEffect(() => {
@@ -2589,35 +2524,6 @@ export function SkillPanel({
               data-testid="skill-panel-graph-view"
               className="page-shell mt-4 flex flex-1 min-h-0 flex-col gap-3"
             >
-              {indexRecommendationVisible ? (
-                <div
-                  className="flex flex-none flex-col gap-3 rounded-lg border border-warn bg-warn-subtle px-4 py-3"
-                  data-testid="skill-index-recommendation"
-                >
-                  <p className="whitespace-pre-line text-sm leading-6 text-text">
-                    {t('skills.retrieval.indexRecommended')}
-                  </p>
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      className="rounded-lg border border-border bg-panel px-4 py-2 text-sm text-text hover:bg-secondary/50 disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={indexRecommendationBuilding}
-                      onClick={() => setIndexRecommendationVisible(false)}
-                    >
-                      {t('skills.retrieval.recommendationDismiss')}
-                    </button>
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={indexRecommendationBuilding}
-                      onClick={() => void buildRecommendedIndex()}
-                    >
-                      {indexRecommendationBuilding ? <Loader2 size={15} className="animate-spin" /> : null}
-                      {t('skills.retrieval.recommendationBuild')}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
               <div
                 data-testid="skill-panel-graph-orchestration-card"
                 className="flex flex-none flex-wrap items-center justify-between gap-4 rounded-lg border border-border bg-panel p-4"

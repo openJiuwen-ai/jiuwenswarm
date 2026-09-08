@@ -178,9 +178,7 @@ class _ConfigChangeSet:
             scopes.add("multimodal")
         for key in self.yaml_updated:
             key_text = str(key)
-            if key_text == "skill_retrieval_index_recommendation_shown":
-                scopes.add("web_ui")
-            elif key_text in {"models.defaults"} or key_text.startswith("models."):
+            if key_text in {"models.defaults"} or key_text.startswith("models."):
                 scopes.add("model")
             elif key_text in {"modes.team", "agents", "team"}:
                 scopes.add("team")
@@ -1150,12 +1148,6 @@ _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_index_recommendation_shown": (
-        ("index", "recommendation_shown"),
-        "bool",
-        False,
-    ),
     "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
         ("discovery", "max_output_chars"),

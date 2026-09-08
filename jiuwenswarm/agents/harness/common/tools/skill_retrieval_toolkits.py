@@ -214,17 +214,9 @@ def is_skill_retrieval_enabled(
 def is_skill_retrieval_index_enabled(
     config_base: dict[str, Any] | None = None,
 ) -> bool:
-    """Return the explicit taxonomy build-and-use preference.
+    """Compatibility alias: taxonomy now follows the retrieval switch."""
 
-    The taxonomy preference is intentionally independent of the global
-    retrieval switch. Callers that build or consume an index must check both.
-    """
-
-    override = _env_switch("SYMPHONY_SKILL_RETRIEVAL_INDEX_ENABLED")
-    if override is not None:
-        return override
-    index = _retrieval_config(config_base).get("index")
-    return bool(index.get("enabled", False)) if isinstance(index, dict) else False
+    return is_skill_retrieval_enabled(config_base)
 
 
 def build_discovery_settings(
@@ -236,14 +228,13 @@ def build_discovery_settings(
     # only when it is strictly below one percent of the context window.
     # Ignore stale/user-authored ratio values so every entry point makes the
     # same session decision.
-    # One explicit preference controls both building and consuming taxonomy.
-    # Legacy ``mode`` / ``discovery.use_existing_index`` values are ignored so
-    # upgrades cannot unexpectedly incur model cost or consume old artifacts.
+    # The retrieval switch controls both building and consuming taxonomy.
+    # Legacy index/mode preferences no longer override this decision.
     config = _config(config_base)
     return replace(
         load_discovery_settings(config),
         candidate_budget_ratio=_CANDIDATE_BUDGET_RATIO,
-        use_existing_index=is_skill_retrieval_index_enabled(config),
+        use_existing_index=is_skill_retrieval_enabled(config),
     )
 
 
@@ -372,11 +363,9 @@ class SkillRetrievalToolkit:
             candidate_budget_ratio=_CANDIDATE_BUDGET_RATIO,
         )
         self._index_enabled = bool(
-            frozen_profile.get("index_enabled")
+            frozen_profile.get("enabled", is_skill_retrieval_enabled(self._config_base))
             if frozen_profile is not None
-            else configured_settings.use_existing_index
-            if settings is not None
-            else is_skill_retrieval_index_enabled(self._config_base)
+            else is_skill_retrieval_enabled(self._config_base)
         )
         explicit_artifact_root = str(artifact_root or "").strip()
         resolved_artifact_root = (

@@ -5004,6 +5004,16 @@ class JiuWenSwarmDeepAdapter:
             return
         try:
             await self._instance.unregister_rail(rail)
+            skill_rail = self._skill_rail
+            skill_mode = self._resolve_skill_mode(
+                self._config_cache, retrieval_enabled=False
+            )
+            if skill_rail is not None and skill_rail.skill_mode != skill_mode:
+                # Retrieval forced AUTO_LIST; restoring only the prompt would
+                # leave its list_skill ability behind in native ALL mode.
+                skill_rail.uninit(self._instance)
+                skill_rail.skill_mode = skill_mode
+                skill_rail.init(self._instance)
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail unregister failed: %s",
@@ -5019,13 +5029,10 @@ class JiuWenSwarmDeepAdapter:
         """Resolve the effective build permission and root before a reload."""
 
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            is_skill_retrieval_index_enabled,
             skill_retrieval_artifact_root,
         )
 
-        allowed = is_skill_retrieval_enabled(
-            config_base
-        ) and is_skill_retrieval_index_enabled(config_base)
+        allowed = is_skill_retrieval_enabled(config_base)
         return allowed, skill_retrieval_artifact_root(config_base)
 
     async def _cancel_skill_retrieval_build_after_reload(

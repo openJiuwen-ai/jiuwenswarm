@@ -307,10 +307,6 @@
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
       "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
-      "skill_retrieval_index_enabled": {
-        "title": "技能索引",
-        "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
-      },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
       "jina_api_key": { "title": "Jina API 密钥" },
@@ -2029,9 +2025,6 @@
       "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时 skill_index 检索；分类索引是否构建由单独的索引开关控制。已有会话保持创建时冻结的策略。",
       "globalDisabledHint": "全局发现开关已关闭。Agent 使用 JiuwenSwarm 原有 Skill 逻辑；已有分类索引文件会保留但不使用。",
       "indexNotNeeded": "完整候选快照低于 1% 阈值时无需分类索引；即使已保存索引偏好，也不会启动构建。",
-      "indexRecommended": "当前已安装 Skills 较多。您可以构建 Skill 索引，以增强对已安装 Skills 的调用能力。\n\nSkill 索引主要提供以下增强：\n\n- 维护 Skills 的分层目录结构；\n- 探查 Skills 之间的结构性依赖关系；\n- 提供更强的 Skills 运行时渐进式发现、检索与编排能力。*\n\n*构建或刷新 Skill 索引需要调用 LLM 分析已安装 Skills，因此会额外消耗 token。",
-      "recommendationBuild": "立即构建",
-      "recommendationDismiss": "暂不构建",
       "indexDisabled": "分类索引开关已关闭。实时平铺检索仍可用，已有索引文件会保留。",
       "indexBuildRunning": "分类索引正在后台构建。构建期间检索仍可用；构建会消耗模型 token。",
       "indexActive": "分类索引开关已开启，当前分类目录正在使用；刷新会消耗模型 token。",

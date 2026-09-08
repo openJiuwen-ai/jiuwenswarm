@@ -1610,8 +1610,9 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rendered = agent.prompt_attachment_manager.render(
         await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
-    assert "## 已安装 Skill" in rendered
-    assert "当前没有可用 Skill" in rendered
+    assert "## 已安装 Skill" not in rendered
+    assert "## 已安装 Skill" in builder.build()
+    assert "当前没有可用 Skill" in builder.build()
     assert "## Skill 发现" not in rendered
 
     class _AttachmentContext:
@@ -1627,7 +1628,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
 
     history = _AttachmentContext()
     manager = agent.prompt_attachment_manager
-    assert await manager.sync_to_context(history, "sess1") is not None
+    assert await manager.sync_to_context(history, "sess1") is None
 
     # before_invoke runs before the model tool list exists. It must not clear
     # and then re-add the same large snapshot on every user turn.
@@ -1641,7 +1642,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
     await rail.before_model_call(ctx)
     assert await manager.sync_to_context(history, "sess1") is None
-    assert len(history.messages) == 1
+    assert len(history.messages) == 0
 
     missing_index_ctx = AgentCallbackContext(
         agent=agent,

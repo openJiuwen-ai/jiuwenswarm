@@ -313,10 +313,6 @@
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
-      "skill_retrieval_index_enabled": {
-        "title": "Skill Index",
-        "description": "Enable a tree-structured catalog of installed Skills to enhance the agent's structured skill discovery capabilities (*may consume additional tokens)."
-      },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
@@ -2042,9 +2038,6 @@
       "description": "When Skill discovery is enabled, the 1% threshold selects a complete snapshot or live skill_index retrieval for new sessions. Taxonomy construction is controlled independently by the index switch. Existing sessions keep the strategy frozen at creation.",
       "globalDisabledHint": "The global discovery switch is off. Agents use the original JiuwenSwarm Skill logic; any existing taxonomy files remain stored and unused.",
       "indexNotNeeded": "A taxonomy is not needed while the complete candidate snapshot fits below the 1% threshold. No taxonomy build is started, even if the saved index preference is on.",
-      "indexRecommended": "Many Skills are currently installed. You can build a Skill graph index to enhance how installed Skills are used.\n\nThe Skill graph index provides the following enhancements:\n\n- Maintains a hierarchical classification of Skills;\n- Explores structural dependencies between Skills, including inputs, outputs, and prerequisites;\n- Provides stronger runtime progressive discovery, retrieval, and orchestration for Skills.*\n\n*Building or refreshing the Skill graph index calls a model to analyze installed Skills and therefore consumes additional tokens.",
-      "recommendationBuild": "Build now",
-      "recommendationDismiss": "Not now",
       "indexDisabled": "The taxonomy switch is off. Live flat retrieval remains available, and existing taxonomy files are retained.",
       "indexBuildRunning": "The taxonomy is building in the background. Retrieval remains available during the build, which consumes model tokens.",
       "indexActive": "The taxonomy switch is on and the current taxonomy is active. Refreshing it consumes model tokens.",
