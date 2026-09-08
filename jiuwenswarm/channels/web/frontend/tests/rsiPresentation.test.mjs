@@ -250,6 +250,8 @@ test('structured harness stage payloads localize by status instead of using the 
     score: 0.85,
     candidateIndex: null,
     totalCandidates: null,
+    reusedCaseCount: null,
+    evaluatedCaseCount: null,
   });
 
   const t = (key, options = {}) => {
@@ -269,4 +271,66 @@ test('structured harness stage payloads localize by status instead of using the 
   const presentation = presentRsiNode(node, context('HARNESS', null, [node], true));
   assert.equal(presentation.lifecycle, 'evaluating');
   assert.equal(presentation.runtimeLabel, '评测中');
+});
+
+test('an unchanged epoch can score above H0 without being rejected by score', () => {
+  const parent = {
+    node_id: 'ROOT', iteration: 0, parent_id: null, type: 'ROOT', adopted: true,
+    score: 0, changes: [], extra: { iteration_unit: 'epoch' },
+  };
+  const node = {
+    node_id: 'epoch-001', iteration: 1, parent_id: 'ROOT', type: 'REJECTED', adopted: false,
+    score: 0.6, description: 'No retained Harness change', failure_reason: 'rejected',
+    failure_class: null, changes: [], extra: { iteration_unit: 'epoch' },
+  };
+  const presentation = presentRsiNode(node, context('HARNESS', null, [parent, node]));
+  assert.equal(presentation.score, 0.6);
+  assert.equal(presentation.parentScore, 0);
+  assert.equal(presentation.scoreDelta, 0.6);
+  assert.equal(presentation.reasonLabel, '本轮未保留 Harness 改动');
+  assert.equal(presentation.lifecycle, 'rejected');
+});
+
+test('score rejection labels require both a score rejection reason and a non-improving score', () => {
+  const parent = {
+    node_id: 'ROOT', iteration: 0, parent_id: null, type: 'ROOT', adopted: true,
+    score: 0.5, changes: [], extra: {},
+  };
+  for (const [score, failureClass, expected] of [
+    [0.6, null, '未达到采纳条件'],
+    [0.6, 'rejected_by_score', '未达到采纳条件'],
+    [0.5, 'rejected_by_score', '得分未超过父节点'],
+    [0.4, 'rejected_by_score', '得分未超过父节点'],
+    [0.4, null, '未达到采纳条件'],
+    [null, 'rejected_by_score', '未达到采纳条件'],
+  ]) {
+    const node = {
+      node_id: 'candidate', iteration: 1, parent_id: 'ROOT', type: 'REJECTED', adopted: false,
+      score, failure_class: failureClass, changes: [], extra: {},
+    };
+    const presentation = presentRsiNode(node, context('ARTIFACT', 'PROGRAM', [parent, node]));
+    assert.equal(presentation.reasonLabel, expected);
+  }
+});
+
+test('reused source results are not displayed as newly evaluated cases or completed analysis', () => {
+  const node = {
+    node_id: 'epoch-001', iteration: 1, type: 'RUNNING', adopted: false,
+    score: null, changes: [],
+    extra: { stage: {
+      id: 'source.reuse', status: 'done', name: 'Batch 2: reused 3/4 case results',
+      total_cases: 4, reused_case_count: 3, evaluated_case_count: 1, score: 0.25,
+      eval_ref_path: '/run/e001/b002/source/eval_ref.yaml',
+    } },
+  };
+  const spec = nodeStageSpec(node);
+  assert.equal(spec.reusedCaseCount, 3);
+  assert.equal(spec.evaluatedCaseCount, 1);
+  assert.equal(nodeStageLabel(node), 'Batch 2: reused 3/4 case results');
+  const t = (key, options) => {
+    assert.equal(key, 'rsi.stage.sourceReuse');
+    return `复用已有结果 ${options.count}/${options.total}，补评 ${options.evaluated} 题`;
+  };
+  assert.equal(nodeStageLocalizedLabel(node, t), '复用已有结果 3/4，补评 1 题');
+  assert.equal(node.score, null);
 });

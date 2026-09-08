@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
 from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
     RsiHarnessInstaller,
@@ -241,6 +242,16 @@ async def test_installer_publishes_and_is_idempotent(tmp_path):
         tasks_root / task_id / "harness" / "versions"
     )
     assert context.store.get(task_id).config["rsi_installation"]["installation_id"] == first["installation_id"]
+    cards = catalog.list_plugin_packages({"filter": "local"})
+    assert [card["id"] for card in cards] == [first["installation_id"]]
+    assert cards[0]["installed"] is True
+    assert catalog.resolve_plugin_dir(first["installation_id"]).is_dir()
+
+    # An already-active installation repairs an unregistered/deleted catalog copy.
+    catalog.uninstall_plugin_package({"id": first["installation_id"]})
+    await installer.install(task_id)
+    assert catalog.is_plugin_allowed(first["installation_id"])
+    assert len(manager.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -280,6 +291,27 @@ async def test_installer_rolls_back_live_and_pointer_when_provenance_write_fails
     assert manager.calls[1][0]["installation_id"] == manager.calls[0][1]["installation_id"]
     assert manager.calls[1][1] is None
     assert not list((activation_root / task_id / "harness" / "versions").glob("**/validation_harness"))
+    assert catalog.list_plugin_packages({"filter": "local"}) == []
+
+
+@pytest.mark.asyncio
+async def test_hot_load_failure_compensates_catalog_registration(tmp_path):
+    context = build_rsi_service_context(tmp_path / "rsi/tasks", enable_harness_materialization=False)
+    context.store.create(_completed_harness_task(context, "failed-install"))
+    _write_published_state(context, "failed-install", extension_name="validation_harness")
+
+    class FailingManager:
+        async def broadcast_rsi_harness_change(self, **kwargs):
+            assert catalog.list_plugin_packages({"filter": "local"})
+            raise RuntimeError("native load failed")
+
+    installer = RsiHarnessInstaller(
+        context.store, context.adapter_for_task, FailingManager(), activation_root=context.tasks_root,
+    )
+    with pytest.raises(RsiHarnessInstallFailed, match="native load failed"):
+        await installer.install("failed-install")
+    assert context.harness_activation_store.get_active() is None
+    assert catalog.list_plugin_packages({"filter": "local"}) == []
 
 
 @pytest.mark.asyncio

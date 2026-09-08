@@ -771,7 +771,7 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
             value("max_issue_attempts"), default=8, field="max_issue_attempts"
         ),
         "max_repair_rounds": _positive_int(
-            value("max_repair_rounds"), default=1, field="max_repair_rounds"
+            value("max_repair_rounds"), default=3, field="max_repair_rounds"
         ),
         "sibling_candidate_count": sibling_candidate_count,
         "rollout_concurrency": _positive_int(

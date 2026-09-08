@@ -31,6 +31,7 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiHarnessNotReady,
     RsiTaskStateConflict,
 )
+from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harness_plugin
 
 logger = logging.getLogger(__name__)
 
@@ -749,6 +750,11 @@ class RsiHarnessInstaller:
             and old.get("task_id") == task_id
             and str(old.get("sha256") or "").lower() == package_sha256.lower()
         ):
+            # Also repair installations made before catalog registration existed.
+            try:
+                register_harness_plugin(Path(old["runtime_path"]), old["installation_id"])
+            except Exception as exc:
+                raise RsiHarnessInstallFailed("RSI Harness 扩展登记失败，原激活版本未改变") from exc
             return self._response(
                 old,
                 task_id=task_id,
@@ -770,6 +776,7 @@ class RsiHarnessInstaller:
         runtime_path = version_root / extension_name
         created_copy = False
         pointer_committed = False
+        undo_catalog = None
         try:
             if runtime_path.exists():
                 if not runtime_path.is_dir() or hash_harness_package(runtime_path) != package_sha256:
@@ -802,6 +809,7 @@ class RsiHarnessInstaller:
                 "status": "ACTIVE",
                 "installed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
+            undo_catalog = register_harness_plugin(runtime_path, installation_id)
             hot_load = await self._broadcast(old, record)
             record["hot_load"] = hot_load
             try:
@@ -862,6 +870,12 @@ class RsiHarnessInstaller:
             if created_copy:
                 shutil.rmtree(version_root, ignore_errors=True)
             raise RsiHarnessInstallFailed(f"RSI Harness 热加载失败: {exc}") from exc
+        finally:
+            if undo_catalog is not None and not pointer_committed:
+                try:
+                    undo_catalog()
+                except Exception as exc:
+                    raise RsiHarnessInstallConflict("RSI Harness 安装失败且扩展登记回滚失败") from exc
 
     def _task_run_root(self, task: Any) -> Path:
         tasks_root = Path(self.store.tasks_root).expanduser().resolve(strict=False)

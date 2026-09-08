@@ -3337,6 +3337,7 @@
       "caseFailed": "Case {{index}}/{{total}} failed",
       "caseError": "Case {{index}}/{{total}} execution error",
       "caseSkipped": "Case {{index}}/{{total}} skipped",
+      "sourceReuse": "Reused {{count}}/{{total}} results; evaluated {{evaluated}} missing cases",
       "analysisRunning": "Analyzing failed cases",
       "analysisDone": "Failure analysis completed",
       "analysisError": "Failure analysis failed",

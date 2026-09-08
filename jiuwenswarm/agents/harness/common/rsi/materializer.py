@@ -766,7 +766,7 @@ def _profile_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
         "max_epochs": _profile_int(raw, "max_epochs", default=1, minimum=1),
         "batch_size": _profile_int(raw, "batch_size", default=1, minimum=1),
         "max_issue_attempts": _profile_int(raw, "max_issue_attempts", default=8, minimum=0),
-        "max_repair_rounds": _profile_int(raw, "max_repair_rounds", default=1, minimum=1),
+        "max_repair_rounds": _profile_int(raw, "max_repair_rounds", default=3, minimum=1),
         "sibling_candidate_count": _profile_int(
             raw, "sibling_candidate_count", default=1, minimum=1
         ),

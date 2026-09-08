@@ -3315,6 +3315,7 @@
       "caseFailed": "评测用例 {{index}}/{{total}} 未通过",
       "caseError": "评测用例 {{index}}/{{total}} 执行异常",
       "caseSkipped": "评测用例 {{index}}/{{total}} 已跳过",
+      "sourceReuse": "复用已有结果 {{count}}/{{total}}，补评 {{evaluated}} 题",
       "analysisRunning": "正在分析失败用例",
       "analysisDone": "失败用例分析完成",
       "analysisError": "失败用例分析异常",

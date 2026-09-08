@@ -203,7 +203,7 @@ async def test_epoch_push_query_recovery_and_plugin_artifacts_are_consistent(tmp
     import zipfile
     from openjiuwen.rsi.events import NodeStageEvent
     from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
-        active_epoch_node_event, epoch_node_event, root_node_event,
+        active_epoch_node_event, epoch_node_event, root_node_event, source_reuse_stage_payload,
     )
     from jiuwenswarm.agents.harness.common.rsi.artifact_service import RsiArtifactService
     from jiuwenswarm.agents.harness.common.rsi.event_consumer import RsiEventConsumer
@@ -233,6 +233,22 @@ async def test_epoch_push_query_recovery_and_plugin_artifacts_are_consistent(tmp
     assert nodes[0]["description"] == "Initial Harness"
     assert nodes[1]["description"] == "Analyzing failed cases"
 
+    provenance = {
+        "reused_case_ids": ["a", "b"], "evaluated_case_ids": [],
+        "evaluations": [{"eval_ref_path": "/h0/eval_ref.yaml", "case_ids": ["a", "b"]}],
+    }
+    stage = source_reuse_stage_payload(batch_index=1, total_cases=2, score=0.25,
+                                      eval_ref_path="/source/eval_ref.yaml", provenance=provenance)
+    await consumer.on_engine_event(NodeStageEvent("epoch-001", stage))
+    reused_tree = projector.derive_tree(task_id)
+    assert len(reused_tree["nodes"]) == 2
+    assert reused_tree["nodes"][1]["extra"]["stage"] == stage
+    assert reused_tree["nodes"][1]["score"] is None
+    state["completed_batches"] = {
+        "epoch_001:batch_001": {"epoch": 1, "batch_index": 1, "source_eval_ref_path": "/source/eval_ref.yaml",
+                                 "source_evidence": provenance},
+    }
+
     checkpoint = {"epoch": 1, "before_harness_refs_path": str(refs), "harness_refs_path": str(refs),
                   "selected_harness_refs_path": str(refs), "score": 1.0, "promotion_applied": True}
     state.update(epoch_checkpoints=[checkpoint], active_epoch=2, best_score=1.0)
@@ -251,6 +267,7 @@ async def test_epoch_push_query_recovery_and_plugin_artifacts_are_consistent(tmp
         assert [node["node_id"] for node in tree["nodes"]] == ["ROOT", "epoch-001", "epoch-002"]
         assert tree["iteration"] == 1
         assert tree["nodes"][1]["snapshot_artifact_id"] == "Aepoch-001"
+        assert tree["nodes"][1]["extra"]["source_evidence"][0]["reused_case_ids"] == ["a", "b"]
     assert provider.read_state(task_id).best_node_id == "epoch-001"
     assert provider.read_report(task_id).best_node_id == "epoch-001"
     assert provider._result_from_state(task_id).final_node_id == "epoch-001"

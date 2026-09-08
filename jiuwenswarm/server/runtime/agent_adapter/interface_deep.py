@@ -2196,7 +2196,10 @@ class JiuWenSwarmDeepAdapter:
                 raise ValueError(f"plugin_names element must be str, got {type(item).__name__}")
         to_load: list[tuple[str, str, Path]] = []
         for name in v:
-            if name == getattr(self, "_rsi_harness_package_id", None):
+            if name in {
+                getattr(self, "_rsi_harness_package_id", None),
+                getattr(self, "_rsi_harness_install_id", None),
+            }:
                 # The installed RSI version already supplies this plugin.
                 continue
             pkg_dir = equipment.resolve_plugin_dir(name)
@@ -6366,12 +6369,15 @@ class JiuWenSwarmDeepAdapter:
             for name, (path, version) in old_displaced.items():
                 restored = await instance.load_plugin(path)
                 loaded_plugins[name] = (restored, version)
-            baseline = loaded_plugins.get(package_id)
-            if baseline is not None:
-                path = getattr(baseline[0], "source_uri", None) or str(equipment.resolve_plugin_dir(package_id))
-                await instance.unload_extension(baseline[0])
-                loaded_plugins.pop(package_id)
-                displaced[package_id] = (path, baseline[1])
+            # The catalog copy has a versioned id; it is the same capability
+            # bundle as the immutable RSI version, not a second plugin to load.
+            for name in dict.fromkeys((package_id, installation_id)):
+                baseline = loaded_plugins.get(name)
+                if baseline is not None:
+                    path = getattr(baseline[0], "source_uri", None) or str(equipment.resolve_plugin_dir(name))
+                    await instance.unload_extension(baseline[0])
+                    loaded_plugins.pop(name)
+                    displaced[name] = (path, baseline[1])
             record = await instance.load_plugin(config_path)
         except Exception as exc:
             # Undo the ordinary-plugin transition before restoring the old RSI

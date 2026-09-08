@@ -20,6 +20,7 @@ import {
   type RsiActionKind,
 } from '../rsiPresentation';
 import { useRsiStore } from '../rsiStore';
+import { usePluginPackageStore } from '../../../stores/pluginPackageStore';
 import {
   rsiTaskDelete,
   rsiTrainingPause,
@@ -111,6 +112,7 @@ export function RsiDetailHeader({
         } else if (action === 'install') {
           await rsiHarnessInstall(task.task_id);
           markTaskInstalled(task.task_id);
+          await usePluginPackageStore.getState().loadList('local', { silent: true });
         }
       } catch (e) {
         const message = e instanceof Error && e.message ? e.message : t('rsi.detail.actionUnknownError');
