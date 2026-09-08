@@ -12,7 +12,7 @@ from jiuwenclaw.runtime.pip_env import rewrite_shell_command, runtime_subprocess
 
 logger = logging.getLogger(__name__)
 
-_ISOLATION_ENV_KEYS = ("PATH", "VIRTUAL_ENV", "PYTHONPATH")
+_ISOLATION_ENV_KEYS = ("PATH", "VIRTUAL_ENV", "PYTHONPATH", "PLAYWRIGHT_BROWSERS_PATH")
 _PATCHED_ATTR_LOCAL = "_jiuwenclaw_pip_isolation_patched_local"
 _PATCHED_ATTR_SANDBOX = "_jiuwenclaw_pip_isolation_patched_sandbox"
 
