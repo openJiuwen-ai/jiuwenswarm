@@ -166,10 +166,9 @@ def _tool_call_ctx(
 def test_build_agent_identity_prompt_contains_stable_identity_and_task_strategy():
     prompt = build_agent_identity_prompt(language="zh")
 
-    assert "You are 小艺Work, a personal agent" in prompt
-    assert "小艺 work" not in prompt
+    assert "You are a capable personal work assistant" in prompt
     assert "# Identity" in prompt
-    assert "# Task Execution Strategy" in prompt
+    assert "# Task execution" in prompt
     assert "# JiuwenSwarm 内部数据" not in prompt
     assert "## 输出文件放置规范" not in prompt
     assert "## 文件发送" not in prompt
@@ -198,7 +197,7 @@ def test_work_code_and_design_share_the_same_static_prefix():
     work_prompt = build_agent_identity_prompt(language="zh")
     code_prompt = build_code_system_prompt()
     design_prompt = build_design_system_prompt()
-    shared_prefix = work_prompt[: work_prompt.index("# Task Execution Strategy")]
+    shared_prefix = work_prompt[: work_prompt.index("# Task execution")]
 
     assert code_prompt.startswith(shared_prefix)
     assert design_prompt.startswith(shared_prefix)

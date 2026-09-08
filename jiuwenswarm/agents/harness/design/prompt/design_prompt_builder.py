@@ -1,14 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-
-"""Design mode prompt builder — derives from code profile, aligns with WorkBuddy design mode.
-
-Provides the static design-mode prompt sections. Each section is a PromptSection.
-The Core capabilities section carries the per-deliverable trigger phrases and
-boundary/forbidden notes (PPT / video / song).
-
-Sections are injected once at agent creation time (build_design_system_prompt).
-Dynamic content (time, runtime state, memory) is injected per-request by Rails.
-"""
+"""Public fallback prompt builder for JiuwenSwarm's creative profile."""
 
 from __future__ import annotations
 
@@ -17,116 +7,46 @@ from enum import IntEnum
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 
 from jiuwenswarm.agents.harness.common.prompt import safety_override
-from jiuwenswarm.agents.harness.common.prompt import skills_goal_override  # noqa: F401  — patches openjiuwen Skills + Goal sections
+from jiuwenswarm.agents.harness.common.prompt import skills_goal_override  # noqa: F401
+from jiuwenswarm.agents.harness.common.prompt.private_assets import load_mode_sections
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
-    _task_execution_prompt,
     build_shared_content_policy_section,
     build_shared_identity_section,
     build_shared_regional_conventions_section,
     build_shared_system_section,
 )
-from jiuwenswarm.agents.harness.common.prompt.private_assets import load_mode_sections
-
-
-# ─── Priority ────────────────────────────────────
 
 
 class DesignPromptPriority(IntEnum):
     SAFETY = 13
-    # Runtime Tool Usage Rules has priority 30; mode-local static guidance
-    # follows it so the captured prompt order is stable across agent-core builds.
+    TONE_AND_STYLE = 31
     INTRO = 32
     SYSTEM = 11
     CORE_CAPABILITIES = 33
-    COMMUNICATION = 34
 
 
-# ─── Intro ────────────────────────────────────────
+def _section(name: str, text: str, priority: int) -> PromptSection:
+    return PromptSection(name=name, content={"en": text}, priority=priority)
 
 
 def _design_intro_prompt() -> PromptSection:
-    content = (
-        "# Design mode\n"
-        "\n"
-        "Act as an interactive creative-design agent. You help users "
-        "create design deliverables — slides, "
-        "posters, brand systems, illustrations, songs, and short videos. Use the "
-        "instructions below and the tools available to you to assist the user.\n"
-        "\n"
-        "IMPORTANT: Act like an experienced designer working alongside the user. "
-        "The user raises requirements and makes decisions; you do the hands-on "
-        "work and proactively offer design suggestions.\n"
-    )
-    return PromptSection(
-        name="design_intro",
-        content={"en": content},
-        priority=DesignPromptPriority.INTRO,
-    )
-
-
-# ─── Safety ────────────────────────────────────────
+    return _section("design_intro", "# Creative work\n\nHelp users plan and create visual or written deliverables.\n", DesignPromptPriority.INTRO)
 
 
 def _design_safety_prompt() -> PromptSection:
-    content = safety_override.SAFETY_PROMPT_EN
-    return PromptSection(
-        name="safety",
-        content={"en": content},
-        priority=DesignPromptPriority.SAFETY,
-    )
-
-
-# ─── Core Capabilities (aligns with WorkBuddy <core_capabilities>) ──────────
+    return _section("safety", safety_override.SAFETY_PROMPT_EN, DesignPromptPriority.SAFETY)
 
 
 def _design_core_capabilities_prompt() -> PromptSection:
-    content = (
-        "# Core capabilities\n"
-        "\n"
-        "1. PPT Design: Deliver a .pptx file based on the user's need to create "
-        "or modify a presentation.\n"
-        "\n"
-        "2. Video Design: Deliver a video file based on the user's need to "
-        "generate a video, short film, product demo, feed ad, or animation clip.\n"
-        "\n"
-        "3. Song Design: Deliver an audio file based on the user's need to "
-        "create a song, jingle, BGM, or vocal track.\n"
-    )
-    return PromptSection(
-        name="design_core_capabilities",
-        content={"en": content},
-        priority=DesignPromptPriority.CORE_CAPABILITIES,
-    )
-
-
-# ─── System ────────────────────────────────────────
+    return _section("design_core_capabilities", "# Capabilities\n\nUse available skills to create and refine requested deliverables.\n", DesignPromptPriority.CORE_CAPABILITIES)
 
 
 def _design_system_prompt() -> PromptSection:
     return build_shared_system_section(priority=DesignPromptPriority.SYSTEM)
 
 
-# ─── Design Communication ──────────────────────────
-
-
-def _design_communication_prompt() -> PromptSection:
-    content = (
-        "# Design communication\n"
-        "\n"
-        "- For multi-step generation, give brief updates only at meaningful milestones.\n"
-        "- When referencing a file or slide, use file_path:line_number or "
-        "slide_number so the user can navigate to it.\n"
-        "- Describe work as design activity; do not expose tool names, internal "
-        "phases, or implementation details.\n"
-    )
-    return PromptSection(
-        name="design_communication",
-        content={"en": content},
-        priority=DesignPromptPriority.COMMUNICATION,
-    )
-
-
-# ─── Section Generators ────────────────────────────
+def _design_tone_and_style_prompt() -> PromptSection:
+    return _section("design_tone_and_style", "# Tone and style\n\nCommunicate clearly and offer useful design guidance.\n", DesignPromptPriority.TONE_AND_STYLE)
 
 
 _DESIGN_SECTION_GENERATORS = [
@@ -135,42 +55,24 @@ _DESIGN_SECTION_GENERATORS = [
     _design_system_prompt,
     build_shared_regional_conventions_section,
     _design_safety_prompt,
-    _task_execution_prompt,
     _design_intro_prompt,
     _design_core_capabilities_prompt,
-    _design_communication_prompt,
+    _design_tone_and_style_prompt,
 ]
 
 
-# ─── Entry Point ──────────────────────────────────
-
-
 def build_design_system_prompt() -> str:
-    """Build the complete design mode system prompt (English-only).
-
-    Called once at agent creation time. Dynamic content (time, runtime state,
-    memory) is injected per-request by Rails. The static Core capabilities
-    section carries the PPT / video / song trigger phrases and boundary /
-    forbidden notes — adapted for 小艺Work's PPT-focused v1 scope.
-    """
     builder = SystemPromptBuilder(language="en")
-
     for section in build_design_system_prompt_sections():
         builder.add_section(section)
-
     return builder.build()
 
 
 def build_design_system_prompt_sections() -> tuple[PromptSection, ...]:
-    """Return Design's static sections for registration on the runtime builder."""
     private_sections = load_mode_sections("creative")
     if private_sections is not None:
         return private_sections
     return tuple(generator() for generator in _DESIGN_SECTION_GENERATORS)
 
 
-__all__ = [
-    "DesignPromptPriority",
-    "build_design_system_prompt_sections",
-    "build_design_system_prompt",
-]
+__all__ = ["DesignPromptPriority", "build_design_system_prompt", "build_design_system_prompt_sections"]
