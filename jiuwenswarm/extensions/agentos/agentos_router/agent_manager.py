@@ -161,9 +161,16 @@ class AgentRuntime:
 
     @staticmethod
     def normalize_agent_type(raw: Any) -> str:
-        """Normalize agent_type; any non-empty name is accepted (no allowlist)."""
-        agent_type = str(raw or "").strip().lower()
-        return agent_type or BUILTIN_AGENT_TYPE
+        """Normalize agent_type; any non-empty name is accepted (no allowlist).
+
+        Registry ``name`` is case-sensitive and is kept as-is (strip only).
+        Builtin ``jiuwenswarm`` stays case-insensitive and is canonicalized
+        to lowercase so mixed-case chat/switch still reuse the same agent.
+        """
+        agent_type = str(raw or "").strip()
+        if not agent_type or agent_type.lower() == BUILTIN_AGENT_TYPE:
+            return BUILTIN_AGENT_TYPE
+        return agent_type
 
     @staticmethod
     def normalize_session_id(raw: Any) -> str:

@@ -27,10 +27,12 @@ class AgentOSThirdAgent(ThirdAgent):
         *,
         user_id: str,
         current_agent_type: str = "",
+        access_mode: str = "",
     ) -> dict[str, Any]:
         return await self._router.thirdagent_list(
             user_id=user_id,
             current_agent_type=current_agent_type,
+            access_mode=access_mode,
         )
 
     async def thirdagent_switch(

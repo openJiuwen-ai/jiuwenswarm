@@ -271,7 +271,15 @@ class FakeRegistryClient:
             ImageInfo(
                 image_name="opencode",
                 image_uri="registry://opencode:latest",
-                metadata={"agent_type": "opencode", "user_id": user_id},
+                metadata={
+                    "agent_type": "opencode",
+                    "name": "opencode",
+                    "user_id": user_id,
+                    "access_mode": [
+                        {"name": "tui", "port": "2222", "cmd": "opencode"},
+                        {"name": "web", "port": "8080", "cmd": "serve"},
+                    ],
+                },
             ),
         ]
 
@@ -882,6 +890,7 @@ async def test_agent_list_returns_registry_images_without_creating() -> None:
     response = await client.thirdagent_list(
         user_id="u1",
         current_agent_type="jiuwenswarm",
+        access_mode="tui",
     )
     await client.shutdown()
 
@@ -893,8 +902,86 @@ async def test_agent_list_returns_registry_images_without_creating() -> None:
     assert [item["agent_type"] for item in response["payload"]["agents"]] == [
         "opencode",
     ]
-    assert response["payload"]["agents"][0]["image_uri"] == "registry://opencode:latest"
+    assert "image_name" not in response["payload"]["agents"][0]
+    assert "name" not in response["payload"]["agents"][0]
+    assert "image_uri" not in response["payload"]["agents"][0]
+    assert "metadata" not in response["payload"]["agents"][0]
+    assert response["payload"]["agents"][0]["cmd"] == "opencode"
     assert await agent_manager.list_user_agents("u1") == []
+
+
+@pytest.mark.asyncio
+async def test_agent_list_cmd_follows_requested_access_mode() -> None:
+    client = _router_client(FakeYuanRongClient(), FakeRegistryClient(), AgentManager())
+
+    tui = await client.thirdagent_list(
+        user_id="u1", current_agent_type="jiuwenswarm", access_mode="tui"
+    )
+    web = await client.thirdagent_list(
+        user_id="u1", current_agent_type="jiuwenswarm", access_mode="web"
+    )
+    none = await client.thirdagent_list(user_id="u1", current_agent_type="jiuwenswarm")
+    await client.shutdown()
+
+    assert tui["payload"]["agents"][0]["cmd"] == "opencode"
+    assert web["payload"]["agents"][0]["cmd"] == "serve"
+    assert none["payload"]["agents"][0]["cmd"] == ""
+
+
+@pytest.mark.asyncio
+async def test_agent_list_and_switch_preserve_registry_name_case() -> None:
+    class MixedCaseRegistry(FakeRegistryClient):
+        async def list_user_images(self, user_id: str) -> list[ImageInfo]:
+            self.list_user_images_calls.append(user_id)
+            return [
+                ImageInfo(
+                    image_name="Claude-Code",
+                    image_uri="registry://Claude-Code:latest",
+                    metadata={
+                        "agent_type": "Claude-Code",
+                        "name": "Claude-Code",
+                        "user_id": user_id,
+                        "access_mode": [
+                            {"name": "tui", "port": "2222", "cmd": "claude"},
+                        ],
+                    },
+                ),
+            ]
+
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            assert image_name == "Claude-Code"
+            return await super().get_image_info(image_name)
+
+    yuanrong = FakeYuanRongClient()
+    registry = MixedCaseRegistry()
+    client = _router_client(
+        yuanrong, registry, AgentManager(), ssh_channel_endpoint=_ssh_channel()
+    )
+
+    listed = await client.thirdagent_list(
+        user_id="u1", current_agent_type="jiuwenswarm", access_mode="tui"
+    )
+    switched = await client.thirdagent_switch(
+        user_id="u1",
+        agent_type="Claude-Code",
+        session_id="sess-1",
+    )
+    builtin = await client.thirdagent_switch(
+        user_id="u1",
+        agent_type="JiuwenSwarm",
+        session_id="sess-1",
+    )
+    await client.shutdown()
+
+    assert listed["payload"]["agents"][0]["agent_type"] == "Claude-Code"
+    assert listed["payload"]["current_agent_type"] == "jiuwenswarm"
+    assert listed["payload"]["agents"][0]["cmd"] == "claude"
+    assert switched["ok"] is True
+    assert switched["payload"]["agent_type"] == "Claude-Code"
+    assert yuanrong.create_payloads[0]["name"] == "u1+Claude-Code"
+    assert builtin["ok"] is True
+    assert builtin["payload"]["agent_type"] == "jiuwenswarm"
+    assert client.get_current_agent_type("u1") == "jiuwenswarm"
 
 
 @pytest.mark.asyncio
@@ -1327,7 +1414,9 @@ async def test_agentos_third_agent_list_and_switch() -> None:
     )
     third = AgentOSThirdAgent(client)
 
-    listed = await third.thirdagent_list(user_id="u1", current_agent_type="jiuwenswarm")
+    listed = await third.thirdagent_list(
+        user_id="u1", current_agent_type="jiuwenswarm", access_mode="tui"
+    )
     switched = await third.thirdagent_switch(
         user_id="u1", agent_type="opencode", session_id="sess-1"
     )
@@ -1337,6 +1426,7 @@ async def test_agentos_third_agent_list_and_switch() -> None:
     assert [item["agent_type"] for item in listed["payload"]["agents"]] == [
         "opencode",
     ]
+    assert listed["payload"]["agents"][0]["cmd"] == "opencode"
     assert switched["ok"] is True
     assert switched["payload"]["agent_type"] == "opencode"
     assert switched["payload"]["ssh_ip"] == "0.0.0.0"
