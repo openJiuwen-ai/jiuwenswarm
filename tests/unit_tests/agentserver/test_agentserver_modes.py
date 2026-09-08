@@ -74,6 +74,10 @@ def test_progressive_runtime_config_exposes_registered_ask_user_tool():
 
     assert "ask_user" in eager_tools
     assert "ask_user_question" not in eager_tools
+    assert "ttse_consult" in eager_tools
+    assert eager_tools.index("ttse_consult") < eager_tools.index(
+        "skill_acceleration_exec"
+    )
 
 
 def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
@@ -99,6 +103,48 @@ def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
         "read_file",
         "ask_user",
     ]
+
+
+def test_progressive_eager_tools_keep_ttse_consult_when_inject_enabled():
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": [
+                    "read_file",
+                    "skill_acceleration_exec",
+                ],
+            },
+            "ttse": {"enabled": True, "inject_enabled": True},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert rail.eager_tools == [
+        "tools_search",
+        "invoke_tool",
+        "deepresearch_execute",
+        "read_file",
+        "ttse_consult",
+        "skill_acceleration_exec",
+    ]
+
+
+def test_progressive_eager_tools_skip_ttse_consult_when_inject_disabled():
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": ["read_file"],
+            },
+            "ttse": {"enabled": True, "inject_enabled": False},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
 
 
 def test_deep_adapter_builds_usage_reporting_task_planning_rail():

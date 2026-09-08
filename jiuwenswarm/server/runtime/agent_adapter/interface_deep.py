@@ -1280,12 +1280,14 @@ _DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
     "bash",
     "skill_tool",
     "skill_complete",
+    "ttse_consult",
     "todo_create",
     "todo_list",
     "todo_modify",
 ]
 
 _PROGRESSIVE_META_TOOL_NAMES = frozenset({"tools_search", "invoke_tool"})
+_TTSE_CONSULT_TOOL_NAME = "ttse_consult"
 _LEGACY_PROGRESSIVE_EAGER_TOOL_ALIASES = {
     "ask_user_question": "ask_user",
 }
@@ -1306,6 +1308,60 @@ def _ensure_progressive_meta_tools(eager_tools: list[str]) -> list[str]:
         eager_tools.insert(0, "tools_search")
     if "invoke_tool" not in eager_tools:
         eager_tools.insert(1, "invoke_tool")
+    return eager_tools
+
+
+def _ttse_flag_enabled(value: Any, default: bool) -> bool:
+    """Parse yaml/json booleans for TTSE eager-tool gating."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def _ttse_consult_should_be_eager(react_config: dict[str, Any] | None) -> bool:
+    """True when TTSE inject is on, so ``ttse_consult`` must stay in the schema."""
+    if not isinstance(react_config, dict):
+        return False
+    ttse = react_config.get("ttse")
+    if not isinstance(ttse, dict):
+        return False
+    enabled = _ttse_flag_enabled(ttse.get("enabled"), True)
+    inject_enabled = _ttse_flag_enabled(ttse.get("inject_enabled"), True)
+    return enabled and inject_enabled
+
+
+def _ensure_ttse_consult_eager_tool(
+    eager_tools: list[str],
+    react_config: dict[str, Any] | None,
+) -> list[str]:
+    """Keep ``ttse_consult`` visible when TTSE inject is on.
+
+    ProgressiveToolRail only exposes ``eager_tools``. P:45 tells the model to
+    call ``ttse_consult`` before ``skill_acceleration_exec``; if the name is
+    filtered out, first-turn consult is impossible without tools_search.
+    """
+    if not _ttse_consult_should_be_eager(react_config):
+        return eager_tools
+    if _TTSE_CONSULT_TOOL_NAME in eager_tools:
+        return eager_tools
+    if "skill_acceleration_exec" in eager_tools:
+        eager_tools.insert(
+            eager_tools.index("skill_acceleration_exec"),
+            _TTSE_CONSULT_TOOL_NAME,
+        )
+    else:
+        insert_at = 2 if len(eager_tools) >= 2 else len(eager_tools)
+        eager_tools.insert(insert_at, _TTSE_CONSULT_TOOL_NAME)
     return eager_tools
 
 
@@ -1395,6 +1451,8 @@ def build_progressive_tool_rail_from_config(
         # invoke_tool would hide the outer call from its lifecycle Rail.
         if "deepresearch_execute" not in eager_tools:
             eager_tools.insert(2, "deepresearch_execute")
+
+    eager_tools = _ensure_ttse_consult_eager_tool(eager_tools, config)
 
     normalized_language = resolve_language(language)
     logger.info(

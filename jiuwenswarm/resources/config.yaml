@@ -566,6 +566,7 @@ react:
       - bash
       - skill_tool
       - skill_complete
+      - ttse_consult                 # 常驻可见，否则第一轮 schema 里没有，P:45 无法先咨询
       - skill_acceleration_exec
       - todo_create
       - todo_list
