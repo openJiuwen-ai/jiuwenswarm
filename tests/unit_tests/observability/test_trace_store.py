@@ -220,10 +220,11 @@ async def test_live_revisions_finalize_in_place_and_reject_late_running(
         final = store.write_records([final_record])
         late = store.write_records([_snapshot_record(4, name="late-running")])
 
+        resolved_raw = store.fetch_raw(_TRACE_ID, _ROOT_SPAN_ID)
         connection = store._require_connection()
         current = connection.execute(
             """
-            SELECT lifecycle, record_revision, raw_json
+            SELECT lifecycle, record_revision, raw_json, raw_size_bytes
             FROM trajectory_current_records
             WHERE trace_id = ? AND span_id = ?
             """,
@@ -255,7 +256,14 @@ async def test_live_revisions_finalize_in_place_and_reject_late_running(
     assert late.inserted == 0
     assert current is not None
     assert current["lifecycle"] == "final"
-    assert bytes(current["raw_json"]) == final_record.raw_json
+    # Once the span is final its payload is archived in otlp_span_records, so
+    # this table stops carrying a second copy — the rule the change journal
+    # below already follows. The size stays, because the detail reader budgets
+    # pages by it before fetching any payload.
+    assert bytes(current["raw_json"]) == b""
+    assert int(current["raw_size_bytes"]) == len(final_record.raw_json)
+    # Dropping the copy must not change what a reader gets back.
+    assert resolved_raw == final_record.raw_json
     assert change_count is not None and int(change_count["count"]) == 3
     assert journal_payload_bytes is not None
     assert int(journal_payload_bytes["payload_bytes"]) == 0
@@ -2107,3 +2115,71 @@ def test_error_probe_agrees_with_a_full_parse_when_a_code_key_exists() -> None:
     assert store_module._record_has_error(errored) is True
     assert store_module._record_has_error(unset) is False
     test_logger.info("error probe matched a full parse on both status codes")
+
+
+def test_running_snapshot_keeps_its_own_payload_until_the_span_is_final(
+    tmp_path: Path,
+) -> None:
+    # A running span has no archive row to fall back on, so it must keep its
+    # payload in place. Only finalizing may drop the copy.
+    store = TrajectoryStore(tmp_path / "trajectory.sqlite3")
+    store.initialize()
+    try:
+        snapshot = _snapshot_record(1, name="running-1")
+        store.write_records([snapshot])
+        connection = store._require_connection()
+        row = connection.execute(
+            """
+            SELECT lifecycle, raw_json, raw_size_bytes
+            FROM trajectory_current_records
+            WHERE trace_id = ? AND span_id = ?
+            """,
+            (_TRACE_ID, _ROOT_SPAN_ID),
+        ).fetchone()
+
+        assert row is not None
+        assert row["lifecycle"] == "running"
+        assert bytes(row["raw_json"]) == snapshot.raw_json
+        assert int(row["raw_size_bytes"]) == len(snapshot.raw_json)
+        assert store.fetch_raw(_TRACE_ID, _ROOT_SPAN_ID) == snapshot.raw_json
+    finally:
+        store.close()
+    test_logger.info("running snapshot retained the payload it alone holds")
+
+
+@pytest.mark.asyncio
+async def test_reader_resolves_payloads_written_before_the_size_column_existed(
+    tmp_path: Path,
+) -> None:
+    # Rows from an older database still carry their own final payload and a
+    # zero size. They must resolve without any backfill.
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        record = _stored_record(raw_json=_raw_record(_TRACE_ID, _ROOT_SPAN_ID, name="legacy"))
+        store.write_records([record])
+        connection = store._require_connection()
+        connection.execute(
+            """
+            UPDATE trajectory_current_records
+            SET raw_json = ?, raw_size_bytes = 0
+            WHERE trace_id = ? AND span_id = ?
+            """,
+            (sqlite3.Binary(record.raw_json), _TRACE_ID, _ROOT_SPAN_ID),
+        )
+        connection.commit()
+        assert store.fetch_raw(_TRACE_ID, _ROOT_SPAN_ID) == record.raw_json
+    finally:
+        store.close()
+
+    detail = await AsyncTrajectoryReader(database_path).get_trace_records(
+        "session-1",
+        _TRACE_ID,
+        since_revision=0,
+        limit=100,
+    )
+    assert detail is not None
+    assert [item["lifecycle"] for item in detail["records"]] == ["final"]
+    assert int(detail["projected_raw_bytes"]) == len(record.raw_json)
+    test_logger.info("pre-migration row resolved through its own stored payload")

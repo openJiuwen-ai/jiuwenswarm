@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS trajectory_current_records (
     created_at INTEGER NOT NULL,
     has_error INTEGER NOT NULL DEFAULT 0,
     raw_json BLOB NOT NULL,
+    raw_size_bytes INTEGER NOT NULL DEFAULT 0,
     raw_sha256 TEXT NOT NULL,
     update_kind TEXT NOT NULL,
     PRIMARY KEY(trace_id, span_id)
@@ -182,6 +183,22 @@ CREATE INDEX IF NOT EXISTS idx_trajectory_changes_session_change
 CREATE INDEX IF NOT EXISTS idx_trajectory_changes_trace_change
     ON trajectory_changes(trace_id, change_seq);
 """
+
+# A final span's payload already lives in otlp_span_records, so
+# trajectory_current_records stores it only while the span is still running and
+# leaves an empty BLOB once it ends. Reads resolve the two sources through this
+# join. NULLIF keeps rows written before the column existed working unchanged:
+# they still carry their own payload, so the fallback never applies to them and
+# no backfill is needed.
+_CURRENT_ARCHIVE_JOIN = """
+    LEFT JOIN otlp_span_records AS archive
+        ON archive.trace_id = current.trace_id
+       AND archive.span_id = current.span_id
+"""
+_CURRENT_RAW_JSON = "COALESCE(NULLIF(current.raw_json, X''), archive.raw_json)"
+# Pre-migration rows default to 0 here, so fall back to measuring the payload
+# they still hold.
+_CURRENT_RAW_SIZE = "COALESCE(NULLIF(current.raw_size_bytes, 0), LENGTH(current.raw_json))"
 
 
 class TrajectoryCursorError(ValueError):
@@ -230,6 +247,7 @@ class TrajectoryStore:
             connection.execute("PRAGMA synchronous=NORMAL")
             connection.executescript(_SCHEMA_SQL)
             self._ensure_store_state_columns(connection)
+            self._ensure_current_record_columns(connection)
             removed = self._remove_missing_final_current(connection)
             migrated = self._migrate_final_current(connection)
             self._abandon_running_current(connection)
@@ -459,6 +477,13 @@ class TrajectoryStore:
             ),
         )
         change_seq = int(cursor.lastrowid)
+        # A final span is already archived in otlp_span_records under the same
+        # identity, so storing the payload again here doubled the database for
+        # no recoverable information. Running spans have no archive row yet and
+        # keep theirs. The size is recorded either way, because the detail
+        # reader budgets pages by it before it fetches any payload.
+        is_final = record.lifecycle == "final"
+        stored_raw_json = b"" if is_final else record.raw_json
         connection.execute(
             """
             INSERT INTO trajectory_current_records (
@@ -466,8 +491,8 @@ class TrajectoryStore:
                 run_id, agent_mode, lifecycle, record_revision, change_seq,
                 start_time_unix_nano, observed_time_unix_nano,
                 end_time_unix_nano, schema_version, source, created_at,
-                has_error, raw_json, raw_sha256, update_kind
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                has_error, raw_json, raw_size_bytes, raw_sha256, update_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(trace_id, span_id) DO UPDATE SET
                 parent_span_id = excluded.parent_span_id,
                 session_id = COALESCE(excluded.session_id, trajectory_current_records.session_id),
@@ -485,6 +510,7 @@ class TrajectoryStore:
                 created_at = excluded.created_at,
                 has_error = excluded.has_error,
                 raw_json = excluded.raw_json,
+                raw_size_bytes = excluded.raw_size_bytes,
                 raw_sha256 = excluded.raw_sha256,
                 update_kind = excluded.update_kind
             """,
@@ -506,7 +532,8 @@ class TrajectoryStore:
                 record.source,
                 record.created_at,
                 int(resolved_has_error),
-                sqlite3.Binary(record.raw_json),
+                sqlite3.Binary(stored_raw_json),
+                len(record.raw_json),
                 record.raw_sha256,
                 record.update_kind,
             ),
@@ -647,11 +674,13 @@ class TrajectoryStore:
         conflicting non-Team mode.
         """
         rows = connection.execute(
-            """
-            SELECT trace_id, raw_json
-            FROM trajectory_current_records
-            WHERE agent_mode IS NULL OR TRIM(agent_mode) = ''
-            ORDER BY change_seq ASC
+            f"""
+            SELECT current.trace_id AS trace_id,
+                   {_CURRENT_RAW_JSON} AS raw_json
+            FROM trajectory_current_records AS current
+            {_CURRENT_ARCHIVE_JOIN}
+            WHERE current.agent_mode IS NULL OR TRIM(current.agent_mode) = ''
+            ORDER BY current.change_seq ASC
             """
         ).fetchall()
         inferred_trace_ids: set[str] = set()
@@ -742,14 +771,17 @@ class TrajectoryStore:
         """Return exact stored bytes for writer-side diagnostics and tests."""
         connection = self._require_connection()
         row = connection.execute(
-            """
-            SELECT raw_json
-            FROM trajectory_current_records
-            WHERE trace_id = ? AND span_id = ?
+            f"""
+            SELECT {_CURRENT_RAW_JSON} AS raw_json
+            FROM trajectory_current_records AS current
+            {_CURRENT_ARCHIVE_JOIN}
+            WHERE current.trace_id = ? AND current.span_id = ?
             """,
             (trace_id, span_id),
         ).fetchone()
-        return bytes(row["raw_json"]) if row is not None else None
+        if row is None or row["raw_json"] is None:
+            return None
+        return bytes(row["raw_json"])
 
     def fetch_raw_sha256(self, trace_id: str, span_id: str) -> str | None:
         """Return the hash persisted beside one raw record."""
@@ -844,6 +876,25 @@ class TrajectoryStore:
         if "max_change_seq" not in columns:
             connection.execute(
                 "ALTER TABLE trajectory_store_state ADD COLUMN max_change_seq INTEGER NOT NULL DEFAULT 0"
+            )
+
+    @staticmethod
+    def _ensure_current_record_columns(connection: sqlite3.Connection) -> None:
+        """Add the payload-size column an older database predates.
+
+        Existing rows keep the 0 default and their own payload, which
+        ``_CURRENT_RAW_SIZE`` measures directly, so no backfill is required.
+        """
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(trajectory_current_records)"
+            ).fetchall()
+        }
+        if "raw_size_bytes" not in columns:
+            connection.execute(
+                "ALTER TABLE trajectory_current_records"
+                " ADD COLUMN raw_size_bytes INTEGER NOT NULL DEFAULT 0"
             )
 
     @staticmethod
@@ -1091,19 +1142,22 @@ class AsyncTrajectoryReader:
                 after_revision = int(cache["watermark"]) if cache_valid else 0
                 facts = dict(cache["facts"]) if cache_valid else {}
                 async with connection.execute(
-                    """
-                    SELECT trace_id,
-                           start_time_unix_nano,
-                           change_seq,
-                           raw_json
-                    FROM trajectory_current_records
-                    WHERE session_id = ? AND change_seq > ?
-                    ORDER BY change_seq ASC
+                    f"""
+                    SELECT current.trace_id AS trace_id,
+                           current.start_time_unix_nano AS start_time_unix_nano,
+                           current.change_seq AS change_seq,
+                           {_CURRENT_RAW_JSON} AS raw_json
+                    FROM trajectory_current_records AS current
+                    {_CURRENT_ARCHIVE_JOIN}
+                    WHERE current.session_id = ? AND current.change_seq > ?
+                    ORDER BY current.change_seq ASC
                     """,
                     (session_id, after_revision),
                 ) as statement:
                     rows = await statement.fetchall()
                 for row in rows:
+                    if row["raw_json"] is None:
+                        continue
                     fact = _request_usage_fact(
                         bytes(row["raw_json"]),
                         trace_id=str(row["trace_id"]),
@@ -1153,32 +1207,33 @@ class AsyncTrajectoryReader:
             revision = await _session_revision_watermark(connection, session_id)
             query = f"""
                 WITH {_ELIGIBLE_TRACES_CTE}
-                SELECT records.trace_id,
-                       records.span_id,
-                       records.parent_span_id,
-                       records.session_id,
-                       records.request_id,
-                       records.run_id,
-                       records.agent_mode,
-                       records.lifecycle,
-                       records.record_revision,
-                       records.change_seq,
-                       records.start_time_unix_nano,
-                       records.observed_time_unix_nano,
-                       records.end_time_unix_nano,
-                       records.schema_version,
-                       records.source,
-                       records.created_at,
-                       records.raw_json,
-                       records.raw_sha256,
-                       records.update_kind
-                FROM trajectory_current_records AS records
+                SELECT current.trace_id AS trace_id,
+                       current.span_id AS span_id,
+                       current.parent_span_id AS parent_span_id,
+                       current.session_id AS session_id,
+                       current.request_id AS request_id,
+                       current.run_id AS run_id,
+                       current.agent_mode AS agent_mode,
+                       current.lifecycle AS lifecycle,
+                       current.record_revision AS record_revision,
+                       current.change_seq AS change_seq,
+                       current.start_time_unix_nano AS start_time_unix_nano,
+                       current.observed_time_unix_nano AS observed_time_unix_nano,
+                       current.end_time_unix_nano AS end_time_unix_nano,
+                       current.schema_version AS schema_version,
+                       current.source AS source,
+                       current.created_at AS created_at,
+                       {_CURRENT_RAW_JSON} AS raw_json,
+                       current.raw_sha256 AS raw_sha256,
+                       current.update_kind AS update_kind
+                FROM trajectory_current_records AS current
+                {_CURRENT_ARCHIVE_JOIN}
                 INNER JOIN eligible_traces
-                    ON eligible_traces.trace_id = records.trace_id
-                WHERE records.session_id = ?
-                ORDER BY records.start_time_unix_nano ASC,
-                         records.trace_id ASC,
-                         records.span_id ASC
+                    ON eligible_traces.trace_id = current.trace_id
+                WHERE current.session_id = ?
+                ORDER BY current.start_time_unix_nano ASC,
+                         current.trace_id ASC,
+                         current.span_id ASC
             """
             params: tuple[Any, ...] = (
                 *_trajectory_scope_params(),
@@ -1492,7 +1547,7 @@ class AsyncTrajectoryReader:
             # rotating store_epoch must add a durable tombstone before this
             # query can support it safely.
             async with connection.execute(
-                """
+                f"""
                 SELECT change_seq AS ingest_seq,
                        trace_id,
                        span_id,
@@ -1500,8 +1555,8 @@ class AsyncTrajectoryReader:
                        lifecycle,
                        'upsert' AS operation,
                        observed_time_unix_nano,
-                       LENGTH(raw_json) AS raw_size_bytes
-                FROM trajectory_current_records
+                       {_CURRENT_RAW_SIZE} AS raw_size_bytes
+                FROM trajectory_current_records AS current
                 WHERE session_id = ?
                   AND trace_id = ?
                   AND change_seq > ?
@@ -1534,22 +1589,23 @@ class AsyncTrajectoryReader:
             if fetchable_metadata:
                 last_fetch_revision = int(fetchable_metadata[-1]["ingest_seq"])
                 async with connection.execute(
-                    """
-                    SELECT change_seq AS ingest_seq,
-                           trace_id,
-                           span_id,
-                           record_revision,
-                           lifecycle,
+                    f"""
+                    SELECT current.change_seq AS ingest_seq,
+                           current.trace_id AS trace_id,
+                           current.span_id AS span_id,
+                           current.record_revision AS record_revision,
+                           current.lifecycle AS lifecycle,
                            'upsert' AS operation,
-                           observed_time_unix_nano,
-                           LENGTH(raw_json) AS raw_size_bytes,
-                           raw_json
-                    FROM trajectory_current_records
-                    WHERE session_id = ?
-                      AND trace_id = ?
-                      AND change_seq > ?
-                      AND change_seq <= ?
-                    ORDER BY change_seq ASC
+                           current.observed_time_unix_nano AS observed_time_unix_nano,
+                           {_CURRENT_RAW_SIZE} AS raw_size_bytes,
+                           {_CURRENT_RAW_JSON} AS raw_json
+                    FROM trajectory_current_records AS current
+                    {_CURRENT_ARCHIVE_JOIN}
+                    WHERE current.session_id = ?
+                      AND current.trace_id = ?
+                      AND current.change_seq > ?
+                      AND current.change_seq <= ?
+                    ORDER BY current.change_seq ASC
                     """,
                     (
                         session_id,
