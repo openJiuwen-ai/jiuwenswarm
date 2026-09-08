@@ -737,6 +737,14 @@ def _install_default_builtin_skills(
     - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
     - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
     - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
+    - agent-creator: Agent 模板包创建助手
+    - plugin-creator: 插件能力扩展包创建助手
+    - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
+    - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
+    - local-doc-ocr: 本地离线 OCR（扫描件 PDF/图片提取文字）
+    - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
+    - pdf-extraction: PDF 文本/表格/元数据提取
+    - pptx-generator: PowerPoint 演示文稿生成与编辑
 
     Args:
         builtin_dir: 内置技能目录路径
@@ -752,7 +760,13 @@ def _install_default_builtin_skills(
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
         "agent-creator",
-        "plugin-creator"
+        "plugin-creator",
+        "baoyu-image-gen",
+        "docx-pro",
+        "local-doc-ocr",
+        "xlsx",
+        "pdf-extraction",
+        "pptx-generator",
     ]
 
     if not builtin_dir.exists() or not builtin_dir.is_dir():
@@ -819,6 +833,14 @@ def ensure_default_builtin_skills() -> None:
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
+        "agent-creator",
+        "plugin-creator",
+        "baoyu-image-gen",
+        "docx-pro",
+        "local-doc-ocr",
+        "xlsx",
+        "pdf-extraction",
+        "pptx-generator",
     ]
 
     user_skills_dir.mkdir(parents=True, exist_ok=True)
