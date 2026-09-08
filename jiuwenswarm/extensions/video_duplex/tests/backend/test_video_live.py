@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 from pathlib import Path
+import re
 import struct
 from types import SimpleNamespace
 import wave
@@ -610,6 +611,9 @@ async def test_qwen_tool_rpc_delegates_original_instruction_to_core_agent(
     assert completed["tool_call_id"] == "call-weather"
     assert completed["tool_name"] == "jiuwen_delegate"
     assert completed["result"] == "香港今天有雨。"
+    assert completed["display_result"] == "香港今天有雨。"
+    assert completed["realtime_brief"]["summary"] == "香港今天有雨。"
+    assert completed["realtime_brief"]["displayed_in_ui"] is True
 
 
 @pytest.mark.asyncio
@@ -1591,9 +1595,103 @@ async def test_execute_core_agent_uses_unary_content_without_custom_wrapper() ->
 
     assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
     assert result["raw_answer_chars"] == len(result["answer"])
+    assert result["realtime_brief"]["summary"] == result["answer"]
+    assert result["realtime_brief"]["source"] == "derived"
     assert len(requests) == 1
     assert "<final_answer>" not in requests[0].params["query"]
     assert "必须使用简体中文" in requests[0].params["query"]
+    assert "JIUWEN_BRIEF_BEGIN" in requests[0].params["query"]
+
+
+def test_present_core_agent_result_splits_nonce_scoped_brief() -> None:
+    nonce = "request-specific-nonce"
+    raw_answer = (
+        "完整答案第一段。\n\n完整答案第二段。\n"
+        "[[JIUWEN_BRIEF_BEGIN:request-specific-nonce]]\n"
+        "任务已完成，完整答案已经显示。\n"
+        "[[JIUWEN_BRIEF_END:request-specific-nonce]]"
+    )
+
+    presented = video_search.present_core_agent_result(
+        raw_answer,
+        nonce=nonce,
+        question="完成任务",
+        tools_used=[],
+    )
+
+    assert presented["display_result"] == "完整答案第一段。\n\n完整答案第二段。"
+    assert presented["realtime_brief"] == {
+        "status": "completed",
+        "result_kind": "generic",
+        "summary": "任务已完成，完整答案已经显示。",
+        "displayed_in_ui": True,
+        "response_mode": "brief",
+        "source": "core_agent",
+    }
+
+
+@pytest.mark.parametrize(
+    "unsafe_brief",
+    [
+        "第一行\n第二行",
+        "详情请看 https://example.com/result",
+        "```python print('unsafe') ```",
+        "x" * (video_search.MAX_REALTIME_BRIEF_CHARS + 1),
+    ],
+)
+def test_present_core_agent_result_rejects_unsafe_brief(unsafe_brief: str) -> None:
+    nonce = "unsafe-brief"
+    raw_answer = (
+        "```python\nprint('authoritative full answer')\n```\n"
+        f"[[JIUWEN_BRIEF_BEGIN:{nonce}]]\n{unsafe_brief}\n"
+        f"[[JIUWEN_BRIEF_END:{nonce}]]"
+    )
+
+    presented = video_search.present_core_agent_result(
+        raw_answer,
+        nonce=nonce,
+        question="请写一段 Python 代码",
+        tools_used=["powershell"],
+    )
+
+    assert "JIUWEN_BRIEF" not in presented["display_result"]
+    assert presented["realtime_brief"]["source"] == "fallback"
+    assert presented["realtime_brief"]["result_kind"] == "code"
+    assert presented["realtime_brief"]["summary"] == (
+        "代码已经生成，完整内容已经显示在界面中。"
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_core_agent_extracts_generated_brief_protocol() -> None:
+    requests = []
+
+    class FakeAgentClient:
+        async def send_request(self, envelope):
+            requests.append(envelope)
+            prompt = envelope.params["query"]
+            nonce = re.search(r"JIUWEN_BRIEF_BEGIN:([a-f0-9]+)", prompt).group(1)
+            content = (
+                "已完成完整任务。\n"
+                f"[[JIUWEN_BRIEF_BEGIN:{nonce}]]\n"
+                "任务已完成，结果已经显示。\n"
+                f"[[JIUWEN_BRIEF_END:{nonce}]]"
+            )
+            return SimpleNamespace(ok=True, payload={"content": content})
+
+    result = await video_search.execute_core_agent(
+        FakeAgentClient(),
+        question="执行任务",
+        query="执行任务",
+        visual_context="",
+        search_session_id="brief-session",
+    )
+
+    assert result["answer"] == "已完成完整任务。"
+    assert result["display_result"] == result["answer"]
+    assert result["raw_answer_chars"] > len(result["answer"])
+    assert result["realtime_brief"]["summary"] == "任务已完成，结果已经显示。"
+    assert result["realtime_brief"]["source"] == "core_agent"
 
 
 @pytest.mark.asyncio

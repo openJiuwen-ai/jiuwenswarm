@@ -37,6 +37,7 @@ import {
 import {
   AgentAction,
   ChatContextItem,
+  RealtimeBrief,
   SearchJobPayload,
   SearchProgressJob,
   SearchJobState,
@@ -288,7 +289,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return;
     }
-    const result = payload.result?.trim() || '';
+    const result = payload.display_result?.trim() || payload.result?.trim() || '';
     const question = payload.question?.trim() || existing?.question || '';
     reportRealtimeEvent('search_result_received', {
       job_id: payload.job_id,
@@ -307,12 +308,23 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     if (joyaiProviderRef.current?.handleCompletedSearch(payload, existing)) return;
     const callId = payload.tool_call_id?.trim() || existing?.toolCallId;
     const turnId = payload.turn_id?.trim() || existing?.turnId;
+    const realtimeBrief: RealtimeBrief = payload.realtime_brief?.summary?.trim()
+      ? { ...payload.realtime_brief, summary: payload.realtime_brief.summary.trim() }
+      : {
+          status: 'completed',
+          result_kind: 'generic',
+          summary: '任务已经完成，完整结果已经显示在界面中。',
+          displayed_in_ui: true,
+          response_mode: 'brief',
+          source: 'fallback',
+        };
+    appendChat('assistant', result);
     const queued =
       duplexRef.current?.enqueueToolResult({
         jobId: payload.job_id,
         ...(turnId ? { turnId } : {}),
         question,
-        result,
+        brief: realtimeBrief,
         ...(callId ? { callId } : {}),
       }) || false;
     searchJobsRef.current.set(payload.job_id, {
@@ -321,19 +333,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       turnId,
       question,
       query: payload.query?.trim() || existing?.query || '',
-      // A failed delivery stays recoverable and will be retried by status polling.
-      status: queued ? 'queued' : 'running',
+      // The authoritative result is already visible; polling must not display it again.
+      status: 'queued',
       toolCallId: callId,
     });
     if (queued) {
-      appendChat('tool', result);
-      setSearchStatus(`${payload.engine || '九问搜索 Agent'}完成，正在生成回答…`);
+      setSearchStatus(`${payload.engine || 'Jiuwen Core Agent'}完成，正在播报摘要…`);
     } else {
       reportRealtimeEvent('search_result_queue_failed', {
         job_id: payload.job_id,
         message: duplexRef.current ? 'tool result rejected' : 'realtime session unavailable',
       });
-      setSearchStatus('搜索结果暂未回填，正在重试…');
+      setSearchStatus('');
     }
   };
 
@@ -345,12 +356,21 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     const callId = payload.tool_call_id?.trim() || existing?.toolCallId;
     const turnId = payload.turn_id?.trim() || existing?.turnId;
     const error = payload.error?.trim() || 'Jiuwen Core Agent failed';
+    const failureText = `Jiuwen Core Agent 未能完成任务：${error}`;
+    appendChat('assistant', failureText);
     if (callId) {
       duplexRef.current?.enqueueToolResult({
         jobId: payload.job_id,
         ...(turnId ? { turnId } : {}),
-        question,
-        result: `Jiuwen Core Agent could not complete the research: ${error}`,
+        question: question || '此前委托任务',
+        brief: {
+          status: 'failed',
+          result_kind: 'generic',
+          summary: '任务处理失败，错误信息已经显示在界面中。',
+          displayed_in_ui: true,
+          response_mode: 'acknowledge',
+          source: 'fallback',
+        },
         callId,
       });
     }
@@ -781,6 +801,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onAssistantText: (text, final, toolJobId, responseId) => {
               const visibleText = cleanAssistantText(text);
+              if (toolJobId) {
+                if (final) {
+                  searchJobsRef.current.delete(toolJobId);
+                  setSearchStatus('');
+                  if (!headless) setStreamingAnswer('');
+                }
+                return;
+              }
               if (headless && onAssistantStream && responseId) {
                 onAssistantStream({
                   streamId: responseId,
@@ -843,9 +871,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 current_turn_id: latestUserInstructionRef.current.turnId,
               });
               searchJobsRef.current.delete(toolResult.jobId);
-              const requestLabel =
-                toolResult.question.length > 80 ? `${toolResult.question.slice(0, 80)}…` : toolResult.question;
-              appendChat('assistant', `此前请求“${requestLabel}”已完成：\n\n${toolResult.result}`);
               setSearchStatus('');
             },
             onFunctionCall: (call) => {
@@ -880,10 +905,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 })
                 .catch((toolError) => {
                   const message = toolError instanceof Error ? toolError.message : 'Jiuwen Core Agent request failed';
+                  appendChat('assistant', `Jiuwen Core Agent 未能启动任务：${message}`);
                   const queued = session.enqueueToolResult({
                     jobId: `qwen-tool-error-${call.callId}`,
                     question: originalInstruction,
-                    result: `Jiuwen Core Agent could not start the delegated task: ${message}`,
+                    brief: {
+                      status: 'failed',
+                      result_kind: 'generic',
+                      summary: '任务未能启动，错误信息已经显示在界面中。',
+                      displayed_in_ui: true,
+                      response_mode: 'acknowledge',
+                      source: 'fallback',
+                    },
                     callId: call.callId,
                   });
                   if (!queued) setError(message);

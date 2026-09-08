@@ -1,5 +1,6 @@
 import {
   createQwenOmniCancelResponseEvent,
+  createQwenOmniDetachedToolResultEvent,
   createQwenOmniFinishSessionEvent,
   createQwenOmniSessionUpdate,
   createQwenOmniTextTurnEvents,
@@ -9,6 +10,7 @@ import {
   QwenOmniMediaSequencer,
 } from './qwenOmniProtocol.js';
 import { getWsBase } from '../../../../channels/web/frontend/src/utils/env.js';
+import type { RealtimeBrief } from './types.js';
 
 export interface RealtimeDuplexConfig {
   url: string;
@@ -18,19 +20,22 @@ export interface RealtimeDuplexConfig {
 
 export interface RealtimeToolResult {
   jobId: string;
+  turnId?: string;
   question: string;
-  result: string;
+  brief: RealtimeBrief;
   callId?: string;
 }
 
 export interface RealtimeDuplexCallbacks {
   getVideoFrame: () => string | null;
-  onAssistantText: (text: string, final: boolean, toolJobId?: string) => void;
+  onAssistantText: (text: string, final: boolean, toolJobId?: string, responseId?: string) => void;
   onUserText: (text: string, final: boolean) => void;
   onState: (state: 'connecting' | 'listening' | 'speaking' | 'closed') => void;
   onError: (message: string) => void;
   onDiagnostic?: (event: Record<string, unknown>) => void;
   onToolResultDispatched?: (jobId: string) => void;
+  isToolTurnCurrent?: (turnId: string) => boolean;
+  onStaleToolResult?: (toolResult: RealtimeToolResult) => void;
   onFunctionCall?: (call: QwenOmniFunctionCall) => void;
 }
 
@@ -59,7 +64,7 @@ const INPUT_RATE = 16_000;
 const OUTPUT_RATE = 24_000;
 const SEND_INTERVAL_MS = 200;
 const USER_TURN_SILENCE_MS = 1_200;
-const REALTIME_CLIENT_BUILD = 'qwen-media-bargein-v3';
+const REALTIME_CLIENT_BUILD = 'qwen-turn-isolation-v1';
 const LISTENING_SPEECH_MS = 240;
 const INITIAL_PLAYBACK_BUFFER_MS = 400;
 
@@ -69,7 +74,11 @@ function readableError(value: unknown): string {
     const error = value as Record<string, unknown>;
     const message = error.message || error.detail || error.code || error.error;
     if (message) return readableError(message);
-    try { return JSON.stringify(value); } catch { return 'Realtime 服务错误'; }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return 'Realtime 服务错误';
+    }
   }
   return String(value || 'Realtime 服务错误');
 }
@@ -118,7 +127,8 @@ export class RealtimeDuplexSession {
   private pendingToolResults: RealtimeToolResult[] = [];
   private acceptedToolResultIds = new Set<string>();
   private acceptedFunctionCallIds = new Set<string>();
-  private activeToolJobId: string | null = null;
+  private pendingToolResponseJobId: string | null = null;
+  private responseToolJobIds = new Map<string, string>();
   private assistantPlaying = false;
   private responseActive = false;
   private playbackOperation: Promise<void> = Promise.resolve();
@@ -142,9 +152,7 @@ export class RealtimeDuplexSession {
   async start(): Promise<void> {
     this.callbacks.onState('connecting');
     this.playbackContext = new AudioContext({ sampleRate: OUTPUT_RATE });
-    await this.playbackContext.audioWorklet.addModule(
-      new URL('./duplex-playback.js', import.meta.url),
-    );
+    await this.playbackContext.audioWorklet.addModule(new URL('./duplex-playback.js', import.meta.url));
     this.playbackNode = new AudioWorkletNode(this.playbackContext, 'jiuwen-duplex-playback');
     this.playbackNode.port.onmessage = ({ data }) => {
       if (data.type === 'cleared') {
@@ -164,13 +172,16 @@ export class RealtimeDuplexSession {
 
     this.emitDiagnostic('realtime_microphone_request_started', {});
     this.microphone = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
     });
     this.emitDiagnostic('realtime_microphone_ready', {});
     this.captureContext = new AudioContext({ sampleRate: INPUT_RATE });
-    await this.captureContext.audioWorklet.addModule(
-      new URL('./duplex-capture.js', import.meta.url),
-    );
+    await this.captureContext.audioWorklet.addModule(new URL('./duplex-capture.js', import.meta.url));
     const source = this.captureContext.createMediaStreamSource(this.microphone);
     this.captureNode = new AudioWorkletNode(this.captureContext, 'jiuwen-duplex-capture');
     this.captureNode.port.onmessage = ({ data }) => {
@@ -182,7 +193,7 @@ export class RealtimeDuplexSession {
         this.pendingSamples -= this.pending.shift()?.length || 0;
       }
       const level = this.rms(pcm);
-      const frameMs = pcm.length * 1_000 / INPUT_RATE;
+      const frameMs = (pcm.length * 1_000) / INPUT_RATE;
       const threshold = Math.max(350, this.noiseFloor * 2.5);
       if (level > threshold) {
         this.userSpeechMs += frameMs;
@@ -210,7 +221,9 @@ export class RealtimeDuplexSession {
     this.captureNode.connect(silent).connect(this.captureContext.destination);
     await this.captureContext.resume();
 
-    this.emitDiagnostic('realtime_websocket_connecting', { url: this.config.url });
+    this.emitDiagnostic('realtime_websocket_connecting', {
+      url: this.config.url,
+    });
     await this.openSocket();
     this.sendTimer = window.setInterval(() => this.flush(), SEND_INTERVAL_MS);
   }
@@ -218,6 +231,7 @@ export class RealtimeDuplexSession {
   stop(): void {
     if (this.sendTimer !== null) window.clearInterval(this.sendTimer);
     this.sendTimer = null;
+    if (this.assistantTranscript) this.finishAssistantText();
     this.send(createQwenOmniFinishSessionEvent());
     this.socket?.close(1000, 'client stop');
     this.socket = null;
@@ -232,7 +246,8 @@ export class RealtimeDuplexSession {
     this.pendingToolResults = [];
     this.acceptedToolResultIds.clear();
     this.acceptedFunctionCallIds.clear();
-    this.activeToolJobId = null;
+    this.pendingToolResponseJobId = null;
+    this.responseToolJobIds.clear();
     this.sessionReady = false;
     this.responseActive = false;
     this.activeUserTurnId = null;
@@ -257,17 +272,25 @@ export class RealtimeDuplexSession {
   enqueueToolResult(toolResult: RealtimeToolResult): boolean {
     const jobId = toolResult.jobId.trim();
     const question = toolResult.question.trim();
-    const result = toolResult.result.trim();
+    const summary = toolResult.brief.summary.trim();
     const callId = toolResult.callId?.trim();
-    if (!jobId || !question || !result || this.acceptedToolResultIds.has(jobId)) return false;
+    if (!jobId || !question || !summary || this.acceptedToolResultIds.has(jobId)) return false;
     if (!callId) return false;
     this.acceptedToolResultIds.add(jobId);
-    this.pendingToolResults.push({ jobId, question, result, ...(callId ? { callId } : {}) });
+    this.pendingToolResults.push({
+      jobId,
+      ...(toolResult.turnId?.trim() ? { turnId: toolResult.turnId.trim() } : {}),
+      question,
+      brief: { ...toolResult.brief, summary },
+      ...(callId ? { callId } : {}),
+    });
     this.emitDiagnostic('search_result_queued', {
       job_id: jobId,
       question,
-      result,
+      result_kind: toolResult.brief.result_kind,
+      brief_chars: summary.length,
     });
+    this.dispatchQueuedToolResult();
     if (this.acceptedToolResultIds.size > 32) {
       const oldest = this.acceptedToolResultIds.values().next().value;
       if (oldest) this.acceptedToolResultIds.delete(oldest);
@@ -312,12 +335,14 @@ export class RealtimeDuplexSession {
       const sendInit = async () => {
         if (initSent) return;
         initSent = true;
-        this.send(createQwenOmniSessionUpdate({
-          voice: this.config.voice,
-          tools: this.config.tools,
-          inputRate: INPUT_RATE,
-          outputRate: OUTPUT_RATE,
-        }));
+        this.send(
+          createQwenOmniSessionUpdate({
+            voice: this.config.voice,
+            tools: this.config.tools,
+            inputRate: INPUT_RATE,
+            outputRate: OUTPUT_RATE,
+          }),
+        );
       };
       socket.onopen = () => {
         this.emitDiagnostic('realtime_websocket_open', { url: url.toString() });
@@ -351,18 +376,24 @@ export class RealtimeDuplexSession {
             this.sessionReady = true;
             this.emitDiagnostic('realtime_session_ready', {});
           }
-          this.handleEvent(event);
+          this.handleEvent(event, data);
+        } catch {
+          this.callbacks.onError('Realtime 返回了无效事件');
         }
-        catch { this.callbacks.onError('Realtime 返回了无效事件'); }
       };
       socket.onerror = () => {
         if (this.socket !== socket) return;
-        this.emitDiagnostic('realtime_websocket_error', { url: url.toString() });
+        this.emitDiagnostic('realtime_websocket_error', {
+          url: url.toString(),
+        });
         rejectOnce(new Error(`Realtime WebSocket 连接失败：${url}`));
       };
       socket.onclose = ({ code, reason }) => {
         if (this.socket !== socket) return;
-        this.emitDiagnostic('realtime_websocket_closed', { code, message: reason });
+        this.emitDiagnostic('realtime_websocket_closed', {
+          code,
+          message: reason,
+        });
         if (!this.sessionReady) {
           const closeReason = reason || (code === 1000 ? '远端在初始化阶段主动关闭' : `关闭代码 ${code}`);
           const startupAlreadyResolved = settled;
@@ -418,45 +449,49 @@ export class RealtimeDuplexSession {
 
   private sendAudio(pcm: Int16Array, includeVideo: boolean): void {
     const audio = bytesToBase64(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength));
-    const batch = this.qwenMedia.createBatch(
-      audio,
-      includeVideo,
-      includeVideo ? this.callbacks.getVideoFrame() : null,
-    );
+    const batch = this.qwenMedia.createBatch(audio, includeVideo, includeVideo ? this.callbacks.getVideoFrame() : null);
     batch.events.forEach((event) => this.send(event));
     batch.diagnostics.forEach(({ event, details }) => this.emitDiagnostic(event, details));
   }
 
   private dispatchQueuedToolResult(): void {
-    if (this.pendingToolResults.length > 0
-      && !this.responseActive
-      && !this.assistantPlaying
-      && !this.userActivityActive
-      && !this.turnHasUserActivity) {
+    if (this.responseActive || this.userActivityActive || this.turnHasUserActivity) return;
+    while (this.pendingToolResults.length > 0) {
       const toolResult = this.pendingToolResults.shift();
-      if (toolResult) {
-        this.emitDiagnostic('search_result_dispatched', {
+      if (!toolResult) return;
+      const isCurrent = !toolResult.turnId || this.callbacks.isToolTurnCurrent?.(toolResult.turnId) !== false;
+      if (!isCurrent) {
+        this.send(createQwenOmniDetachedToolResultEvent(toolResult.callId || ''));
+        this.emitDiagnostic('stale_tool_result_delivered_directly', {
           job_id: toolResult.jobId,
+          turn_id: toolResult.turnId,
+          call_id: toolResult.callId,
         });
         this.callbacks.onToolResultDispatched?.(toolResult.jobId);
-        if (toolResult.callId) {
-          this.activeToolJobId = toolResult.jobId;
-          this.responseActive = true;
-          createQwenOmniToolResultEvents(
-            toolResult.callId,
-            toolResult.result,
-            toolResult.question,
-          ).forEach((event) => this.send(event));
-          this.emitDiagnostic('qwen_tool_result_returned', {
-            job_id: toolResult.jobId,
-            call_id: toolResult.callId,
-          });
-        }
+        this.callbacks.onStaleToolResult?.(toolResult);
+        continue;
       }
+      this.emitDiagnostic('search_result_dispatched', {
+        job_id: toolResult.jobId,
+        turn_id: toolResult.turnId,
+      });
+      this.callbacks.onToolResultDispatched?.(toolResult.jobId);
+      if (!toolResult.callId) continue;
+      this.pendingToolResponseJobId = toolResult.jobId;
+      this.responseActive = true;
+      createQwenOmniToolResultEvents(toolResult.callId, toolResult.brief).forEach((event) =>
+        this.send(event),
+      );
+      this.emitDiagnostic('qwen_tool_result_returned', {
+        job_id: toolResult.jobId,
+        turn_id: toolResult.turnId,
+        call_id: toolResult.callId,
+      });
+      return;
     }
   }
 
-  private handleEvent(event: Record<string, unknown>): void {
+  private handleEvent(event: Record<string, unknown>, rawEvent = ''): void {
     const type = String(event.type || '');
     const response = event.response as Record<string, unknown> | undefined;
     const eventResponseId = String(event.response_id || response?.id || '') || null;
@@ -471,7 +506,7 @@ export class RealtimeDuplexSession {
         this.emitDiagnostic('qwen_tool_call_received', {
           name: functionCall.name,
           call_id: functionCall.callId,
-          query: functionCall.query,
+          task: functionCall.task,
         });
         this.callbacks.onFunctionCall?.(functionCall);
       }
@@ -479,12 +514,21 @@ export class RealtimeDuplexSession {
       this.emitDiagnostic('qwen_tool_call_invalid', {
         name: String(event.name || ''),
         call_id: String(event.call_id || ''),
+        arguments: typeof event.arguments === 'string' ? event.arguments.slice(0, 2_000) : event.arguments,
       });
       this.callbacks.onError('千问返回了无效的工具调用');
     } else if (type === 'session.created') {
       this.callbacks.onState('listening');
     } else if (type === 'response.created') {
-      if (eventResponseId) this.responseId = eventResponseId;
+      this.responseId = eventResponseId || this.newTurnId('response');
+      if (this.pendingToolResponseJobId) {
+        this.responseToolJobIds.set(this.responseId, this.pendingToolResponseJobId);
+        this.pendingToolResponseJobId = null;
+        if (this.responseToolJobIds.size > 32) {
+          const oldest = this.responseToolJobIds.keys().next().value;
+          if (oldest) this.responseToolJobIds.delete(oldest);
+        }
+      }
       this.responseActive = true;
       this.userSpeechMs = 0;
       this.userSilenceMs = 0;
@@ -498,16 +542,20 @@ export class RealtimeDuplexSession {
       this.callbacks.onAssistantText(
         this.assistantTranscript,
         false,
-        this.activeToolJobId || undefined,
+        this.toolJobIdForResponse(eventResponseId),
+        eventResponseId || this.responseId || undefined,
       );
     } else if (type === 'response.text.done') {
       this.assistantTranscript = String(event.text || this.assistantTranscript);
       this.finishAssistantText();
-    } else if (type === 'audio.cancelled' || type === 'response.audio.cancelled'
-      || type === 'response.cancelled') {
+    } else if (type === 'audio.cancelled' || type === 'response.audio.cancelled' || type === 'response.cancelled') {
       if (!eventResponseId || eventResponseId === this.responseId) {
+        if (this.assistantTranscript) this.finishAssistantText();
         this.responseActive = false;
-        this.playbackNode?.port.postMessage({ type: 'clear', cancelResponse: false });
+        this.playbackNode?.port.postMessage({
+          type: 'clear',
+          cancelResponse: false,
+        });
         this.callbacks.onState('listening');
       }
     } else if (type === 'response.audio.delta' || type === 'response.output_audio.delta') {
@@ -521,8 +569,8 @@ export class RealtimeDuplexSession {
         this.responseActive = false;
       }
       if (affectsActive) this.enqueuePlaybackDrain(eventResponseId || this.responseId);
-    } else if (type === 'response.audio_transcript.delta'
-      || type === 'response.output_audio_transcript.delta') {
+      if (type === 'response.done' && affectsActive) this.dispatchQueuedToolResult();
+    } else if (type === 'response.audio_transcript.delta' || type === 'response.output_audio_transcript.delta') {
       const delta = String(event.delta || '');
       if (!delta) return;
       if (delta.startsWith(this.assistantTranscript)) this.assistantTranscript = delta;
@@ -530,17 +578,14 @@ export class RealtimeDuplexSession {
       this.callbacks.onAssistantText(
         this.assistantTranscript,
         false,
-        this.activeToolJobId || undefined,
+        this.toolJobIdForResponse(eventResponseId),
+        eventResponseId || this.responseId || undefined,
       );
-    } else if (type === 'response.audio_transcript.done'
-      || type === 'response.output_audio_transcript.done') {
+    } else if (type === 'response.audio_transcript.done' || type === 'response.output_audio_transcript.done') {
       this.assistantTranscript = String(event.transcript || this.assistantTranscript);
       this.finishAssistantText();
     } else if (type === 'conversation.item.input_audio_transcription.delta') {
-      this.callbacks.onUserText(
-        `${String(event.delta || event.text || '')}${String(event.stash || '')}`,
-        false,
-      );
+      this.callbacks.onUserText(`${String(event.delta || event.text || '')}${String(event.stash || '')}`, false);
     } else if (type === 'conversation.item.input_audio_transcription.completed') {
       const transcript = String(event.transcript || '');
       this.emitDiagnostic('qwen_native_asr_completed', {
@@ -550,22 +595,24 @@ export class RealtimeDuplexSession {
       this.callbacks.onUserText(transcript, true);
     } else if (type === 'error') {
       const media = this.qwenMedia.snapshot();
+      const error = event.error;
+      const errorRecord = error && typeof error === 'object'
+        ? error as Record<string, unknown>
+        : {};
       this.emitDiagnostic('qwen_realtime_error', {
-        raw_event: event,
+        raw_event: rawEvent || JSON.stringify(event),
+        code: String(errorRecord.code || event.code || 'unknown'),
+        error_type: String(errorRecord.type || ''),
+        message: readableError(error || event),
         audio_append_sequence: media.audioAppendSequence,
         image_append_sequence: media.imageAppendSequence,
         has_deferred_image: media.hasDeferredImage,
       });
-      this.callbacks.onError(readableError(event.error || event));
+      this.callbacks.onError(readableError(error || event));
     }
   }
 
-  private interruptQwenResponse(
-    turnId: string,
-    speechMs: number,
-    level: number,
-    threshold: number,
-  ): boolean {
+  private interruptQwenResponse(turnId: string, speechMs: number, level: number, threshold: number): boolean {
     if (!this.responseActive && !this.assistantPlaying) return false;
     const interruptedResponseId = this.responseId;
     const cancelEventSent = this.responseActive;
@@ -573,7 +620,10 @@ export class RealtimeDuplexSession {
     this.playbackGeneration += 1;
     this.playbackOperation = Promise.resolve();
     this.queuedDrainResponseId = null;
-    this.playbackNode?.port.postMessage({ type: 'clear', cancelResponse: false });
+    this.playbackNode?.port.postMessage({
+      type: 'clear',
+      cancelResponse: false,
+    });
     this.responseActive = false;
     this.assistantPlaying = false;
     if (this.assistantTranscript) this.finishAssistantText();
@@ -599,8 +649,8 @@ export class RealtimeDuplexSession {
 
   private finishAssistantText(): void {
     const text = this.assistantTranscript;
-    const toolJobId = this.activeToolJobId || undefined;
-    this.callbacks.onAssistantText(text, true, toolJobId);
+    const toolJobId = this.toolJobIdForResponse(this.responseId);
+    this.callbacks.onAssistantText(text, true, toolJobId, this.responseId || undefined);
     this.emitDiagnostic('realtime_answer_final', {
       realtime_answer: text,
       ...(toolJobId ? { job_id: toolJobId } : {}),
@@ -612,27 +662,29 @@ export class RealtimeDuplexSession {
       });
     }
     this.assistantTranscript = '';
-    this.activeToolJobId = null;
   }
 
-  private enqueueAudioDelta(
-    event: Record<string, unknown>,
-    encoded: string,
-    responseId: string | null,
-  ): void {
+  private toolJobIdForResponse(responseId: string | null): string | undefined {
+    return responseId ? this.responseToolJobIds.get(responseId) : undefined;
+  }
+
+  private enqueueAudioDelta(event: Record<string, unknown>, encoded: string, responseId: string | null): void {
     const generation = this.playbackGeneration;
     this.playbackOperation = this.playbackOperation
       .then(() => this.decodeOutputAudio(event, encoded))
       .then((output) => {
         if (generation !== this.playbackGeneration || !output || !this.playbackNode) return;
         this.assistantPlaying = true;
-        this.playbackNode.port.postMessage({
-          type: 'audio',
-          lane: 'normal',
-          pcm: output.buffer,
-          responseId,
-          initialBufferMs: INITIAL_PLAYBACK_BUFFER_MS,
-        }, [output.buffer]);
+        this.playbackNode.port.postMessage(
+          {
+            type: 'audio',
+            lane: 'normal',
+            pcm: output.buffer,
+            responseId,
+            initialBufferMs: INITIAL_PLAYBACK_BUFFER_MS,
+          },
+          [output.buffer],
+        );
       })
       .catch(() => this.callbacks.onError('Realtime 音频解码失败'));
   }
@@ -643,7 +695,11 @@ export class RealtimeDuplexSession {
     const generation = this.playbackGeneration;
     this.playbackOperation = this.playbackOperation.then(() => {
       if (generation !== this.playbackGeneration) return;
-      this.playbackNode?.port.postMessage({ type: 'drain', lane: 'normal', responseId });
+      this.playbackNode?.port.postMessage({
+        type: 'drain',
+        lane: 'normal',
+        responseId,
+      });
     });
   }
 

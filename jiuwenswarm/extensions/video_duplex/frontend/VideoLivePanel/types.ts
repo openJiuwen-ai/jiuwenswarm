@@ -4,12 +4,23 @@ export interface ChatContextItem {
   text: string;
 }
 
+export interface RealtimeBrief {
+  status: 'completed' | 'failed';
+  result_kind: 'code' | 'research' | 'calculation' | 'action' | 'file' | 'generic';
+  summary: string;
+  displayed_in_ui: boolean;
+  response_mode: 'brief' | 'acknowledge';
+  source: 'core_agent' | 'derived' | 'fallback';
+}
+
 export interface SearchJobPayload {
   job_id?: string;
   search_session_id?: string;
   question?: string;
   query?: string;
   result?: string;
+  display_result?: string;
+  realtime_brief?: RealtimeBrief;
   error?: string;
   engine?: string;
   status?: 'running' | 'completed' | 'failed';

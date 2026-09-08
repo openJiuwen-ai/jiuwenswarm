@@ -5,6 +5,17 @@ import { runInNewContext } from 'node:vm';
 
 import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
 
+function realtimeBrief(summary, resultKind = 'generic') {
+  return {
+    status: 'completed',
+    result_kind: resultKind,
+    summary,
+    displayed_in_ui: true,
+    response_mode: 'brief',
+    source: 'core_agent',
+  };
+}
+
 function createSession(videoFrame = null, callbackOverrides = {}) {
   const states = [];
   const posted = [];
@@ -248,7 +259,8 @@ test('tool results wait for active generation but dispatch during queued audio p
     session.enqueueToolResult({
       jobId: 'search-weather',
       question: '香港今天的天气',
-      result: '香港今天有雨。',
+      brief: realtimeBrief('香港今天有雨，出门记得带伞。', 'research'),
+      result: '```python\nprint("这段完整代码绝不能发送给Qwen")\n```',
       callId: 'call-weather',
     }),
     true,
@@ -266,6 +278,10 @@ test('tool results wait for active generation but dispatch during queued audio p
     sent.map((event) => event.type),
     ['conversation.item.create', 'conversation.item.create', 'response.create'],
   );
+  assert.equal(sent[0].item.type, 'function_call_output');
+  assert.match(sent[0].item.output, /香港今天有雨/);
+  assert.doesNotMatch(sent[0].item.output, /完整代码绝不能发送给Qwen/);
+  assert.match(sent[1].item.content[0].text, /authoritative full answer is already visible/i);
 
   session.handleEvent({ type: 'response.created', response: { id: 'answer-weather' } });
   session.handleEvent({
@@ -300,7 +316,7 @@ test('a stale tool result is delivered directly without starting another Qwen re
       jobId: 'old-file-task',
       turnId: 'turn-old',
       question: '打开旧文件',
-      result: '旧文件的完整内容',
+      brief: realtimeBrief('旧文件任务已完成。', 'file'),
       callId: 'call-old-file',
     }),
     true,
@@ -308,7 +324,7 @@ test('a stale tool result is delivered directly without starting another Qwen re
 
   assert.deepEqual(dispatchedToolResults, ['old-file-task']);
   assert.equal(staleToolResults.length, 1);
-  assert.equal(staleToolResults[0].result, '旧文件的完整内容');
+  assert.equal(staleToolResults[0].brief.summary, '旧文件任务已完成。');
   assert.deepEqual(
     sent.map((event) => event.type),
     ['conversation.item.create'],
@@ -325,13 +341,13 @@ test('tool responses retain their own job id after another result is queued', ()
   session.enqueueToolResult({
     jobId: 'job-first',
     question: '第一个问题',
-    result: '第一个结果',
+    brief: realtimeBrief('第一个结果已完成。'),
     callId: 'call-first',
   });
   session.enqueueToolResult({
     jobId: 'job-second',
     question: '第二个问题',
-    result: '第二个结果',
+    brief: realtimeBrief('第二个结果已完成。'),
     callId: 'call-second',
   });
   session.handleEvent({ type: 'response.created', response: { id: 'response-first' } });
