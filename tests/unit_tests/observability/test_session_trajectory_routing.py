@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,9 +20,11 @@ from jiuwenswarm.observability.config import (
 )
 from jiuwenswarm.observability.models import TraceRecordData, WriteBatchResult
 from jiuwenswarm.observability.sink import (
+    _SESSION_WRITER_IDLE_SECONDS,
     CommitCallback,
     TrajectoryRecordSink,
     TrajectorySessionSinkRouter,
+    _SessionWriter,
 )
 from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryStore
 
@@ -278,29 +281,33 @@ def test_session_delete_waits_only_for_target_ingress(tmp_path: Path) -> None:
     test_logger.info("Session deletion did not join the process-wide ingress queue")
 
 
-def test_idle_retirement_keeps_route_registered_when_join_times_out(
+def test_idle_retirement_keeps_writer_registered_when_close_times_out(
     tmp_path: Path,
 ) -> None:
     router = TrajectorySessionSinkRouter(_settings(tmp_path / "sessions"))
 
-    class _TimedOutRoute:
+    class _TimedOutSink:
         def __init__(self) -> None:
             self.stop_requested = False
 
-        def can_retire(self, now: float) -> bool:
+        def is_idle(self) -> bool:
             return True
 
         def request_stop(self) -> None:
             self.stop_requested = True
 
-        def join(self, timeout: float) -> bool:
+        def close(self, *, timeout: float = 15.0) -> bool:
             return False
 
-    route = _TimedOutRoute()
-    router._routes["session-a"] = route
+    sink = _TimedOutSink()
+    writer = _SessionWriter(
+        sink=sink,
+        last_activity=time.monotonic() - _SESSION_WRITER_IDLE_SECONDS - 1,
+    )
+    router._writers["session-a"] = writer
 
     router._retire_idle_routes()
 
-    assert route.stop_requested is True
-    assert router._routes["session-a"] is route
+    assert sink.stop_requested is True
+    assert router._writers["session-a"] is writer
     test_logger.info("timed-out idle writer stayed registered against duplication")

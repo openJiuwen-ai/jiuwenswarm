@@ -11,7 +11,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
@@ -229,6 +229,17 @@ class TrajectoryRecordSink:
             self._work_available.set()
         self._increment("accepted")
 
+    def request_stop(self) -> None:
+        """Stop accepting and ask the writer to drain, without waiting for it.
+
+        Lets a caller holding several sinks start every drain before waiting on
+        any of them, so their shutdowns overlap instead of running back to back.
+        """
+        with self._state_lock:
+            self._accepting = False
+        self._stop_requested.set()
+        self._work_available.set()
+
     def close(self, *, timeout: float = 15.0) -> bool:
         """Stop accepting, drain queued records, and close SQLite.
 
@@ -238,13 +249,11 @@ class TrajectoryRecordSink:
         Returns:
             ``True`` when the writer drained and stopped before the timeout.
         """
+        self.request_stop()
         with self._state_lock:
-            self._accepting = False
             thread = self._thread
         if thread is None:
             return True
-        self._stop_requested.set()
-        self._work_available.set()
         thread.join(timeout=max(0.1, float(timeout)))
         stopped = not thread.is_alive()
         if not stopped:
@@ -448,129 +457,18 @@ class TrajectoryRecordSink:
                 raise ValueError(f"unknown trajectory counter: {counter}")
 
 
-class _SessionRoute:
-    """Start and feed one session writer without blocking the router thread."""
+@dataclass(slots=True)
+class _SessionWriter:
+    """One session's writer plus the clock deciding when to retire it.
 
-    def __init__(
-        self,
-        settings: TrajectoryStoreSettings,
-        session_id: str,
-        on_commit: CommitCallback | None,
-        sink_factory: Callable[
-            [TrajectoryStoreSettings, CommitCallback | None], TrajectoryRecordSink
-        ],
-    ) -> None:
-        session_settings = replace(
-            settings,
-            database_path=session_database_path(settings.database_path, session_id),
-        )
-        self._sink = sink_factory(session_settings, on_commit)
-        self._queue: queue.Queue[_QueuedRecord] = queue.Queue(
-            maxsize=settings.queue_size,
-        )
-        self._stop_requested = threading.Event()
-        self._state_lock = threading.Lock()
-        self._accepting = True
-        self._last_activity = time.monotonic()
-        self._thread = threading.Thread(
-            target=self._run,
-            name=f"trajectory-session-route-{session_settings.database_path.stem[:12]}",
-            daemon=True,
-        )
-        self._thread.start()
+    The router feeds ``sink`` directly from its own thread. Both hand-offs are
+    bounded non-blocking enqueues, so a thread of its own here would only move
+    records between two queues.
+    """
 
-    def offer(self, item: _QueuedRecord) -> bool:
-        """Offer one item without waiting for startup or SQLite."""
-        with self._state_lock:
-            if not self._accepting:
-                return False
-            try:
-                self._queue.put_nowait(item)
-            except queue.Full:
-                return False
-            self._last_activity = time.monotonic()
-            return True
-
-    def can_retire(self, now: float) -> bool:
-        """Return whether this route has been fully idle long enough."""
-        with self._state_lock:
-            return (
-                not self._accepting
-                or (
-                    now - self._last_activity >= _SESSION_WRITER_IDLE_SECONDS
-                    and self._queue.empty()
-                    and self._sink.is_idle()
-                )
-            )
-
-    def request_stop(self) -> None:
-        """Request a drain without waiting for the route thread."""
-        with self._state_lock:
-            self._accepting = False
-            self._stop_requested.set()
-
-    def join(self, timeout: float) -> bool:
-        """Wait for the route and its child sink to drain."""
-        self._thread.join(timeout=max(0.0, timeout))
-        return not self._thread.is_alive()
-
-    def stats(self) -> TraceSinkStats:
-        """Return child writer counters plus route backlog."""
-        child = self._sink.stats()
-        return TraceSinkStats(
-            accepted=child.accepted,
-            committed=child.committed,
-            dropped=child.dropped,
-            failed=child.failed,
-            conflicts=child.conflicts,
-            queued=child.queued + self._queue.qsize(),
-            coalesced=child.coalesced,
-            evicted_provisional=child.evicted_provisional,
-            dropped_final=child.dropped_final,
-            stale_ignored=child.stale_ignored,
-        )
-
-    def set_commit_callback(self, on_commit: CommitCallback | None) -> None:
-        """Replace the callback used by this child writer."""
-        self._sink.set_commit_callback(on_commit)
-
-    def _run(self) -> None:
-        try:
-            self._sink.start()
-        except Exception:
-            with self._state_lock:
-                self._accepting = False
-            logger.exception("Trajectory session writer initialization failed")
-            while True:
-                try:
-                    record, snapshot = self._queue.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    if snapshot:
-                        self._sink.consume_snapshot(record)
-                    else:
-                        self._sink.consume(record)
-                finally:
-                    self._queue.task_done()
-            return
-        try:
-            while not self._stop_requested.is_set() or not self._queue.empty():
-                try:
-                    record, snapshot = self._queue.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                try:
-                    if snapshot:
-                        self._sink.consume_snapshot(record)
-                    else:
-                        self._sink.consume(record)
-                finally:
-                    self._queue.task_done()
-        finally:
-            with self._state_lock:
-                self._accepting = False
-            self._sink.close()
+    sink: TrajectoryRecordSink
+    last_activity: float
+    stopping: bool = False
 
 
 class TrajectorySessionSinkRouter:
@@ -591,7 +489,7 @@ class TrajectorySessionSinkRouter:
         self._queue: queue.Queue[tuple[str, _QueuedRecord]] = queue.Queue(
             maxsize=settings.queue_size,
         )
-        self._routes: dict[str, _SessionRoute] = {}
+        self._writers: dict[str, _SessionWriter] = {}
         self._orphan_pending: OrderedDict[
             tuple[str, str], _QueuedRecord
         ] = OrderedDict()
@@ -652,12 +550,14 @@ class TrajectorySessionSinkRouter:
         if thread.is_alive():
             return False
         with self._routes_lock:
-            routes = tuple(self._routes.values())
-        for route in routes:
-            route.request_stop()
+            sinks = tuple(writer.sink for writer in self._writers.values())
+        # Ask every writer to drain before waiting on any of them, so the
+        # session shutdowns overlap within the one deadline.
+        for sink in sinks:
+            sink.request_stop()
         stopped = True
-        for route in routes:
-            stopped = route.join(max(0.0, deadline - time.monotonic())) and stopped
+        for sink in sinks:
+            stopped = sink.close(timeout=max(0.0, deadline - time.monotonic())) and stopped
         if stopped:
             with self._state_lock:
                 self._thread = None
@@ -666,9 +566,9 @@ class TrajectorySessionSinkRouter:
     def stats(self) -> TraceSinkStats:
         """Aggregate ingress and child-writer diagnostics."""
         with self._routes_lock:
-            routes = tuple(self._routes.values())
+            sinks = tuple(writer.sink for writer in self._writers.values())
             orphan_count = len(self._orphan_pending)
-        child_stats = [route.stats() for route in routes]
+        child_stats = [sink.stats() for sink in sinks]
         with self._stats_lock:
             accepted = self._accepted
             dropped = self._dropped
@@ -696,9 +596,9 @@ class TrajectorySessionSinkRouter:
         with self._state_lock:
             self._on_commit = on_commit
         with self._routes_lock:
-            routes = tuple(self._routes.values())
-        for route in routes:
-            route.set_commit_callback(on_commit)
+            sinks = tuple(writer.sink for writer in self._writers.values())
+        for sink in sinks:
+            sink.set_commit_callback(on_commit)
 
     def begin_session_delete(self, session_id: str, *, timeout: float = 15.0) -> None:
         """Drain and close one Session route after its tombstone is installed."""
@@ -715,15 +615,16 @@ class TrajectorySessionSinkRouter:
                     )
                 self._ingress_condition.wait(timeout=remaining)
         with self._routes_lock:
-            route = self._routes.get(resolved)
-            if route is not None:
-                route.request_stop()
-        if route is None:
+            writer = self._writers.get(resolved)
+            if writer is not None:
+                writer.stopping = True
+                writer.sink.request_stop()
+        if writer is None:
             return
-        if route.join(max(0.0, deadline - time.monotonic())):
+        if writer.sink.close(timeout=max(0.0, deadline - time.monotonic())):
             with self._routes_lock:
-                if self._routes.get(resolved) is route:
-                    self._routes.pop(resolved)
+                if self._writers.get(resolved) is writer:
+                    self._writers.pop(resolved)
             return
         raise RuntimeError("Trajectory Session writer did not stop before deletion")
 
@@ -813,44 +714,65 @@ class TrajectorySessionSinkRouter:
                     continue
                 trace_id = str(getattr(item[0], "trace_id", "") or "").strip().lower()
                 with self._routes_lock:
-                    route = self._routes.get(session_id)
-                    if route is None:
-                        route = _SessionRoute(
-                            self.settings,
-                            session_id,
-                            self._on_commit,
-                            self._sink_factory,
-                        )
-                        self._routes[session_id] = route
+                    writer = self._writers.get(session_id)
+                    if writer is None:
+                        writer = self._create_writer(session_id)
+                        self._writers[session_id] = writer
+                    writer.last_activity = time.monotonic()
                     routed_items = self._take_orphans_locked(trace_id)
                     routed_items.append(item)
-                    for routed_item in routed_items:
-                        if route.offer(routed_item):
-                            continue
-                        self._increment("dropped")
-                        if not routed_item[1]:
-                            self._increment("dropped_final")
+                    sink = writer.sink
+                # Hand off outside the routes lock: each consume is a bounded
+                # non-blocking enqueue that counts its own drops.
+                for routed_record, routed_snapshot in routed_items:
+                    if routed_snapshot:
+                        sink.consume_snapshot(routed_record)
+                    else:
+                        sink.consume(routed_record)
             finally:
                 self._complete_ingress(session_id)
                 self._queue.task_done()
         self._drop_all_orphans()
 
+    def _create_writer(self, session_id: str) -> _SessionWriter:
+        """Open one session's writer, keeping a failed one out of the retry path."""
+        session_settings = replace(
+            self.settings,
+            database_path=session_database_path(self.settings.database_path, session_id),
+        )
+        sink = self._sink_factory(session_settings, self._on_commit)
+        try:
+            sink.start()
+        except Exception:
+            # Keep the failed sink registered. It rejects records through its own
+            # counters, whereas retrying start per record would stall routing for
+            # every other session behind a repeated initialization timeout.
+            logger.exception("Trajectory session writer initialization failed")
+        return _SessionWriter(sink=sink, last_activity=time.monotonic())
+
     def _retire_idle_routes(self) -> None:
         now = time.monotonic()
         with self._routes_lock:
             candidates = [
-                (session_id, route)
-                for session_id, route in self._routes.items()
-                if route.can_retire(now)
+                (session_id, writer)
+                for session_id, writer in self._writers.items()
+                if writer.stopping
+                or (
+                    now - writer.last_activity >= _SESSION_WRITER_IDLE_SECONDS
+                    and writer.sink.is_idle()
+                )
             ]
-            for _session_id, route in candidates:
-                route.request_stop()
-        for session_id, route in candidates:
-            if not route.join(1.0):
+            for _session_id, writer in candidates:
+                writer.stopping = True
+                writer.sink.request_stop()
+        for session_id, writer in candidates:
+            # Only forget a writer that actually stopped: a second writer on the
+            # same session would open a second connection to the same database.
+            if not writer.sink.close(timeout=1.0):
                 continue
             with self._routes_lock:
-                if self._routes.get(session_id) is route:
-                    self._routes.pop(session_id)
+                if self._writers.get(session_id) is writer:
+                    self._writers.pop(session_id)
 
     def _buffer_orphan(self, item: _QueuedRecord) -> None:
         """Hold a sessionless child until a session-owned span reveals its route."""
