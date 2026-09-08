@@ -14250,7 +14250,9 @@ class JiuWenSwarmDeepAdapter:
             # Sync single-agent / coding-agent observability with current
             # config before running, and open a root span so OtelCallbackHandler
             # has a parent for LLM/tool spans (see streaming path for details).
-            sync_agent_observability()
+            # A config change makes this restart the trajectory runtime, which
+            # joins writer threads; keep that off the event loop.
+            await asyncio.to_thread(sync_agent_observability)
             _trajectory_mode = deprecate_mode(
                 request.params.get("mode")
                 if isinstance(request.params, dict)
@@ -15004,7 +15006,12 @@ class JiuWenSwarmDeepAdapter:
                 apply_task_tool_debug_patch()
             # Sync single-agent / coding-agent observability with current config
             # before running.
-            sync_agent_observability(force=_dbg_settings.otel_enabled)
+            # A config change makes this restart the trajectory runtime, which
+            # joins writer threads; keep that off the event loop.
+            await asyncio.to_thread(
+                sync_agent_observability,
+                force=_dbg_settings.otel_enabled,
+            )
             _trajectory_mode = deprecate_mode(
                 request.params.get("mode")
                 if isinstance(request.params, dict)

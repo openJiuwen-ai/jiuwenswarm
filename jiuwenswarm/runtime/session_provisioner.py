@@ -1368,7 +1368,9 @@ class RuntimeSessionProvisioner:
                     begin_trajectory_session_delete,
                 )
 
-                begin_trajectory_session_delete(target)
+                # Drains the ingress and joins that session's writer threads,
+                # so it must not run on the event loop.
+                await asyncio.to_thread(begin_trajectory_session_delete, target)
                 trajectory_prepared = True
             if delete_lifecycle is not None:
                 await delete_lifecycle.begin_session_delete(target)
@@ -1618,7 +1620,12 @@ class RuntimeSessionProvisioner:
                     commit_trajectory_session_delete,
                 )
 
-                commit_trajectory_session_delete(result.session_id)
+                # Joins the session's route threads again before unlinking its
+                # database files; keep it off the event loop.
+                await asyncio.to_thread(
+                    commit_trajectory_session_delete,
+                    result.session_id,
+                )
             except Exception as exc:  # noqa: BLE001 - deletion already committed
                 logger.warning(
                     "Runtime trajectory delete commit failed: session_id=%s error=%s",

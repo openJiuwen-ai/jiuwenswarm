@@ -6251,7 +6251,9 @@ class AgentWebSocketServer:
             # 轨迹事件会因 ContextCompressionObservabilityBridge 找不到 parent 而被丢弃。
             # 与 chat 流式路径一致，先同步 observability 再开一个 run root span（session-keyed
             # registry），使压缩状态回调能解析到 parent，事件进入轨迹 v2 展示。
-            sync_agent_observability()
+            # A config change makes this restart the trajectory runtime, which
+            # joins writer threads; keep that off the event loop.
+            await asyncio.to_thread(sync_agent_observability)
             execution_subject = None
             if is_team_mode(canonical_mode):
                 from jiuwenswarm.agents.harness.team import get_team_manager
