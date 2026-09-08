@@ -230,10 +230,8 @@ async def test_provider_fixed_load_never_loads_l1_full_text(tmp_path, monkeypatc
 
         async def call_tool(self, name, args, **kwargs):
             self.calls.append(name)
-            if name == "memory_get_l0_global_summary":
-                return {"global_summary": "profile"}
-            if name == "memory_get_l1_index":
-                return {"entries": [{"id": "s", "type": "scene", "summary": "brief", "factCount": 1}]}
+            if name == "memory_global_load":
+                return {"global_summary": "profile", "navigation": [{"sceneId": "s", "summary": "brief"}]}
             raise AssertionError(name)
 
         async def load_l1_batch(self, *args, **kwargs):
@@ -252,10 +250,11 @@ async def test_provider_fixed_load_never_loads_l1_full_text(tmp_path, monkeypatc
     assert "profile" in context and "brief" in context
     assert "CELIA_MEMORY_GUIDE" not in context
     assert "memory_load_l1" not in client.calls
+    assert client.calls == ["memory_global_load"]
 
 
 @pytest.mark.asyncio
-async def test_provider_reports_openclaw_round_usage_fields(tmp_path):
+async def test_provider_does_not_call_removed_round_usage_endpoint(tmp_path):
     get_runtime_store().clear_all()
     runtime = tmp_path / ".xiaoyiruntime"
     runtime.write_text("MEMORYSTATE=true\n", encoding="utf-8")
@@ -283,14 +282,7 @@ async def test_provider_reports_openclaw_round_usage_fields(tmp_path):
         prompt_tokens=10, cache_read_tokens=2, completion_tokens=4,
         llm_turns=2, recall_tokens=3, fixed_load_tokens=5,
     )
-    name, args = client.calls[-1]
-    assert name == "memory_report_round_usage"
-    assert args == {
-        "sessionId": "tools-user", "userId": "user", "roundIndex": 1,
-        "agentPromptTokens": 10, "agentCacheReadTokens": 2,
-        "agentCompletionTokens": 4, "llmTurns": 2,
-        "recallTokenCount": 3, "isEstimated": False, "fixedLoadTokens": 5,
-    }
+    assert client.calls == []
 
 
 @pytest.mark.asyncio

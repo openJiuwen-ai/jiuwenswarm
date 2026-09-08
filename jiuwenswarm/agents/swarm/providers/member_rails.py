@@ -66,6 +66,7 @@ TEAM_SHARED_SKILL_LINK_REFRESH = "swarm.team_shared_skill_link_refresh"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 TEAM_DELIVERABLE_LOCATION = "swarm.team_deliverable_location"
 CONTEXT_PROCESSOR = "swarm.context_processor"
+EXTERNAL_MEMORY = "swarm.external_memory"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
@@ -77,6 +78,35 @@ def _workspace_root(ctx: SwarmBuildContext) -> str | None:
     """Resolve the member workspace root path."""
     workspace = getattr(ctx, "workspace", None)
     return getattr(workspace, "root_path", None) if workspace else None
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=EXTERNAL_MEMORY,
+    description="Config-gated external memory bound to the member workspace and session.",
+)
+def _build_external_memory_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> Any | None:
+    """Give each member its own rail when external memory is enabled."""
+    from jiuwenswarm.agents.harness.common.memory.external_memory_builder import (
+        build_external_memory_rail,
+    )
+    from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+        is_external_memory_enabled,
+    )
+
+    _ = params
+    config = context.config or {}
+    if not is_external_memory_enabled(config):
+        return None
+    return build_external_memory_rail(
+        config=config,
+        workspace_dir=_workspace_root(context) or ".",
+        session_id=context.session_id or "__default__",
+        request_metadata=context.request_metadata,
+    )
 
 
 class SkillRetrievalPromptInput(ConstructionInput):

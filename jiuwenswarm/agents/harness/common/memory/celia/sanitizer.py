@@ -63,12 +63,19 @@ def _clean_tool_call(value: Any) -> dict[str, Any] | list[dict[str, Any]] | None
     return result
 
 
-def clean_turn_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def clean_turn_events(
+    events: list[dict[str, Any]], *, text_limit: int | None = 4000,
+) -> list[dict[str, Any]]:
     cleaned: list[dict[str, Any]] = []
     memory_tools = {
         "memory_open",
         "memory_add",
         "memory_store",
+        "memory_global_load",
+        "memory_scene_search",
+        "memory_backup",
+        "memory_restore",
+        "memory_update_config",
         "memory_forget",
         "memory_scene_load",
         "memory_record_search",
@@ -96,7 +103,7 @@ def clean_turn_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(text, str):
             clean = sanitize_memory_text(text)
             if clean:
-                item["text"] = clean[:4000]
+                item["text"] = clean[:text_limit] if text_limit is not None else clean
         if role in {"assistant", "tool_call"}:
             if event.get("thinking"):
                 clean_thinking = sanitize_memory_text(event["thinking"])

@@ -177,8 +177,8 @@ class CeliaMcpClient:
     ) -> object:
         await self.start()
         augmented = dict(args or {})
-        if trace_id and "_trace_id" not in augmented:
-            augmented["_trace_id"] = trace_id
+        if trace_id and "traceId" not in augmented:
+            augmented["traceId"] = trace_id
         timeout = self.config.request_timeout if timeout_ms is None else timeout_ms / 1000.0
         result = await self._request(
             "tools/call",
@@ -221,26 +221,6 @@ class CeliaMcpClient:
             return result
         raw = texts[0] if len(texts) == 1 else "\n".join(texts)
         return _decode_text(raw)
-
-    async def load_l1_batch(
-        self,
-        paths: list[str],
-        *,
-        tenant_id: str,
-        user_id: str,
-        session_id: str,
-        trace_id: str | None = None,
-    ) -> object:
-        return await self.call_tool(
-            "memory_load_l1",
-            {
-                "paths": paths,
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "sessionId": session_id,
-            },
-            trace_id=trace_id,
-        )
 
     async def _request(
         self,

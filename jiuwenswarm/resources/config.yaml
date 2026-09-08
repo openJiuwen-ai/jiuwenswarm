@@ -142,11 +142,11 @@ memory:
 
   mode: ${MEMORY_MODE:-local}            # 内置记忆存储位置：local | cloud
   # 记忆引擎总开关：builtin | external | both | none
-  #   builtin  — 仅内置记忆（默认，兼容旧配置）
-  #   external — 仅外接记忆（LTM / Mem0 / OpenViking / 插件）
+  #   builtin  — 仅内置记忆（兼容旧配置）
+  #   external — 仅外接记忆（默认 Celia，也可选 LTM / Mem0 / OpenViking / 插件）
   #   both     — 内置 + 外接并存
   #   none     — 全部关闭
-  engine: builtin
+  engine: ${MEMORY_ENGINE:-external}
   forbidden_memory_definition:
     enabled: false
     patterns: []
@@ -177,7 +177,7 @@ memory:
   #   ┌─────────────┬───────────────┬──────────────────────────────────────┐
   #   │ engine      │ provider      │ 效果                                 │
   #   ├─────────────┼───────────────┼──────────────────────────────────────┤
-  #   │ builtin     │ *             │ 只挂内置（默认；外接即使填了也不挂） │
+  #   │ builtin     │ *             │ 只挂内置（外接即使填了也不挂）       │
   #   │ external    │ openjiuwen    │ 只挂外接 LTM                         │
   #   │ external    │ mem0          │ 只挂外接 Mem0                        │
   #   │ external    │ openviking    │ 只挂外接 OpenViking                  │
@@ -193,7 +193,7 @@ memory:
   # - 失败降级：provider 构建失败或网络异常不阻塞主流程
   external:
     # 选哪家 provider。空字符串 = 禁用外接（等价于 engine=builtin）
-    provider: celia   # openjiuwen | mem0 | openviking | lakebase | celia | <plugin-name>
+    provider: ${MEMORY_EXTERNAL_PROVIDER:-celia}   # openjiuwen | mem0 | openviking | lakebase | celia | <plugin-name>
     # 数据隔离标识（所有 provider 共用）
     user_id: ${MEMORY_USER_ID:-openclaw-user}
     scope_id: ${MEMORY_SCOPE_ID:-user}
@@ -201,6 +201,12 @@ memory:
     # -- Celia Memory MCP -------------------------------------------------
     # 生效条件：provider='celia'。正式运行需要 Linux ARM64/aarch64 binary。
     celia:
+      # 关闭静态平台/二进制预检查；实际启动失败由 Rail 降级处理。
+      preflight_enabled: false
+      # 追加到每次 MCP 调用的隔离键；tenantId 由运行时租户身份注入。
+      request_scope: {}
+      # 按需启用且需后端支持；restore 和 update_config 会修改数据/配置。
+      advanced_tools: []  # memory_backup | memory_restore | memory_update_config
       server_binary_path: ${CELIA_MEMORY_BINARY_PATH:-}
       db_path: ${CELIA_MEMORY_DB_PATH:-}
       log_path: ${CELIA_MEMORY_LOG_PATH:-}

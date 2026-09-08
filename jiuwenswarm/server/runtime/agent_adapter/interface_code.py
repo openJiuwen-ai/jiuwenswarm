@@ -1042,6 +1042,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         - 保留 SubagentRail（供按配置启用的 code/browser 子代理使用）
         - 保留 ProjectMemoryRail（code 模式始终挂载）
         - 保留 CodingMemoryRail（code 模式始终挂载）
+        - 按 memory.engine 配置挂载外接记忆（含 design 模式）
         - 卸载 TaskPlanningRail、SkillEvolutionRail
         """
         # 卸载非 code 专属 rails
@@ -1091,6 +1092,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] CodingMemoryRail (re)registered for %s",
                     mode,
                 )
+
+        await self._handle_external_memory_rail_by_config()
 
     def _build_code_agent_rail(self) -> CodeAgentRail | None:
         """构建 CodeAgentRail，管理 /agents 创建的自定义 agent。"""
