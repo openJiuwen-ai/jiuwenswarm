@@ -1395,6 +1395,51 @@ async def test_pause_session_runtime_pauses_runner_owned_team_runtime(
 
 
 @pytest.mark.asyncio
+async def test_pause_session_runtime_pauses_controller_before_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """controller.pause_all must run BEFORE Runner.pause_agent_team.
+
+    Runner.pause tears down the leader harness, whose async-tool runtime
+    cancels the swarmflow coroutine as a plain cancel: no abort reason, no
+    pause record, and run_background's finally deregisters the handle. A
+    controller.pause that arrives afterwards finds an empty registry and is a
+    no-op — the run dies unrecorded and the tree keeps showing it running.
+    """
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+    getattr(manager, "_initialized_sessions").add("sess-1")
+    timeline: list[str] = []
+
+    class _OrderedController(_FakeBackgroundTaskController):
+        async def pause(self, run_id: str | None = None) -> bool:
+            timeline.append("controller.pause")
+            return await super().pause(run_id)
+
+    controller = _OrderedController()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "get_background_task_controller",
+        lambda _session_id: controller,
+    )
+
+    async def fake_pause_agent_team(*, team_name: str, session_id: str) -> bool:
+        timeline.append("runner.pause")
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.pause_agent_team",
+        fake_pause_agent_team,
+    )
+
+    await manager.pause_session_runtime("sess-1", reason="interrupt(intent=pause): ")
+
+    assert timeline[0] == "controller.pause"
+    assert "runner.pause" in timeline
+    assert timeline.index("controller.pause") < timeline.index("runner.pause")
+
+
+@pytest.mark.asyncio
 async def test_pause_session_runtime_waits_for_stream_task_graceful_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2191,6 +2236,46 @@ async def test_cancel_session_runtime_forwards_default_stop_disposition(
         "cancel",
         workflow_disposition="stop",
     )
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_runtime_stops_controller_before_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """controller.stop_all must run BEFORE Runner.stop_agent_team (SDD-0018 §4.1)."""
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+    timeline: list[str] = []
+
+    class _OrderedController(_FakeBackgroundTaskController):
+        async def stop(self, run_id: str | None = None) -> bool:
+            timeline.append("controller.stop")
+            return await super().stop(run_id)
+
+    controller = _OrderedController()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "get_background_task_controller",
+        lambda _session_id: controller,
+    )
+
+    async def fake_stop_agent_team(*, team_name: str, session_id: str) -> bool:
+        timeline.append("runner.stop")
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.stop_agent_team",
+        fake_stop_agent_team,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    await manager.cancel_session_runtime("sess-1", reason="user-stop")
+
+    assert "controller.stop" in timeline and "runner.stop" in timeline
+    assert timeline.index("controller.stop") < timeline.index("runner.stop")
 
 
 @pytest.mark.asyncio

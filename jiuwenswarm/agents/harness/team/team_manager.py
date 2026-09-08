@@ -2128,6 +2128,48 @@ class TeamManager:
                 exc,
             )
 
+    async def _dispatch_swarmflow_controller(
+        self,
+        session_id: str,
+        *,
+        action: Literal["pause", "stop"],
+    ) -> None:
+        """Drive the session's BackgroundTaskController for every swarmflow run.
+
+        Team lifecycle teardown is the single point that must do this, or a
+        paused/destroyed team leaves dangling handles still burning tokens.
+        Pause keeps the relaunch ticket (resumable); stop drops it (seal).
+
+        Yields after dispatch: the abort unwinds asynchronously (cancel →
+        engine writes the pause/seal record → emits the terminal progress
+        event), and the workflow handler must still be alive to turn that
+        event into the paused/stopped snapshot + frontend broadcast.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            get_background_task_controller,
+        )
+
+        controller = get_background_task_controller(session_id)
+        try:
+            if action == "pause":
+                await controller.pause(None)
+            else:
+                await controller.stop(None)
+            for _ in range(3):
+                await asyncio.sleep(0)
+        except Exception as exc:
+            logger.warning(
+                "[TeamManager] background task controller dispatch failed: "
+                "session_id=%s action=%s error=%s",
+                session_id,
+                action,
+                exc,
+            )
+
+    async def _pause_swarmflow_runs(self, session_id: str) -> None:
+        """Park every active swarmflow run (idempotent for already-paused ones)."""
+        await self._dispatch_swarmflow_controller(session_id, action="pause")
+
     async def _cleanup_runtime_locals(
         self,
         session_id: str,
@@ -2162,46 +2204,16 @@ class TeamManager:
                     exc,
                 )
 
-        # Swarmflow background coroutines hang off the process-local
-        # BackgroundTaskController registries keyed by session_id; team
-        # lifecycle teardown is the single point that must drive them, or a
-        # paused/destroyed team leaves dangling handles still burning tokens.
-        # Pause keeps the relaunch ticket (resumable); stop drops it (seal).
-        #
-        # Dispatched BEFORE the workflow handler is stopped: the engine reacts
-        # to pause/stop by emitting WORKFLOW_PAUSED / WORKFLOW_STOPPED, and the
-        # handler is the only consumer that turns that into the paused/stopped
-        # snapshot + frontend broadcast. Stop it first and the event is lost —
-        # the run stays 'running' in the tree even though the coroutine died.
-        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-            get_background_task_controller,
-        )
-
-        controller = get_background_task_controller(session_id)
-        try:
-            if not finalize_workflows:
-                # Web stop-square / TUI Esc: park the runtime, keep run resume.
-                await controller.pause(None)
-            elif workflow_disposition == "pause":
-                # Client-disconnect reclaim: park so cold start can resume.
-                await controller.pause(None)
-            else:
-                # User termination / session switch: terminal stop_all.
-                await controller.stop(None)
-            # The abort unwinds asynchronously (cancel → engine writes the
-            # pause/seal record → emits the terminal progress event); yield so
-            # that event reaches the monitor queue before the handler drains.
-            for _ in range(3):
-                await asyncio.sleep(0)
-        except Exception as exc:
-            logger.warning(
-                "[TeamManager] background task controller dispatch failed: "
-                "session_id=%s disposition=%s finalize_workflows=%s error=%s",
-                session_id,
-                workflow_disposition,
-                finalize_workflows,
-                exc,
-            )
+        # Dispatched BEFORE the workflow handler is stopped so it can still
+        # consume the WORKFLOW_PAUSED / WORKFLOW_STOPPED the abort produces.
+        # On the pause path this is an idempotent second pass: the runs were
+        # already parked before Runner.pause (see pause_session_runtime).
+        if not finalize_workflows or workflow_disposition == "pause":
+            # Web stop-square / TUI Esc, or client-disconnect reclaim: park.
+            await self._dispatch_swarmflow_controller(session_id, action="pause")
+        else:
+            # User termination / session switch: terminal stop_all.
+            await self._dispatch_swarmflow_controller(session_id, action="stop")
 
         workflow_handler = self.pop_workflow_handler(session_id)
         if workflow_handler is not None:
@@ -2455,6 +2467,12 @@ class TeamManager:
         if lock.locked():
             team_name = self._resolve_session_team_name(session_id)
             if team_name:
+                # Drive the controller before Runner.stop tears the harness
+                # down, or the swarmflow coroutine dies as a plain cancel with
+                # no seal/pause record (see cancel path below).
+                await self._dispatch_swarmflow_controller(
+                    session_id, action=workflow_disposition
+                )
                 await self._stop_runner_team_runtime(
                     session_id, team_name, "cancel: forced"
                 )
@@ -2485,6 +2503,17 @@ class TeamManager:
 
             # Resolve team_name early before cleanup, from active/pending/metadata
             team_name = self._resolve_session_team_name(session_id)
+
+            # Drive the swarmflow controller BEFORE Runner.stop (SDD-0018:
+            # stop_all precedes stop_team). Runner.stop tears down the leader
+            # harness, whose async-tool runtime cancels the coroutine as a
+            # plain cancel — no abort reason, so the engine writes neither the
+            # seal (user termination) nor the pause record (disconnect reclaim)
+            # and run_background's finally deregisters the handle before the
+            # controller ever sees it.
+            await self._dispatch_swarmflow_controller(
+                session_id, action=workflow_disposition
+            )
 
             # Stop Runner-owned runtime first before cancelling stream task
             # to avoid gate/teardown races and ensure pool removal
@@ -2737,6 +2766,16 @@ class TeamManager:
                             reason, session_id,
                         )
                         return False
+
+                    # Park swarmflow runs BEFORE Runner.pause. Runner.pause tears
+                    # down the leader harness, whose async-tool runtime cancels
+                    # the swarmflow coroutine as a plain cancel — no abort reason,
+                    # no pause record, and run_background's finally deregisters
+                    # the handle. Pausing first lets the controller's three-step
+                    # abort (reason=pause) unwind the engine so it writes the
+                    # pause record, emits WORKFLOW_PAUSED while the workflow
+                    # handler is still alive, and parks the relaunch ticket.
+                    await self._pause_swarmflow_runs(session_id)
 
                     # 注册当前 pause 任务，供 cancel 抢占取消
                     self._active_pause_tasks[session_id] = asyncio.current_task()
