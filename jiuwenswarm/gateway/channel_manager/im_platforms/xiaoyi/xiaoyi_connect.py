@@ -2484,6 +2484,22 @@ class XiaoyiChannel(BaseChannel):
             logger.warning(f"XiaoyiChannel 更新配置失败: {config_error}")
 
         # ==================== BUILD MESSAGE AND ROUTE ====================
+        # 入站业务摘要：连路排障锚点（与 relay 侧 [cloud-relay][云→渠道] 日志
+        # 呼应，确认渠道层拿到了消息并解析出了什么）。空帧拦截在下方，
+        # 非空即真实用户请求。
+        logger.info(
+            "[XiaoyiChannel][MSG_IN] top_sid=%s conv=%s task=%s text_len=%d "
+            "files=%d media=%d push_id=%s workspace=%s permission=%s",
+            top_session_id,
+            conversation_id,
+            task_id,
+            len(text),
+            len(file_attachments),
+            len(media_files),
+            push_id[:8] if push_id else "-",
+            str(client_variables.get("workspace") or "-")[:60],
+            str(client_variables.get("permission") or "-"),
+        )
         # V2 Stream Routing: 填充 5 维字段 ——
         #   user_id = agentId（per-user agent 标识，RoutingKey.user_id 维度）
         #   bot_id = config.agent_id（让 MessageHandler._resolve_app_id 兜底拿到 app_id）
@@ -3369,6 +3385,18 @@ class XiaoyiChannel(BaseChannel):
                     task_id,
                     url_key,
                     wrapper,
+                )
+            else:
+                # 非 text/status 的 agent_response（file/html_card/phone_tool
+                # 命令/审批提示等）：出站边界兜底日志，只打帧形态摘要。
+                _result = response.get("result") if isinstance(response.get("result"), dict) else {}
+                logger.info(
+                    "[XiaoyiChannel][OUT_OTHER] sid=%s task=%s kind=%s "
+                    "detail_keys=%s",
+                    session_id,
+                    task_id,
+                    str(_result.get("kind") or "-"),
+                    ",".join(sorted(map(str, _result.keys())))[:120],
                 )
             await self._safe_ws_send(url_key, wrapper)
             if is_text_response:
