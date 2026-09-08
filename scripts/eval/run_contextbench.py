@@ -50,6 +50,7 @@ for path in (SCRIPT_DIR, JIUWEN_ROOT):
 
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa: E402
     INTERFACE_CLASSIC,
+    INTERFACE_FOCUSED,
     PROFILE_GRAPH,
     PROFILE_OFF,
     resolve_profile,
@@ -100,6 +101,7 @@ from coding_agent import (  # noqa: E402
 
 FIND_CONTRACT_TOOLS = ("resolve_symbol", "read_symbol", "submit_code_context")
 CODING_GRAPH_TOOLS = ("resolve_symbol", "read_symbol")
+FOCUSED_CODING_GRAPH_TOOLS = ("resolve_symbol", "focus_code")
 
 
 def resolve_graph_agent(
@@ -1025,7 +1027,10 @@ async def run_one(
         leftover_search = [name for name in HIDDEN_SEARCH_TOOLS if name in tools]
         if leftover_search:
             raise RuntimeError(f"Root still has hidden tools: {leftover_search}")
-    required_graph = CODING_GRAPH_TOOLS if coding else FIND_CONTRACT_TOOLS
+    if coding and resolve_retrieval_interface(retrieval_interface) == INTERFACE_FOCUSED:
+        required_graph = FOCUSED_CODING_GRAPH_TOOLS
+    else:
+        required_graph = CODING_GRAPH_TOOLS if coding else FIND_CONTRACT_TOOLS
     find_on_root = [name for name in required_graph if name in tools]
     if baseline and not delegate:
         if find_on_root:
