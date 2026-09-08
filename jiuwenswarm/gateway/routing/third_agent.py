@@ -22,8 +22,13 @@ class ThirdAgent(ABC):
         *,
         user_id: str,
         current_agent_type: str = "",
+        access_mode: str = "",
     ) -> dict[str, Any]:
-        """Handle ``3rdagent.list`` for a user."""
+        """Handle ``3rdagent.list`` for a user.
+
+        ``access_mode`` selects which registry ``access_mode[].cmd`` to
+        return (TUI passes ``tui``).
+        """
         ...
 
     @abstractmethod
@@ -47,8 +52,9 @@ class UnsupportedThirdAgent(ThirdAgent):
         *,
         user_id: str,
         current_agent_type: str = "",
+        access_mode: str = "",
     ) -> dict[str, Any]:
-        del user_id, current_agent_type
+        del user_id, current_agent_type, access_mode
         return {
             "ok": False,
             "error": "3rdagent.list requires an AgentOS Router extension",

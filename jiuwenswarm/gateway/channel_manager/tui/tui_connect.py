@@ -3253,6 +3253,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             result = await third_agent.thirdagent_list(
                 user_id=uid,
                 current_agent_type=current,
+                access_mode="tui",
             )
         except Exception as exc:
             logger.warning("[3rdagent.list] %s", exc)
