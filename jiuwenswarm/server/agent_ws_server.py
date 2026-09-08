@@ -5697,6 +5697,7 @@ class AgentWebSocketServer:
         missing or no matching live run is registered on the controller.
         """
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            classify_swarmflow_control_miss,
             get_background_task_controller,
         )
 
@@ -5725,12 +5726,26 @@ class AgentWebSocketServer:
             else:  # pragma: no cover - internal dispatch only
                 acted = False
             if not acted:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=channel_id,
-                    ok=False,
-                    payload={"error": "workflow run not found"},
-                )
+                # controller 注册表 miss ≠ run 不存在：run 可能已经自然终态
+                # （用户点的是一张停在 running/paused 的陈旧卡片），也可能是
+                # 进程重启后注册表清空而状态快照还在。由 team 层找回权威
+                # status 一并返回，前端据此纠正卡片并明确提示，而不是
+                # 一句 not found。
+                miss = classify_swarmflow_control_miss(channel_id, session_id, run_id)
+                if miss is not None:
+                    resp = AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        ok=False,
+                        payload=miss,
+                    )
+                else:
+                    resp = AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        ok=False,
+                        payload={"error": "workflow run not found"},
+                    )
             else:
                 resp = AgentResponse(
                     request_id=request.request_id,

@@ -27,7 +27,7 @@ from openjiuwen.agent_teams.runtime.background_task_controller import Background
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.common.logging import server_logger
+from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
 
@@ -157,6 +157,45 @@ def get_background_task_controller(session_id: str) -> BackgroundTaskController:
         controller = BackgroundTaskController()
         _BACKGROUND_TASK_CONTROLLERS[session_id] = controller
     return controller
+
+
+def classify_swarmflow_control_miss(
+    channel_id: str, session_id: str, run_id: str,
+) -> dict | None:
+    """Classify a swarmflow control miss into the run's authoritative state.
+
+    The controller registry only answers "no live handle" — it cannot tell a
+    naturally-terminal run (user clicking a stale running/paused card) from
+    one lost to a process restart. Recover the authoritative ``status`` from
+    the workflow handler's in-memory states, then the session-metadata disk
+    snapshot, and return ``{"error", "status"}`` for the caller's ok=False
+    payload. Returns ``None`` when no state is found anywhere (true not-found).
+    """
+    run_state = None
+    try:
+        wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
+        if wf_handler is not None:
+            run_state = wf_handler.get_run_states().get(run_id)
+        if run_state is None:
+            restored = restore_workflow_runs(session_id)
+            if restored:
+                run_state = restored.get(run_id)
+    except Exception as exc:
+        # best-effort enrichment：分类失败不得阻断控制 RPC，按 not found 返回
+        team_logger.warning(
+            "[swarmflow] control miss classification failed "
+            "session_id=%s run_id=%s: %s",
+            session_id, run_id, exc,
+        )
+        return None
+    if run_state is None:
+        return None
+    error = (
+        f"workflow already {run_state.status}"
+        if run_state.is_terminal
+        else f"workflow is {run_state.status} but no live control handle"
+    )
+    return {"error": error, "status": run_state.status}
 
 
 def _safe_team_path_segment(value: str, fallback: str = "_") -> str:

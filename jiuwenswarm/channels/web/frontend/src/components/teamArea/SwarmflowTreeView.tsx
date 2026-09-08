@@ -48,7 +48,7 @@ import {
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { webRequest } from '../../services/webClient';
-import type { AskUserQuestionPayload } from '../../types/websocket';
+import type { AskUserQuestionPayload, WebError } from '../../types/websocket';
 import {
   AgentDetailModal,
   buildDetailSections,
@@ -56,6 +56,7 @@ import {
   accentChipClass,
   type AgentModalState,
 } from './AgentDetailModal';
+import { Toast } from '../ConnectorMarket/Toast';
 
 // ── 状态图标映射 ──────────────────────────────────────────
 
@@ -81,6 +82,17 @@ function StatusIcon({ status, className }: { status: WorkflowStatus; className?:
       return <Circle className={`${cls} text-gray-400`} />;
   }
 }
+
+// 控制 RPC 失败时服务端带回的权威 status → toast 文案 key 映射。
+// 服务端在 controller miss 时会把 run 的真实状态（终态/暂停态）附在失败
+// payload 里，前端据此提示并纠正陈旧卡片。
+const CONTROL_STATUS_KEY: Record<string, string> = {
+  completed: 'swarmflow.controlAlreadyCompleted',
+  stopped: 'swarmflow.controlAlreadyStopped',
+  failed: 'swarmflow.controlAlreadyFailed',
+  paused: 'swarmflow.controlAlreadyPaused',
+  running: 'swarmflow.controlUnavailable',
+};
 
 // ── 状态文本 ──────────────────────────────────────────────
 
@@ -803,6 +815,30 @@ function RunNode({
     },
     [],
   );
+  const [controlError, setControlError] = useState<string | null>(null);
+  // 控制 RPC 失败统一处理：服务端在 controller miss 时把权威 status 附在
+  // 失败 payload 里带回，据此纠正停在 running/paused 的陈旧卡片并用 Toast
+  // 明确提示——此前只 console.error，用户连点没反应还不知道原因
+  // （17:06-17:07 对已完成 run 反复点暂停、前端只报 not found 的先例）。
+  const applyControlFailure = useCallback(
+    (err: unknown) => {
+      console.error('[swarmflow] control failed:', err);
+      const payload = (err as WebError | undefined)?.payload as
+        | { status?: unknown }
+        | undefined;
+      const status = typeof payload?.status === 'string' ? payload.status : null;
+      if (status && status !== run.status) {
+        // 最小 delta：mergeWorkflowRun 只覆盖 incoming 携带的字段，
+        // name/summary 等缺席字段保留 store 现值，不会用旧渲染快照回退。
+        useSessionStore.getState().applyWorkflowUpdate(sessionId, {
+          id: run.id,
+          status: status as WorkflowStatus,
+        } as WorkflowRun);
+      }
+      setControlError(t((status && CONTROL_STATUS_KEY[status]) || 'swarmflow.controlNotFound'));
+    },
+    [run.id, run.status, sessionId, t],
+  );
   const completedCount =
     run.completed_agent_count ??
     (run.phases ?? []).reduce(
@@ -925,7 +961,7 @@ function RunNode({
                   void webRequest('swarmflow.resume', {
                     session_id: sessionId,
                     run_id: run.id,
-                  }).catch((err) => console.error('[swarmflow] control failed:', err));
+                  }).catch(applyControlFailure);
                   return;
                 }
                 setPausing(true);
@@ -938,7 +974,7 @@ function RunNode({
                   session_id: sessionId,
                   run_id: run.id,
                 }).catch((err) => {
-                  console.error('[swarmflow] control failed:', err);
+                  applyControlFailure(err);
                   if (pauseTimerRef.current) {
                     clearTimeout(pauseTimerRef.current);
                     pauseTimerRef.current = null;
@@ -962,7 +998,7 @@ function RunNode({
               data-testid="team-area-swarmflow-run-stop-btn"
               onClick={() => {
                 void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
-                  (err) => console.error('[swarmflow] control failed:', err),
+                  applyControlFailure,
                 );
               }}
             >
@@ -972,6 +1008,9 @@ function RunNode({
         )}
       </div>
 
+      {controlError && (
+        <Toast message={controlError} onClose={() => setControlError(null)} variant="error" />
+      )}
       {run.error && (
         <button
           type="button"
