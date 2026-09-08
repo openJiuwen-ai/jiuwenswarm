@@ -810,9 +810,10 @@ function RunNode({
   // 明确提示——此前只 console.error，用户连点没反应还不知道原因
   // （17:06-17:07 对已完成 run 反复点暂停、前端只报 not found 的先例）。
   const applyControlFailure = useCallback(
-    (err: unknown) => {
+    (err: unknown): boolean => {
       console.error('[swarmflow] control failed:', err);
-      const payload = (err as WebError | undefined)?.payload as
+      const webErr = err as WebError | undefined;
+      const payload = webErr?.payload as
         | { status?: unknown }
         | undefined;
       const status = typeof payload?.status === 'string' ? payload.status : null;
@@ -824,7 +825,19 @@ function RunNode({
           status: status as WorkflowStatus,
         } as WorkflowRun);
       }
-      setControlError(t((status && CONTROL_STATUS_KEY[status]) || 'swarmflow.controlNotFound'));
+      // 传输层错误（超时/断连，code 非空）没有权威 payload：如实显示其自带
+      // 文案（如"请求超时"），不误报"未找到工作流运行"（16:0x 断连窗口点
+      // resume 弹 controlNotFound 的先例）。返回是否服务端权威失败，供 pause
+      // 在途态决定复位——传输层错误时转圈保持到事件到达，状态以事件为准。
+      const transport = webErr?.code !== undefined;
+      setControlError(
+        status
+          ? t(CONTROL_STATUS_KEY[status] || 'swarmflow.controlNotFound')
+          : transport && webErr?.message
+            ? webErr.message
+            : t('swarmflow.controlNotFound'),
+      );
+      return !transport;
     },
     [run.id, run.status, sessionId, t],
   );
@@ -958,8 +971,11 @@ function RunNode({
                   session_id: sessionId,
                   run_id: run.id,
                 }).catch((err) => {
-                  applyControlFailure(err);
-                  setPausing(false);
+                  // 传输层错误（超时/断连）无权威结论：转圈保持到事件到达；
+                  // 只有服务端权威失败才复位，避免又回到"转圈回落+连点"。
+                  if (applyControlFailure(err)) {
+                    setPausing(false);
+                  }
                 });
               }}
             >
