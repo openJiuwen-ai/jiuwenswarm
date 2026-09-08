@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from jiuwenswarm.observability import store as store_module
 from jiuwenswarm.observability.models import TraceRecordData
 from jiuwenswarm.observability.store import (
     AsyncTrajectoryReader,
@@ -2054,3 +2055,55 @@ async def test_revision_summary_is_frozen_at_first_page_watermark(
     assert updated_summary["run_id"] == "zz-run"
     assert updated_summary["has_error"] is True
     test_logger.info("revision summary aggregation stayed below the frozen watermark")
+
+
+def test_error_probe_skips_parsing_when_no_status_code_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parses: list[bytes] = []
+    original = store_module._strict_otlp_payload
+
+    def _counting(raw_json: bytes) -> Any:
+        parses.append(raw_json)
+        return original(raw_json)
+
+    monkeypatch.setattr(store_module, "_strict_otlp_payload", _counting)
+    # Core serializes an unset span status as {}, so the whole payload can be
+    # ruled out without decoding it.
+    without_code = json.dumps(
+        {
+            "resourceSpans": [
+                {
+                    "resource": {"attributes": []},
+                    "scopeSpans": [
+                        {
+                            "scope": {"name": "openjiuwen"},
+                            "spans": [
+                                {
+                                    "traceId": _TRACE_ID,
+                                    "spanId": _ROOT_SPAN_ID,
+                                    "name": "agent.run",
+                                    "status": {},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert store_module._record_has_error(without_code) is False
+    assert parses == []
+    test_logger.info("error probe ruled out an unset status without parsing")
+
+
+def test_error_probe_agrees_with_a_full_parse_when_a_code_key_exists() -> None:
+    errored = _raw_record(_TRACE_ID, _ROOT_SPAN_ID, status_code="STATUS_CODE_ERROR")
+    unset = _raw_record(_TRACE_ID, _ROOT_SPAN_ID, status_code="STATUS_CODE_UNSET")
+    # A code key that is not an error still resolves through the full parse,
+    # so the cheap pre-check can never turn a healthy span into a failed one.
+    assert store_module._record_has_error(errored) is True
+    assert store_module._record_has_error(unset) is False
+    test_logger.info("error probe matched a full parse on both status codes")

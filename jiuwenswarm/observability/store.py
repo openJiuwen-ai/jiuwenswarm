@@ -42,6 +42,9 @@ _SCHEMA_VERSION = 3
 _BUSY_TIMEOUT_MS = 5000
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
 _MAX_JSON_NESTING_DEPTH = 256
+# Serialized name of the OTLP span status code, used to skip parsing a payload
+# that cannot carry an error status. See ``_record_has_error``.
+_STATUS_CODE_KEY = b'"code"'
 _ABSENT_STORE_EPOCH = "absent"
 _TRAJECTORY_MODE_VALUES = tuple(
     sorted(SINGLE_AGENT_CANONICAL_MODES | TEAM_CANONICAL_MODES),
@@ -1943,6 +1946,15 @@ def _decode_cursor_sequence(value: object) -> int:
 
 
 def _record_has_error(raw_json: bytes) -> bool:
+    # A span status reaches OTLP JSON as {"status":{"code":...}}, and an
+    # unset status carries no code at all, so a payload without the key cannot
+    # describe an error. This scan is C-level, whereas the parse it guards is
+    # dominated by a byte-wise nesting check costing roughly fifteen times the
+    # JSON decode. The writer runs this once per record, which made it the
+    # single largest cost of a batch. A key present for any other reason only
+    # falls through to the parse below, which still decides the answer.
+    if _STATUS_CODE_KEY not in raw_json:
+        return False
     try:
         payload = _strict_otlp_payload(raw_json)
     except Exception:
