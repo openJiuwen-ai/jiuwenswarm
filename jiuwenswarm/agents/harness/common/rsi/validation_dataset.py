@@ -53,6 +53,7 @@ def normalize_validation_suite(source_path: Path | str) -> dict[str, Any] | None
         seen_case_ids.add(case_id)
         cases.append(
             {
+                **task,
                 "case_id": case_id,
                 "task_id": case_id,
                 "input": prompt,

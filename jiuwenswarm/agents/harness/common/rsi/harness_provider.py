@@ -13,21 +13,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
-import hashlib
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
-
 from openjiuwen.rsi import (
     AutoCoordinatingHarnessConfig,
     IterativeSingleHarnessRequest,
     SingleHarnessIterativeOptimizationOrchestrator,
+)
+from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
+    active_epoch_node_event,
+    epoch_node_event,
+    root_node_event,
 )
 from openjiuwen.rsi.schema import (
     ArtifactRef,
@@ -37,18 +41,13 @@ from openjiuwen.rsi.schema import (
     RsiTreeNode,
     TreeResponse,
 )
-from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
-    active_epoch_node_event,
-    epoch_node_event,
-    root_node_event,
-)
 
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiBadRequest,
     RsiDatasetInvalid,
-    RsiPathNotAllowed,
     RsiNotReady,
     RsiPathInvalid,
+    RsiPathNotAllowed,
     RsiResumeInputChanged,
     RsiResumeMismatch,
 )
@@ -92,7 +91,18 @@ def engine_validate_input(dataset_path: str | None) -> Any:
                     json.dumps(normalized, ensure_ascii=False) + "\n",
                     encoding="utf-8",
                 )
+                from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+                    copy_dataset_files,
+                )
+
+                copy_dataset_files(normalized["cases"], path.resolve(), normalized_path)
                 cases = _engine_load_cases([str(normalized_path)])
+        from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+            validate_case_fields,
+        )
+
+        for case in cases:
+            validate_case_fields(case)
     except RsiDatasetInvalid as exc:
         return {
             "valid": False,
@@ -518,6 +528,24 @@ class HarnessProvider:
             actual_hash = _sha256(path)
             if actual_hash != expected_hash:
                 self._raise_material_error(resume, f"{role} 材料已变化")
+
+        file_hashes = (materials.get("input_snapshot") or {}).get("files", {})
+        if file_hashes:
+            from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+                resolve_dataset_file,
+            )
+
+            dataset_root = Path(actual_paths["dataset"]).resolve().parent
+            if not isinstance(file_hashes, dict):
+                self._raise_material_error(resume, "dataset file manifest is invalid")
+            for relative, expected_hash in file_hashes.items():
+                try:
+                    path = resolve_dataset_file(dataset_root, relative)
+                    matches = _sha256(path) == expected_hash
+                except (OSError, ValueError, TypeError):
+                    matches = False
+                if not matches:
+                    self._raise_material_error(resume, f"dataset file changed or missing: {relative}")
 
         harness_snapshot = materials.get("harness_snapshot")
         if isinstance(harness_snapshot, dict):

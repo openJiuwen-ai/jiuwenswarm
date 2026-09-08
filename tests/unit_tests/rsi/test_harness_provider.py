@@ -16,8 +16,8 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiResumeMismatch,
 )
 from jiuwenswarm.agents.harness.common.rsi.harness_adapter import HarnessEngineRequest
-from jiuwenswarm.agents.harness.common.rsi.materializer import RsiTaskMaterializer
 from jiuwenswarm.agents.harness.common.rsi.harness_provider import HarnessProvider
+from jiuwenswarm.agents.harness.common.rsi.materializer import RsiTaskMaterializer
 
 
 def _request(tmp_path: Path, *, resume: bool = False) -> HarnessEngineRequest:
@@ -198,14 +198,64 @@ def test_baseline_progress_does_not_consume_an_epoch(tmp_path: Path) -> None:
     assert state.baseline == 0.5
 
 
+def test_rejected_epoch_parent_is_consistent_in_push_query_and_recovery(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
+        active_epoch_node_event,
+        epoch_node_event,
+        root_node_event,
+    )
+
+    from jiuwenswarm.agents.harness.common.rsi.projector import RsiProjector
+
+    task_id = "epoch-parent-task"
+    checkpoint = {"epoch": 1, "status": "rejected", "promotion_applied": False, "score": 0.6,
+                  "before_harness_refs_path": "h0.yaml", "harness_refs_path": "h0.yaml",
+                  "selected_harness_refs_path": "h0.yaml"}
+    state = {**_state_dict(), "source_harness_refs_path": "h0.yaml", "best_harness_refs_path": "h0.yaml",
+             "baseline_score": 0.6, "best_score": 0.6, "epoch_checkpoints": [checkpoint],
+             "active_epoch": 2, "active_epoch_before_harness_refs_path": "h0.yaml"}
+    _write_state(tmp_path, task_id, state)
+    active = active_epoch_node_event(state).node
+    assert active.parent_id == "h0"
+    projector = RsiProjector(tmp_path)
+    for node in (root_node_event(state).node, epoch_node_event(state, checkpoint).node, active):
+        projector.on_provider_node(task_id, node)
+    assert projector.derive_tree(task_id)["nodes"][-1]["parent_id"] == "ROOT"
+
+    # An older persisted tree must not override the corrected engine lineage.
+    projector.on_provider_node(task_id, replace(active, parent_id="epoch-001"))
+    recovered = RsiProjector(tmp_path)
+    recovered.load_from_disk(task_id)
+    provider = HarnessProvider(tmp_path)
+    tree = recovered.merge_provider_tree(task_id, provider.get_tree(task_id))
+    nodes = {node["node_id"]: node for node in tree["nodes"]}
+    assert nodes["epoch-001"]["parent_id"] == "ROOT"
+    assert nodes["epoch-002"]["parent_id"] == "ROOT"
+    assert nodes["epoch-001"]["score"] == 0.6
+    assert not nodes["epoch-001"]["adopted"]
+    assert nodes["epoch-002"]["score"] is None
+    assert nodes["epoch-002"]["failure_reason"] is None
+    assert provider.read_state(task_id).best_node_id == "h0"
+    assert "score_comparison" not in nodes["epoch-002"]["extra"]
+
+
 @pytest.mark.asyncio
 async def test_epoch_push_query_recovery_and_plugin_artifacts_are_consistent(tmp_path: Path):
     import zipfile
+
     from openjiuwen.rsi.events import NodeStageEvent
     from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
-        active_epoch_node_event, epoch_node_event, root_node_event, source_reuse_stage_payload,
+        active_epoch_node_event,
+        epoch_node_event,
+        root_node_event,
+        source_reuse_stage_payload,
     )
-    from jiuwenswarm.agents.harness.common.rsi.artifact_service import RsiArtifactService
+
+    from jiuwenswarm.agents.harness.common.rsi.artifact_service import (
+        RsiArtifactService,
+    )
     from jiuwenswarm.agents.harness.common.rsi.event_consumer import RsiEventConsumer
     from jiuwenswarm.agents.harness.common.rsi.projector import RsiProjector
     from jiuwenswarm.agents.harness.common.rsi.usage_recorder import RsiUsageRecorder
@@ -286,9 +336,15 @@ def test_real_engine_baseline_reaches_push_report_tree_and_resume(tmp_path: Path
     import asyncio
     from types import SimpleNamespace
 
-    from openjiuwen.rsi import AutoCoordinatingHarnessConfig, SingleHarnessIterativeOptimizationOrchestrator
+    from openjiuwen.rsi import (
+        AutoCoordinatingHarnessConfig,
+        SingleHarnessIterativeOptimizationOrchestrator,
+    )
     from openjiuwen.rsi.harness_rsi.config import DataLoaderConfig, EvaluatorConfig
-    from jiuwenswarm.agents.harness.common.rsi.artifact_service import RsiArtifactService
+
+    from jiuwenswarm.agents.harness.common.rsi.artifact_service import (
+        RsiArtifactService,
+    )
     from jiuwenswarm.agents.harness.common.rsi.event_consumer import RsiEventConsumer
     from jiuwenswarm.agents.harness.common.rsi.projector import RsiProjector
     from jiuwenswarm.agents.harness.common.rsi.services import RsiReportService
@@ -552,6 +608,9 @@ def test_materialized_request_is_validated_against_task_snapshots(tmp_path: Path
         "profile": {"sha256": digest(profile)},
         "models": {"evaluation": {"path": str(model), "config_sha256": digest(model)}},
     }
+    attachment = input_dir / "input.txt"
+    attachment.write_text("original attachment", encoding="utf-8")
+    materials["input_snapshot"]["files"] = {"input.txt": digest(attachment)}
     (task_root / "task.json").write_text(
         json.dumps({"config": {"rsi_materials": materials}}),
         encoding="utf-8",
@@ -573,6 +632,13 @@ def test_materialized_request_is_validated_against_task_snapshots(tmp_path: Path
 
     result = asyncio.run(provider.run(request))
     assert result.status == "completed"
+
+    attachment.write_text("changed attachment", encoding="utf-8")
+    with pytest.raises(RsiPathNotAllowed, match="dataset file changed"):
+        asyncio.run(provider.run(request))
+    with pytest.raises(RsiResumeInputChanged, match="dataset file changed"):
+        asyncio.run(provider.resume(request))
+    attachment.write_text("original attachment", encoding="utf-8")
 
     source_harness.write_text("name: changed\n", encoding="utf-8")
     with pytest.raises(RsiPathNotAllowed):

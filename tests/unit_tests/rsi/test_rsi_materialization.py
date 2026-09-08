@@ -11,21 +11,21 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiDatasetInvalid,
     RsiModelNotFound,
     RsiPathInvalid,
     RsiUnsupportedParameter,
 )
-from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
     resolve_native_harness_baseline,
 )
+from jiuwenswarm.agents.harness.common.rsi.harness_adapter import HarnessEngineAdapter
 from jiuwenswarm.agents.harness.common.rsi.harness_provider import (
     HarnessProvider,
     engine_validate_input,
 )
-from jiuwenswarm.agents.harness.common.rsi.harness_adapter import HarnessEngineAdapter
 from jiuwenswarm.agents.harness.common.rsi.materializer import RsiTaskMaterializer
 from jiuwenswarm.agents.harness.common.rsi.model_resolver import RsiModelConfigResolver
 
@@ -179,6 +179,9 @@ def test_gdpval_validation_suite_is_normalized(tmp_path: Path) -> None:
     assert payload["dataset_id"] == "evobench_local_no_key_validation"
     assert payload["cases"] == [
         {
+            "id": "gdpval-case-1",
+            "prompt": "Prepare the report.",
+            "metadata": {"task_type": "spreadsheet"},
             "case_id": "gdpval-case-1",
             "task_id": "gdpval-case-1",
             "input": "Prepare the report.",
@@ -194,7 +197,7 @@ def test_materializer_copies_dataset_wraps_single_harness_and_writes_validation_
 ) -> None:
     source_dataset = tmp_path / "source" / "validation.json"
     source_dataset.parent.mkdir()
-    source_dataset.write_text('{"cases": [{"case_id": "a"}]}', encoding="utf-8")
+    source_dataset.write_text('{"cases": [{"case_id": "a", "input": "Task a"}]}', encoding="utf-8")
     source_harness = tmp_path / "harness" / "harness_config.yaml"
     source_harness.parent.mkdir()
     source_harness.write_text("name: demo\n", encoding="utf-8")
@@ -475,7 +478,7 @@ def test_task_service_materializes_private_validation_inputs_and_keeps_manifest_
 ) -> None:
     source_dataset = tmp_path / "source" / "validation.json"
     source_dataset.parent.mkdir()
-    source_dataset.write_text('{"cases": [{"case_id": "a"}]}', encoding="utf-8")
+    source_dataset.write_text('{"cases": [{"case_id": "a", "input": "Task a"}]}', encoding="utf-8")
     source_harness = tmp_path / "harness" / "harness_config.yaml"
     source_harness.parent.mkdir()
     source_harness.write_text("name: demo\n", encoding="utf-8")

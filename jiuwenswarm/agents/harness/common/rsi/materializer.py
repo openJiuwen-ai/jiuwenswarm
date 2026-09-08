@@ -52,6 +52,7 @@ class RsiTaskMaterialization:
                 "source_path": self.dataset.get("source_path"),
                 "path": self.dataset.get("path"),
                 "sha256": self.dataset.get("sha256"),
+                "files": deepcopy(self.dataset.get("files", {})),
             },
             "harness_snapshot": {
                 "source_path": self.harness.get("source_path"),
@@ -134,6 +135,17 @@ class RsiTaskMaterializer:
             target = target_dir / "cases.json"
             target.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+        try:
+            from openjiuwen.rsi.harness_rsi.data_loader import load_json_cases
+            from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+                copy_dataset_files,
+            )
+
+            cases = normalized["cases"] if normalized is not None else load_json_cases(source)
+            files = copy_dataset_files(cases, source, target)
+        except (ValueError, TypeError, OSError) as exc:
+            raise RsiDatasetInvalid(f"Dataset files are invalid: {exc}") from exc
+
         if check is not None:
             try:
                 result = check(str(target))
@@ -156,6 +168,7 @@ class RsiTaskMaterializer:
             "path": str(target.resolve()),
             "sha256": _sha256(target),
             "source_sha256": _sha256(source),
+            "files": files,
             "dataset_id": (
                 str(normalized.get("dataset_id") or "").strip()
                 if normalized is not None
@@ -667,6 +680,7 @@ def _load_evobench_suite(source: Path, *, domain: str | None) -> dict[str, Any] 
         task_type = metadata.get("task_type") if isinstance(metadata, dict) else None
         cases.append(
             {
+                **task,
                 "case_id": case_id,
                 "task_id": case_id,
                 "input": str(task.get("prompt") or ""),
