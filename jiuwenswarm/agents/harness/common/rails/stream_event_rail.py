@@ -324,6 +324,17 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # cross-session leakage in concurrent collect→get→clear sequences).
         self._cancelled_tool_results: dict[str, list[dict[str, Any]]] = {}
         self._quarantined_sessions: set[str] = set()
+        # tool_call_id -> sid of calls whose tool_call/tool_update chunks were
+        # already emitted.  Resume replays the full rail cycle for the same
+        # tool_call_id; without this latch history.jsonl gets a duplicate
+        # tool_call + tool_update pair (#3785).  Lifecycle: set on first emit,
+        # popped in after_tool_call on normal completion — the latch must hold
+        # across the interrupt → user answer → resume window (so
+        # reset_for_new_task never touches it), but must not outlive the call:
+        # some providers reset tool_call ids per response (call_0, call_1...),
+        # and a stale latch would swallow the next round's legitimate call.
+        # cleanup_session drops leftovers when the session is destroyed.
+        self._emitted_tool_call_ids: dict[str, str] = {}
         self._symphony_stream_handler = SymphonyToolStreamHandler()
 
     def init(self, agent: Any) -> None:
@@ -594,6 +605,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
         self._cancelled_tool_results.pop(sid, None)
+        # Drop this session's leftover latch entries (interrupted calls that
+        # never completed).  Other sessions' entries must stay: shared adapters
+        # serve many sessions concurrently.
+        self._emitted_tool_call_ids = {
+            tc_id: owner_sid
+            for tc_id, owner_sid in self._emitted_tool_call_ids.items()
+            if owner_sid != sid
+        }
 
     def quarantine_session(
         self, session_id: str, session: Session | None = None
@@ -964,33 +983,39 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                         exc,
                     )
                 ctx.inputs.tool_args = cleaned_args
-            tool_call_emitted = await self._emit_tool_call(
-                session,
-                tc,
-                model_display_name=model_display,
-            )
-            in_progress_emitted = await self._emit_tool_update(
-                session,
-                tc,
-                status="in_progress",
-            )
-            if (
-                tool_call_emitted
-                and in_progress_emitted
-                and reviewer_progress_metadata is not None
-            ):
-                await self._emit_reviewer_tool_update(
+            # 同一 tool_call_id 只向会话发射一次 tool_call/tool_update：resume 重放
+            # rail 周期时会带着相同 id 再进这里，重复发射会在 history.jsonl 留下
+            # 重复记录（#3785）。
+            tc_id = getattr(tc, "id", "")
+            if not (tc_id and self._emitted_tool_call_ids.get(tc_id) == sid):
+                tool_call_emitted = await self._emit_tool_call(
                     session,
-                    tool_call_id=getattr(tc, "id", "") if tc is not None else "",
-                    reviewer_metadata=reviewer_progress_metadata,
+                    tc,
+                    model_display_name=model_display,
                 )
+                in_progress_emitted = await self._emit_tool_update(
+                    session,
+                    tc,
+                    status="in_progress",
+                )
+                if (
+                    tool_call_emitted
+                    and in_progress_emitted
+                    and reviewer_progress_metadata is not None
+                ):
+                    await self._emit_reviewer_tool_update(
+                        session,
+                        tool_call_id=tc_id,
+                        reviewer_metadata=reviewer_progress_metadata,
+                    )
+                if tc_id:
+                    self._emitted_tool_call_ids[tc_id] = sid
             self._symphony_stream_handler.bind_progress(
                 ctx,
                 session,
                 tc,
             )
             # Track in-flight tool call for cancellation
-            tc_id = getattr(tc, "id", "")
             if tc_id:
                 self._inflight_tool_calls[tc_id] = {
                     "tool_call": tc,
@@ -1014,6 +1039,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if getattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, None):
             return
         setattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, "projecting")
+        projected = False
         try:
             self._symphony_stream_handler.reset_progress(ctx)
             if tc_id:
@@ -1024,28 +1050,34 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             tool_result = ctx.inputs.tool_result
             if tool_result is None and ctx.exception is not None:
                 tool_result = ctx.exception
-            projected = await self._emit_tool_result(
-                session,
-                tc,
-                tool_result,
-                reviewer_metadata=reviewer_metadata,
+            interrupt = (
+                _extract_tool_interrupt(tool_result)
+                or _extract_tool_interrupt(ctx.exception)
             )
-            if not projected:
-                return
-            setattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, "projected")
-            consume_reviewer_tool_result_metadata(
-                getattr(ctx, "extra", None), tool_call_id=tc_id
-            )
+            if interrupt is None:
+                projected = await self._emit_tool_result(
+                    session,
+                    tc,
+                    tool_result,
+                    reviewer_metadata=reviewer_metadata,
+                )
+                if projected:
+                    setattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, "projected")
+                    consume_reviewer_tool_result_metadata(
+                        getattr(ctx, "extra", None), tool_call_id=tc_id
+                    )
+                    self._emitted_tool_call_ids.pop(tc_id, None)
         finally:
             if getattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, None) == "projecting":
                 delattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE)
-        if not projected:
+        if interrupt is None and not projected:
             return
-        self._symphony_stream_handler.request_force_finish(
-            ctx,
-            tc,
-            tool_result,
-        )
+        if projected:
+            self._symphony_stream_handler.request_force_finish(
+                ctx,
+                tc,
+                tool_result,
+            )
         await self._emit_ask_user_question_if_interrupted(
             session,
             tc,

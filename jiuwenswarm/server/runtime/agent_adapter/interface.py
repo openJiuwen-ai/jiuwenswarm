@@ -3563,7 +3563,14 @@ class JiuWenSwarm:
                                 _note_durable_reasoning_delta()
                                 durable_pending_reasoning_chunks.append(payload_content)
                                 should_record = False
-                            elif et == "chat.tool_call":
+                            elif et in (
+                                "chat.tool_call",
+                                # 中断边界（ask_user / 权限确认）结束本轮输出且不会再有
+                                # 收尾 chat.final；不冲刷的话中断前流出的正文整段
+                                # 不落盘，刷新后这段回答凭空消失（#3785）。
+                                "chat.ask_user_question",
+                                "harness.activate_interaction",
+                            ):
                                 _persist_pending_final_text()
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
@@ -3756,7 +3763,12 @@ class JiuWenSwarm:
                             _note_durable_reasoning_delta()
                             durable_pending_reasoning_chunks.append(payload_content)
                             should_record = False
-                        elif et == "chat.tool_call":
+                        elif et in (
+                            "chat.tool_call",
+                            # 同上：中断边界结束本轮输出，冲刷 pending 正文（#3785）。
+                            "chat.ask_user_question",
+                            "harness.activate_interaction",
+                        ):
                             _persist_pending_final_text()
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
