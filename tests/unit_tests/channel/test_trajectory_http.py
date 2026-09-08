@@ -555,8 +555,13 @@ async def test_archive_get_download_preserves_execution_subject_and_access(
     )
     assert int(response.headers["content-length"]) == len(response.content)
     assert len(response.content) > len(raw_json)
-    assert stored_raw == raw_json
-    assert current_raw == raw_json
+    # How the three tables hold one final span: the archive keeps the only
+    # copy and keeps it compressed, while the current-record row and the change
+    # journal store no payload at all. The download below still hands back the
+    # original bytes.
+    assert stored_raw != raw_json
+    assert len(stored_raw) < len(raw_json)
+    assert current_raw == b""
     assert change_raw == b""
     payload = response.json()
     assert payload["format"] == "openjiuwen.trajectory.archive"

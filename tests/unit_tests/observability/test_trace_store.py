@@ -2139,7 +2139,12 @@ def test_running_snapshot_keeps_its_own_payload_until_the_span_is_final(
 
         assert row is not None
         assert row["lifecycle"] == "running"
-        assert bytes(row["raw_json"]) == snapshot.raw_json
+        stored = bytes(row["raw_json"])
+        assert stored, "a running span holds the only copy of its payload"
+        # Stored compressed, so the column no longer measures the real payload
+        # and raw_size_bytes has to carry it for the detail reader's budget.
+        assert stored != snapshot.raw_json
+        assert len(stored) < len(snapshot.raw_json)
         assert int(row["raw_size_bytes"]) == len(snapshot.raw_json)
         assert store.fetch_raw(_TRACE_ID, _ROOT_SPAN_ID) == snapshot.raw_json
     finally:
@@ -2183,3 +2188,43 @@ async def test_reader_resolves_payloads_written_before_the_size_column_existed(
     assert [item["lifecycle"] for item in detail["records"]] == ["final"]
     assert int(detail["projected_raw_bytes"]) == len(record.raw_json)
     test_logger.info("pre-migration row resolved through its own stored payload")
+
+
+def test_archived_payload_is_stored_compressed_but_reads_back_intact(
+    tmp_path: Path,
+) -> None:
+    store = TrajectoryStore(tmp_path / "trajectory.sqlite3")
+    store.initialize()
+    try:
+        record = _stored_record(
+            raw_json=_raw_record(_TRACE_ID, _ROOT_SPAN_ID, name="compressible" * 200)
+        )
+        store.write_records([record])
+        connection = store._require_connection()
+        stored = bytes(
+            connection.execute(
+                "SELECT raw_json FROM otlp_span_records WHERE trace_id = ? AND span_id = ?",
+                (_TRACE_ID, _ROOT_SPAN_ID),
+            ).fetchone()["raw_json"]
+        )
+
+        assert stored != record.raw_json
+        assert len(stored) < len(record.raw_json)
+        # The digest describes the payload, not its encoding, so conflict
+        # detection keeps working across the change.
+        assert store.fetch_raw_sha256(_TRACE_ID, _ROOT_SPAN_ID) == record.raw_sha256
+        assert store.fetch_raw(_TRACE_ID, _ROOT_SPAN_ID) == record.raw_json
+    finally:
+        store.close()
+    test_logger.info("archived payload shrank on disk and returned byte-identical")
+
+
+def test_payload_decoding_passes_through_uncompressed_rows() -> None:
+    # A database written before compression stores plain JSON. Both forms must
+    # resolve, which is what lets the change ship without a migration.
+    plain = b'{"resourceSpans":[]}'
+    assert store_module._decode_payload(plain) == plain
+    assert store_module._decode_payload(store_module._encode_payload(plain)) == plain
+    assert store_module._decode_payload(b"") == b""
+    assert store_module._decode_payload(None) == b""
+    test_logger.info("payload decoding handled compressed, plain and empty rows")
