@@ -53,6 +53,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     INTERFACE_FOCUSED,
     PROFILE_GRAPH,
     PROFILE_OFF,
+    effective_retrieval_interface,
     resolve_profile,
     resolve_retrieval_interface,
 )
@@ -556,24 +557,38 @@ def usage_from_totals(totals: dict[str, Any]) -> dict[str, Any]:
     return usage
 
 
+def _decode_git_output(raw: bytes | str | None) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", errors="replace")
+
+
 def _run_git(
     args: list[str], *, timeout: int | None = None
 ) -> subprocess.CompletedProcess[str]:
     limit = _GIT_TIMEOUT_SECONDS if timeout is None else timeout
     try:
-        return subprocess.run(
+        proc = subprocess.run(
             args,
             capture_output=True,
-            text=True,
+            text=False,
             check=False,
             timeout=limit,
+        )
+        return subprocess.CompletedProcess(
+            args,
+            proc.returncode,
+            _decode_git_output(proc.stdout),
+            _decode_git_output(proc.stderr),
         )
     except subprocess.TimeoutExpired as exc:
         return subprocess.CompletedProcess(
             args,
             1,
-            exc.stdout or "",
-            exc.stderr or f"git timed out after {limit}s",
+            _decode_git_output(exc.stdout),
+            _decode_git_output(exc.stderr) or f"git timed out after {limit}s",
         )
 
 
@@ -642,6 +657,9 @@ def _repair_stale_worktree(url: str, commit: str, cache_dir: Path) -> None:
     """
     worktree = _worktree_dir_for(url, commit)
     if not worktree.is_dir():
+        base = cache_dir / _worktree_url_key(url)
+        if base.is_dir():
+            _run_git(["git", "-C", str(base), "worktree", "prune"])
         return
     head = _run_git(["git", "-C", str(worktree), "rev-parse", "HEAD"])
     head_ok = head.returncode == 0 and head.stdout.strip() == commit
@@ -867,10 +885,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--retrieval-interface",
-        default=INTERFACE_CLASSIC,
-        choices=(INTERFACE_CLASSIC, "focused"),
-        help="graph observation contract. classic keeps current payloads; "
-        "focused is the ACI summary + focus_code path. ignored when --profile off.",
+        default=None,
+        choices=(INTERFACE_CLASSIC, INTERFACE_FOCUSED),
+        help="eval-only A/B. omitted: locate exam stays classic, coding/SWE "
+        "and product graph use focused. ignored when --profile off. "
+        "not a product yaml key.",
     )
     parser.add_argument("--max-iterations", type=int, default=40)
     parser.add_argument(
@@ -1277,7 +1296,12 @@ async def async_main() -> None:
         default_out = DEFAULT_OUTPUT
 
     run_root = (args.output or default_out).expanduser().resolve()
-    retrieval_interface = resolve_retrieval_interface(getattr(args, "retrieval_interface", None))
+    coding = swe or task_mode == TASK_MODE_CODING
+    retrieval_interface = effective_retrieval_interface(
+        profile=profile,
+        prompt_mode=PROMPT_MODE_PRODUCT if coding else PROMPT_MODE_LOCATE,
+        explicit=getattr(args, "retrieval_interface", None),
+    )
     name = config_dir_name(
         profile=profile,
         task_mode=task_mode,
