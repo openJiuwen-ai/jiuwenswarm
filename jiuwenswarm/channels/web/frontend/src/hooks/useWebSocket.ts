@@ -4215,6 +4215,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           | undefined;
         if (workflow && typeof workflow === 'object' && workflow.id) {
           useSessionStore.getState().applyWorkflowUpdate(sessionId, workflow);
+          // swarmflow 提问弹窗跟随节点状态，而非只等用户回答：human 超时
+          // （AGENT_FAILED → 节点 failed）、run 终态时，弹窗若不清会永久残留。
+          const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestion;
+          const meta = pendingQuestion?.swarmflowMeta;
+          if (meta?.run_id === workflow.id) {
+            const run = useSessionStore.getState().getRuntime(sessionId)?.workflowRuns
+              .find((item) => item.id === workflow.id);
+            const isTerminal = workflow.status === 'completed'
+              || workflow.status === 'failed'
+              || workflow.status === 'stopped';
+            const node = run?.phases?.flatMap((phase) => phase.agents ?? [])
+              .find((agent) => agent.correlation_id === meta.correlation_id);
+            if (isTerminal || node?.status !== 'waiting_for_human') {
+              useChatStore.getState().setPendingQuestion(sessionId, null);
+            }
+          }
         }
       }),
 
