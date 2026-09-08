@@ -1092,12 +1092,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 delattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE)
         if interrupt is None and not projected:
             return
-        if projected:
-            self._symphony_stream_handler.request_force_finish(
-                ctx,
-                tc,
-                tool_result,
-            )
         await self._emit_ask_user_question_if_interrupted(
             session,
             tc,
