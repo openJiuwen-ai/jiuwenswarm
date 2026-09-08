@@ -1754,6 +1754,42 @@ class SkillManager:
         del params
         return await get_swarm_symphony_service().cancel_build()
 
+    async def handle_skills_experience_list(self, params: dict) -> dict:
+        """List retained Symphony experience candidates."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return get_swarm_symphony_service().list_experience_candidates()
+
+    async def handle_skills_experience_request(self, params: dict) -> dict:
+        """Re-open one retained candidate through the normal approval prompt."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        allowed = {
+            "recipe_id",
+            "recipe_version",
+            "_session_id",
+            "_channel_id",
+        }
+        if any(key not in allowed for key in params):
+            return {"success": False, "reason": "invalid_parameters"}
+        recipe_id = str(params.get("recipe_id") or "").strip()
+        raw_version = params.get("recipe_version")
+        if isinstance(raw_version, bool) or not isinstance(raw_version, (int, str)):
+            return {"success": False, "reason": "invalid_recipe_version"}
+        try:
+            recipe_version = int(raw_version)
+        except (TypeError, ValueError):
+            return {"success": False, "reason": "invalid_recipe_version"}
+        if not recipe_id or recipe_version < 1:
+            return {"success": False, "reason": "invalid_recipe"}
+        return await get_swarm_symphony_service().request_experience_candidate(
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            session_id=str(params.get("_session_id") or ""),
+            channel_id=str(params.get("_channel_id") or "") or None,
+        )
+
     async def handle_skills_evolution_status(self, params: dict) -> dict:
         """检查某个 skill 是否存在 evolutions.json."""
         name = str(params.get("name") or "").strip()
@@ -4866,6 +4902,95 @@ class SkillManager:
                 "source": source,
                 "workspace_path": str(dest),
             },
+        }
+
+    def install_symphony_skill_artifact(
+        self,
+        artifact_dir: str | Path,
+        *,
+        expected_root: str | Path,
+        package_id: str,
+        integrity: str,
+    ) -> dict[str, Any]:
+        """Install a server-resolved reviewed Symphony Skill artifact."""
+
+        source = Path(artifact_dir).resolve()
+        root = Path(expected_root).resolve()
+        try:
+            source.relative_to(root)
+        except ValueError as exc:
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "Symphony Skill 产物不在受控目录内",
+            ) from exc
+        if not package_id or not integrity or not source.is_dir():
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "Symphony Skill 产物凭据无效",
+            )
+        return self._install_imported_skill_dir(
+            source,
+            force=False,
+            origin=f"symphony:{package_id}",
+            source_trusted=False,
+            conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+        )
+
+    def recover_symphony_skill_install(
+        self,
+        artifact_dir: str | Path,
+        *,
+        package_id: str,
+        integrity: str,
+    ) -> dict[str, Any] | None:
+        """Recognize a fully copied Symphony Skill after receipt-write failure."""
+
+        source = Path(artifact_dir).resolve()
+        if not package_id or not integrity or not source.is_dir():
+            return None
+        try:
+            meta = self._assert_skill_package_safe(source, source_trusted=False)
+            skill_name = _safe_path_name(str(meta.get("name") or "").strip(), "skill")
+            destination = _safe_child_path(self._skills_dir, skill_name, "skill")
+        except (SkillRpcError, ValueError):
+            return None
+        record = next(
+            (
+                item
+                for item in self._state.get("local_skills", [])
+                if isinstance(item, dict)
+                and item.get("name") == skill_name
+            ),
+            None,
+        )
+        if record is None or not destination.is_dir():
+            return None
+        if compute_content_checksum(source) != compute_content_checksum(destination):
+            return None
+        expected_origin = f"symphony:{package_id}"
+        origin = str(record.get("origin") or "")
+        if origin != expected_origin:
+            if origin not in {"", "local", "project"}:
+                return None
+            self._add_local_skill(
+                {
+                    **record,
+                    "name": skill_name,
+                    "origin": expected_origin,
+                    "source": record.get("source") or "local",
+                }
+            )
+        return {
+            "success": True,
+            "skill": {
+                "name": skill_name,
+                "description": str(meta.get("description") or "").strip(),
+                "version": get_current_version(destination),
+                "skill_type": detect_skill_type(destination),
+                "source": self._resolve_display_source_for_import(skill_name),
+                "workspace_path": str(destination),
+            },
+            "recovered": True,
         }
 
     def _resolve_display_source_for_import(self, skill_name: str) -> str:

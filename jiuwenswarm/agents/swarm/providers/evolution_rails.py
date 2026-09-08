@@ -52,6 +52,80 @@ TEAM_SKILL_EVOLUTION = "swarm.team_skill_evolution"
 TEAM_SKILL_CREATE = "swarm.team_skill_create"
 MEMBER_SKILL_EVOLUTION = "swarm.member_skill_evolution"
 EVOLUTION_INTERRUPT = "swarm.evolution_interrupt"
+SYMPHONY_GRAPH_EVOLUTION = "swarm.symphony_graph_evolution"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=SYMPHONY_GRAPH_EVOLUTION,
+    description="Leader-only Symphony execution graph evolution rail.",
+)
+def build_symphony_graph_evolution_rail(
+    params: dict[str, Any],
+    ctx: SwarmBuildContext,
+) -> Any | None:
+    """Build one Team graph rail only for the leader."""
+
+    del params
+    from jiuwenswarm.symphony.config import load_symphony_config
+
+    config = load_symphony_config(ctx.config)
+    if (
+        ctx.role != "leader"
+        or not config.enabled
+        or config.evolution.backend != "core"
+        or not (config.evolution.enabled or config.flow.enabled)
+    ):
+        return None
+    try:
+        from openjiuwen.extensions.observability.demand import (
+            get_trajectory_span_processor,
+        )
+        from openjiuwen.harness.rails.evolution import TeamSymphonyGraphEvolutionRail
+        from jiuwenswarm.symphony.adapter import model_from_config
+        from jiuwenswarm.symphony.experience import (
+            PublishedCapabilitySnapshotProvider,
+        )
+        from jiuwenswarm.symphony.llm import LLMConfig
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        service = get_swarm_symphony_service()
+        runtime = service.runtime()
+
+        async def submit_evolution(
+            planned_graph: dict[str, Any] | None,
+            execution_graph: dict[str, Any],
+            *,
+            session_id: str,
+            capture_mode: str,
+        ) -> None:
+            del capture_mode
+            await service.submit_evolution_and_notify(
+                planned_graph,
+                execution_graph,
+                session_id=session_id,
+                capture_mode="team",
+                channel_id=ctx.channel_id,
+            )
+
+        return TeamSymphonyGraphEvolutionRail(
+            trajectory_span_processor=(
+                ctx.trajectory_span_processor or get_trajectory_span_processor()
+            ),
+            graph_snapshot_provider=runtime.capture_graph_snapshot,
+            capability_snapshot_provider=PublishedCapabilitySnapshotProvider(
+                config.paths.graph_dir
+            ),
+            edge_evaluator_llm=model_from_config(LLMConfig.from_default_model()),
+            submit_evolution=submit_evolution,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[swarm.symphony_graph_evolution] build failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
 
 
 def _skill_library_dir(ctx: SwarmBuildContext) -> str:
@@ -811,6 +885,8 @@ def build_member_skill_evolution_rail(
 
 
 __all__ = [
+    "SYMPHONY_GRAPH_EVOLUTION",
+    "build_symphony_graph_evolution_rail",
     "EVOLUTION_INTERRUPT",
     "TEAM_SKILL_EVOLUTION",
     "TEAM_SKILL_CREATE",
