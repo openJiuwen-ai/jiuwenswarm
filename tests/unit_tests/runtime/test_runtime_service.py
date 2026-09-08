@@ -100,6 +100,9 @@ class FakeAgent:
             metadata={"route": "unary"},
         )
 
+    async def execute_message(self, request: AgentRequest) -> AgentResponse:
+        return await self.process_message(request)
+
     async def process_message_stream(self, request: AgentRequest):
         yield AgentResponseChunk(
             request_id=request.request_id,
@@ -295,6 +298,79 @@ async def test_create_or_resume_session_uses_runtime_manager() -> None:
         ("process_cli", None),
         ("process_cli", "cli-session-1"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "owned"),
+    [("agent.work.normal", True), ("agent.work.plan", False)],
+)
+async def test_session_switch_commit_registers_single_agent_runtime(
+    mode: str,
+    owned: bool,
+) -> None:
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+    )
+    await runtime.start()
+    prepared = MagicMock()
+    prepared.state = runtime_package.SessionProvisionState.COMMITTED
+    runtime._session_provisioner.commit_session_provision = AsyncMock(
+        return_value=runtime_package.SessionSwitchResult(
+            channel_id="web",
+            session_id="switched-session",
+            mode=mode,
+        )
+    )
+
+    await runtime.commit_session_provision(
+        prepared,
+        timing=runtime_package.SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,
+    )
+
+    assert runtime.owns_session("switched-session") is owned
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "owned"),
+    [("agent.work.normal", True), ("agent.work.plan", False)],
+)
+async def test_session_create_commit_registers_single_agent_runtime(
+    mode: str,
+    owned: bool,
+) -> None:
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+    )
+    await runtime.start()
+    prepared = MagicMock()
+    prepared.state = runtime_package.SessionProvisionState.COMMITTED
+    runtime._session_provisioner.commit_session_provision = AsyncMock(
+        return_value=runtime_package.SessionCreateResult(
+            channel_id="web",
+            session_id="created-session",
+            project_id="default_work",
+            project_dir="",
+            work_mode="work",
+            persist_session=False,
+            prewarm_hit=False,
+            prewarm_status="warming",
+            created=True,
+            canonical_mode=mode,
+        )
+    )
+
+    await runtime.commit_session_provision(
+        prepared,
+        timing=runtime_package.SessionProvisionCommitTiming.AFTER_RESULT_DELIVERY,
+    )
+
+    assert runtime.owns_session("created-session") is owned
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -1118,9 +1194,7 @@ async def test_interrupt_resume_stream_does_not_wait_for_existing_user_admission
 
 
 @pytest.mark.asyncio
-async def test_interrupt_answer_controls_running_session_execution() -> None:
-    answer_received = asyncio.Event()
-
+async def test_interrupt_answer_resumes_session_after_ask_stream_ends() -> None:
     class InteractionAgent(FakeAgent):
         async def process_message_stream(self, request: AgentRequest):
             yield AgentResponseChunk(
@@ -1133,18 +1207,14 @@ async def test_interrupt_answer_controls_running_session_execution() -> None:
                     "questions": [],
                 },
             )
-            await answer_received.wait()
+
+        async def deliver_control_input(self, request: AgentRequest):
             yield AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 payload={"event_type": "chat.final", "content": "continued"},
                 is_complete=True,
             )
-
-        async def deliver_control_input(self, request: AgentRequest):
-            answer_received.set()
-            async for chunk in super().deliver_control_input(request):
-                yield chunk
 
     class InteractionManager(FakeAgentManager):
         def get_agent_for_session_nowait(
@@ -1169,8 +1239,18 @@ async def test_interrupt_answer_controls_running_session_execution() -> None:
         is_stream=True,
         params={"query": "choose", "mode": "agent", "work_mode": "work"},
     )
-    stream = runtime.stream(original, trigger_hook=False)
-    assert (await anext(stream)).event_type == "chat.ask_user_question"
+    original_events = await _collect_events(runtime.stream(original, trigger_hook=False))
+    assert [event.event_type for event in original_events] == [
+        "chat.ask_user_question"
+    ]
+    waiting_snapshot = runtime.session_coordinator.snapshot_session(session_id)
+    assert waiting_snapshot is not None
+    parent = next(
+        item
+        for item in waiting_snapshot.executions
+        if item.work_kind.value == "chat_stream"
+    )
+    assert parent.state.value == "waiting_for_control"
 
     answer = AgentRequest(
         request_id="answer-dispatch",
@@ -1191,13 +1271,8 @@ async def test_interrupt_answer_controls_running_session_execution() -> None:
         _collect_events(runtime.stream(answer, trigger_hook=False)),
         timeout=0.2,
     )
-    assert [event.event_type for event in control_events] == [
-        "runtime.accepted",
-        "",
-    ]
-    assert (await asyncio.wait_for(anext(stream), timeout=0.2)).payload["content"] == "continued"
-    with pytest.raises(StopAsyncIteration):
-        await anext(stream)
+    assert [event.event_type for event in control_events] == ["chat.final"]
+    assert control_events[0].payload["content"] == "continued"
     snapshot = runtime.session_coordinator.snapshot_session(session_id)
     assert snapshot is not None
     control = next(
@@ -1205,7 +1280,12 @@ async def test_interrupt_answer_controls_running_session_execution() -> None:
         for item in snapshot.executions
         if item.work_kind.value == "control_input"
     )
-    assert control.parent_execution_id is not None
+    assert control.parent_execution_id == parent.execution_id
+    completed_parent = next(
+        item for item in snapshot.executions if item.execution_id == parent.execution_id
+    )
+    assert completed_parent.state.value == "succeeded"
+    assert control.state.value == "succeeded"
 
 
 @pytest.mark.asyncio

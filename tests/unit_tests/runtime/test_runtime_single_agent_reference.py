@@ -11,7 +11,8 @@ from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
-from jiuwenswarm.runtime.session import SessionManagementMode, SessionWorkKind
+from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.runtime.session import SessionWorkKind
 from jiuwenswarm.runtime.session.model import SessionExecutionState
 
 pytestmark = pytest.mark.unit
@@ -44,12 +45,11 @@ async def _initialize() -> None:
     return None
 
 
-def _runtime(mode: SessionManagementMode = SessionManagementMode.RUNTIME_MANAGED):
+def _runtime():
     return AgentRuntime(
         agent_manager=_Manager(),
         initializer=_initialize,
         plan_controller=_Plan(),
-        session_management_mode=mode,
     )
 
 
@@ -58,7 +58,7 @@ def _runtime(mode: SessionManagementMode = SessionManagementMode.RUNTIME_MANAGED
     ("mode", "work_mode"),
     [("agent.work.normal", "work"), ("agent.code.normal", "code")],
 )
-async def test_work_and_code_normal_unary_use_managed_registry(
+async def test_work_and_code_normal_unary_use_session_registry(
     mode: str, work_mode: str
 ) -> None:
     runtime = _runtime()
@@ -91,7 +91,7 @@ async def test_work_and_code_normal_unary_use_managed_registry(
     ("mode", "work_mode"),
     [("agent.work.normal", "work"), ("agent.code.normal", "code")],
 )
-async def test_work_and_code_normal_stream_use_managed_registry(
+async def test_work_and_code_normal_stream_use_session_registry(
     mode: str, work_mode: str
 ) -> None:
     runtime = _runtime()
@@ -122,7 +122,7 @@ async def test_work_and_code_normal_stream_use_managed_registry(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["agent.work.plan", "team.work.normal"])
-async def test_managed_runtime_rejects_unadapted_modes(mode: str) -> None:
+async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
     runtime = _runtime()
     await runtime.start()
     await runtime.create_or_resume_session(channel_id="process", session_id="session")
@@ -134,8 +134,11 @@ async def test_managed_runtime_rejects_unadapted_modes(mode: str) -> None:
         req_method=ReqMethod.CHAT_SEND,
         params={"mode": mode, "work_mode": "work"},
     )
-    with pytest.raises(ValueError, match="only supports Work Normal and Code Normal"):
-        await runtime.invoke(request)
+    async def invoke_started(actual: AgentRequest, **_kwargs: Any):
+        return [actual.request_id]
+
+    runtime._invoke_started = invoke_started  # type: ignore[method-assign]
+    assert await runtime.invoke(request) == [request.request_id]
     snapshot = runtime.session_coordinator.snapshot_session("session")
     assert snapshot is not None
     assert snapshot.executions == ()
@@ -189,15 +192,106 @@ async def test_cancel_runs_semantic_interrupt_before_coordinator_cancel(
     await runtime.close()
 
 
-def test_process_client_always_uses_managed_runtime() -> None:
-    assert (
-        InProcessRuntimeClient().runtime.session_management_mode
-        is SessionManagementMode.RUNTIME_MANAGED
-    )
+def test_process_client_uses_the_standard_runtime() -> None:
+    assert isinstance(InProcessRuntimeClient().runtime, AgentRuntime)
 
 
 @pytest.mark.asyncio
-async def test_process_client_rejects_requests_outside_managed_reference_modes() -> None:
+async def test_closed_session_can_be_registered_as_a_new_generation() -> None:
+    runtime = _runtime()
+    await runtime.start()
+    await runtime.register_session(session_id="session", channel_id="web")
+    first = runtime.session_coordinator.snapshot_session("session")
+    assert first is not None
+
+    await runtime.session_coordinator.close_session("session")
+    assert not runtime.owns_session("session")
+    await runtime.register_session(session_id="session", channel_id="tui")
+
+    second = runtime.session_coordinator.snapshot_session("session")
+    assert second is not None
+    assert second.generation == first.generation + 1
+    assert second.channel_id == "tui"
+    await runtime.close()
+
+
+_SINGLE_AGENT_CHANNELS = (
+    "web",
+    "tui",
+    "feishu",
+    "feishu_enterprise:tenant-a",
+    "xiaoyi",
+    "wecom",
+    "dingtalk",
+    "telegram",
+    "discord",
+    "slack",
+    "whatsapp",
+    "wechat",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_id", _SINGLE_AGENT_CHANNELS)
+@pytest.mark.parametrize(
+    ("mode", "work_mode"),
+    [("agent.work.normal", "work"), ("agent.code.normal", "code")],
+)
+async def test_single_agent_runtime_owns_every_user_channel(
+    channel_id: str,
+    mode: str,
+    work_mode: str,
+) -> None:
+    runtime = _runtime()
+    await runtime.start()
+
+    async def invoke_started(request: AgentRequest, **_kwargs: Any):
+        return [request.request_id]
+
+    runtime._invoke_started = invoke_started  # type: ignore[method-assign]
+    request = AgentRequest(
+        request_id=f"{channel_id}-request",
+        channel_id=channel_id,
+        session_id=f"{channel_id.replace(':', '-')}-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": mode, "work_mode": work_mode},
+    )
+
+    assert await runtime.invoke(request) == [request.request_id]
+    snapshot = runtime.session_coordinator.snapshot_session(request.session_id)
+    assert snapshot is not None
+    assert snapshot.channel_id == channel_id
+    assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent.work.plan", "team.work.normal"])
+async def test_plan_and_team_work_keep_their_existing_owner(
+    mode: str,
+) -> None:
+    runtime = _runtime()
+    await runtime.start()
+
+    async def invoke_started(request: AgentRequest, **_kwargs: Any):
+        return [request.request_id]
+
+    runtime._invoke_started = invoke_started  # type: ignore[method-assign]
+    request = AgentRequest(
+        request_id="unadapted-request",
+        channel_id="web",
+        session_id="unadapted-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": mode, "work_mode": "work"},
+    )
+
+    assert await runtime.invoke(request) == [request.request_id]
+    assert runtime.session_coordinator.snapshot_session(request.session_id) is None
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_process_client_routes_plan_to_its_executor() -> None:
     runtime = _runtime()
     await runtime.start()
     await runtime.create_or_resume_session(channel_id="process_cli", session_id="session")
@@ -210,6 +304,15 @@ async def test_process_client_rejects_requests_outside_managed_reference_modes()
         params={"mode": "agent.work.plan", "work_mode": "work"},
         is_stream=True,
     )
-    with pytest.raises(ValueError, match="only supports Work Normal and Code Normal"):
-        await anext(client.stream(request))
+    async def stream_started(actual: AgentRequest, **_kwargs: Any):
+        yield RuntimeEvent(
+            request_id=actual.request_id,
+            channel_id=actual.channel_id,
+            session_id=actual.session_id,
+            payload={"content": "plan"},
+            is_complete=True,
+        )
+
+    runtime._stream_started = stream_started  # type: ignore[method-assign]
+    assert len([item async for item in client.stream(request)]) == 1
     await client.close()

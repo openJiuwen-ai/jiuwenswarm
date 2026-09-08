@@ -38,6 +38,70 @@ class FakeWebSocket:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "channel_id",
+    [
+        "web",
+        "tui",
+        "feishu",
+        "feishu_enterprise:tenant-a",
+        "xiaoyi",
+        "wecom",
+        "dingtalk",
+        "telegram",
+        "discord",
+        "slack",
+        "whatsapp",
+        "wechat",
+    ],
+)
+@pytest.mark.parametrize(
+    ("mode", "work_mode"),
+    [("agent.work.normal", "work"), ("agent.code.normal", "code")],
+)
+async def test_single_agent_stream_skips_transport_task_registry_for_every_channel(
+    channel_id: str,
+    mode: str,
+    work_mode: str,
+) -> None:
+    manager = object()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=AsyncMock(),
+    )
+
+    async def stream(request, **_kwargs):
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"content": "done"},
+            is_complete=True,
+        )
+
+    runtime.stream = stream  # type: ignore[method-assign]
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = runtime
+    server._session_stream_tasks = {}
+    request = AgentRequest(
+        request_id=f"{channel_id}-request",
+        channel_id=channel_id,
+        session_id=f"{channel_id.replace(':', '-')}-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": mode, "work_mode": work_mode},
+        is_stream=True,
+    )
+
+    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+
+    assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_send_wire_payload_sends_small_wire_unchanged(monkeypatch):
     monkeypatch.setattr(ws_send, "AGENT_WS_SEND_BUDGET_BYTES", 1024)
     ws = FakeWebSocket()

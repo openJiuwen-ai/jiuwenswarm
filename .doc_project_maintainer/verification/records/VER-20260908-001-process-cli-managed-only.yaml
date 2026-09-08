@@ -26,7 +26,7 @@ evidence:
   successes: 2
   warnings: 3
 result: passed
-status: active
+status: superseded
 recorded_at: 2026-09-08T06:56:58Z
 supersedes: [VER-20260907-001-runtime-session-reference-chain]
 evidence_paths: []

@@ -9,13 +9,6 @@ from enum import Enum
 from typing import Any
 
 
-class SessionManagementMode(str, Enum):
-    """Migration mode used by an :class:`AgentRuntime`."""
-
-    LEGACY = "legacy"
-    RUNTIME_MANAGED = "runtime_managed"
-
-
 class RuntimeSessionState(str, Enum):
     READY = "ready"
     ACTIVE = "active"

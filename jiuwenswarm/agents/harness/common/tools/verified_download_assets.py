@@ -32,7 +32,8 @@ def _default_asset_root() -> Path:
     configured = str(os.getenv("JIUWENSWARM_DOWNLOAD_ASSET_ROOT") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path(tempfile.gettempdir()) / f"jiuwenswarm-download-assets-{os.getuid()}"
+    owner_id = os.getuid() if hasattr(os, "getuid") else os.getpid()
+    return Path(tempfile.gettempdir()) / f"jiuwenswarm-download-assets-{owner_id}"
 
 
 @dataclass(frozen=True)
@@ -313,11 +314,12 @@ class VerifiedDownloadAssetOwner:
             os.close(file_descriptor)
         try:
             os.replace(temp_path, sidecar_path)
-            directory_fd = os.open(self.root, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            if os.name != "nt":
+                directory_fd = os.open(self.root, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
         finally:
             self._safe_unlink(temp_path)
 

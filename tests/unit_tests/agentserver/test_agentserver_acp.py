@@ -923,6 +923,11 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
     metadata = get_session_metadata("acp_session_001", cache_bust=True)
     assert metadata["mode"] == "agent.work.normal"
+    runtime_session = server._execution_runtime().session_coordinator.snapshot_session(
+        "acp_session_001"
+    )
+    assert runtime_session is not None
+    assert runtime_session.channel_id == "acp"
     assert fake_ws.sent == [
         {
             "response_id": "req-session-create",
@@ -2529,6 +2534,7 @@ async def test_handle_team_session_bind_rejects_missing_session(monkeypatch, tmp
 @pytest.mark.parametrize(
     ("mode", "resolved_mode", "is_team"),
     [
+        ("agent", "agent.work.normal", False),
         ("team", "team", True),
         ("agent.plan", "agent.plan", False),
     ],

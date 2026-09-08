@@ -86,10 +86,6 @@ _EXPORTS = {
         "jiuwenswarm.runtime.session",
         "RuntimeSessionCoordinator",
     ),
-    "SessionManagementMode": (
-        "jiuwenswarm.runtime.session",
-        "SessionManagementMode",
-    ),
     "RuntimeExecutionContext": (
         "jiuwenswarm.runtime.context",
         "RuntimeExecutionContext",

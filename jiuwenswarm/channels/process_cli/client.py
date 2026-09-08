@@ -7,7 +7,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from jiuwenswarm.runtime import AgentRuntime
-from jiuwenswarm.runtime.session import SessionManagementMode
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -23,9 +22,7 @@ class InProcessRuntimeClient:
         if runtime is not None:
             self._runtime = runtime
             return
-        self._runtime = AgentRuntime(
-            session_management_mode=SessionManagementMode.RUNTIME_MANAGED
-        )
+        self._runtime = AgentRuntime()
 
     @property
     def runtime(self) -> AgentRuntime:

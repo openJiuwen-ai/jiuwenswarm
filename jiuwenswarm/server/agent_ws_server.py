@@ -3239,9 +3239,12 @@ class AgentWebSocketServer:
     ) -> None:
         """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
         session_id = request.session_id or "default"
+        channel_id = request.channel_id or "web"
         current_task = asyncio.current_task()
         stream_stop_event = asyncio.Event()
-        if current_task is not None:
+        runtime = self._execution_runtime()
+        uses_session_runtime = AgentRuntime.uses_session_runtime(request)
+        if current_task is not None and not uses_session_runtime:
             self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
 
         chunk_count = 0
@@ -3315,7 +3318,7 @@ class AgentWebSocketServer:
                 finally:
                     # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
                     entries = self._session_stream_tasks.get(session_id)
-                    if entries is not None and current_task is not None:
+                    if entries is not None and current_task is not None and not uses_session_runtime:
                         entries.pop(current_task, None)
                         if not entries:
                             self._session_stream_tasks.pop(session_id, None)

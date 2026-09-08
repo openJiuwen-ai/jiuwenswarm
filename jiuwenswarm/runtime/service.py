@@ -32,7 +32,7 @@ from jiuwenswarm.runtime.session_provisioner import (
 )
 from jiuwenswarm.runtime.session import (
     RuntimeSessionCoordinator,
-    SessionManagementMode,
+    RuntimeSessionState,
     SessionPersistencePolicy,
     SessionWorkKind,
 )
@@ -270,7 +270,6 @@ class AgentRuntime:
         admission_controller: Any | None = None,
         session_delete_lifecycle: SessionDeleteLifecycle | None = None,
         enable_kvc_tracking: bool = False,
-        session_management_mode: SessionManagementMode = SessionManagementMode.LEGACY,
         session_coordinator: RuntimeSessionCoordinator | None = None,
     ) -> None:
         self._agent_manager = agent_manager or AgentManager()
@@ -293,7 +292,6 @@ class AgentRuntime:
             delete_lifecycle=session_delete_lifecycle,
         )
         self._enable_kvc_tracking = bool(enable_kvc_tracking)
-        self._session_management_mode = session_management_mode
         self._session_coordinator = session_coordinator or RuntimeSessionCoordinator()
         self._stateless_agents: dict[str, Any] = {}
         self._lifecycle_lock = asyncio.Lock()
@@ -312,10 +310,6 @@ class AgentRuntime:
     @property
     def plan_controller(self) -> PlanModeController:
         return self._plan_controller
-
-    @property
-    def session_management_mode(self) -> SessionManagementMode:
-        return self._session_management_mode
 
     @property
     def session_coordinator(self) -> RuntimeSessionCoordinator:
@@ -420,12 +414,10 @@ class AgentRuntime:
             channel_id=channel_id,
             session_id=requested or None,
         )
-        if self._session_management_mode is SessionManagementMode.RUNTIME_MANAGED:
-            await self._session_coordinator.register_session(
-                resolved_session_id,
-                channel_id,
-                SessionPersistencePolicy.PERSISTENT,
-            )
+        await self.register_session(
+            session_id=resolved_session_id,
+            channel_id=channel_id,
+        )
         return resolved_session_id
 
     async def prepare_session_fork(
@@ -499,11 +491,29 @@ class AgentRuntime:
         async with self._lifecycle_lock:
             self._require_started()
         try:
-            return await self._session_provisioner.commit_session_provision(
+            result = await self._session_provisioner.commit_session_provision(
                 prepared,
                 timing=timing,
                 context=context,
             )
+            if isinstance(result, SessionCreateResult):
+                mode = result.canonical_mode
+                work_mode = result.work_mode
+            elif isinstance(result, SessionSwitchResult):
+                mode = result.mode
+                work_mode = None
+            else:
+                mode = None
+                work_mode = None
+            if mode is not None and self.is_single_agent_session_mode(
+                mode,
+                work_mode=work_mode,
+            ):
+                await self.register_session(
+                    session_id=result.session_id,
+                    channel_id=result.channel_id,
+                )
+            return result
         finally:
             self._discard_finalized_session_provision(prepared)
 
@@ -528,6 +538,53 @@ class AgentRuntime:
             SessionProvisionState.ABORTED,
         }:
             self._pending_session_provisions.discard(prepared)
+
+    async def register_session(self, *, session_id: str, channel_id: str) -> None:
+        """Adopt an existing product Session into this Runtime.
+
+        Product create/switch and direct process callers converge here after
+        durable lifecycle work, without reallocating the ID or touching
+        metadata.
+        """
+        if self._closed:
+            raise RuntimeStateError("runtime is already closed")
+        await self._session_coordinator.register_session(
+            session_id,
+            channel_id,
+            SessionPersistencePolicy.PERSISTENT,
+        )
+
+    def owns_session(self, session_id: str | None) -> bool:
+        """Return whether the Coordinator owns the current Session generation."""
+        snapshot = (
+            self._session_coordinator.snapshot_session(session_id)
+            if session_id
+            else None
+        )
+        return bool(snapshot and snapshot.state is not RuntimeSessionState.CLOSED)
+
+    @staticmethod
+    def is_single_agent_session_mode(
+        mode: object,
+        *,
+        work_mode: object = None,
+    ) -> bool:
+        """Return whether a mode uses the single-Agent Session Runtime."""
+        from jiuwenswarm.common.mode_matrix import (
+            NEW_AGENT_CODE_NORMAL,
+            NEW_AGENT_WORK_NORMAL,
+            deprecate_mode,
+        )
+        from jiuwenswarm.runtime.request import resolve_agent_request_mode
+
+        _mode, _sub_mode, canonical = resolve_agent_request_mode(
+            mode,
+            work_mode=work_mode,
+        )
+        return deprecate_mode(canonical) in {
+            NEW_AGENT_WORK_NORMAL,
+            NEW_AGENT_CODE_NORMAL,
+        }
 
     async def prepare_chat_turn(
         self,
@@ -585,10 +642,7 @@ class AgentRuntime:
             await self._clear_pending_interaction(
                 request.session_id or "default"
             )
-        if (
-            self._session_management_mode is SessionManagementMode.RUNTIME_MANAGED
-            and request.session_id
-        ):
+        if request.session_id and self.owns_session(request.session_id):
             params = request.params if isinstance(request.params, dict) else {}
             target_request_id = str(params.get("target_request_id") or "").strip()
             await self._session_coordinator.cancel_execution(
@@ -659,13 +713,14 @@ class AgentRuntime:
 
         token = set_runtime_context(self, self._agent_manager)
         try:
-            if self._session_management_mode is SessionManagementMode.RUNTIME_MANAGED:
-                self._require_managed_session_execution(request)
+            if self.uses_session_runtime(request):
+                await self._ensure_session_registered(request)
                 if self._is_interrupt_resume_request(request):
                     return await self._session_coordinator.deliver_control(
                         request.session_id or "default",
                         self._control_request_id(request),
                         lambda: self._deliver_control_started(request),
+                        suspends=self._waits_for_control,
                     )
                 return await self._session_coordinator.run_unary(
                     request.session_id or "default",
@@ -676,6 +731,7 @@ class AgentRuntime:
                         trigger_hook=trigger_hook,
                         on_control_event=on_control_event,
                     ),
+                    suspends=self._waits_for_control,
                 )
             return await self._invoke_started(
                 request,
@@ -759,7 +815,7 @@ class AgentRuntime:
                         events=events,
                         handler=on_control_event,
                     )
-            if self._session_management_mode is SessionManagementMode.RUNTIME_MANAGED:
+            if self.uses_session_runtime(request):
                 response = await agent.execute_message(request)
             else:
                 response = await agent.process_message(request)
@@ -897,13 +953,14 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        if self._session_management_mode is SessionManagementMode.RUNTIME_MANAGED:
-            self._require_managed_session_execution(request, background=background)
+        if self.uses_session_runtime(request, background=background):
+            await self._ensure_session_registered(request)
             if self._is_interrupt_resume_request(request):
                 events = await self._session_coordinator.deliver_control(
                     request.session_id or "default",
                     self._control_request_id(request),
                     lambda: self._deliver_control_started(request),
+                    suspends=self._waits_for_control,
                 )
                 for event in events:
                     yield event
@@ -919,6 +976,7 @@ class AgentRuntime:
                     background=background,
                     on_agent_ready=on_agent_ready,
                 ),
+                suspends=self._waits_for_control,
             )
         else:
             stream = self._stream_started(
@@ -1220,7 +1278,7 @@ class AgentRuntime:
         """
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
-        if self._session_management_mode is SessionManagementMode.RUNTIME_MANAGED:
+        if self.owns_session(session_id):
             await self._session_coordinator.close_session(session_id)
         cleaned = await self._agent_manager.cleanup_session_runtime(
             channel_id=channel_id,
@@ -1402,36 +1460,49 @@ class AgentRuntime:
         )
         return is_team_mode(canonical)
 
-    def _require_managed_session_execution(
-        self,
+    @classmethod
+    def uses_session_runtime(
+        cls,
         request: AgentRequest,
         *,
         background: bool = False,
-    ) -> None:
-        if background or not request.session_id:
-            raise ValueError("Runtime-managed execution requires a foreground Session")
-        if request.req_method not in self._chat_turn_methods():
-            raise ValueError("Runtime-managed execution requires a chat request")
-        from jiuwenswarm.common.mode_matrix import (
-            NEW_AGENT_CODE_NORMAL,
-            NEW_AGENT_WORK_NORMAL,
-        )
-        from jiuwenswarm.runtime.request import resolve_agent_request_mode
-
+    ) -> bool:
+        """Return whether the Session Runtime owns this execution."""
+        if (
+            background
+            or not request.session_id
+            or request.req_method not in cls._chat_turn_methods()
+        ):
+            return False
         params = request.params if isinstance(request.params, dict) else {}
-        _mode, _sub_mode, canonical = resolve_agent_request_mode(
+        return cls.is_single_agent_session_mode(
             params.get("mode"),
             work_mode=params.get("work_mode"),
         )
-        if canonical not in {NEW_AGENT_WORK_NORMAL, NEW_AGENT_CODE_NORMAL}:
-            raise ValueError(
-                "Runtime-managed execution only supports Work Normal and Code Normal"
-            )
+
+    async def _ensure_session_registered(self, request: AgentRequest) -> None:
+        """Idempotently adopt direct callers that already own a product ID."""
+        session_id = str(request.session_id or "").strip()
+        if self.owns_session(session_id):
+            return
+        await self.register_session(
+            session_id=session_id,
+            channel_id=request.channel_id or "default",
+        )
 
     @staticmethod
     def _control_request_id(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
         return str(params.get("request_id") or request.request_id or "")
+
+    @staticmethod
+    def _waits_for_control(value: object) -> bool:
+        events = value if isinstance(value, (list, tuple)) else (value,)
+        return any(
+            getattr(event, "event_type", "")
+            in {"chat.ask_user_question", "harness.activate_interaction"}
+            for event in events
+        )
 
     async def _record_kvc_chat_started(self, request: AgentRequest) -> None:
         """Record a best-effort KVC task fact without changing chat success."""

@@ -49,9 +49,9 @@ Team, `code.team`, and Swarm creation bypass the warm pool.
 ## Causal Path
 
 1. Gateway finishes channel registration and sends `agent.prewarm.sync` with deduplicated eligible channel IDs after filtering ACP/A2A. AgentServer repeats the exclusion defensively. Startup, configuration, and channel triggers are debounced and coalesced so reload completion is not followed by duplicate reconcile bursts; a periodic scan is the fallback.
-2. AgentServer scans visible/default projects in a worker thread and stores one immutable `WarmKey` target snapshot. Reconciliation retains missing targets as pending keys, but globally permits only one speculative READY or warming slot; it does not create one asyncio task per project/channel at startup.
+2. The Runtime provisioning path scans visible/default projects in a worker thread and stores one immutable `WarmKey` target snapshot. Reconciliation retains missing targets as pending keys, but globally permits only one speculative READY or warming slot; it does not create one asyncio task per project/channel at startup.
 3. Background preparation gets the root adapter with `(code, normal)` for code or `(agent, None)` for work, creates the session child, configures stable runtime state, and starts the interaction without sending input.
-4. `session.create` validates project binding, derives the single-Agent canonical mode from final `work_mode`, and persists that mode before allocation. A READY slot is atomically claimed; matching warming work is promoted with its existing ID.
+4. `RuntimeSessionProvisioner.prepare_session_create` validates project binding, derives the single-Agent canonical mode from final `work_mode`, and persists that mode before allocation. A READY slot is atomically claimed; matching warming work is promoted with its existing ID.
 5. AgentServer writes normal metadata only after claim. The prewarm marker is retained through the claim and removed only after metadata commits, closing the crash gap without exposing blank slots in normal session listings.
 6. Chat selection reads the locked Session `work_mode` (falling back to the request), canonicalizes stale `mode=agent` code requests to `code.normal`, awaits the claimed task, and selects the same AgentManager cache key. Foreground cancellation and the shared registry lock prevent competing initialization.
 7. MemoryRail registration does not schedule a full reindex on first registration. A real embedding-configuration change is singleflight per normalized workspace and fingerprint, preventing parallel new sessions from repeating the same repository-wide indexing work.
@@ -71,7 +71,7 @@ On startup, old-boot markers and unclaimed metadata-less directories are removed
 ## Failure, Ordering, And Idempotency
 
 - Project validation precedes allocation.
-- Normal create rejects explicit IDs from other channels. TUI startup alone may pass an explicit ID to `session.create`; AgentServer logs and validates it under a per-ID lock, preserves existing binding, and returns `prewarm_status="bypassed"` without a warm claim.
+- Normal create rejects explicit IDs from other channels. TUI startup alone may pass an explicit ID to `session.create`; Runtime provisioning logs and validates it under a per-ID lock, preserves existing binding, and returns `prewarm_status="bypassed"` without a warm claim.
 - `create_token` is required by adapted frontends and enables response-loss retry.
 - Gateway-owned Web creation overwrites any request-body `user_id` with the authenticated connection identity before forwarding to AgentServer.
 - Initialization exceptions are logged and never publish READY.

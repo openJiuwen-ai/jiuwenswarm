@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Live completion gate for the managed Process CLI reference chain."""
+"""Live completion gate for the Process CLI Session Runtime chain."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -14,7 +15,10 @@ import pytest
 
 from jiuwenswarm.channels.process_cli import app
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
-from jiuwenswarm.runtime.session import RuntimeSessionState, SessionManagementMode
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.session import RuntimeSessionState
+from jiuwenswarm.runtime.session.model import SessionExecutionState
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
 pytestmark = [pytest.mark.system, pytest.mark.slow]
@@ -132,8 +136,105 @@ async def test_process_cli_two_turn_session_resume_live(
 
     assert len(_RecordingClient.instances) == 2
     for client in _RecordingClient.instances:
-        assert client.runtime.session_management_mode is SessionManagementMode.RUNTIME_MANAGED
         snapshot = client.runtime.session_coordinator.snapshot_session(session_id)
         assert snapshot is not None
         assert snapshot.state is RuntimeSessionState.CLOSED
         assert all(execution.state.terminal for execution in snapshot.executions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _LIVE_ENABLED,
+    reason="requires a configured model and interactive ask_user support",
+)
+async def test_single_agent_ask_user_resume_after_stream_end_live(
+    tmp_path: Path,
+) -> None:
+    client = InProcessRuntimeClient()
+    session_id = ""
+    try:
+        await client.start()
+        session_id = await client.create_or_resume_session(
+            channel_id="web",
+            session_id=None,
+        )
+        original = AgentRequest(
+            request_id="live-ask-user-original",
+            channel_id="web",
+            session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND,
+            is_stream=True,
+            params={
+                "query": (
+                    "你必须先调用 ask_user，让我在 RED 和 BLUE 中选择一个；"
+                    "收到选择后只回复 ASK_USER_RESUME_OK。"
+                ),
+                "mode": "agent.work.normal",
+                "work_mode": "work",
+                "project_dir": str(tmp_path),
+                "cwd": str(tmp_path),
+                "trusted_dirs": [str(tmp_path)],
+                "supports_user_interaction": True,
+            },
+        )
+        first_events = [
+            event
+            async for event in client.stream(original)
+        ]
+        interaction = next(
+            event
+            for event in first_events
+            if event.event_type == "chat.ask_user_question"
+        )
+        waiting = client.runtime.session_coordinator.snapshot_session(session_id)
+        assert waiting is not None
+        assert any(
+            execution.state is SessionExecutionState.WAITING_FOR_CONTROL
+            for execution in waiting.executions
+        )
+
+        interaction_payload = interaction.payload or {}
+        answer = AgentRequest(
+            request_id="live-ask-user-answer",
+            channel_id="web",
+            session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND,
+            is_stream=True,
+            params={
+                "query": "",
+                "request_id": interaction_payload["request_id"],
+                "answers": [
+                    {
+                        "question": "请选择颜色",
+                        "selected_options": ["BLUE"],
+                    }
+                ],
+                "source": "ask_user_interrupt",
+                "mode": "agent.work.normal",
+                "work_mode": "work",
+                "project_dir": str(tmp_path),
+                "cwd": str(tmp_path),
+                "trusted_dirs": [str(tmp_path)],
+                "supports_user_interaction": True,
+            },
+        )
+        resumed_events = await asyncio.wait_for(
+            _collect_runtime_events(client.stream(answer)),
+            timeout=180,
+        )
+        resumed_text = "".join(
+            str((event.payload or {}).get("content") or "")
+            for event in resumed_events
+        )
+        assert "ASK_USER_RESUME_OK" in resumed_text
+        completed = client.runtime.session_coordinator.snapshot_session(session_id)
+        assert completed is not None
+        assert all(execution.state.terminal for execution in completed.executions)
+    finally:
+        if session_id:
+            await client.cleanup_session(channel_id="web", session_id=session_id)
+        await client.close()
+
+
+async def _collect_runtime_events(stream):
+    return [event async for event in stream]

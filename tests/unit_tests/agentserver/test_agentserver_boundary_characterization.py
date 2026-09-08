@@ -147,6 +147,9 @@ class RecordingAgent:
             agent_ref=request.agent_ref,
         )
 
+    async def execute_message(self, request: AgentRequest) -> AgentResponse:
+        return await self.process_message(request)
+
 
 class RecordingAgentManager:
     def __init__(
@@ -335,6 +338,9 @@ class PortableRuntime:
             channel_id=channel_id,
             session_id=session_id,
         )
+
+    def owns_session(self, _session_id: str) -> bool:
+        return False
 
 
 class NoopAdmission:
