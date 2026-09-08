@@ -28,6 +28,7 @@ from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from jiuwenswarm.gateway.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -214,22 +215,7 @@ def _format_cron_broadcast_text(*, job_name: str, text: str, is_placeholder: boo
 
 
 def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
-    # Lazy import so the rest of the system can still run without cron enabled.
-    from croniter import croniter  # type: ignore
-
-    # Support Quartz 7-field format: second minute hour day month dow year
-    # croniter default is minute hour day month dow second year
-    field_count = len(cron_expr.strip().split())
-    second_at_beginning = field_count == 7
-
-    it = croniter(cron_expr, base_dt, second_at_beginning=second_at_beginning)
-    nxt = it.get_next(datetime)
-    if not isinstance(nxt, datetime):
-        raise RuntimeError("croniter returned invalid datetime")
-    if nxt.tzinfo is None:
-        # Keep tz-consistent; base_dt is tz-aware in our usage.
-        return nxt.replace(tzinfo=base_dt.tzinfo)
-    return nxt
+    return next_cron_datetime(cron_expr, base_dt)
 
 
 @dataclass(frozen=True, order=True)

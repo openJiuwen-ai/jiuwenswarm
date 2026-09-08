@@ -75,11 +75,24 @@ def test_schedule_cron_rejects_invalid_expr() -> None:
         HeartbeatSchedule.from_dict({"type": "cron", "cron_expr": "not a cron"})
 
 
-def test_schedule_cron_rejects_seven_field_expression() -> None:
-    with pytest.raises(ValueError, match="must have exactly 5 fields"):
+def test_schedule_cron_accepts_seven_field_expression() -> None:
+    s = HeartbeatSchedule.from_dict(
+        {"type": "cron", "cron_expr": "0 0 9 * * ? *"}
+    )
+    assert s.cron_expr == "0 0 9 * * ? *"
+
+
+def test_schedule_cron_rejects_invalid_seven_field_expression() -> None:
+    with pytest.raises(ValueError, match="invalid cron expression"):
         HeartbeatSchedule.from_dict(
-            {"type": "cron", "cron_expr": "0 0 9 * * ? *"}
+            {"type": "cron", "cron_expr": "60 0 9 * * ? *"}
         )
+
+
+@pytest.mark.parametrize("expr", ["0 9 * *", "0 0 9 * * ?"])
+def test_schedule_cron_rejects_unsupported_field_counts(expr: str) -> None:
+    with pytest.raises(ValueError, match="must have 5 or 7 fields"):
+        HeartbeatSchedule.from_dict({"type": "cron", "cron_expr": expr})
 
 
 def test_schedule_cron_requires_expr() -> None:

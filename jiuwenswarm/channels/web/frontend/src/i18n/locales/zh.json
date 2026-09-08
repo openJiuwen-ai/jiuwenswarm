@@ -3093,7 +3093,7 @@
     "schedule": {
       "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
       "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
-      "cron": { "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）" },
+      "cron": { "hint": "支持 5 段（分 时 日 月 周）或与普通 Cron 任务相同的 7 段格式（秒 分 时 日 月 周 年）。" },
       "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成", "dateLabel": "日期", "timeLabel": "时间" },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
@@ -3102,7 +3102,7 @@
       }
     },
     "errors": {
-      "cronFieldCount": "心跳的 Cron 表达式需要 5 段（分 时 日 月 周）"
+      "cronFieldCount": "心跳的 Cron 表达式需要 5 段（分 时 日 月 周）或 7 段（秒 分 时 日 月 周 年）"
     },
     "drawer": {
       "fieldName": "任务名称",

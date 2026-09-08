@@ -158,7 +158,14 @@ class HeartbeatRuntimeBridge:
             "properties": {
                 "type": {"type": "string", "enum": ["interval", "cron", "once"]},
                 "interval_seconds": {"type": "integer"},
-                "cron_expr": {"type": "string"},
+                "cron_expr": {
+                    "type": "string",
+                    "description": (
+                        "5-field crontab (minute hour day month weekday) or "
+                        "the same 7-field format used by Cron tasks (second "
+                        "minute hour day month weekday year)."
+                    ),
+                },
                 "timezone": {"type": "string"},
                 "run_at": {
                     "type": "number",

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -163,6 +165,20 @@ def test_compute_next_run_cron_uses_cron_helper(setup) -> None:
     nxt = sched.compute_next_run(job, base)
     assert nxt is not None
     assert nxt > base  # 下一次触发在 now 之后
+
+
+def test_compute_next_run_seven_field_cron_preserves_seconds(setup) -> None:
+    _store, _, sched = setup
+    timezone = ZoneInfo("Asia/Shanghai")
+    base = datetime(2026, 9, 5, 10, 15, 20, tzinfo=timezone)
+    job = HeartbeatJob(
+        id="x", name="n", enabled=True, channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "cron", "cron_expr": "30 15 10 * * ? *", "timezone": "Asia/Shanghai"}
+        ),
+    )
+    nxt = sched.compute_next_run(job, base.timestamp())
+    assert nxt == datetime(2026, 9, 5, 10, 15, 30, tzinfo=timezone).timestamp()
 
 
 def test_compute_next_run_unsupported_type_raises(setup) -> None:
@@ -890,6 +906,54 @@ def test_preview_cron(setup) -> None:
     )
     out = sched.preview_next_runs(job, count=2)
     assert len(out) == 2
+
+
+def test_preview_seven_field_cron_preserves_second_precision(setup) -> None:
+    _store, _, sched = setup
+    job = HeartbeatJob(
+        id="x", name="n", enabled=True, channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "cron", "cron_expr": "30 15 10 * * ? *", "timezone": "Asia/Shanghai"}
+        ),
+    )
+    out = sched.preview_next_runs(job, count=2)
+    assert len(out) == 2
+    assert all(datetime.fromtimestamp(item["run_at"], ZoneInfo("Asia/Shanghai")).second == 30 for item in out)
+
+
+async def test_fixed_year_seven_field_cron_runs_once_then_expires(setup) -> None:
+    store, _, sched = setup
+    timezone = ZoneInfo("Asia/Shanghai")
+    base = datetime(2026, 9, 5, 10, 15, 20, tzinfo=timezone)
+    due = datetime(2099, 9, 5, 10, 15, 30, tzinfo=timezone)
+    schedule = HeartbeatSchedule.from_dict(
+        {"type": "cron", "cron_expr": "30 15 10 5 9 ? 2099", "timezone": "Asia/Shanghai"}
+    )
+    job = await store.create_job(
+        name="fixed-year", channel_id="web", session_id="s1", prompt="p",
+        schedule=schedule, source="agent_tool", now=base.timestamp(),
+    )
+    assert job.next_run_at == due.timestamp()
+
+    sched._now_fn = lambda: base.timestamp()
+    preview = sched.preview_next_runs(job, count=5)
+    assert len(preview) == 1
+    assert preview[0]["run_at"] == due.timestamp()
+
+    sched._now_fn = lambda: due.timestamp() + 1
+    decision = await sched._start_run(
+        job, "run-fixed-year", due.timestamp(), trigger="scheduler", reschedule=True
+    )
+    assert decision == "run"
+    claimed = await store.get_job(job.id)
+    assert claimed is not None
+    assert claimed.next_run_at is None
+
+    assert await sched.on_run_finished(job.id, "run-fixed-year", outcome="succeeded") is True
+    finished = await store.get_job(job.id)
+    assert finished is not None
+    assert finished.status == "expired"
+    assert finished.enabled is False
 
 
 def test_preview_formats_job_timezone(setup) -> None:

@@ -159,6 +159,27 @@ async def test_create_distinguishes_default_and_unlimited_max_runs(
     assert unlimited["max_runs"] is None
 
 
+async def test_create_update_and_preview_seven_field_cron(
+    ctrl: HeartbeatController,
+) -> None:
+    created = await ctrl.create_job({
+        "name": "seven-field", "channel_id": "web", "session_id": "s", "prompt": "p",
+        "schedule": {"type": "cron", "cron_expr": "0 0 9 * * ? *", "timezone": "Asia/Shanghai"},
+    })
+    assert created["schedule"]["cron_expr"] == "0 0 9 * * ? *"
+    assert created["next_run_at"] is not None
+
+    updated = await ctrl.update_job(
+        created["id"],
+        {"schedule": {"type": "cron", "cron_expr": "30 0 10 * * ? *", "timezone": "Asia/Shanghai"}},
+    )
+    assert updated["schedule"]["cron_expr"] == "30 0 10 * * ? *"
+    assert updated["next_run_at"] is not None
+
+    preview = await ctrl.preview_job(created["id"], count=2)
+    assert len(preview["next"]) == 2
+
+
 # ---------------------------------------------------------------------------
 # 资源限制
 # ---------------------------------------------------------------------------

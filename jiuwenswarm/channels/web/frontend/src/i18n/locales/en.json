@@ -3111,7 +3111,7 @@
     "schedule": {
       "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
       "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)" },
+      "cron": { "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)." },
       "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed", "dateLabel": "Date", "timeLabel": "Time" },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
@@ -3120,7 +3120,7 @@
       }
     },
     "errors": {
-      "cronFieldCount": "Heartbeat cron expressions must have 5 fields (minute hour day month weekday)"
+      "cronFieldCount": "Heartbeat cron expressions must have 5 fields (minute hour day month weekday) or 7 fields (second minute hour day month weekday year)"
     },
     "drawer": {
       "fieldName": "Task name",

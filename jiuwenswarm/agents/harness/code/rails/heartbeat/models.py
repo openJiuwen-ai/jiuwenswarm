@@ -159,7 +159,7 @@ class HeartbeatSchedule:
     type: str
     # interval 模式使用,>=60。
     interval_seconds: int | None = None
-    # cron 模式使用,5 字段。
+    # cron 模式使用,支持 5 字段 crontab 或普通 Cron 任务使用的 7 字段格式。
     cron_expr: str | None = None
     # cron 模式时区,默认 Asia/Shanghai。
     timezone: str | None = None
@@ -208,17 +208,11 @@ class HeartbeatSchedule:
             cron_expr = str(data.get("cron_expr") or "").strip()
             if not cron_expr:
                 raise ValueError("schedule.cron_expr is required for cron type")
-            field_count = len(cron_expr.split())
-            if field_count != 5:
-                raise ValueError(
-                    "heartbeat schedule.cron_expr must have exactly 5 fields, "
-                    f"got {field_count}"
-                )
             tz = _validate_timezone(
                 str(data.get("timezone") or "").strip() or default_timezone,
                 default=default_timezone,
             )
-            # Heartbeat 只允许 5 字段；表达式内容继续复用 Cron helper 校验。
+            # 与普通 Cron 任务保持一致，支持 5 字段和 7 字段，并保留原表达式。
             validate_cron_expression(cron_expr, timezone=tz)
             return HeartbeatSchedule(
                 type=SCHEDULE_CRON,

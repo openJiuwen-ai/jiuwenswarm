@@ -68,7 +68,7 @@ export default function HeartbeatScheduleEditor({ value, onChange, minIntervalSe
         <div className="space-y-2">
           <input
             type="text"
-            placeholder="0 9 * * 1-5"
+            placeholder="0 0 9 * * ? *"
             value={value.cronExpr}
             onChange={(e) => onChange({ ...value, cronExpr: e.target.value })}
             title={t('heartbeat.schedule.cron.hint') ?? undefined}
