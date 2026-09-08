@@ -305,14 +305,19 @@ def test_sink_debounces_snapshot_flood_before_sqlite_write(tmp_path: Path) -> No
 
 
 def test_sink_rejects_invalid_raw_type_without_raising(tmp_path: Path) -> None:
+    # The payload is validated on the writer thread, not at the ingress: Core
+    # encodes raw_json lazily, so reading it here would undo that deferral.
     sink = TrajectoryRecordSink(_settings(tmp_path / "trajectory.sqlite3"))
+    sink.start()
     record = _record()
     record.raw_json = "not-bytes"
 
     sink.consume(record)
+    assert sink.close(timeout=5) is True
 
     stats = sink.stats()
     assert stats.failed == 1
+    assert stats.committed == 0
     assert stats.dropped == 0
     test_logger.info("invalid Core record isolated from the caller")
 

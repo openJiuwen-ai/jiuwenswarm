@@ -133,13 +133,10 @@ class TrajectoryRecordSink:
         """Atomically accept one frozen Core record without storage work.
 
         Core's processor publishes an immutable record whose ``raw_json`` is
-        already ``bytes``. Validation, copying, hashing, and SQLite work stay
-        on the writer thread so a full queue remains a constant-cost decision.
+        encoded lazily on first read. Payload validation, copying, hashing, and
+        SQLite work stay on the writer thread so a full queue remains a
+        constant-cost decision and no payload is encoded before it is needed.
         """
-        if not isinstance(getattr(record, "raw_json", None), bytes):
-            self._increment("failed")
-            logger.warning("Trajectory record rejected before queueing: raw_json must be bytes")
-            return
         if not _record_owner_is_consistent(record):
             self._increment("failed")
             logger.warning(
@@ -181,11 +178,12 @@ class TrajectoryRecordSink:
         self._increment("accepted")
 
     def consume_snapshot(self, record: OtlpSpanSnapshotRecordLike) -> None:
-        """Accept a live snapshot using identity-keyed latest-wins coalescing."""
-        if not isinstance(getattr(record, "raw_json", None), bytes):
-            self._increment("failed")
-            logger.warning("Trajectory snapshot rejected before queueing: raw_json must be bytes")
-            return
+        """Accept a live snapshot using identity-keyed latest-wins coalescing.
+
+        The payload stays unread here: a snapshot this method later coalesces
+        away must never cost an OTLP encode. See ``consume`` for where the
+        payload is validated instead.
+        """
         if not _record_owner_is_consistent(record):
             self._increment("failed")
             return
@@ -762,7 +760,13 @@ class TrajectorySessionSinkRouter:
         malformed_identity = (
             (session_id and session_id != raw_session_id) or not trace_id or not span_id
         )
-        if malformed_identity or not isinstance(getattr(record, "raw_json", None), bytes):
+        # Only identity is validated here. Agent Core encodes ``raw_json`` lazily
+        # on first read, so touching it on this thread would drag the full OTLP
+        # encode back onto the caller — normally the event loop — and would pay
+        # it even for snapshots the writer later coalesces away. The payload is
+        # type-checked in TraceRecordData.from_core_* on the writer thread, where
+        # _write_batch already rejects a bad record without failing its batch.
+        if malformed_identity:
             self._increment("failed")
             return
         if not _record_owner_is_consistent(record):
