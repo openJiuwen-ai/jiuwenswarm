@@ -15,6 +15,7 @@ class ReqMethod(Enum):
     REVERSE_RPC_RESPONSE = "reverse_rpc.response"
 
     CHAT_SEND = "chat.send"
+    CHAT_CAPACITY = "chat.capacity"
     CHAT_RESUME = "chat.resume"
     CHAT_CANCEL = "chat.interrupt"
     CHAT_ANSWER = "chat.user_answer"

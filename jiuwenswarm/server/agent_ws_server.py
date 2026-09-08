@@ -1899,6 +1899,10 @@ class AgentWebSocketServer:
                 await self._handle_reverse_rpc_response(ws, request, send_lock)
                 return
 
+            if request.req_method == ReqMethod.CHAT_CAPACITY:
+                await self._handle_chat_capacity(ws, request, send_lock)
+                return
+
             await self._trigger_before_chat_request_hook(request)
 
             if request.req_method == ReqMethod.SESSION_LIST:
@@ -3067,6 +3071,17 @@ class AgentWebSocketServer:
             and hasattr(manager, "end_foreground_chat")
         )
         try:
+            if desktop_stream_admitted is True and (request.metadata or {}).get("require_admission_ack") is True:
+                accepted = AgentResponseChunk(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    payload={"event_type": "chat.accepted"},
+                    is_complete=False,
+                    agent_ref=request.agent_ref,
+                )
+                wire = encode_agent_chunk_for_wire(accepted, response_id=request.request_id, sequence=0)
+                async with send_lock:
+                    await send_wire_payload(ws, wire)
             if foreground:
                 await manager.begin_foreground_chat()
             try:
@@ -3092,10 +3107,7 @@ class AgentWebSocketServer:
             active = {}
             self._active_desktop_chat_streams = active
 
-        if (
-            session_id not in active
-            and len(active) >= _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS
-        ):
+        if not self._desktop_chat_capacity(session_id)["allowed"]:
             return False
         active[session_id] = active.get(session_id, 0) + 1
         return True
@@ -3117,27 +3129,41 @@ class AgentWebSocketServer:
         else:
             active.pop(session_id, None)
 
-    @staticmethod
-    async def _send_desktop_session_limit_message(
-        ws: Any,
-        request: AgentRequest,
-        send_lock: asyncio.Lock,
-    ) -> None:
-        chunk = AgentResponseChunk(
+    def _desktop_chat_capacity(self, session_id: str | None) -> dict[str, Any]:
+        """Read the same counter used by admission without reserving a slot."""
+        active = getattr(self, "_active_desktop_chat_streams", {})
+        sid = str(session_id or "").strip()
+        return {
+            "allowed": sid in active or len(active) < _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS,
+            "activeSessions": len(active),
+            "limit": _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS,
+        }
+
+    async def _handle_chat_capacity(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        response = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
+            payload=self._desktop_chat_capacity(request.session_id),
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _send_desktop_session_limit_message(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock,
+    ) -> None:
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
             payload={
-                "event_type": "chat.final",
-                "content": _DESKTOP_SESSION_LIMIT_MESSAGE,
+                "code": "DESKTOP_SESSION_LIMIT",
+                "error": _DESKTOP_SESSION_LIMIT_MESSAGE,
+                **self._desktop_chat_capacity(request.session_id),
             },
-            is_complete=True,
             agent_ref=request.agent_ref,
         )
-        wire = encode_agent_chunk_for_wire(
-            chunk,
-            response_id=request.request_id,
-            sequence=0,
-        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
         logger.info(
@@ -3199,7 +3225,12 @@ class AgentWebSocketServer:
                 if restored_plan:
                     await self._push_plan_mode_exited(request)
 
-        chunk_count = 0
+        # The opt-in admission acknowledgment already used sequence 0.
+        chunk_count = int(
+            str(request.channel_id or "").strip().lower() == "desktop"
+            and request.req_method == ReqMethod.CHAT_SEND
+            and (request.metadata or {}).get("require_admission_ack") is True
+        )
         # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
         heartbeat_event = asyncio.Event()
         heartbeat_task: asyncio.Task | None = None
