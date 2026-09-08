@@ -701,7 +701,6 @@ react:
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     inject_mode: disk_catalog  # disk_catalog | legacy_system | trailing_attach（默认 disk_catalog：P:45 只写指引，FACT/TIP 走 ttse_consult）
-    store_path: ""          # 空则落到 workspace/.ttse/bank.json
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
     dream_enabled: true     # 是否启用静默 Auto-dream
     dream_interval: 20      # 每 N 次非 follow-up 任务迭代尝试一次 dream

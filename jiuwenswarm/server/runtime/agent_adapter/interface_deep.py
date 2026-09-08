@@ -7124,11 +7124,15 @@ class JiuWenSwarmDeepAdapter:
                 return False
         return default
 
+    @staticmethod
+    def _ttse_bank_path() -> str:
+        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob."""
+        return str(get_agent_workspace_dir() / ".ttse" / "bank.json")
+
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (yaml wins on known keys).
 
-        Catalog/adapter cache often has ``enabled`` without ``store_path``; falling
-        back only to workspace ``bank.json`` then splits inject vs induce.
+        ``store_path`` is not a user setting; the bank is always under workspace.
         """
         merged: dict[str, Any] = {}
         merged.update(_get_ttse_config(config if config is not None else self._config_cache))
@@ -7137,7 +7141,6 @@ class JiuWenSwarmDeepAdapter:
         except Exception:
             yaml_ttse = {}
         for key in (
-            "store_path",
             "evolve_enabled",
             "inject_enabled",
             "inject_mode",
@@ -7167,9 +7170,7 @@ class JiuWenSwarmDeepAdapter:
             from openjiuwen.core.memory.lite.embeddings import OpenAICompatibleEmbeddingProvider
 
             ttse_cfg = self._resolved_ttse_config(config)
-            store_path = str(ttse_cfg.get("store_path") or "").strip() or str(
-                get_agent_workspace_dir() / ".ttse" / "bank.json"
-            )
+            store_path = self._ttse_bank_path()
             evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
             inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
             inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
@@ -7244,9 +7245,7 @@ class JiuWenSwarmDeepAdapter:
         if rail is None:
             return
         ttse_cfg = self._resolved_ttse_config(config)
-        store_path = str(ttse_cfg.get("store_path") or "").strip() or str(
-            get_agent_workspace_dir() / ".ttse" / "bank.json"
-        )
+        store_path = self._ttse_bank_path()
         evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
         inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
         inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
