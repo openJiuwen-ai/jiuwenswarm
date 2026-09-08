@@ -6585,3 +6585,86 @@ def test_inject_swarmflow_context_followup_resume_needs_no_script_path() -> None
     injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=False)
 
     assert 'swarmflow(resume_id="legacy-run", action="resume")' in injected.text
+
+
+# ---------------------------------------------------------------------------
+# SDD-0018 §4.6: tree-view buttons while the team is asleep
+# ---------------------------------------------------------------------------
+
+
+def test_pending_swarmflow_resume_roundtrip(monkeypatch):
+    """The button parks a resume request in session metadata; runtime_ready pops it once."""
+    store: dict[str, Any] = {"session_id": "sess-x"}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata._read_metadata",
+        lambda session_id, cache_bust=False: dict(store),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata._enqueue_write",
+        lambda session_id, metadata: store.update(metadata),
+    )
+
+    team_helpers.persist_pending_swarmflow_resume("sess-x", ["wf_1"])
+    team_helpers.persist_pending_swarmflow_resume("sess-x", ["wf_2"])  # accumulates, no dup
+    team_helpers.persist_pending_swarmflow_resume("sess-x", ["wf_1"])
+
+    assert team_helpers.pop_pending_swarmflow_resume("sess-x") == ["wf_1", "wf_2"]
+    assert team_helpers.pop_pending_swarmflow_resume("sess-x") == []  # consumed
+
+
+def test_mark_run_stopped_in_snapshot_without_handler(monkeypatch):
+    """Stop on a paused run while the team sleeps edits the snapshot directly.
+
+    The workflow handler is torn down with the team, so there is nobody to turn
+    a controller.stop into the stopped card; the snapshot is the only ledger
+    that survives until the team wakes up.
+    """
+    persisted: list[dict[str, WorkflowRunState]] = []
+    runs = {
+        "wf_1": WorkflowRunState(id="wf_1", status="paused"),
+        "wf_2": WorkflowRunState(id="wf_2", status="paused"),
+    }
+    monkeypatch.setattr(team_helpers, "restore_workflow_runs", lambda session_id: runs)
+    monkeypatch.setattr(
+        team_helpers, "persist_workflow_runs",
+        lambda r, session_id, **kw: persisted.append(r),
+    )
+
+    assert team_helpers.mark_run_stopped_in_snapshot("sess-x", "wf_1") is True
+    assert runs["wf_1"].status == "stopped"
+    assert runs["wf_2"].status == "paused"
+    assert persisted == [runs]
+    # already terminal / unknown run → no-op, no persist
+    assert team_helpers.mark_run_stopped_in_snapshot("sess-x", "wf_1") is False
+    assert team_helpers.mark_run_stopped_in_snapshot("sess-x", "nope") is False
+    assert len(persisted) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_pending_swarmflow_resume_prefers_ticket_then_launch_plane(monkeypatch):
+    """runtime_ready applies parked resumes: ticket first, launch plane when it is gone."""
+    invoked: list[dict[str, Any]] = []
+
+    class _Launcher:
+        async def invoke(self, inputs):
+            invoked.append(inputs)
+            return type("Out", (), {"success": True})()
+
+    class _Ctl:
+        _launcher = _Launcher()
+        async def resume(self, run_id):
+            return run_id == "wf_ticket"  # only this one still has a ticket
+
+    monkeypatch.setattr(team_helpers, "pop_pending_swarmflow_resume", lambda sid: ["wf_ticket", "wf_cold", "wf_nopath"])
+    monkeypatch.setattr(team_helpers, "get_background_task_controller", lambda sid: _Ctl())
+    monkeypatch.setattr(team_helpers, "restore_workflow_runs", lambda sid: {
+        "wf_cold": WorkflowRunState(id="wf_cold", status="paused", script_path="/abs/cold.py"),
+        "wf_nopath": WorkflowRunState(id="wf_nopath", status="paused"),
+    })
+
+    await team_helpers.apply_pending_swarmflow_resume("sess-x")
+
+    # wf_ticket: controller relaunch, no invoke. wf_cold: launch plane with
+    # script_path (args come back from the journal). wf_nopath: nothing usable.
+    assert invoked == [{"resume_id": "wf_cold", "script_path": "/abs/cold.py"}]
