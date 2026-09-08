@@ -1717,6 +1717,87 @@ async def test_warmup_ws_failure_keeps_ready_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sandbox_prewarm_lifecycle_protected_during_warmup(monkeypatch) -> None:
+    """断开清理不得误删预热在途（create 已就绪、实例 WS 未打通）的沙箱。
+
+    预热全程持有 task_count（acquire=True）：在途窗口内断开连接且延迟
+    清理到点时，清理路径必须因 task_count>0 拒绝删除；预热终态释放后，
+    保护交还给连接语义，再次清理可正常删除。
+    """
+    import jiuwenswarm.extensions.agentos.agentos_router.router_client as router_mod
+
+    monkeypatch.setattr(router_mod, "_DISCONNECT_CLEANUP_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(router_mod, "_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS", 0.01)
+
+    class GatedWsClient(FakeAgentWsClient):
+        """connect 阻塞在 gate 上，模拟实例 WS 预热在途窗口。"""
+
+        def __init__(self, yuanrong: FakeYuanRongClient) -> None:
+            super().__init__(yuanrong)
+            self.gate = asyncio.Event()
+
+        async def connect(self, uri: str) -> None:
+            await self.gate.wait()
+            await super().connect(uri)
+
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    gated_clients: list[GatedWsClient] = []
+
+    def ws_factory() -> GatedWsClient:
+        gated = GatedWsClient(yuanrong)
+        gated_clients.append(gated)
+        return gated
+
+    client = _router_client(
+        yuanrong,
+        agent_manager=agent_manager,
+        ws_client_factory=ws_factory,
+        disconnect_cleanup_timeout_seconds=0.01,
+    )
+
+    # 建连触发预热：create 立即完成（READY），WS 打通被 gate 卡住。
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    warmup_task = client._warmup_tasks.get("u1")
+    assert warmup_task is not None
+
+    runtime = None
+    for _ in range(500):
+        runtime = await agent_manager.get_agent("u1", "jiuwenswarm")
+        if runtime is not None and runtime.is_ready():
+            break
+        await asyncio.sleep(0.01)
+    assert runtime is not None and runtime.is_ready()
+    # 处于在途窗口：WS 未打通，且预热持有 task_count 保护。
+    assert gated_clients and not gated_clients[0].connected_uris
+    assert runtime.task_count == 1
+
+    # 断开连接 → 延迟清理到点：task_count>0 必须拒绝删除（重试耗尽后放弃）。
+    await client._on_channel_event(_channel_event("u1", "disconnected"))
+    cleanup = client._pending_cleanups.get("u1")
+    assert cleanup is not None
+    await cleanup
+
+    survived = await agent_manager.get_agent("u1", "jiuwenswarm")
+    assert survived is not None and survived.is_ready()
+    assert yuanrong.delete_calls == []
+
+    # 预热终态（WS 打通）→ 释放 task_count → 再次清理可正常删除。
+    for gated in gated_clients:
+        gated.gate.set()
+    await warmup_task
+    released = await agent_manager.get_agent("u1", "jiuwenswarm")
+    assert released is not None and released.task_count == 0
+
+    await asyncio.sleep(0.05)
+    await client._delayed_cleanup("u1")
+
+    assert await agent_manager.get_agent("u1", "jiuwenswarm") is None
+    assert yuanrong.delete_calls == ["sbx-1"]
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_chat_after_connect_warmup_reuses_sandbox() -> None:
     yuanrong = FakeYuanRongClient()
     client = _router_client(yuanrong)
