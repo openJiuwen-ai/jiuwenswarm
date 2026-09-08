@@ -2,8 +2,9 @@
 """Code Graph configuration for the Code adapter.
 
 ``code_graph.profile`` turns graph tools on: ``off`` is the original agent;
-``graph`` hangs find_* retrieval tools. ``code_graph.agent`` selects who owns
-them: ``root`` or ``code_agent``. Plan and Explore never get graph tools.
+``graph`` hangs focused retrieval tools (``focus_code``). ``code_graph.agent``
+selects who owns them: ``root`` or ``code_agent``. Plan and Explore never get
+graph tools. Retrieval interface is not a yaml knob.
 
 Product yaml writes ``agent: root``. An omitted or unknown ``agent`` key still
 resolves to ``code_agent`` so previous ContextBench runs stay comparable.
@@ -89,14 +90,35 @@ def resolve_agent(value: Any, *, default: str = AGENT_CODE) -> str:
     return default
 
 
-def resolve_retrieval_interface(value: Any, *, default: str = INTERFACE_CLASSIC) -> str:
-    """Accept ``classic`` / ``focused``. Missing or unknown values use ``classic``."""
+def resolve_retrieval_interface(value: Any, *, default: str = INTERFACE_FOCUSED) -> str:
+    """Accept ``classic`` / ``focused``. Missing or unknown values use ``focused``."""
     if value is None or isinstance(value, bool):
         return default
     text = str(value).strip().lower()
     if text in VALID_INTERFACES:
         return text
     return default
+
+
+def effective_retrieval_interface(
+    *,
+    profile: str,
+    prompt_mode: str | None = None,
+    explicit: str | None = None,
+) -> str:
+    """In-memory interface for one run. Not a product yaml key.
+
+    ``off`` is classic. Locate exam defaults to classic so later A/B can
+    still pass ``classic`` or ``focused``. Every other graph run is focused.
+    """
+    if resolve_profile(profile) == PROFILE_OFF:
+        return INTERFACE_CLASSIC
+    if explicit is not None and str(explicit).strip() != "":
+        return resolve_retrieval_interface(explicit)
+    mode = (prompt_mode or "").strip().lower()
+    if mode == "locate":
+        return INTERFACE_CLASSIC
+    return INTERFACE_FOCUSED
 
 
 _MIB = 1024 * 1024
@@ -223,13 +245,12 @@ def resolve_code_graph_flags(config_base: dict[str, Any] | None) -> CodeGraphFla
     if not isinstance(raw, dict):
         return CodeGraphFlags()
     profile = resolve_profile(raw.get("profile"))
-    interface = resolve_retrieval_interface(raw.get("retrieval_interface"))
-    if profile == PROFILE_OFF:
-        interface = INTERFACE_CLASSIC
     return CodeGraphFlags(
         profile=profile,
         agent=resolve_agent(raw.get("agent")),
-        retrieval_interface=interface,
+        retrieval_interface=(
+            INTERFACE_CLASSIC if profile == PROFILE_OFF else INTERFACE_FOCUSED
+        ),
     )
 
 
@@ -324,19 +345,16 @@ def apply_code_graph_profile(
 
     Does not rewrite ``code_graph.agent``. Eval hang is ``--graph-agent``.
     Extra keys in a live config stay in yaml; flags only read ``profile`` and
-    ``agent``.
+    ``agent``. ``retrieval_interface`` is not written: it is not a product
+    switch. Eval resolves it in memory.
     """
     from copy import deepcopy
 
+    del retrieval_interface
     cfg = deepcopy(config_base)
     graph = dict(cfg.get("code_graph") or {})
     graph["profile"] = resolve_profile(profile)
-    if retrieval_interface is not None:
-        graph["retrieval_interface"] = (
-            INTERFACE_CLASSIC
-            if graph["profile"] == PROFILE_OFF
-            else resolve_retrieval_interface(retrieval_interface)
-        )
+    graph.pop("retrieval_interface", None)
     cfg["code_graph"] = graph
     react = dict(cfg.get("react") or {})
     subagents = dict(react.get("subagents") or {})

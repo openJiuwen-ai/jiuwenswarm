@@ -21,6 +21,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     PROFILE_OFF,
     admit_code_graph_workspace,
     apply_code_graph_profile,
+    effective_retrieval_interface,
     enable_code_agent_subagent,
     format_source_volume_for_yaml,
     parse_source_volume_to_bytes,
@@ -514,7 +515,46 @@ def test_focused_interface_is_ignored_when_profile_off() -> None:
         PROFILE_GRAPH,
         retrieval_interface=INTERFACE_FOCUSED,
     )
+    assert "retrieval_interface" not in cfg["code_graph"]
     assert resolve_code_graph_flags(cfg).uses_focused is True
+
+
+def test_yaml_retrieval_interface_is_not_a_product_knob() -> None:
+    flags = resolve_code_graph_flags(
+        {"code_graph": {"profile": "graph", "retrieval_interface": "classic"}}
+    )
+    assert flags.retrieval_interface == INTERFACE_FOCUSED
+    assert flags.uses_focused is True
+    cfg = apply_code_graph_profile(
+        {"code_graph": {"profile": "graph", "retrieval_interface": "classic"}},
+        PROFILE_GRAPH,
+        retrieval_interface=INTERFACE_CLASSIC,
+    )
+    assert "retrieval_interface" not in cfg["code_graph"]
+    assert resolve_code_graph_flags(cfg).uses_focused is True
+
+
+def test_effective_interface_locate_stays_classic() -> None:
+    assert (
+        effective_retrieval_interface(profile=PROFILE_GRAPH, prompt_mode="locate")
+        == INTERFACE_CLASSIC
+    )
+    assert (
+        effective_retrieval_interface(profile=PROFILE_GRAPH, prompt_mode="product")
+        == INTERFACE_FOCUSED
+    )
+    assert (
+        effective_retrieval_interface(profile=PROFILE_OFF, prompt_mode="product")
+        == INTERFACE_CLASSIC
+    )
+    assert (
+        effective_retrieval_interface(
+            profile=PROFILE_GRAPH,
+            prompt_mode="locate",
+            explicit=INTERFACE_FOCUSED,
+        )
+        == INTERFACE_FOCUSED
+    )
 
 
 def test_task_mode_hidden_tools_and_capture_patch(tmp_path: Path) -> None:

@@ -48,19 +48,17 @@ code_graph:
 
 ## 打开后能做什么
 
-定位已知类/函数：`resolve_symbol` → `read_symbol`。
+定位已知类/函数：`resolve_symbol` → `focus_code`。
 
-不知道精确名：`find_code_symbols` 生成候选，再 `read_symbol`。
+不知道精确名：`find_code_symbols` 生成候选，再 `focus_code`。
 
 精确字面量（报错、配置键、decorator）：`search_source_text`。
 
 文件或类结构：`inspect_code_structure`。
 
-邻居关系：`find_callers` / `find_callees` / `find_importers` / `find_base_classes` / `find_subclasses`。
+需要调用 / 继承关系时：`focus_code` 并打开 `include_relations`。产品 `graph` **没有**独立的 `find_callers` / `read_symbol` / `select_code_context`。
 
-多跳调用链：`trace_call_paths`（必须传 `direction`）。
-
-定位完成后，同一个挂载点继续 `edit_file` / `write_file` 并跑测试。产品模式**没有** `submit_code_context`。
+定位完成后，同一个挂载点继续 `edit_file` / `write_file` 并跑测试。产品模式**没有** `submit_code_context`。检索面不是 yaml 开关：`graph` 即 focused，`off` 即原工具。
 
 ## 和评测脚本的区别
 

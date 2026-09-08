@@ -23,7 +23,7 @@ import sys
 import time
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,7 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
     PROFILE_OFF,
     CodeGraphFlags,
     apply_code_graph_profile,
+    effective_retrieval_interface,
     product_code_graph_config,
     resolve_code_graph_flags,
     resolve_profile,
@@ -341,7 +342,6 @@ def _code_agent_profile_kwargs(
     }
     if flags.enabled:
         kwargs["code_graph_config"] = graph_config
-    if flags.uses_focused:
         import inspect
 
         try:
@@ -421,9 +421,15 @@ def create_coding_agent(
     product = apply_code_graph_profile(
         config_base if isinstance(config_base, dict) else load_product_config(),
         resolved_profile,
-        retrieval_interface=retrieval_interface,
     )
-    flags = resolve_code_graph_flags(product)
+    flags = replace(
+        resolve_code_graph_flags(product),
+        retrieval_interface=effective_retrieval_interface(
+            profile=resolved_profile,
+            prompt_mode=prompt_mode,
+            explicit=retrieval_interface,
+        ),
+    )
     graph_config = _graph_config(product, work, cache_dir)
     model = model or build_model_from_env()
     trace = EvalTrace(
