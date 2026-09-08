@@ -79,6 +79,10 @@ const DETAIL_CONCURRENCY = 6;
 const LIVE_HINT_PULL_INTERVAL_MS = 80;
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 
+/** Upstream project the trajectory renderer is adapted from (MIT; see NOTICE.md). */
+const DSH_PROJECT_URL = 'https://github.com/deepseek-ai/deepseek-harness';
+const DSH_LICENSE_URL = `${DSH_PROJECT_URL}/blob/main/LICENSE`;
+
 interface TraceUpdatedPayload {
   session_id?: unknown;
   trace_id?: unknown;
@@ -276,6 +280,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       'toolbar.search': '搜索轨迹',
       'toolbar.searchPlaceholder': '搜索',
     },
+    attributionBasis: '本产品轨迹 UI 基于开源项目',
+    attributionLicense: '的轨迹组件开发构建，原项目遵循',
+    attributionLicenseSuffix: '。',
+    attributionCopyright: '原项目 Copyright © 2026 DeepSeek · 修改部分 © 2026 Huawei Technologies Co., Ltd.',
   } : {
     loading: 'Loading trajectory…',
     loadingProgress: (loaded: number, total: number) => `Loading trajectory ${loaded} / ${total}`,
@@ -314,6 +322,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     rawExpand: 'Expand raw OTel panel',
     rawResize: 'Resize raw OTel panel height',
     toolbar: undefined,
+    attributionBasis: 'The trajectory UI in this product is developed and built on the trajectory components of the open-source project',
+    attributionLicense: ', which is licensed under the',
+    attributionLicenseSuffix: '.',
+    attributionCopyright: 'Original project Copyright © 2026 DeepSeek · Modifications © 2026 Huawei Technologies Co., Ltd.',
   }, [chinese, teamMode]);
 
   const publish = useCallback((generation: number) => {
@@ -1448,6 +1460,31 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         </div>
       ) : null}
       <div ref={bodyRef} className={css.body}>{content}</div>
+      <footer className={css.footer}>
+        <p className={css.footerText}>
+          {copy.attributionBasis}{' '}
+          <a
+            className={css.footerLink}
+            href={DSH_PROJECT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            DeepSeek Harness
+          </a>
+          {copy.attributionLicense}{' '}
+          <a
+            className={css.footerLink}
+            href={DSH_LICENSE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            MIT License
+          </a>
+          {copy.attributionLicenseSuffix}
+          <br />
+          {copy.attributionCopyright}
+        </p>
+      </footer>
     </section>
   );
 });
