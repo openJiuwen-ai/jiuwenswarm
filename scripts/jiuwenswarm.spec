@@ -163,13 +163,6 @@ datas += collect_data_files(
     include_py_files=False,
     includes=DATA_FILE_PATTERNS,
 )
-try:
-    # The package is optional for OSS builds and mandatory for official Xiaoyi
-    # Work releases.  The runtime loader uses importlib.resources, so its JSON
-    # asset must be added explicitly instead of relying on module analysis.
-    datas += collect_data_files("xiaoyi_prompt_assets", include_py_files=False)
-except Exception as exc:  # noqa: BLE001
-    print(f"jiuwenswarm.spec: private prompt assets not installed: {exc}")
 for package_root in DISPATCH_PACKAGE_ROOTS:
     datas += collect_tree_data_files(
         os.path.join(symphony_root, package_root),
