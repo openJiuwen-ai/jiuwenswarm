@@ -6413,12 +6413,12 @@ def test_run_lamp_active_all_completed_agents_do_not_hold_lamp() -> None:
 # SDD-0018: _normalize_recovered_runs — park disk-restored zombies on cold start
 # ---------------------------------------------------------------------------
 
-def test_normalize_recovered_runs_parks_running_and_marks_recovered(monkeypatch):
-    """A crash-left running run is parked to paused and marked recovered.
+def test_normalize_recovered_runs_parks_running(monkeypatch):
+    """A crash-left running run is parked to paused.
 
     A restored running run has no live controller (registries are empty after a
-    restart), so parking it keeps the frontend lamp off while recovered=True
-    greys its control buttons.
+    restart) and no events will ever arrive; parking it keeps the idle lamp
+    honest. Buttons stay usable — resume parks a request and wakes the team.
     """
     persist_calls: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
@@ -6435,15 +6435,12 @@ def test_normalize_recovered_runs_parks_running_and_marks_recovered(monkeypatch)
     result = team_helpers._normalize_recovered_runs(runs, session_id="sess-cold")
 
     assert result is runs
-    # crash zombie: running -> paused (non-terminal, resumable via relaunch) + recovered
+    # crash zombie: running -> paused (non-terminal, resumable via relaunch)
     assert runs["running"].status == "paused"
-    assert runs["running"].recovered is True
-    # already parked: status untouched, recovered marker added
+    # already parked: untouched
     assert runs["paused"].status == "paused"
-    assert runs["paused"].recovered is True
-    # terminal run: neither parked nor marked — it truly finished
+    # terminal run: not parked — it truly finished
     assert runs["done"].status == "completed"
-    assert runs["done"].recovered is False
     # a change was persisted exactly once
     assert persist_calls == [("sess-cold", runs)]
 
@@ -6462,8 +6459,8 @@ def test_normalize_recovered_runs_only_terminal_no_persist(monkeypatch):
         "failed": WorkflowRunState(status="failed"),
     }
     team_helpers._normalize_recovered_runs(runs, session_id="sess-noop")
-    assert runs["done"].recovered is False
-    assert runs["failed"].recovered is False
+    assert runs["done"].status == "completed"
+    assert runs["failed"].status == "failed"
     assert persist_calls == []
 
 

@@ -143,7 +143,6 @@ export interface WorkflowRun {
   phase_total?: number;
   has_more?: boolean;
   /** 冷启动恢复的 run（无进程内 controller 句柄）；true 时控制按钮应置灰。 */
-  recovered?: boolean;
 }
 
 const SPLITTABLE_AGENT_FIELDS = [

@@ -859,22 +859,19 @@ def _normalize_recovered_runs(
 ) -> dict[str, WorkflowRunState] | None:
     """Normalize disk-restored runs after cold start.
 
-    Any non-terminal run is parked to ``paused`` (a crash left it ``running``
-    but no events will ever arrive) and marked ``recovered`` so the frontend
-    greys its control buttons — the controller registries are empty after a
-    restart, so only launch-plane recovery (leader advisory) can resume it.
+    A crash leaves runs ``running`` in the snapshot although no events will
+    ever arrive; park every non-terminal run to ``paused`` so it neither holds
+    the idle lamp nor lies as stopped. Control buttons stay usable: the
+    tree-view resume parks a request and wakes the team, and the launch plane
+    (``resume_id + script_path``) takes over when the controller ticket is gone.
     """
     if not runs:
         return runs
     changed = False
     for run in runs.values():
-        if not run.is_terminal:
-            if run.status != "paused":
-                run.status = "paused"
-                changed = True
-            if not run.recovered:
-                run.recovered = True
-                changed = True
+        if not run.is_terminal and run.status != "paused":
+            run.status = "paused"
+            changed = True
     if changed:
         persist_workflow_runs(runs, session_id)
     return runs

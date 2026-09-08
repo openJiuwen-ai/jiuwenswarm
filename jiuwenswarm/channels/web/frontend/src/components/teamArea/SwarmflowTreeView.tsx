@@ -786,7 +786,6 @@ function RunNode({
       : run.budget?.total != null && run.budget?.exhausted
         ? 'session'
         : null);
-  const isRecovered = run.recovered === true && run.status === 'paused';
 
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-card/50">
@@ -854,14 +853,6 @@ function RunNode({
             )}
           </span>
         )}
-        {isRecovered && (
-          <span
-            className="text-xs px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-500 shrink-0"
-            data-testid="team-area-swarmflow-run-recovered-badge"
-          >
-            {t('swarmflow.recoveredBadge')}
-          </span>
-        )}
         {(run.status === 'running' || run.status === 'paused') && (
           <div
             className="flex items-center gap-1 shrink-0"
@@ -869,9 +860,8 @@ function RunNode({
           >
             <button
               type="button"
-              title={t(isRecovered ? 'swarmflow.recoveredHint' : 'swarmflow.pauseResumeHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-muted"
-              disabled={isRecovered}
+              title={t('swarmflow.pauseResumeHint')}
+              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors"
               data-testid="team-area-swarmflow-run-pause-btn"
               data-variant={run.status === 'running' ? 'pause' : 'resume'}
               onClick={() => {
@@ -890,9 +880,8 @@ function RunNode({
             </button>
             <button
               type="button"
-              title={t(isRecovered ? 'swarmflow.recoveredHint' : 'swarmflow.stopHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-muted"
-              disabled={isRecovered}
+              title={t('swarmflow.stopHint')}
+              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors"
               data-testid="team-area-swarmflow-run-stop-btn"
               onClick={() => {
                 void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
