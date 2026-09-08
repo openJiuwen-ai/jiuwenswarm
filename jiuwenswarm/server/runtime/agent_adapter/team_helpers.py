@@ -2581,7 +2581,7 @@ async def _process_team_message_stream(
                 # args 由 agent-core 从 journal 自动恢复，提示只含 resume_id+script_path。
                 wf_handler = team_manager.get_workflow_handler(session_id)
                 runs = wf_handler.get_run_states() if wf_handler is not None else {}
-                if isinstance(query, str) and runs and not _is_member_addressed(query):
+                if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
                     turn = _inject_swarmflow_context(turn.with_text(query), runs, cold_start=False)
                     query = turn.text if isinstance(turn.text, str) else query
                 followup_payload = _deliverable(turn, query)
@@ -2790,7 +2790,7 @@ async def _process_team_message_stream(
             # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
             wf_handler = team_manager.get_workflow_handler(session_id)
             runs = wf_handler.get_run_states() if wf_handler is not None else {}
-            if isinstance(query, str) and runs and not _is_member_addressed(query):
+            if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
                 turn = _inject_swarmflow_context(turn.with_text(query), runs, cold_start=True)
                 query = turn.text if isinstance(turn.text, str) else query
             try:
