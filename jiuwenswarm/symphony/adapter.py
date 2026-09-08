@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
-from openjiuwen.symphony import (
+from openjiuwen.symphony import (  # type: ignore[import-untyped]
     CapabilityFingerprint,
     CapabilityDescriptor,
     FingerprintArtifact,
@@ -129,7 +129,7 @@ def orchestration_config_from_swarm(
         top_k=orchestration.top_k,
         max_depth=orchestration.max_depth,
         min_edge_confidence=orchestration.min_edge_confidence,
-        dynamic_graph_enabled=config.evolution.enabled,
+        dynamic_graph_enabled=_core_dynamic_graph_enabled(config),
     )
 
 
@@ -144,7 +144,7 @@ def graph_build_orchestration_config_from_swarm(
         top_k=orchestration.top_k,
         max_depth=orchestration.max_depth,
         min_edge_confidence=config.build.min_edge_confidence,
-        dynamic_graph_enabled=config.evolution.enabled,
+        dynamic_graph_enabled=_core_dynamic_graph_enabled(config),
     )
 
 
@@ -162,6 +162,11 @@ def graph_config_from_swarm(config: SymphonyConfig) -> dict[str, Any]:
     ):
         graph_config[key] = getattr(build, key)
     return graph_config
+
+
+def _core_dynamic_graph_enabled(config: SymphonyConfig) -> bool:
+    backend = getattr(config.evolution, "backend", None)
+    return bool(config.evolution.enabled and (backend is None or backend == "core"))
 
 
 def llm_config_signature(config: LLMConfig) -> str:

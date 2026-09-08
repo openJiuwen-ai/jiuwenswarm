@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future as ConcurrentFuture
+import hashlib
 import inspect
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable
+import tempfile
+from typing import Any, Callable, TypeAlias
 
-from openjiuwen.symphony import SymphonyRuntime, normalize_name_key
+import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
@@ -25,6 +28,7 @@ from jiuwenswarm.symphony.adapter import (
     orchestration_config_from_swarm,
 )
 from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
+from jiuwenswarm.symphony.experience import JiuwenSwarmSkillAdapter
 from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
@@ -33,8 +37,152 @@ from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
 
 logger = logging.getLogger(__name__)
 
+CombinationCandidateType: TypeAlias = Any
+SymphonyRuntimeType: TypeAlias = Any
+SymphonyRuntime = core_symphony.SymphonyRuntime
+normalize_name_key = core_symphony.normalize_name_key
+CapabilityPackager = core_symphony.flow.CapabilityPackager
+LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
+PackageReviewGate = core_symphony.flow.PackageReviewGate
+SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
+VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
+
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
+
+
+def experience_request_id(recipe_id: str, version: int) -> str:
+    """Return the stable Host request id for one immutable Recipe version."""
+
+    digest = hashlib.sha256(f"{recipe_id}:{version}".encode()).hexdigest()[:20]
+    return f"symphony_experience_{digest}"
+
+
+def _graph_scope_id(graph_dir: Path) -> str:
+    digest = hashlib.sha256(str(graph_dir.resolve()).encode()).hexdigest()[:20]
+    return f"jiuwenswarm-{digest}"
+
+
+def _configured_evolution_backend(config: Any) -> str:
+    # Hand-built legacy config objects have no backend field and retain the
+    # pre-Core overlay behavior. Normalized config always supplies ``core``.
+    return str(getattr(config.evolution, "backend", "legacy") or "legacy")
+
+
+def _flow_enabled(config: Any) -> bool:
+    return bool(getattr(getattr(config, "flow", None), "enabled", False)) and (
+        _configured_evolution_backend(config) == "core"
+    )
+
+
+def _flow_dir(config: Any) -> Path | None:
+    value = getattr(getattr(config, "flow", None), "flow_dir", None)
+    return Path(value) if value else None
+
+
+def _unique_candidates(
+    candidates: tuple[CombinationCandidateType, ...],
+) -> tuple[CombinationCandidateType, ...]:
+    output: list[CombinationCandidateType] = []
+    seen: set[tuple[str, int]] = set()
+    for candidate in candidates:
+        key = (candidate.recipe_id, candidate.version)
+        if key not in seen:
+            seen.add(key)
+            output.append(candidate)
+    return tuple(output)
+
+
+def _candidate_question(
+    candidate: CombinationCandidateType,
+    *,
+    request_id: str,
+) -> dict[str, Any]:
+    structure = (
+        "；".join(
+            f"{source} → {target} ({relation})"
+            for source, target, relation in candidate.structure
+        )
+        or "线性组合能力"
+    )
+    statistics = (
+        f"成功 {candidate.success_count}/{candidate.execution_count} 次"
+        f"（{candidate.success_rate:.0%}）"
+    )
+    question = "\n".join(
+        (
+            candidate.applicability or "发现一条可复用的成功能力组合。",
+            f"能力结构：{structure}",
+            f"历史统计：{statistics}",
+            "是否安装为组合 Skill？",
+        )
+    )
+    return {
+        "event_type": "chat.ask_user_question",
+        "request_id": request_id,
+        "questions": [
+            {
+                "header": (candidate.name or "组合 Skill")[:12],
+                "question": question,
+                "options": [
+                    {"label": "安装", "description": "评审通过后安装组合 Skill。"},
+                    {"label": "稍后", "description": "保留经验，暂不安装。"},
+                ],
+                "multi_select": False,
+            }
+        ],
+        "evolution_meta": {
+            "event_kind": "approval",
+            "rail_kind": "symphony_experience",
+            "approval_kind": "install",
+            "request_id": request_id,
+            "recipe_id": candidate.recipe_id,
+            "recipe_version": candidate.version,
+        },
+    }
+
+
+def _candidate_payload(candidate: CombinationCandidateType) -> dict[str, Any]:
+    return {
+        "recipe_id": candidate.recipe_id,
+        "recipe_version": candidate.version,
+        "name": candidate.name,
+        "applicability": candidate.applicability,
+        "structure": [list(item) for item in candidate.structure],
+        "execution_count": candidate.execution_count,
+        "success_count": candidate.success_count,
+        "success_rate": candidate.success_rate,
+    }
+
+
+def _read_install_receipt(flow_root: Path, request_id: str) -> dict[str, Any] | None:
+    path = flow_root / "install_receipts" / f"{request_id}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("request_id") != request_id:
+        return None
+    return payload if isinstance(payload.get("installed"), bool) else None
+
+
+def _save_install_receipt(flow_root: Path, receipt: dict[str, Any]) -> None:
+    directory = flow_root / "install_receipts"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{receipt['request_id']}.json"
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(receipt, handle, ensure_ascii=False, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 class SwarmSymphonyService:
@@ -43,8 +191,16 @@ class SwarmSymphonyService:
     def __init__(self) -> None:
         self._build_guard = asyncio.Lock()
         self._active_build_task: asyncio.Task | None = None
-        self._runtime: SymphonyRuntime | None = None
+        self._runtime: SymphonyRuntimeType | None = None
         self._runtime_key: tuple[Any, ...] | None = None
+        self._flow_started = False
+        self._recovered_candidates: tuple[CombinationCandidateType, ...] = ()
+        self._candidate_locks: dict[tuple[str, int], asyncio.Lock] = {}
+        self._notified_candidates: set[tuple[str, int]] = set()
+        self._install_lock = asyncio.Lock()
+        self._install_receipts: dict[str, dict[str, Any]] = {}
+        self._retired_runtime_tasks: set[asyncio.Task[None]] = set()
+        self._closing = False
 
     async def graph_status(
         self,
@@ -204,7 +360,10 @@ class SwarmSymphonyService:
                 disabled_skill_names=load_execution_disabled_skills(),
                 dynamic_overlay=(
                     load_dynamic_overlay(graph_dir)
-                    if config.evolution.enabled
+                    if (
+                        config.evolution.enabled
+                        and _configured_evolution_backend(config) == "legacy"
+                    )
                     else None
                 ),
             )
@@ -265,37 +424,57 @@ class SwarmSymphonyService:
                             "retryable": False,
                             "build_status": "running",
                             "operation": "plan",
-                            "detail": graph_build.get("detail")
-                            or failure["detail"],
+                            "detail": graph_build.get("detail") or failure["detail"],
                         }
                     )
                 return failure
             graph_build["rebuilt"] = True
         else:
             graph_build = None
+        transient_runtime = llm_config is not None
+        runtime = None
         try:
             runtime = (
                 self._runtime_for(config, llm_config=llm_config)
                 if llm_config is not None
                 else self._runtime_for(config)
             )
-            public_payload = await runtime.orchestration.plan(
-                query,
-                candidate_ids=candidate_ids,
-                language=language,
-                progress=progress,
-                disabled_capability_ids=load_execution_disabled_skills(),
-                dynamic_overlay=(
-                    load_dynamic_overlay(graph_dir)
-                    if config.evolution.enabled
-                    else None
-                ),
-                mode=requested_mode,
-            )
+            plan_kwargs = {
+                "candidate_ids": candidate_ids,
+                "language": language,
+                "progress": progress,
+                "disabled_capability_ids": load_execution_disabled_skills(),
+                "mode": requested_mode,
+            }
+            if (
+                config.evolution.enabled
+                and _configured_evolution_backend(config) == "legacy"
+            ):
+                public_payload = await runtime.orchestration.plan(
+                    query,
+                    dynamic_overlay=load_dynamic_overlay(graph_dir),
+                    **plan_kwargs,
+                )
+            elif hasattr(runtime, "graph_engine"):
+                public_payload = await runtime.graph_engine.plan(
+                    query,
+                    graph_scope_id=runtime.graph_scope_id,
+                    **plan_kwargs,
+                )
+            else:
+                # Compatibility for embedded runtimes predating GraphEngine.
+                public_payload = await runtime.orchestration.plan(
+                    query,
+                    dynamic_overlay=None,
+                    **plan_kwargs,
+                )
             payload = public_payload.to_dict()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Symphony planning failed")
             payload = {"success": False, "detail": str(exc)}
+        finally:
+            if transient_runtime and runtime is not None:
+                await self._close_transient_runtime(runtime)
         if not isinstance(payload, dict):
             return {
                 "success": False,
@@ -464,8 +643,12 @@ class SwarmSymphonyService:
         config,
         *,
         llm_config: LLMConfig | None = None,
-    ) -> SymphonyRuntime:
-        llm_config = llm_config or LLMConfig.from_default_model()
+    ) -> SymphonyRuntimeType:
+        if self._closing:
+            raise RuntimeError("Symphony service is closing")
+        if llm_config is not None:
+            return self._create_runtime(config, llm_config, with_flow=False)
+        llm_config = LLMConfig.from_default_model()
         llm_signature = llm_config_signature(llm_config)
         key = (
             str(config.paths.graph_dir),
@@ -474,19 +657,389 @@ class SwarmSymphonyService:
             config.orchestration.max_depth,
             config.orchestration.min_edge_confidence,
             config.evolution.enabled,
+            _configured_evolution_backend(config),
+            _flow_enabled(config),
+            str(_flow_dir(config) or ""),
             llm_signature,
         )
         if self._runtime is None or self._runtime_key != key:
-            self._runtime = SymphonyRuntime(
-                graph_artifact_root=config.paths.graph_dir,
-                capability_provider=(),
-                model=model_from_config(llm_config),
-                model_response_observer=model_response_observer_from_config(llm_config),
-                orchestration_config=orchestration_config_from_swarm(config),
-                graph_config=graph_config_from_swarm(config),
-            )
+            previous_runtime = self._runtime
+            if (
+                previous_runtime is not None
+                and getattr(previous_runtime, "flow_engine", None) is not None
+            ):
+                # A Flow store has exactly one process owner. Configuration
+                # changes take effect after orderly service restart.
+                return previous_runtime
+            if previous_runtime is not None:
+                self._retire_runtime(previous_runtime)
+            self._runtime = self._create_runtime(config, llm_config, with_flow=True)
             self._runtime_key = key
+            self._flow_started = False
+            self._notified_candidates.clear()
         return self._runtime
+
+    def _create_runtime(
+        self,
+        config: Any,
+        llm_config: LLMConfig,
+        *,
+        with_flow: bool,
+    ) -> SymphonyRuntimeType:
+        model = model_from_config(llm_config)
+        flow_engine = None
+        if with_flow and _flow_enabled(config):
+            flow_dir = _flow_dir(config) or config.paths.graph_dir.parent / "flow"
+            flow_engine = SymphonyFlowEngine(
+                flow_dir,
+                llm_client=model,
+                gate=PackageReviewGate(LLMPackageReviewAgent(model)),
+                skill_adapter=JiuwenSwarmSkillAdapter(),
+            )
+        return SymphonyRuntime(
+            graph_artifact_root=config.paths.graph_dir,
+            capability_provider=(),
+            model=model,
+            model_response_observer=model_response_observer_from_config(llm_config),
+            orchestration_config=orchestration_config_from_swarm(config),
+            graph_config=graph_config_from_swarm(config),
+            flow_engine=flow_engine,
+            graph_scope_id=_graph_scope_id(config.paths.graph_dir),
+        )
+
+    @staticmethod
+    async def _close_transient_runtime(runtime: SymphonyRuntimeType) -> None:
+        close = getattr(runtime, "aclose", None)
+        if callable(close):
+            await close()
+            return
+        close = getattr(runtime, "close", None)
+        if callable(close):
+            close()
+
+    def _retire_runtime(self, runtime: SymphonyRuntimeType) -> None:
+        """Close a replaced Runtime without blocking synchronous Rail assembly."""
+
+        if getattr(runtime, "flow_engine", None) is None:
+            close = getattr(runtime, "close", None)
+            if callable(close):
+                close()
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(runtime.aclose())
+            return
+        task = loop.create_task(runtime.aclose(), name="symphony-runtime-retire")
+        self._retired_runtime_tasks.add(task)
+        task.add_done_callback(self._consume_retired_runtime_result)
+
+    def _consume_retired_runtime_result(self, task: asyncio.Task[None]) -> None:
+        self._retired_runtime_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Retired Symphony runtime close failed (%s)",
+                type(exc).__name__,
+            )
+
+    def runtime(self) -> SymphonyRuntimeType:
+        """Return the process-local Core runtime for Rail assembly."""
+
+        return self._runtime_for(load_symphony_config())
+
+    async def submit_evolution_and_notify(
+        self,
+        planned_graph: dict[str, Any] | None,
+        execution_graph: dict[str, Any],
+        *,
+        session_id: str,
+        capture_mode: str,
+        channel_id: str | None,
+    ) -> None:
+        """Submit one Rail graph pair and deliver any new install candidates."""
+
+        config = load_symphony_config()
+        if not config.evolution.enabled and not _flow_enabled(config):
+            return
+        runtime = self._runtime_for(config)
+        result = await runtime.submit_evolution(
+            planned_graph,
+            execution_graph,
+            session_id=session_id,
+            capture_mode=capture_mode,
+        )
+        if not _flow_enabled(config):
+            return
+        recovered = self._recovered_candidates
+        try:
+            recovered = (*recovered, *await self._start_flow(runtime))
+            self._recovered_candidates = ()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Symphony Flow startup recovery failed (%s)",
+                type(exc).__name__,
+            )
+        candidates = _unique_candidates((*recovered, *result.new_candidates))
+        for candidate in candidates:
+            try:
+                await self._notify_candidate(
+                    candidate, session_id=session_id, channel_id=channel_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Symphony candidate delivery failed (%s)",
+                    type(exc).__name__,
+                )
+
+    async def _start_flow(
+        self,
+        runtime: SymphonyRuntimeType,
+    ) -> tuple[CombinationCandidateType, ...]:
+        if runtime.flow_engine is None or self._flow_started:
+            return ()
+        candidates = await runtime.flow_engine.start()
+        self._flow_started = True
+        return tuple(candidates)
+
+    async def start(self) -> None:
+        """Start Flow recovery when the feature is enabled."""
+
+        config = load_symphony_config()
+        if not config.enabled or not _flow_enabled(config):
+            return
+        runtime = self._runtime_for(config)
+        recovered = await self._start_flow(runtime)
+        if recovered:
+            self._recovered_candidates = _unique_candidates(
+                (*self._recovered_candidates, *recovered)
+            )
+
+    async def _notify_candidate(
+        self,
+        candidate: CombinationCandidateType,
+        *,
+        session_id: str,
+        channel_id: str | None,
+        force: bool = False,
+    ) -> None:
+        key = (candidate.recipe_id, candidate.version)
+        lock = self._candidate_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key in self._notified_candidates and not force:
+                return
+            request_id = experience_request_id(*key)
+            payload = _candidate_question(candidate, request_id=request_id)
+            from jiuwenswarm.runtime.host_services import RuntimeHostPushTransport
+            from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
+                EvolutionPushContext,
+                push_evolution_event,
+            )
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                build_server_push_message,
+            )
+
+            await push_evolution_event(
+                EvolutionPushContext(
+                    transport=RuntimeHostPushTransport(),
+                    channel_id=channel_id,
+                    session_id=session_id,
+                ),
+                request_id,
+                payload,
+                build_server_push_message,
+            )
+            # Delivery succeeded. Keep the process-local guard even if the
+            # persistent Flow acknowledgement is stale or temporarily fails;
+            # otherwise concurrent submissions can show the same prompt again.
+            self._notified_candidates.add(key)
+            runtime = self._runtime
+            if runtime is None or runtime.flow_engine is None:
+                return
+            try:
+                runtime.flow_engine.acknowledge_candidate(*key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Symphony candidate acknowledgement failed (%s)",
+                    type(exc).__name__,
+                )
+
+    def list_experience_candidates(self) -> dict[str, Any]:
+        """Return installable Recipe versions retained by the Core Flow store."""
+
+        config = load_symphony_config()
+        if not config.enabled or not _flow_enabled(config):
+            return {"success": True, "enabled": False, "candidates": []}
+        flow = self._runtime_for(config).flow_engine
+        candidates = flow.list_candidates() if flow is not None else ()
+        return {
+            "success": True,
+            "enabled": True,
+            "candidates": [_candidate_payload(item) for item in candidates],
+        }
+
+    async def request_experience_candidate(
+        self,
+        *,
+        recipe_id: str,
+        recipe_version: int,
+        session_id: str,
+        channel_id: str | None,
+    ) -> dict[str, Any]:
+        """Re-send one retained candidate through the existing Host question flow."""
+
+        config = load_symphony_config()
+        if not config.enabled or not _flow_enabled(config):
+            return {"success": False, "reason": "flow_disabled"}
+        flow = self._runtime_for(config).flow_engine
+        candidate = (
+            flow.get_candidate(recipe_id, version=recipe_version)
+            if flow is not None
+            else None
+        )
+        if candidate is None:
+            return {"success": False, "reason": "candidate_not_found"}
+        await self._notify_candidate(
+            candidate,
+            session_id=session_id,
+            channel_id=channel_id,
+            force=True,
+        )
+        return {
+            "success": True,
+            "request_id": experience_request_id(recipe_id, recipe_version),
+            "candidate": _candidate_payload(candidate),
+        }
+
+    async def install_candidate(
+        self,
+        *,
+        request_id: str,
+        recipe_id: str,
+        recipe_version: int,
+        package_id: str | None,
+        integrity: str | None,
+        skill_manager: Any,
+    ) -> dict[str, Any]:
+        """Prepare, validate, and install one server-owned Skill artifact."""
+
+        expected_request_id = experience_request_id(recipe_id, recipe_version)
+        if request_id != expected_request_id:
+            return {"installed": False, "reason": "invalid_request_id"}
+        async with self._install_lock:
+            previous = self._install_receipts.get(request_id)
+            if previous is not None:
+                return {**previous, "newly_installed": False, "replayed": True}
+            runtime = self.runtime()
+            flow = runtime.flow_engine
+            if flow is None:
+                return {"installed": False, "reason": "flow_disabled"}
+            persisted = _read_install_receipt(flow.store.root.resolve(), request_id)
+            if persisted is not None:
+                self._install_receipts[request_id] = dict(persisted)
+                return {**persisted, "newly_installed": False, "replayed": True}
+            preparation = await flow.review_and_prepare_install(
+                recipe_id,
+                recipe_version=recipe_version,
+            )
+            package = preparation.package or {}
+            actual_package_id = str(package.get("package_id") or "")
+            actual_integrity = str(package.get("integrity") or "")
+            if preparation.verdict != VERDICT_APPROVED:
+                result = {
+                    "installed": False,
+                    "newly_installed": False,
+                    "replayed": False,
+                    "reason": preparation.verdict,
+                    "details": list(preparation.reasons),
+                    "recipe_id": recipe_id,
+                    "recipe_version": recipe_version,
+                    "request_id": request_id,
+                }
+                _save_install_receipt(flow.store.root.resolve(), result)
+                self._install_receipts[request_id] = dict(result)
+                return result
+            if package_id and package_id != actual_package_id:
+                return {"installed": False, "reason": "package_id_mismatch"}
+            if integrity and integrity != actual_integrity:
+                return {"installed": False, "reason": "integrity_mismatch"}
+            if not CapabilityPackager.verify_package_integrity(package):
+                return {"installed": False, "reason": "invalid_integrity"}
+            flow_root = flow.store.root.resolve()
+            with tempfile.TemporaryDirectory(
+                prefix=".symphony-install-", dir=flow_root
+            ) as staging_value:
+                artifact_dir = Path(staging_value).resolve()
+                JiuwenSwarmSkillAdapter.render(package, artifact_dir)
+                recover = getattr(skill_manager, "recover_symphony_skill_install", None)
+                installed = (
+                    recover(
+                        artifact_dir,
+                        package_id=actual_package_id,
+                        integrity=actual_integrity,
+                    )
+                    if callable(recover)
+                    else None
+                )
+                if installed is None:
+                    try:
+                        installed = skill_manager.install_symphony_skill_artifact(
+                            artifact_dir,
+                            expected_root=flow_root,
+                            package_id=actual_package_id,
+                            integrity=actual_integrity,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Symphony Skill install failed (%s)",
+                            type(exc).__name__,
+                        )
+                        return {"installed": False, "reason": "install_failed"}
+            receipt = {
+                "installed": bool(installed.get("success")),
+                "newly_installed": bool(installed.get("success")),
+                "replayed": False,
+                "recipe_id": recipe_id,
+                "recipe_version": recipe_version,
+                "package_id": actual_package_id,
+                "integrity": actual_integrity,
+                "request_id": request_id,
+                "skill": installed.get("skill"),
+            }
+            if receipt["installed"]:
+                _save_install_receipt(flow_root, receipt)
+                self._install_receipts[request_id] = dict(receipt)
+            return receipt
+
+    async def close(self) -> None:
+        """Drain Flow and Graph workers and release the process runtime."""
+
+        if self._closing:
+            return
+        self._closing = True
+        runtime, self._runtime = self._runtime, None
+        self._runtime_key = None
+        self._flow_started = False
+        self._recovered_candidates = ()
+        self._candidate_locks.clear()
+        self._notified_candidates.clear()
+        runtime_error: BaseException | None = None
+        try:
+            if runtime is not None:
+                await runtime.aclose()
+        except BaseException as exc:
+            runtime_error = exc
+        finally:
+            retired = tuple(self._retired_runtime_tasks)
+            if retired:
+                await asyncio.gather(*retired, return_exceptions=True)
+            self._retired_runtime_tasks.clear()
+            self._closing = False
+        if runtime_error is not None:
+            raise runtime_error
 
     @staticmethod
     def _read_graph_artifact(graph_dir: Path) -> dict[str, Any]:
