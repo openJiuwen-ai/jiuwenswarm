@@ -2140,10 +2140,10 @@ class TeamManager:
         paused/destroyed team leaves dangling handles still burning tokens.
         Pause keeps the relaunch ticket (resumable); stop drops it (seal).
 
-        Yields after dispatch: the abort unwinds asynchronously (cancel →
-        engine writes the pause/seal record → emits the terminal progress
-        event), and the workflow handler must still be alive to turn that
-        event into the paused/stopped snapshot + frontend broadcast.
+        The controller only returns once each cancelled task has unwound, i.e.
+        the engine has written the pause/seal record and emitted the terminal
+        progress event — so the workflow handler (still alive at this point)
+        has it in its queue before anything tears the harness down.
         """
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             get_background_task_controller,
@@ -2155,8 +2155,6 @@ class TeamManager:
                 await controller.pause(None)
             else:
                 await controller.stop(None)
-            for _ in range(3):
-                await asyncio.sleep(0)
         except Exception as exc:
             logger.warning(
                 "[TeamManager] background task controller dispatch failed: "
