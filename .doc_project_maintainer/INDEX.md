@@ -1,6 +1,6 @@
 # Project Maintainer Index
 
-Status: partial. A 2026-07-15 semantic-hash scan at `10afedf2` found 0 expired audits among the 128 existing `AgentWebSocketServer` method reviews; wider repository coverage remains partial.
+Status: partial. The 2026-07-15 scan found 0 expired audits among 128 reviewed `AgentWebSocketServer` methods; wider coverage remains partial.
 
 ## Project
 
@@ -14,6 +14,7 @@ Status: partial. A 2026-07-15 semantic-hash scan at `10afedf2` found 0 expired a
 - [AgentServer Runtime](modules/agentserver-runtime/README.md): standalone agent server, WebSocket RPC dispatch, sessions, commands, server push, scheduler, sandbox, ACP.
 - [Gateway And Channels](modules/gateway-and-channels/README.md): Gateway clients and channel surfaces that talk to AgentServer.
 - [Agent Harness](modules/agent-harness/README.md): agent adapters, rails, team orchestration, memory, skills, and tools.
+- [Runtime Session](modules/runtime-session/README.md): product Session execution registry, scheduling, cancellation, generation isolation, and the Process CLI reference chain.
 - [Project Packaging](modules/project-packaging/README.md): package metadata, launch scripts, deploy and installer assets.
 
 ## Directories
@@ -34,6 +35,7 @@ Status: partial. A 2026-07-15 semantic-hash scan at `10afedf2` found 0 expired a
 - [AgentServer History Stream](project/flows/agentserver-history-stream.md)
 - [Session Prewarm And Allocation](project/flows/session-prewarm-allocation.md)
 - [Eternal Conversation Memory](project/flows/eternal-conversation-memory.md)
+- [Runtime Session Reference Chain](project/flows/runtime-session-reference-chain.md)
 
 ## Decisions And Recent Changes
 
@@ -44,6 +46,8 @@ Status: partial. A 2026-07-15 semantic-hash scan at `10afedf2` found 0 expired a
 - [CHG-20260803-001](changes/records/CHG-20260803-001-enable-session-prewarm-by-default.md): prewarming on by default; `JIUWENSWARM_AGENT_PREWARM` becomes an opt-out.
 - [CHG-20260803-002](changes/records/CHG-20260803-002-tui-external-session-create.md): unified TUI startup `session.create` barrier, normal AgentServer allocation, and explicit-ID prewarm bypass.
 - [CHG-20260818-001](changes/records/CHG-20260818-001-persist-session-creation-contract.md): immutable Persist Session creation contract, UI state, and prewarm-safe activation.
+- [CHG-20260907-001](changes/records/CHG-20260907-001-runtime-session-reference-chain.md): managed Runtime Session foundation and retained Process CLI Work/Code reference chain.
+- [CHG-20260908-001](changes/records/CHG-20260908-001-process-cli-managed-only.md): remove managed-path rollback, forwarding layers, and unused scaffolding.
 
 ## Priority Code Symbols
 

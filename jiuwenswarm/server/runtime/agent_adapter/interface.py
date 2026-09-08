@@ -2500,6 +2500,19 @@ class JiuWenSwarm:
         return plan_language in {"cn", "en"}
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
+        """Process a request through the facade-owned Session scheduler."""
+        return await self._process_message(request, schedule_session=True)
+
+    async def execute_message(self, request: AgentRequest) -> AgentResponse:
+        """Execute one request when scheduling is owned by AgentRuntime."""
+        return await self._process_message(request, schedule_session=False)
+
+    async def _process_message(
+        self,
+        request: AgentRequest,
+        *,
+        schedule_session: bool,
+    ) -> AgentResponse:
         """处理非流式请求.
 
         支持多 session 并发执行，同 session 内任务按先进后出顺序执行.
@@ -2728,7 +2741,12 @@ class JiuWenSwarm:
             return await adapter.process_message_impl(request, inputs)
 
         try:
-            result = await self._session_manager.submit_and_wait(session_id, run_agent_task)
+            if schedule_session:
+                result = await self._session_manager.submit_and_wait(
+                    session_id, run_agent_task
+                )
+            else:
+                result = await run_agent_task()
         except asyncio.CancelledError:
             _schedule_feedback_once("cancelled")
             raise
@@ -2812,6 +2830,26 @@ class JiuWenSwarm:
         if not feedback_scheduled:
             _schedule_feedback_once("success" if result.ok else "error")
         return result
+
+    async def deliver_control_input(
+        self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """Inject an interaction answer into this Session's active execution."""
+        if not is_interrupt_resume_payload(request.params):
+            raise ValueError("control input must answer an active interaction")
+        adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        session_id = self._session_manager.get_session_id(request.session_id)
+        params = request.params if isinstance(request.params, dict) else {}
+        restore_chat_send_equipment_params(session_id, params)
+        inputs, _memory_mode, _user_turn = self._build_inputs(request)
+        await self.reconcile_session_mcp(
+            request.session_id,
+            compute_chat_send_mcp_needed(params),
+            model_name=params.get("model_name"),
+            history_before_request_id=request.request_id,
+        )
+        async for chunk in adapter.process_message_stream_impl(request, inputs):
+            yield chunk
 
     async def process_message_stream(
             self, request: AgentRequest
@@ -2935,12 +2973,6 @@ class JiuWenSwarm:
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
         team_flag = request.params.get("team", False) if isinstance(request.params, dict) else False
         is_team_mode = team_flag or is_team_runtime_mode(mode)
-        is_auto_harness_resume = (
-            isinstance(mode, str)
-            and mode.strip().lower() == "auto_harness"
-            and isinstance(request.params.get("activate_response"), dict)
-        )
-
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         # command.goal set history is written only after a successful set inside
@@ -3020,15 +3052,10 @@ class JiuWenSwarm:
         # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
         # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此
         # leader 收到的信封与单 agent 逐字段一致。
-        team_query_is_interactive_input = False
         if is_team_mode:
-            from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-
-            team_query_is_interactive_input = isinstance(inputs.get("query"), InteractiveInput)
             inputs[TEAM_USER_TURN_KEY] = user_turn
             logger.info(
-                "[JiuWenSwarm] Team模式 user turn: interactive_input=%s text=%s",
-                team_query_is_interactive_input,
+                "[JiuWenSwarm] Team模式 user turn: text=%s",
                 str(user_turn.text)[:100],
             )
 
@@ -3052,36 +3079,6 @@ class JiuWenSwarm:
                 raise
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
             inputs["memory_block"] = memory_block
-
-        # Team 模式: 检查是否是后续请求（需要绕过 Session Manager）
-        is_team_first_request = True
-        if is_team_mode:
-            from jiuwenswarm.agents.harness.team import get_team_manager
-            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _team_session_has_runtime
-
-            team_manager = get_team_manager(request.channel_id)
-            if team_query_is_interactive_input:
-                # Interrupt-resume answers must bypass the session queue and
-                # flow straight into team_helpers, which knows how to wait for
-                # or recover a paused runtime before calling interact().
-                is_team_first_request = False
-            else:
-                try:
-                    is_team_first_request = not await _team_session_has_runtime(
-                        team_manager, session_id
-                    )
-                except asyncio.CancelledError:
-                    _schedule_feedback_once("cancelled")
-                    raise
-                except Exception:
-                    _schedule_feedback_once("error")
-                    raise
-            logger.info(
-                "[JiuWenSwarm] Team模式: session_id=%s is_first=%s interactive_input=%s",
-                session_id,
-                is_team_first_request,
-                team_query_is_interactive_input,
-            )
 
         stream_queue = asyncio.Queue(maxsize=self.STREAM_QUEUE_MAXSIZE)
         stream_done = asyncio.Event()
@@ -3276,28 +3273,7 @@ class JiuWenSwarm:
                     )
                     stream_done.set()
 
-        # Team 模式: 后续请求直接执行，绕过 Session Manager 队列
-        # 因为 Team 是长期运行的(persistent)，interact 调用不需要等待前一个任务完成
-        # team_helpers 只串行化同一 session 的首次启动，已有流上的输入可并发提交
-        if is_team_mode and not is_team_first_request:
-            logger.info(
-                "[JiuWenSwarm] Team模式后续请求，直接执行: request_id=%s session_id=%s",
-                rid, session_id,
-            )
-            stream_task = asyncio.create_task(run_stream_task())
-        elif is_auto_harness_resume:
-            logger.info(
-                "[JiuWenSwarm] Auto-Harness resume请求，绕过Session队列: request_id=%s session_id=%s",
-                rid, session_id,
-            )
-            stream_task = asyncio.create_task(run_stream_task())
-        else:
-            # DeepAgentRuntimeController is the session scheduler for ordinary
-            # chat.  Starting this facade task immediately lets runtime_send()
-            # atomically route an arriving user input as a steer, follow-up, or
-            # replacement round; an outer SessionManager queue would otherwise
-            # wait behind the long-lived output consumer.
-            stream_task = asyncio.create_task(run_stream_task())
+        stream_task = asyncio.create_task(run_stream_task())
 
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
@@ -3376,8 +3352,8 @@ class JiuWenSwarm:
 
         _yielded_from_queue = 0
         logger.info(
-            "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
-            rid, is_team_mode, is_team_first_request,
+            "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s",
+            rid, is_team_mode,
         )
         stream_aborted = False
         abort_terminal_status = "cancelled"

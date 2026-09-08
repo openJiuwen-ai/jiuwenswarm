@@ -23,6 +23,10 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 
 
+async def _collect_events(stream) -> list[RuntimeEvent]:
+    return [event async for event in stream]
+
+
 class FakeAgentManager:
     def __init__(self) -> None:
         self.cancel_calls: list[str] = []
@@ -109,6 +113,20 @@ class FakeAgent:
             payload={"event_type": "chat.final", "content": "ok"},
             is_complete=True,
             metadata={"route": "stream"},
+        )
+
+    async def deliver_control_input(self, request: AgentRequest):
+        yield AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={"event_type": "runtime.accepted"},
+            is_complete=False,
+        )
+        yield AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload=None,
+            is_complete=True,
         )
 
 
@@ -1078,12 +1096,10 @@ async def test_interrupt_resume_stream_does_not_wait_for_existing_user_admission
         plan_controller=FakePlanController(),
         admission_controller=admission,
     )
-    session_id = "ask-user-stream-session"
-
     request = AgentRequest(
         request_id="answer-stream-dispatch",
         channel_id="tui",
-        session_id=session_id,
+        session_id="ask-user-stream-session",
         req_method=ReqMethod.CHAT_SEND,
         is_stream=True,
         params={
@@ -1099,6 +1115,97 @@ async def test_interrupt_resume_stream_does_not_wait_for_existing_user_admission
     events = [event async for event in runtime.stream(request, trigger_hook=False)]
     assert [event.event_type for event in events] == ["chat.delta", "chat.final"]
     assert admission.calls == []
+
+
+@pytest.mark.asyncio
+async def test_interrupt_answer_controls_running_session_execution() -> None:
+    answer_received = asyncio.Event()
+
+    class InteractionAgent(FakeAgent):
+        async def process_message_stream(self, request: AgentRequest):
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "call_ask_user",
+                    "source": "ask_user_interrupt",
+                    "questions": [],
+                },
+            )
+            await answer_received.wait()
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "chat.final", "content": "continued"},
+                is_complete=True,
+            )
+
+        async def deliver_control_input(self, request: AgentRequest):
+            answer_received.set()
+            async for chunk in super().deliver_control_input(request):
+                yield chunk
+
+    class InteractionManager(FakeAgentManager):
+        def get_agent_for_session_nowait(
+            self, channel_id: str, session_id: str
+        ) -> object:
+            return self.agent
+
+    manager = InteractionManager()
+    manager.agent = InteractionAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    runtime._trigger_before_chat_request_hook = AsyncMock()
+    session_id = "ask-user-stream-session"
+    original = AgentRequest(
+        request_id="original",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={"query": "choose", "mode": "agent", "work_mode": "work"},
+    )
+    stream = runtime.stream(original, trigger_hook=False)
+    assert (await anext(stream)).event_type == "chat.ask_user_question"
+
+    answer = AgentRequest(
+        request_id="answer-dispatch",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={
+            "query": "",
+            "request_id": "call_ask_user",
+            "answers": [{"question": "选择方案", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+    )
+    control_events = await asyncio.wait_for(
+        _collect_events(runtime.stream(answer, trigger_hook=False)),
+        timeout=0.2,
+    )
+    assert [event.event_type for event in control_events] == [
+        "runtime.accepted",
+        "",
+    ]
+    assert (await asyncio.wait_for(anext(stream), timeout=0.2)).payload["content"] == "continued"
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    snapshot = runtime.session_coordinator.snapshot_session(session_id)
+    assert snapshot is not None
+    control = next(
+        item
+        for item in snapshot.executions
+        if item.work_kind.value == "control_input"
+    )
+    assert control.parent_execution_id is not None
 
 
 @pytest.mark.asyncio

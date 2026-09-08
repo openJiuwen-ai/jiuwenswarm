@@ -3,7 +3,7 @@ id: agentserver-session-lifecycle
 name: AgentServer Session Lifecycle
 status: partial
 confidence: confirmed
-last_updated: 2026-08-03
+last_updated: 2026-09-07
 user_visible_surface: "Session create, switch, list, fork, rewind, delete, history, and team session operations."
 source_of_truth:
   - "agent session directories"
@@ -54,3 +54,5 @@ Focused warm-pool, AgentServer session, TUI Gateway/frontend, rewind, and fork t
 ## Known Gaps
 
 Existing-session operations can still receive hostile IDs and require containment review. `create_token` idempotency is process-local, and fork can still leave partial state after later copy failure. Detailed downstream audits for metadata, history, checkpointer state, warm-resource limits, and team teardown remain pending.
+
+The Runtime Session unification now has a validated Process CLI reference chain, but AgentServer intentionally remains legacy in phase one. Its `_session_stream_tasks`, handler-owned mutations, broad cleanup, and Gateway delivery assumptions remain current production behavior until the staged module adaptations in `docs/session-runtime-unification-refactor-plan.md`; this flow must not yet claim Coordinator ownership for AgentServer traffic.

@@ -893,6 +893,63 @@ def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team_follo
     assert chunks[-1].is_complete is True
 
 
+def test_deliver_control_input_uses_existing_adapter_without_opening_work_turn(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    class FakeSessionManager:
+        @staticmethod
+        def get_session_id(session_id=None):
+            return session_id or "default"
+
+    class FakeAdapter:
+        seen_inputs = None
+
+        @staticmethod
+        async def process_message_stream_impl(_request, inputs):
+            FakeAdapter.seen_inputs = inputs
+            yield AgentResponseChunk(
+                request_id="answer",
+                channel_id="web",
+                payload={"event_type": "runtime.accepted"},
+                is_complete=True,
+            )
+
+    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm,
+        "_ensure_adapter",
+        lambda self, mode="agent": FakeAdapter(),
+    )
+    swarm = interface_module.JiuWenSwarm()
+    monkeypatch.setattr(swarm, "_build_inputs", lambda _request: ({"query": "answer"}, "disabled", None))
+
+    async def reconcile(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(swarm, "reconcile_session_mcp", reconcile)
+    request = AgentRequest(
+        request_id="answer",
+        channel_id="web",
+        session_id="session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "mode": "agent",
+            "request_id": "ask-call",
+            "answers": [{"selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+        },
+        is_stream=True,
+    )
+
+    async def collect_chunks():
+        return [chunk async for chunk in swarm.deliver_control_input(request)]
+
+    chunks = asyncio.run(collect_chunks())
+    assert FakeAdapter.seen_inputs == {"query": "answer"}
+    assert chunks[0].payload == {"event_type": "runtime.accepted"}
+
+
 def test_process_message_stream_routes_web_evolution_interrupt_without_user_history(monkeypatch):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
