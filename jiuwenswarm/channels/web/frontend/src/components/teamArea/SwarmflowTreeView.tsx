@@ -11,7 +11,7 @@
  * - 点击 waiting_for_human agent 重新打开 ask-user 对话框
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -794,27 +794,16 @@ function RunNode({
   const [expanded, setExpanded] = useState(true);
   const [runDetail, setRunDetail] = useState<AgentModalState | null>(null);
   // 暂停请求在途标记：点 pause 后按钮立即转圈并禁用，直到 run 状态真正翻成
-  // paused（进度事件到达）才恢复。后端 abort 可能耗时数秒（09-04 实测 ~9s），
-  // 期间禁用可避免用户重复点击（16:45:41 双击 pause 触发 "workflow run not
-  // found" 的先例）。事件若迟迟不来（09-07 生产交付断点的先例）由 10s 兜底
-  // 恢复按钮，避免永远转圈。
+  // paused（进度事件到达）才恢复。后端 abort 可能耗时数秒，控制通道被阻塞时
+  // 更久（09-08 实测 80s 后 res 才回、但事件与 res 一并到达），期间禁用可
+  // 避免用户重复点击（14:36 转圈回落后被连点两次 resume 的先例）。不设超时
+  // 兜底：按钮只认 run.status 翻转，事件不来就一直转——状态以事件为准。
   const [pausing, setPausing] = useState(false);
-  const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (pausing && run.status !== 'running') {
-      if (pauseTimerRef.current) {
-        clearTimeout(pauseTimerRef.current);
-        pauseTimerRef.current = null;
-      }
       setPausing(false);
     }
   }, [pausing, run.status]);
-  useEffect(
-    () => () => {
-      if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
-    },
-    [],
-  );
   const [controlError, setControlError] = useState<string | null>(null);
   // 控制 RPC 失败统一处理：服务端在 controller miss 时把权威 status 附在
   // 失败 payload 里带回，据此纠正停在 running/paused 的陈旧卡片并用 Toast
@@ -965,20 +954,11 @@ function RunNode({
                   return;
                 }
                 setPausing(true);
-                if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
-                pauseTimerRef.current = setTimeout(() => {
-                  pauseTimerRef.current = null;
-                  setPausing(false);
-                }, 10000);
                 void webRequest('swarmflow.pause', {
                   session_id: sessionId,
                   run_id: run.id,
                 }).catch((err) => {
                   applyControlFailure(err);
-                  if (pauseTimerRef.current) {
-                    clearTimeout(pauseTimerRef.current);
-                    pauseTimerRef.current = null;
-                  }
                   setPausing(false);
                 });
               }}
