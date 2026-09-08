@@ -11,7 +11,7 @@
  * - 点击 waiting_for_human agent 重新打开 ask-user 对话框
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -42,6 +42,7 @@ import {
   detectPhaseLoops,
   sortPhasesByExecution,
   computeLoopStatus,
+  computeSessionStatus,
   findActiveIterationIndex,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
@@ -732,11 +733,15 @@ function PhaseNode({
           {sessions.map((session) => {
             const representative = session.members[0];
             if (!representative) return null;
+            // 代表节点状态按 members 聚合：Turn0 完成不代表整张卡完成。
+            const status = computeSessionStatus(session.members);
+            const node =
+              status === representative.status ? representative : { ...representative, status };
             return (
               <div key={representative.id} className="relative pl-4">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-3 border-t border-border/30" />
                 <AgentNode
-                  agent={representative}
+                  agent={node}
                   phaseAgents={phase.agents ?? []}
                   depth={0}
                   runId={runId}
@@ -776,6 +781,28 @@ function RunNode({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const [runDetail, setRunDetail] = useState<AgentModalState | null>(null);
+  // 暂停请求在途标记：点 pause 后按钮立即转圈并禁用，直到 run 状态真正翻成
+  // paused（进度事件到达）才恢复。后端 abort 可能耗时数秒（09-04 实测 ~9s），
+  // 期间禁用可避免用户重复点击（16:45:41 双击 pause 触发 "workflow run not
+  // found" 的先例）。事件若迟迟不来（09-07 生产交付断点的先例）由 10s 兜底
+  // 恢复按钮，避免永远转圈。
+  const [pausing, setPausing] = useState(false);
+  const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (pausing && run.status !== 'running') {
+      if (pauseTimerRef.current) {
+        clearTimeout(pauseTimerRef.current);
+        pauseTimerRef.current = null;
+      }
+      setPausing(false);
+    }
+  }, [pausing, run.status]);
+  useEffect(
+    () => () => {
+      if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
+    },
+    [],
+  );
   const completedCount =
     run.completed_agent_count ??
     (run.phases ?? []).reduce(
@@ -889,18 +916,40 @@ function RunNode({
             <button
               type="button"
               title={t('swarmflow.pauseResumeHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors"
+              disabled={pausing}
+              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors disabled:opacity-70 disabled:cursor-wait"
               data-testid="team-area-swarmflow-run-pause-btn"
               data-variant={run.status === 'running' ? 'pause' : 'resume'}
               onClick={() => {
-                const method =
-                  run.status === 'running' ? 'swarmflow.pause' : 'swarmflow.resume';
-                void webRequest(method, { session_id: sessionId, run_id: run.id }).catch(
-                  (err) => console.error('[swarmflow] control failed:', err),
-                );
+                if (run.status !== 'running') {
+                  void webRequest('swarmflow.resume', {
+                    session_id: sessionId,
+                    run_id: run.id,
+                  }).catch((err) => console.error('[swarmflow] control failed:', err));
+                  return;
+                }
+                setPausing(true);
+                if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
+                pauseTimerRef.current = setTimeout(() => {
+                  pauseTimerRef.current = null;
+                  setPausing(false);
+                }, 10000);
+                void webRequest('swarmflow.pause', {
+                  session_id: sessionId,
+                  run_id: run.id,
+                }).catch((err) => {
+                  console.error('[swarmflow] control failed:', err);
+                  if (pauseTimerRef.current) {
+                    clearTimeout(pauseTimerRef.current);
+                    pauseTimerRef.current = null;
+                  }
+                  setPausing(false);
+                });
               }}
             >
-              {run.status === 'running' ? (
+              {pausing ? (
+                <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+              ) : run.status === 'running' ? (
                 <Pause className="w-4 h-4" />
               ) : (
                 <Play className="w-4 h-4" />
