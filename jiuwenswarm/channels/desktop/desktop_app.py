@@ -1019,9 +1019,16 @@ class DesktopRuntime:
 
         web_ready_notified = False
         terminated_after_error = False
-        while any(waiter.is_alive() for waiter in waiters):
-            for waiter in waiters:
-                waiter.join(timeout=0.1)
+
+        def _notify_and_terminate_once() -> None:
+            """Single iteration of the waiter loop's side effects.
+
+            在锁内读取快照后触发导航/终结; 退出循环后必须再执行一次:
+            三个 waiter 若在主循环首次判断 is_alive() 前全部结束(测试中
+            mock 的失败路径瞬时完成), 循环体一次都不会执行, web_ready
+            通知会被整个跳过。
+            """
+            nonlocal web_ready_notified, terminated_after_error
             with errors_lock:
                 has_errors = bool(errors)
                 web_ok = web_ready_ok
@@ -1035,6 +1042,13 @@ class DesktopRuntime:
                 _terminate_process_tree(gateway_process)
                 _terminate_process_tree(web_process)
                 terminated_after_error = True
+
+        while any(waiter.is_alive() for waiter in waiters):
+            for waiter in waiters:
+                waiter.join(timeout=0.1)
+            _notify_and_terminate_once()
+        # 所有 waiter 已结束: 用最终状态补一次检查, 覆盖循环从未运行的情况。
+        _notify_and_terminate_once()
 
         with errors_lock:
             startup_errors = list(errors)
