@@ -1903,7 +1903,9 @@ class AgentWebSocketServer:
                 await self._handle_chat_capacity(ws, request, send_lock)
                 return
 
-            await self._trigger_before_chat_request_hook(request)
+            defer_admission_preparation = self._should_defer_admission_preparation(request)
+            if not defer_admission_preparation:
+                await self._trigger_before_chat_request_hook(request)
 
             if request.req_method == ReqMethod.SESSION_LIST:
                 await self._handle_session_list(ws, request, send_lock)
@@ -2209,10 +2211,17 @@ class AgentWebSocketServer:
                             async with send_lock:
                                 await send_wire_payload(ws, wire)
                 return
-            await self._ensure_auto_team_binding_for_chat(request)
             if request.is_stream:
-                await self._handle_stream(ws, request, send_lock)
+                if not defer_admission_preparation:
+                    await self._ensure_auto_team_binding_for_chat(request)
+                await self._handle_stream(
+                    ws,
+                    request,
+                    send_lock,
+                    defer_admission_preparation=defer_admission_preparation,
+                )
             else:
+                await self._ensure_auto_team_binding_for_chat(request)
                 await self._handle_unary(ws, request, send_lock)
         except asyncio.CancelledError:
             # 流式任务被 interrupt 取消，正常退出无需报错
@@ -2276,6 +2285,16 @@ class AgentWebSocketServer:
             ReqMethod.CHAT_SEND,
             ReqMethod.CHAT_RESUME,
             ReqMethod.CHAT_ANSWER,
+        )
+
+    @staticmethod
+    def _should_defer_admission_preparation(request: AgentRequest) -> bool:
+        """准入 ACK 请求先确认，再执行可能耗时的聊天前置处理。"""
+        return (
+            request.is_stream
+            and request.req_method == ReqMethod.CHAT_SEND
+            and str(request.channel_id or "").strip().lower() == "desktop"
+            and (request.metadata or {}).get("require_admission_ack") is True
         )
 
     @staticmethod
@@ -3056,7 +3075,12 @@ class AgentWebSocketServer:
 
 
     async def _handle_stream(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+        *,
+        defer_admission_preparation: bool = False,
     ) -> None:
         desktop_stream_admitted = self._begin_desktop_chat_stream(request)
         if desktop_stream_admitted is False:
@@ -3082,6 +3106,9 @@ class AgentWebSocketServer:
                 wire = encode_agent_chunk_for_wire(accepted, response_id=request.request_id, sequence=0)
                 async with send_lock:
                     await send_wire_payload(ws, wire)
+            if defer_admission_preparation:
+                await self._trigger_before_chat_request_hook(request)
+                await self._ensure_auto_team_binding_for_chat(request)
             if foreground:
                 await manager.begin_foreground_chat()
             try:
