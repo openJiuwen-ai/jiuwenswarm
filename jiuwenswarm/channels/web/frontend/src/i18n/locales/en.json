@@ -3239,6 +3239,8 @@
     "layoutGraph": "Flow Graph",
     "pauseResumeHint": "Pause / Resume",
     "stopHint": "Stop",
+    "recoveredHint": "Session was reloaded, so this workflow can't be controlled directly. Send a message to resume it.",
+    "recoveredBadge": "Paused · resume via chat",
     "sessionBudget": "Session budget (team-wide, never resets)",
     "runBudget": "Run budget (META.workflow_token_limit)",
     "sessionBudgetShort": "Session",

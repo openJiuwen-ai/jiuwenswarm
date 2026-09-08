@@ -854,6 +854,14 @@ function RunNode({
             )}
           </span>
         )}
+        {isRecovered && (
+          <span
+            className="text-xs px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-500 shrink-0"
+            data-testid="team-area-swarmflow-run-recovered-badge"
+          >
+            {t('swarmflow.recoveredBadge')}
+          </span>
+        )}
         {(run.status === 'running' || run.status === 'paused') && (
           <div
             className="flex items-center gap-1 shrink-0"
@@ -861,7 +869,7 @@ function RunNode({
           >
             <button
               type="button"
-              title={t('swarmflow.pauseResumeHint')}
+              title={t(isRecovered ? 'swarmflow.recoveredHint' : 'swarmflow.pauseResumeHint')}
               className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-muted"
               disabled={isRecovered}
               data-testid="team-area-swarmflow-run-pause-btn"
@@ -882,7 +890,7 @@ function RunNode({
             </button>
             <button
               type="button"
-              title={t('swarmflow.stopHint')}
+              title={t(isRecovered ? 'swarmflow.recoveredHint' : 'swarmflow.stopHint')}
               className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-muted"
               disabled={isRecovered}
               data-testid="team-area-swarmflow-run-stop-btn"
