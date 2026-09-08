@@ -2114,6 +2114,43 @@ async def test_cleanup_runtime_locals_pause_path_skips_finalize_but_pauses_contr
 
 
 @pytest.mark.asyncio
+async def test_cleanup_runtime_locals_dispatches_controller_before_handler_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Controller pause must run while the workflow handler is still alive.
+
+    controller.pause makes the engine emit WORKFLOW_PAUSED; the handler is the
+    only consumer that turns it into the paused snapshot + frontend broadcast.
+    Stopping the handler first drops that event and leaves the run 'running'.
+    """
+    manager = _TeamManagerHarness()
+    session_id = "sess-cleanup-order"
+    timeline: list[str] = []
+
+    class _OrderedHandler(_FakeWorkflowHandler):
+        async def stop(self) -> None:
+            timeline.append("handler.stop")
+            await super().stop()
+
+    class _OrderedController(_FakeBackgroundTaskController):
+        async def pause(self, run_id: str | None = None) -> bool:
+            timeline.append("controller.pause")
+            return await super().pause(run_id)
+
+    controller = _OrderedController()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "get_background_task_controller",
+        lambda _session_id: controller,
+    )
+    manager.register_workflow_handler(session_id, _OrderedHandler())
+
+    await manager._cleanup_runtime_locals(session_id, finalize_workflows=False)
+
+    assert timeline == ["controller.pause", "handler.stop"]
+
+
+@pytest.mark.asyncio
 async def test_finalize_runtime_cleanup_forwards_pause_disposition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

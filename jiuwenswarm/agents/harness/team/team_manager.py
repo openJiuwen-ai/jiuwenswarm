@@ -2162,6 +2162,47 @@ class TeamManager:
                     exc,
                 )
 
+        # Swarmflow background coroutines hang off the process-local
+        # BackgroundTaskController registries keyed by session_id; team
+        # lifecycle teardown is the single point that must drive them, or a
+        # paused/destroyed team leaves dangling handles still burning tokens.
+        # Pause keeps the relaunch ticket (resumable); stop drops it (seal).
+        #
+        # Dispatched BEFORE the workflow handler is stopped: the engine reacts
+        # to pause/stop by emitting WORKFLOW_PAUSED / WORKFLOW_STOPPED, and the
+        # handler is the only consumer that turns that into the paused/stopped
+        # snapshot + frontend broadcast. Stop it first and the event is lost —
+        # the run stays 'running' in the tree even though the coroutine died.
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            get_background_task_controller,
+        )
+
+        controller = get_background_task_controller(session_id)
+        try:
+            if not finalize_workflows:
+                # Web stop-square / TUI Esc: park the runtime, keep run resume.
+                await controller.pause(None)
+            elif workflow_disposition == "pause":
+                # Client-disconnect reclaim: park so cold start can resume.
+                await controller.pause(None)
+            else:
+                # User termination / session switch: terminal stop_all.
+                await controller.stop(None)
+            # The abort unwinds asynchronously (cancel → engine writes the
+            # pause/seal record → emits the terminal progress event); yield so
+            # that event reaches the monitor queue before the handler drains.
+            for _ in range(3):
+                await asyncio.sleep(0)
+        except Exception as exc:
+            logger.warning(
+                "[TeamManager] background task controller dispatch failed: "
+                "session_id=%s disposition=%s finalize_workflows=%s error=%s",
+                session_id,
+                workflow_disposition,
+                finalize_workflows,
+                exc,
+            )
+
         workflow_handler = self.pop_workflow_handler(session_id)
         if workflow_handler is not None:
             try:
@@ -2190,36 +2231,6 @@ class TeamManager:
                 )
 
         self._clear_team_rail_registries(session_id)
-
-        # Swarmflow background coroutines hang off the process-local
-        # BackgroundTaskController registries keyed by session_id; team
-        # lifecycle teardown is the single point that must drive them, or a
-        # paused/destroyed team leaves dangling handles still burning tokens.
-        # Pause keeps the relaunch ticket (resumable); stop drops it (seal).
-        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-            get_background_task_controller,
-        )
-
-        controller = get_background_task_controller(session_id)
-        try:
-            if not finalize_workflows:
-                # Web stop-square / TUI Esc: park the runtime, keep run resume.
-                await controller.pause(None)
-            elif workflow_disposition == "pause":
-                # Client-disconnect reclaim: park so cold start can resume.
-                await controller.pause(None)
-            else:
-                # User termination / session switch: terminal stop_all.
-                await controller.stop(None)
-        except Exception as exc:
-            logger.warning(
-                "[TeamManager] background task controller dispatch failed: "
-                "session_id=%s disposition=%s finalize_workflows=%s error=%s",
-                session_id,
-                workflow_disposition,
-                finalize_workflows,
-                exc,
-            )
 
     async def _stop_runner_team_runtime(
         self, session_id: str, team_name: str, caller: str
