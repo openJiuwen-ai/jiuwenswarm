@@ -2472,13 +2472,6 @@ class JiuWenSwarm:
         durable_pending_final_chunks: list[str] = []
         durable_pending_reasoning_chunks: list[str] = []
         durable_final_content = ""
-        # usage 并入终稿（共享出口层）：内容非空的主应答/leader
-        # chat.final 截留到流尾，并入用量字段后统一落盘+下发——agent/team/code
-        # 全模式同路径；usage_summary 帧载荷暂存（取累计 usage/model/占用率/上限）
-        pending_final_chunk: AgentResponseChunk | None = None
-        round_usage_summary_payload: dict[str, Any] | None = None
-        # 直播 context.usage 推送帧暂存（与环面直播同帧同值）：占用率/上限/占用实值
-        round_context_usage_payload: dict[str, Any] | None = None
 
         def _consume_durable_reasoning_content() -> str:
             nonlocal durable_pending_reasoning_chunks
@@ -2632,120 +2625,6 @@ class JiuWenSwarm:
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
             rid, is_team_mode, is_team_first_request,
         )
-
-        def _persist_chat_event(et: str, payload: dict[str, Any]) -> None:
-            """消费循环 chat.* 落盘（抽取共享：循环内即时落盘 + 流尾截留终稿补落）。
-
-            extra 拍平、reasoning 附挂、专家身份快照、proactive 透传与原内联块同规。
-            """
-            payload_dict = dict(payload)
-            # role/error/rid 等事件路由键不能进 extra：append_history_record 的
-            # item.update(extra) 会把记录 role 覆盖成 payload 的 role（team_helpers
-            # 给 leader 帧打 role="leader" → 落盘记录 role 被污染成 leader），
-            # 且与回答记录共用 <rid>:assistant id 混淆对账
-            extra_fields = {k: v for k, v in payload_dict.items() if
-                            k not in ("event_type", "content", "role")}
-            if et == EventType.TEAM_MESSAGE.value and "event" in payload_dict:
-                event_data = payload_dict.get("event", {})
-                if isinstance(event_data, dict):
-                    for k, v in event_data.items():
-                        if k not in ("type", "timestamp", "content"):
-                            extra_fields[k] = v
-            if et in {"chat.final", "chat.tool_call", "chat.error"}:
-                extra_fields = _attach_reasoning_content(extra_fields)
-            # 主应答落盘携带专家身份（无绑定显式写空串=默认角色作答标记）
-            if et in ("chat.final", "chat.error") and "expert_id" not in extra_fields:
-                from jiuwenswarm.server.runtime.expert.expert_service import (
-                    history_expert_identity_extra,
-                )
-                extra_fields.update(history_expert_identity_extra(session_id))
-            # 透传 proactive 标记——刷新页面时前端靠 source 识别卡片
-            for pk in ("source", "proactive_type", "proactive_target"):
-                if pk not in extra_fields and pk in request.params:
-                    extra_fields[pk] = request.params[pk]
-            append_history_record(
-                session_id=session_id,
-                request_id=rid,
-                channel_id=cid,
-                role="assistant",
-                event_type=et,
-                content=payload.get("content") or payload.get("error") or "",
-                timestamp=time.time(),
-                extra=extra_fields if extra_fields else None,
-                mode=request.params.get("mode", "unknown"),
-            )
-
-        async def _build_round_usage_fields() -> dict[str, Any]:
-            """回合用量字段（并入终稿 chat.final）。
-
-            三来源按序补缺：直播 context.usage 推送帧（占用率/上限/占用实值——与环面
-            直播同帧同值，回放=直播）→ usage_summary 帧载荷（累计 usage/model）
-            → adapter.get_context_usage 现算（三类分项）。任一缺失降级不阻塞。
-            """
-            fields: dict[str, Any] = {}
-            # 优先级 1：直播 context.usage 推送帧（与环面直播同帧同值，回放=直播）
-            push = round_context_usage_payload
-            if isinstance(push, dict):
-                rate = push.get("rate")
-                if isinstance(rate, (int, float)):
-                    fields["usage_percent"] = float(rate)
-                cw = push.get("context_max")
-                if isinstance(cw, (int, float)) and cw > 0:
-                    fields["context_window_tokens"] = int(cw)
-                used = push.get("tokens_used")
-                if isinstance(used, (int, float)) and used > 0:
-                    fields["context_tokens_used"] = int(used)
-                # 三类分项（rail 在 after_model_call 按真实发送窗口现算）——
-                # 团队工具集回合末即 teardown，只有推送帧带的是真实值
-                for key in ("system_prompt_tokens", "tools_tokens", "messages_tokens"):
-                    value = push.get(key)
-                    if isinstance(value, (int, float)) and value > 0:
-                        fields[key] = int(value)
-            # 优先级 2：usage_summary 帧载荷（累计 usage/model；占用率/上限补缺）
-            payload = round_usage_summary_payload
-            if isinstance(payload, dict):
-                usage = payload.get("usage")
-                if isinstance(usage, dict) and usage.get("total_tokens"):
-                    fields["usage"] = usage
-                model = payload.get("model")
-                if isinstance(model, str) and model:
-                    fields["model"] = model
-                pct = payload.get("usage_percent")
-                if isinstance(pct, (int, float)) and "usage_percent" not in fields:
-                    fields["usage_percent"] = float(pct)
-                cw = payload.get("context_window_tokens")
-                if isinstance(cw, (int, float)) and cw > 0 and "context_window_tokens" not in fields:
-                    fields["context_window_tokens"] = int(cw)
-            try:
-                get_usage = getattr(adapter, "get_context_usage", None)
-                if callable(get_usage):
-                    detail = await get_usage(session_id)
-                    if isinstance(detail, dict):
-                        limit = detail.get("context_window_limit") or 0
-                        if limit and "context_window_tokens" not in fields:
-                            fields["context_window_tokens"] = int(limit)
-                        rate = detail.get("occupancy_rate")
-                        if rate is not None and "usage_percent" not in fields:
-                            fields["usage_percent"] = float(rate)
-                        total = detail.get("total_tokens")
-                        if total and "context_tokens_used" not in fields:
-                            fields["context_tokens_used"] = int(total)
-                        for key in ("system_prompt_tokens", "tools_tokens", "messages_tokens"):
-                            value = detail.get(key)
-                            if isinstance(value, (int, float)) and value > 0 and key not in fields:
-                                fields[key] = int(value)
-            except Exception:
-                logger.debug(
-                    "[JiuWenSwarm] build round usage fields failed: request_id=%s",
-                    rid, exc_info=True,
-                )
-            if "model" not in fields:
-                resolve_name = getattr(adapter, "_resolve_model_name", None)
-                if callable(resolve_name):
-                    name = resolve_name()
-                    if name and name != "unknown":
-                        fields["model"] = name
-            return fields
         try:
             while not stream_done.is_set() or not stream_queue.empty():
                 try:
@@ -2810,14 +2689,6 @@ class JiuWenSwarm:
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
                             should_record = et.startswith("chat.")
-                            # usage_summary 帧载荷暂存（流尾并入终稿；本帧照常透传下发，
-                            # 独立落盘由空壳过滤器拦截——usage 不单独成行）
-                            if et == "chat.usage_summary":
-                                round_usage_summary_payload = data.payload
-                            # 直播 context.usage 推送帧暂存（成员帧带 member_name 不取——
-                            # 只统计主理人，与前端环面同口径；回放=直播同帧同值）
-                            if et == "context.usage" and not data.payload.get("member_name"):
-                                round_context_usage_payload = data.payload
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "chat.error":
@@ -2928,25 +2799,46 @@ class JiuWenSwarm:
                                 and is_retry_notice_payload(data.payload)
                             ):
                                 should_record = False
-                            # 终稿截留：内容非空的主应答/leader chat.final
-                            # 截留到流尾并入用量字段后统一落盘+下发（全模式共享本出口）；
-                            # 成员帧（member_name）不归此路径（team_helpers 落盘所有权），
-                            # 空 content 的边界/合成 final 不截留（本就不落盘）
-                            if (
-                                et == "chat.final"
-                                and not data.payload.get("member_name")
-                                and str(data.payload.get("content") or "").strip()
-                            ):
-                                if pending_final_chunk is not None:
-                                    _persist_chat_event("chat.final", pending_final_chunk.payload)
-                                    yield pending_final_chunk
-                                pending_final_chunk = data
-                                durable_final_content = str(data.payload.get("content", ""))
-                                final_answer_content = durable_final_content
-                                final_answer_chunks.clear()
-                                continue
                             if should_record:
-                                _persist_chat_event(et, data.payload)
+                                payload_dict = dict(data.payload)
+                                # role/error/rid 等事件路由键不能进 extra：
+                                # append_history_record 的 item.update(extra) 会把
+                                # 记录 role 覆盖成 payload 的 role（team_helpers 给 leader
+                                # 帧打 role="leader" → 落盘记录 role 被污染成 leader），
+                                # 且与回答记录共用 <rid>:assistant id 混淆对账
+                                extra_fields = {k: v for k, v in payload_dict.items() if
+                                                k not in ("event_type", "content", "role")}
+                                if et == EventType.TEAM_MESSAGE.value and "event" in payload_dict:
+                                    event_data = payload_dict.get("event", {})
+                                    if isinstance(event_data, dict):
+                                        for k, v in event_data.items():
+                                            if k not in ("type", "timestamp", "content"):
+                                                extra_fields[k] = v
+                                if et in {"chat.final", "chat.tool_call", "chat.error"}:
+                                    extra_fields = _attach_reasoning_content(extra_fields)
+                                # 主应答落盘携带专家身份（无绑定显式写空串=默认角色作答标记）——
+                                # 前端据"键存在但空"区分默认角色与存量无字段；漏写会导致
+                                # 中途绑专家后历史刷新把本轮身份回落成新专家
+                                if et in ("chat.final", "chat.error") and "expert_id" not in extra_fields:
+                                    from jiuwenswarm.server.runtime.expert.expert_service import (
+                                        history_expert_identity_extra,
+                                    )
+                                    extra_fields.update(history_expert_identity_extra(session_id))
+                                # 透传 proactive 标记——刷新页面时前端靠 source 识别卡片
+                                for pk in ("source", "proactive_type", "proactive_target"):
+                                    if pk not in extra_fields and pk in request.params:
+                                        extra_fields[pk] = request.params[pk]
+                                append_history_record(
+                                    session_id=session_id,
+                                    request_id=rid,
+                                    channel_id=cid,
+                                    role="assistant",
+                                    event_type=et,
+                                    content=data.payload.get("content") or data.payload.get("error") or "",
+                                    timestamp=time.time(),
+                                    extra=extra_fields if extra_fields else None,
+                                    mode=request.params.get("mode", "unknown"),
+                                )
                                 if et == "chat.final":
                                     durable_final_content = str(data.payload.get("content", ""))
                             if et == "chat.final":
@@ -3104,11 +2996,6 @@ class JiuWenSwarm:
             # 链路中断：下方 log/raise 不执行，调用方收到普通异常）。
             try:
                 _persist_pending_final_text(aborted=True)
-                # 截留终稿在取消路径不丢：原样落盘（不并用量），不下发（消费者已断）。
-                # 在半截留痕之后写——last-wins 下完整终稿覆盖半截记录
-                if pending_final_chunk is not None and isinstance(pending_final_chunk.payload, dict):
-                    _persist_chat_event("chat.final", pending_final_chunk.payload)
-                    pending_final_chunk = None
             except Exception:
                 logger.warning(
                     "[JiuWenSwarm] failed to persist aborted final text: request_id=%s",
@@ -3142,17 +3029,6 @@ class JiuWenSwarm:
         # cancellation contract once all already-produced chunks are drained.
         if producer_cancellation is not None:
             raise producer_cancellation
-
-        # 流尾：截留终稿并入用量字段后统一落盘+下发。
-        # 在 a2ui 修复之前——修复产出不同终稿时其记录（同样带用量字段）last-wins 覆盖本条
-        round_usage_fields = await _build_round_usage_fields()
-        if pending_final_chunk is not None:
-            _held_final = pending_final_chunk
-            pending_final_chunk = None
-            if isinstance(_held_final.payload, dict) and round_usage_fields:
-                _held_final.payload.update(round_usage_fields)
-            _persist_chat_event("chat.final", _held_final.payload)
-            yield _held_final
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
         repair_call = getattr(adapter, "repair_model_response", None)
@@ -3190,8 +3066,6 @@ class JiuWenSwarm:
                         if k in ("source", "proactive_type", "proactive_target")
                     },
                     **history_expert_identity_extra(session_id),
-                    # a2ui 修复重写的终稿同样携带用量（last-wins 覆盖截留终稿的记录）
-                    **round_usage_fields,
                 }),
                 mode=request.params.get("mode", "unknown"),
             )

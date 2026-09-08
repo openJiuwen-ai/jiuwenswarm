@@ -141,12 +141,16 @@ from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
 )
-from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
+from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
+    build_agent_identity_prompt,
+    build_work_system_prompt_sections,
+)
 from jiuwenswarm.agents.harness.common.rails import (
     BrowserTaskPromptRail,
     JiuSwarmStreamEventRail,
     InvocationContextRail,
     MultimodalImageRail,
+    OrderedContextAssembleRail,
     ResponsePromptRail,
     RuntimePromptRail,
     StructuredAskUserRail,
@@ -884,7 +888,7 @@ def _deep_agent_kv_cache_affinity_config(
 def _build_context_assemble_rail() -> ContextAssembleRail | None:
     """Build ContextAssembleRail."""
     try:
-        context_assemble_rail = ContextAssembleRail()
+        context_assemble_rail = OrderedContextAssembleRail()
         logger.info("[JiuWenSwarmDeepAdapter] ContextAssembleRail create success")
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] ContextAssembleRail create failed: %s", exc)
@@ -1224,6 +1228,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # response Language section (see ``_resolve_output_language``).
         self._runtime_language_override: str | None = None
         self._force_english_runtime_prompt: bool = True
+        # The configured string is only a bootstrap value for agent-core.  Its
+        # final builder receives the individual static sections after startup.
+        self._static_prompt_profile: str = "work"
         self._parent_session_id: str | None = None
         # Root-adapter-only: its own DeepAgent is built on demand (see
         # ``ensure_instance``), so the chat path does not pay for an instance it
@@ -2165,6 +2172,45 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """
         return self._runtime_language_override or "en"
 
+    def _build_static_system_prompt_sections(self) -> tuple[PromptSection, ...]:
+        """Return Work sections for the *final* runtime prompt builder.
+
+        Subclasses select their own profile.  This must not return a rendered
+        string: agent-core wraps a ``system_prompt`` string into one identity
+        section, preventing runtime sections such as Tools from being ordered
+        between Safety and later static guidance.
+        """
+        return build_work_system_prompt_sections()
+
+    def _install_structured_static_prompt_sections(self) -> None:
+        """Replace agent-core's flattened bootstrap prompt with real sections."""
+        instance = self._instance
+        if instance is None:
+            return
+        builder = getattr(instance, "system_prompt_builder", None)
+        if builder is None:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] structured static prompt skipped: no builder"
+            )
+            return
+
+        sections = self._build_static_system_prompt_sections()
+        # ``create_deep_agent(system_prompt=...)`` has stored the full static
+        # prompt under this name at P10.  Replacing it is what allows dynamic
+        # Tools (P14) to sit immediately after Safety (P13).
+        for section in sections:
+            builder.remove_section(section.name)
+        for section in sections:
+            builder.add_section(section)
+
+        # ReActAgent re-reads prompt_template each turn.  Refresh it after the
+        # identity section above is reduced from the old flattened blob to the
+        # identity section alone; all remaining sections stay on the shared
+        # builder and are rendered once by the normal rail path.
+        apply_builder = getattr(instance, "apply_prompt_builder_to_react_agent", None)
+        if callable(apply_builder):
+            apply_builder()
+
     def _resolve_output_language(self) -> str:
         """Resolve user-facing output language for the Language section and
         runtime_state display.
@@ -2186,56 +2232,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if self._model_request_config and hasattr(self._model_request_config, "model_name"):
             return self._model_request_config.model_name or "unknown"
         return "unknown"
-
-    async def _build_round_usage_fields(
-        self, session_id: str, usage_accumulator: dict[str, Any]
-    ) -> dict[str, Any]:
-        """回合收尾用量字段（并入终稿 chat.final，随通用落盘器落盘）。
-
-        usage=累计消耗；context_tokens_used=占用实值；
-        三类分项为 token_counter 估算，归一化在前端展示层做。
-        """
-        fields: dict[str, Any] = {}
-        if usage_accumulator.get("total_tokens", 0) > 0:
-            summary: dict[str, Any] = {
-                "input_tokens": usage_accumulator["input_tokens"],
-                "output_tokens": usage_accumulator["output_tokens"],
-                "total_tokens": usage_accumulator["total_tokens"],
-            }
-            if usage_accumulator["input_tokens"] > 0:
-                summary["cache_tokens"] = usage_accumulator["cache_tokens"]
-            for cost in ("input_cost", "output_cost", "total_cost"):
-                if usage_accumulator.get(cost, 0) > 0:
-                    summary[cost] = round(usage_accumulator[cost], 6)
-            fields["usage"] = summary
-        try:
-            usage = await self.get_context_usage(session_id)
-        except Exception:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] build round usage fields failed",
-                exc_info=True,
-            )
-            return fields
-        if not isinstance(usage, dict):
-            return fields
-        limit = usage.get("context_window_limit") or 0
-        if not limit:
-            return fields
-        model_name = self._resolve_model_name()
-        if model_name and model_name != "unknown":
-            fields["model"] = model_name
-        fields["context_window_tokens"] = int(limit)
-        rate = usage.get("occupancy_rate")
-        if rate is not None:
-            fields["usage_percent"] = float(rate)
-        total = usage.get("total_tokens")
-        if total:
-            fields["context_tokens_used"] = int(total)
-        for key in ("system_prompt_tokens", "tools_tokens", "messages_tokens"):
-            value = usage.get(key)
-            if isinstance(value, (int, float)) and value > 0:
-                fields[key] = int(value)
-        return fields
 
     def _resolve_session_git_snapshot(
         self,
@@ -4572,11 +4568,12 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             task_planning_rail = None
         return task_planning_rail
 
-    @staticmethod
-    def _build_subagent_rail() -> SubagentRail | None:
+    def _build_subagent_rail(self) -> SubagentRail | None:
         """Build SubagentRail for subagent delegation."""
         try:
-            subagent_rail = BrowserTaskPromptRail()
+            subagent_rail = BrowserTaskPromptRail(
+                include_usage_rules=self._include_outer_subagent_usage_rules()
+            )
             logger.info("[JiuWenSwarmDeepAdapter] SubagentRail create success")
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] SubagentRail create failed: %s", exc)
@@ -4838,6 +4835,18 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             logger.warning("[JiuWenSwarmDeepAdapter] CsplSentinelRail create failed: %s", exc)
             return None
 
+    def _include_outer_subagent_usage_rules(self) -> bool:
+        """Whether to include the standalone ``# Subagent Usage Rules`` section.
+
+        All three first-party modes keep the concise runtime subsection, but
+        omit this separate task-tool prompt section.
+        """
+        return False
+
+    def _include_runtime_subagent_usage_rules(self) -> bool:
+        """Whether Runtime Environment includes its ``## Subagent`` subsection."""
+        return True
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -4849,6 +4858,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             rail = RuntimePromptRail(
                 language=self._resolve_runtime_language(),
                 channel=default_channel,
+                include_subagent_usage_rules=self._include_runtime_subagent_usage_rules(),
             )
             logger.info("[JiuWenSwarmDeepAdapter] RuntimePromptRail create success")
         except Exception as exc:
@@ -5838,6 +5848,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         await asyncio.sleep(0)
         await self._instance.ensure_initialized()
+        self._install_structured_static_prompt_sections()
         self._bind_invoke_workspace_context()
         initial_runtime_workspace = self._project_dir or str(
             get_default_project_session_workspace_dir()
@@ -6185,6 +6196,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         finally:
             self._restore_omitted_reload_fields(deep_cfg, omitted_fields)
         if "system_prompt" not in omitted_fields:
+            self._install_structured_static_prompt_sections()
             await self._reapply_expert_after_prompt_rebuild()
         self._commit_reload_fingerprints(reload_fingerprints)
         self._sync_active_evolution_review_agent_after_reload()
@@ -9824,10 +9836,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         accumulated_reasoning = ""
         had_assistant_output = False
         emitted_terminal_chat_final = False
-        # 终稿截留：循环内命中的 chat.final 不立即下发，
-        # 截留到回合收尾并入用量字段（usage/usage_percent/context_window_tokens 等）
-        # 后再发——extra 拍平使通用落盘器把用量写进终稿记录，回放可恢复环面。
-        pending_terminal_final_payload: dict[str, Any] | None = None
         usage_accumulator = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -10440,16 +10448,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                                 continue
                             if parsed.get("event_type") == "chat.final":
                                 self._stream_content_run_kind = None
-                                # 终稿截留：留到流尾并入用量字段后再发
-                                if pending_terminal_final_payload is not None:
-                                    yield AgentResponseChunk(
-                                        request_id=rid,
-                                        channel_id=cid,
-                                        payload=pending_terminal_final_payload,
-                                        is_complete=False,
-                                    )
-                                pending_terminal_final_payload = note_chat_payload(parsed)
-                                continue
                             yield AgentResponseChunk(
                                 request_id=rid,
                                 channel_id=cid,
@@ -10464,16 +10462,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                             continue
                         if parsed.get("event_type") == "chat.final":
                             self._stream_content_run_kind = None
-                            # 终稿截留：留到流尾并入用量字段后再发
-                            if pending_terminal_final_payload is not None:
-                                yield AgentResponseChunk(
-                                    request_id=rid,
-                                    channel_id=cid,
-                                    payload=pending_terminal_final_payload,
-                                    is_complete=False,
-                                )
-                            pending_terminal_final_payload = note_chat_payload(parsed)
-                            continue
                         yield AgentResponseChunk(
                             request_id=rid,
                             channel_id=cid,
@@ -10505,39 +10493,12 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         continue
                     if parsed.get("event_type") == "chat.final":
                         self._stream_content_run_kind = None
-                        # 终稿截留：留到流尾并入用量字段后再发
-                        if pending_terminal_final_payload is not None:
-                            yield AgentResponseChunk(
-                                request_id=rid,
-                                channel_id=cid,
-                                payload=pending_terminal_final_payload,
-                                is_complete=False,
-                            )
-                        pending_terminal_final_payload = note_chat_payload(parsed)
-                        continue
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
                         payload=note_chat_payload(parsed),
                         is_complete=False,
                     )
-
-            # 回合收尾：用量字段并入终稿 chat.final
-            # 截留的终稿在此并入用量字段后下发；extra 拍平使通用落盘器
-            # （interface.py 消费循环）把用量写进终稿记录，供历史回放恢复。
-            round_usage_fields = await self._build_round_usage_fields(
-                session_id, usage_accumulator
-            )
-            if pending_terminal_final_payload is not None:
-                if round_usage_fields:
-                    pending_terminal_final_payload.update(round_usage_fields)
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=cid,
-                    payload=pending_terminal_final_payload,
-                    is_complete=False,
-                )
-                pending_terminal_final_payload = None
 
             if is_xiaoyi_request:
                 logger.info(
@@ -10564,8 +10525,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         "event_type": "chat.final",
                         "content": accumulated_text,
                     }
-                    if round_usage_fields:
-                        flush_payload.update(round_usage_fields)
                     self._stream_content_run_kind = None
                 yield AgentResponseChunk(
                     request_id=rid,
@@ -10637,15 +10596,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             logger.exception("[JiuWenSwarmDeepAdapter] 流式任务异常: %s", exc)
             if _debug_logger is not None:
                 _debug_logger.end_run(status="error", error=exc)
-            # 截留的终稿在异常路径不能丢：先原样补发（不并用量字段），再发错误帧
-            if pending_terminal_final_payload is not None:
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=cid,
-                    payload=pending_terminal_final_payload,
-                    is_complete=False,
-                )
-                pending_terminal_final_payload = None
             # 预置 rewind session：从 history.jsonl 重建上下文，避免下一轮
             # invoke 加载 stale checkpointer state 导致上下文丢失（与 cancel
             # 路径同一根因）。model call failure（如 408 超时）不属于 cancel
@@ -11588,53 +11538,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         return response
 
-    async def _resolve_team_leader_instance(self, session_id: str) -> Any | None:
-        """团队模式解析 leader 运行时实例（NativeHarness IS-A DeepAgent）。
-
-        解析链：session metadata expert_id → team_name → GLOBAL_RUNNER 的
-        runtime pool → TeamAgent.harness（TeamHarness）→ ._native。
-        非团队会话或任一步失败返回 None（调用方回退会话外壳实例）。
-        """
-        try:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
-            md = get_session_metadata(session_id)
-            if not isinstance(md, dict) or str(md.get("expert_type") or "") != "team":
-                return None
-            from jiuwenswarm.server.runtime.expert.expert_service import (
-                build_expert_group_team_name,
-            )
-
-            expert_id = str(md.get("expert_id") or "")
-            if not expert_id:
-                return None
-            team_name = build_expert_group_team_name(expert_id, session_id)
-            from openjiuwen.core.runner.runner import GLOBAL_RUNNER
-            from jiuwenswarm.agents.harness.team.team_manager import (
-                _runner_team_runtime_manager,
-            )
-
-            runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
-            pool = getattr(runtime_mgr, "pool", None) if runtime_mgr is not None else None
-            get_active = getattr(pool, "get", None)
-            if not callable(get_active):
-                return None
-            active = await get_active(team_name)
-            team_agent = getattr(active, "agent", None)
-            harness = getattr(team_agent, "harness", None)
-            leader_da = getattr(harness, "_native", None)
-            if leader_da is not None and getattr(leader_da, "react_agent", None) is not None:
-                return leader_da
-        except Exception:
-            logger.debug(
-                "[JiuWenSwarmDeepAdapter] resolve team leader agent failed: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-        return None
-
     async def get_context_usage(self, session_id: str) -> dict[str, Any]:
         """获取当前上下文窗口占用统计。
 
@@ -11662,14 +11565,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if self._instance is None:
             raise ValueError("Agent instance not available")
 
-        # 团队模式：量 leader 运行时 agent（而非会话外壳的裸实例——外壳没参与
-        # 作答，量它会得到偏小的假值）。解析失败回退外壳实例
-        target_instance = (
-            await self._resolve_team_leader_instance(session_id)
-        ) or self._instance
-
-        context_engine = target_instance.react_agent.context_engine
-        react_agent = target_instance.react_agent
+        context_engine = self._instance.react_agent.context_engine
+        react_agent = self._instance.react_agent
         context = context_engine.get_context(session_id=session_id)
         if context is None:
             return {
@@ -11683,13 +11580,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         token_counter = context.token_counter()
         from openjiuwen.core.foundation.tool import ToolInfo
 
-        # 系统提示词：prompt_builder.build() 现算全量
-        # （含 rails 动态注入段——团队身份/任务板等）。不用 _get_agent_system_prompt
-        # 的会话级缓存：那是为提示词前缀复用设计的，首次 build 后注入段增长会漏估
-        prompt_builder = getattr(react_agent, "prompt_builder", None) or getattr(
-            react_agent, "system_prompt_builder", None
-        )
-        system_prompt = prompt_builder.build() if prompt_builder is not None else ""
+        # 系统提示词
+        system_prompt = self._get_agent_system_prompt()
         if system_prompt and token_counter:
             system_prompt_tokens = token_counter.count(system_prompt) or 0
         elif system_prompt:
@@ -11723,17 +11615,21 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         else:
             tools_tokens = 0
 
-        # 总量 & 窗口限制：总量=三类估算和——同源同上下文，
-        # 不再用 da_total 覆盖
-        # 窗口上限仍取 DeepAgent engine 解析值（与压缩判定同源）；占用率自算
+        # 总量 & 窗口限制：优先用 DeepAgent 的准确值，回退到估算
         total_tokens = system_prompt_tokens + messages_tokens + tools_tokens
         context_window_limit = 0
+        occupancy_rate = 0.0
         context_occupancy = None
 
         try:
-            usage = target_instance.get_context_usage(session_id=session_id)
+            usage = self._instance.get_context_usage(session_id=session_id)
             context_occupancy = usage
+            # DeepAgent 的 total_tokens 来自 usage_metadata，比估算更准确
+            da_total = usage.get("total_tokens", 0)
+            if da_total > 0:
+                total_tokens = da_total
             context_window_limit = usage.get("context_window_tokens", 0)
+            occupancy_rate = usage.get("usage_percent", 0)
         except Exception as exc:
             logger.debug("[JiuWenSwarmDeepAdapter] DeepAgent.get_context_usage failed: %s", exc)
             from openjiuwen.core.context_engine.context.context_utils import ContextUtils
@@ -11742,11 +11638,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 if self._model_request_config else ""
             )
             context_window_limit = ContextUtils.resolve_context_max(model_name=model_name)
-        occupancy_rate = (
-            round(total_tokens / context_window_limit * 100, 1)
-            if context_window_limit > 0
-            else 0.0
-        )
+            if context_window_limit > 0:
+                occupancy_rate = round(total_tokens / context_window_limit * 100, 1)
 
         message_count = len(context_messages)
 

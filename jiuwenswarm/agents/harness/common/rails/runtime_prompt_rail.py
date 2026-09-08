@@ -82,6 +82,7 @@ class RuntimePromptRail(DeepAgentRail):
         language: str = "cn",
         channel: str = "web",
         timezone_offset: int = 8,
+        include_subagent_usage_rules: bool = True,
     ) -> None:
         super().__init__()
         self._agent = None
@@ -97,6 +98,7 @@ class RuntimePromptRail(DeepAgentRail):
         self._mode: str = ""
         self._session_id: str | None = None
         self._force_english: bool = False
+        self._include_subagent_usage_rules = include_subagent_usage_rules
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -499,11 +501,12 @@ class RuntimePromptRail(DeepAgentRail):
             f"- Current channel: `{channel}`"
         )
 
-        # ── Input Instructions / Output Rules / Subagent Usage Rules ──
-        # Shared across office / code / design / team profiles. Appended after
-        # the CN/EN branch so both language paths receive the same content
-        # (English-only, mirroring the office/code/design all-English policy).
-        env_content += "\n\n" + _runtime_env_message_rules_text()
+        # ── Input Instructions / Output Rules / optional Subagent rules ──
+        # Appended after the CN/EN branch so both language paths receive the
+        # same content (English-only, mirroring office/code/design policy).
+        env_content += "\n\n" + _runtime_env_message_rules_text(
+            include_subagent_usage_rules=self._include_subagent_usage_rules
+        )
 
         # ── Text output (does not apply to tool calls) ──
         # Shared across office / code / design / team profiles. Appended last

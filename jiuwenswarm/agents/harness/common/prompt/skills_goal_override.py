@@ -93,6 +93,26 @@ _FIND_SKILLS_TOOL_RULES = {
 - **Usage rule:** Complete all skill discovery, retrieval, and installation tasks through this skill by default. Use another discovery or installation method only when the user explicitly requests it.""",
 }
 
+# Keep product wording stable across agent-core releases.  Calling the upstream
+# builder below still determines whether the current request has any tools;
+# only the displayed policy text is owned here.
+_TOOL_USAGE_RULES = {
+    "cn": """# 工具使用规则
+
+- 只调用当前请求中实际可用的工具。
+- 相同工具和相同参数已有结果时，不要重复调用。
+- 上一次结果为空或没有新增信息时，调整参数、改用其他工具或说明结果不足。
+- 文件搜索、读取、编辑和写入优先使用专用工具，不要用 Shell 重复实现。
+- Shell 命令只有存在依赖关系时才串联；长时间运行的命令应根据需要增大 `timeout`，不要用 `sleep` 轮询。""",
+    "en": """# Tool Usage Rules
+
+- Only call tools that are actually available in the current request.
+- Do not repeat the same tool with the same parameters when a result already exists.
+- If the previous result is empty or has no new information, adjust parameters, switch to another tool, or state that the result is insufficient.
+- Prefer dedicated tools for file search, read, edit, and write — do not reimplement them with Shell.
+- Chain Shell commands only when there are dependencies; for long-running commands, increase `timeout` as needed — do not poll with `sleep`.""",
+}
+
 def _skills_prompt_max_chars() -> int:
     """Return the configured final Skills-section character budget.
 
@@ -274,26 +294,48 @@ def _build_auto_list_mode_skill_prompt(language: str = "en") -> str:
 # Tool-usage section — retain find-skills-win policy next to other tool rules
 # ---------------------------------------------------------------------------
 
+# Safety is static priority 13 in all three modes.  Priority 14 reserves its
+# immediate successor for this runtime-built section.  Product static sections
+# that must follow Tools use 31+ so the ordering also stays correct when an
+# older agent-core writer leaves Tools at its upstream priority 30.
+_TOOL_USAGE_SECTION_PRIORITY = 14
+
 def _build_tools_content_with_find_skills(ability_manager, language: str = "cn") -> str | None:
-    """Append skill-discovery policy to the upstream Tool Usage Rules section."""
-    content = _ORIGINAL_BUILD_TOOLS_CONTENT(ability_manager, language)
-    if not content:
-        return content
+    """Build product tool rules plus skill-discovery policy when tools exist."""
+    # Preserve upstream's availability check, but keep the product rule wording
+    # independent from agent-core prompt-text changes.
+    if not _ORIGINAL_BUILD_TOOLS_CONTENT(ability_manager, language):
+        return None
     lang = language or "cn"
+    content = _TOOL_USAGE_RULES.get(lang, _TOOL_USAGE_RULES["cn"])
     rule = _FIND_SKILLS_TOOL_RULES.get(lang, _FIND_SKILLS_TOOL_RULES["en"])
     return f"{content.rstrip()}\n\n{rule}\n"
 
 
 _ORIGINAL_BUILD_TOOLS_CONTENT = _context.build_tools_content
+_ORIGINAL_BUILD_TOOLS_SECTION = _context.build_tools_section
+
+
+def _build_tools_section_after_safety(ability_manager, language: str = "cn"):
+    """Build Tool Usage Rules directly after the shared Safety section."""
+    section = _ORIGINAL_BUILD_TOOLS_SECTION(ability_manager, language)
+    if section is not None:
+        section.priority = _TOOL_USAGE_SECTION_PRIORITY
+    return section
 
 
 def _apply_tools_patch() -> None:
-    """Patch the upstream content builder without changing its public API."""
-    current = _context.build_tools_content
-    if getattr(current, "__skills_goal_override_wrapped__", False):
-        return
-    _build_tools_content_with_find_skills.__skills_goal_override_wrapped__ = True  # type: ignore[attr-defined]
-    _context.build_tools_content = _build_tools_content_with_find_skills
+    """Patch shared tool text without changing the public API.
+
+    Product-owned rails apply the final section priority locally. Do not modify
+    ``ContextAssembleRail`` globally here: unrelated agents sharing this
+    process must retain their upstream behavior.
+    """
+    if not getattr(_context.build_tools_content, "__skills_goal_override_wrapped__", False):
+        _build_tools_content_with_find_skills.__skills_goal_override_wrapped__ = True  # type: ignore[attr-defined]
+        _build_tools_section_after_safety.__skills_goal_override_wrapped__ = True  # type: ignore[attr-defined]
+        _context.build_tools_content = _build_tools_content_with_find_skills
+        _context.build_tools_section = _build_tools_section_after_safety
 
 
 # ---------------------------------------------------------------------------

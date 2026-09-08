@@ -1154,46 +1154,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             else:
                 rate = 0
 
-            # 三类分项：此刻 ctx.inputs 即真实发送窗口
-            # （react_agent 在模型调用前把 context_window 的 messages/tools 写进
-            # inputs）——团队模式工具集回合末即 teardown，只有此刻量得到真实发送集
-            token_counter = None
-            try:
-                token_counter = context.token_counter()
-            except Exception:
-                token_counter = None
-            inputs = getattr(ctx, "inputs", None)
-            in_messages = list(getattr(inputs, "messages", None) or [])
-            in_tools = list(getattr(inputs, "tools", None) or [])
-
-            def _role_of(m: Any) -> str:
-                return str(getattr(m, "role", "") or getattr(m, "type", "") or "").lower()
-
-            category_tokens: dict[str, int] = {}
-            if token_counter is not None and (in_messages or in_tools):
-                system_msgs = [m for m in in_messages if _role_of(m) == "system"]
-                other_msgs = [m for m in in_messages if _role_of(m) != "system"]
-                try:
-                    if system_msgs:
-                        category_tokens["system_prompt_tokens"] = (
-                            token_counter.count_messages(system_msgs) or 0
-                        )
-                    if other_msgs:
-                        category_tokens["messages_tokens"] = (
-                            token_counter.count_messages(other_msgs) or 0
-                        )
-                    if in_tools:
-                        category_tokens["tools_tokens"] = (
-                            token_counter.count_tools(in_tools) or 0
-                        )
-                except Exception:
-                    logger.debug("context_usage category count failed", exc_info=True)
-
             payload = {
                 "rate": rate,
                 "context_max": raw_total_tokens,
                 "tokens_used": current_context_tokens,
-                **category_tokens,
             }
             if role:
                 payload["role"] = role

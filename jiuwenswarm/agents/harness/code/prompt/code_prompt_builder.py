@@ -30,13 +30,18 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
 
 class CodePromptPriority(IntEnum):
     SAFETY = 13
-    INTRO = 14
+    # Runtime Tool Usage Rules has priority 30; mode-local static guidance
+    # follows it so the captured prompt order is stable across agent-core builds.
+    TONE_AND_STYLE = 31
+    INTRO = 32
     SYSTEM = 11
-    DOING_TASKS = 25
-    USING_YOUR_TOOLS = 31
-    ACTIONS_WITH_CARE = 35
-    TONE_AND_STYLE = 45
-    SESSION_GUIDANCE = 34
+    # All mode-specific guidance follows Tool Usage Rules.  Keep Tone first so
+    # it immediately follows the shared runtime tools section in the final
+    # assembled prompt.
+    DOING_TASKS = 33
+    USING_YOUR_TOOLS = 34
+    SESSION_GUIDANCE = 35
+    ACTIONS_WITH_CARE = 36
 
 
 # ─── Intro ────────────────────────────────────────
@@ -537,7 +542,12 @@ def build_code_system_prompt() -> str:
     """
     builder = SystemPromptBuilder(language="en")
 
-    for generator in _CODE_SECTION_GENERATORS:
-        builder.add_section(generator())
+    for section in build_code_system_prompt_sections():
+        builder.add_section(section)
 
     return builder.build()
+
+
+def build_code_system_prompt_sections() -> tuple[PromptSection, ...]:
+    """Return Code's static sections for registration on the runtime builder."""
+    return tuple(generator() for generator in _CODE_SECTION_GENERATORS)

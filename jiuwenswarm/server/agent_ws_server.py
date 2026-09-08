@@ -1992,9 +1992,6 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.COMMAND_CONTEXT:
                 await self._handle_command_context(ws, request, send_lock)
                 return
-            if request.req_method == ReqMethod.MODEL_CONTEXT_WINDOW:
-                await self._handle_model_context_window(ws, request, send_lock)
-                return
             if request.req_method == ReqMethod.COMMAND_RECAP:
                 await self._handle_command_recap(ws, request, send_lock)
                 return
@@ -5850,72 +5847,6 @@ class AgentWebSocketServer:
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] command.context failed: %s", e)
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    async def _handle_model_context_window(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """model.context_window：按模型名解析上下文窗口上限（只读，不碰会话运行时）。
-
-        与压缩判定构造性同源——直接调 agent-core 的 resolve_context_max
-        （显式配置 > 自定义表 > 内置表 > OpenRouter 缓存 > 兜底 200000），
-        环面显示的上限与压缩触发的上限恒为同一值。
-        """
-        try:
-            params = request.params or {}
-            model_name = str(params.get("model_name") or "").strip()
-            from openjiuwen.core.context_engine.context.context_utils import (
-                DEFAULT_CONTEXT_MAX_TOKENS,
-                MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
-                ContextUtils,
-            )
-
-            react_cfg = get_config().get("react", {}) or {}
-            cec = react_cfg.get("context_engine_config") or {}
-            raw_explicit = cec.get("context_window_tokens")
-            try:
-                explicit = int(raw_explicit) if raw_explicit not in (None, "") else None
-            except (TypeError, ValueError):
-                explicit = None
-            raw_table = cec.get("model_context_window_tokens")
-            custom_table = raw_table if isinstance(raw_table, dict) else None
-
-            resolved = ContextUtils.resolve_context_max(
-                model_name=model_name,
-                fallback_context_window_tokens=explicit,
-                model_context_window_tokens=custom_table,
-            )
-            # source 判定（与 resolve_context_max 优先级逐级对齐）
-            match = ContextUtils._get_positive_int_by_model_name
-            if isinstance(explicit, int) and explicit > 0:
-                source = "explicit"
-            elif custom_table and match(custom_table, model_name) is not None:
-                source = "custom_table"
-            elif match(MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS, model_name) is not None:
-                source = "builtin"
-            elif resolved == DEFAULT_CONTEXT_MAX_TOKENS:
-                source = "default"
-            else:
-                source = "openrouter"
-
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={
-                    "model_name": model_name,
-                    "context_window_tokens": resolved,
-                    "source": source,
-                },
-            )
-        except Exception as e:
-            logger.exception("[AgentWebSocketServer] model.context_window failed: %s", e)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

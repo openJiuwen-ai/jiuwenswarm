@@ -21,7 +21,10 @@ class PromptPriority(IntEnum):
     CONTENT_POLICY = 11
     REGIONAL_CONVENTIONS = 12
     SAFETY = 13
-    TASK_EXECUTION = 14
+    # Tool Usage Rules is materialized at runtime by agent-core with priority
+    # 30.  Keep Task Execution immediately after it rather than depending on
+    # a monkey-patch of that external runtime section.
+    TASK_EXECUTION = 31
     SKILLS = 40
     MEMORY = 55
     INPUT = 60
@@ -236,23 +239,28 @@ System message types:
 - When asked for the current model name, use the current model value in `runtime.setting` and state only the model name.
 - When asked which models are supported or configured, use the available model list in `runtime.setting`.
 
-## Subagent Usage Rules
+"""
+
+_SUBAGENT_USAGE_RULES_TEXT = """## Subagent Usage Rules
 
 - Invoke task_tool with a specialized agent when the work at hand fits that agent's description. Subagents help you parallelize independent queries or keep the main context window free of bulky results, but do not reach for them when they are not needed. Critically, never duplicate work a subagent is already handling — once you hand research to a subagent, do not run the same searches yourself.
 - For browser automation tasks (taking screenshots, navigating pages, interacting with web UIs, or scraping dynamic content), use task_tool with subagent_type="browser_agent". Do not write Playwright scripts or use bash/subprocess to launch a browser — delegate to browser_agent instead.
 """
 
 
-def _runtime_env_message_rules_text() -> str:
-    """Return the Input Instructions / Output Rules / Subagent Usage Rules
+def _runtime_env_message_rules_text(include_subagent_usage_rules: bool = True) -> str:
+    """Return Input/Output rules and optional Subagent Usage Rules.
+
+    Office, Code, and Design all retain this Runtime Environment subsection.
+    Office alone omits the separate top-level task-tool prompt section.
     subsections that are appended to the Runtime Environment (``env``) section
     by :class:`RuntimePromptRail`.
 
-    Headings are demoted one level (``##`` / ``###``) so the three blocks read
+    Headings are demoted one level (``##`` / ``###``) so the blocks read
     as subsections of ``# Runtime Environment`` rather than top-level sections.
-    Shared across office / code / design / team profiles because they all
-    register the same :class:`RuntimePromptRail`.
     """
+    if include_subagent_usage_rules:
+        return _RUNTIME_ENV_MESSAGE_RULES_TEXT + "\n\n" + _SUBAGENT_USAGE_RULES_TEXT
     return _RUNTIME_ENV_MESSAGE_RULES_TEXT
 
 
@@ -264,13 +272,27 @@ def build_agent_identity_prompt(language: str) -> str:
     """
     resolved_language = resolve_language(language)
     builder = SystemPromptBuilder(language=resolved_language)
-    builder.add_section(_identity_prompt())
-    builder.add_section(_content_policy_prompt())
-    builder.add_section(build_shared_system_section())
-    builder.add_section(_regional_conventions_prompt())
-    builder.add_section(_safety_prompt())
-    builder.add_section(_task_execution_prompt())
+    for section in build_work_system_prompt_sections():
+        builder.add_section(section)
     return builder.build()
+
+
+def build_work_system_prompt_sections() -> tuple[PromptSection, ...]:
+    """Return Work's static sections without flattening them into one string.
+
+    ``create_deep_agent(system_prompt=...)`` wraps a string as one ``identity``
+    section.  Adapters that need dynamic sections to interleave with static
+    ones use this function to register the returned sections on the final
+    runtime builder instead.
+    """
+    return (
+        _identity_prompt(),
+        _content_policy_prompt(),
+        build_shared_system_section(),
+        _regional_conventions_prompt(),
+        _safety_prompt(),
+        _task_execution_prompt(),
+    )
 
 
 def _read_file(file_path: str) -> Optional[str]:
@@ -303,5 +325,6 @@ __all__ = [
     "build_shared_content_policy_section",
     "build_shared_system_section",
     "build_shared_regional_conventions_section",
+    "build_work_system_prompt_sections",
     "build_agent_identity_prompt",
 ]
