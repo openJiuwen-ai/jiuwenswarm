@@ -163,6 +163,13 @@ datas += collect_data_files(
     include_py_files=False,
     includes=DATA_FILE_PATTERNS,
 )
+try:
+    # The package is optional for OSS builds and mandatory for official Xiaoyi
+    # Work releases.  The runtime loader uses importlib.resources, so its JSON
+    # asset must be added explicitly instead of relying on module analysis.
+    datas += collect_data_files("xiaoyi_prompt_assets", include_py_files=False)
+except Exception as exc:  # noqa: BLE001
+    print(f"jiuwenswarm.spec: private prompt assets not installed: {exc}")
 for package_root in DISPATCH_PACKAGE_ROOTS:
     datas += collect_tree_data_files(
         os.path.join(symphony_root, package_root),
@@ -194,6 +201,7 @@ hiddenimports = webview_hiddenimports + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
+    "xiaoyi_prompt_assets",
 ] + openjiuwen_submodules + symphony_submodules + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）

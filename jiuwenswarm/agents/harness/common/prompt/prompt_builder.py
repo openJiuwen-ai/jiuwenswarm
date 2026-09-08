@@ -12,6 +12,10 @@ from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder, resol
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.agents.harness.common.prompt import safety_override
 from jiuwenswarm.agents.harness.common.prompt import skills_goal_override  # noqa: F401  — patches openjiuwen Skills + Goal sections
+from jiuwenswarm.agents.harness.common.prompt.private_assets import (
+    load_mode_sections,
+    load_shared_text,
+)
 
 
 class PromptPriority(IntEnum):
@@ -299,6 +303,15 @@ def _runtime_env_message_rules_text(include_subagent_usage_rules: bool = True) -
     Headings are demoted one level (``##`` / ``###``) so the blocks read
     as subsections of ``# Runtime Environment`` rather than top-level sections.
     """
+    private_text = load_shared_text(
+        "runtime_env_with_subagents"
+        if include_subagent_usage_rules
+        else "runtime_env_without_subagents"
+    )
+    if private_text is not None:
+        if not isinstance(private_text, str):
+            raise TypeError("private runtime prompt asset must be a string")
+        return private_text
     output_rules = _RUNTIME_ENV_MESSAGE_RULES_TEXT.rstrip()
     if include_subagent_usage_rules:
         return output_rules + "\n\n" + _TEXT_OUTPUT + "\n\n" + _SUBAGENT_USAGE_RULES_TEXT
@@ -326,6 +339,9 @@ def build_work_system_prompt_sections() -> tuple[PromptSection, ...]:
     ones use this function to register the returned sections on the final
     runtime builder instead.
     """
+    private_sections = load_mode_sections("office")
+    if private_sections is not None:
+        return private_sections
     return (
         _identity_prompt(),
         _content_policy_prompt(),

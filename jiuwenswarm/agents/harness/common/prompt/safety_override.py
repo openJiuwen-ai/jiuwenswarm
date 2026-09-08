@@ -26,9 +26,9 @@ from typing import Dict, Optional
 
 import openjiuwen.harness.prompts.sections.safety as _safety
 from openjiuwen.harness.prompts.builder import PromptSection
-from openjiuwen.harness.prompts.sections import SectionName
 
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.agents.harness.common.prompt.private_assets import load_shared_text
 
 _PATCHED = False
 
@@ -148,6 +148,17 @@ SAFETY_PROMPT: Dict[str, str] = {
     "cn": SAFETY_PROMPT_CN,
     "en": SAFETY_PROMPT_EN,
 }
+
+_private_safety_prompt = load_shared_text("safety")
+if _private_safety_prompt is not None:
+    if not (
+        isinstance(_private_safety_prompt, dict)
+        and all(isinstance(language, str) and isinstance(text, str) for language, text in _private_safety_prompt.items())
+    ):
+        raise TypeError("private safety prompt asset must map languages to text")
+    SAFETY_PROMPT = _private_safety_prompt
+    SAFETY_PROMPT_CN = SAFETY_PROMPT["cn"]
+    SAFETY_PROMPT_EN = SAFETY_PROMPT["en"]
 
 
 def build_safety_section(language: str = "en") -> Optional[PromptSection]:

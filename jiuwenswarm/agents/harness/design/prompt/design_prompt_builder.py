@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
     build_shared_regional_conventions_section,
     build_shared_system_section,
 )
+from jiuwenswarm.agents.harness.common.prompt.private_assets import load_mode_sections
 
 
 # ─── Priority ────────────────────────────────────
@@ -162,6 +163,9 @@ def build_design_system_prompt() -> str:
 
 def build_design_system_prompt_sections() -> tuple[PromptSection, ...]:
     """Return Design's static sections for registration on the runtime builder."""
+    private_sections = load_mode_sections("creative")
+    if private_sections is not None:
+        return private_sections
     return tuple(generator() for generator in _DESIGN_SECTION_GENERATORS)
 
 
