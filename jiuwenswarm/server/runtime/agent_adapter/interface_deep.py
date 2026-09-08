@@ -7100,14 +7100,6 @@ class JiuWenSwarmDeepAdapter:
         return skill_evolution_rail
 
     @staticmethod
-    def _coerce_ttse_inject_mode(value: Any) -> str:
-        """Normalize ``react.ttse.inject_mode``; empty/unknown defaults to disk_catalog."""
-        text = str(value or "").strip() or "disk_catalog"
-        if text in {"legacy_system", "disk_catalog", "trailing_attach"}:
-            return text
-        return "disk_catalog"
-
-    @staticmethod
     def _coerce_ttse_bool(value: Any, default: bool) -> bool:
         """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
         if isinstance(value, bool):
@@ -7133,6 +7125,7 @@ class JiuWenSwarmDeepAdapter:
         """User yaml ``react.ttse`` plus adapter cache (yaml wins on known keys).
 
         ``store_path`` is not a user setting; the bank is always under workspace.
+        FACT/TIP disclosure is always catalog + ``ttse_consult``.
         """
         merged: dict[str, Any] = {}
         merged.update(_get_ttse_config(config if config is not None else self._config_cache))
@@ -7143,7 +7136,6 @@ class JiuWenSwarmDeepAdapter:
         for key in (
             "evolve_enabled",
             "inject_enabled",
-            "inject_mode",
             "enabled",
             "dream_enabled",
             "dream_interval",
@@ -7173,7 +7165,6 @@ class JiuWenSwarmDeepAdapter:
             store_path = self._ttse_bank_path()
             evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
             inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
-            inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
             dream_enabled = self._coerce_ttse_bool(ttse_cfg.get("dream_enabled"), True)
             try:
                 dream_interval = int(ttse_cfg.get("dream_interval", 20))
@@ -7189,12 +7180,11 @@ class JiuWenSwarmDeepAdapter:
                 dream_ttl_days = 90
             logger.info(
                 "[JiuWenSwarmDeepAdapter] TTSEConfig: store_path=%s evolve_enabled=%s "
-                "inject_enabled=%s inject_mode=%s dream_enabled=%s dream_interval=%s "
+                "inject_enabled=%s dream_enabled=%s dream_interval=%s "
                 "dream_min_hours=%s dream_ttl_days=%s",
                 store_path,
                 evolve_enabled,
                 inject_enabled,
-                inject_mode,
                 dream_enabled,
                 dream_interval,
                 dream_min_hours,
@@ -7217,7 +7207,6 @@ class JiuWenSwarmDeepAdapter:
                     store_path=store_path,
                     evolve_enabled=evolve_enabled,
                     inject_enabled=inject_enabled,
-                    inject_mode=inject_mode,
                     embedding=embedding,
                     dream_enabled=bool(dream_enabled),
                     dream_interval=dream_interval,
@@ -7227,11 +7216,10 @@ class JiuWenSwarmDeepAdapter:
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] TTSERail create success, "
-                "store_path=%s evolve_enabled=%s inject_enabled=%s inject_mode=%s has_embedding=%s",
+                "store_path=%s evolve_enabled=%s inject_enabled=%s has_embedding=%s",
                 store_path,
                 evolve_enabled,
                 inject_enabled,
-                inject_mode,
                 embedding is not None,
             )
         except Exception as exc:
@@ -7248,7 +7236,6 @@ class JiuWenSwarmDeepAdapter:
         store_path = self._ttse_bank_path()
         evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
         inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
-        inject_mode = self._coerce_ttse_inject_mode(ttse_cfg.get("inject_mode"))
         cfg = getattr(rail, "_ttse_config", None)
         path_changed = False
         if cfg is not None:
@@ -7256,7 +7243,6 @@ class JiuWenSwarmDeepAdapter:
             cfg.store_path = store_path
             cfg.evolve_enabled = evolve_enabled
             cfg.inject_enabled = inject_enabled
-            cfg.inject_mode = inject_mode
             path_changed = old_path != store_path
         store = getattr(rail, "_ttse_store", None)
         if path_changed and store is not None and hasattr(store, "_load_sync"):
@@ -7266,11 +7252,10 @@ class JiuWenSwarmDeepAdapter:
             sync_mode()
         logger.info(
             "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
-            "store_path=%s evolve_enabled=%s inject_enabled=%s inject_mode=%s",
+            "store_path=%s evolve_enabled=%s inject_enabled=%s",
             store_path,
             evolve_enabled,
             inject_enabled,
-            inject_mode,
         )
 
     async def _ensure_ttse_rail_registered(self) -> None:

@@ -130,7 +130,7 @@ react:
       model: "bge-m3"
 ```
 
-规则库固定在 agent workspace 下的 `.ttse/bank.json`，不作为用户配置项。`embedding` 可选；未配置或字段不全时不调用向量服务，注入整库 FACT/TIP。
+规则库固定在 agent workspace 下的 `.ttse/bank.json`，注入方式固定为 `disk_catalog`（P:45 只写指引，FACT/TIP 走 `ttse_consult`），二者都不作为用户配置项。`embedding` 可选；未配置或字段不全时不调用向量服务，注入整库 FACT/TIP。
 
 Auto-dream 对已有 FACT/TIP bank 做卫生（TTL 剪枝、近重合并、低质量 TIP 清洗），与在线 `induce`/`blame` 独立；上述四个 `dream_*` 字段可在配置中覆盖默认值。
 

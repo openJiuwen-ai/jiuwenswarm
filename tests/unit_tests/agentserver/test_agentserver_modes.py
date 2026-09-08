@@ -2788,7 +2788,6 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     assert captured["config"]["store_path"] == str(tmp_path / ".ttse" / "bank.json")
     assert captured["config"]["evolve_enabled"] is False
     assert captured["config"]["inject_enabled"] is True
-    assert captured["config"]["inject_mode"] == "disk_catalog"
     assert captured["config"]["embedding"] is None
     assert captured["config"]["dream_enabled"] is False
     assert captured["config"]["dream_interval"] == 5
@@ -2829,6 +2828,38 @@ def test_build_ttse_rail_ignores_configured_store_path(monkeypatch, tmp_path):
 
     assert isinstance(rail, FakeTTSERail)
     assert captured["config"]["store_path"] == str(tmp_path / ".ttse" / "bank.json")
+
+
+def test_build_ttse_rail_ignores_configured_inject_mode(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    captured: dict[str, object] = {}
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"inject_mode": "legacy_system"}}},
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail({"ttse": {"inject_mode": "trailing_attach"}})
+
+    assert isinstance(rail, FakeTTSERail)
+    assert "inject_mode" not in captured["config"]
 
 
 def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
