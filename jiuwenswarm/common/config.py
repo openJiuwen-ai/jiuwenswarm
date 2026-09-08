@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -2748,9 +2749,11 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
 #     idle_ttl_seconds: 600         # 可选, 默认 None = 不进行 idle 驱逐
 #     idle_check_interval: 60       # 可选, 默认 None = 让 jiuwenbox 端用自身默认值
 #     fallback_on_failure: false    # jiuwenbox exec 异常时回退本地 (见 agent-core jiuwenbox provider)
+#     token: "..."                  # 可选, jiuwenswarm↔jiuwenbox Bearer token (与 use_random_token 互斥)
+#     use_random_token: false       # 可选, internal 模式下随机生成 token (不落盘)
 #
 # ``get_sandbox_runtime`` 把这些 key 读出来填默认值;
-# ``update_sandbox_runtime`` 写回时也只动这几个 key, 不动 endpoint 字段。
+# ``update_sandbox_runtime`` 写回时也只动这几个 key, 不动 endpoint / token 字段。
 #
 # ``idle_ttl_seconds`` / ``idle_check_interval`` 透传给
 # ``create_sandbox_sysop_card`` 作为同名参数, 最终在 jiuwenbox provider 里通过
@@ -2768,7 +2771,25 @@ _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
 }
 
 # 受 ``get_sandbox_runtime`` / ``update_sandbox_runtime`` 管辖的 sandbox 字段。
+# ``token`` / ``use_random_token`` 故意不在这里: 它们是 endpoint 级凭据, 不该被
+# ``/sandbox`` runtime patch 整表刷盘。
 _SANDBOX_RUNTIME_KEYS: tuple[str, ...] = tuple(_SANDBOX_RUNTIME_DEFAULTS.keys())
+
+# Shared with jiuwenbox server / CLI / provider HTTP client.
+JIUWENBOX_API_TOKEN_ENV = "JIUWENBOX_API_TOKEN"
+
+# Process-lifetime cache for ``sandbox.use_random_token=true``. Must stay stable
+# across bootstrap and later ``/sandbox enable`` so parent env and the already
+# spawned jiuwenbox subprocess keep the same Bearer token. Cleared only on
+# process restart (or explicitly in unit tests via
+# :func:`_clear_sandbox_api_token_cache_for_tests`).
+_random_sandbox_api_token_cache: str | None = None
+
+
+def _clear_sandbox_api_token_cache_for_tests() -> None:
+    """Reset the random-token cache. Unit tests only."""
+    global _random_sandbox_api_token_cache
+    _random_sandbox_api_token_cache = None
 
 
 def _coerce_optional_positive_int(
@@ -2979,6 +3000,82 @@ def get_sandbox_startup_mode_explicit() -> str | None:
     if text not in _VALID_SANDBOX_STARTUP_MODES:
         return None
     return text
+
+
+def get_sandbox_token_config() -> tuple[str, bool]:
+    """返回 ``(sandbox.token, sandbox.use_random_token)`` 的归一化结果。
+
+    - ``token``: 去空白后的字符串; 缺失 / 空串 → ``""``。
+    - ``use_random_token``: 缺省 ``False``。
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        sandbox = {}
+    token = str(sandbox.get("token") or "").strip()
+    use_random = bool(sandbox.get("use_random_token", False))
+    return token, use_random
+
+
+def resolve_sandbox_api_token(*, startup_mode: str | None = None) -> str | None:
+    """解析 jiuwenswarm ↔ jiuwenbox 之间使用的 Bearer token。
+
+    规则:
+    - ``sandbox.token`` 非空且 ``use_random_token=true`` → ``ValueError`` (互斥)。
+    - ``use_random_token=true`` 且 ``startup_mode=external`` → ``ValueError``
+      (随机值无法注入用户自行拉起的进程)。
+    - 仅 ``token`` 非空 → 返回该值。
+    - 仅 ``use_random_token=true`` → 返回进程内缓存的随机值 (首次生成后复用,
+      **不写回** ``sandbox.token``)。
+    - 两者都未启用 → ``None`` (关闭认证, 与旧行为一致)。
+
+    Args:
+        startup_mode: 调用方已知的模式; ``None`` 时回落到
+            :func:`get_sandbox_startup_mode`。
+    """
+    global _random_sandbox_api_token_cache
+
+    token, use_random = get_sandbox_token_config()
+    if token and use_random:
+        raise ValueError(
+            "sandbox.token 与 sandbox.use_random_token 不能同时配置: "
+            "请只保留其中一个"
+        )
+
+    mode = (
+        _normalize_sandbox_startup_mode(startup_mode)
+        if startup_mode is not None
+        else get_sandbox_startup_mode()
+    )
+    if use_random and mode == "external":
+        raise ValueError(
+            "sandbox.use_random_token=true 仅适用于 startup_mode=internal: "
+            "external 模式下无法把随机 token 注入用户自行拉起的 jiuwenbox"
+        )
+
+    if token:
+        return token
+    if use_random:
+        if _random_sandbox_api_token_cache is None:
+            import secrets
+
+            _random_sandbox_api_token_cache = secrets.token_urlsafe(32)
+        return _random_sandbox_api_token_cache
+    return None
+
+
+def sync_sandbox_api_token_environ(token: str | None) -> None:
+    """把解析出的 token 同步到当前进程的 ``JIUWENBOX_API_TOKEN``。
+
+    agent-server 派生的子进程 (MCP server / hybrid shell 宿主侧编排 /
+    jiuwenbox CLI 等) 会继承该环境变量, 以便现有 provider HTTP 客户端无需改
+    签名即可带上 ``Authorization: Bearer``。无 token 时显式 ``pop``, 避免继承
+    到过期值。
+    """
+    if token:
+        os.environ[JIUWENBOX_API_TOKEN_ENV] = token
+    else:
+        os.environ.pop(JIUWENBOX_API_TOKEN_ENV, None)
 
 
 def update_sandbox_startup_mode(mode: str) -> str:
