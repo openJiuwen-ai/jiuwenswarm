@@ -2338,7 +2338,9 @@ async def _process_team_message_stream(
         team_spec = await team_manager.get_swarm_enriched_team_spec(
             session_id=session_id,
             mode=resolved_mode,
-            project_dir=request_metadata.get("project_dir"),
+            project_dir=(
+                inputs.get("project_dir") or request_metadata.get("project_dir")
+            ),
             trusted_dirs=_request_trusted_dirs(request),
             request_id=rid,
             user_id=str(getattr(request, "user_id", "") or "").strip() or None,

@@ -1823,13 +1823,19 @@ async def test_handle_team_slash_command_allows_evolve_rollback(monkeypatch, tmp
 
 
 @pytest.mark.anyio
-async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch, tmp_path):
+async def test_process_team_message_stream_forwards_project_dir_and_handles_team_evolve_list(
+    monkeypatch,
+    tmp_path,
+):
     _write_team_skill(
         tmp_path,
         "demo-skill",
         records=[_evolution_record("First summary line")],
     )
     captured_spec: list[object] = []
+    captured_build_kwargs: list[dict[str, Any]] = []
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
@@ -1838,6 +1844,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
 
         @staticmethod
         async def get_swarm_enriched_team_spec(**kwargs):
+            captured_build_kwargs.append(kwargs)
             spec = SimpleNamespace(
                 team_name="unit-team",
                 workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
@@ -1845,21 +1852,27 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
             captured_spec.append(spec)
             return spec
 
-    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers, "get_team_manager", lambda channel_id: _FakeManager()
+    )
 
     request = SimpleNamespace(
         session_id="sess-team-stream",
         request_id="req-team-stream",
         channel_id="web",
         metadata=None,
+        params={"mode": "team", "project_dir": str(project_dir)},
     )
-    inputs = {"query": "/evolve_list demo-skill"}
+    inputs = {
+        "query": "/evolve_list demo-skill",
+        "project_dir": str(project_dir),
+    }
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-            request,
-            inputs,
-            object(),
+        request,
+        inputs,
+        object(),
     ):
         chunks.append(chunk)
 
@@ -1876,6 +1889,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
     assert chunks[1].is_complete is False
     assert chunks[2].is_complete is True
     assert captured_spec
+    assert captured_build_kwargs[0]["project_dir"] == str(project_dir)
 
 
 @pytest.mark.anyio

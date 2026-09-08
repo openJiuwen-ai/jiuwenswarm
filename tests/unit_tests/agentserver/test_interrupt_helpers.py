@@ -6,6 +6,7 @@ import pytest
 from openjiuwen.harness.rails.security.tool_security_rail import (
     PermissionInterruptRail,
 )
+from openjiuwen.harness.security import PermissionLevel
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     apply_permission_trusted_dirs,
@@ -1136,6 +1137,55 @@ def test_apply_permission_trusted_dirs_injects_project_into_file_guard(tmp_path:
     apply_permission_trusted_dirs(rail, trusted_dirs=None, project_dir=str(project))
     trusted = [path.resolve() for path in rail._engine.trusted_dirs]
     assert project.resolve() in trusted
+
+
+@pytest.mark.parametrize("tool_name", ["bash", "mcp_exec_command"])
+def test_issue_3952_project_dir_allows_ls_without_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions import (
+        permissions_layers,
+    )
+
+    monkeypatch.setattr(permissions_layers, "load_user_permissions", lambda: {})
+    monkeypatch.setattr(
+        permissions_layers,
+        "load_session_permissions",
+        lambda _session_id: {},
+    )
+    project = tmp_path / "external-project"
+    project.mkdir()
+    permissions = {
+        "enabled": True,
+        "defaults": {"*": "allow"},
+        "tools": {tool_name: "allow"},
+        "file_guard": {
+            "enabled": True,
+            "defaults": {"read": "ask", "write": "ask", "exec": "ask"},
+            "workspace": {"read": "allow", "write": "allow", "exec": "ask"},
+        },
+    }
+    rail = build_permission_rail({"permissions": permissions})
+    assert rail is not None
+    tool_args = {"command": "ls", "workdir": str(project)}
+
+    before, before_rule = rail._engine.evaluate_global_policy_directly(
+        tool_name,
+        tool_args,
+    )
+    assert before == PermissionLevel.ASK
+    assert "file_guard:defaults" in str(before_rule)
+
+    apply_permission_trusted_dirs(rail, project_dir=str(project))
+
+    after, after_rule = rail._engine.evaluate_global_policy_directly(
+        tool_name,
+        tool_args,
+    )
+    assert after == PermissionLevel.ALLOW
+    assert str(after_rule) == f"tools.{tool_name}"
 
 
 def _patch_permission_layer_paths(tmp_path: Path, monkeypatch) -> None:
