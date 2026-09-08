@@ -123,8 +123,8 @@ class SessionTurnTracker:
         known = self._current or self._load(session)
         if continues_turn and known is not None:
             # The loop that asked is still the loop that runs — same turn,
-            # new trace. Re-persist so the durable copy tracks the memory one
-            # even when this tracker resolved it from memory.
+            # new trace. Re-stage so ``sync`` can checkpoint the memory copy
+            # even when this tracker resolved it without reading the Session.
             self._current = known
             self._persist(session, known)
             return known
@@ -134,19 +134,25 @@ class SessionTurnTracker:
         self._persist(session, resolved)
         return resolved
 
-    def sync(self, session: Any | None) -> None:
-        """Persist the resolved turn once *session* becomes available.
+    async def sync(self, session: Any | None) -> None:
+        """Persist and checkpoint the resolved turn once *session* is available.
 
         A brand-new message resolves its turn before the session exists, so the
-        durable write at resolve time is a no-op. Calling this after the run has
-        a session closes that gap.
+        write at resolve time is a no-op. Calling this after the run has a
+        session closes that gap. ``update_state`` only mutates the live Session;
+        ``commit`` is required for a rebuilt adapter to recover the counter.
 
         Args:
             session: Live session to persist into; None is a no-op.
         """
         if self._current is None:
             return
-        self._persist(session, self._current)
+        if not self._persist(session, self._current):
+            return
+        try:
+            await session.commit()
+        except Exception as exc:
+            logger.debug("[Trajectory] turn state commit failed: %s", exc)
 
     @staticmethod
     def _load(session: Any | None) -> TurnIdentity | None:
@@ -160,15 +166,17 @@ class SessionTurnTracker:
             return None
 
     @staticmethod
-    def _persist(session: Any | None, identity: TurnIdentity) -> None:
-        """Write the identity to session state, best-effort.
+    def _persist(session: Any | None, identity: TurnIdentity) -> bool:
+        """Stage the identity in session state, best-effort.
 
-        Losing the durable copy costs a turn number after a reload; failing the
-        request over it would cost the whole run, so this never raises.
+        Returns whether the state was staged. Failing the request over an
+        observability counter would cost the whole run, so this never raises.
         """
         if session is None:
-            return
+            return False
         try:
             session.update_state({SESSION_STATE_KEY: identity.to_dict()})
+            return True
         except Exception as exc:
             logger.debug("[Trajectory] turn state write failed: %s", exc)
+            return False

@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import pytest
+
 from jiuwenswarm.observability.turn import (
     SESSION_STATE_KEY,
     SessionTurnTracker,
@@ -21,6 +23,7 @@ class _FakeSession:
 
     def __init__(self) -> None:
         self.state: dict[str, Any] = {}
+        self.committed_state: dict[str, Any] = {}
 
     def update_state(self, data: dict) -> None:
         """Merge *data* into the session state."""
@@ -29,6 +32,10 @@ class _FakeSession:
     def get_state(self, key: str | None = None) -> Any:
         """Return the value stored under *key*."""
         return self.state.get(key)
+
+    async def commit(self) -> None:
+        """Capture the state a rebuilt Session would restore."""
+        self.committed_state = dict(self.state)
 
 
 class _BrokenSession:
@@ -115,15 +122,31 @@ def test_resolution_without_a_session_still_yields_a_turn():
     assert resumed == first
 
 
-def test_sync_persists_a_turn_resolved_before_the_session_existed():
+@pytest.mark.asyncio
+async def test_sync_checkpoints_a_turn_resolved_before_the_session_existed():
     tracker = SessionTurnTracker()
     resolved = tracker.resolve(None, continues_turn=False)
     session = _FakeSession()
 
-    tracker.sync(session)
+    await tracker.sync(session)
 
     test_logger.info("persisted after sync: %s", session.state)
     assert session.state[SESSION_STATE_KEY] == resolved.to_dict()
+    assert session.committed_state[SESSION_STATE_KEY] == resolved.to_dict()
+
+
+@pytest.mark.asyncio
+async def test_numbering_survives_a_session_rebuilt_from_checkpoint():
+    session = _FakeSession()
+    tracker = SessionTurnTracker()
+    first = tracker.resolve(session, continues_turn=False)
+    await tracker.sync(session)
+
+    rebuilt = _FakeSession()
+    rebuilt.state = dict(session.committed_state)
+    second = SessionTurnTracker().resolve(rebuilt, continues_turn=False)
+
+    assert (first.turn_number, second.turn_number) == (1, 2)
 
 
 def test_unusable_session_state_degrades_to_a_new_turn():

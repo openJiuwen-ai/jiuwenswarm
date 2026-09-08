@@ -14302,6 +14302,10 @@ class JiuWenSwarmDeepAdapter:
                 )
                 if interaction_stream is None and not permission_dispatched:
                     self._permission_dispatch.release(inputs)
+            # ``update_state`` alone is process-local. Checkpoint the resolved
+            # turn before waiting on the runner so a server restart cannot
+            # reset this session's next turn number to 1.
+            await self._turn_tracker.sync(self._active_loop_session())
             if interaction_stream is None:
                 return AgentResponse(
                     request_id=request.request_id,
@@ -15279,7 +15283,7 @@ class JiuWenSwarmDeepAdapter:
             # session, so the durable write was a no-op then. Every branch above
             # has handed the message over, so the session exists now — persist
             # it, or a HITL resume that outlives this adapter loses the turn.
-            self._turn_tracker.sync(self._active_loop_session())
+            await self._turn_tracker.sync(self._active_loop_session())
 
             def observe_runner_stream_chunk(
                 chunk: Any,
