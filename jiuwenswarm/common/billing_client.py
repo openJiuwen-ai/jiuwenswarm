@@ -16,6 +16,9 @@ fulfillment 服务（与模型访问 np://claw-model 同一套「鉴权收拢主
   - NEW     携带 query，不带 sessionId/interactionId；响应含 hasBalance
   - FINISH/FAILED 携带 sessionId/interactionId，不带 query
   - endpoint.device 固定字段照抄桌面 buildEndpointDevice（服务端校验以该形态为准）
+NEW 的 query 上报前剥离渠道注入段（_strip_injected_directives：<claw_workspace>
+尾段），与桌面 ReportConversations sanitizeReportQuery 同口径——工作空间路径
+不随计费接口出网。
 
 x-hag-trace-id = 裸核心段（``sessionId&interactionId短码``，≤45），与本轮全部
 模型调用的 x-hag-trace-id 完全同值（TraceAwareModel 经 invocation context 注入）。
@@ -36,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -56,6 +60,20 @@ _new_reported: OrderedDict[str, float] = OrderedDict()
 
 # fire-and-forget 任务集合（防 GC；任务自带 done_callback 移除）
 _REPORT_TASKS: set[asyncio.Task] = set()
+
+# 计费 query 剥离口径：渠道层 with_workspace_directive（common/permission_profile.py）
+# 在手机端选择工作空间时拼入的 <claw_workspace> + 【工作空间】指令尾段不进计费上报——
+# 工作空间路径不随计费接口出网，且与桌面侧同口径（BillingService.report 经
+# restoreVisibleUserText 剥离 claw_context/claw_workspace/claw_cron_create 注入段；
+# 手机端不产生 claw_context，本侧唯一注入源即该尾段）。
+_WORKSPACE_DIRECTIVE_TAIL_RE = re.compile(
+    r"\s*<claw_workspace>[^\r\n]*</claw_workspace>\r?\n【工作空间】[^\r\n]*\s*$"
+)
+
+
+def _strip_injected_directives(query: str) -> str:
+    """NEW 上报前剥离渠道注入段（当前仅 <claw_workspace> 尾段；受限/完全访问两档文案同形态）。"""
+    return _WORKSPACE_DIRECTIVE_TAIL_RE.sub("", query).rstrip()
 
 
 def xiaoyi_billing_enabled() -> bool:
@@ -222,7 +240,9 @@ def report_new(query: str, trace_id: str) -> bool:
         _new_reported[trace_id] = now
         _new_reported.move_to_end(trace_id)
         return False
-    payload = _build_status_body("NEW", uid=uid, device_id=device_id, query=query)
+    payload = _build_status_body(
+        "NEW", uid=uid, device_id=device_id, query=_strip_injected_directives(query)
+    )
     if not _schedule_report("NEW", trace_id, payload):
         return False
     _new_reported[trace_id] = now
