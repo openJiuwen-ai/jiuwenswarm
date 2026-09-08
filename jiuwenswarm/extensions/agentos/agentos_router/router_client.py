@@ -78,6 +78,8 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
     apply_trace_header,
+    extract_trace_id,
+    bind_southbound_trace_id,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
 from jiuwenswarm.gateway import ChannelManager
@@ -1231,6 +1233,9 @@ class AgentOSRouterClient(AgentServerClient):
         uri = self._agent_ws_url(instance_id, agent_port)
         deadline = asyncio.get_running_loop().time() + _WS_CONNECT_READY_TIMEOUT_SECONDS
         attempt = 0
+        # One reconnect (including 502 retries) shares one southbound id.
+        ws_headers = apply_trace_header({})
+        ws_trace_id = extract_trace_id(ws_headers)
 
         while True:
             attempt += 1
@@ -1247,12 +1252,13 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_type=agent_type,
                 instance=instance_id,
                 attempt=attempt,
+                trace_id=ws_trace_id,
             )
             try:
                 await _connect_ws_client(
                     client,
                     uri,
-                    extra_headers=apply_trace_header({}),
+                    extra_headers=ws_headers,
                 )
                 log_agentos(
                     logger,
@@ -1341,6 +1347,7 @@ class AgentOSRouterClient(AgentServerClient):
                 info = await getter(instance_id)
                 return info if isinstance(info, dict) else {}
             return {}
+        poll_trace_id = bind_southbound_trace_id()
         log_agentos(
             logger,
             logging.DEBUG,
@@ -1350,8 +1357,12 @@ class AgentOSRouterClient(AgentServerClient):
             sandbox_id=instance_id,
             agent_type=agent_type,
             instance=instance_id,
+            trace_id=poll_trace_id,
         )
-        info = await waiter(instance_id)
+        try:
+            info = await waiter(instance_id, trace_id=poll_trace_id)
+        except TypeError:
+            info = await waiter(instance_id)
         return info if isinstance(info, dict) else {}
 
     async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:

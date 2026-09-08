@@ -49,6 +49,19 @@ def test_format_agentos_redacts_token_kwargs() -> None:
     assert "user_id=u1" in line
 
 
+def test_format_agentos_puts_trace_id_after_request_id() -> None:
+    line = format_agentos(
+        "agent.ws.ready",
+        user_id="u1",
+        request_id="r1",
+        trace_id="t-ws-1",
+        sandbox_id="sbx",
+    )
+    keys = [part.split("=", 1)[0] for part in line.split()[2:]]
+    assert keys[:4] == ["user_id", "request_id", "trace_id", "sandbox_id"]
+    assert "trace_id=t-ws-1" in line
+
+
 def test_agentos_extra_skips_empty() -> None:
     assert agentos_extra() == {}
     assert agentos_extra(session_id="s1", sandbox_id="") == {"session_id": "s1"}

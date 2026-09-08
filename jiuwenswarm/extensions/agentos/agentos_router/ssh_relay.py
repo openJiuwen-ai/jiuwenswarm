@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
-from jiuwenswarm.extensions.yuanrong_frontend_client import normalize_trace_id
+from jiuwenswarm.extensions.yuanrong_frontend_client import bind_southbound_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -300,9 +300,8 @@ class YuanrongSshRelay:
         attempt = 0
         while True:
             attempt += 1
-            username = self.backend_username(
-                instance_id, trace_id=normalize_trace_id()
-            )
+            trace_id = bind_southbound_trace_id()
+            username = self.backend_username(instance_id, trace_id=trace_id)
             log_agentos(
                 logger,
                 logging.DEBUG,
@@ -312,13 +311,15 @@ class YuanrongSshRelay:
                 sandbox_id=instance_id,
                 instance=instance_id,
                 attempt=attempt,
+                trace_id=trace_id,
             )
             logger.debug(
-                "[AgentOS] ssh.south.connect keys_dir=%s keys=%s user_id=%s sandbox_id=%s",
+                "[AgentOS] ssh.south.connect keys_dir=%s keys=%s user_id=%s sandbox_id=%s trace_id=%s",
                 keys_dir,
                 len(client_keys),
                 user_id,
                 instance_id,
+                trace_id,
             )
             try:
                 conn = await asyncio.wait_for(

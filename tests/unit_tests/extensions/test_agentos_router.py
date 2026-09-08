@@ -217,10 +217,12 @@ class FlakyAgentWsClient(FakeAgentWsClient):
     def __init__(self, yuanrong: FakeYuanRongClient) -> None:
         super().__init__(yuanrong)
         self.connect_attempts = 0
+        self.connect_headers: list[dict] = []
         type(self).instances.append(self)
 
-    async def connect(self, uri: str) -> None:
+    async def connect(self, uri: str, extra_headers=None) -> None:
         self.connect_attempts += 1
+        self.connect_headers.append(dict(extra_headers or {}))
         total = sum(c.connect_attempts for c in type(self).instances)
         if total <= self.fail_times:
             raise _Http502("server rejected WebSocket connection: HTTP 502")
@@ -544,6 +546,14 @@ async def test_get_ws_client_retries_http_502_until_ready(monkeypatch) -> None:
     assert yuanrong.send_calls == 1
     assert len(yuanrong.ws_connect_uris) == 1
     assert sum(c.connect_attempts for c in FlakyAgentWsClient.instances) == 3
+    trace_ids = [
+        str(hdr.get("X-Trace-Id") or "")
+        for client in FlakyAgentWsClient.instances
+        for hdr in client.connect_headers
+    ]
+    assert len(trace_ids) == 3
+    assert all(trace_ids)
+    assert len(set(trace_ids)) == 1
 
 
 @pytest.mark.asyncio

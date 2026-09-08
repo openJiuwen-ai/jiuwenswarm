@@ -17,11 +17,15 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+import contextvars
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Mapping, TypedDict
 
 TRACE_ID_HEADER = "X-Trace-Id"
 _TRACE_ID_MAX_LEN = 128
+_southbound_trace_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "yuanrong_southbound_trace_id", default=""
+)
 
 
 def normalize_trace_id(value: str | None = None) -> str:
@@ -30,6 +34,23 @@ def normalize_trace_id(value: str | None = None) -> str:
     if not text:
         text = str(uuid.uuid4())
     return text[:_TRACE_ID_MAX_LEN]
+
+
+def bind_southbound_trace_id(value: str | None = None) -> str:
+    """Normalize, remember on this task, and return the id sent southbound."""
+    resolved = normalize_trace_id(value)
+    _southbound_trace_id.set(resolved)
+    return resolved
+
+
+def current_southbound_trace_id() -> str:
+    """Last southbound mint in this task; empty if YuanRong was not called."""
+    return str(_southbound_trace_id.get() or "").strip()
+
+
+def clear_southbound_trace_id() -> None:
+    """Drop the task-local id so a later 401 cannot inherit a previous call."""
+    _southbound_trace_id.set("")
 
 
 def extract_trace_id(headers: Mapping[str, Any] | None) -> str:
@@ -48,7 +69,7 @@ def apply_trace_header(
 ) -> dict[str, str]:
     """Set canonical ``X-Trace-Id``; prefer explicit, then existing header, then mint."""
     merged = {str(key): str(value) for key, value in dict(headers or {}).items()}
-    resolved = normalize_trace_id(trace_id or extract_trace_id(merged))
+    resolved = bind_southbound_trace_id(trace_id or extract_trace_id(merged))
     return {
         key: value
         for key, value in merged.items()
@@ -585,7 +606,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if mounts:
             payload["mounts"] = list(mounts)
 
-        resolved_trace_id = normalize_trace_id(trace_id)
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
         status, body = await asyncio.to_thread(
             self._do_agent_create, payload, resolved_trace_id
         )
@@ -633,21 +654,25 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if not normalized_sandbox_id:
             raise ValueError("sandbox_id is required to delete sandbox")
 
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
         status, body = await asyncio.to_thread(
             self._do_agent_delete,
             normalized_sandbox_id,
-            trace_id,
+            resolved_trace_id,
         )
         if self._agent_api_not_found(status, body):
             logger.info(
-                "[YuanrongFrontendAgentClient] delete_sandbox: already gone instance_id=%s",
+                "[YuanrongFrontendAgentClient] delete_sandbox: already gone "
+                "instance_id=%s trace_id=%s",
                 normalized_sandbox_id,
+                resolved_trace_id,
             )
             return
         self._parse_agent_api_response(body, status)
         logger.info(
-            "[YuanrongFrontendAgentClient] delete_sandbox: instance_id=%s",
+            "[YuanrongFrontendAgentClient] delete_sandbox: instance_id=%s trace_id=%s",
             normalized_sandbox_id,
+            resolved_trace_id,
         )
 
     async def get_agent_info(
@@ -697,7 +722,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         last_error: BaseException | None = None
         last_status = ""
         # Only GET poll retries share one id; every other YuanRong call mints.
-        poll_trace_id = normalize_trace_id(trace_id)
+        poll_trace_id = bind_southbound_trace_id(trace_id)
         while True:
             attempt += 1
             instance: dict[str, Any] = {}
@@ -716,15 +741,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                     f"status={status}"
                 )
             if _is_agent_running(instance):
-                if attempt > 1:
-                    logger.info(
-                        "[YuanrongFrontendAgentClient] instance running after GET poll: "
-                        "instance_id=%s attempt=%s status=%s trace_id=%s",
-                        normalized_id,
-                        attempt,
-                        status or _AGENT_RUNNING_STATUS,
-                        poll_trace_id,
-                    )
+                logger.info(
+                    "[YuanrongFrontendAgentClient] instance running after GET poll: "
+                    "instance_id=%s attempt=%s status=%s trace_id=%s",
+                    normalized_id,
+                    attempt,
+                    status or _AGENT_RUNNING_STATUS,
+                    poll_trace_id,
+                )
                 return instance
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
@@ -770,13 +794,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise ValueError("instance_id is required to upload agent file")
         if not normalized_path:
             raise ValueError("path is required to upload agent file")
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] upload_agent_file: instance_id=%s path=%s trace_id=%s",
+            normalized_id,
+            normalized_path,
+            resolved_trace_id,
+        )
         status, body = await asyncio.to_thread(
             self._do_agent_file_upload,
             normalized_id,
             normalized_path,
             data,
             dict(auth_headers or {}),
-            trace_id,
+            resolved_trace_id,
         )
         return self._parse_agent_file_upload_response(body, status, normalized_path, len(data))
 
@@ -800,13 +831,23 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise ValueError("path is required to download agent file")
         resolved_offset = max(int(offset), 0)
         resolved_limit = max(int(limit), 1)
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] download_agent_file: instance_id=%s path=%s "
+            "offset=%s limit=%s trace_id=%s",
+            normalized_id,
+            normalized_path,
+            resolved_offset,
+            resolved_limit,
+            resolved_trace_id,
+        )
         status, data, content_type, total_size = await asyncio.to_thread(
             self._do_agent_file_download,
             _AgentFileRequest(
                 instance_id=normalized_id,
                 path=normalized_path,
                 auth_headers=dict(auth_headers or {}),
-                trace_id=trace_id,
+                trace_id=resolved_trace_id,
             ),
             resolved_offset,
             resolved_limit,
@@ -847,13 +888,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise ValueError("path is required to list agent files")
         if int(max_depth) < 0:
             raise ValueError("max_depth must be >= 0")
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] list_agent_files: instance_id=%s path=%s trace_id=%s",
+            normalized_id,
+            normalized_path,
+            resolved_trace_id,
+        )
         status, body = await asyncio.to_thread(
             self._do_agent_file_list,
             _AgentFileRequest(
                 instance_id=normalized_id,
                 path=normalized_path,
                 auth_headers=dict(auth_headers or {}),
-                trace_id=trace_id,
+                trace_id=resolved_trace_id,
             ),
             bool(recursive),
             int(max_depth),
@@ -885,13 +933,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 error_code="BAD_REQUEST",
             )
         normalized_mode = self._normalize_mkdir_mode(mode)
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] mkdir_agent_dir: instance_id=%s path=%s trace_id=%s",
+            normalized_id,
+            normalized_path,
+            resolved_trace_id,
+        )
         status, body = await asyncio.to_thread(
             self._do_agent_file_mkdir,
             _AgentFileRequest(
                 instance_id=normalized_id,
                 path=normalized_path,
                 auth_headers=dict(auth_headers or {}),
-                trace_id=trace_id,
+                trace_id=resolved_trace_id,
             ),
             normalized_mode,
             bool(recursive),
@@ -1255,19 +1310,21 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             status = int(getattr(err, "code", 500) or 500)
             logger.error(
                 "[YuanrongFrontendAgentClient] file download HTTP error: "
-                "instance=%s path=%s code=%d",
+                "instance=%s path=%s code=%d trace_id=%s",
                 request.instance_id,
                 request.path,
                 status,
+                request.trace_id or "",
             )
             return status, body, "application/octet-stream", 0
         except Exception as err:
             logger.error(
                 "[YuanrongFrontendAgentClient] file download failed: "
-                "instance=%s path=%s error=%s",
+                "instance=%s path=%s error=%s trace_id=%s",
                 request.instance_id,
                 request.path,
                 err,
+                request.trace_id or "",
             )
             if self._is_timeout_error(err):
                 raise YuanrongAgentApiError(
@@ -1669,24 +1726,29 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if uid:
             session_context = json.dumps({"sessionCtx": uid}, ensure_ascii=False)
             headers["X-Session-Context"] = session_context
+        bound = apply_trace_header(headers, request_id)
+        resolved_trace_id = extract_trace_id(bound)
+        if uid:
             logger.debug(
                 "[YuanrongFrontendAgentClient] invoke headers: method=%s session_id=%s user_id=%s "
-                "X-Session-Context=%s stream=%s",
+                "X-Session-Context=%s stream=%s trace_id=%s",
                 req_method,
                 session_id,
                 uid,
                 session_context,
                 stream,
+                resolved_trace_id,
             )
         else:
             logger.info(
                 "[YuanrongFrontendAgentClient] invoke headers: method=%s session_id=%s "
-                "uid_empty=yes X-Session-Context omitted stream=%s",
+                "uid_empty=yes X-Session-Context omitted stream=%s trace_id=%s",
                 req_method,
                 session_id,
                 stream,
+                resolved_trace_id,
             )
-        return apply_trace_header(headers, request_id)
+        return bound
 
     def _do_invoke(
         self,
@@ -1732,7 +1794,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 envelope.user_id,
             )
         except YuanrongAgentApiError as e:
-            logger.warning("[YuanrongFrontendAgentClient] invoke failed: %s", e)
+            logger.warning(
+                "[YuanrongFrontendAgentClient] invoke failed: %s trace_id=%s",
+                e,
+                current_southbound_trace_id() or "-",
+            )
             return AgentResponse(
                 request_id=envelope.request_id,
                 channel_id=envelope.channel_id,

@@ -231,10 +231,12 @@ async def test_wait_until_ready_retries_closed_then_succeeds(
             return None
 
     attempts = {"n": 0}
+    usernames: list[str] = []
 
     class _FakeAsyncssh:
         async def connect(self, *args: Any, **kwargs: Any) -> _Conn:
-            del args, kwargs
+            del args
+            usernames.append(str(kwargs.get("username") or ""))
             attempts["n"] += 1
             if attempts["n"] < 3:
                 raise ConnectionRefusedError("SSH connection closed")
@@ -247,6 +249,8 @@ async def test_wait_until_ready_retries_closed_then_succeeds(
     )
     await relay.wait_until_ready("inst-1", user_id="alice")
     assert attempts["n"] == 3
+    assert usernames
+    assert all(name.startswith("yr:instance:inst-1:port=2222:trace=") for name in usernames)
 
 
 @pytest.mark.asyncio

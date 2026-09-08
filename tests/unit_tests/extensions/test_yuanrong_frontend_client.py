@@ -2,6 +2,7 @@
 
 import io
 import json
+import logging
 import urllib.error
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -24,6 +25,9 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     apply_trace_header,
     extract_trace_id,
     normalize_trace_id,
+    bind_southbound_trace_id,
+    clear_southbound_trace_id,
+    current_southbound_trace_id,
 )
 
 
@@ -121,6 +125,17 @@ def test_normalize_and_extract_trace_id():
     assert apply_trace_header({"Content-Type": "application/json"}, "req-1")[
         TRACE_ID_HEADER
     ] == "req-1"
+
+
+def test_bind_southbound_trace_id_is_task_local():
+    clear_southbound_trace_id()
+    assert current_southbound_trace_id() == ""
+    assert bind_southbound_trace_id("t-file-1") == "t-file-1"
+    assert current_southbound_trace_id() == "t-file-1"
+    apply_trace_header({}, "t-ws-2")
+    assert current_southbound_trace_id() == "t-ws-2"
+    clear_southbound_trace_id()
+    assert current_southbound_trace_id() == ""
 
 
 def test_invoke_headers_without_user_id(client: YuanrongFrontendAgentClientProbe):
@@ -348,6 +363,7 @@ async def test_agent_api_sends_x_trace_id(client: YuanrongFrontendAgentClientPro
         "t-20260903-001",
         "t-20260903-001",
     ]
+    assert current_southbound_trace_id() == "t-20260903-001"
 
 
 @pytest.mark.asyncio
@@ -641,6 +657,48 @@ async def test_wait_until_running_polls_get_until_status_running(
     assert len(poll_ids) == 3
     assert all(poll_ids)
     assert len(set(poll_ids)) == 1
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_logs_trace_id_on_first_attempt(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+    captured: list[str] = []
+
+    class _Mem(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _Mem()
+    yr_logger = logging.getLogger("jiuwenswarm.extensions.yuanrong_frontend_client")
+    yr_logger.addHandler(handler)
+    yr_logger.setLevel(logging.INFO)
+    get_bodies = [
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running"}}',
+    ]
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(req, timeout, get_bodies=get_bodies)
+
+    try:
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            instance = await client.wait_until_running(
+                _CREATE_INSTANCE_ID, trace_id="t-get-1"
+            )
+    finally:
+        yr_logger.removeHandler(handler)
+
+    assert instance["status"] == "running"
+    assert current_southbound_trace_id() == "t-get-1"
+    assert any(
+        "instance running after GET poll:" in msg
+        and "trace_id=t-get-1" in msg
+        and "attempt=1" in msg
+        for msg in captured
+    )
 
 
 @pytest.mark.asyncio
@@ -1035,6 +1093,16 @@ def test_normalize_mkdir_mode_rejects_illegal(client: YuanrongFrontendAgentClien
 async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentClientProbe):
     await client.connect("http://127.0.0.1:8080")
     captured: dict[str, Any] = {}
+    logs: list[str] = []
+
+    class _Mem(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            logs.append(record.getMessage())
+
+    handler = _Mem()
+    yr_logger = logging.getLogger("jiuwenswarm.extensions.yuanrong_frontend_client")
+    yr_logger.addHandler(handler)
+    yr_logger.setLevel(logging.INFO)
 
     def fake_urlopen(req, timeout=0):
         del timeout
@@ -1051,15 +1119,18 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
         resp.__exit__ = MagicMock(return_value=False)
         return resp
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        result = await client.mkdir_agent_dir(
-            "inst-1",
-            "/home/agentos/sub",
-            mode="0755",
-            recursive=True,
-            auth_headers={"Authorization": "Bearer tok-mkdir"},
-            trace_id="t-mkdir-1",
-        )
+    try:
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = await client.mkdir_agent_dir(
+                "inst-1",
+                "/home/agentos/sub",
+                mode="0755",
+                recursive=True,
+                auth_headers={"Authorization": "Bearer tok-mkdir"},
+                trace_id="t-mkdir-1",
+            )
+    finally:
+        yr_logger.removeHandler(handler)
 
     assert result["created"] is True
     assert captured["method"] == "POST"
@@ -1069,6 +1140,8 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
     assert "mode=0755" in captured["url"]
     assert "recursive=true" in captured["url"]
     assert _header(captured["headers"], TRACE_ID_HEADER) == "t-mkdir-1"
+    assert current_southbound_trace_id() == "t-mkdir-1"
+    assert any("mkdir_agent_dir:" in msg and "trace_id=t-mkdir-1" in msg for msg in logs)
 
 
 @pytest.mark.asyncio
