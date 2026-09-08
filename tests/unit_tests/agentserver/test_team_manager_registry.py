@@ -2108,91 +2108,29 @@ def test_get_workflow_handler_returns_none_for_unknown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cleanup_runtime_locals_stop_disposition_dispatches_controller_stop_all(
+async def test_cleanup_runtime_locals_finalizes_by_disposition_without_driving_controller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = _TeamManagerHarness()
-    session_id = "sess-cleanup-stop"
-    handler = _FakeWorkflowHandler()
-    controller = _patch_background_task_controller(monkeypatch)
-    manager.register_workflow_handler(session_id, handler)
+    """_cleanup_runtime_locals only finalizes/stops the handler.
 
-    await manager._cleanup_runtime_locals(session_id)
-
-    assert controller.calls == [("stop", None)]
-    assert handler.finalize_dispositions == ["stop"]
-    assert handler.stopped is True
-
-
-@pytest.mark.asyncio
-async def test_cleanup_runtime_locals_pause_disposition_dispatches_controller_pause_all(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manager = _TeamManagerHarness()
-    session_id = "sess-cleanup-pause"
-    handler = _FakeWorkflowHandler()
-    controller = _patch_background_task_controller(monkeypatch)
-    manager.register_workflow_handler(session_id, handler)
-
-    await manager._cleanup_runtime_locals(session_id, workflow_disposition="pause")
-
-    assert controller.calls == [("pause", None)]
-    assert handler.finalize_dispositions == ["pause"]
-    assert handler.stopped is True
-
-
-@pytest.mark.asyncio
-async def test_cleanup_runtime_locals_pause_path_skips_finalize_but_pauses_controller(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manager = _TeamManagerHarness()
-    session_id = "sess-cleanup-pause-path"
-    handler = _FakeWorkflowHandler()
-    controller = _patch_background_task_controller(monkeypatch)
-    manager.register_workflow_handler(session_id, handler)
-
-    await manager._cleanup_runtime_locals(session_id, finalize_workflows=False)
-
-    assert controller.calls == [("pause", None)]
-    assert handler.finalize_dispositions == []  # paused runs stay parked, not finalized
-    assert handler.stopped is True
-
-
-@pytest.mark.asyncio
-async def test_cleanup_runtime_locals_dispatches_controller_before_handler_stop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Controller pause must run while the workflow handler is still alive.
-
-    controller.pause makes the engine emit WORKFLOW_PAUSED; the handler is the
-    only consumer that turns it into the paused snapshot + frontend broadcast.
-    Stopping the handler first drops that event and leaves the run 'running'.
+    The swarmflow controller is driven by each lifecycle method BEFORE
+    Runner.pause/stop (see the ordering tests below); a second dispatch here
+    would be a no-op at best and misleading about where the injection point is.
     """
     manager = _TeamManagerHarness()
-    session_id = "sess-cleanup-order"
-    timeline: list[str] = []
+    controller = _patch_background_task_controller(monkeypatch)
 
-    class _OrderedHandler(_FakeWorkflowHandler):
-        async def stop(self) -> None:
-            timeline.append("handler.stop")
-            await super().stop()
+    for disposition, finalize in (("stop", True), ("pause", True), ("stop", False)):
+        session_id = f"sess-cleanup-{disposition}-{finalize}"
+        handler = _FakeWorkflowHandler()
+        manager.register_workflow_handler(session_id, handler)
+        await manager._cleanup_runtime_locals(
+            session_id, finalize_workflows=finalize, workflow_disposition=disposition,
+        )
+        assert handler.finalize_dispositions == ([disposition] if finalize else [])
+        assert handler.stopped is True
 
-    class _OrderedController(_FakeBackgroundTaskController):
-        async def pause(self, run_id: str | None = None) -> bool:
-            timeline.append("controller.pause")
-            return await super().pause(run_id)
-
-    controller = _OrderedController()
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
-        "get_background_task_controller",
-        lambda _session_id: controller,
-    )
-    manager.register_workflow_handler(session_id, _OrderedHandler())
-
-    await manager._cleanup_runtime_locals(session_id, finalize_workflows=False)
-
-    assert timeline == ["controller.pause", "handler.stop"]
+    assert controller.calls == []
 
 
 @pytest.mark.asyncio
@@ -2201,7 +2139,9 @@ async def test_finalize_runtime_cleanup_forwards_pause_disposition(
 ) -> None:
     manager = _TeamManagerHarness()
     session_id = "sess-finalize-pause"
-    controller = _patch_background_task_controller(monkeypatch)
+    _patch_background_task_controller(monkeypatch)
+    handler = _FakeWorkflowHandler()
+    manager.register_workflow_handler(session_id, handler)
 
     await manager._finalize_runtime_cleanup(
         session_id,
@@ -2209,7 +2149,51 @@ async def test_finalize_runtime_cleanup_forwards_pause_disposition(
         workflow_disposition="pause",
     )
 
-    assert controller.calls == [("pause", None)]
+    assert handler.finalize_dispositions == ["pause"]
+
+
+@pytest.mark.asyncio
+async def test_stop_paused_session_runtime_stops_controller_before_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session switch: controller.stop_all (drop tickets) precedes Runner.stop."""
+    manager = _TeamManagerHarness()
+    session_id = "sess-1"
+    timeline: list[str] = []
+
+    class _OrderedController(_FakeBackgroundTaskController):
+        async def stop(self, run_id: str | None = None) -> bool:
+            timeline.append("controller.stop")
+            return await super().stop(run_id)
+
+    controller = _OrderedController()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "get_background_task_controller",
+        lambda _session_id: controller,
+    )
+
+    async def fake_find_paused(sid: str) -> str | None:
+        return "demo-team"
+
+    async def fake_stop_agent_team(*, team_name: str, session_id: str) -> bool:
+        timeline.append("runner.stop")
+        return True
+
+    monkeypatch.setattr(manager, "_find_paused_runner_team_name", fake_find_paused)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.stop_agent_team",
+        fake_stop_agent_team,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id: {},
+    )
+
+    await manager.stop_paused_session_runtime(session_id)
+
+    assert "controller.stop" in timeline and "runner.stop" in timeline
+    assert timeline.index("controller.stop") < timeline.index("runner.stop")
 
 
 @pytest.mark.asyncio

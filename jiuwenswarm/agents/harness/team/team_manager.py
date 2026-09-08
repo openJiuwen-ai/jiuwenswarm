@@ -2202,17 +2202,12 @@ class TeamManager:
                     exc,
                 )
 
-        # Dispatched BEFORE the workflow handler is stopped so it can still
-        # consume the WORKFLOW_PAUSED / WORKFLOW_STOPPED the abort produces.
-        # On the pause path this is an idempotent second pass: the runs were
-        # already parked before Runner.pause (see pause_session_runtime).
-        if not finalize_workflows or workflow_disposition == "pause":
-            # Web stop-square / TUI Esc, or client-disconnect reclaim: park.
-            await self._dispatch_swarmflow_controller(session_id, action="pause")
-        else:
-            # User termination / session switch: terminal stop_all.
-            await self._dispatch_swarmflow_controller(session_id, action="stop")
-
+        # The swarmflow controller is NOT driven here. Each lifecycle method
+        # (pause / cancel / stop_paused) dispatches it before Runner.pause/stop —
+        # Runner tears the leader harness down and would otherwise cancel the
+        # swarmflow coroutine as a plain cancel (no pause/seal record). By the
+        # time this runs the abort has unwound and the handler below only has
+        # to drain the WORKFLOW_PAUSED/STOPPED it produced.
         workflow_handler = self.pop_workflow_handler(session_id)
         if workflow_handler is not None:
             try:
@@ -2682,6 +2677,10 @@ class TeamManager:
                 session_id,
                 team_name,
             )
+            # Session switch / new session: drop the parked tickets (no seal —
+            # the pause record stays in the journal for a cold-start resume).
+            # Same slot as the other lifecycle paths: before Runner.stop.
+            await self._dispatch_swarmflow_controller(session_id, action="stop")
             stopped = await self._stop_runner_team_runtime(
                 session_id,
                 team_name,
