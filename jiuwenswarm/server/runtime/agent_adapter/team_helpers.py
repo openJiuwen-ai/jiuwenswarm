@@ -987,9 +987,17 @@ def _inject_swarmflow_context(
     for r in eligible:
         script = r.script_path or r.script or ""
         lines.append(f"- run_id: {r.id}  脚本: {script}")
-        if r.script_path:
+        # Two resume planes (SDD-0018 §5.4): in-round the controller still holds
+        # the ticket, so ``action="resume"`` relaunches the cached prefix; after a
+        # cold start the ticket is gone and only the launch plane
+        # (``resume_id + script_path``, args recovered from the journal) works.
+        # Handing the leader the wrong one makes it bypass the ticket and start
+        # a brand-new run instead of resuming.
+        if not cold_start:
+            lines.append(f'  恢复调用: swarmflow(resume_id="{r.id}", action="resume")')
+        elif r.script_path:
             lines.append(
-                f"  恢复调用: swarmflow(resume_id=\"{r.id}\", script_path=\"{r.script_path}\")"
+                f'  恢复调用: swarmflow(resume_id="{r.id}", script_path="{r.script_path}")'
             )
     lines.append("以上信息仅在你认为需要恢复工作流时使用；与当前任务无关请直接忽略。")
     lines.append(_ADVISORY_MARK[1])

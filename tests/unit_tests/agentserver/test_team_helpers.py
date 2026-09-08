@@ -6535,6 +6535,10 @@ def test_inject_swarmflow_context_followup_lists_only_paused_runs() -> None:
     assert "/abs/w2.py" in injected.text
     assert "run-running" not in injected.text
     assert "run-done" not in injected.text
+    # In-round the controller still holds the ticket: the leader must use the
+    # control plane, not the launch plane (which would start a brand-new run).
+    assert 'swarmflow(resume_id="run-paused", action="resume")' in injected.text
+    assert "script_path=" not in injected.text
 
 
 def test_inject_swarmflow_context_no_eligible_runs_returns_same_turn() -> None:
@@ -6560,13 +6564,24 @@ def test_inject_swarmflow_context_non_string_text_returns_same_turn() -> None:
     assert team_helpers._inject_swarmflow_context(turn, runs, cold_start=False) is turn
 
 
-def test_inject_swarmflow_context_run_without_script_path_has_no_resume_line() -> None:
+def test_inject_swarmflow_context_cold_start_run_without_script_path_has_no_resume_line() -> None:
+    """Cold start needs the launch plane, which needs script_path; without it only the listing remains."""
     turn = _advisory_turn("hi")
     runs = {"legacy": WorkflowRunState(id="legacy-run", status="paused", script="wf.legacy")}
 
-    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=False)
+    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=True)
 
     assert isinstance(injected.text, str)
     assert "legacy-run" in injected.text
     assert "wf.legacy" in injected.text
     assert "恢复调用" not in injected.text
+
+
+def test_inject_swarmflow_context_followup_resume_needs_no_script_path() -> None:
+    """In-round the ticket carries the inputs, so the control plane works without script_path."""
+    turn = _advisory_turn("hi")
+    runs = {"legacy": WorkflowRunState(id="legacy-run", status="paused", script="wf.legacy")}
+
+    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=False)
+
+    assert 'swarmflow(resume_id="legacy-run", action="resume")' in injected.text
