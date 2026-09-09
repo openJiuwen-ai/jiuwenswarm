@@ -41,6 +41,7 @@ export function PersonalContextSettingsPanel({
     loadingConfig,
     pendingWrites,
     loadAll,
+    setMasterEnabled,
     setEnabled,
     setStrategyProfile,
     selectModel,
@@ -51,6 +52,9 @@ export function PersonalContextSettingsPanel({
     saveGithubAuth,
   } = usePersonalContextStore();
   const availableModels = useSessionStore((s) => s.availableModels);
+
+  // 总开关为派生状态：任一子开关开启即视为开启。
+  const masterEnabled = config.collection_enabled || config.agent_use_enabled;
 
   const [error, setError] = useState<string | null>(null);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
@@ -78,6 +82,16 @@ export function PersonalContextSettingsPanel({
       });
     },
     [setEnabled],
+  );
+
+  const handleMasterEnabled = useCallback(
+    (enabled: boolean) => {
+      setError(null);
+      void setMasterEnabled(enabled).catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
+      });
+    },
+    [setMasterEnabled],
   );
 
   const handleStrategy = useCallback(
@@ -143,23 +157,38 @@ export function PersonalContextSettingsPanel({
         </div>
       )}
 
-      {/* 配置卡片：未开启时只显示开关行；开启后显示完整配置 */}
+      {/* 配置卡片：总开关关闭时只显示总开关；开启后显示采集开关与完整配置 */}
       <div className="pc-settings__card">
-        {/* 采集个人上下文内容 */}
+        {/* 总开关 */}
         <div className="pc-settings__card-row">
           <div className="pc-settings__row-text">
-            <div className="pc-settings__row-label">{t('personalContext.settings.enable')}</div>
-            <div className="pc-settings__row-hint">{t('personalContext.settings.enableHint')}</div>
+            <div className="pc-settings__row-label">{t('personalContext.settings.masterEnable')}</div>
+            <div className="pc-settings__row-hint">{t('personalContext.settings.masterEnableHint')}</div>
           </div>
           <Switch
-            checked={config.collection_enabled}
-            onChange={handleEnabled}
-            disabled={!isConnected || !!pendingWrites.collection_enabled}
+            checked={masterEnabled}
+            onChange={handleMasterEnabled}
+            disabled={!isConnected || !!pendingWrites.collection_enabled || !!pendingWrites.agent_use_enabled}
           />
         </div>
 
-        {config.collection_enabled && (
+        {masterEnabled && (
           <>
+            {/* 采集个人上下文内容 */}
+            <div className="pc-settings__card-row">
+              <div className="pc-settings__row-text">
+                <div className="pc-settings__row-label">{t('personalContext.settings.enable')}</div>
+                <div className="pc-settings__row-hint">{t('personalContext.settings.enableHint')}</div>
+              </div>
+              <Switch
+                checked={config.collection_enabled}
+                onChange={handleEnabled}
+                disabled={!isConnected || !!pendingWrites.collection_enabled}
+              />
+            </div>
+
+            {config.collection_enabled && (
+              <>
             {/* 上下文采集模式 */}
             <div className="pc-settings__card-row pc-settings__card-row--inline">
               <div className="pc-settings__row-text">
@@ -238,6 +267,8 @@ export function PersonalContextSettingsPanel({
                 </div>
               </div>
             </div>
+          </>
+        )}
           </>
         )}
       </div>

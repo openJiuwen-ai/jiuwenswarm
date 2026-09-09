@@ -48,9 +48,9 @@ async def test_legacy_config_file_is_not_read(tmp_path: Path) -> None:
     status = await host.get_status()
 
     # Legacy pcs.yaml is ignored: a fresh default config is bootstrapped
-    # (collection_enabled=True) instead of inheriting legacy "enabled: false".
+    # (collection_enabled=False) instead of inheriting legacy "enabled: false".
     assert status.configured is True
-    assert status.collection_enabled is True
+    assert status.collection_enabled is False
     assert host._config_path == home / "personal_context.yaml"
     assert host._config_path.is_file()
     assert legacy_config.is_file()

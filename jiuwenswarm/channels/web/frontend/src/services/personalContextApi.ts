@@ -522,8 +522,8 @@ export function validateServiceId(value: string): string | null {
   const text = value.trim();
   if (!text) return 'service_id is required';
   if (text === '.' || text === '..') return 'service_id must not be . or ..';
-  if (!/^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._\-\/]{0,127}$/.test(text)) {
-    return 'service_id must start with a letter/digit/Chinese char and contain only letters, digits, Chinese, spaces, . _ - / (max 128 chars)';
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(text)) {
+    return 'service_id must start with a letter or digit and contain only letters, digits, . _ - (max 128 chars)';
   }
   return null;
 }

@@ -384,11 +384,11 @@ async def test_start_without_yaml_bootstraps_default_config(tmp_path: Path) -> N
     host = PersonalContextHostAPI(home=home)
     await host.start()
     status = await host.get_status()
-    # First deployment bootstraps a default config (collection + agent-use ON)
-    # so the settings page opens with the toggle enabled by default.
+    # First deployment bootstraps a default config with both switches OFF
+    # (the feature is strictly opt-in until the user enables it).
     assert status.configured is True
-    assert status.collection_enabled is True
-    assert status.agent_use_enabled is True
+    assert status.collection_enabled is False
+    assert status.agent_use_enabled is False
     assert (home / "personal_context.yaml").is_file()
 
 
@@ -445,7 +445,7 @@ async def test_unconfigured_projection_and_stop_are_read_only_until_first_start(
     started = await host.set_collection_enabled(True)
 
     assert started["collection_enabled"] is True
-    assert started["agent_use_enabled"] is True
+    assert started["agent_use_enabled"] is False
     assert started["strategy_profile"] == "rules"
     assert started["model_index"] is None
     assert started["fetch_services"] == []

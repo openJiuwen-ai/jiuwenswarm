@@ -1563,10 +1563,15 @@
       "feature3Title": "任务联动·唤醒图谱上下文",
       "feature3Desc": "在执行复杂的 AI 任务或对话时，支持直接挂载与调取图谱知识，让输出更精准、上下文更丰富。"
     },
+    "chat": {
+      "toggleLabel": "个人上下文"
+    },
     "settings": {
       "subtitle": "选择个人上下文采用哪种方式采集、整理和生成。",
+      "masterEnable": "启用个人上下文",
+      "masterEnableHint": "总开关，控制个人上下文采集与 agent 加载上下文。",
       "enable": "采集个人上下文内容",
-      "enableHint": "支持添加个人上下文内容并自动构建图谱。",
+      "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
       "strategyProfile": "上下文采集模式",
       "model": "上下文整理模型",
       "modelPlaceholder": "请选择整理模型",
@@ -1650,6 +1655,7 @@
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
+      "stateStopping": "正在停止",
       "lastRunUnavailable": "后端未返回采集时间",
       "intervalHour": "每 {{n}} 小时",
       "intervalDay": "每 {{n}} 天",
@@ -1681,7 +1687,7 @@
     "addContent": {
       "title": "添加内容",
       "nameLabel": "采集内容名称",
-      "namePlaceholder": "如 我的知乎收藏",
+      "namePlaceholder": "如 my-task，字母数字开头，仅 . _ -",
       "providerLabel": "内容采集来源",
       "autoCollectLabel": "自动采集",
       "autoCollectHint": "开启后按频率自动采集",

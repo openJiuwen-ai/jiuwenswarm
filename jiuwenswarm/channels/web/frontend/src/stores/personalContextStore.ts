@@ -25,7 +25,7 @@ export type InfoTab = 'graph' | 'services';
 const UNCONFIGURED: PersonalContextConfig = {
   configured: false,
   collection_enabled: false,
-  agent_use_enabled: true,
+  agent_use_enabled: false,
   strategy_profile: 'rules',
   model_index: null,
   fetch_services: [],
@@ -59,6 +59,8 @@ interface PersonalContextState {
 
   setEnabled: (enabled: boolean) => Promise<void>;
   setAgentUseEnabled: (enabled: boolean) => Promise<void>;
+  /** 总开关：无独立持久化状态，仅联动两个子开关——开启=两者开，关闭=两者关。 */
+  setMasterEnabled: (enabled: boolean) => Promise<void>;
   setStrategyProfile: (profile: PersonalContextConfig['strategy_profile']) => Promise<void>;
   selectModel: (modelIndex: number) => Promise<void>;
 
@@ -149,16 +151,24 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     set({ config: { ...prev, collection_enabled: enabled } });
     try {
       const next = enabled ? await pcApi.startRuntime() : await pcApi.stopRuntime();
-      // 同步 agent_use_enabled：开启上下文时一并开启 agent 使用，关闭时一并关闭
-      const synced = { ...next, agent_use_enabled: enabled };
-      set({ config: synced, status: await pcApi.getStatus().catch(() => get().status) });
-      // 持久化 agent_use_enabled 到后端（与开关值一致）
-      void get().setAgentUseEnabled(enabled).catch(() => {});
+      set({ config: next, status: await pcApi.getStatus().catch(() => get().status) });
     } catch (e) {
       set({ config: prev });
       throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, collection_enabled: false } });
+    }
+  },
+
+  setMasterEnabled: async (enabled) => {
+    // 总开关为派生状态，本身不落库：开=两个子开关都开，关=两个子开关都关。
+    if (enabled) {
+      // 开启顺序：先采集（可能触发后端首次初始化 config），再 agent 使用
+      await get().setEnabled(true);
+      await get().setAgentUseEnabled(true);
+    } else {
+      await get().setEnabled(false);
+      await get().setAgentUseEnabled(false);
     }
   },
 

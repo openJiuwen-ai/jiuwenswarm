@@ -1581,11 +1581,16 @@
       "feature3Title": "Task integration · awaken graph context",
       "feature3Desc": "When running complex AI tasks or conversations, directly mount and retrieve graph knowledge for more accurate output and richer context."
     },
+    "chat": {
+      "toggleLabel": "Personal Context"
+    },
     "settings": {
       "title": "Context",
       "subtitle": "Choose how personal context is collected, organized, and generated.",
+      "masterEnable": "Enable Personal Context",
+      "masterEnableHint": "Master switch controlling personal context collection and agent context loading.",
       "enable": "Collect Personal Context",
-      "enableHint": "Add personal context content and build a knowledge graph automatically.",
+      "enableHint": "Periodic context harvesting & graph building.",
       "strategyProfile": "Context strategy",
       "model": "Context Organize Model",
       "modelPlaceholder": "Please select an organize model",
@@ -1668,6 +1673,7 @@
       "stateFailed": "Failed",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
+      "stateStopping": "Stopping",
       "lastRunUnavailable": "Backend did not return fetch time",
       "intervalHour": "Every {{n}} hour(s)",
       "intervalDay": "Every {{n}} day(s)",
@@ -1699,7 +1705,7 @@
     "addContent": {
       "title": "Add content",
       "nameLabel": "Content name",
-      "namePlaceholder": "e.g. My Zhihu collection",
+      "namePlaceholder": "e.g. my-task: letter/digit start, . _ - only",
       "providerLabel": "Content source",
       "autoCollectLabel": "Auto fetch",
       "autoCollectHint": "Fetch automatically at the chosen frequency",

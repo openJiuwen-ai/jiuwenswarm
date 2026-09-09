@@ -420,6 +420,7 @@
 .pc-services__status-text--stateFailed { color: #F23030; }
 .pc-services__status-text--stateCollecting { color: #5CB300; }
 .pc-services__status-text--stateWaiting { color: #0BB8B2; }
+.pc-services__status-text--stateStopping { color: #808080; }
 
 /* 卡片操作区 */
 .pc-services__card-actions {

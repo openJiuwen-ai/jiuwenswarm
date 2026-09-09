@@ -14,6 +14,7 @@
   Fragment,
   type CSSProperties,
   type RefObject,
+  type SVGProps,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -28,6 +29,7 @@ import {
   usePlanStore,
   useSessionStore,
   useWorkspaceStore,
+  usePersonalContextStore,
 } from '../../stores';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
@@ -91,6 +93,29 @@ import GoalIcon from '../../assets/agent-management/goal.svg?react';
 import PlanIcon from '../../assets/agent-management/planned-events.svg?react';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
+
+// 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
+function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" {...props}>
+      <path
+        fillRule="evenodd"
+        d="M12 3C13.1046 3 14 3.89543 14 5C14 6.10457 13.1046 7 12 7L2 7C2 7 2.99999 6 2.99999 5C2.99999 4 2 3 2 3L12 3Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth={1}
+      />
+      <path
+        fillRule="evenodd"
+        d="M10 0C11.1046 0 12 0.89543 12 2C12 3.10457 11.1046 4 10 4L0 4C0 4 0.999991 3 0.999991 2C0.999992 1 0 0 0 0L10 0Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth={1}
+        transform="matrix(-1,0,0,1,14,9)"
+      />
+    </svg>
+  );
+}
 
 const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */
@@ -810,6 +835,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const planActive = usePlanStore((s) => s.runtimes[activeSessionId ?? '']?.active ?? false);
   const planPendingExplicitEntry = usePlanStore(
     (s) => s.runtimes[activeSessionId ?? '']?.pendingExplicitEntry ?? false,
+  );
+  // 个人上下文：agent 加载开关（总开关联动）。总开关关闭时整个菜单项隐藏；开启时默认打开，可单独控制。
+  const isConnected = useSessionStore((s) => s.isConnected);
+  const personalContextMasterEnabled = usePersonalContextStore(
+    (s) => s.config.collection_enabled || s.config.agent_use_enabled,
+  );
+  const agentUseEnabled = usePersonalContextStore((s) => s.config.agent_use_enabled);
+  const agentUsePending = usePersonalContextStore((s) => !!s.pendingWrites.agent_use_enabled);
+  const setAgentUseEnabled = usePersonalContextStore((s) => s.setAgentUseEnabled);
+  const toggleAgentUse = useCallback(
+    (next: boolean) => {
+      void setAgentUseEnabled(next).catch(() => {
+        // 静默：store 已做乐观回滚，失败不额外提示
+      });
+    },
+    [setAgentUseEnabled],
   );
   // Reactive selectors for swarmflow state. Using getState() inside render IIFEs
   // does not subscribe the component to store changes, leaving the Switch/UI stale
@@ -3336,6 +3377,25 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     </div>
                   );
                 })()}
+                {personalContextMasterEnabled && (
+                  <div
+                    className="chat-mode-select__option"
+                    role="menuitem"
+                    data-testid="chat-panel-input-attach-menu-personal-context"
+                  >
+                    <span className="chat-mode-select__option-main">
+                      <span className="chat-mode-select__icon chat-mode-select__icon--asset" aria-hidden="true">
+                        <PersonalContextIcon aria-hidden="true" />
+                      </span>
+                      <span className="chat-mode-select__label">{t('personalContext.chat.toggleLabel')}</span>
+                    </span>
+                    <Switch
+                      checked={agentUseEnabled}
+                      disabled={!isConnected || agentUsePending}
+                      onChange={toggleAgentUse}
+                    />
+                  </div>
+                )}
               </div>,
               document.body
              )}

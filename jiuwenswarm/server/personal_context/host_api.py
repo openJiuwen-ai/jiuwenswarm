@@ -33,7 +33,7 @@ _PERSONAL_CONTEXT_MODEL_MAX_RETRIES = 2
 def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
     return {
         "collection_enabled": collection_enabled,
-        "agent_use_enabled": True,
+        "agent_use_enabled": False,
         "strategy_profile": "rules",
         "fetch_services": [],
     }
@@ -1035,9 +1035,10 @@ class PersonalContextHostAPI:
             if self._config is None:
                 raw = _read_yaml(self._config_path)
                 if raw is None:
-                    # First deployment: persist a default config so the
-                    # settings page opens with collection ON by default.
-                    raw = _initial_stored_config(collection_enabled=True)
+                    # First deployment: persist a default config with both
+                    # switches OFF (collection + agent use) — the feature is
+                    # strictly opt-in until the user enables it.
+                    raw = _initial_stored_config(collection_enabled=False)
                     payload = _serialize_config(raw)
                     _publish_yaml(self._config_path, payload)
                 stored, config = _prepare_stored_config(raw)
