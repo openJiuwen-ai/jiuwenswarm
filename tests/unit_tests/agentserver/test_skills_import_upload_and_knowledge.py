@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -318,8 +319,34 @@ async def test_create_from_knowledge_silent_runs_agent(
     assert impl_calls
     assert impl_calls[0]["metadata"].get("skills_create_from_knowledge_silent") is True
     assert impl_calls[0]["skills"] == ["skill-omni-creation"]
+    assert impl_calls[0]["session_id"] == "skills-knowledge-req-knowledge"
+    assert ":" not in impl_calls[0]["session_id"]
     swarm.create_instance.assert_awaited_once()
     swarm._reload_team_skill_rails.assert_awaited_once_with("user-session")
+
+
+def test_build_skills_knowledge_followup_session_id_is_windows_safe() -> None:
+    """临时 session_id 不得含 ':'，否则 Windows 下 sessions 目录 mkdir 会 WinError 267."""
+    request = AgentRequest(
+        request_id="req_mttf7ps6_21",
+        channel_id="web",
+        session_id="user-session",
+        req_method=ReqMethod.SKILLS_CREATE_FROM_KNOWLEDGE,
+        params={"link": "https://example.com"},
+    )
+    followup = interface_module.JiuWenSwarm._build_skills_knowledge_followup_request(
+        request,
+        followup="generate",
+        skills=["skill-omni-creation"],
+        trusted_dirs=[],
+        input_file="",
+    )
+    assert followup.session_id == "skills-knowledge-req_mttf7ps6_21"
+    assert ":" not in followup.session_id
+    assert re.fullmatch(
+        r"^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9_])?$",
+        followup.session_id,
+    )
 
 
 def test_parse_multipart_roundtrip() -> None:

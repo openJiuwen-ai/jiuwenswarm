@@ -161,7 +161,7 @@ async def _call_agent_skill_rpc(
         envelope = e2a_from_agent_fields(
             request_id=request_id,
             channel_id="web",
-            session_id=f"file-api:{request_id}",
+            session_id=f"file-api-{request_id}",
             req_method=method,
             params=params,
             is_stream=False,
