@@ -827,11 +827,18 @@ class AgentWebSocketServer:
         # gateway-ws 单槽曾导致 send_push 永久失败、chat.file 到不了前台）。
         # drop_on_stall=False：与 _GatewayWSPushSink「发送失败/变慢都不注销」一致。
         push_subscriber_id = make_ws_push_subscriber_id(ws)
+        # Match the HTTP push-consumer contract. Relay/Node chat subscribers
+        # cannot answer ACP/A2A reverse RPCs merely because they use WebSocket.
+        request_headers = getattr(ws, "request_headers", None)
+        if request_headers is None:
+            request_headers = getattr(getattr(ws, "request", None), "headers", None)
         get_push_registry().register(
             push_subscriber_id,
             _GatewayWSPushSink(ws, send_lock),
             drop_on_stall=False,
-            reverse_rpc_capable=True,
+            reverse_rpc_capable=(
+                get_header_value(request_headers, "X-Jiuwen-Push-Consumer") == "gateway"
+            ),
         )
 
         # 触发身份获取（写入当前连接 context；无 provider 时身份为 null，连接继续）。

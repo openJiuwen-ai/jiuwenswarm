@@ -20,6 +20,7 @@ from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from openjiuwen.core.single_agent import create_agent_session
@@ -31,6 +32,7 @@ from openjiuwen.core.single_agent.rail.base import (
     ToolCallInputs,
 )
 
+from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.server.runtime.agent_adapter.llm_io_trace import (
     begin_tool_trace_event,
@@ -475,12 +477,18 @@ class SkillTurboExecutor:
         # resume 时把用户作答按前端 answers 结构回填给 skill_code。
         self._ask_user_rail = self._build_ask_user_rail()
 
+        # LLM 重复输出 / 流超时 / 瞬时错误重试（与 DeepAgent 共用 config.yaml execution_guard）。
+        # 检测算法在 openjiuwen LLMRetryRail；此处只负责挂载、消费 inspector、以及重试循环。
+        self._llm_retry_rail = self._build_llm_retry_rail()
+
         # Rail列表（按优先级排序）
         self._rails = [self._stream_event_rail]
         if self._ask_user_rail is not None:
             self._rails.append(self._ask_user_rail)
         if permission_rail is not None:
             self._rails.append(permission_rail)
+        if self._llm_retry_rail is not None:
+            self._rails.append(self._llm_retry_rail)
         self._rails.append(self._artifact_rail)
 
         # 按优先级排序（priority越小越先执行）
@@ -974,6 +982,85 @@ class SkillTurboExecutor:
                 "[SkillTurboExecutor] build_ask_user_rail failed: %s", exc
             )
             return None
+
+    @staticmethod
+    def _build_llm_retry_rail() -> NotifyingLLMRetryRail | None:
+        """构建 NotifyingLLMRetryRail；关闭或构建失败时返回 None。
+
+        配置与 DeepAgent 一致：``execution_guard.llm_retry_rail``（get_config）。
+        """
+        try:
+            from jiuwenswarm.common.config import get_config
+
+            config_base = get_config()
+            guard_cfg = (
+                config_base.get("execution_guard", {})
+                if isinstance(config_base, dict)
+                else {}
+            )
+            retry_cfg = (
+                guard_cfg.get("llm_retry_rail", {})
+                if isinstance(guard_cfg, dict)
+                else {}
+            )
+            if retry_cfg.get("enabled", False) is not True:
+                logger.info(
+                    "[SkillTurboExecutor] LLMRetryRail disabled by config"
+                )
+                return None
+            rail = NotifyingLLMRetryRail(
+                max_retries=retry_cfg.get("max_retries", 2),
+                repeat_min_pattern_chars=retry_cfg.get(
+                    "repeat_min_pattern_chars", 2
+                ),
+                repeat_max_pattern_chars=retry_cfg.get(
+                    "repeat_max_pattern_chars", 64
+                ),
+                repeat_min_count=retry_cfg.get("repeat_min_count", 6),
+                repeat_min_total_chars=retry_cfg.get(
+                    "repeat_min_total_chars", 160
+                ),
+                repeat_window_chars=retry_cfg.get("repeat_window_chars", 1024),
+                single_char_repeat_count=retry_cfg.get(
+                    "single_char_repeat_count", 100
+                ),
+                retry_transient_invoke_errors=retry_cfg.get(
+                    "retry_transient_invoke_errors", True
+                ),
+                notify_user_on_retry=retry_cfg.get("notify_user_on_retry", True),
+                notify_user_on_exhausted=retry_cfg.get(
+                    "notify_user_on_exhausted", True
+                ),
+            )
+            logger.info(
+                "[SkillTurboExecutor] NotifyingLLMRetryRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[SkillTurboExecutor] LLMRetryRail create failed: %s", exc
+            )
+            return None
+
+    @staticmethod
+    async def _run_stream_chunk_inspectors(
+        ctx: AgentCallbackContext,
+        chunk: Any,
+    ) -> None:
+        """直接调用 ``ctx.extra['_stream_chunk_inspectors']``（不可走 ``_run_rail_hook``）。
+
+        ``_run_rail_hook`` 会吞掉非 AbortError；inspector 抛出的重复输出异常必须向上传播，
+        才能由 call_llm / stream_llm 的重试循环消费 ``request_retry``。
+        """
+        inspectors = ctx.extra.get("_stream_chunk_inspectors") or []
+        if isinstance(inspectors, dict):
+            inspectors = list(inspectors.values())
+        for inspector in list(inspectors):
+            if not callable(inspector):
+                continue
+            inspect_result = inspector(ctx, chunk)
+            if asyncio.iscoroutine(inspect_result):
+                await inspect_result
 
     async def _run_rail_hook(
         self,
@@ -1878,95 +1965,129 @@ class SkillTurboExecutor:
 
         thinking_kwargs = resolve_skill_turbo_thinking_kwargs(thinking, client)
 
+        # 每次 call_llm 独立重置重试计数，避免整份 plan 共享 2 次额度。
+        await self._run_rail_hook("before_invoke", ctx)
+
         trace_session_token = self._set_llm_interface_log_session()
         try:
-            await self._run_rail_hook('before_model_call', ctx)
-
-            # 使用 Model.invoke() 调用 LLM（受实例级 Semaphore 限流保护）
-            logger.debug("[SkillTurboExecutor] call_llm max_tokens=%s node=%s", _DEFAULT_LLM_MAX_TOKENS, node_name)
-            async with self._llm_concurrency_guard():
+            while True:
+                ctx.consume_retry_request()
+                ctx.exception = None
                 try:
-                    response = await client.invoke(
-                        messages,
-                        max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                        **thinking_kwargs,
+                    await self._run_rail_hook("before_model_call", ctx)
+
+                    # 使用 Model.invoke() 调用 LLM（受实例级 Semaphore 限流保护）
+                    logger.debug(
+                        "[SkillTurboExecutor] call_llm max_tokens=%s node=%s",
+                        _DEFAULT_LLM_MAX_TOKENS,
+                        node_name,
                     )
-                except Exception as inv_exc:
-                    if thinking_kwargs and is_skill_turbo_thinking_param_error(inv_exc):
-                        logger.warning(
-                            "[SkillTurboExecutor] thinking params rejected, bare retry once: %s",
-                            inv_exc,
-                        )
-                        response = await client.invoke(
-                            messages,
-                            max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                        )
-                    else:
+                    async with self._llm_concurrency_guard():
+                        try:
+                            response = await client.invoke(
+                                messages,
+                                max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                **thinking_kwargs,
+                            )
+                        except Exception as inv_exc:
+                            if thinking_kwargs and is_skill_turbo_thinking_param_error(
+                                inv_exc
+                            ):
+                                logger.warning(
+                                    "[SkillTurboExecutor] thinking params rejected, "
+                                    "bare retry once: %s",
+                                    inv_exc,
+                                )
+                                response = await client.invoke(
+                                    messages,
+                                    max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                )
+                            else:
+                                raise
+
+                    # AssistantMessage 有两个属性：
+                    # - content: 普通文本内容
+                    # - reasoning_content: 推理过程内容（与 DeepAgent 保持一致）
+                    reasoning_content = getattr(response, "reasoning_content", None)
+                    result = response.content
+
+                    # 非流式路径无 chunk 循环：用合成 chunk 跑同一套 inspector（写前端 / 发 usage 之前）。
+                    # 顺序与 stream_llm 一致：先 inspector，通过后再发 usage，避免失败轮重复用量。
+                    await self._run_stream_chunk_inspectors(
+                        ctx,
+                        SimpleNamespace(
+                            content=result or "",
+                            reasoning_content=reasoning_content or "",
+                        ),
+                    )
+
+                    # llm_usage 事件注入 source_id（仅成功通过 inspector 后发送）
+                    await self._emit_llm_usage(
+                        session,
+                        getattr(response, "usage_metadata", None),
+                        node_name=node_name,
+                        stream_source_id=source_id,
+                    )
+
+                    # 处理 reasoning_content（推理过程）并注入 source_id
+                    if reasoning_content and session:
+                        payload: dict[str, Any] = {
+                            "content": str(reasoning_content),
+                            "plan_name": self._display_name(node_name),
+                        }
+                        if source_id is not None:
+                            payload[STREAM_SOURCE_ID_FIELD] = source_id
+                        try:
+                            await session.write_stream(
+                                OutputSchema(
+                                    type="llm_reasoning", index=0, payload=payload
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "[SkillTurboExecutor] Failed to send llm_reasoning event: %s",
+                                e,
+                            )
+
+                    # 处理正文内容并注入 source_id（与 reasoning 保持一致）
+                    if result and session:
+                        output_payload: dict[str, Any] = {
+                            "content": str(result),
+                            "plan_name": self._display_name(node_name),
+                        }
+                        if source_id is not None:
+                            output_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                        try:
+                            await session.write_stream(
+                                OutputSchema(
+                                    type="llm_output",
+                                    index=0,
+                                    payload=output_payload,
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "[SkillTurboExecutor] Failed to send llm_output event: %s",
+                                e,
+                            )
+
+                    # 设置response（供after回调使用）
+                    ctx.inputs.response = result
+                    return result
+                except AbortError:
+                    raise
+                except Exception as e:
+                    ctx.exception = e
+                    await self._run_rail_hook("on_model_exception", ctx)
+                    retry_request = ctx.consume_retry_request()
+                    if not retry_request:
                         raise
-
-            # llm_usage 事件注入 source_id
-            await self._emit_llm_usage(
-                session,
-                getattr(response, "usage_metadata", None),
-                node_name=node_name,
-                stream_source_id=source_id,
-            )
-
-            # AssistantMessage 有两个属性：
-            # - content: 普通文本内容
-            # - reasoning_content: 推理过程内容（与 DeepAgent 保持一致）
-
-            # 处理 reasoning_content（推理过程）并注入 source_id
-            reasoning_content = getattr(response, "reasoning_content", None)
-            if reasoning_content and session:
-                payload: dict[str, Any] = {
-                    "content": str(reasoning_content),
-                    "plan_name": self._display_name(node_name),
-                }
-                if source_id is not None:
-                    payload[STREAM_SOURCE_ID_FIELD] = source_id
-                try:
-                    await session.write_stream(
-                        OutputSchema(type="llm_reasoning", index=0, payload=payload)
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[SkillTurboExecutor] Failed to send llm_reasoning event: %s",
-                        e,
-                    )
-
-            # AssistantMessage.content 是响应文本
-            result = response.content
-
-            # 处理正文内容并注入 source_id（与 reasoning 保持一致）
-            if result and session:
-                output_payload: dict[str, Any] = {
-                    "content": str(result),
-                    "plan_name": self._display_name(node_name),
-                }
-                if source_id is not None:
-                    output_payload[STREAM_SOURCE_ID_FIELD] = source_id
-                try:
-                    await session.write_stream(
-                        OutputSchema(type="llm_output", index=0, payload=output_payload)
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[SkillTurboExecutor] Failed to send llm_output event: %s",
-                        e,
-                    )
-
-            # 设置response（供after回调使用）
-            ctx.inputs.response = result
-
-            return result
-        except Exception as e:
-            ctx.exception = e
-            await self._run_rail_hook('on_model_exception', ctx)
-            raise
+                    if retry_request.delay_seconds > 0:
+                        await asyncio.sleep(retry_request.delay_seconds)
+                finally:
+                    await self._run_rail_hook("after_model_call", ctx)
         finally:
             self._reset_llm_interface_log_session(trace_session_token)
-            await self._run_rail_hook('after_model_call', ctx)
 
     async def stream_llm(
         self,
@@ -1994,8 +2115,12 @@ class SkillTurboExecutor:
             str: 流式文本片段（普通文本内容）
             
         内部机制：
-            - reasoning 事件会通过 session stream 实时发送
+            - reasoning / 正文事件经 session stream **实时**刷出（与 DeepAgent 对齐；
+              失败轮前端可能留下脏前缀，随后由重试通知 / 成功轮覆盖）
             - 业务代码只看到普通文本，无需关心 reasoning
+            - 重复输出等可重试失败时，本轮已缓冲的业务正文会丢弃并整轮重试；
+              成功轮结束后再向业务 yield，避免 stream_llm_collect 拼到脏前缀
+            - llm_usage 仅在成功轮发送，避免失败轮中途 usage 泄漏后成功轮再计一次
         """
         ctx = self._build_model_call_context()
         session = ctx.session
@@ -2027,117 +2152,143 @@ class SkillTurboExecutor:
 
         thinking_kwargs = resolve_skill_turbo_thinking_kwargs(thinking, client)
 
-        accumulated_message = ""
+        # 每次 stream_llm 独立重置重试计数。
+        await self._run_rail_hook("before_invoke", ctx)
+
         trace_session_token = self._set_llm_interface_log_session()
         try:
-            await self._run_rail_hook('before_model_call', ctx)
-            
-            # 使用 Model.stream() 流式调用 LLM
-            # 流式调用整个生命周期都占用一个 LLM "槽位"，因此用 Semaphore 包裹整个流。
-            async with self._llm_concurrency_guard():
-                async def _iter_chunks():
-                    try:
-                        async for chunk in client.stream(
-                            messages,
-                            max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                            **thinking_kwargs,
-                        ):
-                            yield chunk
-                    except Exception as stream_exc:
-                        if thinking_kwargs and is_skill_turbo_thinking_param_error(stream_exc):
-                            logger.warning(
-                                "[SkillTurboExecutor] thinking params rejected, "
-                                "bare retry once: %s",
-                                stream_exc,
-                            )
-                            async for chunk in client.stream(
-                                messages,
-                                max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                            ):
-                                yield chunk
-                        else:
-                            raise
+            while True:
+                ctx.consume_retry_request()
+                ctx.exception = None
+                accumulated_message = ""
+                # 业务侧缓冲：失败轮丢弃，成功轮再 yield，避免 collect 拼到脏前缀。
+                buffered_chunks: list[str] = []
+                # usage 成功轮才发（与 call_llm 对齐）；中途 chunk 可能已带 usage。
+                pending_usage: Any = None
+                try:
+                    await self._run_rail_hook("before_model_call", ctx)
 
-                async for chunk in _iter_chunks():
-                    # usage_metadata 通常只在最后一个 chunk 有值，避免对每个 chunk 都调用
-                    chunk_usage = getattr(chunk, "usage_metadata", None)
-                    if chunk_usage:
-                        await self._emit_llm_usage(
-                            session,
-                            chunk_usage,
-                            node_name=node_name,
-                            stream_source_id=source_id,
-                        )
-                    # AssistantMessageChunk 有两个属性：
-                    # - content: 普通文本内容
-                    # - reasoning_content: 推理过程内容
-                    
-                    # ──────────────────────── 自动处理 reasoning_content ────────────────────────
-                    # 框架层面自动发送 reasoning 事件，业务代码无需关心
-                    reasoning_content = getattr(chunk, "reasoning_content", None)
-                    if reasoning_content:
-                        if session:
-                            reasoning_payload: dict[str, Any] = {
-                                "content": str(reasoning_content),
-                                "plan_name": self._display_name(node_name),
-                            }
-                            if source_id is not None:
-                                reasoning_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                    # 使用 Model.stream() 流式调用 LLM
+                    # 流式调用整个生命周期都占用一个 LLM "槽位"，因此用 Semaphore 包裹整个流。
+                    async with self._llm_concurrency_guard():
+                        async def _iter_chunks():
                             try:
-                                await session.write_stream(
-                                    OutputSchema(
-                                        type="llm_reasoning",
-                                        index=0,
-                                        payload=reasoning_payload,
+                                async for chunk in client.stream(
+                                    messages,
+                                    max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    **thinking_kwargs,
+                                ):
+                                    yield chunk
+                            except Exception as stream_exc:
+                                if thinking_kwargs and is_skill_turbo_thinking_param_error(
+                                    stream_exc
+                                ):
+                                    logger.warning(
+                                        "[SkillTurboExecutor] thinking params rejected, "
+                                        "bare retry once: %s",
+                                        stream_exc,
                                     )
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "[SkillTurboExecutor] Failed to send stream llm_reasoning event: %s",
-                                    e,
-                                )
-                    
-                    # ──────────────────────── 处理普通文本内容 ────────────────────────
-                    text_chunk = chunk.content
-                    if text_chunk:
-                        # 累积消息（供after回调使用）
-                        accumulated_message += text_chunk
+                                    async for chunk in client.stream(
+                                        messages,
+                                        max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    ):
+                                        yield chunk
+                                else:
+                                    raise
 
-                        # 通过 session stream 发送正文 delta（与 reasoning 保持一致）
-                        if session:
-                            output_payload: dict[str, Any] = {
-                                "content": str(text_chunk),
-                                "plan_name": self._display_name(node_name),
-                            }
-                            if source_id is not None:
-                                output_payload[STREAM_SOURCE_ID_FIELD] = source_id
-                            try:
-                                await session.write_stream(
-                                    OutputSchema(
-                                        type="llm_output",
-                                        index=0,
-                                        payload=output_payload,
+                        async for chunk in _iter_chunks():
+                            # 先跑 inspector，再刷前端 / 缓冲业务正文。
+                            await self._run_stream_chunk_inspectors(ctx, chunk)
+
+                            # 记下 usage，成功轮再发；避免失败轮中途泄漏后成功轮重复计费。
+                            chunk_usage = getattr(chunk, "usage_metadata", None)
+                            if chunk_usage:
+                                pending_usage = chunk_usage
+                            # AssistantMessageChunk 有两个属性：
+                            # - content: 普通文本内容
+                            # - reasoning_content: 推理过程内容
+
+                            # ──────────────────────── 实时刷 reasoning_content ────────────────────────
+                            reasoning_content = getattr(chunk, "reasoning_content", None)
+                            if reasoning_content and session:
+                                reasoning_payload: dict[str, Any] = {
+                                    "content": str(reasoning_content),
+                                    "plan_name": self._display_name(node_name),
+                                }
+                                if source_id is not None:
+                                    reasoning_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                                try:
+                                    await session.write_stream(
+                                        OutputSchema(
+                                            type="llm_reasoning",
+                                            index=0,
+                                            payload=reasoning_payload,
+                                        )
                                     )
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "[SkillTurboExecutor] Failed to send stream llm_output event: %s",
-                                    e,
-                                )
+                                except Exception as e:
+                                    logger.warning(
+                                        "[SkillTurboExecutor] Failed to send stream "
+                                        "llm_reasoning event: %s",
+                                        e,
+                                    )
 
-                        # 返回普通文本（业务代码只看到普通文本）
+                            # ──────────────────────── 实时刷前端 + 缓冲业务正文 ────────────────────────
+                            text_chunk = chunk.content
+                            if text_chunk:
+                                # 累积消息（供after回调使用）
+                                accumulated_message += text_chunk
+                                # 先缓冲；整轮成功后再 yield，保证重试时业务侧看不到脏前缀
+                                buffered_chunks.append(str(text_chunk))
+
+                                if session:
+                                    output_payload: dict[str, Any] = {
+                                        "content": str(text_chunk),
+                                        "plan_name": self._display_name(node_name),
+                                    }
+                                    if source_id is not None:
+                                        output_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                                    try:
+                                        await session.write_stream(
+                                            OutputSchema(
+                                                type="llm_output",
+                                                index=0,
+                                                payload=output_payload,
+                                            )
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            "[SkillTurboExecutor] Failed to send stream "
+                                            "llm_output event: %s",
+                                            e,
+                                        )
+
+                    # 成功轮：发 usage，再向业务 yield。
+                    await self._emit_llm_usage(
+                        session,
+                        pending_usage,
+                        node_name=node_name,
+                        stream_source_id=source_id,
+                    )
+
+                    # 设置response（供after回调使用）
+                    ctx.inputs.response = accumulated_message
+                    for text_chunk in buffered_chunks:
                         yield text_chunk
-            
-            # 设置response（供after回调使用）
-            ctx.inputs.response = accumulated_message
-            
-        except Exception as e:
-            ctx.exception = e
-            await self._run_rail_hook('on_model_exception', ctx)
-            raise
+                    return
+                except AbortError:
+                    raise
+                except Exception as e:
+                    ctx.exception = e
+                    await self._run_rail_hook("on_model_exception", ctx)
+                    retry_request = ctx.consume_retry_request()
+                    if not retry_request:
+                        raise
+                    if retry_request.delay_seconds > 0:
+                        await asyncio.sleep(retry_request.delay_seconds)
+                finally:
+                    await self._run_rail_hook("after_model_call", ctx)
         finally:
             self._reset_llm_interface_log_session(trace_session_token)
-            await self._run_rail_hook('after_model_call', ctx)
 
     async def fallback(
         self,

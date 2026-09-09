@@ -11,6 +11,7 @@ import pytest
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     _prepare_parent_stream_output,
+    _push_task_event_out_of_band,
     _without_inner_task_routing,
     reset_skill_turbo_outer_todo_active,
     set_skill_turbo_outer_todo_active,
@@ -765,3 +766,145 @@ async def test_outer_todo_hides_inner_tasks_without_hiding_stage_messages(
         assert all("task_id" not in payload for payload in forwarded)
     else:
         assert forwarded[0]["tasks"][0]["task_id"] == "task_deadbeef"
+
+
+@pytest.mark.asyncio
+async def test_task_update_is_also_pushed_out_of_band(_skill_turbo_runtime) -> None:
+    adapter, _turbo_session = _skill_turbo_runtime
+    parent_session = SimpleNamespace(
+        write_stream=AsyncMock(),
+        get_session_id=lambda: "sess-fallback",
+    )
+    send_push = AsyncMock(return_value=1)
+    server = SimpleNamespace(send_push=send_push)
+
+    async def stream(*_args, **_kwargs):
+        yield SimpleNamespace(
+            payload={
+                "event_type": "task.start",
+                "task_id": "task_a2f23a2e",
+                "task_content": "Stage 11: 幻灯片生成",
+            }
+        )
+        yield SimpleNamespace(
+            payload={
+                "event_type": "task.update",
+                "tasks": [{
+                    "task_id": "task_a2f23a2e",
+                    "task_content": "Stage 11: 幻灯片生成",
+                    "status": "completed",
+                }],
+            }
+        )
+        yield SimpleNamespace(
+            payload={
+                "event_type": "task.complete",
+                "task_id": "task_a2f23a2e",
+                "task_content": "Stage 11: 幻灯片生成",
+                "status": "completed",
+            }
+        )
+        yield SimpleNamespace(
+            payload={
+                "event_type": "chat.delta",
+                "content": "页面生成完成",
+            }
+        )
+
+    turbo = _fake_turbo()
+    turbo.run_stream = MagicMock(side_effect=stream)
+    token = set_skill_turbo_outer_todo_active(False)
+    try:
+        with (
+            patch(
+                "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+                return_value=adapter,
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+                return_value=None,
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+                return_value=None,
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+                return_value={
+                    "request_id": "7fcaa6ad-4b55-454e-909e-8a2897be8d05",
+                    "channel_id": "officeclaw",
+                    "session_id": "officeclaw_e0495cc952026dae2fb252ef",
+                },
+            ),
+            patch(
+                "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+                return_value=parent_session,
+            ),
+            patch(
+                "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+                return_value=None,
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+                return_value=turbo,
+            ),
+            patch(
+                "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
+                return_value=server,
+            ),
+        ):
+            result = await skill_turbo.invoke({"query": _QUERY})
+    finally:
+        reset_skill_turbo_outer_todo_active(token)
+
+    assert result.get("success") is True
+    send_push.assert_awaited_once()
+    pushed = send_push.await_args.args[0]
+    assert pushed["request_id"] == "7fcaa6ad-4b55-454e-909e-8a2897be8d05"
+    assert pushed["session_id"] == "officeclaw_e0495cc952026dae2fb252ef"
+    assert pushed["payload"]["event_type"] == "task.update"
+    assert pushed["payload"]["tasks"][0]["task_content"] == "Stage 11: 幻灯片生成"
+    assert parent_session.write_stream.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_push_task_event_skips_non_task_events() -> None:
+    send_push = AsyncMock(return_value=1)
+    server = SimpleNamespace(send_push=send_push)
+    with patch(
+        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
+        return_value=server,
+    ):
+        await _push_task_event_out_of_band(
+            "chat.delta",
+            {"event_type": "chat.delta", "content": "x"},
+            request_id="r1",
+            channel_id="officeclaw",
+            session_id="sess-1",
+        )
+    send_push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_push_task_event_skips_start_and_complete() -> None:
+    send_push = AsyncMock(return_value=1)
+    server = SimpleNamespace(send_push=send_push)
+    with patch(
+        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
+        return_value=server,
+    ):
+        await _push_task_event_out_of_band(
+            "task.start",
+            {"event_type": "task.start", "task_id": "task_a"},
+            request_id="r1",
+            channel_id="officeclaw",
+            session_id="sess-1",
+        )
+        await _push_task_event_out_of_band(
+            "task.complete",
+            {"event_type": "task.complete", "task_id": "task_a"},
+            request_id="r1",
+            channel_id="officeclaw",
+            session_id="sess-1",
+        )
+    send_push.assert_not_awaited()

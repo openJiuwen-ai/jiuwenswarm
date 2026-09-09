@@ -2086,6 +2086,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
+        if is_enterprise():
+            return
 
         async def _sync() -> None:
             try:

@@ -787,6 +787,28 @@ def build_permission_rail(
             permission_scene_hook=_permission_scene_hook,
         )
 
+        workspace_root = None
+        try:
+            workspace_root = get_workspace_dir()
+        except Exception:
+            logger.warning(
+                "[InterruptHelpers] workspace_dir resolve failed for permission engine; "
+                "continue with workspace_root=None (same as PermissionInterruptRail default)",
+                exc_info=True,
+            )
+        from jiuwenswarm.agents.harness.common.rails.permissions.workspace_untrusted_policy import (
+            WorkspaceUntrustedPolicyEngine,
+        )
+
+        # 不在此写死 trusted_dirs：与 PermissionInterruptRail 默认引擎一致，
+        # 请求级白名单由 adapter 的 set_trusted_dirs → engine.update_trusted_dirs 注入。
+        permission_engine = WorkspaceUntrustedPolicyEngine(
+            config=permission_config,
+            llm=llm,
+            model_name=model_name,
+            workspace_root=workspace_root,
+        )
+
         # Skill 动态授权协调：默认权限 Rail 叠加 gate-handled 短路
         # （skill_tool/skill_complete 由 SkillAuthorizationRail 专属裁决，避免重复弹卡）。
         rail_cls = PermissionInterruptRail
@@ -825,6 +847,7 @@ def build_permission_rail(
 
         permission_rail = rail_cls(
             config=permission_config,
+            engine=permission_engine,
             tool_names=tool_names,
             llm=llm,
             model_name=model_name,
