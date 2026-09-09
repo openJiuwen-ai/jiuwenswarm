@@ -69,6 +69,40 @@ async def test_ack_precedes_execution_and_slot_released_on_failure():
 
 
 @pytest.mark.asyncio
+async def test_admission_ack_precedes_before_chat_hook():
+    server = make_server()
+    server._active_desktop_chat_streams = {}
+    ws = SimpleNamespace(send=AsyncMock())
+    order = []
+
+    async def before_chat(request):
+        order.append("before_chat")
+        assert frames(ws)[0]["body"]["event_type"] == "chat.accepted"
+
+    async def ensure_team(request):
+        order.append("ensure_team")
+
+    async def execute(*args):
+        order.append("execute")
+
+    server._trigger_before_chat_request_hook = before_chat
+    server._ensure_auto_team_binding_for_chat = ensure_team
+    server._handle_stream_impl = execute
+    await server._handle_message(ws, json.dumps({
+        "protocol_version": "1.0",
+        "request_id": "ack-first",
+        "channel": "desktop",
+        "method": "chat.send",
+        "params": {"query": "hello"},
+        "metadata": {"require_admission_ack": True},
+        "session_id": "ack-first",
+        "is_stream": True,
+    }), asyncio.Lock())
+
+    assert order == ["before_chat", "ensure_team", "execute"]
+
+
+@pytest.mark.asyncio
 async def test_ack_send_failure_releases_slot_without_execution():
     server = make_server()
     server._active_desktop_chat_streams = {}

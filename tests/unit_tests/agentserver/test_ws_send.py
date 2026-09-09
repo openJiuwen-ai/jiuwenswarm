@@ -326,9 +326,14 @@ async def test_desktop_sixth_parallel_session_is_rejected_before_agent_start(
     ]
     assert len(rejected_frames) == 1
     assert rejected_frames[0]["is_final"] is True
-    assert rejected_frames[0]["body"]["result"] == {
-        "event_type": "chat.final",
-        "content": warning,
+    assert rejected_frames[0]["status"] == "failed"
+    # 8e489b6c7 起拒绝改为结构化 e2a.error：错误码/并发快照在 body.details。
+    assert rejected_frames[0]["body"]["details"] == {
+        "code": "DESKTOP_SESSION_LIMIT",
+        "error": warning,
+        "allowed": False,
+        "activeSessions": 5,
+        "limit": 5,
     }
 
 
