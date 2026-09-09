@@ -299,7 +299,7 @@ class JiuwenSummaryTeamFactory:
 
             if donor_backend is not None:
                 _verify_shared_database(agent, donor_backend)
-                await self._materialize_team_in_db(agent)
+                await self._materialize_team_in_db(agent, spec0)
 
             # Design: Summary Team should sit PAUSED without an idle warm-up so
             # the framework's summary-turn drain can resume it on demand.
@@ -318,7 +318,20 @@ class JiuwenSummaryTeamFactory:
             return _Launched(
                 team_id=team_id, leader_id=_leader_id_from_agent(agent, team_id)
             )
-        except Exception:
+        except Exception as exc:
+            import logging
+            import traceback
+
+            logging.getLogger(__name__).error(
+                "[SummaryTeamFactory] _launch_team FAILED team=%s session=%s "
+                "activation_attempted=%s exc_type=%s exc=%r\n%s",
+                team_id,
+                session_id,
+                activation_attempted,
+                type(exc).__name__,
+                exc,
+                "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            )
             if activation_attempted:
                 await self.stop(team_id=team_id, session_id=session_id)
             raise
@@ -370,14 +383,21 @@ class JiuwenSummaryTeamFactory:
             _align_spec_storage(spec, shared_db)
         return spec
 
-    async def _materialize_team_in_db(self, agent: Any) -> None:
+    async def _materialize_team_in_db(self, agent: Any, spec0: Any | None = None) -> None:
         backend = getattr(agent, "team_backend", None)
         if backend is None:
             raise ValueError("summary team backend has no team_backend")
         build_team = getattr(backend, "build_team", None)
         if not callable(build_team):
             raise ValueError("summary team backend has no build_team")
-        await build_team()
+        # rebase-on-jiuwen: TeamBackend.build_team now requires the 4 label args.
+        display = str(getattr(spec0, "display_name", "") or "").strip() or "Summary Team"
+        await build_team(
+            display_name=display,
+            desc=display,
+            leader_display_name=display,
+            leader_desc=display,
+        )
 
     async def stop(self, *, team_id: str, session_id: str) -> None:
         name = str(team_id or "").strip()
