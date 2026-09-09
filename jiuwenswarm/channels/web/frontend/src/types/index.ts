@@ -141,6 +141,14 @@ export interface VendorPreset {
   anthropic_client_provider: string | null;
   reasoning_capabilities: Record<string, ModelReasoningProtocols>;
   reasoning_rules: ModelReasoningRule[];
+  /** Text-to-video IDs. Chat /v1/models does not list wan t2v IDs. */
+  video_gen_default_model?: string | null;
+  video_gen_model_options?: string[];
+  video_gen_api_base?: string | null;
+  /** Text-to-image IDs. Chat /v1/models does not list wanx / qwen-image. */
+  image_gen_default_model?: string | null;
+  image_gen_model_options?: string[];
+  image_gen_api_base?: string | null;
 }
 
 export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {

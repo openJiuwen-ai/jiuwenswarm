@@ -56,9 +56,9 @@ logger = logging.getLogger(__name__)
 class PlanKind(str, Enum):
     """Model selection plan categories."""
 
-    TOKEN_PLAN = "token_plan"        # 预付费套餐/资源包/订阅
-    CODING_PLAN = "coding_plan"     # 编码场景
-    CUSTOM_API = "custom_api"       # 通用Token(按量计费)
+    TOKEN_PLAN = "token_plan"  # 预付费套餐/资源包/订阅
+    CODING_PLAN = "coding_plan"  # 编码场景
+    CUSTOM_API = "custom_api"  # 通用Token(按量计费)
 
 
 @dataclass(frozen=True)
@@ -74,30 +74,70 @@ class VendorPreset:
     different base_url.
     """
 
-    vendor_key: str            # e.g. "alibaba", "baidu"
-    display_name: str          # e.g. "阿里云百炼"
-    plan: PlanKind             # which bucket this entry belongs to
+    vendor_key: str  # e.g. "alibaba", "baidu"
+    display_name: str  # e.g. "阿里云百炼"
+    plan: PlanKind  # which bucket this entry belongs to
     # 落库用 (jiuwenswarm config.yaml models.defaults[].model_client_config)
-    client_provider: str       # must equal a ProviderType enum value
-    api_base: str              # OpenAI-format base_url for this plan
+    client_provider: str  # must equal a ProviderType enum value
+    api_base: str  # OpenAI-format base_url for this plan
     # 前端展示 + 模型下拉
-    default_model: str        # pre-selected model for this (vendor, plan) entry
+    default_model: str  # pre-selected model for this (vendor, plan) entry
     model_options: tuple[str, ...]  # dropdown candidates (verified common models)
-    icon_key: str              # matches frontend ModelProviderIcon PROVIDER_SPECS.key
+    icon_key: str  # matches frontend ModelProviderIcon PROVIDER_SPECS.key
     # 可选拉取 (vendors.fetch_models RPC)
-    models_endpoint: str | None = None     # GET /models endpoint; None = not supported
-    models_needs_key: bool = True          # whether fetch requires api_key
+    models_endpoint: str | None = None  # GET /models endpoint; None = not supported
+    models_needs_key: bool = True  # whether fetch requires api_key
     # Anthropic-format base for this plan (custom_api allows switching OpenAI<->Anthropic)
-    anthropic_base: str | None = None      # None = vendor has no Anthropic endpoint
+    anthropic_base: str | None = None  # None = vendor has no Anthropic endpoint
     # OpenAI 协议端点方言(deepseek/openrouter/siliconflow/dashscope/openai_compatible/...);
     # None=不写、走默认 openai;Anthropic 协议(client_provider=Anthropic)时此字段被 core 忽略
     endpoint_profile: str | None = None
+    # Text-to-video models. ``/v1/models`` is the chat catalog (e.g. MiniMax-M*)
+    # and does not list video-generation IDs such as MiniMax-H3.
+    video_gen_default_model: str | None = None
+    video_gen_model_options: tuple[str, ...] | None = None
+    # Dedicated text-to-video API base when it differs from the chat api_base
+    # (e.g. DashScope wan uses /api/v1 rather than compatible-mode).
+    video_gen_api_base: str | None = None
+    # Text-to-image models. Chat ``/v1/models`` does not list wanx / qwen-image IDs,
+    # and DashScope image generation uses /api/v1 rather than compatible-mode.
+    image_gen_default_model: str | None = None
+    image_gen_model_options: tuple[str, ...] | None = None
+    image_gen_api_base: str | None = None
 
 
 # core 的 ProviderType.Anthropic 枚举值。当用户在前端选 "Anthropic 格式" 时,
 # 落库的 client_provider 用这个值(core 会实例化 AnthropicModelClient 走 /v1/messages)。
 # Anthropic 格式可用的充要条件:该预设的 anthropic_base 非空。
 ANTHROPIC_CLIENT_PROVIDER = "Anthropic"
+
+# DashScope video generation.
+DASHSCOPE_VIDEO_GEN_API_BASE = "https://dashscope.aliyuncs.com/api/v1"
+DASHSCOPE_VIDEO_GEN_MODELS: tuple[str, ...] = (
+    "wan3.0-video",
+    "wan3.0-video-prime",
+    "happyhorse-1.1-t2v",
+    "happyhorse-1.1-i2v",
+    "happyhorse-1.1-r2v",
+    "wan2.7-t2v",
+    "wan2.7-i2v",
+    "wan2.7-r2v",
+    "wan2.6-t2v",
+    "wan2.6-i2v",
+    "wan2.6-i2v-flash",
+    "wan2.6-r2v",
+    "wan2.6-r2v-flash",
+)
+
+# DashScope image generation.
+DASHSCOPE_IMAGE_GEN_API_BASE = "https://dashscope.aliyuncs.com/api/v1"
+DASHSCOPE_IMAGE_GEN_MODELS: tuple[str, ...] = (
+    "qwen-image-3.0",
+    "qwen-image-3.0-pro",
+    "wan2.7-image",
+    "wan2.7-image-pro",
+    "z-image-turbo",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -109,35 +149,58 @@ ANTHROPIC_CLIENT_PROVIDER = "Anthropic"
 # ---------------------------------------------------------------------------
 
 _PRESETS: list[VendorPreset] = [
-
     # ── Token Plan ──────────────────────────────────────────────────────────
     VendorPreset(
-        vendor_key="alibaba", display_name="阿里云百炼", plan=PlanKind.TOKEN_PLAN,
+        vendor_key="alibaba",
+        display_name="阿里云百炼",
+        plan=PlanKind.TOKEN_PLAN,
         client_provider="OpenAI",
         api_base="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         endpoint_profile="dashscope",
         default_model="qwen3.7-max",
-        model_options=("qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.7-flash", "qwen3.6-max-preview"),
+        model_options=(
+            "qwen3.8-max",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.7-flash",
+            "qwen3.6-max-preview",
+        ),
         icon_key="qwen",
         # token-plan key 只在 token-plan 域名有效,通用 dashscope 域名 401 invalid_api_key,
         # 所以拉列表也必须走 token-plan maas 域名(实测 200,12 个模型)。
         models_endpoint="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models",
         models_needs_key=True,
         anthropic_base="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
+        video_gen_default_model="wan2.6-t2v",
+        video_gen_model_options=DASHSCOPE_VIDEO_GEN_MODELS,
+        video_gen_api_base=DASHSCOPE_VIDEO_GEN_API_BASE,
+        image_gen_default_model="wanx-v1",
+        image_gen_model_options=DASHSCOPE_IMAGE_GEN_MODELS,
+        image_gen_api_base=DASHSCOPE_IMAGE_GEN_API_BASE,
     ),
     VendorPreset(
-        vendor_key="minimax", display_name="MiniMax", plan=PlanKind.TOKEN_PLAN,
+        vendor_key="minimax",
+        display_name="MiniMax",
+        plan=PlanKind.TOKEN_PLAN,
         client_provider="OpenAI",
         api_base="https://api.minimaxi.com/v1",
         default_model="MiniMax-M2",
-        model_options=("MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2", "MiniMax-M1"),
+        model_options=(
+            "MiniMax-M3",
+            "MiniMax-M2.7",
+            "MiniMax-M2.5",
+            "MiniMax-M2",
+            "MiniMax-M1",
+        ),
         icon_key="minimax",
         models_endpoint="https://api.minimaxi.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://api.minimaxi.com/anthropic",
     ),
     VendorPreset(
-        vendor_key="maas", display_name="Maas盘古", plan=PlanKind.TOKEN_PLAN,
+        vendor_key="maas",
+        display_name="Maas盘古",
+        plan=PlanKind.TOKEN_PLAN,
         client_provider="ModelArts",
         api_base="https://api.modelarts-maas.com/plan/v2",
         endpoint_profile="modelarts",
@@ -149,7 +212,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://api.modelarts-maas.com/plan/anthropic",
     ),
     VendorPreset(
-        vendor_key="baidu", display_name="百度智能云", plan=PlanKind.TOKEN_PLAN,
+        vendor_key="baidu",
+        display_name="百度智能云",
+        plan=PlanKind.TOKEN_PLAN,
         client_provider="OpenAI",
         api_base="https://qianfan.baidubce.com/v2/tokenplan/personal",  # personal; team variant: /v2/tokenplan/team
         default_model="ernie-5.1",
@@ -169,7 +234,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://qianfan.baidubce.com/anthropic/tokenplan/personal",
     ),
     VendorPreset(
-        vendor_key="mimo", display_name="小米Mimo", plan=PlanKind.TOKEN_PLAN,
+        vendor_key="mimo",
+        display_name="小米Mimo",
+        plan=PlanKind.TOKEN_PLAN,
         client_provider="MiMo",
         api_base="https://token-plan-cn.xiaomimimo.com/v1",  # 套餐调用走套餐域名(需套餐 key)
         endpoint_profile="mimo",
@@ -182,10 +249,11 @@ _PRESETS: list[VendorPreset] = [
         models_needs_key=True,
         anthropic_base="https://token-plan-cn.xiaomimimo.com/anthropic",
     ),
-
     # ── Coding Plan ─────────────────────────────────────────────────────────
     VendorPreset(
-        vendor_key="alibaba", display_name="阿里云百炼", plan=PlanKind.CODING_PLAN,
+        vendor_key="alibaba",
+        display_name="阿里云百炼",
+        plan=PlanKind.CODING_PLAN,
         client_provider="OpenAI",
         api_base="https://coding.dashscope.aliyuncs.com/v1",  # xlsx 写 aliyun.com 是笔误,实测 aliuyuncs.com 才存在(401)
         endpoint_profile="dashscope",
@@ -196,9 +264,17 @@ _PRESETS: list[VendorPreset] = [
         models_endpoint="https://coding.dashscope.aliyuncs.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://coding.dashscope.aliyuncs.com/apps/anthropic",
+        video_gen_default_model="wan2.6-t2v",
+        video_gen_model_options=DASHSCOPE_VIDEO_GEN_MODELS,
+        video_gen_api_base=DASHSCOPE_VIDEO_GEN_API_BASE,
+        image_gen_default_model="wanx-v1",
+        image_gen_model_options=DASHSCOPE_IMAGE_GEN_MODELS,
+        image_gen_api_base=DASHSCOPE_IMAGE_GEN_API_BASE,
     ),
     VendorPreset(
-        vendor_key="kimi", display_name="Kimi(月之暗面)", plan=PlanKind.CODING_PLAN,
+        vendor_key="kimi",
+        display_name="Kimi(月之暗面)",
+        plan=PlanKind.CODING_PLAN,
         client_provider="OpenAI",
         api_base="https://api.kimi.com/coding/v1",
         default_model="kimi-k2.7-code",
@@ -210,11 +286,20 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://api.kimi.com/coding",
     ),
     VendorPreset(
-        vendor_key="zhipu", display_name="智谱GLM", plan=PlanKind.CODING_PLAN,
+        vendor_key="zhipu",
+        display_name="智谱GLM",
+        plan=PlanKind.CODING_PLAN,
         client_provider="OpenAI",
         api_base="https://open.bigmodel.cn/api/coding/paas/v4",
         default_model="glm-4.7",
-        model_options=("glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.7-flash", "codegeex-4"),
+        model_options=(
+            "glm-5.2",
+            "glm-5.1",
+            "glm-5",
+            "glm-4.7",
+            "glm-4.7-flash",
+            "codegeex-4",
+        ),
         icon_key="zhipu",
         # coding key 走 coding 路径;/api/paas/v4/models 是通用端点。/api/coding/paas/v4/models 实测 401(端点存在)。
         models_endpoint="https://open.bigmodel.cn/api/coding/paas/v4/models",
@@ -222,7 +307,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://open.bigmodel.cn/api/anthropic",
     ),
     VendorPreset(
-        vendor_key="volcengine", display_name="火山引擎", plan=PlanKind.CODING_PLAN,
+        vendor_key="volcengine",
+        display_name="火山引擎",
+        plan=PlanKind.CODING_PLAN,
         client_provider="OpenAI",
         api_base="https://ark.cn-beijing.volces.com/api/coding/v3",
         default_model="seed-2.0-mini",
@@ -234,7 +321,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://ark.cn-beijing.volces.com/api/coding",
     ),
     VendorPreset(
-        vendor_key="baidu", display_name="百度智能云", plan=PlanKind.CODING_PLAN,
+        vendor_key="baidu",
+        display_name="百度智能云",
+        plan=PlanKind.CODING_PLAN,
         client_provider="OpenAI",
         api_base="https://qianfan.baidubce.com/v2/coding",
         default_model="deepseek-v4-pro",
@@ -245,10 +334,11 @@ _PRESETS: list[VendorPreset] = [
         models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
         anthropic_base="https://qianfan.baidubce.com/anthropic/coding",
     ),
-
     # ── 自定义API (通用Token / 按量计费) ────────────────────────────────────
     VendorPreset(
-        vendor_key="alibaba", display_name="阿里云百炼", plan=PlanKind.CUSTOM_API,
+        vendor_key="alibaba",
+        display_name="阿里云百炼",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
         endpoint_profile="dashscope",
@@ -314,9 +404,17 @@ _PRESETS: list[VendorPreset] = [
         models_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
         models_needs_key=True,
         anthropic_base="https://dashscope.aliyuncs.com/apps/anthropic",
+        video_gen_default_model="wan2.6-t2v",
+        video_gen_model_options=DASHSCOPE_VIDEO_GEN_MODELS,
+        video_gen_api_base=DASHSCOPE_VIDEO_GEN_API_BASE,
+        image_gen_default_model="wanx-v1",
+        image_gen_model_options=DASHSCOPE_IMAGE_GEN_MODELS,
+        image_gen_api_base=DASHSCOPE_IMAGE_GEN_API_BASE,
     ),
     VendorPreset(
-        vendor_key="deepseek", display_name="DeepSeek", plan=PlanKind.CUSTOM_API,
+        vendor_key="deepseek",
+        display_name="DeepSeek",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://api.deepseek.com",
         endpoint_profile="deepseek",
@@ -332,7 +430,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://api.deepseek.com/anthropic",
     ),
     VendorPreset(
-        vendor_key="kimi", display_name="Kimi(月之暗面)", plan=PlanKind.CUSTOM_API,
+        vendor_key="kimi",
+        display_name="Kimi(月之暗面)",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://api.moonshot.cn/v1",
         default_model="kimi-k3",
@@ -343,7 +443,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://api.moonshot.cn/anthropic",
     ),
     VendorPreset(
-        vendor_key="openrouter", display_name="OpenRouter", plan=PlanKind.CUSTOM_API,
+        vendor_key="openrouter",
+        display_name="OpenRouter",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://openrouter.ai/api/v1",
         endpoint_profile="openrouter",  # 归因头由 core 按 profile 注入
@@ -362,7 +464,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://openrouter.ai/api/v1",  # xlsx 标 Anthropic 格式与 OpenAI 同 url(实测 /v1/messages 也 401 存在)
     ),
     VendorPreset(
-        vendor_key="zhipu", display_name="智谱GLM", plan=PlanKind.CUSTOM_API,
+        vendor_key="zhipu",
+        display_name="智谱GLM",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://open.bigmodel.cn/api/paas/v4",
         default_model="glm-5.2",
@@ -382,18 +486,29 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://open.bigmodel.cn/api/anthropic",
     ),
     VendorPreset(
-        vendor_key="minimax", display_name="MiniMax", plan=PlanKind.CUSTOM_API,
+        vendor_key="minimax",
+        display_name="MiniMax",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://api.minimaxi.com/v1",
         default_model="MiniMax-M3",
-        model_options=("MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2", "MiniMax-M2-HER", "MiniMax-M1"),
+        model_options=(
+            "MiniMax-M3",
+            "MiniMax-M2.7",
+            "MiniMax-M2.5",
+            "MiniMax-M2",
+            "MiniMax-M2-HER",
+            "MiniMax-M1",
+        ),
         icon_key="minimax",
         models_endpoint="https://api.minimaxi.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://api.minimaxi.com/anthropic",
     ),
     VendorPreset(
-        vendor_key="maas", display_name="Maas盘古", plan=PlanKind.CUSTOM_API,
+        vendor_key="maas",
+        display_name="Maas盘古",
+        plan=PlanKind.CUSTOM_API,
         client_provider="ModelArts",
         api_base="https://api.modelarts-maas.com/v2",
         endpoint_profile="modelarts",
@@ -413,18 +528,28 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://api.modelarts-maas.com/anthropic",
     ),
     VendorPreset(
-        vendor_key="volcengine", display_name="火山引擎", plan=PlanKind.CUSTOM_API,
+        vendor_key="volcengine",
+        display_name="火山引擎",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://ark.cn-beijing.volces.com/api/v3",
         default_model="seed-2.0-mini",
-        model_options=("seed-2.0-mini", "seed-2.0-lite", "seed-1.6", "seed-1.6-flash", "doubao-1.5-pro-32k"),
+        model_options=(
+            "seed-2.0-mini",
+            "seed-2.0-lite",
+            "seed-1.6",
+            "seed-1.6-flash",
+            "doubao-1.5-pro-32k",
+        ),
         icon_key="doubao",
         models_endpoint="https://ark.cn-beijing.volces.com/api/v3/models",
         models_needs_key=True,
         anthropic_base="https://ark.cn-beijing.volces.com/api/compatible",
     ),
     VendorPreset(
-        vendor_key="baidu", display_name="百度智能云", plan=PlanKind.CUSTOM_API,
+        vendor_key="baidu",
+        display_name="百度智能云",
+        plan=PlanKind.CUSTOM_API,
         client_provider="OpenAI",
         api_base="https://qianfan.baidubce.com/v2",
         default_model="ernie-5.1",
@@ -444,7 +569,9 @@ _PRESETS: list[VendorPreset] = [
         anthropic_base="https://qianfan.baidubce.com/anthropic",
     ),
     VendorPreset(
-        vendor_key="mimo", display_name="小米Mimo", plan=PlanKind.CUSTOM_API,
+        vendor_key="mimo",
+        display_name="小米Mimo",
+        plan=PlanKind.CUSTOM_API,
         client_provider="MiMo",
         api_base="https://api.xiaomimimo.com/v1",
         endpoint_profile="mimo",
@@ -461,7 +588,9 @@ _PRESETS: list[VendorPreset] = [
 # Pre-built indices for O(1) lookup.
 _BY_PLAN: dict[PlanKind, list[VendorPreset]] = {p: [] for p in PlanKind}
 _BY_VENDOR_PLAN: dict[tuple[str, PlanKind], VendorPreset] = {}
-_BY_VENDOR: dict[str, VendorPreset] = {}  # first occurrence per vendor (for icon lookup)
+_BY_VENDOR: dict[
+    str, VendorPreset
+] = {}  # first occurrence per vendor (for icon lookup)
 
 for _p in _PRESETS:
     _BY_PLAN[_p.plan].append(_p)
@@ -562,7 +691,15 @@ def to_frontend_payload() -> dict[str, Any]:
                 # api_base=anthropic_base(core 用 AnthropicModelClient 走 /v1/messages)。
                 "supports_anthropic": bool(p.anthropic_base),
                 "anthropic_base": p.anthropic_base,
-                "anthropic_client_provider": ANTHROPIC_CLIENT_PROVIDER if p.anthropic_base else None,
+                "anthropic_client_provider": ANTHROPIC_CLIENT_PROVIDER
+                if p.anthropic_base
+                else None,
+                "video_gen_default_model": p.video_gen_default_model,
+                "video_gen_model_options": list(p.video_gen_model_options or ()),
+                "video_gen_api_base": p.video_gen_api_base,
+                "image_gen_default_model": p.image_gen_default_model,
+                "image_gen_model_options": list(p.image_gen_model_options or ()),
+                "image_gen_api_base": p.image_gen_api_base,
             }
             for p in _BY_PLAN[plan]
         ]

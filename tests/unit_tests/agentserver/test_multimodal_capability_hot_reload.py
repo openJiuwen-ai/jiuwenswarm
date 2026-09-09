@@ -57,7 +57,10 @@ def test_multimodal_switch_hot_reload_registers_and_removes_vision_tools(
     )
     monkeypatch.setenv("AUDIO_ENABLED", "false")
     monkeypatch.setenv("VIDEO_ENABLED", "false")
+    # Isolate vision hot-reload from image/video generation tool registration.
     monkeypatch.delenv("IMAGE_GEN_API_KEY", raising=False)
+    monkeypatch.delenv("VIDEO_GEN_API_KEY", raising=False)
+    monkeypatch.delenv("API_KEY", raising=False)
 
     adapter = JiuWenSwarmDeepAdapter()
     ability_manager = _AbilityManager()

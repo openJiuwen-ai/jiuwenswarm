@@ -283,7 +283,7 @@ harness_element(kind=RAIL, name=..., builder=SomeRailClass)              # 直�
 > P=param（属性，config_specs 烘焙）；C=context（环境，SwarmBuildContext）；—=无输入。
 > 模式：T=team，K=code（code.team/team.plan）。
 
-### 10.1 Tool（8，swarm 自有）
+### 10.1 Tool（9，swarm 自有）
 
 | name | 模式 | P（属性） | C（环境） |
 |---|---|---|---|
@@ -291,6 +291,7 @@ harness_element(kind=RAIL, name=..., builder=SomeRailClass)              # 直�
 | `swarm.user_todos` | T+K | — | — |
 | `swarm.video` | T+K | — | config（models.video 门控） |
 | `swarm.image_gen` | T+K | — | config（IMAGE_GEN_API_KEY 门控） |
+| `swarm.video_gen` | T+K | — | config（VIDEO_GEN_API_KEY 门控） |
 | `swarm.xiaoyi_phone` | T+K | — | config（channels.xiaoyi 门控） |
 | `swarm.code_extra_tools` | K | acp_enabled | — |
 | `swarm.cron_tools` | T+K | — | member_card_id, channel_id, session_id, request_metadata, language |

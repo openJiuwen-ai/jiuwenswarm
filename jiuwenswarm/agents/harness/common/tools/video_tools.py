@@ -8,7 +8,9 @@ import asyncio
 import base64
 import mimetypes
 import os
+import random
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +18,12 @@ import requests
 from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.utils import env_url, get_config_file
-from jiuwenswarm.agents.harness.common.tools.multimodal_config import apply_video_model_config_from_yaml
+from jiuwenswarm.common.utils import env_url, get_agent_workspace_dir, get_config_file
+from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
+    apply_video_gen_model_config_from_yaml,
+    apply_video_model_config_from_yaml,
+    _get_model_config,
+)
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 
 
@@ -233,3 +239,212 @@ async def video_understanding(inputs: dict[str, Any], **kwargs) -> str:
         return await asyncio.to_thread(_glm_video_understanding_sync, req)
     except Exception as exc:
         return f"[ERROR]: glm video understanding failed: {exc}"
+
+
+def _normalize_video_size(size: str | None) -> str | None:
+    """Normalize size to DashScope ``W*H`` form (also accepts ``WxH``)."""
+    if not size:
+        return None
+    value = str(size).strip().replace("x", "*").replace("X", "*")
+    return value or None
+
+
+async def _invoke_model_video_generation(
+    prompt: str,
+    *,
+    size: str = "1280*720",
+    duration: int = 5,
+    resolution: str | None = None,
+) -> dict[str, Any]:
+    """Generate a video via the same Model client stack as image generation."""
+    from openjiuwen.core.foundation.llm import (
+        Model,
+        ModelClientConfig,
+        ModelRequestConfig,
+        UserMessage,
+    )
+
+    cfg = get_config() or {}
+    mc = _get_model_config(cfg, "video_gen")
+
+    api_key = str(mc.get("api_key") or os.getenv("VIDEO_GEN_API_KEY") or "").strip()
+    api_base = str(
+        mc.get("api_base")
+        or os.getenv("VIDEO_GEN_API_BASE")
+        or "https://dashscope.aliyuncs.com/api/v1"
+    ).strip()
+    if not api_key:
+        return {"error": "[ERROR]: VIDEO_GEN_API_KEY is not configured for video generation."}
+
+    model = str(
+        mc.get("model_name")
+        or mc.get("model")
+        or os.getenv("VIDEO_GEN_MODEL_NAME")
+        or "wan2.6-t2v"
+    ).strip()
+    provider = str(
+        mc.get("client_provider")
+        or mc.get("model_provider")
+        or os.getenv("VIDEO_GEN_PROVIDER")
+        or "DashScope"
+    ).strip()
+    # DashScope text-to-video uses OpenAI client_provider + endpoint_profile=dashscope.
+    endpoint_profile = str(
+        mc.get("endpoint_profile") or os.getenv("VIDEO_GEN_ENDPOINT_PROFILE") or ""
+    ).strip().lower()
+    if provider in ("DashScope", "dashscope"):
+        provider = "OpenAI"
+        endpoint_profile = endpoint_profile or "dashscope"
+
+    try:
+        _mcc_kwargs: dict[str, Any] = dict(
+            client_id="video_gen_client",
+            client_provider=provider,
+            api_key=api_key,
+            api_base=api_base,
+            verify_ssl=mc.get("verify_ssl", True),
+            ssl_cert=mc.get("ssl_cert"),
+            timeout=mc.get("timeout", 1800),
+        )
+        if endpoint_profile:
+            _mcc_kwargs["endpoint_profile"] = endpoint_profile
+        model_client_config = ModelClientConfig(**_mcc_kwargs)
+        model_config = ModelRequestConfig(model=model)
+        model_instance = Model(
+            model_config=model_config,
+            model_client_config=model_client_config,
+        )
+        messages = [UserMessage(content=prompt)]
+        normalized_size = _normalize_video_size(size)
+
+        result = await model_instance.generate_video(
+            messages=messages,
+            model=model,
+            size=normalized_size,
+            resolution=resolution,
+            duration=duration,
+        )
+
+        output_dir = get_agent_workspace_dir()
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        random_suffix = random.randint(1000, 9999)
+        output_path = output_dir / f"generated_{timestamp}_{random_suffix}.mp4"
+
+        video_url = getattr(result, "video_url", None)
+        video_data = getattr(result, "video_data", None)
+
+        if video_data:
+            with open(output_path, "wb") as f:
+                f.write(video_data)
+            return {
+                "video_path": str(output_path.absolute()),
+                "revised_prompt": prompt,
+            }
+
+        if video_url:
+            ua = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            )
+            response = requests.get(
+                video_url,
+                headers={"User-Agent": ua},
+                verify=get_requests_verify(),
+                timeout=300,
+            )
+            response.raise_for_status()
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+            return {
+                "video_path": str(output_path.absolute()),
+                "revised_prompt": prompt,
+                "original_url": video_url,
+            }
+
+        return {"error": "[ERROR]: No valid video data in response"}
+    except Exception as ex:
+        return {"error": f"[ERROR]: Video generation failed: {ex}"}
+
+
+@tool(
+    name="generate_video",
+    description=(
+        "Generate a video from a text description using AI video generation models. "
+        "Use this tool when the user wants to create a short video / clip / animation "
+        "based on a text prompt. Returns the path to the saved generated video file "
+        "and automatically delivers it to the user chat."
+    ),
+)
+async def generate_video(
+    prompt: str,
+    size: str = "1280*720",
+    duration: int = 5,
+    resolution: str | None = None,
+    save_dir: str | None = None,
+) -> str:
+    """Generate a video from a text description and deliver it via chat.file."""
+    try:
+        apply_video_gen_model_config_from_yaml(get_config())
+    except Exception:
+        logger.debug("Failed to apply video_gen model config from yaml", exc_info=True)
+
+    model = (os.environ.get("VIDEO_GEN_MODEL_NAME") or "wan2.6-t2v").strip()
+    provider = (os.environ.get("VIDEO_GEN_PROVIDER") or "DashScope").strip()
+    logger.info(
+        "[generate_video] using model: %s, provider: %s, size: %s, duration: %s",
+        model,
+        provider,
+        size,
+        duration,
+    )
+
+    try:
+        duration_int = int(duration)
+    except (TypeError, ValueError):
+        duration_int = 5
+    duration_int = max(1, min(duration_int, 15))
+
+    result = await _invoke_model_video_generation(
+        prompt,
+        size=size,
+        duration=duration_int,
+        resolution=resolution,
+    )
+    if "error" in result:
+        return result["error"]
+
+    video_path = result["video_path"]
+    if save_dir:
+        save_path = Path(save_dir)
+        save_path.mkdir(parents=True, exist_ok=True)
+        new_path = save_path / Path(video_path).name
+        Path(video_path).rename(new_path)
+        video_path = str(new_path.absolute())
+
+    response_parts = [
+        "Video generated successfully!",
+        f"Saved to: {video_path}",
+        f"Prompt: {prompt}",
+    ]
+    original_url = result.get("original_url", "")
+    if original_url:
+        response_parts.append(f"Original URL: {original_url}")
+
+    try:
+        from jiuwenswarm.agents.harness.common.tools.send_file_to_user import (
+            deliver_file_to_user,
+        )
+
+        delivery = await deliver_file_to_user(video_path)
+        if delivery:
+            response_parts.append(f"Delivered to user: {delivery}")
+    except Exception as deliver_err:
+        logger.warning(
+            "[generate_video] auto chat.file delivery failed: %s", deliver_err
+        )
+        response_parts.append(
+            "Note: video was saved but automatic delivery failed; "
+            "use send_file_to_user with the saved path if needed."
+        )
+
+    return "\n".join(response_parts)

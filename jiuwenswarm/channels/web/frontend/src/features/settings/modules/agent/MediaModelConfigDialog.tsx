@@ -19,6 +19,13 @@ import type { MediaCapabilityModality } from './mediaCapabilities';
 import {
   buildMediaModelConfigUpdates,
   createMediaModelDraft,
+  filterVendorCatalogForModality,
+  isGenerationModality,
+  mediaApiBaseForPreset,
+  mediaDefaultModelForPreset,
+  mediaModelOptionsForPreset,
+  shouldFetchRemoteMediaModels,
+  usesDedicatedMediaModels,
   type MediaModelDraft,
 } from './mediaModelConfig';
 
@@ -41,8 +48,17 @@ function getPresetStatusKey(
   preset: VendorPreset | undefined,
   apiKey: string,
   options: readonly string[],
+  modality: MediaCapabilityModality,
 ): string | undefined {
   if (!preset) return undefined;
+  if (usesDedicatedMediaModels(preset, modality)) {
+    const presetStatusKey = isGenerationModality(modality)
+      ? modality === 'image_gen'
+        ? 'settingsPanel.models.imageGenPresetModels'
+        : 'settingsPanel.models.videoGenPresetModels'
+      : 'settingsPanel.models.presetModels';
+    return options.length > 0 ? presetStatusKey : 'settingsPanel.models.noPresetModelsNoEndpoint';
+  }
   if (!preset.models_endpoint)
     return options.length > 0
       ? 'settingsPanel.models.fetchReasons.noEndpoint'
@@ -122,7 +138,11 @@ export function MediaModelConfigDialog({
   const catalogRequestId = useRef(0);
   const fetchRequestId = useRef(0);
   const fetchedModelLists = useRef(new Set<string>());
-  const preset = findVendorPreset(catalog, values.vendor_selection);
+  const modalityCatalog = useMemo(
+    () => filterVendorCatalogForModality(catalog, modality),
+    [catalog, modality],
+  );
+  const preset = findVendorPreset(modalityCatalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
   const closeBlocked = submitting;
   const { discardConfirmationOpen, requestClose, cancelDiscard, confirmDiscard } = useSettingsFormDialogClose({
@@ -134,10 +154,10 @@ export function MediaModelConfigDialog({
 
   const describePresetStatus = useCallback(
     (targetPreset: VendorPreset | undefined, apiKey: string, options: readonly string[]) => {
-      const statusKey = getPresetStatusKey(targetPreset, apiKey, options);
+      const statusKey = getPresetStatusKey(targetPreset, apiKey, options, modality);
       return statusKey ? t(statusKey) : '';
     },
-    [t],
+    [modality, t],
   );
 
   const updateModelOptions = (options: readonly string[]) => {
@@ -182,16 +202,16 @@ export function MediaModelConfigDialog({
 
   useEffect(() => {
     const current = form.getValues();
-    const currentPreset = findVendorPreset(catalog, current.vendor_selection);
+    const currentPreset = findVendorPreset(modalityCatalog, current.vendor_selection);
     if (!currentPreset) return;
-    const presetOptions = normalizeModelOptions(currentPreset.model_options);
+    const presetOptions = normalizeModelOptions(mediaModelOptionsForPreset(currentPreset, modality));
     const nextOptions =
       current.model_name.trim() && !presetOptions.includes(current.model_name.trim())
         ? [current.model_name.trim(), ...presetOptions]
         : presetOptions;
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(currentPreset, current.api_key, nextOptions));
-  }, [catalog, describePresetStatus, form]);
+  }, [describePresetStatus, form, modality, modalityCatalog]);
 
   const invalidateFetchState = () => {
     fetchRequestId.current += 1;
@@ -219,17 +239,17 @@ export function MediaModelConfigDialog({
       return;
     }
 
-    const nextPreset = findVendorPreset(catalog, selection);
+    const nextPreset = findVendorPreset(modalityCatalog, selection);
     if (!nextPreset) {
       form.setFieldValue('vendor_selection', selection);
       return;
     }
-    const nextOptions = normalizeModelOptions(nextPreset.model_options);
+    const nextOptions = normalizeModelOptions(mediaModelOptionsForPreset(nextPreset, modality));
     form.setValues({
       vendor_selection: selection,
-      api_base: nextPreset.api_base,
+      api_base: mediaApiBaseForPreset(nextPreset, modality),
       api_key: '',
-      model_name: selectProviderDefaultModel(nextPreset.default_model, nextOptions),
+      model_name: selectProviderDefaultModel(mediaDefaultModelForPreset(nextPreset, modality), nextOptions),
       model_input_mode: 'options',
       provider: nextPreset.client_provider,
       endpoint_profile: nextPreset.endpoint_profile ?? '',
@@ -243,10 +263,13 @@ export function MediaModelConfigDialog({
 
   const fetchModels = async () => {
     const currentValues = form.getValues();
-    const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
+    const currentPreset = findVendorPreset(modalityCatalog, currentValues.vendor_selection);
     if (!currentPreset || fetching) return;
-    const presetOptions = normalizeModelOptions(currentPreset.model_options);
-    if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
+    const presetOptions = normalizeModelOptions(mediaModelOptionsForPreset(currentPreset, modality));
+    if (
+      !shouldFetchRemoteMediaModels(currentPreset, modality) ||
+      (currentPreset.models_needs_key && !currentValues.api_key.trim())
+    ) {
       updateModelOptions(presetOptions);
       setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, presetOptions));
       return;
@@ -297,10 +320,13 @@ export function MediaModelConfigDialog({
 
   const openModelList = () => {
     const currentValues = form.getValues();
-    const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
+    const currentPreset = findVendorPreset(modalityCatalog, currentValues.vendor_selection);
     if (!currentPreset) return;
-    const presetOptions = normalizeModelOptions(currentPreset.model_options);
-    if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
+    const presetOptions = normalizeModelOptions(mediaModelOptionsForPreset(currentPreset, modality));
+    if (
+      !shouldFetchRemoteMediaModels(currentPreset, modality) ||
+      (currentPreset.models_needs_key && !currentValues.api_key.trim())
+    ) {
       updateModelOptions(presetOptions);
       setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, presetOptions));
       return;
@@ -309,7 +335,7 @@ export function MediaModelConfigDialog({
     if (!fetchedModelLists.current.has(fetchKey)) void fetchModels();
   };
 
-  const errors = validateMediaModelDraft(values, catalog, t);
+  const errors = validateMediaModelDraft(values, modalityCatalog, t);
   const formItems: FormItem<MediaModelDraft>[] = [
     {
       name: 'vendor_selection',
@@ -321,7 +347,7 @@ export function MediaModelConfigDialog({
           id={id}
           value={String(value ?? '')}
           protocol="openai"
-          catalog={catalog}
+          catalog={modalityCatalog}
           includeOpenAIAccount={false}
           disabled={fieldDisabled}
           invalid={Boolean(error)}
@@ -363,9 +389,9 @@ export function MediaModelConfigDialog({
     onChange: (_apiKey, nextValues) => {
       invalidateFetchState();
       fetchedModelLists.current.clear();
-      const nextPreset = findVendorPreset(catalog, nextValues.vendor_selection);
+      const nextPreset = findVendorPreset(modalityCatalog, nextValues.vendor_selection);
       if (!nextPreset) return;
-      const nextOptions = updateModelOptions(nextPreset.model_options);
+      const nextOptions = updateModelOptions(mediaModelOptionsForPreset(nextPreset, modality));
       setFetchStatus(describePresetStatus(nextPreset, nextValues.api_key, nextOptions));
     },
   });
@@ -385,11 +411,11 @@ export function MediaModelConfigDialog({
         invalid={Boolean(error)}
         fetchStatus={fetchStatus}
         fetching={fetching}
-        showRefresh={Boolean(preset)}
-        fetchDisabled={!isConnected || !preset?.models_endpoint || fetching || submitting}
+        showRefresh={Boolean(preset) && shouldFetchRemoteMediaModels(preset, modality)}
+        fetchDisabled={!isConnected || !shouldFetchRemoteMediaModels(preset, modality) || fetching || submitting}
         emptyText={t(
           preset
-            ? (getPresetStatusKey(preset, values.api_key, []) ?? 'settingsPanel.models.noModelResults')
+            ? (getPresetStatusKey(preset, values.api_key, [], modality) ?? 'settingsPanel.models.noModelResults')
             : 'settingsPanel.models.noModelResults',
         )}
         onOpen={openModelList}
@@ -411,7 +437,7 @@ export function MediaModelConfigDialog({
     setSaveError('');
     try {
       const saveResult = await save(
-        buildMediaModelConfigUpdates(result.values, catalog, modality, enableOnSave),
+        buildMediaModelConfigUpdates(result.values, modalityCatalog, modality, enableOnSave),
         `settingsPanel.agent.${modality}`,
       );
       onSaved(saveResult);

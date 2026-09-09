@@ -1,4 +1,4 @@
-export const mediaCapabilityModalities = ['vision', 'audio', 'video'] as const;
+export const mediaCapabilityModalities = ['vision', 'audio', 'video', 'image_gen', 'video_gen'] as const;
 
 export type MediaCapabilityModality = (typeof mediaCapabilityModalities)[number];
 

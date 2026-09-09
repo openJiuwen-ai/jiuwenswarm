@@ -63,6 +63,14 @@ function isNullableString(value: unknown): value is string | null | undefined {
   return value === undefined || value === null || typeof value === 'string';
 }
 
+function parseOptionalStringList(value: unknown): string[] | undefined {
+  if (value == null) return undefined;
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+    throw new Error('INVALID_VENDOR_CATALOG');
+  }
+  return value;
+}
+
 export function parseVendorCatalog(value: unknown): VendorPresetMap {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_VENDOR_CATALOG');
   const payload = value as Record<string, unknown>;
@@ -93,13 +101,23 @@ export function parseVendorCatalog(value: unknown): VendorPresetMap {
         typeof preset.models_needs_key !== 'boolean' ||
         typeof preset.supports_anthropic !== 'boolean' ||
         !isNullableString(preset.anthropic_base) ||
-        !isNullableString(preset.anthropic_client_provider)
+        !isNullableString(preset.anthropic_client_provider) ||
+        !isNullableString(preset.video_gen_default_model) ||
+        !isNullableString(preset.video_gen_api_base) ||
+        !isNullableString(preset.image_gen_default_model) ||
+        !isNullableString(preset.image_gen_api_base)
       ) {
         throw new Error('INVALID_VENDOR_CATALOG');
       }
       try {
         return {
           ...preset,
+          video_gen_default_model: preset.video_gen_default_model ?? null,
+          video_gen_model_options: parseOptionalStringList(preset.video_gen_model_options),
+          video_gen_api_base: preset.video_gen_api_base ?? null,
+          image_gen_default_model: preset.image_gen_default_model ?? null,
+          image_gen_model_options: parseOptionalStringList(preset.image_gen_model_options),
+          image_gen_api_base: preset.image_gen_api_base ?? null,
           reasoning_capabilities: parseReasoningCapabilities(preset.reasoning_capabilities),
           reasoning_rules: parseReasoningRules(preset.reasoning_rules),
         } as unknown as VendorPreset;

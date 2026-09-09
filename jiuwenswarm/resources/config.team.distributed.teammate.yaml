@@ -170,6 +170,17 @@ models:
         timeout: 1800
       model_config_obj:
         temperature: 0.95
+  video_gen:
+      model_client_config:
+        api_base: ${VIDEO_GEN_API_BASE}
+        api_key: ${VIDEO_GEN_API_KEY}
+        model_name: ${VIDEO_GEN_MODEL_NAME}
+        client_provider: ${VIDEO_GEN_PROVIDER}
+        endpoint_profile: ${VIDEO_GEN_ENDPOINT_PROFILE:-dashscope}
+        verify_ssl: false
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.95
 
 telemetry:
   enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）

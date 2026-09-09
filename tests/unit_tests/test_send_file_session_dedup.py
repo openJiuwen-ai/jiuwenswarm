@@ -13,8 +13,12 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 @pytest.fixture(autouse=True)
 def _clear_dedup_registry():
     sfu._SENT_FILE_PATHS_BY_SESSION.clear()
+    sfu._TOOLKITS_BY_SESSION.clear()
+    sfu.bind_active_send_file_toolkit(None)
     yield
     sfu._SENT_FILE_PATHS_BY_SESSION.clear()
+    sfu._TOOLKITS_BY_SESSION.clear()
+    sfu.bind_active_send_file_toolkit(None)
 
 
 def test_partition_and_mark_sent_files():
@@ -214,3 +218,81 @@ def test_send_file_keeps_worktree_file_in_worktree(tmp_path):
 
     assert toolkit._materialize_team_deliverable(str(source)) == str(source)
     assert not project_root.exists()
+
+
+def test_deliver_file_to_user_uses_bound_toolkit(tmp_path):
+    file_path = tmp_path / "generated.png"
+    file_path.write_text("img", encoding="utf-8")
+
+    toolkit = sfu.SendFileToolkit(
+        request_id="r2",
+        session_id="sess-2",
+        channel_id="web",
+    )
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    sfu.bind_active_send_file_toolkit(toolkit)
+
+    try:
+        with patch.object(sfu, "send_runtime_push", _push), patch(
+            "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+        ):
+            result = asyncio.run(sfu.deliver_file_to_user(str(file_path)))
+    finally:
+        sfu.bind_active_send_file_toolkit(None)
+
+    assert "成功发送" in result
+    assert len(pushed) == 1
+
+
+def test_deliver_file_to_user_noop_without_toolkit(tmp_path):
+    file_path = tmp_path / "orphan.mp4"
+    file_path.write_bytes(b"video")
+    sfu.bind_active_send_file_toolkit(None)
+    assert asyncio.run(sfu.deliver_file_to_user(str(file_path))) == ""
+
+
+def test_session_registry_isolates_concurrent_bindings(tmp_path):
+    """Session-keyed registry must not let one request overwrite another's toolkit."""
+    file_a = tmp_path / "a.png"
+    file_a.write_text("a", encoding="utf-8")
+
+    toolkit_a = sfu.SendFileToolkit(request_id="ra", session_id="sess-a", channel_id="web")
+    toolkit_b = sfu.SendFileToolkit(request_id="rb", session_id="sess-b", channel_id="web")
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    sfu.bind_active_send_file_toolkit(toolkit_a)
+    sfu.bind_active_send_file_toolkit(toolkit_b)
+
+    # ContextVar points at the latest bind, but each session keeps its own entry.
+    assert sfu._lookup_toolkit_for_session("sess-a") is toolkit_a
+    assert sfu._lookup_toolkit_for_session("sess-b") is toolkit_b
+
+    # Simulate a worker that lost the request ContextVar but knows its session.
+    sfu._ACTIVE_SEND_FILE_TOOLKIT.set(None)
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        result = asyncio.run(sfu.deliver_file_to_user(str(file_a), session_id="sess-a"))
+
+    assert "成功发送" in result
+    assert len(pushed) == 1
+    assert pushed[0].get("session_id") == "sess-a"
+
+
+def test_clear_active_send_file_toolkit_drops_session_entry():
+    toolkit = sfu.SendFileToolkit(request_id="r", session_id="sess-clear", channel_id="web")
+    sfu.bind_active_send_file_toolkit(toolkit)
+    assert sfu._lookup_toolkit_for_session("sess-clear") is toolkit
+    sfu.clear_active_send_file_toolkit(session_id="sess-clear")
+    assert sfu._lookup_toolkit_for_session("sess-clear") is None
+    assert sfu._ACTIVE_SEND_FILE_TOOLKIT.get() is None
