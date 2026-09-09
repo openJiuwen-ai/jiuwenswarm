@@ -152,20 +152,18 @@ _PRESETS: list[VendorPreset] = [
         vendor_key="baidu", display_name="百度智能云", plan=PlanKind.TOKEN_PLAN,
         client_provider="OpenAI",
         api_base="https://qianfan.baidubce.com/v2/tokenplan/personal",  # personal; team variant: /v2/tokenplan/team
-        default_model="ernie-5.1",
+        default_model="glm-5.2",
         model_options=(
-            "ernie-5.1",
+            "glm-5.2",
             "deepseek-v4-pro",
             "deepseek-v4-flash",
-            "glm-5.2",
             "kimi-k2.6",
-            "mimo-v2.5",
         ),
         icon_key="baidu",
-        # token plan key 走 tokenplan 端点;/v2/models 是通用端点。/v2/tokenplan/models 404,
-        # personal 变体 401(端点存在,对齐 api_base)。
-        models_endpoint="https://qianfan.baidubce.com/v2/tokenplan/personal/models",
-        models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
+        # 百度仅提供统一的模型列表接口；Token Plan 专属路径只用于推理，
+        # /v2/tokenplan/personal/models 不存在并会返回 404。
+        models_endpoint="https://qianfan.baidubce.com/v2/models",
+        models_needs_key=True,
         anthropic_base="https://qianfan.baidubce.com/anthropic/tokenplan/personal",
     ),
     VendorPreset(

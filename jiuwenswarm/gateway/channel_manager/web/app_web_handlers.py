@@ -4063,12 +4063,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 _fetch_remote_sync, preset.models_endpoint, headers,
             )
 
-            # DashScope's /models catalogue includes unavailable marketplace,
-            # retired, and non-chat entries.  For Alibaba, expose only the
-            # small plan-specific allowlist whose models have been verified on
-            # the corresponding OpenAI-compatible endpoint.  Keep allowlist
-            # order so the UI presents recommended models first.
-            if vendor_key == "alibaba" and remote_ids:
+            # Some shared /models catalogues include models that the selected
+            # plan cannot invoke. Restrict those responses to the curated,
+            # plan-specific allowlist and keep its recommendation order.
+            needs_plan_allowlist = vendor_key == "alibaba" or (
+                vendor_key == "baidu" and plan == PlanKind.TOKEN_PLAN
+            )
+            if needs_plan_allowlist and remote_ids:
+                allowlist_name = "Alibaba" if vendor_key == "alibaba" else "Baidu"
                 unfiltered_count = len(remote_ids)
                 remote_model_ids = set(remote_ids)
                 remote_ids = [
@@ -4079,11 +4081,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 filtered_count = unfiltered_count - len(remote_ids)
                 if filtered_count:
                     logger.info(
-                        "[vendors.fetch_models] filtered %d non-allowlisted Alibaba models",
+                        "[vendors.fetch_models] filtered %d non-allowlisted %s models",
                         filtered_count,
+                        allowlist_name,
                     )
                 if not remote_ids:
-                    remote_reason = "no remote models matched the Alibaba plan allowlist"
+                    remote_reason = (
+                        f"no remote models matched the {allowlist_name} plan allowlist"
+                    )
 
             if remote_ids:
                 await channel.send_response(
