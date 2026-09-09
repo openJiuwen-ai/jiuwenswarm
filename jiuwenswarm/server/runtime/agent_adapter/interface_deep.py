@@ -2224,6 +2224,7 @@ class JiuWenSwarmDeepAdapter:
         if self._skill_manager is not None:
             adapter.set_skill_manager(self._skill_manager)
         adapter.set_heartbeat_service(self._heartbeat_service)
+        adapter.set_permissions_changed_notifier(self._permissions_changed_notifier)
         return adapter
 
     @staticmethod
@@ -2238,6 +2239,7 @@ class JiuWenSwarmDeepAdapter:
     def mark_as_session_scoped(self, session_id: str) -> None:
         self._is_session_scoped_adapter = True
         self._parent_session_id = session_id
+        self._trusted_search_urls.bind_session(session_id)
 
     def _resolve_permission_workspace_root(self) -> Path:
         """Return the session-stable primary root used by Auto Permission."""
@@ -2953,7 +2955,11 @@ class JiuWenSwarmDeepAdapter:
         if self._is_session_scoped_adapter:
             if self._session_adapter_key(self._parent_session_id) != sid:
                 return False
-            if self.is_session_active(sid) or self.is_deep_agent_executing_for_session(sid):
+            if (
+                self._has_live_root_permission_owner(sid)
+                or self.is_session_active(sid)
+                or self.is_deep_agent_executing_for_session(sid)
+            ):
                 return False
             await self.cleanup()
             return True
@@ -2991,17 +2997,37 @@ class JiuWenSwarmDeepAdapter:
                 self._session_adapter_reload_failures.pop(sid, None)
                 remove_lock_after_release = True
             else:
-                if adapter.is_session_active(sid) or adapter.is_deep_agent_executing_for_session(sid):
-                    return False
-                try:
-                    await adapter.cleanup()
-                except Exception as exc:
-                    logger.warning(
-                        "[JiuWenSwarmDeepAdapter] session adapter cleanup failed: session_id=%s error=%s",
-                        sid,
-                        exc,
+                if adapter._permission_state.permission_isolated:
+                    # Ordinary cleanup tolerates stop failures. An isolated
+                    # Smart owner must retain its cache entry until strict
+                    # cleanup succeeds, including when eviction comes from TTL.
+                    await adapter._isolate_permission_instance()
+                    if not adapter._permission_state.permission_cleanup_complete:
+                        return False
+                else:
+                    has_live_permission_owner = getattr(
+                        adapter,
+                        "_has_live_root_permission_owner",
+                        None,
                     )
-                    return False
+                    live_permission_owner = callable(
+                        has_live_permission_owner
+                    ) and has_live_permission_owner(sid)
+                    if (
+                        live_permission_owner
+                        or adapter.is_session_active(sid)
+                        or adapter.is_deep_agent_executing_for_session(sid)
+                    ):
+                        return False
+                    try:
+                        await adapter.cleanup()
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] session adapter cleanup failed: session_id=%s error=%s",
+                            sid,
+                            exc,
+                        )
+                        return False
                 # Idle eviction releases memory, not the logical session.
                 self._drop_session_adapter_cache_entry(
                     sid,
@@ -3030,7 +3056,86 @@ class JiuWenSwarmDeepAdapter:
         waiters = getattr(lock, "_waiters", None)
         return any(not waiter.cancelled() for waiter in list(waiters or ()))
 
+    @staticmethod
+    def _is_host_permission_update_input(request: AgentRequest) -> bool:
+        """Return whether this request may consume a pending Permission version."""
 
+        params = request.params if isinstance(request.params, dict) else {}
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        if request.req_method != ReqMethod.CHAT_SEND:
+            return False
+        if metadata.get("skip_a2ui") is True:
+            return False
+        runtime_mode = str(params.get("mode") or "agent").strip().lower()
+        if is_team_params(params) or runtime_mode == "auto_harness":
+            return False
+        from jiuwenswarm.server.runtime.agent_adapter.interface import (
+            is_external_user_authored_dispatch,
+        )
+
+        return is_external_user_authored_dispatch(
+            params,
+            channel_id=request.channel_id,
+            request_method=request.req_method,
+            metadata=request.metadata,
+        )
+
+    async def _get_session_adapter_for_request(
+        self,
+        request: AgentRequest,
+        *,
+        reserve_activity: bool,
+    ) -> "JiuWenSwarmDeepAdapter":
+        """Select a child and publish Smart Permission only at a safe boundary.
+
+        A safe boundary is a Host-verified external user input observed after
+        the global reload tail stabilizes, while holding the session adapter
+        lock, with no active request or pending approval/resume. If the child
+        is busy, a new task needing another epoch must retry after settlement.
+        """
+
+        cached = self._get_cached_session_adapter(request.session_id)
+        smart_lifecycle = self._coordinates_smart_permission_lifecycle(
+            get_config(), request.session_id,
+        ) or (
+            cached is not None and cached._enable_auto_permission
+        )
+        if smart_lifecycle and (
+            self._is_interrupt_resume_dispatch(request.params)
+            and cached is None
+        ):
+            raise RootPermissionQueueError("permission_resume_owner_missing")
+
+        if not smart_lifecycle or not self._is_host_permission_update_input(request):
+            return await self._get_or_create_session_adapter(
+                request.session_id,
+                history_before_request_id=request.request_id,
+                reserve_activity=reserve_activity,
+            )
+
+        selected: JiuWenSwarmDeepAdapter | None = None
+
+        async def select_and_publish() -> None:
+            nonlocal selected
+            selected = await self._get_or_create_session_adapter(
+                request.session_id,
+                history_before_request_id=request.request_id,
+                reserve_activity=reserve_activity,
+                host_external_input=True,
+            )
+
+        builder = self._permissions_external_input_context_builder
+        if builder is None:
+            await select_and_publish()
+        else:
+            context_factory = builder(select_and_publish)
+            if not callable(context_factory):
+                raise RuntimeError("permission_external_input_context_invalid")
+            async with context_factory():
+                pass
+        if selected is None:
+            raise RuntimeError("permission_external_input_adapter_unavailable")
+        return selected
 
     async def _get_or_create_session_adapter(
         self,
@@ -3039,6 +3144,9 @@ class JiuWenSwarmDeepAdapter:
         model_name: str | None = None,
         pending_mcp_scan_names: set[str] | None = None,
         history_before_request_id: str | None = None,
+        reserve_activity: bool = False,
+        host_external_input: bool = False,
+        permission_project_dir: str | None = None,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
         if self._is_session_scoped_adapter:
@@ -3052,6 +3160,15 @@ class JiuWenSwarmDeepAdapter:
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
+            if existing is not None and existing._permission_state.permission_isolated:
+                if not existing._permission_state.permission_cleanup_complete:
+                    await existing._isolate_permission_instance()
+                if not existing._permission_state.permission_cleanup_complete:
+                    raise RuntimeError("permission_session_cleanup_pending")
+                self._drop_session_adapter_cache_entry(
+                    sid, remove_lock=False, remove_runtime_state=False,
+                )
+                existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
                     getattr(
@@ -3107,8 +3224,16 @@ class JiuWenSwarmDeepAdapter:
                     # live MCPs later, but cannot dispose the child underneath
                     # this first caller.
                     existing.mark_session_mcp_reconcile_started()
-                await self._reload_session_adapter_if_stale(sid, existing)
+                await self._reload_session_adapter_if_stale(
+                    sid,
+                    existing,
+                    host_external_input=host_external_input,
+                )
                 self._touch_session_adapter(sid)
+                if reserve_activity:
+                    existing._register_session_agent_task(  # pylint: disable=protected-access
+                        sid
+                    )
                 return existing
 
             adapter = self._new_session_scoped_adapter(sid)
@@ -3133,6 +3258,8 @@ class JiuWenSwarmDeepAdapter:
                 else None
             )
             create_started_at = time.monotonic()
+            if permission_project_dir is not None:
+                config = {**(config or {}), "project_dir": permission_project_dir}
             await adapter.create_instance(
                 config,
                 mode=self._session_instance_mode,
@@ -3152,7 +3279,11 @@ class JiuWenSwarmDeepAdapter:
             # same configuration as already-existing sessions that reload lazily.
             # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
             # (including the no-pending case, where it silently catches up).
-            await self._reload_session_adapter_if_stale(sid, adapter)
+            await self._reload_session_adapter_if_stale(
+                sid,
+                adapter,
+                host_external_input=host_external_input,
+            )
             # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
             # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
             # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
@@ -3187,6 +3318,10 @@ class JiuWenSwarmDeepAdapter:
                 (interaction_ready_at - instance_ready_at) * 1000,
                 (time.monotonic() - create_started_at) * 1000,
             )
+            if reserve_activity:
+                adapter._register_session_agent_task(  # pylint: disable=protected-access
+                    sid
+                )
             return adapter
 
     def _should_defer_permission_reload(
@@ -11010,7 +11145,11 @@ class JiuWenSwarmDeepAdapter:
         project_dir: str | None = None,
     ) -> None:
         """Create a session child and apply stable runtime state without input."""
-        adapter = await self._get_or_create_session_adapter(session_id)
+        smart_preparation = self._coordinates_smart_permission_lifecycle(get_config(), session_id)
+        adapter = await self._get_or_create_session_adapter(
+            session_id,
+            **({"permission_project_dir": project_dir} if smart_preparation and project_dir is not None else {}),
+        )
         await adapter.configure_session_runtime(
             session_id=session_id,
             channel_id=channel_id,
@@ -11075,6 +11214,7 @@ class JiuWenSwarmDeepAdapter:
                     self._parent_session_id,
                     exc,
                 )
+            self._trusted_search_urls.dispose()
         await self._finalize_external_memory_session()
         try:
             await self._sync_personal_context_rail("cleanup")

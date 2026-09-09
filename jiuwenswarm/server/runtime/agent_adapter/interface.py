@@ -269,6 +269,37 @@ def _warn_unrecognised_approval_option(
     )
 
 
+def is_external_user_authored_dispatch(
+    params: Any,
+    *,
+    channel_id: Any = "",
+    request_method: Any = None,
+    metadata: Any = None,
+) -> bool:
+    """Return whether Host ingress proved an external user-authored dispatch."""
+
+    if not isinstance(params, dict):
+        return False
+    # Scheduled Heartbeats reuse the original channel, including web. Inspect
+    # each ingress container separately so merging metadata cannot erase a marker.
+    for container in (params, metadata, params.get("metadata")):
+        automation = container.get("automation") if isinstance(container, dict) else None
+        if isinstance(automation, dict) and str(automation.get("kind") or "").strip().lower() == "heartbeat":
+            return False
+    if params.get("log_as_user") is False:
+        return False
+    if params.get("attach_goal") is True:
+        return False
+    if is_interrupt_resume_payload(params):
+        return False
+    if request_method == ReqMethod.COMMAND_GOAL:
+        return False
+    if str(channel_id or "").strip().lower() in {"cron", "heartbeat"}:
+        return False
+    return not str(params.get("source") or "").strip()
+
+
+
 def _should_record_user_history(params: Any) -> bool:
     if not isinstance(params, dict):
         return True
