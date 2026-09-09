@@ -17,7 +17,8 @@ from openjiuwen_runtime.foundation.db.table_def import (
     TableDefinition,
 )
 
-# 时间戳列用 float（DOUBLE / REAL epoch 秒），与现有数据模型一致。
+# 时间戳列使用 double（64 位）：MySQL 的 FLOAT 为 32 位单精度，存储
+# epoch 秒时间戳会产生量化失真；PG 的 float/double 均为 64 位。
 # content 用 mediumtext：mysql → MEDIUMTEXT(16MB)，pg → TEXT(无界)。
 # string 列必须带 length：MySQL 的 VARCHAR 不允许省略长度（PG 的裸 VARCHAR
 # 合法，会掩盖问题），缺 length 会让 create_all 在 MySQL 上直接编译失败——
@@ -31,8 +32,8 @@ SESSIONS_TABLE_DEF = TableDefinition(
         ColumnDefinition("title", "string", length=255, nullable=True),
         ColumnDefinition("message_count", "integer", nullable=False, default=0),
         ColumnDefinition("last_preview", "string", length=255, nullable=True),
-        ColumnDefinition("created_at", "float", nullable=False),
-        ColumnDefinition("updated_at", "float", nullable=False),
+        ColumnDefinition("created_at", "double", nullable=False),
+        ColumnDefinition("updated_at", "double", nullable=False),
         # 置顶状态（remote 模式 session.pin 的持久化字段；本地模式存 agent/sessions 元数据）
         ColumnDefinition("pinned", "boolean", nullable=False, default=False),
         ColumnDefinition("pin_order", "integer", nullable=False, default=0),
@@ -43,7 +44,7 @@ SESSIONS_TABLE_DEF = TableDefinition(
         ColumnDefinition("project_id", "string", length=128, nullable=True),
         ColumnDefinition("cron_id", "string", length=128, nullable=True),
         ColumnDefinition("work_mode", "string", length=32, nullable=True),
-        ColumnDefinition("last_user_message_at", "float", nullable=True),
+        ColumnDefinition("last_user_message_at", "double", nullable=True),
     ],
     indexes=[
         IndexDefinition(["user", "updated_at"], unique=False),
@@ -61,7 +62,7 @@ MESSAGES_TABLE_DEF = TableDefinition(
         ColumnDefinition("role", "string", length=32, nullable=False),
         ColumnDefinition("content", "mediumtext", nullable=False),
         ColumnDefinition("event_type", "string", length=64, nullable=True),
-        ColumnDefinition("timestamp", "float", nullable=False),
+        ColumnDefinition("timestamp", "double", nullable=False),
     ],
     indexes=[
         IndexDefinition(["session_id", "request_id", "role"], unique=True),
