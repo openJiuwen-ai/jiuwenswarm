@@ -742,6 +742,7 @@ def _install_default_builtin_skills(
     - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
     - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
     - local-doc-ocr: 本地离线 OCR（扫描件 PDF/图片提取文字）
+    - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
     - pdf-extraction: PDF 文本/表格/元数据提取
     - pptx-generator: PowerPoint 演示文稿生成与编辑
 
@@ -763,6 +764,7 @@ def _install_default_builtin_skills(
         "baoyu-image-gen",
         "docx-pro",
         "local-doc-ocr",
+        "xlsx",
         "pdf-extraction",
         "pptx-generator",
     ]
@@ -836,6 +838,7 @@ def ensure_default_builtin_skills() -> None:
         "baoyu-image-gen",
         "docx-pro",
         "local-doc-ocr",
+        "xlsx",
         "pdf-extraction",
         "pptx-generator",
     ]
