@@ -348,7 +348,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
   const messages: Message[] = [];
   const shutdownMembers = new Set<string>();
   let taskProgressBaseline = createTaskProgressBaseline();
-  let hasSeenMember = false;
 
   const addMember = (memberId: string, timestamp: number) => {
     if (!shouldKeepMember(memberId)) {
@@ -357,7 +356,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     if (shutdownMembers.has(memberId)) {
       return;
     }
-    hasSeenMember = true;
     const existing = members.get(memberId);
     members.set(memberId, {
       id: `hist-member-${memberId}`,
@@ -725,9 +723,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         continue;
       }
       shutdownMembers.delete(memberId);
-      if (shouldKeepMember(memberId)) {
-        hasSeenMember = true;
-      }
       // 回放是逐条覆盖同一个 member 记录的，而只有部分事件带 name / mode
       // （registered 带，spawned / status_changed 不带）。后到的事件不能把先前
       // 学到的展示名冲掉，否则恢复出来的面板会退回显示 member_id。
@@ -780,18 +775,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       updated_at: (event.updated_at as number | string | null | undefined) ?? eventTimestamp,
     });
     upsertTask(event, eventTimestamp, status);
-  }
-
-  if (hasSeenMember && members.size === 0) {
-    return {
-      members: [],
-      tasks: [],
-      taskEvents: [],
-      executionEvents: [],
-      messages: [],
-      humanShareCommands: [],
-      taskProgressBaseline: createTaskProgressBaseline(),
-    };
   }
 
   return {

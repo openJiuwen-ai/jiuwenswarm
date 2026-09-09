@@ -947,7 +947,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
   }, []);
   const previousActiveSessionIdRef = useRef(activeSessionId);
-  const clearedTeamPanelSessionRef = useRef<Set<string>>(new Set());
   const teamMemberOutputEventRef = useRef<Map<string, string>>(new Map());
   const eventDedupDroppedRef = useRef<Record<string, number>>({});
   const symphonyStatusTargetRef = useRef<Map<string, { messageId: string; baseContent: string }>>(
@@ -978,7 +977,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     receiveContextUsage,
     setTeamMemberContextCompressionStatus,
     clearTeamMemberContextCompressionStatus,
-    clearAllTeamMemberContextCompressionStatus,
   } = useSessionStore.getState();
 
   const resolveEventSessionId = useCallback(
@@ -1544,9 +1542,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useHarnessStore.getState().reset(sessionId);
       }
       if (currentMode === 'team') {
-        if (clearedTeamPanelSessionRef.current.has(sessionId)) {
-          clearedTeamPanelSessionRef.current.delete(sessionId);
-        }
         useChatStore.getState().setPaused(sessionId, false);
         // 执行中追问：先收尾上一轮仍在 streaming 的 leader，避免新一轮气泡/头像挂错簇
         closeActiveTeamLeaderMessages(sessionId);
@@ -2255,23 +2250,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       clearPendingTeamMemberContextCompressionStart(sessionId, normalizedMemberId);
       clearTeamMemberContextCompressionStatus(sessionId, normalizedMemberId);
       sessionStore.setTeamMembers(sessionId, nextMembers);
-      if (nextMembers.length === 0) {
-        clearedTeamPanelSessionRef.current.add(sessionId);
-        useTodoStore.getState().clearTodos(sessionId);
-        const currentSessionStore = useSessionStore.getState();
-        currentSessionStore.setTeamMembers(sessionId, []);
-        currentSessionStore.setTeamTaskEvents(sessionId, []);
-        currentSessionStore.setTeamHumanShareCommands(sessionId, []);
-        currentSessionStore.setTeamTasks(sessionId, []);
-        currentSessionStore.setTeamMemberExecutionEvents(sessionId, []);
-        clearAllTeamMemberContextCompressionStatus(sessionId);
-        currentSessionStore.setTeamHistoryMessages(sessionId, []);
-      }
-    };
-
-    const isTeamPanelClearedForPayload = (payload: Record<string, unknown>) => {
-      const sessionId = getPayloadSessionId(payload) || undefined;
-      return Boolean(sessionId && clearedTeamPanelSessionRef.current.has(sessionId));
+      // An empty roster does not end the team; later members and task events remain valid.
     };
 
     /**
@@ -3266,7 +3245,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           shutdownMemberToolCallRef.current.set(toolCall.id, shutdownMemberId);
         }
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
-          if (currentMode === 'team' && !isTeamPanelClearedForPayload(payload)) {
+          if (currentMode === 'team') {
             applyTeamTaskToolCall(sessionId, toolCall);
           }
           const memberId = getTeamPayloadMemberName(payload) || toolCall.memberName;
@@ -3311,7 +3290,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         } else if (currentStreamId) {
           useChatStore.getState().finalizeStreamSegment(sessionId);
         }
-        if (currentMode === 'team' && !isTeamPanelClearedForPayload(payload)) {
+        if (currentMode === 'team') {
           applyTeamTaskToolCall(sessionId, toolCall);
         }
       }),
@@ -3444,9 +3423,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('todo.updated', payload)) return;
-        if (isTeamPanelClearedForPayload(payload)) {
-          return;
-        }
         const todos = Array.isArray(payload.todos) ? payload.todos : [];
         useTodoStore.getState().setTodos(sessionId, todos as Parameters<ReturnType<typeof useTodoStore.getState>['setTodos']>[1]);
       }),
@@ -4204,9 +4180,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('team.task', payload)) {
           return;
         }
-        if (isTeamPanelClearedForPayload(payload)) {
-          return;
-        }
         clearThinkingForVisibleOutput(sessionId);
         const p = payload as { payload?: { event?: unknown }; event?: unknown };
         const event = p.payload?.event || p.event;
@@ -4276,8 +4249,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
             applyTeamMemberShutdown(e.member_id, activeSessionId);
-          } else if (activeSessionId && clearedTeamPanelSessionRef.current.has(activeSessionId)) {
-            return;
           } else if (e.type === 'team.member.status_changed' && e.member_id && e.new_status) {
             useSessionStore.getState().updateTeamMemberStatus(
               sessionId,
@@ -4521,7 +4492,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     };
   }, [
     appendTeamMemberOutputDelta,
-    clearAllTeamMemberContextCompressionStatus,
     clearPendingTeamMemberContextCompressionStart,
     clearTeamMemberContextCompressionStatus,
     findExistingTeamMemberId,

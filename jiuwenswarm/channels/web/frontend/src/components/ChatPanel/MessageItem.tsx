@@ -136,7 +136,9 @@ function TeamLeaderPlainTextMessage({
   member = 'team_leader',
   content,
   messageId,
+  timestamp,
   isStreaming = false,
+  hideMeta = false,
   showAvatar = true,
   fileItems,
   disableA2UIInteraction = false,
@@ -144,7 +146,9 @@ function TeamLeaderPlainTextMessage({
   member?: string;
   content: string;
   messageId: string;
+  timestamp: string;
   isStreaming?: boolean;
+  hideMeta?: boolean;
   showAvatar?: boolean;
   fileItems?: FileDownloadItem[];
   disableA2UIInteraction?: boolean;
@@ -169,6 +173,14 @@ function TeamLeaderPlainTextMessage({
           disableInteraction={disableA2UIInteraction}
         />
       </div>
+      {!isStreaming && !hideMeta && (
+        <div
+          data-testid="chat-panel-message-meta"
+          className="flex items-center gap-1 text-sm mt-2 text-text-muted justify-start"
+        >
+          <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
+        </div>
+      )}
     </TeamMemberMessageFrame>
   );
 }
@@ -574,6 +586,9 @@ export const MessageItem = memo(function MessageItem({
 	                 member={event.fromMember}
 	                 content={event.content}
 	                 messageId={id}
+	                 timestamp={timestamp}
+	                 isStreaming={isStreaming}
+	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
 	               />
 	             );
@@ -635,7 +650,9 @@ export const MessageItem = memo(function MessageItem({
 	           member="team_leader"
 	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
 	           messageId={id}
+	           timestamp={timestamp}
 	           isStreaming={isStreaming}
+	           hideMeta={hideMeta}
 	           showAvatar={showAvatar}
 	           fileItems={fileItems}
 	           disableA2UIInteraction={disableA2UIInteraction}
