@@ -2226,7 +2226,7 @@ async def test_cancel_session_runtime_forwards_default_stop_disposition(
 async def test_cancel_session_runtime_stops_controller_before_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """controller.stop_all must run BEFORE Runner.stop_agent_team (SDD-0018 §4.1)."""
+    """controller.stop_all must run BEFORE Runner.stop_agent_team."""
     manager = _TeamManagerHarness()
     manager.set_active_runtime_for_test("sess-1", "demo-team")
     timeline: list[str] = []

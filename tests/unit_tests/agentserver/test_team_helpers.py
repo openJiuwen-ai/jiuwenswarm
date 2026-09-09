@@ -6410,7 +6410,7 @@ def test_run_lamp_active_all_completed_agents_do_not_hold_lamp() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SDD-0018: _normalize_recovered_runs — park disk-restored zombies on cold start
+# _normalize_recovered_runs — park disk-restored zombies on cold start
 # ---------------------------------------------------------------------------
 
 def test_normalize_recovered_runs_parks_running_and_marks_recovered(monkeypatch):
@@ -6418,7 +6418,7 @@ def test_normalize_recovered_runs_parks_running_and_marks_recovered(monkeypatch)
 
     A restored running run has no live controller (registries are empty after a
     restart), so parking it keeps the idle lamp honest while recovered=True
-    greys its control buttons until the leader relaunches it (SDD-0018 §5.11).
+    greys its control buttons until the leader relaunches it.
     """
     persist_calls: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
@@ -6482,7 +6482,7 @@ def test_normalize_recovered_runs_empty_and_none_returned_unchanged(monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# SDD-0018 §4.4-B: _inject_swarmflow_context — resume-advisory text prefix
+# _inject_swarmflow_context — resume-advisory text prefix
 # ---------------------------------------------------------------------------
 
 def _advisory_turn(text: object) -> Any:
@@ -6588,7 +6588,7 @@ def test_inject_swarmflow_context_followup_resume_needs_no_script_path() -> None
 
 
 # ---------------------------------------------------------------------------
-# SDD-0018 §5.11: advisory tells the leader to ask before resuming
+# advisory: act on explicit requests, otherwise ask
 # ---------------------------------------------------------------------------
 
 

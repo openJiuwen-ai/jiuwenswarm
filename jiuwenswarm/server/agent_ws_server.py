@@ -6586,7 +6586,7 @@ class AgentWebSocketServer:
         control to the run identified by ``run_id`` (accepting ``run_id`` or the
         ``workflow_run_id`` alias). Returns ok=False with a reason when run_id is
         missing, the team is asleep (no leader harness to host the run — the
-        tree-view buttons are greyed then, SDD-0018 §5.11), or no matching run
+        tree-view buttons are greyed then), or no matching run
         is registered on the controller.
         """
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
@@ -6626,8 +6626,8 @@ class AgentWebSocketServer:
             elif action == "stop":
                 acted = await controller.stop(run_id)
                 # 已解栈的 paused run 没有引擎回发的 WORKFLOW_STOPPED，快照会永远停在
-                # paused；此处补一个 stopped 终态标记且不写 journal seal（SDD-0018
-                # §5.10 方案 B）。active run 由 WORKFLOW_STOPPED 事件路径自动更新。
+                # paused；此处补一个 stopped 终态标记且不写 journal seal（丢票不 seal，
+                # 手动 resume_id 仍可续）。active run 由 WORKFLOW_STOPPED 事件路径自动更新。
                 wf_handler = tm.get_workflow_handler(session_id)
                 if wf_handler is not None:
                     run_state = wf_handler.get_run_states().get(run_id)

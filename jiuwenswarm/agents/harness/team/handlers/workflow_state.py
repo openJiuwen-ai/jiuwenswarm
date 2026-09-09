@@ -218,7 +218,7 @@ class WorkflowRunState(BaseModel):
     script_path: Optional[str] = None
     # Disk-restored after a cold start with no live controller handle; the
     # frontend greys this run's control buttons until a launch-plane relaunch
-    # (leader advisory) brings it back (SDD-0018 §5.11).
+    # (leader advisory) brings it back.
     recovered: bool = False
     result: Optional[str] = None
     error: Optional[str] = None

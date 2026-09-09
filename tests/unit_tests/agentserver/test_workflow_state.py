@@ -1160,7 +1160,7 @@ def test_workflow_stopped_preserves_budget_and_scope():
 
 
 # ---------------------------------------------------------------------------
-# SDD-0018: WorkflowRunState.script_path — 冷启动续跑情境注入
+# WorkflowRunState.script_path — 冷启动续跑情境注入
 # ---------------------------------------------------------------------------
 
 def test_workflow_started_carries_script_path():
@@ -1204,7 +1204,7 @@ def test_model_dump_exclude_none_omits_unset_script_path():
 
 
 # ---------------------------------------------------------------------------
-# SDD-0018 §5.1: pause_if_running — park a running run as paused (non-terminal)
+# pause_if_running — park a running run as paused (non-terminal)
 # ---------------------------------------------------------------------------
 
 def test_pause_if_running_parks_running_run_as_paused():
@@ -1254,7 +1254,7 @@ def test_pause_if_running_returns_false_when_already_paused():
 
 
 # ---------------------------------------------------------------------------
-# SDD-0018 §5.11: recovered — cold-start per-run button greying marker
+# recovered — cold-start per-run button greying marker
 # ---------------------------------------------------------------------------
 
 def test_model_validate_keeps_recovered_true():

@@ -762,7 +762,7 @@ def _normalize_recovered_runs(
     ever arrive; park every non-terminal run to ``paused`` and mark it
     ``recovered`` — the controller registries are empty after a restart, so
     the tree-view buttons are greyed and only the leader (launch plane via
-    advisory) can resume it (SDD-0018 §5.11).
+    advisory) can resume it.
     """
     if not runs:
         return runs
@@ -988,7 +988,7 @@ def _inject_swarmflow_context(
     for r in eligible:
         script = r.script_path or r.script or ""
         lines.append(f"- run_id: {r.id}  脚本: {script}")
-        # Two resume planes (SDD-0018 §5.4): in-round the controller still holds
+        # Two resume planes: in-round the controller still holds
         # the ticket, so ``action="resume"`` relaunches the cached prefix; after a
         # cold start the ticket is gone and only the launch plane
         # (``resume_id + script_path``, args recovered from the journal) works.
@@ -1003,7 +1003,7 @@ def _inject_swarmflow_context(
         # stop works on both planes: the tool announces stopped itself when the
         # controller no longer holds the ticket (cold start), no journal seal.
         lines.append(f'  停止调用: swarmflow(resume_id="{r.id}", action="stop")')
-    # The tree-view buttons are greyed while the team sleeps (SDD-0018 §5.11),
+    # The tree-view buttons are greyed while the team sleeps,
     # so the leader is the only control path: act on an explicit request,
     # otherwise ask — coarse first, per-run only on demand, so N runs never
     # overflow ask_user's 2-4 options per question.

@@ -562,7 +562,7 @@ class TestExtractProgressPassthrough:
 
 
 # ---------------------------------------------------------------------------
-# SDD-0018: workflow_started script_path passthrough (冷启动续跑情境注入)
+# workflow_started script_path passthrough (冷启动续跑情境注入)
 # ---------------------------------------------------------------------------
 
 class TestWorkflowStartedScriptPath:
@@ -615,7 +615,7 @@ def _running_run(run_id: str = "wf_run_running") -> WorkflowRunState:
 
 
 class TestFinalizePendingRunsDisposition:
-    """SDD-0018 §5.1: finalize by disposition, not one-size stopped.
+    """finalize by disposition, not one-size stopped.
 
     A session teardown must not stamp a paused (resumable) run to the terminal
     ``stopped`` — pause reclaim parks it as ``paused`` so the journal cache

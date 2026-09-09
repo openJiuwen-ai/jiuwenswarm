@@ -2497,8 +2497,8 @@ class TeamManager:
             # Resolve team_name early before cleanup, from active/pending/metadata
             team_name = self._resolve_session_team_name(session_id)
 
-            # Drive the swarmflow controller BEFORE Runner.stop (SDD-0018:
-            # stop_all precedes stop_team). Runner.stop tears down the leader
+            # Drive the swarmflow controller BEFORE Runner.stop (stop_all
+            # precedes stop_team). Runner.stop tears down the leader
             # harness, whose async-tool runtime cancels the coroutine as a
             # plain cancel — no abort reason, so the engine writes neither the
             # seal (user termination) nor the pause record (disconnect reclaim)

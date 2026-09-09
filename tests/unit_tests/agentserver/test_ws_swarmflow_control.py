@@ -219,7 +219,7 @@ class TestHandleSwarmflowControl:
     async def test_control_while_team_asleep_is_rejected(self) -> None:
         """Team asleep: no leader harness can host the run, so every control
         is refused without touching the controller (the tree-view buttons are
-        greyed then; resume goes through the leader's ask_user, SDD-0018 §5.11).
+        greyed then; resume goes through the leader's ask_user).
         """
         asleep = SimpleNamespace(
             has_stream_task=lambda sid: False, get_workflow_handler=lambda sid: None,
