@@ -1231,7 +1231,7 @@ export function PersonalContextGraphPanel({
                     </dl>
                   </div>
                 )}
-                <MarkdownRenderer content={nodeDetail.markdown} onLinkClick={handleDetailLinkClick} />
+                <MarkdownRenderer className="prose prose-sm max-w-none pc-graph__markdown" content={nodeDetail.markdown} onLinkClick={handleDetailLinkClick} />
               </div>
             ) : (
               <div className="pc-graph__empty">—</div>

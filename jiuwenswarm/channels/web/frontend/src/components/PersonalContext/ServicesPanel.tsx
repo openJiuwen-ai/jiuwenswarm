@@ -309,6 +309,7 @@ export function PersonalContextServicesPanel({
                       !!pendingWrites[`stop:${s.service_id}`] ||
                       !!pendingWrites[`del:${s.service_id}`]
                     }
+                    stopping={!!pendingWrites[`stop:${s.service_id}`]}
                     onRun={handleRun}
                     onStop={handleStop}
                     onToggle={handleToggle}
@@ -374,6 +375,7 @@ const STATUS_RING_COLORS: Record<string, string> = {
   stateCompleted: '#5CB300',
   stateFailed: '#F23030',
   stateCollecting: '#5CB300',
+  stateStopping: '#808080',
 };
 
 function StatusIcon({ statusKey }: { statusKey: string }) {
@@ -401,6 +403,7 @@ function ServiceCard({
   lastError,
   progress,
   pending,
+  stopping,
   onRun,
   onStop,
   onToggle,
@@ -412,6 +415,7 @@ function ServiceCard({
   lastError: string | null;
   progress?: FetchRunProgress;
   pending: boolean;
+  stopping: boolean;
   onRun: (id: string) => void;
   onStop: (id: string) => void;
   onToggle: (id: string, enabled: boolean) => void;
@@ -428,15 +432,19 @@ function ServiceCard({
     ? runState === 'failed'
     : state === 'FAILED' || (!!lastError && state === 'STOPPED');
 
-  const statusKey = isCollecting
-    ? 'stateCollecting'
-    : isFailed
-      ? 'stateFailed'
-      : runState === 'succeeded'
-        ? 'stateCompleted'
-        : !service.enabled
-          ? 'stateStopped'
-          : 'stateWaiting';
+  const isStopping = state === 'STOPPING' || stopping;
+
+  const statusKey = isStopping
+    ? 'stateStopping'
+    : isCollecting
+      ? 'stateCollecting'
+      : isFailed
+        ? 'stateFailed'
+        : runState === 'succeeded'
+          ? 'stateCompleted'
+          : !service.enabled
+            ? 'stateStopped'
+            : 'stateWaiting';
 
   const percent = progress?.progress_percent;
   const hasProgress = isCollecting && typeof percent === 'number' && percent > 0;

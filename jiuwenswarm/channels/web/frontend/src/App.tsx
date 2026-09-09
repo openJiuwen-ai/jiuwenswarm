@@ -86,6 +86,7 @@ import {
   useWorkspaceStore,
   useCronStore,
   useSubagentStore,
+  usePersonalContextStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
@@ -312,6 +313,10 @@ function AppContent({
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  const masterEnabled = usePersonalContextStore(
+    (s) => s.config.collection_enabled || s.config.agent_use_enabled,
+  );
+  const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const kvCacheAffinityEnabled = normalizeConfigBoolean(
     serverConfig?.kv_cache_affinity_enabled,
@@ -408,6 +413,12 @@ function AppContent({
       setActiveNav('chat');
     }
   }, [activeNav]);
+
+  useEffect(() => {
+    if (!masterEnabled && activeNav === 'personalContext') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, masterEnabled]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -766,10 +777,14 @@ function AppContent({
   );
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base = getHiddenNavItemsForPlatform(frontendPlatform);
-    if (FEATURE_PERSONAL_CONTEXT_UI) return base;
     // feature 关闭时移除全部个人上下文入口
-    return [...base, 'personalContext', 'personalContextSettings'];
-  }, [frontendPlatform]);
+    if (!FEATURE_PERSONAL_CONTEXT_UI) {
+      return [...base, 'personalContext', 'personalContextSettings'];
+    }
+    // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
+    if (!masterEnabled) return [...base, 'personalContext'];
+    return base;
+  }, [frontendPlatform, masterEnabled]);
 
   useEffect(() => {
     if (!serverConfig) {
@@ -1852,6 +1867,14 @@ function AppContent({
       })
       .catch(() => {});
   }, [isConnected]);
+
+  // 连接成功后拉取个人上下文配置，使总开关（派生态）在刷新后与后端持久化状态一致
+  useEffect(() => {
+    if (!isConnected || !FEATURE_PERSONAL_CONTEXT_UI) return;
+    void loadPersonalContextConfig().catch(() => {
+      // 静默；未配置时后端返回投影，拉取失败不影响主流程
+    });
+  }, [isConnected, loadPersonalContextConfig]);
 
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {

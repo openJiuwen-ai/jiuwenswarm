@@ -450,6 +450,25 @@
   overflow-y: auto;
 }
 
+/* 详情 markdown 正文：复用 Tailwind prose 排版（行间距/标题/列表/代码），此处仅微调配色与链接 */
+.pc-graph__detail-content .pc-graph__markdown {
+  color: #191919;
+}
+
+/* 节点标题已由 .pc-graph__detail-name 显示，隐藏 markdown 内重复的 h1 */
+.pc-graph__detail-content .pc-graph__markdown h1 {
+  display: none;
+}
+
+.pc-graph__detail-content .pc-graph__markdown a {
+  color: #1476ff;
+  text-decoration: none;
+}
+
+.pc-graph__detail-content .pc-graph__markdown a:hover {
+  text-decoration: underline;
+}
+
 /* 旧类名兼容 */
 .pc-graph__detail-head,
 .pc-graph__detail-title {
