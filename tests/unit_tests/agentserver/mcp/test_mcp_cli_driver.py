@@ -23,7 +23,8 @@ from jiuwenswarm.server.runtime.mcp.cli_driver import (
     _extract_url,
     _is_binary_not_found,
     _parse_version,
-    _version_ge,
+    _pin_init_command,
+    _version_eq,
 )
 from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
@@ -84,9 +85,16 @@ class TestVersionUtils:
         assert _parse_version("lark-cli 1.0.79 build 123") == "1.0.79"
         assert _parse_version("no version here") is None
 
-    def test_version_ge(self) -> None:
-        assert _version_ge("1.0.79", "1.0.77") is True
-        assert _version_ge("1.0.70", "1.0.77") is False
+    def test_version_eq(self) -> None:
+        assert _version_eq("1.0.79", "1.0.79") is True
+        assert _version_eq("1.0.90", "1.0.79") is False
+        assert _version_eq("1.0.70", "1.0.79") is False
+
+    def test_pin_init_command(self) -> None:
+        assert _pin_init_command("npm install -g @wecom/cli@{version}", "0.1.9") == "npm install -g @wecom/cli@0.1.9"
+        assert _pin_init_command("py -m pip install gitcode-cli=={version}", "0.9.0") == "py -m pip install gitcode-cli==0.9.0"
+        assert _pin_init_command("npm install -g @wecom/cli", "0.1.9") == "npm install -g @wecom/cli"
+        assert _pin_init_command("", "0.1.9") == ""
 
 
 class TestExtractUrl:
@@ -132,15 +140,58 @@ class TestCliDriverInstall:
     def test_install_skips_init_when_version_ok(self) -> None:
         runner = _FakeRunner({
             "lark-cli.cmd --version": CommandResult(
-                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.90"
+                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.79"
             ),
         })
         drv = CliDriver("feishu", _mkmanifest(), runner)
         res = drv.install()
         assert res.version_ok is True
-        assert res.version == "1.0.90"
-        # init (npm install) must NOT run when versionCheck already passes
+        assert res.version == "1.0.79"
+        # init (npm install) must NOT run when versionCheck already matches
         assert "npm install -g @larksuite/cli" not in runner.calls
+
+    def test_install_downgrades_newer_version_to_pin(self) -> None:
+        """A newer install (1.0.90) is not interchangeable — the CLI's command
+        output is tied to the pinned version. install() must run the pinned
+        init (`@1.0.79`) to downgrade, then re-check and pass."""
+        m = _mkmanifest()
+        m.init_cmd = "npm install -g @larksuite/cli@{version}"
+        calls: list[str] = []
+        downgraded = {"done": False}
+
+        def runner(command: str) -> CommandResult:
+            calls.append(command)
+            if command == "lark-cli.cmd --version":
+                ver = "1.0.79" if downgraded["done"] else "1.0.90"
+                return CommandResult(command, 0, stdout=f"lark-cli {ver}")
+            if command == "npm install -g @larksuite/cli@1.0.79":
+                downgraded["done"] = True
+                return CommandResult(command, 0)
+            return CommandResult(command, 1, stderr="unknown")
+
+        drv = CliDriver("feishu", m, runner)
+        res = drv.install()
+        assert res.version_ok is True
+        assert res.version == "1.0.79"
+        # init must run with the pinned version, not the bare "latest" command
+        assert "npm install -g @larksuite/cli@1.0.79" in calls
+
+    def test_install_cmd_carries_pinned_version(self) -> None:
+        """InstallResult.install_cmd carries the {version}-filled command so
+        the frontend hint can show the exact upgrade/downgrade command."""
+        m = _mkmanifest()
+        m.init_cmd = "npm install -g @larksuite/cli@{version}"
+        runner = _FakeRunner({
+            "lark-cli.cmd --version": CommandResult(
+                "lark-cli.cmd --version", 0, stdout="lark-cli 1.0.70"
+            ),
+            "npm install -g @larksuite/cli@1.0.79": CommandResult(
+                "npm install -g @larksuite/cli@1.0.79", 0
+            ),
+        })
+        drv = CliDriver("feishu", m, runner)
+        res = drv.install()
+        assert res.install_cmd == "npm install -g @larksuite/cli@1.0.79"
 
     def test_install_binary_not_found_classified(self) -> None:
         """Runtime/CLI binary missing (node/npm/dws not on PATH) surfaces as
