@@ -12,9 +12,14 @@ def configure_agent_teams_home() -> None:
     from openjiuwen.agent_teams.paths import configure_openjiuwen_home
 
     configure_openjiuwen_home(get_user_workspace_dir())
-    # Register installer only; Catalog/Launcher stay lazy until first org tool use.
+    # Register installers only; Catalog/Launcher/Factory stay lazy until first
+    # org tool use or first summary-task event.
     from jiuwenswarm.agents.harness.team.expert_org.wiring import (
         register_expert_adapter_installer,
     )
+    from jiuwenswarm.agents.harness.team.summary_team_org.wiring import (
+        register_summary_factory_installer,
+    )
 
     register_expert_adapter_installer()
+    register_summary_factory_installer()
