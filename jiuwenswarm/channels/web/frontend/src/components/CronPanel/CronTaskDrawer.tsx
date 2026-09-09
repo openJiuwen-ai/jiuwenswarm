@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
@@ -16,6 +16,7 @@ import { isDefaultLikeProject } from './cronProjectDisplay';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
+import { useSessionStore, resolveEffectiveModel } from '../../stores/sessionStore';
 import type { AgentMode } from '../../types';
 // 会话输入框工具栏那一套 .chat-mode-select pill 下拉组件（模式/模型选择器）的 CSS，
 // 抽屉里的模式/模型选择器直接复用同一套 class，跟会话界面视觉/交互完全一致。
@@ -148,6 +149,23 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
   const [wakeOffsetValid, setWakeOffsetValid] = useState(() =>
     isWakeOffsetMinutesValid(String(wakeOffsetSecondsToMinutes((initial ?? emptyForm()).wakeOffsetSeconds))),
   );
+
+  // 新建/模板创建时给"模型"预填后端配置的默认模型（与会话输入框 ModelSelector 同源：
+  // sessionStore.defaultModelName），用户无需再手动下拉选一次，只有想切换时才操作。
+  // 编辑已有任务时展示的是任务自己存的 modelName，不做预填（mode === 'edit' 跳过）。
+  // resolveEffectiveModel 复用会话侧同一套解析（alias 优先、失配兜底到首个可选模型），
+  // 拿到 ModelEntry 后取其 model_name 作为下发值（form.modelName 按 model_name 匹配）。
+  const chatAvailableModels = useSessionStore((s) => s.chatAvailableModels);
+  const defaultModelName = useSessionStore((s) => s.defaultModelName);
+  useEffect(() => {
+    if (mode === 'edit') return;
+    if (form.modelName) return;
+    const resolved = resolveEffectiveModel(chatAvailableModels, null, defaultModelName);
+    if (resolved) setForm((prev) => (prev.modelName ? prev : { ...prev, modelName: resolved.model_name }));
+    // 仅在打开抽屉/模型清单就绪时预填一次；form.modelName 变化后由上面的 guard 短路，
+    // 不把 form.modelName 放进依赖，避免用户手动清空/切换时被反复覆盖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, chatAvailableModels, defaultModelName]);
 
   const title = mode === 'edit' ? t('cron.drawer.titleEdit') : mode === 'template' ? t('cron.drawer.titleTemplate') : t('cron.drawer.titleCreate');
   // 显式加一条 value 为空串的"-"选项，代表"未选项目"，放在真实项目列表最后面（列表顺序：
