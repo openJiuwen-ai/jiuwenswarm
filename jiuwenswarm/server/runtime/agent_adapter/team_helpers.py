@@ -3781,11 +3781,17 @@ async def _consume_workflow_events(
             await _broadcast_event(channel_id, session_id, event)
 
             # The idle guard may be holding a swallowed team.idle for this
-            # session. If this update took the last run out of the active set
-            # (pause / stop / terminal) nothing else will re-emit idle, so
-            # release it here — same shape the guard would have broadcast.
+            # session. A pause / stop takes the run out of the active set
+            # without waking the leader, so nothing else will re-emit idle:
+            # release it here, same shape the guard would have broadcast.
+            # Natural completion / failure must NOT release it — the completion
+            # injection wakes the leader, whose own idle turns the lamp off
+            # after it reports; releasing on the last agent_completed turned
+            # the lamp off ~12ms before that wake-up and it flickered back on.
             run_states = getattr(workflow_handler, "get_run_states", lambda: {})()
-            if not any(_run_lamp_active(r) for r in run_states.values()):
+            if wf_status in ("paused", "stopped") and not any(
+                _run_lamp_active(r) for r in run_states.values()
+            ):
                 held = get_team_manager(channel_id).pop_held_idle(session_id)
                 if held is not None:
                     logger.info(
