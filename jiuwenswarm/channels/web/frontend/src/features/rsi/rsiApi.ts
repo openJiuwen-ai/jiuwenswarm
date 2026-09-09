@@ -597,6 +597,7 @@ export function rsiTaskCreate(params: RsiTaskCreateParams): Promise<RsiTaskCreat
   const artifactType = toWireArtifactType(params.scenario === 'ARTIFACT' ? params.artifact_type : undefined);
   if (artifactType) wire.artifact_type = artifactType;
   if (params.scenario === 'HARNESS' && params.package_id?.trim()) wire.package_id = params.package_id;
+  if (params.scenario === 'HARNESS' && params.evaluation_method) wire.evaluation_method = params.evaluation_method;
   if (params.input_file?.trim()) {
     // Harness 的公共契约字段是 input_file；Paper 也允许把数据集作为 input_file。
     wire.input_file = params.input_file;

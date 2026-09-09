@@ -299,7 +299,7 @@ class RsiTaskMaterializer:
             },
             "evaluator": {
                 "backend": "single_harness",
-                "evaluation_method": "script-based",
+                "evaluation_method": profile_options["evaluation_method"],
                 "transient_case_retry_limit": 2,
             },
             "evaluation_result_analyzer": {
@@ -331,6 +331,9 @@ class RsiTaskMaterializer:
                 "full_evaluation_enabled": True,
             },
         }
+        if profile_options["evaluation_method"] == "llm_as_judge":
+            payload["evaluator"]["judge_model_config_ref"] = normalized_paths["analysis"]
+            payload["evaluator"]["judge_success_score"] = 0.8
         if profile_options["runtime"]:
             payload["rsi_runtime"] = profile_options["runtime"]
         target.write_text(
@@ -776,7 +779,11 @@ def _copy_harness_source(source: Path, target: Path) -> None:
 
 def _profile_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
     raw = options or {}
+    evaluation_method = str(raw.get("evaluation_method", "script-based")).strip().lower().replace("-", "_")
+    if evaluation_method not in {"script_based", "exact_match", "llm_as_judge"}:
+        raise RsiPathInvalid("evaluation_method must be script_based, exact_match or llm_as_judge")
     values = {
+        "evaluation_method": "script-based" if evaluation_method == "script_based" else evaluation_method,
         "max_epochs": _profile_int(raw, "max_epochs", default=1, minimum=1),
         "batch_size": _profile_int(raw, "batch_size", default=1, minimum=1),
         "max_issue_attempts": _profile_int(raw, "max_issue_attempts", default=8, minimum=0),

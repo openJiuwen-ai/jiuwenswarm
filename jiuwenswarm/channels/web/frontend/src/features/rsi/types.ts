@@ -49,6 +49,7 @@ export interface RsiHarnessTaskCreateParams extends RsiTaskCreateBase {
   scenario: 'HARNESS';
   input_file: string;
   package_id?: string;
+  evaluation_method?: 'llm_as_judge' | 'script_based';
   model_refs: {
     optimizer: string;
     tester: string;

@@ -857,6 +857,10 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
             "AgentServer Generic Harness 适配目前只支持 execution_mode=local"
         )
 
+    evaluation_method = str(value("evaluation_method", "script-based")).strip().lower().replace("-", "_")
+    if evaluation_method not in {"script_based", "exact_match", "llm_as_judge"}:
+        raise RsiUnsupportedParameter("evaluation_method must be script_based, exact_match or llm_as_judge")
+
     sibling_candidate_count = _positive_int(
         value("sibling_candidate_count"), default=1, field="sibling_candidate_count"
     )
@@ -870,6 +874,7 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
         "domain": domain_raw,
         "improver_policy_ref": improver_policy_ref,
         "execution_mode": execution_mode,
+        "evaluation_method": evaluation_method,
         "max_epochs": _positive_int(value("max_epochs"), default=1, field="max_epochs"),
         "batch_size": _positive_int(value("batch_size"), default=1, field="batch_size"),
         "max_issue_attempts": _non_negative_int(

@@ -286,6 +286,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                 tester: form.tester,
               },
               max_iterations: form.maxIterations,
+              evaluation_method: form.evaluationMethod === 'agent' ? 'llm_as_judge' : 'script_based',
             }
           : {
               scenario: 'ARTIFACT',
