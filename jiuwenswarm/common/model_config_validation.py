@@ -60,6 +60,40 @@ def _validate_patch(value: Any, location: str, errors: list[str]) -> None:
         errors.append(f"{location} contains forbidden fields: {', '.join(forbidden)}")
 
 
+def _validate_model_detail(entry: dict[str, Any], location: str, errors: list[str]) -> None:
+    detail = entry.get("model_detail")
+    if detail is None:
+        return
+    if not isinstance(detail, dict):
+        errors.append(f"{location}.model_detail must be an object")
+        return
+    for key in ("fallback_tag", "model_description"):
+        value = detail.get(key)
+        if value is not None and not isinstance(value, str):
+            errors.append(f"{location}.model_detail.{key} must be a string")
+
+
+def _validate_routing(value: Any, location: str, errors: list[str]) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        errors.append(f"{location} must be an object")
+        return
+    strategy = value.get("strategy", "ordered-failover")
+    if not isinstance(strategy, str) or not strategy.strip():
+        errors.append(f"{location}.strategy must be a non-empty string")
+    retries = value.get("num_retries")
+    if retries is not None and (not isinstance(retries, int) or isinstance(retries, bool) or retries < 0):
+        errors.append(f"{location}.num_retries must be a non-negative integer")
+    strategy_kwargs = value.get("strategy_kwargs")
+    if strategy_kwargs is not None and not isinstance(strategy_kwargs, dict):
+        errors.append(f"{location}.strategy_kwargs must be an object")
+    if strategy == "tag-filtered":
+        fallback_tag = strategy_kwargs.get("fallback_tag") if isinstance(strategy_kwargs, dict) else None
+        if not isinstance(fallback_tag, str) or not fallback_tag.strip():
+            errors.append(f"{location}.strategy_kwargs.fallback_tag must be a non-empty string")
+
+
 def validate_models_config(models: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     defaults = models.get("defaults") or []
@@ -87,6 +121,7 @@ def validate_models_config(models: dict[str, Any]) -> list[str]:
                     errors.append(f"agentos[{index}] cannot be default")
                 else:
                     default_models += 1
+            _validate_model_detail(entry, f"{source}[{index}]", errors)
     if default_models > 1:
         errors.append("at most one default model is allowed")
 
@@ -118,6 +153,8 @@ def validate_models_config(models: dict[str, Any]) -> list[str]:
                 continue
             route_id = str(route.get("route_id") or "").strip()
             model_id = str(route.get("model_id") or "").strip()
+            if "enabled" in route and not isinstance(route["enabled"], bool):
+                errors.append(f"group {group_id!r} route {route_id!r}.enabled must be a boolean")
             if not route_id:
                 errors.append(f"group {group_id!r} route[{route_index}].route_id is required")
             elif route_id in route_ids:
@@ -127,6 +164,7 @@ def validate_models_config(models: dict[str, Any]) -> list[str]:
                 errors.append(f"group {group_id!r} references missing model_id {model_id!r}")
             _validate_patch(route.get("request_overrides"), f"group {group_id!r} route {route_id!r}", errors)
         _validate_patch(group.get("request_config"), f"group {group_id!r}.request_config", errors)
+        _validate_routing(group.get("routing"), f"group {group_id!r}.routing", errors)
     if default_groups > 1:
         errors.append("at most one default model group is allowed")
     return errors

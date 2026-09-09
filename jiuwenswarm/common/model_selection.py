@@ -27,8 +27,11 @@ class ResolvedModel(BaseModel):
     source: Literal["defaults", "agentos"]
     model_name: str
     provider: str
-    api_base: str
-    api_key: str
+    api_base: str = ""
+    api_key: str = ""
+    endpoint_profile: str | None = None
+    fallback_tag: str | None = None
+    model_description: str | None = None
     client_options: dict[str, Any] = Field(default_factory=dict)
     request_defaults: dict[str, Any] = Field(default_factory=dict)
 
@@ -37,8 +40,8 @@ class ResolvedRoute(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     route_id: str
     model: ResolvedModel
+    enabled: bool = True
     request_overrides: dict[str, Any] = Field(default_factory=dict)
-    tags: list[str] = Field(default_factory=list)
     tpm: int | None = None
     rpm: int | None = None
     timeout: float | None = None

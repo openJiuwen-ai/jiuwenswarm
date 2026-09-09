@@ -69,6 +69,7 @@ class ModelSelectionResolver:
             raise ModelSelectionError(MODEL_SELECTION_FORBIDDEN, f"model {model_id!r} is forbidden")
         entry, source = hit["entry"], hit["source"]
         mcc, mco = entry.get("model_client_config") or {}, entry.get("model_config_obj") or {}
+        model_detail = entry.get("model_detail") or {}
         if not mcc.get("model_name"):
             raise ModelSelectionError(MODEL_SELECTION_DISABLED, f"model {model_id!r} is disabled")
         excluded_client_options = {"model_name", "client_provider", "api_base", "api_key"}
@@ -81,6 +82,9 @@ class ModelSelectionResolver:
             provider=mcc.get("client_provider", ""),
             api_base=mcc.get("api_base", ""),
             api_key=mcc.get("api_key", ""),
+            endpoint_profile=entry.get("endpoint_profile") or mcc.get("endpoint_profile") or None,
+            fallback_tag=model_detail.get("fallback_tag") or None,
+            model_description=model_detail.get("model_description") or None,
             client_options=options,
             request_defaults=defaults,
         )
@@ -103,8 +107,8 @@ class ModelSelectionResolver:
             ResolvedRoute(
                 route_id=route["route_id"],
                 model=self._model(route["model_id"], context),
+                enabled=route.get("enabled", True),
                 request_overrides=route.get("request_overrides") or {},
-                tags=route.get("tags") or [],
                 tpm=route.get("tpm"),
                 rpm=route.get("rpm"),
                 timeout=route.get("timeout"),

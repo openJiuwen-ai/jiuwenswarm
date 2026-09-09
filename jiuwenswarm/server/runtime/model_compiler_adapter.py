@@ -23,8 +23,8 @@ def compile_model_selection(resolved: ResolvedSelection) -> tuple[Any, Any]:
         core = CoreModel(**resolved.model_dump())
     else:
         routes = [CoreRoute(route_id=r.route_id, model=CoreModel(**r.model.model_dump()),
-            request_overrides=r.request_overrides, tags=r.tags, tpm=r.tpm, rpm=r.rpm, timeout=r.timeout)
-            for r in resolved.routes]
+            enabled=r.enabled, request_overrides=r.request_overrides,
+            tpm=r.tpm, rpm=r.rpm, timeout=r.timeout) for r in resolved.routes]
         core = CoreGroup(model_group_id=resolved.model_group_id, routes=routes,
             request_config=resolved.request_config, routing=resolved.routing)
     return compile_core(core)
