@@ -458,11 +458,11 @@ class CronController:
                     "  Example: daily 9:00 = '0 9 * * *', every Monday 9:00 = '0 9 * * 1'.\n"
                     "- Relative time (e.g. \"in X minutes\"): take now in the given timezone, "
                     "compute run_at = now + X minutes, then encode run_at as 7-field cron "
-                    "with a fixed year (minute hour day month day-of-week second year). "
-                    "Example: run_at (Mar 19, 2026 10:07:00 local) -> '0 7 10 19 3 * 2026'.\n"
+                    "with a fixed year (second minute hour day month day-of-week year). "
+                    "Example: run_at (Mar 19, 2026 10:07:00 local) -> '0 7 10 19 3 ? 2026'.\n"
                     "- One-shot (runs only once): must use 7 fields with a fixed year: "
-                    "minute hour day month day-of-week second year. "
-                    "Example: 2026-03-28 17:00 (local) -> '0 17 28 3 * 0 2026'.\n"
+                    "second minute hour day month day-of-week year. "
+                    "Example: 2026-03-28 17:00 (local) -> '0 0 17 28 3 ? 2026'.\n"
                     "Warning: if you use a 5-field expression with fixed day/month "
                     "but year semantics implicitly '*', it will repeat every year; "
                     "for a real one-shot, use the 7-field form with a fixed year.\n"
@@ -481,11 +481,11 @@ class CronController:
                             "description": (
                                 "Cron expression. "
                                 "Recurring jobs use 5 fields: minute hour dom month day-of-week. "
-                                "One-shot jobs must use 7 fields: minute hour dom month "
-                                "day-of-week second year (fixed year). "
+                                "One-shot jobs must use 7 fields: second minute hour dom month "
+                                "day-of-week year (fixed year). "
                                 "For relative time, treat it as one-shot: compute run_at = now + X minutes, "
                                 "then encode it as a 7-field expression with a fixed year. "
-                                "Example: 2026-03-28 17:00 (local) -> '0 17 28 3 * 0 2026'."
+                                "Example: 2026-03-28 17:00 (local) -> '0 0 17 28 3 ? 2026'."
                             ),
                         },
                         "timezone": {

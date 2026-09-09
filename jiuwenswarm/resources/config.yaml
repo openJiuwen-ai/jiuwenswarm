@@ -1,3 +1,7 @@
+# 配置版本号：与程序版本（jiuwenswarm/common/_build_config.py 的 VERSION）同步。
+# 空串表示未迁移，首次启动迁移后由程序写回实际版本。
+config_version: ""
+
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
@@ -60,6 +64,7 @@ symphony:
     # Enabling it never changes a live session's frozen directory strategy.
     index:
       enabled: false
+      recommendation_shown: false
     artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
     discovery:
       # Strictly below the fixed 1% context threshold, a new session receives
@@ -238,6 +243,16 @@ proactive_recommendation:
   enabled: false                # 总开关
   max_recommend_per_day: 10               # 每天最多推荐次数
   max_rounds_per_tick: 20                # 每次 Tick 读取最近几轮对话
+
+# 自建网关方言覆盖表：api_base 的 host -> agent-core endpoint_profile。
+# 自建推理服务（如 vLLM/SGLang 起的 DashScope 风格服务，思考开关认
+# enable_thinking / thinking_budget、忽略官方 thinking.type）无法从域名
+# 识别方言时，在此按 host 声明；保存、校验、运行时各路径会自动补
+# endpoint_profile 透传给 core。示例：
+# endpoint_profile_overrides:
+#   "10.0.0.1": "vllm"
+# 留空表示不做任何推断；模型条目里显式配置的 endpoint_profile 始终优先。
+endpoint_profile_overrides:
 
 models:
   # 开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。
@@ -501,6 +516,25 @@ agent_observability:
   file_retention_days: 7            # file exporter 文件保留天数
 
 # ============================================================
+# 单 Agent 轨迹观测 Web 数据面
+# ============================================================
+# enabled=true 会作为 Agent / Team OTel provider 的额外 demand，但仍完整复用
+# agent_observability / team_observability 的 exporter、采样、脱敏、字段长度
+# 与 Langfuse 配置。Processor 后的数据由 AgentServer 有界队列写入 SQLite；
+# Gateway 只读查询。Agent 与 Team 会话均向 Web 暴露轨迹。
+# auto_harness 不向 Web 暴露轨迹。
+# ============================================================
+trajectory_ui:
+  enabled: false                     # 启用“对话 / 轨迹”数据链路
+  db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
+  retention_days: 7                 # SQLite 轨迹保留天数
+  queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
+  batch_size: 64                    # writer 单事务最大记录数
+  flush_interval_ms: 200            # writer 最大合批等待时间
+  poll_interval_ms: 2000            # Web 端兜底轮询间隔
+  detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
+
+# ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
 # ============================================================
 # 控制非 team 模式（agent.* / code.*）的人类可读本地 dump。
@@ -539,9 +573,16 @@ debug_trace:
     redact_prompts: false           # 脱敏 prompt/completion（密钥字段始终打码）
     redact_completions: false
 
+# Application 级 KV-Cache 算力亲和开关；所有 Agent/Team/RSI 运行模式共享。
+kv_cache_affinity_config:
+  enable_kv_cache_affinity: false
+
 react:
   agent_name: main_agent
   enable_task_loop: true
+  # read_file 图片输入策略：null=自动探测，false=纯文本，true=启用多模态。
+  # 必须在模板中显式声明，否则配置迁移会将用户或 Benchmark 写入的值当作废弃字段删除。
+  enable_read_image_multimodal: null
   # 单轮任务循环等待上限（秒）；null 表示不限时，避免长任务被静默截断
   completion_timeout: null
   max_iterations: 100
@@ -572,25 +613,35 @@ react:
   answer_chunk_size: 500
   stream_chunk_threshold: 50
   stream_character_threshold: 2000
-  kv_cache_affinity_config:
-    enable_kv_cache_release: false
-    enable_kv_cache_affinity: false
   # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
     enable_openrouter_model_context_window_tokens: true # 从 OpenRouter 拉取模型的上下文窗口大小；false 时按内置模型表解析
-    # 显式覆盖上下文窗口 token 上限（正整数），优先级最高，会覆盖当前模型的 context_window；
-    # 注释掉或留空则按当前模型的 context_window / 显式映射 / 自动解析
+    # 是否预下载/使用模型词表进行精确 token 计算；关闭时使用字符串长度兜底，默认不联网。
+    enable_tiktoken_counter: false
+    # 词表统一缓存目录；相对路径相对于 ~/.jiuwenswarm（可由 JIUWENSWARM_DATA_DIR 改变）。
+    tokenizer_cache_dir: tokenizers
+    tokenizer_offline: false
+    # 开发调试时打开：落盘 core 最终发送给模型的完整 messages/tools，
+    # 以及上下文处理器的阈值判断、片段切分、压缩重试和前后对比等 JSONL 记录。
+    # 内容可能包含用户数据和系统提示词，默认关闭。
+    enable_context_debug: false
+    # context_debug_dir: context-debug
+    # 留空则按环境变量 OPENJIUWEN_CONTEXT_DEBUG_DIR，
+    # 再缺省落到 {workspace}/context/{session_id}_context/context_debug/
+    # 已知模型会按模型名自动解析并预热 tokenizer；模型条目也可直接配置
+    # tokenizer/tokenizer_spec 覆盖默认映射。自定义别名无法推断时需声明 tokenizer。
+    # tokenizer_registry:
+    #   - provider: qwen
+    #     model: qwen-max
+    #     source: modelscope
+    #     id: Qwen/Qwen2.5-72B-Instruct
+    # 显式覆盖上下文窗口 token 上限（正整数）；注释掉或留空则按模型自动解析
     # context_window_tokens: 131072
     # 可选的模型名到上下文窗口映射；优先级低于全局值和当前模型的 context_window
     # model_context_window_tokens:
     #   some-model: 131072
     enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
-
-    enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭
-    # debug 记录目录；留空则按环境变量 OPENJIUWEN_CONTEXT_DEBUG_DIR，
-    # 再缺省落到 {workspace}/context/{session_id}_context/context_debug/
-    # context_debug_dir:
 
     # 压缩召回：压缩器替换原始消息时，把原文分块归档到会话目录 compression_recall/，
     # 模型可通过 [[COMPRESSION_RECALL: id=...]] 标记按需召回原文。默认关闭。
@@ -712,6 +763,9 @@ gateway:
     agent_key_fields:
       - user_id
       - agent_type
+    # Web/TUI 连接建立后后台预热内置 jiuwenswarm 沙箱并打通 instance WS，
+    # 避免首条 chat 卡在 create + 冷启动 502 重试。失败不影响连接。
+    connect_warmup_enabled: true
     registry:
       # Agent OS 注册中心地址（空=本地 stub，不发 HTTP）。一体机默认 http://127.0.0.1:8000
       endpoint:
@@ -740,6 +794,10 @@ heartbeat:
     default_max_runs: 12
     default_concurrency_policy: skip
     default_session_deleted_policy: disable
+    # 单次心跳任务的最长执行时间；超时后取消并记录 failed。
+    execution_timeout_seconds: 300
+    # 用户请求抢占心跳时，等待精确取消和清理完成的最长时间。
+    user_preemption_timeout_seconds: 10
 
 health_check:
   # 业务探活间隔（秒），默认 3600
@@ -971,14 +1029,17 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # manual keeps the existing approval flow; auto enables Smart Approval.
+  mode: manual
 
   defaults:
     "*": "allow"
 
   tools:
-    bash: ask
-    mcp_exec_command: ask
-    create_terminal: ask
+    bash: allow
+    powershell: allow
+    mcp_exec_command: allow
+    create_terminal: allow
     write: allow
     write_file: allow
     edit_file: allow
@@ -1024,87 +1085,168 @@ permissions:
 
   rules:
     - id: shell_allow_dir
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "dir *"
       severity: LOW
     - id: shell_allow_ls
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "ls *"
       severity: LOW
     - id: shell_allow_pwd
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "pwd *"
       severity: LOW
     - id: shell_allow_cd
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "cd *"
       severity: LOW
     - id: shell_allow_echo
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "echo *"
       severity: LOW
     - id: shell_allow_cat
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "cat *"
       severity: LOW
     - id: shell_allow_type
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "type *"
       severity: LOW
     - id: shell_allow_head
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "head *"
       severity: LOW
     - id: shell_allow_tail
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "tail *"
       severity: LOW
     - id: shell_allow_git_status
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git status *"
       severity: LOW
     - id: shell_allow_git_log
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git log *"
       severity: LOW
     - id: shell_allow_git_diff
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git diff *"
       severity: LOW
     - id: shell_allow_git_branch
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git branch *"
       severity: LOW
+    # PowerShell cmdlet / alias counterparts of cd, pwd, ls/dir, cat/type, echo, head/tail
+    - id: shell_allow_set_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Set-Location *"
+      severity: LOW
+    - id: shell_allow_push_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Push-Location *"
+      severity: LOW
+    - id: shell_allow_pop_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Pop-Location *"
+      severity: LOW
+    - id: shell_allow_sl
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "sl *"
+      severity: LOW
+    - id: shell_allow_chdir
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "chdir *"
+      severity: LOW
+    - id: shell_allow_get_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-Location *"
+      severity: LOW
+    - id: shell_allow_gl
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gl *"
+      severity: LOW
+    - id: shell_allow_get_childitem
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-ChildItem *"
+      severity: LOW
+    - id: shell_allow_gci
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gci *"
+      severity: LOW
+    - id: shell_allow_get_item
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-Item *"
+      severity: LOW
+    - id: shell_allow_gi
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gi *"
+      severity: LOW
+    - id: shell_allow_get_content
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-Content *"
+      severity: LOW
+    - id: shell_allow_gc
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gc *"
+      severity: LOW
+    - id: shell_allow_write_output
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Write-Output *"
+      severity: LOW
+    - id: shell_allow_write_host
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Write-Host *"
+      severity: LOW
+    - id: shell_allow_select_object
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: 're:(?i)^Select-Object\b'
+      severity: LOW
     - id: shell_ask_rm
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "rm *"
       severity: HIGH
     - id: shell_ask_del
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "del *"
       severity: HIGH
     - id: shell_ask_rd
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "rd *"
       severity: HIGH
+    - id: shell_ask_remove_item
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Remove-Item *"
+      severity: HIGH
+    - id: shell_ask_ri
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "ri *"
+      severity: HIGH
+    - id: shell_ask_rmdir
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "rmdir *"
+      severity: HIGH
+    - id: shell_ask_erase
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "erase *"
+      severity: HIGH
     - id: shell_ask_mv
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "mv *"
       severity: HIGH
     - id: shell_ask_cp
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "cp *"
       severity: HIGH
     - id: shell_ask_chmod
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "chmod *"
       severity: HIGH
     - id: shell_ask_chown
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "chown *"
       severity: HIGH
     - id: shell_ask_sensitive_file_reads
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: 're:(?i)(^|[\s;&|()])((cat|type|less|more|head|tail|grep|find|Get-Content|Select-String)\b[^;&|]*(id_rsa|id_ed25519|\.pem\b|\.pfx\b|\.key\b|\.kube/config|\.aws/(credentials|config)|\.npmrc\b|\.env(\.[A-Za-z0-9_-]+)?\b|authorized_keys|\.ssh/))'
       severity: HIGH
     # path_ask_* 已迁到 file_guard.paths（match: glob）；Pipeline A 不再重复匹配。
@@ -1114,8 +1256,8 @@ permissions:
   owner_scopes: {}
   deny_guidance_message: ""
 
-  # Native 路径层（agent-core FileGuard）：defaults + workspace 绑定运行时 workspace_root
-  # trusted_dirs（TUI 项目 cwd / /add-dir）由引擎运行时编译，不必写进 YAML。
+  # Native 路径层（agent-core FileGuard）。P1 起包内 sensitive_paths 在 file_guard.enabled
+  # 时注入（.ssh / .env / 私钥为 deny，家目录凭证为 ask）；下面 glob 可与目录重复，更严者胜。
   file_guard:
     enabled: true
     defaults:
@@ -1382,6 +1524,23 @@ modes:
       # SwarmFlow agent calls with options.isolation="worktree".
       worktree:
         enabled: true
+
+      # 任务调度模式（TeamAgentSpec.dispatch_mode，静态配置，运行时不可切换）：
+      #   autonomous（默认）— 任务放到共享看板，成员按专长自行认领，
+      #                        leader 通过 send_message 广播启动。
+      #   scheduled        — leader 把每个任务预先指派给具名成员，
+      #                        F_62 调度运行时（agent/scheduling）统一处理
+      #                        start / 送审 / 返工 / 验收等 leader 身份的
+      #                        邮箱消息；成员失去 claim_task，改用
+      #                        member_complete_task。
+      dispatch_mode: autonomous
+
+      # 调度模式下的验收开关（TeamAgentSpec.enable_task_verification）：
+      # 纯 prompt 驱动，开启后 leader 建任务时会按自己的判断给部分任务
+      # 指派 0..N 个 reviewer（无强制校验，leader 认为无需验收的任务可以
+      # 不带 reviewer）。reviewer 机制（列、guard、投票）本身始终可用，
+      # 与本开关无关；本开关只影响 leader 的建任务引导语。见 F_62。
+      enable_task_verification: false
 
       leader:
         member_name: team-leader

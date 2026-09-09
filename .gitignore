@@ -84,10 +84,6 @@ workspace/agent/memory/*.db
 workspace/agent/memory/*.db-shm
 workspace/agent/memory/*.db-wal
 
-jiuwenswarm/agentserver/tools/browser-move/.browser
-jiuwenswarm/agentserver/tools/browser-move/.browser-profiles
-jiuwenswarm/agentserver/tools/browser-move/screenshots
-
 jiuwenswarm/workspace/.whatsapp-auth/
 jiuwenswarm/resources/agent/workspace/
 jiuwenswarm/resources/tui/bin/
@@ -101,3 +97,10 @@ reasonix.toml
 
 # Build-time Node runtime cache used by packaging scripts.
 vendor/node/
+/AGENTS.local.md
+report/index.html
+/tmp/
+/memory/
+/sub_agents/
+/context/
+/.plans/

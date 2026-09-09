@@ -341,8 +341,8 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
         schedule: scheduleFormToDto(value.schedule),
         timezone: value.schedule.timezone,
         concurrency_policy: value.concurrencyPolicy,
-        session_deleted_policy: value.sessionDeletedPolicy,
         max_runs: value.maxRuns,
+        ...(drawer.mode === 'edit' ? { session_deleted_policy: value.sessionDeletedPolicy } : {}),
       };
       try {
         if (drawer.mode === 'create') {
@@ -409,41 +409,43 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
   ];
 
   return (
-    <div className="flex h-full w-[420px] max-w-full flex-shrink-0 flex-col border-l border-border bg-card">
+    <div className="flex h-full w-[420px] max-w-full flex-shrink-0 flex-col border-l border-border bg-card" data-testid="heartbeat-panel-root">
       {drawer && meta ? (
-        <div className="flex items-center gap-2 border-b border-border p-4">
+        <div className="flex items-center gap-2 border-b border-border p-4" data-testid="heartbeat-panel-drawer-header">
           <button
             type="button"
             onClick={() => setDrawer(null)}
             title={t('heartbeat.drawer.back')}
             className="text-text-muted hover:text-text"
+            data-testid="heartbeat-panel-drawer-back-btn"
           >
             <ArrowLeft size={18} />
           </button>
-          <h2 className="text-lg font-bold text-text-strong">
+          <h2 className="text-lg font-bold text-text-strong" data-testid="heartbeat-panel-drawer-title" data-variant={drawer.mode}>
             {t(drawer.mode === 'create' ? 'heartbeat.drawer.titleCreate' : 'heartbeat.drawer.titleEdit')}
           </h2>
-          <button onClick={onClose} className="ml-auto text-text-muted hover:text-text">
+          <button onClick={onClose} className="ml-auto text-text-muted hover:text-text" data-testid="heartbeat-panel-close-btn">
             <X size={20} />
           </button>
         </div>
       ) : (
-        <div className="flex items-center justify-between border-b border-border p-4">
-          <h2 className="text-lg font-bold text-text-strong">{t('heartbeat.panel.title')}</h2>
+        <div className="flex items-center justify-between border-b border-border p-4" data-testid="heartbeat-panel-header">
+          <h2 className="text-lg font-bold text-text-strong" data-testid="heartbeat-panel-title">{t('heartbeat.panel.title')}</h2>
           <div className="flex items-center gap-3">
-            <div className="relative" ref={createMenuRef}>
+            <div className="relative" ref={createMenuRef} data-testid="heartbeat-panel-create-menu-wrap">
               <button
                 type="button"
                 disabled={!meta || drawerBusy}
                 onClick={() => setCreateMenuOpen((v) => !v)}
                 className="flex items-center gap-1.5 rounded-full bg-cron-action px-4 py-1.5 text-sm font-bold text-cron-action-foreground hover:bg-cron-action-hover disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="heartbeat-panel-create-btn"
               >
                 <Plus size={14} />
                 {t('heartbeat.panel.create')}
                 <ChevronDown size={14} />
               </button>
               {createMenuOpen && (
-                <div className="absolute right-0 top-[calc(100%+6px)] z-20 w-44 rounded-lg border border-border bg-card py-1.5 shadow-lg">
+                <div className="absolute right-0 top-[calc(100%+6px)] z-20 w-44 rounded-lg border border-border bg-card py-1.5 shadow-lg" data-testid="heartbeat-panel-create-menu">
                   <button
                     type="button"
                     onClick={() => {
@@ -451,6 +453,8 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                       openCreateDrawer();
                     }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold text-text hover:bg-bg-hover"
+                    data-testid="heartbeat-panel-create-menu-item"
+                    data-variant="manual"
                   >
                     <PencilLine size={14} />
                     {t('heartbeat.panel.createMenu.manual')}
@@ -462,6 +466,8 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                       createViaChat();
                     }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold text-text hover:bg-bg-hover"
+                    data-testid="heartbeat-panel-create-menu-item"
+                    data-variant="viaChat"
                   >
                     <MessageSquarePlus size={14} />
                     {t('heartbeat.panel.createMenu.viaChat')}
@@ -469,7 +475,7 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                 </div>
               )}
             </div>
-            <button onClick={onClose} className="text-text-muted hover:text-text">
+            <button onClick={onClose} className="text-text-muted hover:text-text" data-testid="heartbeat-panel-close-btn">
               <X size={20} />
             </button>
           </div>
@@ -477,7 +483,7 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
       )}
 
       {drawer && meta ? (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto" data-testid="heartbeat-panel-drawer-body">
           <HeartbeatTaskDrawer
             key={drawer.mode === 'edit' ? drawer.jobId : 'create'}
             mode={drawer.mode}
@@ -492,13 +498,14 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
       ) : (
         <>
           {jobs.length > 0 && meta && (
-            <div className="flex items-center gap-2 px-4 py-2">
+            <div className="flex items-center gap-2 px-4 py-2" data-testid="heartbeat-panel-toolbar">
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('heartbeat.panel.searchPlaceholder') ?? ''}
                 className="flex-1 rounded-md border border-border bg-card px-2 py-1.5 text-sm"
+                data-testid="heartbeat-panel-search-input"
               />
               <SimpleSelect
                 value={statusFilter}
@@ -508,32 +515,32 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
               />
             </div>
           )}
-          <div className="flex-1 overflow-y-auto p-4">
-            {loading && <p className="text-sm text-text-muted">{t('heartbeat.panel.loading')}</p>}
-            {!loading && loadError && <p className="text-sm text-red-500">{loadError}</p>}
+          <div className="flex-1 overflow-y-auto p-4" data-testid="heartbeat-panel-list-scroll">
+            {loading && <p className="text-sm text-text-muted" data-testid="heartbeat-panel-loading-text">{t('heartbeat.panel.loading')}</p>}
+            {!loading && loadError && <p className="text-sm text-red-500" data-testid="heartbeat-panel-error-text">{loadError}</p>}
             {!loading && !loadError && jobs.length === 0 && (
-              <p className="text-sm text-text-muted">{t('heartbeat.panel.empty')}</p>
+              <p className="text-sm text-text-muted" data-testid="heartbeat-panel-empty-text">{t('heartbeat.panel.empty')}</p>
             )}
             {!loading && !loadError && jobs.length > 0 && filteredJobs.length === 0 && (
-              <p className="text-sm text-text-muted">{t('heartbeat.panel.emptyFiltered')}</p>
+              <p className="text-sm text-text-muted" data-testid="heartbeat-panel-empty-filtered-text">{t('heartbeat.panel.emptyFiltered')}</p>
             )}
             {!loading && !loadError && displayedJobs.length > 0 && meta && (
-              <ul className="space-y-3">
+              <ul className="space-y-3" data-testid="heartbeat-panel-task-list">
                 {displayedJobs.map((job) => (
-                  <li key={job.id} className="rounded-lg border border-border bg-card p-3 shadow-sm">
+                  <li key={job.id} className="rounded-lg border border-border bg-card p-3 shadow-sm" data-testid="heartbeat-panel-task-item" data-variant={job.id}>
                     <div className="flex items-start justify-between gap-2">
-                      <span className="min-w-0 truncate font-medium text-text-strong" title={job.name}>
+                      <span className="min-w-0 truncate font-medium text-text-strong" title={job.name} data-testid="heartbeat-panel-task-name">
                         {job.name}
                       </span>
                       <HeartbeatStatusBadge status={job.status} />
                     </div>
-                    <p className="mt-1.5 line-clamp-2 text-sm text-text-muted">{job.prompt}</p>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
-                      <span>{summarizeHeartbeatSchedule(job.schedule, t)}</span>
+                    <p className="mt-1.5 line-clamp-2 text-sm text-text-muted" data-testid="heartbeat-panel-task-prompt">{job.prompt}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted" data-testid="heartbeat-panel-task-meta">
+                      <span data-testid="heartbeat-panel-task-schedule">{summarizeHeartbeatSchedule(job.schedule, t)}</span>
                       {formatHeartbeatTimestamp(job.nextRunAt) && (
-                        <span>{t('heartbeat.panel.nextRunAt', { time: formatHeartbeatTimestamp(job.nextRunAt) })}</span>
+                        <span data-testid="heartbeat-panel-task-next-run">{t('heartbeat.panel.nextRunAt', { time: formatHeartbeatTimestamp(job.nextRunAt) })}</span>
                       )}
-                      {job.runCount > 0 && <span>{t('heartbeat.panel.runCount', { count: job.runCount })}</span>}
+                      {job.runCount > 0 && <span data-testid="heartbeat-panel-task-run-count">{t('heartbeat.panel.runCount', { count: job.runCount })}</span>}
                       {/* §5.1：展示最近一次运行状态与错误；忙等待超时后显示 skipped + session_busy_timeout */}
                       {(() => {
                         const lastStatusKey = heartbeatLastRunStatusLabelKey(job.runState.last_run_status);
@@ -541,16 +548,17 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                         const lastError = job.runState.last_error;
                         const errorText = lastError ? t('heartbeat.panel.lastError', { error: lastError }) : '';
                         const sep = lastStatusKey && errorText ? ' · ' : '';
-                        return <span>{t(lastStatusKey)}{sep}{errorText}</span>;
+                        return <span data-testid="heartbeat-panel-task-last-run">{t(lastStatusKey)}{sep}{errorText}</span>;
                       })()}
                     </div>
-                    <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-border pt-2">
+                    <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-border pt-2" data-testid="heartbeat-panel-task-actions">
                       {job.status === 'running' && (
                         <button
                           type="button"
                           disabled={actingJobId === job.id}
                           onClick={() => void handleCancel(job, false)}
                           className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs text-text hover:bg-bg-hover disabled:opacity-60"
+                          data-testid="heartbeat-panel-task-cancel-run-btn"
                         >
                           <CircleStop size={13} />
                           {t('heartbeat.panel.cancelRun')}
@@ -561,25 +569,34 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                         disabled={actingJobId === job.id || !canHeartbeatRunNow(job.enabled, job.status)}
                         onClick={() => void handleRunNow(job)}
                         className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+                        data-testid="heartbeat-panel-task-run-now-btn"
                       >
                         <Play size={13} />
                         {t('heartbeat.panel.runNow')}
                       </button>
                       {(() => {
                         const isTerminal = job.status === 'completed' || job.status === 'expired';
+                        const canEnable = canHeartbeatToggleEnable(
+                          job.status,
+                          job.maxRuns,
+                          job.runCount,
+                          job.schedule,
+                        );
                         const toggleBtn = (
                           <button
                             type="button"
-                            disabled={actingJobId === job.id || (!job.enabled && !canHeartbeatToggleEnable(job.status))}
+                            disabled={actingJobId === job.id || (!job.enabled && !canEnable)}
                             onClick={() => void handleToggle(job)}
                             className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-pressed={job.enabled}
+                            data-testid="heartbeat-panel-task-toggle-btn"
                           >
                             {job.enabled ? <Pause size={13} /> : <RotateCcw size={13} />}
                             {t(job.enabled ? 'heartbeat.panel.pause' : 'heartbeat.panel.resume')}
                           </button>
                         );
                         // disabled 按钮本身不触发 hover tooltip，终态时用外层 span 承载"如何重新激活"的提示
-                        return isTerminal ? (
+                        return isTerminal && !canEnable ? (
                           <span className="inline-flex" title={t('heartbeat.panel.resumeFromCompletedHint')}>
                             {toggleBtn}
                           </span>
@@ -592,6 +609,7 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                         disabled={drawerBusy}
                         onClick={() => openEditDrawer(job)}
                         className="inline-flex items-center gap-1 rounded-full border border-border px-3 py-1 text-xs text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
+                        data-testid="heartbeat-panel-task-edit-btn"
                       >
                         <Pencil size={13} />
                         {t('heartbeat.panel.edit')}
@@ -604,6 +622,7 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                           setPendingDelete(job);
                         }}
                         className="inline-flex items-center gap-1 rounded-full border border-red-300 px-3 py-1 text-xs text-red-500 hover:bg-red-50 disabled:opacity-60"
+                        data-testid="heartbeat-panel-task-delete-btn"
                       >
                         <Trash2 size={13} />
                         {t('heartbeat.panel.delete')}
@@ -627,7 +646,7 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
         </>
       )}
       {toast && (
-        <div className="pointer-events-none fixed bottom-6 right-6 z-50 rounded-md bg-text-strong px-4 py-2 text-sm text-card shadow-lg">
+        <div className="pointer-events-none fixed bottom-6 right-6 z-50 rounded-md bg-text-strong px-4 py-2 text-sm text-card shadow-lg" data-testid="heartbeat-panel-toast">
           {toast}
         </div>
       )}

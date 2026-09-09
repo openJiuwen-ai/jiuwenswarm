@@ -45,15 +45,16 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
   return (
     <div
       className="fixed inset-0 z-50 bg-overlay-cron-drawer"
+      data-testid="connector-market-picker-modal"
       onClick={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
     >
       {/* 2026-08-19：用户明确要求左侧两个角改直角（原 rounded-l-2xl 去掉）+ 抽屉整体加宽。 */}
-      <div className="absolute inset-y-0 right-0 flex w-[760px] flex-col bg-card p-6 shadow-xl">
+      <div className="absolute inset-y-0 right-0 flex w-[760px] flex-col bg-card p-6 shadow-xl" data-testid="connector-market-picker-drawer">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-[16px] font-semibold leading-6 text-text">{title}</h2>
-          <button type="button" onClick={onCancel} className="text-text-muted hover:text-text">
+          <button type="button" onClick={onCancel} className="text-text-muted hover:text-text" data-testid="connector-market-picker-close">
             <X size={18} />
           </button>
         </div>
@@ -65,6 +66,7 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t('connectorMarket.common.search')}
             className="h-8 w-full rounded-lg border border-border bg-bg pl-8 pr-3 text-[12px] leading-[18px] text-text outline-none focus:border-border-hover"
+            data-testid="connector-market-picker-search"
           />
         </div>
 
@@ -73,9 +75,9 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
               的按钮 onClick），请求还在路上时 visible 可能还是空数组，不加这个分支会闪一下
               "暂无结果"再跳到真实列表，体验很怪。 */}
           {loading ? (
-            <div className="py-10 text-center text-[13px] text-text-muted">{t('common.loading')}</div>
+            <div className="py-10 text-center text-[13px] text-text-muted" data-testid="connector-market-picker-loading">{t('common.loading')}</div>
           ) : (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2" data-testid="connector-market-picker-list">
             {visible.map((item) => {
               const checked = selected.includes(item.id);
               return (
@@ -83,6 +85,8 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
                   key={item.id}
                   type="button"
                   onClick={() => toggle(item.id)}
+                  data-testid="connector-market-picker-item"
+                  data-variant={item.id}
                   className={`flex flex-col gap-2 rounded-lg border p-4 text-left transition-colors ${
                     checked ? 'border-[color:var(--color-chat-accent)] bg-accent-subtle' : 'border-border hover:border-border-hover'
                   }`}
@@ -103,16 +107,16 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
                 </button>
               );
             })}
-            {visible.length === 0 && <div className="col-span-full py-10 text-center text-[13px] text-text-muted">{t('connectorMarket.common.noResult')}</div>}
+            {visible.length === 0 && <div className="col-span-full py-10 text-center text-[13px] text-text-muted" data-testid="connector-market-picker-empty">{t('connectorMarket.common.noResult')}</div>}
           </div>
           )}
         </div>
 
         <div className="mt-4 flex shrink-0 justify-end gap-2 border-t border-border pt-4">
-          <button type="button" onClick={onCancel} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover">
+          <button type="button" onClick={onCancel} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover" data-testid="connector-market-picker-cancel">
             {t('connectorMarket.common.cancel')}
           </button>
-          <button type="button" onClick={() => onConfirm(selected)} className="rounded-lg bg-text px-4 py-1.5 text-[13px] text-text-inverse">
+          <button type="button" onClick={() => onConfirm(selected)} className="rounded-lg bg-text px-4 py-1.5 text-[13px] text-text-inverse" data-testid="connector-market-picker-ok">
             {t('connectorMarket.common.confirm')}
           </button>
         </div>

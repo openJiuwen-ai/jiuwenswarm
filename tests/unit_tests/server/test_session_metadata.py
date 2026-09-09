@@ -2051,6 +2051,68 @@ class TestLazyMigrationOnRead:
         assert "last_user_message_at" in data
 
     @staticmethod
+    def test_repairs_subagent_mode_leaked_into_web_parent(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            get_session_metadata,
+        )
+
+        session_dir = sessions_dir / "web_parent"
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "web_parent",
+                    "channel_id": "web",
+                    "mode": "subagent",
+                    "team_name": "",
+                    "work_mode": "work",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _METADATA_CACHE.pop("web_parent", None)
+
+        metadata = get_session_metadata(
+            "web_parent",
+            cache_bust=True,
+            enable_writeback=False,
+        )
+
+        assert metadata["mode"] == "agent.work.normal"
+
+    @staticmethod
+    def test_keeps_standalone_subagent_channel_mode(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            get_session_metadata,
+        )
+
+        session_dir = sessions_dir / "subagent_session"
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "subagent_session",
+                    "channel_id": "subagent",
+                    "mode": "subagent",
+                    "team_name": "",
+                    "work_mode": "work",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _METADATA_CACHE.pop("subagent_session", None)
+
+        metadata = get_session_metadata(
+            "subagent_session",
+            cache_bust=True,
+            enable_writeback=False,
+        )
+
+        assert metadata["mode"] == "subagent"
+
+    @staticmethod
     def test_last_user_message_at_uses_last_message_at_when_present(sessions_dir):
         """有 last_message_at 时优先用它，不被 or 短路跳过 0.0。"""
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -2261,20 +2323,11 @@ class TestSetSessionPinnedQueuedWriteRace:
         old_write_started = threading.Event()
         release_old_write = threading.Event()
 
-        def _delayed_write(
-            session_id, metadata, preserve_pin_fields=False,
-            preserve_rebound_fields=False, rebind_gen_at_enqueue=None,
-        ):
+        def _delayed_write(session_id, metadata, options=None):
             if session_id == "s_async_pin" and metadata.get("model") == "old-queued-write":
                 old_write_started.set()
                 assert release_old_write.wait(5), "old queued write was not released"
-            return original_write(
-                session_id,
-                metadata,
-                preserve_pin_fields=preserve_pin_fields,
-                preserve_rebound_fields=preserve_rebound_fields,
-                rebind_gen_at_enqueue=rebind_gen_at_enqueue,
-            )
+            return original_write(session_id, metadata, options)
 
         monkeypatch.setattr(sm, "_write_metadata_sync", _delayed_write)
 
@@ -2369,6 +2422,34 @@ class TestIdentityPreservation:
         assert data["workflow_runs"] == {"wf_1": {}}
 
     @staticmethod
+    def test_atomic_replace_retries_transient_permission_error(
+        sessions_dir,
+        monkeypatch,
+    ):
+        """Windows readers can briefly block replace; the atomic write must retry."""
+        import jiuwenswarm.server.runtime.session.session_metadata as sm
+
+        src = sessions_dir / "metadata.tmp"
+        dst = sessions_dir / "metadata.json"
+        src.write_text('{"session_id": "retry"}', encoding="utf-8")
+        real_replace = sm.os.replace
+        attempts = 0
+
+        def flaky_replace(source, target):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("simulated sharing violation")
+            return real_replace(source, target)
+
+        monkeypatch.setattr(sm.os, "replace", flaky_replace)
+
+        sm._atomic_replace(src, dst)
+
+        assert attempts == 3
+        assert json.loads(dst.read_text(encoding="utf-8"))["session_id"] == "retry"
+
+    @staticmethod
     def test_write_is_atomic_no_empty_window(sessions_dir):
         """A concurrent reader must never observe an empty file mid-write (atomic replace)."""
         import jiuwenswarm.server.runtime.session.session_metadata as sm
@@ -2387,7 +2468,11 @@ class TestIdentityPreservation:
             while not stop.is_set():
                 try:
                     raw = fpath.read_text(encoding="utf-8")
-                except (FileNotFoundError, PermissionError):
+                except PermissionError:
+                    # Windows can briefly deny a reader while an atomic replace
+                    # is committing. This is not an empty/truncated file window.
+                    continue
+                except FileNotFoundError:
                     empties.append("missing")
                     continue
                 if not raw.strip():
@@ -2582,12 +2667,13 @@ class TestRebindSessionProjectConcurrency:
         """关键回归：入队早于 rebind 的陈旧异步快照, worker 写回时不得覆盖 rebind。
 
         直接模拟 worker 处理"gen 不匹配"的陈旧快照（worker 的核心行为是调用
-        ``_write_metadata_sync(preserve_rebound_fields=True)``），确保磁盘
-        project 字段保留 rebind 的新值, 而非 project 字段（如 message_count）
+        ``_write_metadata_sync(_MetadataWriteOptions(preserve_rebound_fields=True))``，
+        确保磁盘 project 字段保留 rebind 的新值, 而非 project 字段（如 message_count）
         仍按陈旧快照更新。确定性复现：worker 线程为模块级单例, 时序不可控,
         故此处直接调用 _write_metadata_sync 模拟 worker 的"重绑后处理陈旧快照"。
         """
         from jiuwenswarm.server.runtime.session.session_metadata import (
+            _MetadataWriteOptions,
             _write_metadata_sync,
             get_session_metadata,
             rebind_session_project,
@@ -2617,7 +2703,9 @@ class TestRebindSessionProjectConcurrency:
         # 3. 模拟 worker 处理陈旧快照（gen_at_enqueue < 当前 gen → preserve_rebound=True）
         #    若无版本检查（preserve_rebound_fields=False）, 此调用会覆盖 rebind。
         _write_metadata_sync(
-            sid, stale_snapshot, preserve_rebound_fields=True,
+            sid,
+            stale_snapshot,
+            _MetadataWriteOptions(preserve_rebound_fields=True),
         )
         # 4. 断言磁盘 project 字段仍为 rebind 的新值
         after = get_session_metadata(sid, cache_bust=True)
@@ -2642,6 +2730,7 @@ class TestRebindSessionProjectConcurrency:
         会覆盖 rebind —— 反向证明上一用例的断言确由版本检查保护, 而非巧合。
         """
         from jiuwenswarm.server.runtime.session.session_metadata import (
+            _MetadataWriteOptions,
             _write_metadata_sync,
             get_session_metadata,
             rebind_session_project,
@@ -2666,7 +2755,11 @@ class TestRebindSessionProjectConcurrency:
             "message_count": 9,
         }
         # 不做版本检查 → 陈旧快照直接覆盖 rebind
-        _write_metadata_sync(sid, stale_snapshot, preserve_rebound_fields=False)
+        _write_metadata_sync(
+            sid,
+            stale_snapshot,
+            _MetadataWriteOptions(preserve_rebound_fields=False),
+        )
         after = get_session_metadata(sid, cache_bust=True)
         assert after["project_id"] == "proj_old"
         assert after["project_dir"] == "/old/dir"
@@ -2709,15 +2802,16 @@ class TestRebindSessionProjectConcurrency:
         )
         monkeypatch.setattr(sm._METADATA_QUEUE, "put_nowait", original_put)
         assert len(captured) == 1
-        item_sid, _meta, _pin, gen_at_enqueue = captured[0]
+        item_sid, _meta, options = captured[0]
         assert item_sid == sid
-        assert gen_at_enqueue == 0
+        assert options.rebind_gen_at_enqueue == 0
+        assert options.merge_fields is None
 
         # rebind: bump gen
         _bump_rebind_gen(sid)
         assert _get_rebind_gen(sid) == 1
         # worker 处理时: gen_at_enqueue(0) < 当前 gen(1) → 判定为陈旧
-        assert gen_at_enqueue < _get_rebind_gen(sid)
+        assert options.rebind_gen_at_enqueue < _get_rebind_gen(sid)
 
     @staticmethod
     def test_rebind_gen_helpers_isolated():
@@ -2821,10 +2915,7 @@ class TestRebindSessionProjectConcurrency:
         original_write = sm._write_metadata_sync
         rebind_injected: list[bool] = []
 
-        def _inject_rebound_during_write(
-            session_id, metadata, preserve_pin_fields=False,
-            preserve_rebound_fields=False, rebind_gen_at_enqueue=None,
-        ):
+        def _inject_rebound_during_write(session_id, metadata, options=None):
             # 仅对本次 sync_write 的陈旧快照注入一次 rebind (gen 0→1, 落盘 proj_new)。
             # 用 original_write 直接写, 不走 _enqueue_write, 避免递归回到本拦截。
             if session_id == sid and not rebind_injected:
@@ -2840,13 +2931,7 @@ class TestRebindSessionProjectConcurrency:
                 original_write(session_id, rebound)
             # 继续处理本来的陈旧快照: rebind_gen_at_enqueue 应为 0 (早于注入的 rebind),
             # _write_metadata_sync 持锁后重比 0 < 1 → 从磁盘保留 rebind 字段。
-            return original_write(
-                session_id,
-                metadata,
-                preserve_pin_fields=preserve_pin_fields,
-                preserve_rebound_fields=preserve_rebound_fields,
-                rebind_gen_at_enqueue=rebind_gen_at_enqueue,
-            )
+            return original_write(session_id, metadata, options)
 
         monkeypatch.setattr(sm, "_write_metadata_sync", _inject_rebound_during_write)
         _enqueue_write(sid, stale, sync_write=True, preserve_pin_fields=False)

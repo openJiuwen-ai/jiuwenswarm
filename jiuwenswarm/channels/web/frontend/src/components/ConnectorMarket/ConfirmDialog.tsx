@@ -13,6 +13,7 @@ export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfir
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-cron-dialog"
+      data-testid="connector-market-confirm-dialog"
       onClick={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
@@ -25,6 +26,7 @@ export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfir
             type="button"
             onClick={onCancel}
             className="flex h-8 items-center justify-center rounded-lg border border-border px-3 text-[13px] text-text hover:border-border-hover"
+            data-testid="connector-market-confirm-cancel"
           >
             {t('connectorMarket.common.cancel')}
           </button>
@@ -32,6 +34,7 @@ export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfir
             type="button"
             onClick={onConfirm}
             className="flex h-8 items-center justify-center rounded-lg bg-danger px-3 text-[13px] text-white hover:opacity-90"
+            data-testid="connector-market-confirm-ok"
           >
             {confirmLabel ?? t('connectorMarket.common.confirm')}
           </button>

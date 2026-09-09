@@ -210,3 +210,30 @@ def test_installer_blocks_running_app_and_preserves_user_data(exe_entry):
     assert 'Type: filesandordirs; Name: "{app}"' not in uninstall_delete
     assert "{userappdata}" not in uninstall_delete
     assert "{userprofile}" not in uninstall_delete
+
+
+def test_installer_cleans_only_confirmed_stale_openjiuwen_descriptions():
+    script = INSTALLER_PATH.read_text(encoding="utf-8")
+
+    assert "PrivilegesRequired=lowest" in script
+    assert "procedure CleanupStaleOpenJiuwenDescriptions();" in script
+    assert "function HasNestedDescriptionReplacement" in script
+    assert "CompareText(FindRec.Name, 'fragments') <> 0" in script
+    assert "AddBackslash(LanguageDirectory) + '*.md'" in script
+    assert "Unable to remove stale OpenJiuwen description" in script
+
+    step_handler = script.index("procedure CurStepChanged")
+    post_install_guard = script.index("CurStep <> ssPostInstall", step_handler)
+    cleanup_call = script.index(
+        "  CleanupStaleOpenJiuwenDescriptions();",
+        post_install_guard,
+    )
+    assert post_install_guard < cleanup_call
+
+    for removed_doctor_marker in (
+        "DoctorPassed",
+        "DoctorSucceeded",
+        "ExecAsOriginalUser",
+        "--doctor --doctor-output",
+    ):
+        assert removed_doctor_marker not in script

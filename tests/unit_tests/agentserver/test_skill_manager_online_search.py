@@ -274,3 +274,93 @@ async def test_online_search_rejects_invalid_input(tmp_path):
     assert missing_query["detail"] == "缺少参数: query"
     assert invalid_limit["success"] is False
     assert invalid_limit["detail"] == "参数 limit 必须是整数"
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_dispatches_teamskillshub(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    seen: dict[str, object] = {}
+
+    async def _install(params: dict) -> dict:
+        seen.update(params)
+        return {"success": True, "skill": {"name": "demo"}}
+
+    monkeypatch.setattr(manager, "handle_skills_team_skills_hub_install", _install)
+
+    payload = await manager.handle_skills_online_search_install(
+        {"identifier": "asset-demo", "force": True}
+    )
+
+    assert payload["success"] is True
+    assert seen == {"asset_id": "asset-demo", "force": True}
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_dispatches_clawhub(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    seen: dict[str, object] = {}
+
+    async def _download(params: dict) -> dict:
+        seen.update(params)
+        return {"success": True, "skill": {"name": "ppt-generator"}}
+
+    monkeypatch.setattr(manager, "handle_skills_clawhub_download", _download)
+
+    payload = await manager.handle_skills_online_search_install(
+        {
+            "source": "clawhub",
+            "identifier": "ppt-generator",
+            "owner_handle": "alice",
+            "display_name": "PPT Generator",
+            "force": False,
+        }
+    )
+
+    assert payload["success"] is True
+    assert seen == {
+        "slug": "ppt-generator",
+        "force": False,
+        "owner_handle": "alice",
+        "display_name": "PPT Generator",
+    }
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_dispatches_skillnet(tmp_path, monkeypatch):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    seen: dict[str, object] = {}
+
+    async def _install(params: dict) -> dict:
+        seen.update(params)
+        return {"success": True, "pending": True, "install_id": "abc"}
+
+    monkeypatch.setattr(manager, "handle_skills_skillnet_install", _install)
+
+    payload = await manager.handle_skills_online_search_install(
+        {"source": "skillnet", "identifier": "https://github.com/example/skill"}
+    )
+
+    assert payload["pending"] is True
+    assert seen == {"url": "https://github.com/example/skill", "force": False}
+
+
+@pytest.mark.asyncio
+async def test_online_search_install_rejects_missing_identifier_and_unknown_source(tmp_path):
+    manager = SkillManager(workspace_dir=str(tmp_path))
+
+    missing = await manager.handle_skills_online_search_install({"source": "clawhub"})
+    unknown = await manager.handle_skills_online_search_install(
+        {"source": "otherhub", "identifier": "x"}
+    )
+
+    assert missing["success"] is False
+    assert missing["detail"] == "缺少参数: identifier"
+    assert unknown["success"] is False
+    assert "不支持的 source" in unknown["detail"]
+    assert unknown["detail_key"] == "skills.onlineSearch.unsupportedSource"
+
+
+def test_req_method_online_search_install_registered() -> None:
+    from jiuwenswarm.common.schema.message import ReqMethod
+
+    assert ReqMethod.SKILLS_ONLINE_SEARCH_INSTALL.value == "skills.online_search.install"

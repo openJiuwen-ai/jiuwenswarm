@@ -55,7 +55,7 @@ class _NoHooks:
     events: dict = {}
 
 
-_OBSERVABILITY_RAIL_MODULE = "openjiuwen.agent_teams.observability.rail"
+_OBSERVABILITY_RAIL_MODULE = "openjiuwen.harness.observability"
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +69,7 @@ def _stub_observability_rail(monkeypatch: pytest.MonkeyPatch) -> None:
     means the function-level import resolves without the real one ever loading.
     """
     stub_module = types.ModuleType(_OBSERVABILITY_RAIL_MODULE)
-    stub_module.ObservabilityRail = lambda: object()
+    stub_module.AgentObservabilityRail = lambda: object()
     monkeypatch.setitem(sys.modules, _OBSERVABILITY_RAIL_MODULE, stub_module)
 
 

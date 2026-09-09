@@ -3,7 +3,7 @@ from pathlib import Path
 
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 
-from text_utils import CJK_PDF_BLOCKED_MESSAGE, contains_cjk
+from text_utils import CJK_WATERMARK_BLOCKED_MESSAGE, contains_cjk
 
 
 class PDFManipulator(Tool):
@@ -300,7 +300,7 @@ class PDFManipulator(Tool):
         font_size = options.get("font_size", 50)
 
         if contains_cjk(watermark_text):
-            return {"error": CJK_PDF_BLOCKED_MESSAGE}
+            return {"error": CJK_WATERMARK_BLOCKED_MESSAGE}
 
         reader = PdfReader(file_path)
         page = reader.pages[0]

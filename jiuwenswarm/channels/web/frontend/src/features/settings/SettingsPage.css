@@ -270,6 +270,12 @@
   flex: 0 0 auto;
 }
 
+.settings-experimental-cli__install-running--success {
+  color: var(--color-feedback-success);
+  border-color: var(--color-feedback-success);
+  background: var(--color-feedback-success-subtle);
+}
+
 .settings-model-dialog {
   width: min(620px, calc(100vw - 32px));
 }

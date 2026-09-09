@@ -17,13 +17,13 @@ import { classifyPrompt } from './promptRouting';
 import './InteractionSlot.css';
 
 interface InteractionSlotProps {
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
 
 export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const pending = useChatStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.pendingQuestion ?? null,
+    (s) => s.runtimes[activeSessionId ?? '']?.pendingQuestions[0] ?? null,
   );
 
   const kind = classifyPrompt(pending);

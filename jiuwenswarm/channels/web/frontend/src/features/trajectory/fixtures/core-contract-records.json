@@ -1,0 +1,185 @@
+[
+  {
+    "resourceSpans": [{
+      "scopeSpans": [{
+        "spans": [{
+          "traceId": "cccccccccccccccccccccccccccccccc",
+          "spanId": "1000000000000000",
+          "name": "agent.agent.plan.core-session",
+          "startTimeUnixNano": "1000000000",
+          "endTimeUnixNano": "5000000000",
+          "attributes": [
+            { "key": "gen_ai.conversation.id", "value": { "stringValue": "core-session" } },
+            { "key": "openjiuwen.session.id", "value": { "stringValue": "openjiuwen-conflict" } },
+            { "key": "session.id", "value": { "stringValue": "legacy-conflict" } },
+            { "key": "openjiuwen.session_id", "value": { "stringValue": "old-openjiuwen-conflict" } },
+            { "key": "agentteam.session.id", "value": { "stringValue": "team-conflict" } },
+            { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
+            { "key": "openjiuwen.trace.root", "value": { "boolValue": true } },
+            { "key": "openjiuwen.trace.schema_version", "value": { "stringValue": "1" } },
+            { "key": "openjiuwen.trace.complete", "value": { "boolValue": true } },
+            { "key": "openjiuwen.trace.forced_close", "value": { "boolValue": true } },
+            { "key": "openjiuwen.request.id", "value": { "stringValue": "web-request-1" } },
+            { "key": "openjiuwen.run.id", "value": { "stringValue": "run-1" } },
+            { "key": "openjiuwen.turn.id", "value": { "stringValue": "turn-1" } },
+            { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.agent.mode", "value": { "stringValue": "agent.plan" } },
+            { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "turn" } }
+          ],
+          "status": { "code": 1 }
+        }]
+      }]
+    }]
+  },
+  {
+    "resourceSpans": [{
+      "scopeSpans": [{
+        "spans": [{
+          "traceId": "cccccccccccccccccccccccccccccccc",
+          "spanId": "2000000000000000",
+          "parentSpanId": "1000000000000000",
+          "name": "llm.call",
+          "startTimeUnixNano": "2000000000",
+          "endTimeUnixNano": "4000000000",
+          "attributes": [
+            { "key": "gen_ai.conversation.id", "value": { "stringValue": "core-session" } },
+            { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+            { "key": "gen_ai.provider.name", "value": { "stringValue": "openai" } },
+            { "key": "gen_ai.system", "value": { "stringValue": "legacy-provider-conflict" } },
+            { "key": "gen_ai.request.model", "value": { "stringValue": "request-model" } },
+            { "key": "gen_ai.request.temperature", "value": { "doubleValue": 0 } },
+            { "key": "gen_ai.request.top_p", "value": { "doubleValue": 0.8 } },
+            { "key": "gen_ai.request.max_tokens", "value": { "intValue": "0" } },
+            { "key": "gen_ai.request.stream", "value": { "boolValue": true } },
+            { "key": "gen_ai.system_instructions", "value": { "stringValue": "[{\"type\":\"text\",\"content\":\"Core system\"}]" } },
+            { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Core question\"}]}]" } },
+            { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Core reasoning\"},{\"type\":\"text\",\"content\":\"Core answer\"},{\"type\":\"tool_call\",\"id\":\"call-1\",\"name\":\"search\",\"arguments\":{\"q\":\"next\"}}]}]" } },
+            { "key": "gen_ai.tool.definitions", "value": { "stringValue": "[{\"type\":\"function\",\"function\":{\"name\":\"search\",\"description\":\"Search docs\",\"parameters\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}}}]" } },
+            { "key": "gen_ai.response.id", "value": { "stringValue": "resp-1" } },
+            { "key": "gen_ai.response.model", "value": { "stringValue": "response-model" } },
+            { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [{ "stringValue": "tool_calls" }] } } },
+            { "key": "gen_ai.response.finish_reason", "value": { "stringValue": "legacy-conflict" } },
+            { "key": "gen_ai.response.time_to_first_chunk", "value": { "doubleValue": 0 } },
+            { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "0" } },
+            { "key": "gen_ai.usage.prompt_tokens", "value": { "intValue": "99" } },
+            { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "7" } },
+            { "key": "gen_ai.usage.completion_tokens", "value": { "intValue": "88" } },
+            { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "3" } },
+            { "key": "gen_ai.usage.cache_creation.input_tokens", "value": { "intValue": "2" } },
+            { "key": "gen_ai.usage.reasoning.output_tokens", "value": { "intValue": "2" } },
+            { "key": "gen_ai.usage.total_tokens", "value": { "intValue": "7" } },
+            { "key": "gen_ai.agent.id", "value": { "stringValue": "agent-1" } },
+            { "key": "gen_ai.agent.name", "value": { "stringValue": "Core Agent" } },
+            { "key": "gen_ai.agent.version", "value": { "stringValue": "1.0" } },
+            { "key": "gen_ai.agent.description", "value": { "stringValue": "Contract fixture" } },
+            { "key": "openjiuwen.request.id", "value": { "stringValue": "web-request-1" } },
+            { "key": "openjiuwen.run.id", "value": { "stringValue": "run-1" } },
+            { "key": "openjiuwen.turn.id", "value": { "stringValue": "turn-1" } },
+            { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.request.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.request.purpose", "value": { "stringValue": "assistant" } },
+            { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } },
+            { "key": "openjiuwen.trace.schema_version", "value": { "stringValue": "1" } },
+            { "key": "openjiuwen.gen_ai.usage.input_cost", "value": { "doubleValue": 0 } },
+            { "key": "openjiuwen.gen_ai.usage.output_cost", "value": { "doubleValue": 0.02 } },
+            { "key": "openjiuwen.gen_ai.usage.total_cost", "value": { "doubleValue": 0.02 } },
+            { "key": "openjiuwen.gen_ai.response.total_latency_ms", "value": { "doubleValue": 2000 } },
+            { "key": "openjiuwen.gen_ai.response.tpot_ms", "value": { "doubleValue": 250 } },
+            { "key": "openjiuwen.gen_ai.response.prompt_token_ids", "value": { "stringValue": "[1,2]" } },
+            { "key": "openjiuwen.gen_ai.response.completion_token_ids", "value": { "stringValue": "[3,4]" } },
+            { "key": "openjiuwen.gen_ai.response.logprobs", "value": { "stringValue": "[{\"token\":\"Core\",\"logprob\":-0.1}]" } },
+            { "key": "openjiuwen.gen_ai.response.parser_result", "value": { "stringValue": "{\"ok\":true}" } },
+            { "key": "openjiuwen.gen_ai.response.provider_metadata", "value": { "stringValue": "{\"system_fingerprint\":\"fp\"}" } },
+            { "key": "langfuse.observation.output", "value": { "stringValue": "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Langfuse conflict\"},\"finish_reason\":\"langfuse-conflict\"}],\"usage\":{\"input_tokens\":77,\"output_tokens\":66,\"total_tokens\":143}}" } }
+          ],
+          "events": [
+            {
+              "timeUnixNano": "2500000000",
+              "name": "dsh.stream.chunk",
+              "attributes": [
+                { "key": "dsh.event.sequence", "value": { "intValue": "0" } },
+                { "key": "dsh.stream.kind", "value": { "stringValue": "text-delta" } },
+                { "key": "dsh.stream.text", "value": { "stringValue": "DSH conflict" } }
+              ]
+            },
+            {
+              "timeUnixNano": "2500000001",
+              "name": "openjiuwen.stream.chunk",
+              "attributes": [
+                { "key": "openjiuwen.event.sequence", "value": { "intValue": "0" } },
+                { "key": "openjiuwen.stream.kind", "value": { "stringValue": "text-delta" } },
+                { "key": "openjiuwen.stream.text", "value": { "stringValue": "OpenJiuwen wins" } }
+              ]
+            },
+            {
+              "timeUnixNano": "2500000002",
+              "name": "llm.chunk",
+              "attributes": [
+                { "key": "text", "value": { "stringValue": "must not project" } }
+              ]
+            }
+          ],
+          "status": { "code": 1 }
+        }]
+      }]
+    }]
+  },
+  {
+    "resourceSpans": [{
+      "scopeSpans": [{
+        "spans": [{
+          "traceId": "cccccccccccccccccccccccccccccccc",
+          "spanId": "3000000000000000",
+          "parentSpanId": "1000000000000000",
+          "name": "tool.search",
+          "startTimeUnixNano": "4100000000",
+          "endTimeUnixNano": "4500000000",
+          "attributes": [
+            { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+            { "key": "gen_ai.tool.name", "value": { "stringValue": "search" } },
+            { "key": "gen_ai.tool.call.id", "value": { "stringValue": "call-1" } },
+            { "key": "gen_ai.tool.call.arguments", "value": { "stringValue": "{\"q\":\"next\"}" } },
+            { "key": "gen_ai.tool.call.result", "value": { "stringValue": "null" } },
+            { "key": "gen_ai.tool.type", "value": { "stringValue": "function" } },
+            { "key": "gen_ai.tool.description", "value": { "stringValue": "Search docs" } },
+            { "key": "openjiuwen.tool.resource_id", "value": { "stringValue": "resource-search" } },
+            { "key": "openjiuwen.tool.type", "value": { "stringValue": "function" } },
+            { "key": "openjiuwen.tool.authoritative", "value": { "boolValue": true } },
+            { "key": "openjiuwen.span.forced_close", "value": { "boolValue": true } },
+            { "key": "openjiuwen.span.forced_close.reason", "value": { "stringValue": "trace_safety_flush" } },
+            { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "tool" } }
+          ],
+          "status": { "code": 1 }
+        }]
+      }]
+    }]
+  },
+  {
+    "resourceSpans": [{
+      "scopeSpans": [{
+        "spans": [{
+          "traceId": "cccccccccccccccccccccccccccccccc",
+          "spanId": "4000000000000000",
+          "parentSpanId": "1000000000000000",
+          "name": "tool.search.callback",
+          "startTimeUnixNano": "4100000001",
+          "endTimeUnixNano": "4500000001",
+          "attributes": [
+            { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+            { "key": "gen_ai.tool.name", "value": { "stringValue": "search" } },
+            { "key": "gen_ai.tool.call.id", "value": { "stringValue": "call-1" } },
+            { "key": "gen_ai.tool.call.arguments", "value": { "stringValue": "{\"q\":\"shadow\"}" } },
+            { "key": "gen_ai.tool.call.result", "value": { "stringValue": "{\"shadow\":true}" } },
+            { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "tool" } }
+          ],
+          "status": { "code": 1 }
+        }]
+      }]
+    }]
+  }
+]

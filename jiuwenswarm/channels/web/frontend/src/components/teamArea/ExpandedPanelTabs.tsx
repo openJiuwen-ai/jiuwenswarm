@@ -7,6 +7,7 @@ import RecentTasksIcon from '../../assets/work-mode/progress-tasks.svg?react';
 import artifactsIcon from '../../assets/artifacts.svg';
 import reviewIcon from '../../assets/review.svg';
 import '../subagent/Subagent.css';
+import '../ChatPanel/ChatPanel.css';
 
 export interface PanelTabItem {
   key: string;
@@ -106,22 +107,22 @@ export function ExpandedPanelTabs({
           <button
             onClick={onToggleFullscreen}
             data-testid={`${testIdPrefix}-maximize`}
-            className="flex h-[36px] w-[36px] items-center justify-center rounded p-2 text-text hover:bg-secondary"
+            className="chat-header-icon-btn panel-tab-icon-btn"
             aria-label={isFullscreen ? t('team.restore') : t('team.maximize')}
             title={isFullscreen ? t('team.restore') : t('team.maximize')}
           >
-            {isFullscreen ? <Minimize2 size={12} /> : <MaximizeIcon className="h-[12px] w-[12px]" aria-hidden="true" />}
+            {isFullscreen ? <Minimize2 className="h-[21.33px] w-[21.33px]" /> : <MaximizeIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />}
           </button>
         )}
         {onCollapse && (
           <button
             onClick={onCollapse}
             data-testid={`${testIdPrefix}-collapse`}
-            className="flex h-[36px] w-[36px] items-center justify-center rounded p-2 text-text hover:bg-secondary"
+            className="chat-header-icon-btn panel-tab-icon-btn panel-tab-icon-btn--collapse"
             aria-label={t('team.collapse')}
             title={t('team.collapse')}
           >
-            <PanelCollapseIcon className="h-[18px] w-[18px]" aria-hidden="true" />
+            <PanelCollapseIcon className="h-[32px] w-[32px]" aria-hidden="true" />
           </button>
         )}
       </div>

@@ -70,6 +70,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
+  yamlField('skill_retrieval_index_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.index.enabled'),
   envField('free_search_ddg_enabled', 'agent', 'boolean', 'FREE_SEARCH_DDG_ENABLED'),
   envField('free_search_bing_enabled', 'agent', 'boolean', 'FREE_SEARCH_BING_ENABLED'),
   envField('jina_api_key', 'agent', 'text', 'JINA_API_KEY'),
@@ -101,11 +102,17 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('video_vendor_key', 'agent', 'text', 'VIDEO_VENDOR_KEY'),
   envField('video_plan', 'agent', 'text', 'VIDEO_PLAN'),
   envField('video_enabled', 'agent', 'boolean', 'VIDEO_ENABLED'),
-  yamlField('swarmflow_enabled', 'agent', 'boolean', 'modes.team.jiuwen_team.enable_swarmflow'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
+  yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
+  yamlField(
+    'kv_cache_affinity_enabled',
+    'experimental',
+    'boolean',
+    'kv_cache_affinity_config.enable_kv_cache_affinity',
+  ),
   yamlField(
     'external_cli_agent_claude_enabled',
     'experimental',

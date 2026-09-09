@@ -1,12 +1,20 @@
+ARG NODE_VERSION=22.11.0
 ARG BASE_IMAGE=python:3.11.4-slim-bookworm
+FROM node:${NODE_VERSION}-bookworm-slim AS node-runtime
 FROM ${BASE_IMAGE}
+
+# Pin the same Node runtime as desktop releases. npm/npx remain available for
+# frontend builds and the explicit Playwright MCP fallback, while the healthy
+# browser path launches the bundled CLI directly with node.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=node-runtime /usr/local/bin/npx /usr/local/bin/npx
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 
 # Frontend build dependencies and git (required by the openjiuwen VCS dependency).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
-    nodejs \
-    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user and set up working directory
@@ -30,6 +38,7 @@ ENV PATH=$PATH:/home/app/.local/bin
 # source, desktop, and pip installations.
 ENV FRONTEND_HOST=0.0.0.0
 RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple . --no-cache-dir
+RUN python -c "from jiuwenswarm.common.playwright_mcp_runtime import materialize_bundled_runtime, resolve_node_executable; import subprocess; cli, manifest = materialize_bundled_runtime(); node = resolve_node_executable(); result = subprocess.run([node, str(cli), '--help'], check=True, capture_output=True, text=True); assert manifest['version'] == '0.0.78' and 'playwright mcp' in result.stdout.lower()"
 
 # Start claw app
 EXPOSE 5173

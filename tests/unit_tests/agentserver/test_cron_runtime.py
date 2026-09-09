@@ -316,6 +316,32 @@ async def test_cron_tools_reports_gateway_delivery_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cron_tools_runtime_host_transport_waits_for_gateway_ack(
+    monkeypatch,
+) -> None:
+    """The Runtime host adapter keeps develop's Gateway validation round trip."""
+    payloads: list[dict] = []
+
+    async def _send(payload: dict) -> bool:
+        payloads.append(payload)
+        cron_tools_module.resolve_gateway_cron_command_ack(
+            payload["body"]["command_id"],
+            {"data": {"id": "job-1"}},
+        )
+        return True
+
+    monkeypatch.setattr(cron_tools_module, "send_runtime_push", _send)
+    result = await CronTools()._send("get", {"job_id": "job-1"})
+
+    assert result == {
+        "action": "get",
+        "status": "ok",
+        "data": {"id": "job-1"},
+    }
+    assert payloads[0]["body"]["action"] == "get"
+
+
+@pytest.mark.asyncio
 async def test_cron_tools_delete_missing_job_returns_false_without_push(
     tmp_path, monkeypatch,
 ) -> None:

@@ -406,10 +406,24 @@
   color: var(--color-feedback-danger);
 }
 
+/* 卡片头部统计徽标（code-mode-changes-card-lines-added / -removed） */
+.code-changes-card__heading .code-stat-added {
+  background: var(--color-code-stat-added-surface);
+  padding: 0 4px;
+  line-height: 18px;
+  border-radius: 2px;
+}
+
+.code-changes-card__heading .code-stat-removed {
+  background: var(--color-code-stat-removed-surface);
+  padding: 0 4px;
+  line-height: 18px;
+  border-radius: 2px;
+}
+
 .code-changes-card {
   container-type: inline-size;
-  width: min(720px, calc(100% - 24px));
-  margin: 14px auto;
+  width: 100%;
   overflow: hidden;
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
@@ -426,14 +440,11 @@
 
 .code-changes-card__icon {
   display: inline-flex;
-  width: 38px;
-  height: 38px;
+  width: 24px;
+  height: 24px;
   flex: none;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  background: var(--color-action-primary-subtle);
-  color: var(--color-action-primary);
 }
 
 .code-changes-card__heading {
@@ -769,7 +780,7 @@ button.code-environment__row:disabled {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--color-code-toolbar-icon);
   cursor: pointer;
 }
 
@@ -886,7 +897,7 @@ button.code-environment__row:disabled {
   border: 1px solid var(--color-border-default);
   border-radius: 7px;
   background: var(--color-surface-panel);
-  color: var(--color-text-primary);
+  color: var(--color-code-toolbar-icon);
   font-size: 12px;
   cursor: pointer;
 }

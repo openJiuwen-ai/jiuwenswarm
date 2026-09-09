@@ -56,10 +56,10 @@ function commandOutputMessage(ms, id = 'cmd1') {
     message: {
       id,
       role: 'system',
-      content: '/btw side question\nside answer',
+      content: '/compact\ncontext compressed',
       timestamp: iso(ms),
       isCommandOutput: true,
-      commandName: 'btw',
+      commandName: 'compact',
     },
   };
 }
@@ -68,7 +68,7 @@ function turnSummaryOf(items) {
   return items.find((item) => item.type === 'turnSummary');
 }
 
-function execution({ status, startedAt, updatedAt }) {
+function execution({ status, startedAt, updatedAt, agentTemplateName }) {
   return {
     toolCallId: `tc-${startedAt}`,
     toolCall: { id: `tc-${startedAt}`, name: 'bash', arguments: {} },
@@ -76,8 +76,47 @@ function execution({ status, startedAt, updatedAt }) {
     startedAt: iso(startedAt),
     updatedAt: iso(updatedAt),
     timeoutAt: iso(startedAt + 60_000),
+    ...(agentTemplateName ? { agentTemplateName } : {}),
   };
 }
+
+test('tool-first group keeps the Web Agent identity for its avatar', () => {
+  const items = [
+    userMessage(U),
+    {
+      type: 'toolExecution',
+      key: 'tc-agent',
+      timestampMs: S,
+      sourceIndex: 0,
+      execution: execution({
+        status: 'pending',
+        startedAt: S,
+        updatedAt: S,
+        agentTemplateName: 'expert-a',
+      }),
+    },
+  ];
+
+  const toolGroup = buildRenderItems(items, false, true).find((item) => item.type === 'toolGroup');
+  assert.equal(toolGroup?.agentTemplateName, 'expert-a');
+});
+
+test('adjacent reasoning keeps a later Agent identity when the first segment lacks one', () => {
+  const items = [
+    userMessage(U),
+    reasoningItem({ id: 'rsn-first', text: 'first', startedAt: S, closed: true }),
+    reasoningItem({
+      id: 'rsn-second',
+      text: 'second',
+      startedAt: S + 1,
+      closed: true,
+      agentTemplateName: 'expert-a',
+    }, 1),
+  ];
+
+  const reasoning = buildRenderItems(items, false, false).find((item) => item.type === 'reasoning');
+  assert.equal(reasoning?.segment.agentTemplateName, 'expert-a');
+});
 
 test('异常结束（无 closedAt）：reasoning.updatedAt 兜底为耗时终点', () => {
   const items = [
@@ -147,6 +186,25 @@ test('回归：pending/timeout 工具的 updatedAt 不计入耗时终点（防�
   ];
   const summary = turnSummaryOf(buildRenderItems(items, false, false));
   assert.equal(summary.workEndMs, toolStart, 'pending 的 updatedAt 不得进入 work 终点');
+});
+
+test('任务用时行移动到本轮内容顶部：头像下第一行，并接管顶部头像', () => {
+  const items = [
+    userMessage(U),
+    assistantMessage(U + 2_000, U + 8_000),
+  ];
+  const out = buildRenderItems(items, false, false);
+  const summaryIndex = out.findIndex((item) => item.type === 'turnSummary');
+  const assistantIndex = out.findIndex(
+    (item) => item.type === 'message' && item.message.role === 'assistant',
+  );
+
+  assert.ok(summaryIndex >= 0, '仍应生成任务用时行');
+  assert.ok(summaryIndex < assistantIndex, '时间行应排在本轮 assistant 内容之前（头像下第一行）');
+  const summary = out[summaryIndex];
+  assert.equal(summary.showAvatar, true, '时间行接管本轮顶部头像');
+  const assistant = out[assistantIndex];
+  assert.equal(assistant.showAvatar, false, '首条 assistant 内容不再重复画头像');
 });
 
 test('slash 命令结果自成时间线块，不把上一轮任务用时排到卡片下方', () => {

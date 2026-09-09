@@ -2,7 +2,7 @@
  * Todo 类型定义
  */
 
-export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
 
 export interface TodoItem {
   id: string;

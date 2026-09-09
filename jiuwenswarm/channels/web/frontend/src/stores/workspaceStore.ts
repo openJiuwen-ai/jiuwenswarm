@@ -402,9 +402,26 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   upsertSession: (session, options = {}) => {
     const state = get();
-    const projectId = findProjectIdForSession(state.projects, session);
-    if (!projectId) return;
+    const isCronSession = Boolean(session.cron_id?.trim());
     set((current) => {
+      // cron 会话由 cronStore 在对应定时任务节点展示。WebSocket / metadata
+      // 的增量更新不能把它临时插入项目普通会话列表，否则在下一次全量刷新前
+      // 会同时出现在两个位置。已置顶的会话沿用现有规则，展示在置顶区。
+      if (isCronSession && !session.pinned) {
+        return {
+          projectSessions: patchSessionLists(
+            current.projectSessions,
+            session.session_id,
+            {},
+            { removeFromProjectLists: true },
+          ),
+          pinnedSessions: current.pinnedSessions.filter(
+            (item) => item.session_id !== session.session_id,
+          ),
+        };
+      }
+      const projectId = findProjectIdForSession(state.projects, session);
+      if (!projectId) return current;
       const currentProjectSessions = current.projectSessions[projectId] || [];
       const sessionWasVisible = currentProjectSessions.some((item) => item.session_id === session.session_id);
       const pinnedSessions = session.pinned

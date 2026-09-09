@@ -1,0 +1,310 @@
+.pc-settings {
+  height: 100%;
+  overflow-y: auto;
+  background: #ffffff;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pc-settings--loading {
+  align-items: center;
+  justify-content: center;
+}
+
+/* 标题：24px semibold #191919 */
+.pc-settings__title {
+  font-size: 24px;
+  font-weight: 600;
+  color: #191919;
+  line-height: 36px;
+  margin: 0;
+}
+
+.pc-settings__error {
+  background: rgba(220, 50, 50, 0.08);
+  color: #dc3232;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+/* 配置卡片：r16 描边 #dbdbdb ，透明背景 */
+.pc-settings__card {
+  border: 1px solid #dbdbdb;
+  border-radius: 16px;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* 卡片行：高度 76px，分隔线 #f0f0f0 */
+.pc-settings__card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  border-bottom: 1px solid #f0f0f0;
+  min-height: 76px;
+}
+
+.pc-settings__card-row:last-child {
+  border-bottom: none;
+}
+
+.pc-settings__card-row--inline {
+  align-items: center;
+}
+
+/* 授权行：纵向布局 */
+.pc-settings__card-row--auth {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  padding: 16px;
+}
+
+.pc-settings__row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.pc-settings__row-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #191919;
+  line-height: 22px;
+}
+
+.pc-settings__row-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: #808080;
+  line-height: 18px;
+}
+
+/* 下拉框：160x28 r6 描边 #c2c2c2 */
+.pc-settings__select {
+  width: 160px;
+  height: 28px;
+  border: 1px solid #c2c2c2;
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 12px;
+  color: #191919;
+  padding: 0 28px 0 8px;
+  flex-shrink: 0;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3 6l5 5 5-5' stroke='%23808080' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+
+.pc-settings__select:focus {
+  border-color: #191919;
+}
+
+.pc-settings__select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 授权行头部 */
+.pc-settings__auth-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 授权卡片组 */
+.pc-settings__auth-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 单个授权卡片：#f8f8f8 r16，高 72px */
+.pc-settings__auth-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px;
+  background: #f8f8f8;
+  border-radius: 16px;
+  min-height: 72px;
+}
+
+/* 授权图标：40x40 r10 描边 #dbdbdb 白色背景 */
+.pc-settings__auth-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid #dbdbdb;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.pc-settings__auth-icon img {
+  width: 40px;
+  height: 40px;
+  display: block;
+}
+
+.pc-settings__auth-icon--feishu {
+  color: #3370ff;
+}
+
+.pc-settings__auth-icon--github {
+  color: #191919;
+}
+
+.pc-settings__auth-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: #191919;
+  min-width: 0;
+}
+
+/* 授权按钮：#1476ff 文字 + 箭头，r999 胶囊 */
+.pc-settings__auth-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: none;
+  background: transparent;
+  color: #1476ff;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  line-height: 18px;
+}
+
+.pc-settings__auth-action:hover:not(:disabled) {
+  background: rgba(20, 118, 255, 0.08);
+}
+
+.pc-settings__auth-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 旧类名兼容（已废弃） */
+.pc-settings__header,
+.pc-settings__subtitle,
+.pc-settings__row,
+.pc-settings__row--inline,
+.pc-settings__auth,
+.pc-settings__auth-table,
+.pc-settings__auth-foot,
+.pc-settings__auth-note,
+.pc-settings__auth-hint,
+.pc-settings__auth-btn {
+  display: none;
+}
+
+/* GitHub PAT 弹窗 */
+.pc-settings__modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.pc-settings__modal {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 24px;
+  width: 420px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pc-settings__modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pc-settings__modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #191919;
+  margin: 0;
+}
+
+.pc-settings__modal-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #808080;
+  padding: 4px;
+}
+
+.pc-settings__modal-close:hover {
+  color: #191919;
+}
+
+.pc-settings__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pc-settings__field label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #191919;
+}
+
+.pc-settings__input {
+  height: 32px;
+  border: 1px solid #c2c2c2;
+  border-radius: 6px;
+  padding: 0 12px;
+  font-size: 13px;
+  outline: none;
+}
+
+.pc-settings__input:focus {
+  border-color: #191919;
+}
+
+.pc-settings__field-hint {
+  font-size: 12px;
+  color: #808080;
+}
+
+.pc-settings__modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.spin {
+  animation: pc-spin 1s linear infinite;
+}
+
+@keyframes pc-spin {
+  to { transform: rotate(360deg); }
+}

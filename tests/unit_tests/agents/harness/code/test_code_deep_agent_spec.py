@@ -313,6 +313,7 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     config_base = {
         "react": {"agent_name": "config-agent"},
         "modes": {"code": {"rails": [], "tools": []}},
+        "symphony": {"enabled": True},
     }
     custom_model = _model()
     custom_spec = DeepAgentSpec(
@@ -372,6 +373,12 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     monkeypatch.setattr(adapter, "_create_sys_operation", create_sys_operation)
     monkeypatch.setattr(adapter, "_seed_runtime_cwd", MagicMock())
     monkeypatch.setattr(adapter, "_ensure_cron_tools_registered", MagicMock())
+    sync_symphony = MagicMock()
+    monkeypatch.setattr(
+        adapter,
+        "_sync_symphony_tools_for_runtime",
+        sync_symphony,
+    )
     monkeypatch.setattr(adapter, "_register_mcp_servers_from_config", AsyncMock())
     monkeypatch.setattr(adapter, "_load_active_packages", AsyncMock())
     monkeypatch.setattr(adapter, "load_user_rails", AsyncMock())
@@ -405,6 +412,7 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
     assert adapter._default_model_name == "test-model"
     create_model.assert_not_called()
     convert_config.assert_not_called()
+    sync_symphony.assert_not_called()
 
 
 def test_custom_code_build_context_is_cloned_and_rebound(tmp_path):

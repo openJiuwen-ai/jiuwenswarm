@@ -84,6 +84,10 @@ _AGENT_FILE_PATH_ROOT = "/home/agentos"
 _MAX_AGENT_FILE_UPLOAD_BYTES = 50 * 1024 * 1024
 
 _TEAM_MODES = frozenset({"team", "code.team", "team.plan"})
+# Web/TUI 握手成功后预热内置沙箱；SSH/IM 等不走 agentserver WS，不预热。
+_CONNECT_WARMUP_CHANNELS = frozenset(
+    {ChannelType.WEB.value, ChannelType.CLI.value}
+)
 
 # create_sandbox 返回后 agentserver 仍在进程内启动；YuanRong WS 代理此时会回
 # HTTP 502。在 deadline 内重试，避免首条 chat 立刻空失败（TUI "Worked for 0s"）。
@@ -368,6 +372,7 @@ class AgentOSRouterClient(AgentServerClient):
         sandbox_idle_timeout_seconds: float = 600.0,
         sandbox_idle_check_interval_seconds: float = 30.0,
         disconnect_cleanup_timeout_seconds: float = 60.0,
+        connect_warmup_enabled: bool = True,
         auth_client: AgentOSAuthenticator | None = None,
         ws_client_factory: Callable[[], WebSocketAgentServerClient] | None = None,
     ) -> None:
@@ -390,6 +395,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._disconnect_cleanup_timeout_seconds = float(
             disconnect_cleanup_timeout_seconds
         )
+        self._connect_warmup_enabled = bool(connect_warmup_enabled)
         self._idle_reaper_task: asyncio.Task[None] | None = None
         self._server_ready = False
         self._background_tasks: set[asyncio.Task[Any]] = set()
@@ -399,6 +405,8 @@ class AgentOSRouterClient(AgentServerClient):
         self._auth_client = auth_client
         # 延迟清理任务：user_id → pending cleanup task
         self._pending_cleanups: dict[str, asyncio.Task[None]] = {}
+        # Web/TUI 连接预热：user_id → in-flight warmup task（同用户合并）
+        self._warmup_tasks: dict[str, asyncio.Task[None]] = {}
         # create 后走 YuanRong frontend 的 WS 代理直连 instance（不走 invoke 链路）：
         # instance_id(sandbox_id) → 已连接的 WebSocketAgentServerClient
         self._ws_clients: dict[str, WebSocketAgentServerClient] = {}
@@ -545,7 +553,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._ephemeral_key_ttl_sec = float(ephemeral_key_ttl_sec)
 
     async def _on_channel_event(self, event: Any) -> None:
-        """处理 Channel 连接事件，维护用户连接计数并触发延迟清理。"""
+        """处理 Channel 连接事件：连接计数、延迟清理、Web/TUI 预热。"""
         user_id = str(getattr(event, "user_id", "") or "").strip()
         if not user_id:
             return
@@ -556,6 +564,9 @@ class AgentOSRouterClient(AgentServerClient):
             task = self._pending_cleanups.pop(user_id, None)
             if task is not None and not task.done():
                 task.cancel()
+            channel_type = str(getattr(event, "channel_type", "") or "").strip().lower()
+            if channel_type in _CONNECT_WARMUP_CHANNELS:
+                self._schedule_connect_warmup(user_id)
         elif event_type == "disconnected":
             count = self._agent_manager.decrement_user_connections(user_id)
             # 配置的超时清理时长为0或者负数时，不触发清理机制
@@ -666,6 +677,75 @@ class AgentOSRouterClient(AgentServerClient):
                 await asyncio.sleep(_DISCONNECT_CLEANUP_RETRY_INTERVAL_SECONDS)
             except asyncio.CancelledError:
                 return
+
+    def _schedule_connect_warmup(self, user_id: str) -> None:
+        """Fire-and-forget builtin sandbox + instance WS warmup for one user."""
+        if self._closed or not self._connect_warmup_enabled:
+            return
+        if "session_id" in self._agent_manager.key_fields:
+            logger.info(
+                "[AgentOSRouter] skip connect warmup: session_id in "
+                "agent_key_fields user=%s",
+                user_id,
+            )
+            return
+        existing = self._warmup_tasks.get(user_id)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._warmup_user_agent(user_id),
+            name=f"agentos-connect-warmup-{user_id[:24]}",
+        )
+        self._warmup_tasks[user_id] = task
+        self._background_tasks.add(task)
+
+        def _on_done(done: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done)
+            if self._warmup_tasks.get(user_id) is done:
+                self._warmup_tasks.pop(user_id, None)
+
+        task.add_done_callback(_on_done)
+
+    async def _warmup_user_agent(self, user_id: str) -> None:
+        """Create the builtin jiuwenswarm sandbox and open instance WS.
+
+        Must not raise: handshake / connection.ack already succeeded. Chat
+        still goes through get_or_create_agent, so a failed warmup only
+        means the first request pays the cold-start cost.
+        """
+        if self._closed:
+            return
+        agent_type = BUILTIN_AGENT_TYPE
+        logger.info(
+            "[AgentOSRouter] connect warmup start: user=%s agent_type=%s",
+            user_id,
+            agent_type,
+        )
+        try:
+            runtime = await self._agent_manager.get_or_create_agent(
+                user_id,
+                agent_type,
+                creator=self._create_agent,
+                acquire=False,
+            )
+            await self._get_ws_client(runtime)
+        except Exception:
+            logger.warning(
+                "[AgentOSRouter] connect warmup failed: user=%s agent_type=%s",
+                user_id,
+                agent_type,
+                exc_info=True,
+            )
+            return
+        if self._closed:
+            return
+        logger.info(
+            "[AgentOSRouter] connect warmup ready: user=%s agent_type=%s "
+            "sandbox_id=%s",
+            user_id,
+            agent_type,
+            runtime.info.sandbox_id,
+        )
 
     def get_current_agent_type(self, user_id: str) -> str:
         """Return the user's current agent_type (default ``jiuwenswarm``)."""
@@ -932,6 +1012,7 @@ class AgentOSRouterClient(AgentServerClient):
             if not task.done():
                 task.cancel()
         self._pending_cleanups.clear()
+        self._warmup_tasks.clear()
         await self._drain_background_tasks()
         await self._close_all_ws_clients()
         try:

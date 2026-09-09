@@ -83,7 +83,14 @@ class FeishuIMPlatformAdapter:
             return ""
 
     def resolve_user_display_name(self, user_id: str) -> str:
-        return self.get_user_name_by_open_id(user_id).strip()
+        display_name = self.get_user_name_by_open_id(user_id).strip()
+        if display_name:
+            return display_name
+
+        open_id = user_id.strip()
+        if not open_id:
+            return ""
+        return f"Open ID 尾号是 {open_id[-4:]} 的用户"
 
     def get_principal_display_name(self) -> str:
         if self._target_user_name_cache is not None:

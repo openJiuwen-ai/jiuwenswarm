@@ -2,6 +2,7 @@
 
 """Unit tests for team config loading."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import yaml
 from jiuwenswarm.common.config import resolve_env_vars
 from jiuwenswarm.agents.harness.team.config_loader import (
     TeamTemplateNotFoundError,
+    get_effective_team_model_entries,
     get_team_template_snapshot,
     list_team_template_summaries,
     load_team_spec_dict,
@@ -19,6 +21,162 @@ from jiuwenswarm.agents.harness.team.config_loader import (
 
 def _wrap_modes_team(team_mapping: dict[str, dict]) -> dict:
     return {"modes": {"team": team_mapping}}
+
+
+def test_effective_team_models_include_selected_zen_without_configured_defaults(monkeypatch):
+    """A page-selected in-memory Zen model becomes the only effective candidate."""
+    zen_entry = {
+        "model_client_config": {
+            "api_base": "https://opencode.ai/zen/v1",
+            "api_key": "public",
+            "model_name": "zen-free",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_zen_free_model_entries",
+        lambda: [zen_entry],
+    )
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    entries = get_effective_team_model_entries(
+        {"models": {"defaults": []}},
+        requested_model_name="zen-free",
+    )
+
+    assert entries == [zen_entry]
+
+
+def test_effective_team_models_preserve_distinct_credentials():
+    """Pool assembly deduplicates exact entries without merging credentials."""
+    first = {
+        "model_client_config": {
+            "model_name": "shared-model",
+            "client_provider": "OpenAI",
+            "api_base": "https://models.example/v1",
+            "api_key": "key-one",
+        },
+        "model_config_obj": {"temperature": 0.2},
+    }
+    duplicate = deepcopy(first)
+    duplicate["model_client_config"]["client_provider"] = "openai"
+    duplicate["model_client_config"]["api_base"] = "https://models.example/v1/"
+    second = deepcopy(first)
+    second["model_client_config"]["api_key"] = "key-two"
+    config = {"models": {"defaults": [first, duplicate, second]}}
+
+    entries = get_effective_team_model_entries(config)
+
+    assert len(entries) == 2
+    assert [entry["model_client_config"]["api_key"] for entry in entries] == ["key-one", "key-two"]
+
+
+def test_effective_team_models_select_from_normalized_entries(monkeypatch):
+    """Configured selection reuses decrypted and parsed model entries."""
+    raw_entry = {
+        "model_client_config": {
+            "model_name": "configured-model",
+            "client_provider": "OpenAI",
+            "api_base": "https://models.example/v1",
+            "api_key": "encrypted-key",
+            "custom_headers": '{"X-Trace-Id": "trace-one"}',
+        },
+        "model_config_obj": {},
+    }
+    normalized_entry = deepcopy(raw_entry)
+    normalized_entry["model_client_config"]["api_key"] = "decrypted-key"
+    normalized_entry["model_client_config"]["custom_headers"] = {"X-Trace-Id": "trace-one"}
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_default_models",
+        lambda _config: [deepcopy(normalized_entry)],
+    )
+
+    entries = get_effective_team_model_entries(
+        {"models": {"defaults": [raw_entry]}},
+        requested_model_name="configured-model",
+    )
+
+    assert entries == [normalized_entry]
+    assert entries[0]["model_client_config"]["api_key"] == "decrypted-key"
+    assert entries[0]["model_client_config"]["custom_headers"] == {"X-Trace-Id": "trace-one"}
+
+
+def test_team_manager_builds_pool_for_single_configured_model(monkeypatch):
+    """A single configured model remains available to external fallback."""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    model_entry = {
+        "model_client_config": {
+            "api_base": "https://models.example/v1",
+            "api_key": "model-key",
+            "model_name": "configured-model",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    config = {
+        "models": {"defaults": [model_entry]},
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+
+    spec = TeamManager._load_team_spec("session-one")
+
+    assert spec.model_pool_strategy == "by_model_name"
+    assert len(spec.model_pool) == 1
+    assert spec.model_pool[0].model_name == "configured-model"
+    assert spec.model_pool[0].api_key == "model-key"
+
+
+def test_team_manager_builds_pool_for_single_selected_zen_model(monkeypatch):
+    """A selected Zen model creates a one-entry pool even with zero defaults."""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    zen_entry = {
+        "model_client_config": {
+            "api_base": "https://opencode.ai/zen/v1",
+            "api_key": "public",
+            "model_name": "zen-free",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    config = {
+        "models": {"defaults": []},
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.config_loader.get_zen_free_model_entries",
+        lambda: [zen_entry],
+    )
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    spec = TeamManager._load_team_spec("session-one", requested_model_name="zen-free")
+
+    assert spec.model_pool_strategy == "by_model_name"
+    assert len(spec.model_pool) == 1
+    assert spec.model_pool[0].model_name == "zen-free"
+    assert spec.model_pool[0].api_provider == "OpenAI"
 
 
 @pytest.mark.parametrize(
@@ -131,6 +289,188 @@ def test_load_team_spec_dict_uses_first_models_defaults_entry_for_team(monkeypat
     assert model["model_client_config"]["model_name"] == "first-model"
     assert model["model_request_config"]["model"] == "first-model"
     assert model["model_request_config"]["temperature"] == 0.1
+
+
+def test_load_team_spec_dict_maps_reasoning_level_off_and_drops_internal_hint():
+    """Cluster members must not forward UI ``reasoning_level`` to the OpenAI SDK."""
+    config = {
+        "models": {
+            "defaults": [
+                {
+                    "model_client_config": {
+                        "api_base": "https://example.test/v1",
+                        "api_key": "sk-test",
+                        "model_name": "Deepseek-V4-Flash-0731",
+                        "client_provider": "OpenAI",
+                    },
+                    "model_config_obj": {
+                        "temperature": 0.95,
+                        "reasoning_level": "off",
+                    },
+                    "is_default": True,
+                }
+            ]
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {},
+                        "teammate": {},
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    for role in ("leader", "teammate"):
+        request_config = spec["agents"][role]["model"]["model_request_config"]
+        assert "reasoning_level" not in request_config
+        assert request_config["reasoning"] == {"mode": "disabled"}
+        assert request_config["model"] == "Deepseek-V4-Flash-0731"
+        assert request_config["temperature"] == 0.95
+
+
+def test_load_team_spec_dict_sanitizes_explicit_member_model_reasoning_level():
+    """A member that already has its own model dict still needs the UI hint stripped."""
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "fallback-model",
+                    "client_provider": "OpenAI",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {
+                            "model": {
+                                "model_client_config": {
+                                    "api_base": "https://example.test/v1",
+                                    "api_key": "sk-test",
+                                    "model_name": "Deepseek-V4-Flash-0731",
+                                    "client_provider": "OpenAI",
+                                },
+                                "model_request_config": {
+                                    "model": "Deepseek-V4-Flash-0731",
+                                    "temperature": 0.2,
+                                    "reasoning_level": "off",
+                                },
+                            }
+                        },
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    request_config = spec["agents"]["leader"]["model"]["model_request_config"]
+    assert "reasoning_level" not in request_config
+    assert request_config["reasoning"] == {"mode": "disabled"}
+    assert request_config["temperature"] == 0.2
+
+
+def test_load_team_spec_dict_keeps_declared_request_model_over_client_model_name():
+    """An explicit member request ``model`` must not be overwritten by client model_name."""
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "fallback-model",
+                    "client_provider": "OpenAI",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {
+                            "model": {
+                                "model_client_config": {
+                                    "api_base": "https://example.test/v1",
+                                    "api_key": "sk-test",
+                                    "model_name": "client-listed-name",
+                                    "client_provider": "OpenAI",
+                                },
+                                "model_request_config": {
+                                    "model": "request-declared-name",
+                                    "temperature": 0.2,
+                                    "reasoning_level": "off",
+                                },
+                            }
+                        },
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    request_config = spec["agents"]["leader"]["model"]["model_request_config"]
+    assert request_config["model"] == "request-declared-name"
+    assert "reasoning_level" not in request_config
+    assert request_config["reasoning"] == {"mode": "disabled"}
+
+
+def test_load_team_spec_dict_keeps_ui_hint_from_model_config_obj_when_request_config_exists():
+    """A leftover ``model_config_obj.reasoning_level`` must still be mapped."""
+    config = {
+        "models": {
+            "default": {
+                "model_client_config": {
+                    "model_name": "fallback-model",
+                    "client_provider": "OpenAI",
+                },
+                "model_config_obj": {},
+            }
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {
+                        "leader": {
+                            "model": {
+                                "model_client_config": {
+                                    "api_base": "https://example.test/v1",
+                                    "api_key": "sk-test",
+                                    "model_name": "Deepseek-V4-Flash-0731",
+                                    "client_provider": "OpenAI",
+                                },
+                                "model_config_obj": {"reasoning_level": "off"},
+                                "model_request_config": {
+                                    "model": "Deepseek-V4-Flash-0731",
+                                    "temperature": 0.3,
+                                },
+                            }
+                        },
+                    },
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(config_base=config)
+
+    request_config = spec["agents"]["leader"]["model"]["model_request_config"]
+    assert "reasoning_level" not in request_config
+    assert "model_config_obj" not in spec["agents"]["leader"]["model"]
+    assert request_config["reasoning"] == {"mode": "disabled"}
+    assert request_config["temperature"] == 0.3
 
 
 def test_load_team_spec_dict_supports_member_specific_agents(monkeypatch, tmp_path):

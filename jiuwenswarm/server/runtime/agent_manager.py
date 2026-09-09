@@ -49,7 +49,7 @@ def _normalize_project_dir(project_dir: str | None) -> str:
     if not raw:
         return ""
     try:
-        return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+        return os.path.normcase(os.path.abspath(os.path.expanduser(raw))).casefold()
     except Exception:
         return raw
 
@@ -670,6 +670,45 @@ class AgentManager:
                 f"session_id={sid}"
             )
         return cleaned
+
+    async def release_subagent_runtime_for_session(
+        self,
+        *,
+        channel_id: str | None,
+        session_id: str,
+        reason: str = "session_deleted",
+    ) -> bool:
+        """Release subagent control owned by the channel's existing Agent.
+
+        Product Session deletion historically performed this lookup in
+        AgentServer.  Keeping it here preserves the same first-Agent lookup and
+        adapter selection while hiding Agent/Adapter internals behind the
+        Runtime-owned manager boundary.
+        """
+        agent = self.get_agent_nowait(channel_id=channel_id or "")
+        adapter = self._resolve_runtime_adapter(agent)
+        release_runtime = getattr(
+            adapter,
+            "release_subagent_runtime_for_session",
+            None,
+        )
+        if not callable(release_runtime):
+            return False
+        await release_runtime(session_id, reason=reason)
+        return True
+
+    @staticmethod
+    def _resolve_runtime_adapter(agent: Any) -> Any:
+        """Resolve the same adapter shape used by the legacy Server path."""
+        if agent is None:
+            return None
+        for attr in ("_adapter", "adapter", "_active_adapter"):
+            inner = getattr(agent, attr, None)
+            if inner is not None and hasattr(inner, "apply_sandbox_runtime_patch"):
+                return inner
+        if hasattr(agent, "apply_sandbox_runtime_patch"):
+            return agent
+        return None
 
     async def apply_mcp_change(
         self, name: str, action: str, *, enabled: bool = True,
@@ -1459,12 +1498,12 @@ class AgentManager:
             params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
             mode_full = params.get("mode", "agent")
             mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            workspace_dir = params.get("workspace_dir")
+            project_dir = params.get("project_dir")
 
             agent = await self.get_agent(
                 channel_id=channel_id,
                 mode=mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
@@ -1489,12 +1528,12 @@ class AgentManager:
             params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
             mode_full = params.get("mode", "agent")
             mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            workspace_dir = params.get("workspace_dir")
+            project_dir = params.get("project_dir")
 
             agent = await self.get_agent(
                 channel_id=channel_id,
                 mode=mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")

@@ -38,6 +38,7 @@ interface CollapsibleSectionProps {
   dataTestId?: string;
   defaultCollapsed?: boolean;
   autoExpandOnContent?: boolean;
+  expanded?: boolean;
 }
 
 export function CollapsibleSection({
@@ -53,11 +54,14 @@ export function CollapsibleSection({
   dataTestId = 'collapsible-section',
   defaultCollapsed = false,
   autoExpandOnContent = false,
+  expanded: expandedProp = false,
 }: CollapsibleSectionProps) {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
-  const [expanded, setExpanded] = useState(false);
+  const [internalExpanded, setInternalExpanded] = useState(false);
   const [userToggled, setUserToggled] = useState(false);
+
+  const expanded = expandedProp || internalExpanded;
 
   useEffect(() => {
     if (autoExpandOnContent && childCount !== undefined && childCount > 0 && collapsed && !userToggled) {
@@ -71,7 +75,7 @@ export function CollapsibleSection({
   };
 
   const handleExpandAll = () => {
-    setExpanded(true);
+    setInternalExpanded(true);
     onExpandAll?.();
   };
 

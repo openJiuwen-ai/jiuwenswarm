@@ -3,6 +3,7 @@ import {
   Editor,
   SelectList,
   type SelectItem,
+  type SelectListTruncatePrimaryContext,
   type AutocompleteItem,
   type AutocompleteProvider,
   type Component,
@@ -68,16 +69,19 @@ import {
   formatTokenCount,
   formatWorkflowBudgetDetail,
   formatWorkflowBudgetInline,
+  formatWorkflowRunBudgetDetail,
+  formatWorkflowRunBudgetInline,
   formatWorkflowAgentKindLabel,
   formatWorkflowTimingText,
   groupWorkflowAgentsByName,
   HUMAN_TURN_CACHED_ANSWER,
   HUMAN_TURN_CACHED_QUESTION,
   isHumanTurnCached,
-  isWorkflowBudgetExhausted,
   isWorkflowBudgetLow,
+  workflowBudgetExhaustedScope,
   pendingHumanViewHint,
   pendingInputsBannerText,
+  pausedWorkflowsBannerText,
   runningWorkflowsBannerText,
   sessionMembersInPhase,
   shouldShowTurnInDetailOrReply,
@@ -268,7 +272,7 @@ const MODEL_VALUE_SEPARATOR = "\x00";
 const MODEL_FORM_FIELDS: ModelFormField[] = ["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"];
 const MODEL_REQUIRED_FIELDS: ModelFormField[] = ["model_name", "api_base", "api_key", "model_provider"];
 const DEFAULT_MODEL_PROVIDER = "OpenAI";
-const MODEL_PROVIDER_OPTIONS = ["OpenAI", "OpenRouter", "DashScope", "SiliconFlow", "InferenceAffinity", "AscendAffinity", "DeepSeek"];
+const MODEL_PROVIDER_OPTIONS = ["OpenAI", "OpenRouter", "DashScope", "SiliconFlow", "AscendAffinity", "DeepSeek"];
 const REASONING_LEVEL_OPTIONS = ["", "off", "low", "medium", "high"];
 const MAX_MODEL_NAME_LENGTH = 100;
 const MAX_ALIAS_LENGTH = 100;
@@ -1487,6 +1491,7 @@ function workflowStatusTone(status: WorkflowStatus): (value: string) => string {
   switch (status) {
     case "planned":
     case "pending":
+    case "paused":
       return palette.status.warning;
     case "running":
       return palette.status.info;
@@ -1543,19 +1548,40 @@ function formatRelativeTime(timestamp: number | undefined): string {
 }
 
 function getDisplayLabel(s: SessionMeta): string {
-  const title = s.title?.trim();
-  if (title) {
-    return `${s.session_id}  |  ${title}`;
+  return s.title?.trim() || s.session_id;
+}
+
+const RESUME_SESSION_ID_HINT_SUFFIX_LENGTH = 4;
+
+function getResumeSessionIdHint(sessionId: string, occurrence: number): string {
+  return `#${occurrence}:${sessionId.slice(-RESUME_SESSION_ID_HINT_SUFFIX_LENGTH)}`;
+}
+
+function truncateResumeSessionPrimary({
+  text,
+  maxWidth,
+}: SelectListTruncatePrimaryContext, idHint?: string): string {
+  if (!idHint) {
+    return truncateToWidth(text, maxWidth, "");
   }
-  return s.session_id;
+
+  const suffix = `  ${idHint}`;
+  const suffixWidth = visibleWidth(suffix);
+  if (maxWidth <= suffixWidth) {
+    return truncateToWidth(idHint, maxWidth, "");
+  }
+  return `${truncateToWidth(text, maxWidth - suffixWidth, "")}${suffix}`;
 }
 
 function sessionToSelectItem(s: SessionMeta, showProject = false): SelectItem {
-  const parts: string[] = [formatRelativeTime(s.last_message_at)];
+  const title = s.title?.trim();
+  const parts: string[] = [];
+  if (s.active_in_window) parts.push("in another window");
+  if (title) parts.push(s.session_id);
+  if (showProject && s.project_dir?.trim()) parts.push(s.project_dir.trim());
+  parts.push(formatRelativeTime(s.last_message_at));
   const msgCount = s.message_count ?? 0;
   if (msgCount > 0) parts.push(`${msgCount} msgs`);
-  if (showProject && s.project_dir?.trim()) parts.push(s.project_dir.trim());
-  if (s.active_in_window) parts.push("in another window");
   return {
     value: s.session_id,
     label: getDisplayLabel(s),
@@ -2710,19 +2736,7 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    // h key: open pending human-input list from the main chat screen.
-    if (
-      !hasOverlay &&
-      !pendingQuestion &&
-      !this.replyingToHumanPrompt &&
-      data === "h" &&
-      (snapshot.pendingHumanPrompts?.size ?? 0) > 0
-    ) {
-      void this.enterSwarmWorkflowsPendingList();
-      return;
-    }
-
-    // Global ctrl+l/t/g/o only apply on the main screen — defer while an overlay
+    // Global shortcuts only apply on the main screen — defer while an overlay
     // or the team panel is active so context-specific bindings (e.g. ResumeList)
     // can use the same physical keys.
     // Exception: app:toggleTranscript (ctrl+o) is allowed even when overlays are
@@ -2756,6 +2770,13 @@ export class AppScreen implements Component, Focusable {
           this.state.setTranscriptMode(
             snapshot.transcriptMode === "detailed" ? "compact" : "detailed",
           );
+        },
+        viewHumanInputs: () => {
+          if ((snapshot.pendingHumanPrompts?.size ?? 0) > 0) {
+            void this.enterSwarmWorkflowsPendingList();
+            return;
+          }
+          this.showTransientNotice("No human inputs waiting.");
         },
         redraw: () => {
           this.tui.invalidate();
@@ -4037,9 +4058,24 @@ export class AppScreen implements Component, Focusable {
   }
 
   private makeResumeSelectList(items: SelectItem[]): SelectList {
+    const labelCounts = new Map<string, number>();
+    for (const item of items) {
+      labelCounts.set(item.label, (labelCounts.get(item.label) ?? 0) + 1);
+    }
+    const labelOccurrences = new Map<string, number>();
+    const idHints = new Map<string, string>();
+    for (const item of items) {
+      if ((labelCounts.get(item.label) ?? 0) < 2) continue;
+      const occurrence = (labelOccurrences.get(item.label) ?? 0) + 1;
+      labelOccurrences.set(item.label, occurrence);
+      idHints.set(item.value, getResumeSessionIdHint(item.value, occurrence));
+    }
+
     const list = new SelectList(items, Math.min(Math.max(items.length, 1), 8), selectListTheme, {
       minPrimaryColumnWidth: 24,
       maxPrimaryColumnWidth: 42,
+      truncatePrimary: (context) =>
+        truncateResumeSessionPrimary(context, idHints.get(context.item.value)),
     });
     list.onSelect = (item) => {
       if (item && item.value) {
@@ -4413,6 +4449,19 @@ export class AppScreen implements Component, Focusable {
   private buildResumeSessionPreviewLines(width: number, session: SessionMeta, previewMessages: PreviewMessage[]): string[] {
     const title = session.title?.trim() || "(untitled)";
     const project = session.project_dir?.trim() || "-";
+    const titleLines = renderWrappedText(width, title, palette.text.primary);
+    const sessionPrefix = "Session:   ";
+    const sessionLines = prefixedLines(
+      renderWrappedText(
+        Math.max(1, width - sessionPrefix.length),
+        session.session_id,
+        palette.text.primary,
+      ),
+      width,
+      sessionPrefix,
+      palette.text.dim,
+      " ".repeat(sessionPrefix.length),
+    );
 
     // Build preview message lines: full transcript style, matching Claude Code SessionPreview
     const messageLines: string[] = [];
@@ -4449,9 +4498,9 @@ export class AppScreen implements Component, Focusable {
     }
 
     // Clip message lines to fit terminal height with scroll offset.
-    // Overhead: 7 header lines + 2 footer lines in this method,
-    // plus ~4 lines for status bar / welcome / transcript in the screen layout.
-    const overhead = 13;
+    // Six fixed header lines, the wrapped title/session identity, two footer
+    // lines, and ~4 lines for status bar / welcome / transcript.
+    const overhead = 12 + titleLines.length + sessionLines.length;
     const availableHeight = Math.max(3, this.tui.terminal.rows - overhead);
     let visibleMessages = messageLines;
     let scrollHint = "";
@@ -4469,7 +4518,8 @@ export class AppScreen implements Component, Focusable {
 
     return [
       padToWidth(palette.status.warning("Session preview"), width),
-      padToWidth(palette.text.primary(title), width),
+      ...titleLines,
+      ...sessionLines,
       "",
       padToWidth(`${palette.text.dim("Project:   ")}${palette.text.primary(project)}`, width),
       "",
@@ -5111,11 +5161,61 @@ export class AppScreen implements Component, Focusable {
     const target = this.modelList?.target;
     if (!target) return;
     try {
-      await this.state.request("command.model", {
-        action: "delete_model",
-        index: target.index,
-      });
-      this.state.addItem(addInfo(this.state.getSnapshot().sessionId, `Deleted model: ${target.name}`, "m"));
+      // 删除前重新拉取列表并按 name 稳态标识解析当前 index，
+      // 避免"确认页停留期间 defaults 被其他窗口切换重排"导致 index 漂移删错。
+      // 后端 delete_model 会用 model 字段按 model_name/alias 匹配，index 仅兜底。
+      // 指纹必须取自用户当时选中的条目（旧 modelsMeta 快照），而非新列表中占据旧
+      // index 位置的那条——后者在重排后会指向另一条模型，导致指纹匹配删错。
+      const oldMeta = this.modelList?.modelsMeta.find(
+        (m) => m.index !== undefined && m.index === target.index,
+      );
+      const mk = (mm: ModelMeta | undefined): string =>
+        `${mm?.alias ?? ""}|${mm?.model_provider ?? ""}|${mm?.api_base ?? ""}`;
+      const targetFingerprint = oldMeta ? mk(oldMeta) : undefined;
+      const payload = await this.state.request<ModelListPayload>("command.model", {});
+      const metas = payload.models ?? [];
+      // 1) 同名区分：name + alias + provider + api_base 完全相同 → 用户当时选的那一条
+      // 2) 退化为纯 name 匹配（后端再按 model 字段做同名消歧与 index 校验）
+      const sameName = metas.filter((m) => m.name === target.name && !m.is_agentos);
+      let match: ModelMeta | undefined;
+      if (sameName.length > 1) {
+        // 同名多条：优先用原指纹在新列表定位（index 重排后不可靠，仅作弱提示）
+        if (targetFingerprint !== undefined) {
+          match = sameName.find((m) => mk(m) === targetFingerprint);
+        }
+        // 指纹未命中或旧快照未取到指纹：退化为原 index 匹配
+        if (!match) {
+          match = sameName.find((m) => m.index === target.index);
+        }
+      } else {
+        match = sameName[0];
+      }
+      if (!match) {
+        this.state.addItem(
+          addError(
+            this.state.getSnapshot().sessionId,
+            `Model '${target.name}' no longer exists; the list may have changed. Refreshed.`,
+          ),
+        );
+        await this.openModelList();
+        return;
+      }
+      const resp = await this.state.request<{ name?: string; current?: string }>(
+        "command.model",
+        {
+          action: "delete_model",
+          index: typeof match.index === "number" ? match.index : undefined,
+          model: target.name,
+        },
+      );
+      // C: 以后端实际删除名为准（防 index 漂移后"显示 A 实删 B"的静默错位）
+      this.state.addItem(
+        addInfo(
+          this.state.getSnapshot().sessionId,
+          `Deleted model: ${resp.name ?? target.name}`,
+          "m",
+        ),
+      );
       await this.state.refreshModelInfo();
       await this.openModelList();
     } catch (error) {
@@ -5687,13 +5787,38 @@ export class AppScreen implements Component, Focusable {
     ];
   }
 
-  private swarmActionKeyLabel(action: "swarm:budget"): string {
+  private swarmActionKeyLabel(
+    action: "swarm:budget" | "swarm:pauseResume" | "swarm:stop",
+  ): string {
     const key = getContextBindings("SwarmWorkflows").find(
       (binding) => binding.action === action,
     )?.key;
-    if (!key) return "B";
-    if (key === "shift+b") return "B";
+    if (!key) {
+      return action === "swarm:budget" ? "B" : action === "swarm:pauseResume" ? "P" : "S";
+    }
+    // Shifted single letters display as uppercase (shift+b -> B, shift+p -> P, shift+s -> S).
+    if (key.startsWith("shift+")) {
+      const base = key.slice("shift+".length);
+      if (base.length === 1) return base.toUpperCase();
+    }
     return key;
+  }
+
+  private sendSwarmWorkflowControl(
+    workflowId: string,
+    action: "pause" | "resume" | "stop",
+  ): void {
+    const snapshot = this.state.getSnapshot();
+    this.state.sendEventOnly(`swarmflow.${action}`, {
+      session_id: snapshot.sessionId,
+      run_id: workflowId,
+    });
+  }
+
+  private globalActionKeyLabel(action: "app:viewHumanInputs"): string | null {
+    return getContextBindings("Global").find(
+      (binding) => binding.action === action,
+    )?.key ?? null;
   }
 
   private workflowIdForBudgetView(): string | null {
@@ -5708,27 +5833,61 @@ export class AppScreen implements Component, Focusable {
 
   private workflowBudgetViewerContent(workflow: WorkflowRun): string {
     const budget = workflow.budget;
-    if (!budget) return "Budget data unavailable";
+    const runBudget = workflow.workflow_budget;
+    if (!budget && !runBudget) return "Budget data unavailable";
 
-    const spent = formatTokenCount(budget.spent) ?? "—";
-    const total = formatTokenCount(budget.total);
-    const remaining = formatTokenCount(budget.remaining);
-    const usedPercent = workflowBudgetUsedPercent(budget);
-    const low = isWorkflowBudgetLow(budget);
-    const lines = [
-      "Team budget",
-      "",
-      "Scope       Leader shared",
-      `Spent       ${spent}`,
-      total ? `Total       ${total}` : "Limit       Unbounded",
-    ];
-    if (total) {
-      const remainingLine = `Remaining   ${remaining ?? "—"}`;
-      const usedLine = `Used        ${usedPercent === null ? "—" : `${usedPercent}%`}`;
-      lines.push(low ? palette.status.warning(`⚠ ${remainingLine}`) : remainingLine);
-      lines.push(low ? palette.status.warning(`⚠ ${usedLine}`) : usedLine);
+    const lines: string[] = [];
+    if (budget) {
+      const spent = formatTokenCount(budget.spent) ?? "—";
+      const total = formatTokenCount(budget.total);
+      const remaining = formatTokenCount(budget.remaining);
+      const usedPercent = workflowBudgetUsedPercent(budget);
+      const low = isWorkflowBudgetLow(budget);
+      lines.push(
+        "Team budget",
+        "",
+        "Scope       Session shared",
+        `Spent       ${spent}`,
+        total ? `Total       ${total}` : "Limit       Unbounded",
+      );
+      if (total) {
+        const remainingLine = `Remaining   ${remaining ?? "—"}`;
+        const usedLine = `Used        ${usedPercent === null ? "—" : `${usedPercent}%`}`;
+        lines.push(low ? palette.status.warning(`⚠ ${remainingLine}`) : remainingLine);
+        lines.push(low ? palette.status.warning(`⚠ ${usedLine}`) : usedLine);
+      }
     }
-    if (isWorkflowBudgetExhausted(workflow)) {
+    if (runBudget) {
+      const spent = formatTokenCount(runBudget.spent) ?? "—";
+      const total = formatTokenCount(runBudget.total);
+      const remaining = formatTokenCount(runBudget.remaining);
+      const usedPercent = workflowBudgetUsedPercent(runBudget);
+      const low = isWorkflowBudgetLow(runBudget);
+      if (lines.length > 0) lines.push("");
+      lines.push(
+        "Run budget (this invocation)",
+        "",
+        "Scope       Workflow (META.workflow_token_limit)",
+        `Spent       ${spent}`,
+        total ? `Total       ${total}` : "Limit       Unbounded",
+      );
+      if (total) {
+        const remainingLine = `Remaining   ${remaining ?? "—"}`;
+        const usedLine = `Used        ${usedPercent === null ? "—" : `${usedPercent}%`}`;
+        lines.push(low ? palette.status.warning(`⚠ ${remainingLine}`) : remainingLine);
+        lines.push(low ? palette.status.warning(`⚠ ${usedLine}`) : usedLine);
+      }
+    }
+    const exhaustedScope = workflowBudgetExhaustedScope(workflow);
+    if (exhaustedScope === "workflow") {
+      lines.push(
+        "",
+        palette.status.error("Run budget exhausted"),
+        palette.status.error(
+          "Revise the workflow (or raise META.workflow_token_limit) and relaunch.",
+        ),
+      );
+    } else if (exhaustedScope === "session") {
       lines.push(
         "",
         palette.status.error("Team budget exhausted"),
@@ -5743,7 +5902,7 @@ export class AppScreen implements Component, Focusable {
   ): Promise<void> {
     if (!workflowId) return;
     let workflow = this.state.getSnapshot().workflowRuns.find((item) => item.id === workflowId);
-    if (workflow && !workflow.budget) {
+    if (workflow && !workflow.budget && !workflow.workflow_budget) {
       try {
         await this.state.loadWorkflowDetail(workflowId);
       } catch {
@@ -5754,7 +5913,7 @@ export class AppScreen implements Component, Focusable {
     if (!workflow) return;
     this.enterFileViewer(
       this.workflowBudgetViewerContent(workflow),
-      `Team budget - ${workflow.name}`,
+      `Budget - ${workflow.name}`,
       workflow.name,
     );
   }
@@ -5765,13 +5924,14 @@ export class AppScreen implements Component, Focusable {
     const workflow = this.state
       .getSnapshot()
       .workflowRuns.find((item) => item.id === state.workflowId);
-    if (!workflow || !isWorkflowBudgetExhausted(workflow)) return;
+    const exhaustedScope = workflow ? workflowBudgetExhaustedScope(workflow) : null;
+    if (!workflow || exhaustedScope === null) return;
     const key = `${this.workflowUiSessionId}:${workflow.id}`;
     if (this.shownBudgetExhaustedWorkflowKeys.has(key)) return;
     this.shownBudgetExhaustedWorkflowKeys.add(key);
     this.enterFileViewer(
       this.workflowBudgetViewerContent(workflow),
-      `Team budget exhausted - ${workflow.name}`,
+      `${exhaustedScope === "workflow" ? "Run" : "Team"} budget exhausted - ${workflow.name}`,
       workflow.name,
     );
   }
@@ -5835,6 +5995,19 @@ export class AppScreen implements Component, Focusable {
         this.state.loadWorkflowDetail(workflowId).catch(() => undefined),
       ),
     );
+    // After get_workflow, phases carry summaries only — fetch agents per phase
+    // to surface waiting-for-human nodes (list snapshot had no phases/agents).
+    const phaseAgentLoads: Array<Promise<void>> = [];
+    for (const wf of this.state.getSnapshot().workflowRuns) {
+      if (!detailIds.has(wf.id)) continue;
+      for (const phase of wf.phases ?? []) {
+        if (Array.isArray(phase.agents) && phase.agents.length > 0) continue;
+        phaseAgentLoads.push(
+          this.state.loadPhaseAgents(wf.id, phase.id).catch(() => undefined),
+        );
+      }
+    }
+    await Promise.all(phaseAgentLoads);
     const promptLoads: Array<Promise<void>> = [];
     for (const wf of this.state.getSnapshot().workflowRuns) {
       for (const phase of wf.phases ?? []) {
@@ -6033,15 +6206,25 @@ export class AppScreen implements Component, Focusable {
       const progress = workflow.status === "running" ? `${completed}/${total}` : `${total}`;
       const tokens = formatTokenCount(workflow.token_count);
       const budget = formatWorkflowBudgetInline(workflow.budget);
+      const runBudget = formatWorkflowRunBudgetInline(workflow.workflow_budget);
       const description = [`${progress} agents`];
       if (tokens) description.push(`${tokens} tok`);
       if (budget) {
         description.push(
-          isWorkflowBudgetExhausted(workflow)
+          workflowBudgetExhaustedScope(workflow) === "session"
             ? palette.status.error(budget)
             : isWorkflowBudgetLow(workflow.budget)
               ? palette.status.warning(budget)
               : budget,
+        );
+      }
+      if (runBudget) {
+        description.push(
+          workflow.workflow_budget?.exhausted === true
+            ? palette.status.error(runBudget)
+            : isWorkflowBudgetLow(workflow.workflow_budget)
+              ? palette.status.warning(runBudget)
+              : runBudget,
         );
       }
       return {
@@ -6129,6 +6312,13 @@ export class AppScreen implements Component, Focusable {
       item.value,
     );
     if (!lookup) return;
+    // Agent 进入详情视图前，若仅为 get_phase 摘要（detail_pending，无 prompt/outcome
+    // 等大文本），按需拉取完整体（get_agent，通用，不限 human 节点）。
+    if (lookup.agent.detail_pending === true) {
+      void this.state
+        .loadAgentDetail(workflowId, lookup.phase.id, item.value)
+        .catch(() => undefined);
+    }
     this.swarmWorkflowsViewState = {
       phase: "agent",
       workflowId,
@@ -6156,7 +6346,7 @@ export class AppScreen implements Component, Focusable {
       phaseEntries.findIndex((entry) => entry.phaseId === resolvedPhaseId),
     );
     const selectedPhase =
-      workflow.phases.find((phase) => phase.id === resolvedPhaseId) ?? workflow.phases[0];
+      workflow.phases?.find((phase) => phase.id === resolvedPhaseId) ?? workflow.phases?.[0];
     const activePhaseId = selectedPhase?.id ?? "";
     const phaseItems: SelectItem[] = phaseEntries.map((entry) => ({
       value: entry.phaseId,
@@ -6187,6 +6377,14 @@ export class AppScreen implements Component, Focusable {
         item.value,
         "agents",
       );
+      // Lazy-load agents for the selected phase (get_workflow returns
+      // summaries without agents — fetch on first drill-in).
+      const phase = workflow.phases?.find((p) => p.id === item.value);
+      if (phase && (!Array.isArray(phase.agents) || phase.agents.length === 0)) {
+        void this.state.loadPhaseAgents(workflowId, item.value).then(() =>
+          this.refreshSwarmWorkflowsView(),
+        );
+      }
       this.tui.requestRender();
     };
     phaseList.onCancel = () => {
@@ -6276,11 +6474,26 @@ export class AppScreen implements Component, Focusable {
     const state = this.swarmWorkflowsViewState;
     if (!state) return;
     const action = resolveAction("SwarmWorkflows", data);
-    if (action === "swarm:budget") {
+    // Fallback: resolveAction's matchesKey doesn't match shift+letter on some
+    // terminals (Windows Terminal). Check the raw data for the uppercase letter
+    // that a shifted key produces in legacy terminal mode. Same systemic issue
+    // affects shift+b (budget, shipped in SDD-0010) — it never fires either.
+    let effectiveAction = action;
+    if (effectiveAction === null) {
+      const lower = data.toLowerCase();
+      if (data === "P" || lower === "shift+p") {
+        effectiveAction = "swarm:pauseResume";
+      } else if (data === "S" || lower === "shift+s") {
+        effectiveAction = "swarm:stop";
+      } else if (data === "B" || lower === "shift+b") {
+        effectiveAction = "swarm:budget";
+      }
+    }
+    if (effectiveAction === "swarm:budget") {
       void this.openSwarmWorkflowBudget();
       return;
     }
-    if (action === "swarm:back" || action === "swarm:left") {
+    if (effectiveAction === "swarm:back" || effectiveAction === "swarm:left") {
       if (state.phase === "pending-list") {
         this.restoreFromPendingList(state.previous_phase);
         this.tui.requestRender();
@@ -6326,7 +6539,7 @@ export class AppScreen implements Component, Focusable {
       this.tui.requestRender();
       return;
     }
-    if (action === "swarm:nextFocus") {
+    if (effectiveAction === "swarm:nextFocus") {
       if (state.phase === "list") {
         const item = state.list.getSelectedItem();
         if (item) {
@@ -6355,8 +6568,40 @@ export class AppScreen implements Component, Focusable {
       }
       return;
     }
-    if (state.phase === "workflow" && action === "swarm:logs") {
+    if (state.phase === "workflow" && effectiveAction === "swarm:logs") {
       this.openSwarmWorkflowLogs(state.workflowId);
+      return;
+    }
+    if (effectiveAction === "swarm:pauseResume" || effectiveAction === "swarm:stop") {
+      const workflowId = this.workflowIdForBudgetView();
+      if (!workflowId) {
+        this.showTransientNotice("Select a workflow first.");
+        return;
+      }
+      const workflow = this.state
+        .getSnapshot()
+        .workflowRuns.find((item) => item.id === workflowId);
+      if (!workflow) return;
+      if (effectiveAction === "swarm:stop") {
+        if (workflow.status === "running" || workflow.status === "paused") {
+          this.sendSwarmWorkflowControl(workflowId, "stop");
+        } else {
+          this.showTransientNotice(
+            `This workflow is ${workflow.status} and cannot be stopped.`,
+          );
+        }
+        return;
+      }
+      // swarm:pauseResume toggles: running -> pause, paused -> resume.
+      if (workflow.status === "paused") {
+        this.sendSwarmWorkflowControl(workflowId, "resume");
+      } else if (workflow.status === "running") {
+        this.sendSwarmWorkflowControl(workflowId, "pause");
+      } else {
+        this.showTransientNotice(
+          `This workflow is ${workflow.status} and cannot be paused or resumed.`,
+        );
+      }
       return;
     }
     if (state.phase === "agent") {
@@ -6368,7 +6613,7 @@ export class AppScreen implements Component, Focusable {
       );
       const isHuman = lookup?.agent.kind === "human";
 
-      if (action === "swarm:viewPrompt" || (!isHuman && matchesKey(data, "p"))) {
+      if (effectiveAction === "swarm:viewPrompt" || (!isHuman && matchesKey(data, "p"))) {
         this.openSwarmWorkflowAgentText(state.workflowId, state.agentId, "prompt");
         return;
       }
@@ -6380,11 +6625,11 @@ export class AppScreen implements Component, Focusable {
         this.openSwarmWorkflowAgentText(state.workflowId, state.agentId, "human_reply");
         return;
       }
-      if (!isHuman && action === "swarm:viewOutcome") {
+      if (!isHuman && effectiveAction === "swarm:viewOutcome") {
         this.openSwarmWorkflowAgentText(state.workflowId, state.agentId, "outcome");
         return;
       }
-      if (action === "swarm:viewError") {
+      if (effectiveAction === "swarm:viewError") {
         this.openSwarmWorkflowAgentText(state.workflowId, state.agentId, "error");
         return;
       }
@@ -6460,7 +6705,7 @@ export class AppScreen implements Component, Focusable {
       // Tab: enter reply mode for the waiting turn (if any)
       if (matchesKey(data, "tab")) {
         const workflow = this.state.getSnapshot().workflowRuns.find((w) => w.id === state.workflowId);
-        const phase = workflow?.phases.find((item) => item.id === state.phaseId);
+        const phase = workflow?.phases?.find((item) => item.id === state.phaseId);
         if (phase) {
           for (const agent of phase.agents ?? []) {
             if (
@@ -6499,7 +6744,7 @@ export class AppScreen implements Component, Focusable {
         return;
       }
     }
-    if (action === "swarm:refresh") {
+    if (effectiveAction === "swarm:refresh") {
       if (
         state.phase === "session-detail" ||
         state.phase === "agent" ||
@@ -6673,11 +6918,19 @@ export class AppScreen implements Component, Focusable {
     const pendingPrompts = snapshot.pendingHumanPrompts;
 
     const runningWorkflows = workflowRuns.filter((item) => item.status === "running");
+    const pausedWorkflows = workflowRuns.filter((item) => item.status === "paused");
     const totalPending = pendingPrompts?.size ?? 0;
 
-    if (runningWorkflows.length === 0 && totalPending === 0) return [];
+    if (
+      runningWorkflows.length === 0 &&
+      pausedWorkflows.length === 0 &&
+      totalPending === 0
+    ) {
+      return [];
+    }
 
     const waitingIcon = workflowStatusIcon("waiting_for_human");
+    const pausedIcon = workflowStatusIcon("paused");
     const spinner =
       totalPending > 0
         ? palette.text.humanInput(`${waitingIcon} `)
@@ -6690,18 +6943,51 @@ export class AppScreen implements Component, Focusable {
       return padToWidth(`  ${nameAndTime}${suffix}`, width);
     };
 
+    const renderPausedRow = (workflow: WorkflowRun): string => {
+      const nameAndTime = `${palette.text.dim(workflow.name)} ${palette.text.dim(formatWorkflowTimingText(workflow))}`;
+      return padToWidth(`  ${palette.status.warning(`${pausedIcon} `)}${nameAndTime}`, width);
+    };
+
     if (totalPending > 0) {
+      const humanInputsKey = this.globalActionKeyLabel("app:viewHumanInputs");
       const runningSuffix =
         runningWorkflows.length > 0
           ? ` · ${palette.text.assistant(runningWorkflowsBannerText(runningWorkflows.length))}`
           : "";
+      const pausedSuffix =
+        pausedWorkflows.length > 0
+          ? ` · ${palette.text.assistant(pausedWorkflowsBannerText(pausedWorkflows.length))}`
+          : "";
       const firstLine = padToWidth(
-        `${spinner}${palette.text.humanInput(pendingInputsBannerText(totalPending))} · ${palette.text.dim(pendingHumanViewHint())}${runningSuffix}`,
+        `${spinner}${palette.text.humanInput(pendingInputsBannerText(totalPending))} · ${palette.text.dim(pendingHumanViewHint(humanInputsKey))}${runningSuffix}${pausedSuffix}`,
         width,
       );
       const lines = [firstLine];
       for (const wf of runningWorkflows) {
         lines.push(renderRow(wf));
+      }
+      for (const wf of pausedWorkflows) {
+        lines.push(renderPausedRow(wf));
+      }
+      return lines;
+    }
+
+    // Paused workflows present (no pending) — surface them alongside running ones.
+    if (pausedWorkflows.length > 0) {
+      const banner = [
+        runningWorkflowsBannerText(runningWorkflows.length),
+        pausedWorkflowsBannerText(pausedWorkflows.length),
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const prefix =
+        runningWorkflows.length > 0 ? spinner : palette.status.warning(`${pausedIcon} `);
+      const lines = [padToWidth(`${prefix} ${palette.text.assistant(banner)}`, width)];
+      for (const wf of runningWorkflows) {
+        lines.push(renderRow(wf));
+      }
+      for (const wf of pausedWorkflows) {
+        lines.push(renderPausedRow(wf));
       }
       return lines;
     }
@@ -7047,26 +7333,44 @@ export class AppScreen implements Component, Focusable {
     const completed = workflow.completed_agent_count ?? 0;
     const statusBanner = workflowStatusBannerText(workflow.status);
     const selectedPhase =
-      workflow.phases.find((phase) => phase.id === state.selectedPhaseId) ?? workflow.phases[0];
+      workflow.phases?.find((phase) => phase.id === state.selectedPhaseId) ?? workflow.phases?.[0];
     const selectedAgentId = state.agentList.getSelectedItem()?.value;
-    const selectedAgent = selectedPhase?.agents.find((agent) => agent.id === selectedAgentId);
+    const selectedAgent = selectedPhase?.agents?.find((agent) => agent.id === selectedAgentId);
     const replyHint =
       selectedAgent?.kind === "human" && selectedAgent.status === "waiting_for_human"
         ? " · Tab reply"
         : "";
     const workflowSummary = workflow.summary.trim();
     const budgetKey = this.swarmActionKeyLabel("swarm:budget");
+    const pauseKey = this.swarmActionKeyLabel("swarm:pauseResume");
+    const stopKey = this.swarmActionKeyLabel("swarm:stop");
+    const controlHintParts: string[] = [];
+    if (workflow.status === "running") {
+      controlHintParts.push(`${pauseKey} pause · ${stopKey} stop`);
+    } else if (workflow.status === "paused") {
+      controlHintParts.push(`${pauseKey} resume`);
+    }
     const runTokens = formatTokenCount(workflow.token_count);
     const budgetDetail = formatWorkflowBudgetDetail(workflow.budget);
+    const runBudgetDetail = formatWorkflowRunBudgetDetail(workflow.workflow_budget);
     const usageParts: string[] = [];
     if (runTokens) usageParts.push(`Run tokens ${runTokens}`);
     if (budgetDetail) {
       usageParts.push(
-        isWorkflowBudgetExhausted(workflow)
+        workflowBudgetExhaustedScope(workflow) === "session"
           ? palette.status.error(budgetDetail)
           : isWorkflowBudgetLow(workflow.budget)
             ? palette.status.warning(budgetDetail)
             : budgetDetail,
+      );
+    }
+    if (runBudgetDetail) {
+      usageParts.push(
+        workflowBudgetExhaustedScope(workflow) === "workflow"
+          ? palette.status.error(runBudgetDetail)
+          : isWorkflowBudgetLow(workflow.workflow_budget)
+            ? palette.status.warning(runBudgetDetail)
+            : runBudgetDetail,
       );
     }
     const summaryLines =
@@ -7088,20 +7392,24 @@ export class AppScreen implements Component, Focusable {
         : []),
       ...(state.loadingDetail
         ? [padToWidth(palette.text.dim("Loading workflow details…"), width)]
-        : workflow.truncated
-          ? [
-              padToWidth(
-                palette.status.warning("⚠ Large workflow — some fields were truncated"),
-                width,
-              ),
-            ]
-          : []),
+        : []),
       ...(workflow.status === "failed" && workflow.error
         ? wrapPlainText(workflow.error, width).map((line) =>
             padToWidth(palette.status.error(line), width),
           )
         : []),
-      ...(isWorkflowBudgetExhausted(workflow)
+      ...(workflowBudgetExhaustedScope(workflow) === "workflow"
+        ? [
+            padToWidth(palette.status.error("Run budget exhausted"), width),
+            padToWidth(
+              palette.status.error(
+                "Revise the workflow (or raise META.workflow_token_limit) and relaunch.",
+              ),
+              width,
+            ),
+          ]
+        : []),
+      ...(workflowBudgetExhaustedScope(workflow) === "session"
         ? [
             padToWidth(palette.status.error("Team budget exhausted"), width),
             padToWidth(palette.status.error("This workflow cannot be resumed."), width),
@@ -7145,7 +7453,12 @@ export class AppScreen implements Component, Focusable {
       lines.push(...state.agentList.render(width));
     }
     lines.push(
-      padToWidth(palette.text.secondary(`press l to see full logs · ${budgetKey} budget`), width),
+      padToWidth(
+        palette.text.secondary(
+          [`press l to see full logs`, `${budgetKey} budget`, ...controlHintParts].join(" · "),
+        ),
+        width,
+      ),
     );
     lines.push(
       padToWidth(
@@ -7165,14 +7478,15 @@ export class AppScreen implements Component, Focusable {
     selectedPhaseId: string,
     width: number,
   ): string[] {
-    if (workflow.phases.length === 0) {
+    const phases = workflow.phases ?? [];
+    if (phases.length === 0) {
       return [padToWidth(palette.text.dim("No phases"), width)];
     }
 
     const lines: string[] = [];
     const childrenByParent = new Map<string, WorkflowPhase[]>();
     const orderedParents: WorkflowPhase[] = [];
-    for (const phase of workflow.phases) {
+    for (const phase of phases) {
       if (phase.phase_type === "child") {
         const parent = phase.parent_phase || "";
         if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
@@ -7237,7 +7551,7 @@ export class AppScreen implements Component, Focusable {
   ): string[] {
     const childrenByParent = new Map<string, WorkflowPhase[]>();
     const orderedParents: WorkflowPhase[] = [];
-    for (const phase of workflow.phases) {
+    for (const phase of workflow.phases ?? []) {
       if (phase.phase_type === "child") {
         const parent = phase.parent_phase || "";
         if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
@@ -7280,7 +7594,7 @@ export class AppScreen implements Component, Focusable {
 
   /** Phase-local 0-based turn label (see ``phaseLocalTurnNumber`` in workflows.ts). */
   private agentTurnNumber(
-    agent: WorkflowRun["phases"][number]["agents"][number],
+    agent: WorkflowAgent,
     indexInSession: number,
   ): number {
     return indexInSession;
@@ -7298,7 +7612,7 @@ export class AppScreen implements Component, Focusable {
   }
 
   /** Total session turns visible in the current phase. */
-  private sessionTotalCount(members: WorkflowRun["phases"][number]["agents"]): number {
+  private sessionTotalCount(members: WorkflowAgent[]): number {
     return members.length;
   }
 
@@ -7391,7 +7705,7 @@ export class AppScreen implements Component, Focusable {
   }
 
   private aggregateSessionStatus(
-    members: WorkflowRun["phases"][number]["agents"],
+    members: WorkflowAgent[],
   ): WorkflowStatus {
     let aggregateStatus: WorkflowStatus = "completed";
     for (const member of members) {
@@ -7410,16 +7724,16 @@ export class AppScreen implements Component, Focusable {
   }
 
   /** Done turns for session parent progress (completed / failed / stopped). */
-  private sessionDoneCount(members: WorkflowRun["phases"][number]["agents"]): number {
+  private sessionDoneCount(members: WorkflowAgent[]): number {
     return members.filter(
-      (member) =>
+      (member: WorkflowAgent) =>
         member.status === "completed" ||
         member.status === "failed" ||
         member.status === "stopped",
     ).length;
   }
 
-  private formatSessionProgress(members: WorkflowRun["phases"][number]["agents"]): string {
+  private formatSessionProgress(members: WorkflowAgent[]): string {
     return `${this.sessionDoneCount(members)}/${this.sessionTotalCount(members)}`;
   }
 
@@ -7507,17 +7821,17 @@ export class AppScreen implements Component, Focusable {
   }
 
   private renderSwarmWorkflowAgentRows(
-    agents: WorkflowRun["phases"][number]["agents"],
+    agents: WorkflowAgent[] | undefined,
     width: number,
-    maxRows = agents.length,
+    maxRows = agents?.length ?? 0,
   ): string[] {
-    if (agents.length === 0) return [padToWidth(palette.text.dim("No agents"), width)];
+    if (!agents || agents.length === 0) return [padToWidth(palette.text.dim("No agents"), width)];
 
     const { sessions, oneShots } = groupWorkflowAgentsByName(agents);
 
     type DisplayGroup =
-      | { type: "session"; label: string; members: WorkflowRun["phases"][number]["agents"] }
-      | { type: "oneshot"; agent: WorkflowRun["phases"][number]["agents"][number] };
+      | { type: "session"; label: string; members: WorkflowAgent[] }
+      | { type: "oneshot"; agent: WorkflowAgent };
 
     const displayGroups: DisplayGroup[] = [
       ...sessions.map(({ label, members }) => ({ type: "session" as const, label, members })),
@@ -7535,11 +7849,12 @@ export class AppScreen implements Component, Focusable {
         const firstMember = members[0];
         const modelOrHuman = formatWorkflowAgentKindLabel(firstMember ?? {});
         const tokenValues = members
-          .map((member) => member.token_count)
-          .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+          .map((member: WorkflowAgent) => member.token_count)
+          .filter((value: number | null | undefined): value is number =>
+            typeof value === "number" && Number.isFinite(value));
         const tokenText =
           tokenValues.length > 0
-            ? formatTokenCount(tokenValues.reduce((total, value) => total + value, 0))
+            ? formatTokenCount(tokenValues.reduce((total: number, value: number) => total + value, 0))
             : null;
         const tokenSuffix = tokenText ? ` · ${tokenText} tok` : "";
 
@@ -7562,7 +7877,7 @@ export class AppScreen implements Component, Focusable {
         renderedRows++;
 
         const hasActiveTurn = members.some(
-          (member) =>
+          (member: WorkflowAgent) =>
             member.status === "waiting_for_human" ||
             member.status === "running" ||
             member.status === "pending",
@@ -7629,7 +7944,7 @@ export class AppScreen implements Component, Focusable {
           count++;
         } else {
           count++; // summary row
-          const hasWaiting = g.members.some(m => m.status === "waiting_for_human");
+          const hasWaiting = g.members.some((m: WorkflowAgent) => m.status === "waiting_for_human");
           if (hasWaiting) {
             count += g.members.length; // all turn sub-rows
           }
@@ -7657,7 +7972,7 @@ export class AppScreen implements Component, Focusable {
     const workflow = this.state.getSnapshot().workflowRuns.find((w) => w.id === state.workflowId);
     if (!workflow) return [padToWidth(palette.status.error("Workflow not found"), width)];
 
-    const phase = workflow.phases.find((item) => item.id === state.phaseId);
+    const phase = workflow.phases?.find((item) => item.id === state.phaseId);
 
     const sessionAgents = sessionMembersInPhase(
       phase?.agents ?? [],

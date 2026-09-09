@@ -69,7 +69,7 @@ def _normalize_project_dir(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-    return os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+    return os.path.normcase(os.path.abspath(os.path.expanduser(raw))).casefold()
 
 
 @dataclass(frozen=True, slots=True)

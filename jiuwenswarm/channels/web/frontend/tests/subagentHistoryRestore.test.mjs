@@ -3,13 +3,72 @@ import test from 'node:test';
 
 import {
   mergeHistoryToolReplayItems,
+  parseHistoryJsonFileToTimelinePreview,
   parseSubagentHistoryReplay,
   recoverSubagentToolHistory,
   shouldProcessHistoryPayload,
+  parseHistoryJsonFileToPreviewMessages,
 } from '../node_modules/.cache/subagent-history/historyRestore.mjs';
 
 const sessionId = 'web_session';
 const subagentId = 'web_session_sub_general-purpose_1';
+
+test('history restores the selected Agent identity from top-level and event payload fields', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    {
+      id: 'user-1',
+      role: 'user',
+      content: 'first',
+      timestamp: '2026-08-31T10:00:00.000Z',
+    },
+    {
+      id: 'final-a',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: 'from A',
+      agent_template_name: 'expert-a',
+      timestamp: '2026-08-31T10:00:01.000Z',
+    },
+    {
+      id: 'final-b',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: 'from B',
+      event_payload: { agent_template_name: 'expert-b' },
+      timestamp: '2026-08-31T10:00:02.000Z',
+    },
+    {
+      id: 'final-old',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: 'legacy',
+      timestamp: '2026-08-31T10:00:03.000Z',
+    },
+  ], 'web_session');
+
+  assert.deepEqual(messages.map(({ id, agentTemplateName }) => ({ id, agentTemplateName })), [
+    { id: 'user-1', agentTemplateName: undefined },
+    { id: 'final-a', agentTemplateName: 'expert-a' },
+    { id: 'final-b', agentTemplateName: 'expert-b' },
+    { id: 'final-old', agentTemplateName: undefined },
+  ]);
+});
+
+test('history restores the selected Agent identity on reasoning segments', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'final-with-reasoning',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: 'answer',
+      reasoning_content: 'thinking',
+      agent_template_name: 'expert-a',
+      timestamp: '2026-08-31T10:00:01.000Z',
+    },
+  ], sessionId);
+
+  assert.equal(preview.reasoningSegments[0]?.agentTemplateName, 'expert-a');
+});
 
 test('subagent history replays persisted activity without treating it as final text', () => {
   const replay = parseSubagentHistoryReplay({
@@ -46,6 +105,158 @@ test('subagent history replays persisted activity without treating it as final t
       tool_call_id: 'call-4',
     },
   });
+});
+
+test('session history restores persisted usage summary onto the preceding assistant message', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'r1:user',
+      role: 'user',
+      timestamp: 1787019579,
+      content: 'hello',
+    },
+    {
+      id: 'r1:assistant',
+      role: 'assistant',
+      event_type: 'chat.final',
+      timestamp: 1787019580,
+      content: 'world',
+    },
+    {
+      id: 'r1:assistant',
+      role: 'assistant',
+      event_type: 'chat.usage_summary',
+      timestamp: 1787019581,
+      content: '',
+      usage: {
+        input_tokens: 100,
+        output_tokens: 20,
+        total_tokens: 120,
+        input_cost: 0.01,
+        output_cost: 0.02,
+        total_cost: 0.03,
+      },
+    },
+  ], sessionId);
+
+  assert.equal(preview.messages.length, 2);
+  assert.deepEqual(preview.messages[1].usageSummary, {
+    input_tokens: 100,
+    output_tokens: 20,
+    total_tokens: 120,
+    input_cost: 0.01,
+    output_cost: 0.02,
+    total_cost: 0.03,
+  });
+});
+
+test('session history restores the complete context usage payload without adding a chat message', () => {
+  const contextUsage = {
+    event_type: 'context.usage',
+    schema_version: 'context-usage.v1',
+    phase: 'post_call',
+    request_id: 'context-request',
+    product_session_id: sessionId,
+    depth: 0,
+    team_id: null,
+    member_name: null,
+    timestamp: '2026-08-18T02:19:41.000Z',
+    context_window: {
+      limit_tokens: 2000,
+      input_tokens: 1000,
+      occupancy_rate: 0.5,
+      local_estimated_input_tokens: 231,
+    },
+    parts: {
+      messages: {
+        category: 'messages',
+        tokens: 806,
+        percentage_of_window: 0.403,
+        source: 'provider_usage_residual',
+      },
+    },
+    kv_cache: { session: { weighted_hit_rate: 0.6 } },
+    session_kv_cache_hit_rate: 0.6,
+    measurement: { tokenizer: 'unicode_codepoints', estimated: true },
+  };
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'r2:user',
+      role: 'user',
+      timestamp: 1787019580,
+      content: 'hello',
+    },
+    {
+      id: 'r2:assistant',
+      role: 'assistant',
+      event_type: 'chat.final',
+      timestamp: 1787019581,
+      content: 'world',
+    },
+    {
+      id: 'r2:context',
+      role: 'assistant',
+      event_type: 'context.usage',
+      timestamp: 1787019582,
+      content: '',
+      ...contextUsage,
+    },
+  ], sessionId);
+
+  assert.equal(preview.messages.length, 2);
+  assert.equal(preview.contextUsageSnapshot.request_id, 'context-request');
+  assert.deepEqual(preview.contextUsageSnapshot.context_window, contextUsage.context_window);
+  assert.deepEqual(preview.contextUsageSnapshot.parts, contextUsage.parts);
+  assert.deepEqual(preview.contextUsageSnapshot.kv_cache, contextUsage.kv_cache);
+  assert.deepEqual(preview.contextUsageSnapshot.measurement, contextUsage.measurement);
+});
+
+test('team history restores the latest leader before a newer teammate frame', () => {
+  const contextUsageRecord = ({ requestId, role, memberName, timestamp, inputTokens }) => ({
+    id: requestId,
+    role,
+    mode: 'team',
+    event_type: 'context.usage',
+    request_id: requestId,
+    product_session_id: sessionId,
+    depth: role === 'leader' ? 2 : 0,
+    team_id: 'runtime-team',
+    member_name: memberName,
+    timestamp,
+    content: '',
+    schema_version: 'context-usage.v1',
+    phase: 'post_call',
+    context_window: {
+      limit_tokens: 2000,
+      input_tokens: inputTokens,
+      occupancy_rate: inputTokens / 2000,
+    },
+    parts: {},
+    session_kv_cache_hit_rate: 0,
+  });
+  const leader = contextUsageRecord({
+    requestId: 'leader-context',
+    role: 'leader',
+    memberName: 'explicit-leader-name',
+    timestamp: '2026-09-03T03:00:00.000Z',
+    inputTokens: 700,
+  });
+  const worker = contextUsageRecord({
+    requestId: 'worker-context',
+    role: 'teammate',
+    memberName: 'worker-1',
+    timestamp: '2026-09-03T03:01:00.000Z',
+    inputTokens: 900,
+  });
+
+  const preview = parseHistoryJsonFileToTimelinePreview([leader, worker], sessionId);
+  assert.equal(preview.mode, 'team');
+  assert.equal(preview.contextUsageSnapshot.request_id, 'leader-context');
+  assert.equal(preview.contextUsageSnapshot.role, 'leader');
+  assert.equal(preview.contextUsageSnapshot.context_window.input_tokens, 700);
+
+  const workerOnly = parseHistoryJsonFileToTimelinePreview([worker], sessionId);
+  assert.equal(workerOnly.contextUsageSnapshot, null);
 });
 
 test('subagent history replays persisted roster status updates', () => {

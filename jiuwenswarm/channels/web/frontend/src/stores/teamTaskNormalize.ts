@@ -101,6 +101,7 @@ export function normalizeTaskEvent(value: unknown): TeamTaskUpsert | null {
     timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
     skills: normalizeStringArray(raw.skills),
     files: normalizeStringArray(raw.files),
+    workflow_run_id: pickString(raw.workflow_run_id),
     title_truncated: pickTruncationFlag(raw.title_truncated),
     title_original_size: pickFiniteSize(raw.title_original_size),
     content_truncated: pickTruncationFlag(raw.content_truncated),

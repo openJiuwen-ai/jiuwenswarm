@@ -1,4 +1,11 @@
 import type { ModelEntry, ModelPlan, VendorPreset, VendorPresetMap } from '../../../../types';
+import {
+  isReasoningLevelSupported,
+  parseReasoningCapabilities,
+  parseReasoningCatalog,
+  parseReasoningRules,
+  resolveModelReasoning,
+} from './modelReasoning';
 
 export type ModelProtocol = 'openai' | 'anthropic';
 export type ModelInputMode = 'options' | 'manual';
@@ -60,6 +67,11 @@ export function parseVendorCatalog(value: unknown): VendorPresetMap {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_VENDOR_CATALOG');
   const payload = value as Record<string, unknown>;
   const result = {} as VendorPresetMap;
+  try {
+    result.reasoning = parseReasoningCatalog(payload.reasoning);
+  } catch {
+    throw new Error('INVALID_VENDOR_CATALOG');
+  }
   for (const plan of ['token_plan', 'coding_plan', 'custom_api'] as const) {
     const presets = payload[plan];
     if (!Array.isArray(presets)) throw new Error('INVALID_VENDOR_CATALOG');
@@ -85,7 +97,15 @@ export function parseVendorCatalog(value: unknown): VendorPresetMap {
       ) {
         throw new Error('INVALID_VENDOR_CATALOG');
       }
-      return preset as unknown as VendorPreset;
+      try {
+        return {
+          ...preset,
+          reasoning_capabilities: parseReasoningCapabilities(preset.reasoning_capabilities),
+          reasoning_rules: parseReasoningRules(preset.reasoning_rules),
+        } as unknown as VendorPreset;
+      } catch {
+        throw new Error('INVALID_VENDOR_CATALOG');
+      }
     });
   }
   return result;
@@ -95,6 +115,19 @@ export function findVendorPreset(catalog: VendorPresetMap, selection: string): V
   return flattenVendorCatalog(catalog).find(
     (preset) => vendorSelectionKey(preset.plan, preset.vendor_key) === selection,
   );
+}
+
+/** Normalize the draft after capabilities load or the model changes; never persist it here. */
+export function reconcileModelReasoning(draft: ModelDraft, catalog: VendorPresetMap): ModelDraft {
+  const capability = resolveModelReasoning(
+    catalog,
+    findVendorPreset(catalog, draft.vendor_selection),
+    draft.model_name,
+    draft.protocol,
+  );
+  return capability && !isReasoningLevelSupported(draft.reasoning_level, capability)
+    ? { ...draft, reasoning_level: '' }
+    : draft;
 }
 
 export function normalizeModelOptions(options: readonly string[]): string[] {

@@ -1,0 +1,4877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:;">
+<title>JiuwenSwarm</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #1e1e1e;
+    --bg2: #252526;
+    --bg3: #2d2d30;
+    --border: #3c3c3c;
+    --text: #d4d4d4;
+    --text-muted: #858585;
+    --text-dim: #6a6a6a;
+    --accent: #0e639c;
+    --accent-hover: #1177bb;
+    --user-bg: #1a3a52;
+    --user-border: #0e639c;
+    --assistant-bg: #252526;
+    --tool-bg: #1c2b1c;
+    --tool-border: #3a5a3a;
+    --tool-header: #4a7c4a;
+    --error-bg: #2d1b1b;
+    --error-border: #6b2a2a;
+    --error-text: #f14c4c;
+    --code-bg: #0d1117;
+    --thinking-bg: #2a2a1a;
+    --thinking-border: #5a5a2a;
+    --debug-text: #4ec9b0;
+    --radius: 6px;
+    --font-mono: 'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  :root[data-theme="light"] {
+    --bg: #ffffff;
+    --bg2: #f3f3f3;
+    --bg3: #e8e8e8;
+    --border: #d4d4d4;
+    --text: #242424;
+    --text-muted: #6e6e6e;
+    --text-dim: #9e9e9e;
+    --accent: #0078d4;
+    --accent-hover: #005a9e;
+    --user-bg: #e1f0ff;
+    --user-border: #0078d4;
+    --assistant-bg: #f3f3f3;
+    --tool-bg: #e8f5e9;
+    --tool-border: #4caf50;
+    --tool-header: #388e3c;
+    --error-bg: #ffebee;
+    --error-border: #ef5350;
+    --error-text: #c62828;
+    --code-bg: #f5f5f5;
+    --thinking-bg: #fffde7;
+    --thinking-border: #fbc02d;
+    --debug-text: #007a6e;
+  }
+
+  body {
+    font-family: var(--font);
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ── Header ── */
+  #header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    min-height: 36px;
+  }
+  #header-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    cursor: text;
+  }
+  #header-title:hover::after {
+    content: ' ✎';
+    color: var(--text-muted);
+    font-weight: normal;
+    font-size: 10px;
+  }
+  #status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #6b6b6b;
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  #status-dot.connected { background: #2da44e; }
+  #status-dot.reconnecting { background: #dcdcaa; animation: pulse 1s infinite; }
+  #status-dot.error { background: #f14c4c; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .header-btn {
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    border-radius: var(--radius);
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    line-height: 1.4;
+  }
+  .header-btn:hover {
+    border-color: var(--border);
+    color: var(--text);
+    background: var(--bg3);
+  }
+  .header-btn.active {
+    color: var(--text);
+    border-color: var(--accent);
+    background: rgba(14,99,156,0.15);
+  }
+
+  .header-dropdown {
+    position: relative;
+    display: inline-block;
+  }
+  .dropdown-menu {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: 100%;
+    margin-top: 4px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    min-width: 160px;
+    z-index: 9999;
+    padding: 4px 0;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+  .dropdown-menu.visible { display: block; }
+  .dropdown-item {
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.1s, color 0.1s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dropdown-item:hover { background: var(--bg); color: var(--text); }
+  .dropdown-item.active { color: var(--text); font-weight: 600; }
+  .dropdown-item.disabled { opacity: 0.45; cursor: default; pointer-events: none; }
+  .dropdown-item > .emoji-fix, .dropdown-item > span:first-child { width: 1.3em; text-align: center; flex-shrink: 0; }
+  .dropdown-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 8px;
+  }
+  .dropdown-section-label {
+    padding: 4px 12px 2px;
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+  }
+  .emoji-fix {
+    display: inline-block;
+    width: 1.3em;
+    text-align: center;
+    margin-right: 2px;
+  }
+
+  /* ── Mode selector (bottom-left, custom dropdown) ── */
+  #mode-wrap {
+    position: relative;
+  }
+  #mode-btn {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: var(--radius);
+    padding: 2px 7px;
+    font-size: 11px;
+    cursor: pointer;
+    outline: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: border-color 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  #mode-btn:hover { color: var(--text); border-color: var(--text-muted); }
+  #mode-btn .chevron { font-size: 9px; opacity: 0.7; }
+
+  #mode-dropdown {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    min-width: 220px;
+    z-index: 9999;
+    padding: 4px 0;
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+  }
+  #mode-dropdown.visible { display: block; }
+  .mode-option {
+    padding: 6px 12px 2px;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.1s, color 0.1s;
+  }
+  .mode-option:hover { background: var(--bg); }
+  .mode-option.selected { font-weight: 600; }
+  .mode-desc {
+    padding: 0 12px 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.35;
+    cursor: default;
+    pointer-events: none;
+    border-bottom: 1px solid transparent;
+  }
+  .mode-option:hover + .mode-desc,
+  .mode-desc:hover {
+    background: var(--bg);
+  }
+  .mode-option:last-of-type + .mode-desc {
+    border-bottom: none;
+  }
+
+  /* ── Session picker (in-flow, replaces the messages area) ── */
+  #session-overlay {
+    display: none;
+    flex: 1;           /* fills the same space as #messages */
+    min-height: 0;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    flex-direction: column;
+    overflow: hidden;
+  }
+  /* When overlay is visible, show it and hide #messages */
+  #session-overlay.visible { display: flex; }
+  #messages.sessions-open { display: none !important; }
+
+  /* ── Skills overlay ── */
+  #skills-overlay {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #skills-overlay.visible { display: flex; }
+  #messages.skills-open { display: none !important; }
+  #skills-overlay-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg3);
+    flex-shrink: 0;
+    gap: 8px;
+  }
+  #skills-overlay-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+  }
+  #skills-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #skills-list::-webkit-scrollbar { width: 6px; }
+  #skills-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .skill-item {
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid transparent;
+    background: var(--bg3);
+    transition: border-color 0.1s;
+  }
+  .skill-item:hover { border-color: var(--border); }
+  .skill-info { flex: 1; min-width: 0; }
+  .skill-name { font-size: 12px; font-weight: 600; color: var(--text); }
+  .skill-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .skill-trigger { font-size: 10px; color: var(--accent); font-family: monospace; margin-top: 2px; }
+  .skill-toggle-btn {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background 0.1s, color 0.1s;
+  }
+  .skill-toggle-btn.enabled {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .skill-toggle-btn:hover { opacity: 0.85; }
+  #session-overlay-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg3);
+    flex-shrink: 0;
+    gap: 8px;
+  }
+  #session-overlay-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    flex: 1;
+  }
+  #session-overlay-close, #skills-overlay-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: var(--radius);
+    line-height: 1;
+  }
+  #session-overlay-close:hover, #skills-overlay-close:hover { color: var(--text); background: var(--bg); }
+
+  /* ── Modal dialog ── */
+  #modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 10000;
+    align-items: center;
+    justify-content: center;
+  }
+  #modal-overlay.visible { display: flex; }
+  #modal-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    min-width: 320px;
+    max-width: 420px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  #modal-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+  #modal-body  { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5; }
+  #modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .modal-btn {
+    padding: 6px 14px;
+    font-size: 12px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .modal-btn:hover { background: var(--bg); border-color: var(--text-muted); }
+  .modal-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .modal-btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+  #session-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #session-list::-webkit-scrollbar { width: 6px; }
+  #session-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .session-item {
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    transition: border-color 0.15s, background 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .session-item:hover { border-color: var(--accent); background: var(--bg); }
+  .session-item.active { border-color: var(--accent); background: rgba(14,99,156,0.12); }
+  .session-item-title {
+    font-size: 12px;
+    color: var(--text);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .session-item.active .session-item-title::after {
+    content: ' ✓';
+    color: var(--accent);
+    font-size: 11px;
+  }
+  .session-item-meta {
+    font-size: 10px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 8px;
+  }
+
+  /* ── Debug console (shown above input when debug is on) ── */
+  #debug-panel {
+    display: none;
+    height: 140px;
+    border-top: 1px solid var(--border);
+    background: var(--code-bg);
+    flex-shrink: 0;
+    flex-direction: column;
+  }
+  #debug-panel.visible { display: flex; }
+  #debug-panel-header {
+    display: flex;
+    align-items: center;
+    padding: 2px 8px;
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    gap: 6px;
+  }
+  #debug-panel-header span:first-child {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    flex: 1;
+  }
+  #debug-clear-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 10px;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  #debug-clear-btn:hover { color: var(--text); background: var(--bg); }
+  #debug-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  #debug-log::-webkit-scrollbar { width: 4px; }
+  #debug-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .debug-line { color: var(--debug-text); white-space: pre-wrap; word-break: break-all; }
+
+  /* ── Messages ── */
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    scroll-behavior: smooth;
+  }
+  #messages::-webkit-scrollbar { width: 6px; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .msg { display: flex; flex-direction: column; gap: 4px; }
+
+  .msg-header {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+    padding: 0 4px;
+  }
+  .msg-header.user { color: #569cd6; }
+  .msg-header.assistant { color: #4ec9b0; }
+
+  .msg-body {
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg-body.user {
+    background: var(--user-bg);
+    border: 1px solid var(--user-border);
+    align-self: flex-end;
+    max-width: 90%;
+  }
+  .msg-body.assistant {
+    background: var(--assistant-bg);
+    border: 1px solid var(--border);
+    max-width: 100%;
+  }
+
+  /* Collapsible injected blocks in history messages (IDE context / system reminders) */
+  .history-user-text { white-space: pre-wrap; word-break: break-word; }
+  .history-collapse {
+    margin-top: 6px;
+    font-size: 11px;
+    font-family: var(--font);
+  }
+  .history-collapse summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+    padding: 2px 0;
+    list-style: none;
+  }
+  .history-collapse summary::-webkit-details-marker { display: none; }
+  .history-collapse summary::before { content: '\25B8 '; }
+  .history-collapse[open] summary::before { content: '\25BE '; }
+  .history-collapse summary:hover { color: var(--text); }
+  .history-collapse-body {
+    margin-top: 4px;
+    padding: 6px 8px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  /* Inline markdown rendered into .msg-body */
+  .msg-body code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--code-bg);
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #ce9178;
+  }
+  /* ── Clickable file links in agent messages ── */
+  a.file-link {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--accent);
+    cursor: pointer;
+  }
+  a.file-link:hover { border-bottom-style: solid; }
+  a.file-link > code {
+    color: var(--accent);
+    background: none;
+    padding: 0;
+    border-radius: 0;
+  }
+  .msg-body pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 6px 0;
+  }
+  .msg-body pre code {
+    background: none;
+    padding: 0;
+    color: var(--text);
+    font-size: 12px;
+  }
+  .msg-body strong { color: #dcdcaa; font-weight: 600; }
+  .msg-body em { color: #ce9178; font-style: italic; }
+
+  /* Thinking block */
+  .thinking-block {
+    border: 1px solid var(--thinking-border);
+    background: var(--thinking-bg);
+    border-radius: var(--radius);
+    margin: 4px 0;
+    overflow: hidden;
+  }
+  .thinking-header {
+    padding: 4px 10px;
+    font-size: 11px;
+    color: #dcdcaa;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+  }
+  .thinking-header::before { content: '▶'; font-size: 9px; }
+  .thinking-header.open::before { content: '▼'; }
+  .thinking-body {
+    display: none;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .thinking-header.open + .thinking-body { display: block; }
+
+  /* Tool call card */
+  .tool-card {
+    border: 1px solid var(--tool-border);
+    background: var(--tool-bg);
+    border-radius: var(--radius);
+    margin: 4px 0;
+    overflow: hidden;
+  }
+  .tool-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    font-size: 11px;
+    color: #4ec9b0;
+    background: rgba(74,124,74,0.15);
+    cursor: pointer;
+    user-select: none;
+  }
+  .tool-name { font-weight: 600; font-family: var(--font-mono); }
+  .tool-open {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--accent);
+    background: none;
+    border: 1px solid rgba(128,128,128,0.35);
+    border-radius: 4px;
+    padding: 1px 8px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+  }
+  .tool-open:hover { background: rgba(128,128,128,0.15); }
+  .tool-status { margin-left: auto; font-size: 10px; color: var(--text-muted); }
+  .tool-header .tool-open + .tool-status { margin-left: 8px; }
+  .tool-spinner { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .tool-body {
+    display: none;
+    padding: 8px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .tool-header.open ~ .tool-body { display: block; }
+  .tool-body.result { color: var(--text); border-top: 1px solid var(--tool-border); }
+
+  /* Plan-approval / ask-user interrupt card */
+  .question-card {
+    border: 1px solid var(--tool-border);
+    border-left: 3px solid #eab308;
+    background: rgba(234,179,8,0.08);
+    border-radius: var(--radius);
+    margin: 8px 0;
+    padding: 10px 12px;
+  }
+  .question-title { font-size: 12px; font-weight: 600; color: #eab308; margin-bottom: 4px; }
+  .question-text { font-size: 12px; color: var(--text); margin-bottom: 8px; line-height: 1.5; }
+  .question-plan {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 180px;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.25);
+    border-radius: 4px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  .question-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .question-btn {
+    background: #eab308;
+    color: #1a1a1a;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .question-btn:hover:not(:disabled) { filter: brightness(1.1); }
+  .question-btn:disabled { opacity: 0.5; cursor: default; }
+  .question-card.answered { border-left-color: var(--accent); }
+  .question-status { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+  /* ── History loading indicator ── */
+  #history-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 32px 16px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  #history-loading::before {
+    content: '';
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--text-muted);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+
+  /* Usage metadata */
+  .usage-line {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-align: right;
+    padding: 2px 4px;
+  }
+
+  /* Error message */
+  .error-msg {
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    color: var(--error-text);
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    font-size: 12px;
+  }
+
+  /* Typing dots animation */
+  .typing-dots {
+    display: inline-flex;
+    gap: 4px;
+    padding: 4px 0;
+    align-items: center;
+    height: 20px;
+  }
+  .typing-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    animation: typingBounce 1.4s infinite ease-in-out both;
+  }
+  .typing-dots span:nth-child(1) { animation-delay: -0.32s; }
+  .typing-dots span:nth-child(2) { animation-delay: -0.16s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0s; }
+  @keyframes typingBounce {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+    40% { transform: scale(1); opacity: 1; }
+  }
+
+  /* "Thinking…" pill — shown from llm_call_start until the first streamed token */
+  .thinking-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 2px 0 6px;
+    animation: thinkingPulse 1.8s ease-in-out infinite;
+  }
+  .thinking-pill::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: typingBounce 1.4s infinite ease-in-out both;
+  }
+  @keyframes thinkingPulse {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+  }
+  .thinking-pill.generating {
+    color: var(--accent);
+    animation: none;
+  }
+  .thinking-pill.generating::before {
+    animation: none;
+    background: var(--accent);
+  }
+
+  /* Empty state */
+  #empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    color: var(--text-dim);
+    pointer-events: none;
+    font-size: 12px;
+  }
+  #empty-state-icon { font-size: 32px; opacity: 0.4; }
+
+  /* ── Input area ── */
+  #input-area {
+    border-top: 1px solid var(--border);
+    background: var(--bg2);
+    padding: 8px 12px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #input-row {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+  }
+  #input {
+    flex: 1;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 7px 10px;
+    font-family: var(--font);
+    font-size: 13px;
+    resize: none;
+    min-height: 36px;
+    max-height: 160px;
+    overflow-y: auto;
+    line-height: 1.5;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  #input:focus { border-color: var(--accent-hover); }
+  #input::placeholder { color: var(--text-dim); }
+  #input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #send-btn {
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    border-radius: var(--radius);
+    width: 36px;
+    height: 36px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.15s, opacity 0.15s;
+    font-size: 16px;
+  }
+  #send-btn:hover:not(:disabled) { background: var(--accent-hover); }
+  #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #send-btn.stop { background: #c0392b; font-size: 15px; }
+  #send-btn.stop:hover { background: #e74c3c; }
+
+  #attach-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0 5px;
+    font-size: 13px;
+    line-height: 1;
+    flex-shrink: 0;
+    border-radius: var(--radius);
+    transition: color 0.15s, border-color 0.15s;
+    margin-right: 6px;
+  }
+  #attach-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
+  #attach-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  #attachment-preview {
+    display: none;
+    gap: 6px;
+    padding: 0 0 6px 0;
+    flex-wrap: wrap;
+  }
+  #attachment-preview.has-items { display: flex; }
+  .attachment-thumb {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .attachment-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .attachment-remove {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--error-bg);
+    color: var(--error-text);
+    border: 1px solid var(--error-border);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+
+  /* Mode on left, token counter on right */
+  #input-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  #token-counter {
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  #mem-chip {
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    margin-left: 12px;
+  }
+  #model-wrap {
+    position: relative;
+    margin-left: auto;
+    margin-right: 8px;
+  }
+  #model-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
+    max-width: 200px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+  }
+  #model-btn:hover { color: var(--text); background: var(--bg3); }
+  #model-btn .chevron { font-size: 8px; opacity: 0.6; }
+  #model-display {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #model-display:empty { display: none; }
+  #model-btn:has(#model-display:empty) .chevron { display: none; }
+
+  #model-dropdown {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 4px);
+    right: 0;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    min-width: 200px;
+    max-height: 240px;
+    overflow-y: auto;
+    z-index: 9999;
+    padding: 4px 0;
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+  }
+  #model-dropdown.visible { display: block; }
+  .model-option {
+    padding: 5px 12px;
+    font-size: 11px;
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.1s;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .model-option:hover { background: var(--bg); }
+  .model-option.selected { color: var(--accent); font-weight: 600; }
+  .model-option .model-provider { font-size: 9px; color: var(--text-dim); font-weight: 400; }
+
+  /* Scrollbar for textareas */
+  #input::-webkit-scrollbar { width: 4px; }
+  #input::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* ── Session delete button ── */
+  .session-item-top {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .session-item-top .session-item-title {
+    flex: 1;
+    min-width: 0;
+  }
+  .session-delete-btn {
+    flex-shrink: 0;
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 1px 5px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    line-height: 1.4;
+    transition: color 0.1s, border-color 0.1s, background 0.1s;
+  }
+  .session-delete-btn:hover { color: var(--error-text); border-color: var(--error-text); }
+  .session-delete-btn.confirm { color: var(--error-text); border-color: var(--error-text); background: rgba(220,50,50,0.1); }
+
+  /* ── Session stats bar (live TraceHound-style metrics) ── */
+  #session-stats-bar {
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 5px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+  #session-stats-bar.visible { display: flex; }
+  .ss-chip { color: #b8b8b8; white-space: nowrap; }
+  .ss-chip b { color: var(--text); font-weight: 600; }
+  .ss-chip-err b { color: #ef4444; }
+  .ss-chip .todo-ok   { color: #4ec9b0; }
+  .ss-chip .todo-run  { color: #eab308; }
+  .ss-chip .todo-wait { color: #9ca3af; }
+  :root[data-theme="light"] .ss-chip { color: #4f4f4f; }
+
+  /* ── @-mention popup ── */
+  #input-row { position: relative; }
+  #mention-popup {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  }
+  #mention-popup.hidden { display: none; }
+  .mention-item {
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mention-item:hover, .mention-item.active { background: var(--accent); color: #fff; }
+  .mention-item .mi-rel { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+  .mention-item.active .mi-rel { color: rgba(255,255,255,0.7); }
+  /* ── Skill picker popup (#) ── */
+  #skill-popup {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 180px;
+    overflow-y: auto;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  }
+  #skill-popup.hidden { display: none; }
+  .skill-item {
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .skill-item:hover, .skill-item.active { background: var(--accent); color: #fff; }
+  .skill-item .sk-desc { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+  .skill-item.active .sk-desc { color: rgba(255,255,255,0.7); }
+  /* ── Preset prompt picker popup (!) ── */
+  #prompt-popup {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  }
+  #prompt-popup.hidden { display: none; }
+  .prompt-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .prompt-item:hover, .prompt-item.active { background: var(--accent); color: #fff; }
+  .prompt-item .pi-label { font-weight: 600; }
+  .prompt-item .pi-preview { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+  .prompt-item.active .pi-preview { color: rgba(255,255,255,0.7); }
+  /* ── Mini bar charts (tokens/turn + duration/turn) ── */
+  #mini-charts {
+    display: none;
+    gap: 12px;
+    padding: 5px 12px 4px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    flex-shrink: 0;
+  }
+  #mini-charts.visible { display: flex; }
+  .mini-chart { flex: 1; min-width: 0; }
+  .mini-chart-label { font-size: 10px; color: var(--text-dim); margin-bottom: 3px; }
+  .mini-bars { display: flex; align-items: flex-end; gap: 2px; height: 28px; }
+  .mini-bar { position: relative; flex: 1; min-width: 3px; border-radius: 1px 1px 0 0; transition: opacity 0.15s; }
+  .mini-bar:hover { opacity: 0.7; cursor: default; }
+  .mini-bar:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: #f0f0f0;
+    border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 10px;
+    line-height: 1.4;
+    white-space: pre;
+    z-index: 55;
+    pointer-events: none;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.45);
+  }
+  .charts-toggle {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 2px;
+    line-height: 1;
+  }
+  .charts-toggle:hover { color: var(--text); }
+  :root[data-theme="light"] .mini-bar:hover::after {
+    background: #3a3a3d;
+    color: #f5f5f5;
+    border: 1px solid rgba(0,0,0,0.4);
+    box-shadow: 0 3px 10px rgba(0,0,0,0.35);
+  }
+
+  /* ── Per-turn trajectory (TraceHound-style event timeline) ── */
+  .traj-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 9px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 1.5;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .traj-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+  .traj-toggle.open { color: var(--accent); border-color: var(--accent); }
+  .trajectory { display: none; margin-top: 6px; }
+  .trajectory.visible { display: block; }
+  .traj-copybar { display: flex; justify-content: flex-end; padding: 0 2px 4px; }
+  .traj-copy {
+    background: none; border: none; color: var(--text-muted);
+    font-size: 10px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+  }
+  .traj-copy:hover { color: var(--text); background: rgba(128, 128, 128, .12); }
+  .traj-row {
+    border: 1px solid var(--border);
+    border-left: 2px solid #6b7280;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .traj-row.user       { border-left-color: #569cd6; }
+  .traj-row.reasoning  { border-left-color: #8b5cf6; }
+  .traj-row.generating { border-left-color: #ec4899; }
+  .traj-row.tool_call  { border-left-color: #f59e0b; }
+  .traj-row.tool_update{ border-left-color: #d97706; }
+  .traj-row.tool_result{ border-left-color: #10b981; }
+  .traj-row.usage      { border-left-color: #ec4899; }
+  .traj-row.error      { border-left-color: #ef4444; }
+  .traj-row.final      { border-left-color: #6366f1; }
+  .traj-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .traj-header .traj-label { font-weight: 600; color: var(--text); font-family: var(--font-mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .traj-header .traj-time { margin-left: auto; font-size: 10px; color: var(--text-dim); flex-shrink: 0; }
+  .traj-body {
+    display: none;
+    padding: 5px 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+  }
+  .traj-header.open + .traj-body { display: block; }
+  .traj-gap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-dim);
+    font-size: 10px;
+    margin: 3px 0;
+  }
+  .traj-gap::before, .traj-gap::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .traj-gap.thinking { color: var(--accent); }
+  .traj-gap.generating { color: #ec4899; }
+  .traj-gap.tool { color: #f59e0b; }
+  .traj-gap.prompt-build { color: #8b5cf6; }
+
+  /* ── Custom hover tooltip (native title= is unreliable in JCEF) ── */
+  .custom-tooltip {
+    position: fixed;
+    display: none;
+    z-index: 2147483647;
+    background: #333;
+    color: #eee;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 5px 9px;
+    border-radius: 5px;
+    max-width: 440px;
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre;
+    pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+    border: 1px solid rgba(255,255,255,0.18);
+  }
+
+  /* ── Turn stats footer ── */
+  .turn-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    margin-top: 6px;
+    padding-top: 5px;
+    border-top: 1px solid var(--border);
+  }
+  .stat-badge {
+    padding: 1px 7px;
+    border-radius: 10px;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: capitalize;
+  }
+  .stat-chip {
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--bg3);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    font-size: 9px;
+  }
+  .stat-chip-warn { color: #f59e0b; border-color: rgba(245,158,11,0.4); }
+  .stat-chip-dim  { opacity: 0.55; }
+
+  /* ── Copy button (message-level action, bottom-right of each msg) ── */
+  .copy-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 2px;
+    opacity: 0.5;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    transition: opacity 0.15s;
+  }
+  .copy-btn:hover { opacity: 1; color: var(--text); }
+  .copy-btn.copied { opacity: 1; color: #4ec9b0; }
+  .copy-btn[data-tooltip] {
+    position: relative;
+  }
+  .copy-btn[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    background: #333;
+    color: #eee;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .copy-btn[data-tooltip]:hover::after { opacity: 1; }
+
+  /* ── Resend button on user messages ── */
+  .resend-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 10px;
+    padding: 0;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+    line-height: 1;
+  }
+  .msg:hover .resend-btn { opacity: 0.6; }
+  .resend-btn:hover { opacity: 1 !important; color: var(--accent); }
+
+  /* ── Session title inline edit ── */
+  .session-title-input {
+    background: var(--bg3);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 1px 6px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font);
+    flex: 1;
+    min-width: 0;
+    outline: none;
+  }
+
+  /* ── Token usage bar (blue/red line + trailing token counter) ── */
+  #token-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+  #token-bar-wrap {
+    display: none;
+    height: 2px;
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--bg3);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  #token-bar-wrap.visible { display: block; }
+  /* Counter trails the bar on the same line; hidden while the bar is hidden */
+  #token-bar-wrap:not(.visible) ~ #token-counter { visibility: hidden; }
+  #token-bar-fill {
+    height: 100%;
+    border-radius: 1px;
+    transition: width 0.3s ease, background 0.3s ease;
+    width: 0%;
+  }
+  /* Near-compaction / active-compaction chip on the token row */
+  #ctx-warning {
+    display: none;
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 600;
+    color: #f59e0b;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(245,158,11,0.12);
+    border: 1px solid rgba(245,158,11,0.35);
+    white-space: nowrap;
+  }
+  #ctx-warning.visible { display: inline-block; }
+  #ctx-warning.warn-high { color: #ef4444; background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.4); }
+  #ctx-warning.compacting { color: #8b5cf6; background: rgba(139,92,246,0.12); border-color: rgba(139,92,246,0.4); }
+
+  /* ── Rewind bar (shown after agent edits files) ── */
+  #rewind-bar {
+    display: none;
+    padding: 5px 10px;
+    border-top: 1px solid var(--border);
+    background: var(--bg2);
+    gap: 8px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  #rewind-bar.visible { display: flex; }
+  #rewind-label { font-size: 11px; color: var(--text-dim); flex: 1; }
+  #rewind-btn {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  #rewind-btn:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text); }
+  #rewind-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── Git bar ── */
+  #git-bar {
+    display: none;
+    padding: 5px 10px;
+    border-top: 1px solid var(--border);
+    background: var(--bg2);
+    gap: 8px;
+    align-items: center;
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+  #git-bar.visible { display: flex; }
+  #git-branch { color: var(--text-dim); font-family: var(--font-mono); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #git-changes { color: var(--text-muted); white-space: nowrap; }
+  #git-changes.dirty { color: #eab308; }
+  .git-btn {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .git-btn:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text); }
+  .git-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div id="status-dot" title="Disconnected"></div>
+  <div id="header-title" title="Double-click to rename session">JiuwenSwarm</div>
+  <button id="btn-new-session" class="header-btn" onclick="send({type:'new_session'})" title="New session">New</button>
+  <div class="header-dropdown">
+    <button id="btn-menu" class="header-btn" onclick="toggleMenu()" title="Menu">☰</button>
+    <div id="menu-dropdown" class="dropdown-menu">
+      <div class="dropdown-section-label">Session</div>
+      <div class="dropdown-item" onclick="renameSessionFromMenu()"><span class="emoji-fix">✎</span> <span>Rename</span></div>
+      <div class="dropdown-item" id="menu-export" onclick="exportSession()" title="Export conversation as Markdown"><span class="emoji-fix">↓</span> <span id="menu-export-text">Export</span></div>
+      <div class="dropdown-item" id="menu-copy-path" onclick="copySessionPath()" title="Copy history.jsonl log path"><span class="emoji-fix">⧉</span> <span id="menu-copy-text">Copy Logs Path</span></div>
+      <div class="dropdown-divider"></div>
+      <div class="dropdown-item" onclick="showSessionsFromMenu()"><span class="emoji-fix">📁</span> <span>Sessions</span></div>
+      <div class="dropdown-item" onclick="showSkillsFromMenu()"><span class="emoji-fix">🔧</span> <span>Skills</span></div>
+      <div class="dropdown-divider"></div>
+      <div class="dropdown-section-label">Theme</div>
+      <div class="dropdown-item" id="theme-item-auto" onclick="setThemeMode('auto')"><span class="emoji-fix">◐</span> Auto</div>
+      <div class="dropdown-item" id="theme-item-dark" onclick="setThemeMode('dark')"><span class="emoji-fix">🌙</span> Dark</div>
+      <div class="dropdown-item" id="theme-item-light" onclick="setThemeMode('light')"><span class="emoji-fix">☀</span> Light</div>
+      <div class="dropdown-divider"></div>
+      <div class="dropdown-item" onclick="toggleDebugFromMenu()">
+        <span id="debug-check">☐</span> Debug log
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sessions overlay — covers the panel when open -->
+<div id="session-overlay">
+  <div id="session-overlay-header">
+    <span id="session-overlay-title">Sessions</span>
+    <button id="session-retry-btn" class="header-btn" onclick="retrySessions()" title="Refresh">↺</button>
+    <button id="session-overlay-close" onclick="toggleSessions()" title="Close">✕</button>
+  </div>
+  <div id="session-list"></div>
+</div>
+
+<!-- Skills overlay — covers the panel when open -->
+<div id="skills-overlay">
+  <div id="skills-overlay-header">
+    <span id="skills-overlay-title">Skills</span>
+    <button class="header-btn" onclick="retrySkills()" title="Refresh">↺</button>
+    <button id="skills-overlay-close" onclick="toggleSkills()" title="Close">✕</button>
+  </div>
+  <div id="skills-list"></div>
+</div>
+
+<!-- Mode-change confirmation modal -->
+<div id="modal-overlay" onclick="if(event.target===this) closeModal()">
+  <div id="modal-box">
+    <div id="modal-title">Switch Mode</div>
+    <div id="modal-body">Current session has history messages. Switching mode will create a new session.</div>
+    <div id="modal-actions">
+      <button class="modal-btn" onclick="closeModal()">Cancel</button>
+      <button class="modal-btn primary" onclick="confirmModeSwitch()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Live session metrics — filled by JS as events arrive -->
+<div id="session-stats-bar"></div>
+<div id="mini-charts"></div>
+
+<div id="messages">
+  <div id="empty-state">
+    <div id="empty-state-icon">⟁</div>
+    <div>Start a conversation</div>
+    <div style="font-size:11px;opacity:0.6">Connecting to JiuwenSwarm…</div>
+  </div>
+</div>
+
+<!-- Rewind bar — shown after a turn that edited files -->
+<div id="rewind-bar">
+  <span id="rewind-label">Agent edited files this turn</span>
+  <button id="rewind-btn" onclick="requestRewind()">&#x27F2; Undo changes</button>
+</div>
+
+<!-- Git bar — always shown when inside a git repo -->
+<div id="git-bar">
+  <span id="git-branch">⎇</span>
+  <span id="git-changes"></span>
+  <button class="git-btn" id="git-commit-btn" onclick="requestGitCommit()" title="Stage tracked changes and commit">Commit</button>
+  <button class="git-btn" id="git-push-btn" onclick="requestGitPush()" title="Push current branch to remote">Push ↑</button>
+</div>
+
+<!-- Debug console — shown above input when debug mode is on -->
+<div id="debug-panel">
+  <div id="debug-panel-header">
+    <span>Debug Log</span>
+    <button id="debug-clear-btn" onclick="clearDebugLog()" title="Clear">Clear</button>
+    <button id="debug-copy-btn" onclick="copyDebugLog()" title="Copy log to clipboard">Copy</button>
+  </div>
+  <div id="debug-log"></div>
+</div>
+
+<div id="input-area">
+  <div id="attachment-preview"></div>
+  <div id="input-row">
+    <div id="mention-popup" class="hidden"></div>
+    <div id="skill-popup" class="hidden"></div>
+    <div id="prompt-popup" class="hidden"></div>
+    <textarea id="input" placeholder="@ files, # skills, ! prompts · Enter to send, Shift+Enter for new line" rows="1" disabled></textarea>
+    <button id="send-btn" disabled title="Send (Enter)">↑</button>
+  </div>
+  <div id="token-row">
+    <div id="token-bar-wrap" title="Context occupancy (ctx) — how full the model's context window is right now"><div id="token-bar-fill"></div></div>
+    <span id="token-counter" title="Context occupancy (ctx) — tokens used / context window right now; total session tokens are in the stats bar above"></span>
+    <span id="ctx-warning"></span>
+  </div>
+  <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none">
+  <div id="input-meta">
+    <!-- Attach button — leftmost -->
+    <button id="attach-btn" disabled title="Add Image" onclick="document.getElementById('image-input').click()">+</button>
+    <!-- Mode selector -->
+    <div id="mode-wrap">
+      <button id="mode-btn" onclick="toggleModeDropdown()" title="Coding mode — choose how the agent works">
+        <span id="mode-label">Plan & Execute</span>
+        <span class="chevron">▾</span>
+      </button>
+      <div id="mode-dropdown">
+        <div class="mode-option selected" data-mode="code.plan"    onclick="selectMode('code.plan')">Plan & Execute</div>
+        <div class="mode-desc">Explore files, design a plan, wait for your approval — no edits yet</div>
+        <div class="mode-option"          data-mode="code.normal"  onclick="selectMode('code.normal')">Execute</div>
+        <div class="mode-desc">Edit files, run commands, verify and deliver results directly</div>
+        <div class="mode-option"          data-mode="code.team"    onclick="selectMode('code.team')">Team Coding</div>
+        <div class="mode-desc">Multi-agent collaboration: a leader assigns specialists in parallel</div>
+      </div>
+    </div>
+    <!-- Model selector -->
+    <div id="model-wrap">
+      <button id="model-btn" onclick="toggleModelDropdown()" title="Switch model">
+        <span id="model-display"></span>
+        <span class="chevron">▾</span>
+      </button>
+      <div id="model-dropdown"></div>
+    </div>
+    <span id="mem-chip"></span>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// Bridge detection: VS Code vs JetBrains vs JupyterLab
+// ─────────────────────────────────────────────
+let vscodeApi = null;
+try { vscodeApi = acquireVsCodeApi(); } catch(_) {}
+
+function send(msg) {
+  if (vscodeApi) {
+    vscodeApi.postMessage(msg);
+  } else if (window.__jb_send) {
+    window.__jb_send(JSON.stringify(msg));
+  } else if (window.__jupyter_send) {
+    // JupyterLab: bridge installed by ChatPanel.ts on iframe.contentWindow
+    window.__jupyter_send(JSON.stringify(msg));
+  } else {
+    // Browser-extension host: the shared webview runs in a sandboxed iframe
+    // (opaque origin), so a bridge cannot be installed on this window — post
+    // the message up to the host page instead.
+    try {
+      window.parent.postMessage(msg, '*');
+    } catch (e) {
+      console.warn('[webview] no bridge available, msg:', msg);
+    }
+  }
+}
+
+// JetBrains: exposed by Kotlin side
+window.__jb_dispatch = function(jsonStr) {
+  handleHostMessage(JSON.parse(jsonStr));
+};
+
+// JupyterLab: called directly by SwarmStateManager (symmetric with __jb_dispatch)
+window.__jupyter_dispatch = function(event) {
+  handleHostMessage(event);
+};
+
+// VS Code + JupyterLab: messages arrive via window.message event
+window.addEventListener('message', function(e) {
+  handleHostMessage(e.data);
+});
+
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+let state = {
+  connected: false,
+  sessionId: null,
+  sessionTitle: 'JiuwenSwarm',
+  sessions: [],
+  showSessions: false,
+  showSkills: false,
+  skills: [],
+  showDebug: false,
+  streaming: false,
+  models: [],
+  activeModel: null,
+  turns: [],
+  pendingTurns: {},
+  lastUserEl: null,
+  mode: 'code.plan',
+  modeCustomized: false, // true once the user has manually picked a mode
+  themeMode: 'auto',   // 'auto' | 'dark' | 'light'
+  attachments: [],     // { filename, mimeType, base64Data, previewUrl }
+  rewindable: false,   // true when last turn edited files and rewind is available
+  historyLoading: false, // true while session history is being loaded after a switch
+  hostMetrics: {
+    contextBytes: 0,
+    contextEstimatedTokens: 0,
+    promptEstimatedTokens: 0,
+    sessionTokens: 0,
+    sessionCostUsd: 0,
+    hasCost: false,
+    attachmentsCount: 0,
+  },
+  contextWindow: 0,       // model context window limit (from chat.usage_summary / context.usage)
+  contextUsagePercent: null, // server-reported context occupancy (0-100, null = unknown)
+  contextTokensUsed: 0,   // live context occupancy (tokens_used from context.usage)
+  lastTokenTotal: 0,      // last token total passed to renderTokenCounter (for re-render)
+  modelName: null,        // active model name (from chat.usage_summary)
+  compacting: false,      // true while a context compaction is running (context.compression_state)
+  compactionPhase: null,  // phase string while compacting (e.g. 'l0_to_l1')
+  todoStats: { completed: 0, inProgress: 0, pending: 0 }, // live TODO checkbox counts
+  chartsCollapsed: true, // true when the tokens/duration mini-charts are collapsed (collapsed by default)
+  sessionStats: {
+    totalTurns: 0,
+    totalErrors: 0,
+    totalTokens: 0,
+    totalLlmCalls: 0,
+    totalCostUsd: 0,
+    totalToolCalls: 0,
+    toolCallsByTool: {},  // tool name -> call count (for the tools chip)
+    latencies: [],      // ms per completed turn
+    ttfts: [],          // ms time-to-first-token per turn
+    turnTokens: [],     // total tokens per turn (for chart)
+    turnDurations: [],  // ms per turn (for chart)
+    outcomes: [],       // outcome string per turn (for chart colours)
+  },
+  mentionFiles: [],    // [{name, path, rel}] — populated by host on 'files' message
+  pendingMentions: [], // paths the user @-mentioned in the current input
+  mentionQuery: '',    // current @-token being typed
+  mentionActive: -1,   // keyboard-selected index in mention popup (-1 = none)
+  skillQuery: '',      // current #-token being typed
+  skillActive: -1,     // keyboard-selected index in skill popup (-1 = none)
+  promptQuery: '',     // current !-token being typed
+  promptActive: -1,    // keyboard-selected index in prompt popup (-1 = none)
+  gitBranch: null,     // current git branch name (null = not a git repo)
+  gitChangedCount: 0,  // number of uncommitted changes
+};
+var _historyPendingAssistant = null; // assistant turn being assembled from history records
+var _historyBuffer = []; // server sends history newest-first; we buffer and reverse before rendering
+
+// ─────────────────────────────────────────────
+// Host message handler
+// ─────────────────────────────────────────────
+function handleHostMessage(msg) {
+  switch (msg.type) {
+    case 'connected':
+      setConnected(true, msg.sessionId, msg.sessionTitle);
+      state.models = msg.models || [];
+      state.activeModel = msg.activeModel || null;
+      if (msg.models) updateModelDisplay(msg.models, msg.activeModel);
+      if (msg.defaultMode && !state.modeCustomized) applyMode(msg.defaultMode);
+      if (typeof msg.historyPath === 'string') setSessionHistoryPath(msg.historyPath);
+      // Fetch the session list so the ☰ menu can show "Copy session path"
+      // whenever the current session has a history.jsonl path.
+      send({ type: 'list_sessions' });
+      break;
+    case 'disconnected':
+      setConnected(false);
+      break;
+    case 'reconnecting':
+      setReconnecting();
+      break;
+    case 'metrics':
+      state.hostMetrics = msg.metrics || state.hostMetrics;
+      renderHostMetrics();
+      break;
+    case 'sessions':
+      updateSessions(msg.sessions);
+      break;
+    case 'sessions_error':
+      showSessionsError(msg.message);
+      break;
+    case 'skills':
+      updateSkills(msg.skills);
+      break;
+    case 'skills_error':
+      showSkillsError(msg.message);
+      break;
+    case 'skill_toggled':
+      onSkillToggled(msg.skillId, msg.enabled);
+      break;
+    case 'jiuwen_event':
+      handleJiuwenEvent(msg.event);
+      break;
+    case 'error':
+      showError(msg.message);
+      break;
+    case 'debug_log':
+      appendDebugLog(msg.line);
+      break;
+    case 'prefill':
+      var inp = document.getElementById('input');
+      if (inp && msg.content) {
+        inp.value = msg.content;
+        inp.dispatchEvent(new Event('input'));
+        inp.focus();
+      }
+      break;
+    case 'files':
+      state.mentionFiles = msg.files || [];
+      break;
+    case 'session_deleted':
+      state.sessions = state.sessions.filter(function(s) {
+        return s.session_id !== msg.sessionId;
+      });
+      renderSessionList();
+      break;
+    case 'rewindable':
+      state.rewindable = msg.enabled;
+      var rewindBar = document.getElementById('rewind-bar');
+      var rewindBtn = document.getElementById('rewind-btn');
+      if (msg.enabled) {
+        rewindBar.classList.add('visible');
+        rewindBtn.disabled = false;
+        rewindBtn.textContent = '\u27F2 Undo changes';
+      } else {
+        rewindBar.classList.remove('visible');
+      }
+      break;
+    case 'rewind_done':
+      document.getElementById('rewind-bar').classList.remove('visible');
+      state.rewindable = false;
+      if (msg.message) {
+        var noticeEl = document.createElement('div');
+        noticeEl.className = 'usage-line';
+        noticeEl.textContent = '\u27F2 ' + msg.message;
+        document.getElementById('messages').appendChild(noticeEl);
+        scrollToBottom();
+      }
+      break;
+    case 'history_loading':
+      state.historyLoading = !!msg.loading;
+      if (state.historyLoading) { _historyBuffer = []; }
+      break;
+    case 'session_renamed':
+      state.sessionTitle = msg.title;
+      document.getElementById('header-title').textContent = msg.title;
+      if (state.sessions) {
+        state.sessions = state.sessions.map(function(s) {
+          if (s.session_id === state.sessionId) s.title = msg.title;
+          return s;
+        });
+        renderSessionList();
+      }
+      break;
+    case 'model_changed':
+      state.activeModel = msg.model;
+      if (msg.models) { state.models = msg.models; }
+      updateModelDisplay(state.models, state.activeModel);
+      break;
+    case 'memory':
+      renderMemoryChip(msg);
+      break;
+    case 'git_status':
+      state.gitBranch = msg.branch || null;
+      state.gitChangedCount = typeof msg.changedCount === 'number' ? msg.changedCount : 0;
+      updateGitBar();
+      break;
+    case 'git_committed':
+      updateGitBar();
+      if (msg.hash) appendGitNotice('\u2713 Committed ' + msg.hash);
+      break;
+    case 'git_pushed':
+      appendGitNotice('\u2191 Pushed to remote');
+      break;
+    case 'git_error':
+      appendGitNotice('\u26a0 Git: ' + (msg.message || 'error'), true);
+      break;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Connection state
+// ─────────────────────────────────────────────
+function setConnected(yes, sessionId, title) {
+  const dot = document.getElementById('status-dot');
+  const input = document.getElementById('input');
+  const sendBtn = document.getElementById('send-btn');
+  const attachBtn = document.getElementById('attach-btn');
+  if (yes) {
+    dot.className = 'connected';
+    dot.title = 'Connected';
+    const isNewSession = sessionId && sessionId !== state.sessionId;
+    state.connected = true;
+    state.sessionId = sessionId;
+    state.sessionTitle = title || 'JiuwenSwarm';
+    updateSessionPathMenu();
+    document.getElementById('header-title').textContent = state.sessionTitle;
+    if (isNewSession) {
+      clearMessages();
+      clearAttachments();
+      if (state.historyLoading) {
+        var hLoadEl = document.createElement('div');
+        hLoadEl.id = 'history-loading';
+        hLoadEl.textContent = 'Loading history\u2026';
+        document.getElementById('messages').appendChild(hLoadEl);
+      }
+    }
+    if (!state.streaming) {
+      input.disabled = false;
+      sendBtn.disabled = false;
+      attachBtn.disabled = false;
+    }
+    hideEmptyState();
+  } else {
+    dot.className = 'error';
+    dot.title = 'Disconnected';
+    state.connected = false;
+    input.disabled = true;
+    sendBtn.disabled = true;
+  }
+}
+
+function setReconnecting() {
+  const dot = document.getElementById('status-dot');
+  dot.className = 'reconnecting';
+  dot.title = 'Reconnecting…';
+}
+
+function updateModelDisplay(models, activeModel) {
+  const el = document.getElementById('model-display');
+  if (!el) return;
+  state.models = models || [];
+  state.activeModel = activeModel || null;
+  if (!models || !models.length) {
+    el.textContent = '';
+    return;
+  }
+  const active = models.find(function(m) {
+    return m.model_name === activeModel || m.alias === activeModel;
+  });
+  if (active) {
+    el.textContent = active.alias || active.model_name;
+    el.title = active.model_name + (active.model_provider ? ' · ' + active.model_provider : '');
+  } else if (activeModel) {
+    el.textContent = activeModel;
+    el.title = activeModel;
+  } else {
+    el.textContent = '';
+  }
+  // Populate dropdown
+  var dd = document.getElementById('model-dropdown');
+  if (!dd) return;
+  dd.innerHTML = '';
+  models.forEach(function(m) {
+    var opt = document.createElement('div');
+    opt.className = 'model-option' + (m.model_name === activeModel || m.alias === activeModel ? ' selected' : '');
+    var label = (m.alias || m.model_name) + (m.model_provider ? ' \u00B7 ' + m.model_provider : '');
+    opt.innerHTML = '<span>' + escapeHtml(m.alias || m.model_name) + '</span>' +
+      (m.model_provider ? '<span class="model-provider">' + escapeHtml(m.model_provider) + '</span>' : '');
+    opt.onclick = function() {
+      var name = m.alias || m.model_name;
+      if (name !== state.activeModel && !state.streaming) {
+        state.activeModel = name;
+        send({ type: 'switch_model', model: m.model_name });
+        updateModelDisplay(state.models, name);
+      }
+      closeModelDropdown();
+    };
+    dd.appendChild(opt);
+  });
+}
+
+function toggleModelDropdown() {
+  var dd = document.getElementById('model-dropdown');
+  if (!dd) return;
+  dd.classList.toggle('visible');
+}
+
+function closeModelDropdown() {
+  var dd = document.getElementById('model-dropdown');
+  if (dd) dd.classList.remove('visible');
+}
+
+// ─────────────────────────────────────────────
+// Image attachments
+// ─────────────────────────────────────────────
+function handleImageInput(files) {
+  if (!files || !files.length) return;
+  const validTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  const maxSize = 10 * 1024 * 1024; // 10 MB
+  Array.from(files).forEach(function(file) {
+    if (!validTypes.includes(file.type)) {
+      console.warn('[webview] Unsupported image type:', file.type);
+      return;
+    }
+    if (file.size > maxSize) {
+      console.warn('[webview] Image too large:', file.name, file.size);
+      return;
+    }
+    // Create a blob URL immediately for preview (avoids embedding large base64 in DOM)
+    var previewUrl = URL.createObjectURL(file);
+    readFileAsBase64(file, function(base64) {
+      state.attachments.push({
+        filename: file.name,
+        mimeType: file.type,
+        base64Data: base64,
+        previewUrl: previewUrl
+      });
+      renderAttachments();
+    });
+  });
+}
+
+function readFileAsBase64(file, callback) {
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var dataUrl = e.target.result;
+    var base64 = dataUrl.split(',')[1];
+    callback(base64);
+  };
+  reader.onerror = function() {
+    console.warn('[webview] Failed to read file:', file.name);
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderAttachments() {
+  var preview = document.getElementById('attachment-preview');
+  if (!preview) return;
+  preview.innerHTML = '';
+  if (!state.attachments.length) {
+    preview.classList.remove('has-items');
+    return;
+  }
+  preview.classList.add('has-items');
+  state.attachments.forEach(function(att, idx) {
+    var thumb = document.createElement('div');
+    thumb.className = 'attachment-thumb';
+    var img = document.createElement('img');
+    img.src = att.previewUrl;
+    img.alt = att.filename;
+    thumb.appendChild(img);
+    var removeBtn = document.createElement('button');
+    removeBtn.className = 'attachment-remove';
+    removeBtn.textContent = '✕';
+    removeBtn.title = 'Remove';
+    removeBtn.onclick = function() { removeAttachment(idx); };
+    thumb.appendChild(removeBtn);
+    preview.appendChild(thumb);
+  });
+}
+
+function removeAttachment(index) {
+  var att = state.attachments.splice(index, 1)[0];
+  if (att && att.previewUrl && att.previewUrl.startsWith('blob:')) {
+    URL.revokeObjectURL(att.previewUrl);
+  }
+  renderAttachments();
+}
+
+function clearAttachments() {
+  state.attachments.forEach(function(att) {
+    if (att.previewUrl && att.previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(att.previewUrl);
+    }
+  });
+  state.attachments = [];
+  renderAttachments();
+}
+
+// ─────────────────────────────────────────────
+// Sessions
+// ─────────────────────────────────────────────
+function updateSessions(sessions) {
+  state.sessions = sessions || [];
+  updateSessionPathMenu();
+  renderSessionList();
+}
+
+/** Enable/disable the ☰ menu "Copy Logs Path" / "Export" items based on whether
+ *  the current session's history.jsonl path is known. They stay visible (but
+ *  greyed out) so the menu layout is stable. */
+function setSessionHistoryPath(path) {
+  state.sessionHistoryPath = path || '';
+  const disabled = state.sessionHistoryPath ? '' : 'disabled';
+  const copyItem = document.getElementById('menu-copy-path');
+  if (copyItem) copyItem.classList.toggle('disabled', !!disabled);
+  const exportItem = document.getElementById('menu-export');
+  if (exportItem) exportItem.classList.toggle('disabled', !!disabled);
+}
+
+function updateSessionPathMenu() {
+  const cur = (state.sessions || []).filter(function(s) { return s.session_id === state.sessionId; })[0];
+  setSessionHistoryPath(cur && cur.history_path ? cur.history_path : '');
+}
+
+function copySessionPath() {
+  const text = state.sessionHistoryPath || '';
+  if (!text) return;
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).catch(function() {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+  const item = document.getElementById('menu-copy-text');
+  if (item) {
+    const original = item.textContent;
+    item.textContent = '\u2713 Copied';
+    setTimeout(function() { item.textContent = original; }, 1500);
+  }
+}
+
+function exportSession() {
+  if (!state.sessionHistoryPath) return;
+  document.getElementById('menu-dropdown').classList.remove('visible');
+  const exportItem = document.getElementById('menu-export-text');
+  if (exportItem) {
+    const original = exportItem.textContent;
+    exportItem.textContent = '… Exporting';
+    setTimeout(function() { exportItem.textContent = original; }, 2000);
+  }
+  send({
+    type: 'export_session',
+    historyPath: state.sessionHistoryPath,
+    sessionTitle: state.sessionTitle || 'session',
+  });
+}
+
+function renderSessionList() {
+  const el = document.getElementById('session-list');
+  el.innerHTML = '';
+  if (!state.sessions.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12px;text-align:center;">No sessions found</div>';
+    return;
+  }
+  state.sessions.forEach(function(s) {
+    const isActive = s.session_id === state.sessionId;
+    const item = document.createElement('div');
+    item.className = 'session-item' + (isActive ? ' active' : '');
+
+    // Top row: title + optional delete button
+    const topRow = document.createElement('div');
+    topRow.className = 'session-item-top';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'session-item-title';
+    titleEl.textContent = s.title || s.session_id;
+    topRow.appendChild(titleEl);
+
+    if (!isActive) {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'session-delete-btn';
+      delBtn.textContent = '\u2715';
+      delBtn.title = 'Delete session';
+      delBtn.onclick = function(e) {
+        e.stopPropagation();
+        if (delBtn.classList.contains('confirm')) {
+          send({ type: 'delete_session', sessionId: s.session_id });
+          delBtn.textContent = '\u2026';
+          delBtn.disabled = true;
+        } else {
+          delBtn.classList.add('confirm');
+          delBtn.title = 'Click again to confirm';
+          setTimeout(function() {
+            if (delBtn.classList) {
+              delBtn.classList.remove('confirm');
+              delBtn.title = 'Delete session';
+            }
+          }, 2000);
+        }
+      };
+      topRow.appendChild(delBtn);
+    }
+
+    const metaEl = document.createElement('div');
+    metaEl.className = 'session-item-meta';
+    var metaParts = [];
+    if (s.message_count != null) metaParts.push(s.message_count + ' msg' + (s.message_count !== 1 ? 's' : ''));
+    if (s.last_message_at) metaParts.push(relativeTime(s.last_message_at));
+    metaEl.textContent = metaParts.join(' · ');
+
+    item.appendChild(topRow);
+    item.appendChild(metaEl);
+    item.title = s.session_id;
+    item.onclick = function() {
+      if (!isActive) {
+        send({ type: 'switch_session', sessionId: s.session_id });
+      }
+      toggleSessions();
+    };
+    el.appendChild(item);
+  });
+}
+
+function toggleSessions() {
+  state.showSessions = !state.showSessions;
+  const overlay  = document.getElementById('session-overlay');
+  const messages = document.getElementById('messages');
+  if (state.showSessions) {
+    // Close skills overlay if open
+    if (state.showSkills) {
+      document.getElementById('skills-overlay').classList.remove('visible');
+      messages.classList.remove('skills-open');
+      state.showSkills = false;
+    }
+    overlay.classList.add('visible');
+    messages.classList.add('sessions-open');   // hide messages; overlay takes flex:1 slot
+    retrySessions();
+  } else {
+    overlay.classList.remove('visible');
+    messages.classList.remove('sessions-open');
+  }
+}
+
+function showSessionsError(message) {
+  var msg = escapeHtml(message || 'Failed to load sessions');
+  document.getElementById('session-list').innerHTML =
+    '<div style="padding:16px;display:flex;flex-direction:column;gap:10px;">' +
+      '<div style="color:var(--error-text);font-size:12px;">⚠ ' + msg + '</div>' +
+      '<button onclick="retrySessions()" style="' +
+        'background:var(--bg3);border:1px solid var(--border);color:var(--text-muted);' +
+        'border-radius:var(--radius);padding:4px 10px;font-size:11px;cursor:pointer;' +
+        'align-self:flex-start;"' +
+      '>↺ Retry</button>' +
+    '</div>';
+}
+
+function retrySessions() {
+  document.getElementById('session-list').innerHTML =
+    '<div style="padding:16px;color:var(--text-dim);font-size:12px;text-align:center;">Loading…</div>';
+  send({ type: 'list_sessions' });
+}
+
+// ─────────────────────────────────────────────
+// Skills
+// ─────────────────────────────────────────────
+function toggleSkills() {
+  state.showSkills = !state.showSkills;
+  const overlay  = document.getElementById('skills-overlay');
+  const messages = document.getElementById('messages');
+  if (state.showSkills) {
+    // Close sessions overlay if open
+    if (state.showSessions) toggleSessions();
+    overlay.classList.add('visible');
+    messages.classList.add('skills-open');
+    retrySkills();
+  } else {
+    overlay.classList.remove('visible');
+    messages.classList.remove('skills-open');
+  }
+}
+
+function showSkillsFromMenu() {
+  document.getElementById('menu-dropdown').classList.remove('visible');
+  if (!state.showSkills) toggleSkills();
+}
+
+function retrySkills() {
+  document.getElementById('skills-list').innerHTML =
+    '<div style="padding:16px;color:var(--text-dim);font-size:12px;text-align:center;">Loading…</div>';
+  send({ type: 'list_skills' });
+}
+
+function updateSkills(skills) {
+  state.skills = skills || [];
+  // If the user currently has a '#' token in the input, refresh the skill picker popup
+  // now that data has arrived (skills load asynchronously on first '#' keystroke).
+  if (inputEl && state.skills.length > 0) {
+    var cursorVal = inputEl.value.substring(0, inputEl.selectionStart || inputEl.value.length);
+    var pendingHash = cursorVal.match(/#([^\s#]*)$/);
+    if (pendingHash) {
+      state.skillQuery = pendingHash[1];
+      state.skillActive = 0;
+      renderSkillPopup(getSkillMatches());
+    }
+  }
+  if (!state.showSkills) return;
+  var el = document.getElementById('skills-list');
+  if (!el) return;
+  if (!state.skills.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12px;text-align:center;">No skills found.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  state.skills.forEach(function(skill) {
+    var item = document.createElement('div');
+    item.className = 'skill-item';
+    var enabled = skill.enabled !== false;
+    item.innerHTML =
+      '<div class="skill-info">' +
+        '<div class="skill-name">' + escapeHtml(skill.name || skill.skill_id) + '</div>' +
+        (skill.description ? '<div class="skill-desc">' + escapeHtml(skill.description) + '</div>' : '') +
+        (skill.trigger    ? '<div class="skill-trigger">' + escapeHtml(skill.trigger)    + '</div>' : '') +
+      '</div>' +
+      '<button class="skill-toggle-btn' + (enabled ? ' enabled' : '') + '" ' +
+        'onclick="toggleSkill(' + JSON.stringify(skill.skill_id) + ',' + !enabled + ')" ' +
+        'title="' + (enabled ? 'Disable' : 'Enable') + '">' +
+        (enabled ? 'ON' : 'OFF') +
+      '</button>';
+    el.appendChild(item);
+  });
+}
+
+function showSkillsError(message) {
+  var msg = escapeHtml(message || 'Failed to load skills');
+  document.getElementById('skills-list').innerHTML =
+    '<div style="padding:16px;display:flex;flex-direction:column;gap:10px;">' +
+      '<div style="color:var(--error-text);font-size:12px;">⚠ ' + msg + '</div>' +
+      '<button onclick="retrySkills()" style="' +
+        'background:var(--bg3);border:1px solid var(--border);color:var(--text-muted);' +
+        'border-radius:var(--radius);padding:4px 10px;font-size:11px;cursor:pointer;' +
+        'align-self:flex-start;"' +
+      '>↺ Retry</button>' +
+    '</div>';
+}
+
+function toggleSkill(skillId, enable) {
+  // Optimistic update: reflect change immediately before server confirms
+  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
+  if (idx >= 0) {
+    state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enable });
+    updateSkills(state.skills);
+  }
+  send({ type: 'toggle_skill', skillId: skillId, enabled: enable });
+}
+
+function onSkillToggled(skillId, enabled) {
+  // Update in-memory state and re-render
+  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
+  if (idx >= 0) {
+    state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enabled });
+    updateSkills(state.skills);
+  }
+}
+
+function relativeTime(ts) {
+  var now = Date.now();
+  var t = typeof ts === 'number' ? (ts < 1e12 ? ts * 1000 : ts) : now;
+  var diff = Math.floor((now - t) / 1000);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+// ─────────────────────────────────────────────
+// Theme  (auto / dark / light)
+// ─────────────────────────────────────────────
+function applyTheme() {
+  var isDark;
+  if (state.themeMode === 'auto') {
+    // VS Code webviews set .vscode-dark / .vscode-light on body
+    var isVsCodeDark = document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast');
+    var isVsCodeLight = document.body.classList.contains('vscode-light') || document.body.classList.contains('vscode-high-contrast-light');
+    if (isVsCodeDark || isVsCodeLight) {
+      isDark = isVsCodeDark;
+    } else {
+      isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+  } else {
+    isDark = (state.themeMode === 'dark');
+  }
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+  updateThemeMenuChecks();
+}
+
+function setThemeMode(mode) {
+  state.themeMode = mode;
+  try { localStorage.setItem('jiuwen-theme', mode); } catch(e) {}
+  applyTheme();
+  document.getElementById('menu-dropdown').classList.remove('visible');
+}
+
+function updateThemeMenuChecks() {
+  ['auto', 'dark', 'light'].forEach(function(m) {
+    var el = document.getElementById('theme-item-' + m);
+    if (el) el.classList.toggle('active', state.themeMode === m);
+  });
+}
+
+// React to OS/IDE colour-scheme changes while in auto mode
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {
+  if (state.themeMode === 'auto') applyTheme();
+});
+
+function restoreTheme() {
+  var saved = null;
+  try { saved = localStorage.getItem('jiuwen-theme'); } catch(e) {}
+  state.themeMode = saved || 'auto';
+  applyTheme();
+}
+
+// ─────────────────────────────────────────────
+// Mode selector (custom dropdown, opens upward)
+// ─────────────────────────────────────────────
+function toggleModeDropdown() {
+  document.getElementById('mode-dropdown').classList.toggle('visible');
+}
+
+function closeModeDropdown() {
+  document.getElementById('mode-dropdown').classList.remove('visible');
+}
+
+var pendingModeSwitch = null;
+
+function selectMode(mode) {
+  if (mode === state.mode) {
+    closeModeDropdown();
+    return;
+  }
+  // If session has messages, ask for confirmation
+  var hasMessages = state.turns.length > 0 || document.getElementById('messages').children.length > 1;
+  if (hasMessages) {
+    pendingModeSwitch = mode;
+    openModal();
+    closeModeDropdown();
+    return;
+  }
+  state.modeCustomized = true;
+  applyMode(mode);
+  closeModeDropdown();
+}
+
+function applyMode(mode) {
+  state.mode = mode;
+  var labels = {
+    'code.plan':   'Plan & Execute',
+    'code.normal': 'Execute',
+    'code.team':   'Team Coding'
+  };
+  document.getElementById('mode-label').textContent = labels[mode] || mode;
+  document.querySelectorAll('.mode-option').forEach(function(opt) {
+    opt.classList.toggle('selected', opt.dataset.mode === mode);
+  });
+}
+
+function openModal() {
+  document.getElementById('modal-overlay').classList.add('visible');
+}
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('visible');
+  pendingModeSwitch = null;
+}
+function confirmModeSwitch() {
+  if (pendingModeSwitch) {
+    state.modeCustomized = true;
+    applyMode(pendingModeSwitch);
+    // Request new session after mode switch
+    send({ type: 'new_session' });
+  }
+  closeModal();
+}
+
+// ─────────────────────────────────────────────
+// Header menu
+// ─────────────────────────────────────────────
+function toggleMenu() {
+  const dd = document.getElementById('menu-dropdown');
+  const opening = !dd.classList.contains('visible');
+  dd.classList.toggle('visible');
+  if (opening) {
+    // Refresh the session list so "Copy session path" reflects the current
+    // history.jsonl — the file is only created on the first message, so a
+    // fetch at connect time may have found nothing yet.
+    send({ type: 'list_sessions' });
+  }
+}
+
+function showSessionsFromMenu() {
+  document.getElementById('menu-dropdown').classList.remove('visible');
+  toggleSessions();
+}
+
+function renameSessionFromMenu() {
+  document.getElementById('menu-dropdown').classList.remove('visible');
+  startRenameSession();
+}
+
+// Session rename — double-click the title or use the menu's Rename item.
+function startRenameSession() {
+  if (state.streaming) return;
+  var htEl = document.getElementById('header-title');
+  if (!htEl) return;
+  var current = htEl.textContent;
+  var inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'session-title-input';
+  inp.value = current;
+  inp.maxLength = 100;
+  htEl.style.display = 'none';
+  htEl.parentNode.insertBefore(inp, htEl);
+  inp.focus();
+  inp.select();
+  function save() {
+    var val = inp.value.trim();
+    if (val && val !== current) {
+      state.sessionTitle = val;
+      send({ type: 'rename_session', title: val });
+    }
+    htEl.textContent = val || current;
+    htEl.style.display = '';
+    inp.remove();
+  }
+  inp.addEventListener('blur', save);
+  inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { htEl.style.display = ''; inp.remove(); }
+  });
+}
+
+function toggleDebugFromMenu() {
+  state.showDebug = !state.showDebug;
+  document.getElementById('debug-check').textContent = state.showDebug ? '☑' : '☐';
+  send({ type: 'toggle_debug', enabled: state.showDebug });
+  document.getElementById('menu-dropdown').classList.remove('visible');
+  var panel = document.getElementById('debug-panel');
+  if (state.showDebug) {
+    panel.classList.add('visible');
+  } else {
+    panel.classList.remove('visible');
+  }
+}
+
+// Click outside to close both dropdowns
+document.addEventListener('click', function(e) {
+  const menuDropdown = document.getElementById('menu-dropdown');
+  const menuBtn  = document.getElementById('btn-menu');
+  if (menuDropdown.classList.contains('visible') &&
+      !menuDropdown.contains(e.target) && e.target !== menuBtn) {
+    menuDropdown.classList.remove('visible');
+  }
+
+  const modeDropdown = document.getElementById('mode-dropdown');
+  const modeBtn      = document.getElementById('mode-btn');
+  if (modeDropdown.classList.contains('visible') &&
+      !modeDropdown.contains(e.target) && e.target !== modeBtn &&
+      !modeBtn.contains(e.target)) {
+    modeDropdown.classList.remove('visible');
+  }
+});
+
+function appendDebugLog(line) {
+  var log = document.getElementById('debug-log');
+  if (!log) return;
+  var lineEl = document.createElement('div');
+  lineEl.className = 'debug-line';
+  lineEl.textContent = '[' + new Date().toLocaleTimeString() + '] ' + line;
+  log.appendChild(lineEl);
+  // Keep at most 500 lines to avoid memory growth
+  while (log.children.length > 500) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearDebugLog() {
+  var log = document.getElementById('debug-log');
+  if (log) log.innerHTML = '';
+}
+
+function copyDebugLog() {
+  var log = document.getElementById('debug-log');
+  if (!log) return;
+  var lines = [];
+  for (var i = 0; i < log.children.length; i++) {
+    lines.push(log.children[i].textContent);
+  }
+  var text = lines.join('\n');
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  } else {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+}
+
+// ─────────────────────────────────────────────
+// JiuwenSwarm event handlers
+// ─────────────────────────────────────────────
+function handleJiuwenEvent(evt) {
+  const et = evt.event_type;
+  const rid = evt.request_id;
+  const payload = evt.payload || {};
+
+  if (et === 'chat.delta') {
+    appendDelta(rid, payload.text || '');
+  } else if (et === 'chat.reasoning') {
+    appendThinking(rid, payload.text || '');
+  } else if (et === 'chat.llm_call_start') {
+    showThinkingPill(rid, payload);
+  } else if (et === 'chat.llm_call_end') {
+    hideThinkingPill(rid);
+    // Record this call's response text (emitted by the server with llm_call_end)
+    // so every call has its own "LLM Response" row, even when the wire streams
+    // the text as deltas without an intermediate chat.final.
+    const lpt = state.pendingTurns[rid];
+    if (lpt && typeof payload.content === 'string' && payload.content.trim()) {
+      lpt.events = lpt.events || [];
+      const lastE = lpt.events[lpt.events.length - 1];
+      if (!lastE || lastE.type !== 'final' || Date.now() - lastE.t > 1500) {
+        lpt.events.push({ type: 'final', t: Date.now(), detail: payload.content.trim() });
+      }
+    }
+  } else if (et === 'chat.tool_call') {
+    appendToolCall(rid, payload);
+  } else if (et === 'chat.tool_result') {
+    appendToolResult(rid, payload);
+  } else if (et === 'chat.tool_update') {
+    appendToolUpdate(rid, payload);
+  } else if (et === 'chat.ask_user_question') {
+    // Plan approval / confirm interrupt — renders an inline Approve/Reject card.
+    // Answering resumes the suspended tool via chat.send (interrupt-resume form).
+    renderAskUserQuestion(rid, payload);
+  } else if (et === 'chat.usage_metadata') {
+    // Token data is inside payload.metadata for this event type
+    updateUsage(rid, payload.metadata || payload);
+  } else if (et === 'chat.usage_summary') {
+    // Authoritative turn total; also capture context window / occupancy for the token bar
+    if (typeof payload.context_window_tokens === 'number' && payload.context_window_tokens > 0) {
+      state.contextWindow = payload.context_window_tokens;
+    }
+    if (typeof payload.usage_percent === 'number') {
+      state.contextUsagePercent = payload.usage_percent;
+    }
+    if (typeof payload.model === 'string' && payload.model) {
+      state.modelName = payload.model;
+    }
+    updateTokenBar();
+  } else if (et === 'context.compression_state') {
+    // Auto-compaction lifecycle — the trigger is silent server-side, surface it here
+    state.compacting = !!payload && (payload.status === 'started' || payload.status === 'running');
+    if (state.compacting) {
+      state.compactionPhase = (payload && payload.phase) || '';
+    } else if (payload && payload.status === 'completed') {
+      // Tokens were freed — the next context.usage/usage_summary refreshes the bar
+      state.compactionPhase = null;
+    }
+    updateTokenBar();
+  } else if (et === 'todo.updated') {
+    // Live TODO checkbox summary (statuses: pending / in_progress / completed)
+    var todos = (payload && Array.isArray(payload.todos)) ? payload.todos : [];
+    var counts = { completed: 0, inProgress: 0, pending: 0 };
+    for (var ti = 0; ti < todos.length; ti++) {
+      var t = todos[ti] || {};
+      if (t.status === 'completed') counts.completed++;
+      else if (t.status === 'in_progress') counts.inProgress++;
+      else counts.pending++;
+    }
+    state.todoStats = counts;
+    renderStatsBar();
+  } else if (et === 'context.usage') {
+    // Context occupancy arrives DURING the turn (streamed per token batch), unlike
+    // chat.usage_summary which only arrives at turn end. Capture the live window so
+    // the ctx label and token bar reflect the real limit immediately.
+    if (typeof payload.context_max === 'number' && payload.context_max > 0) {
+      state.contextWindow = payload.context_max;
+    }
+    if (typeof payload.context_window_tokens === 'number' && payload.context_window_tokens > 0) {
+      state.contextWindow = payload.context_window_tokens;
+    }
+    if (typeof payload.tokens_used === 'number') {
+      state.contextTokensUsed = payload.tokens_used;
+    }
+    if (typeof payload.rate === 'number') {
+      state.contextUsagePercent = payload.rate;
+    }
+    renderTokenCounter(state.lastTokenTotal);
+    updateTokenBar();
+  } else if (et === 'chat.final') {
+    finalizeTurn(rid, payload);
+  } else if (et === 'chat.processing_status' && payload.is_processing === false) {
+    // Stream ended but no chat.final was sent by gateway — release the UI
+    if (state.streaming) {
+      finalizeTurn(rid, payload);
+    }
+  } else if (et === 'history.message') {
+    renderHistoryMessage(payload);
+  } else if (et === 'history.done') {
+    _flushHistoryBuffer();
+  } else if (et === 'chat.error') {
+    if (state.historyLoading) {
+      // error from history.get (e.g. empty session) — clear indicator silently
+      var hErrEl = document.getElementById('history-loading');
+      if (hErrEl) hErrEl.remove();
+      state.historyLoading = false;
+      _historyBuffer = [];
+    } else {
+      appendError(rid, payload.error || 'Unknown error');
+    }
+  }
+}
+
+// Called when we send a message — create a user turn and an empty assistant turn
+function beginTurn(requestId, userContent) {
+  const msgs = document.getElementById('messages');
+
+  // User message
+  const userEl = document.createElement('div');
+  userEl.className = 'msg';
+  userEl.innerHTML =
+    '<div class="msg-header user">You</div>' +
+    '<div class="msg-body user">' + escapeHtml(userContent) + '</div>' +
+    '<button class="resend-btn" onclick="resendMessage(this)" title="Resend">\u21BA</button>';
+  msgs.appendChild(userEl);
+  state.lastUserEl = userEl;
+
+  // Assistant message (streaming)
+  const aEl = document.createElement('div');
+  aEl.className = 'msg';
+  aEl.dataset.requestId = requestId;
+
+  const headerEl = document.createElement('div');
+  headerEl.className = 'msg-header assistant';
+  headerEl.textContent = 'JiuwenSwarm';
+  aEl.appendChild(headerEl);
+
+  const streamEl = document.createElement('div');
+  streamEl.className = 'msg-body assistant stream';
+  aEl.appendChild(streamEl);
+
+  // Typing indicator — removed when first content chunk arrives
+  const typingEl = document.createElement('div');
+  typingEl.className = 'typing-dots';
+  typingEl.innerHTML = '<span></span><span></span><span></span>';
+  streamEl.appendChild(typingEl);
+
+  msgs.appendChild(aEl);
+
+  state.pendingTurns[requestId] = {
+    containerEl: aEl,
+    streamEl: streamEl,
+    bodyEl: null,
+    textContent: '',
+    thinkingEl: null,
+    typingEl: typingEl,
+    // metrics tracking
+    startTime: Date.now(),
+    firstTokenTime: null,
+    llmCallCount: 0,
+    toolCallCount: 0,
+    toolCards: [],
+    toolResultIdx: 0,
+    toolErrorCount: 0,
+    hasError: false,
+    hasFinal: false,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    cacheTokens: 0,
+    inputCost: 0,
+    outputCost: 0,
+    ttftMsSum: 0,
+    tpotMsSum: 0,
+    ttftCount: 0,
+    tpotCount: 0,
+    models: {},
+    toolErrors: [],
+    // TraceHound-style per-turn tracking
+    events: [],          // ordered event log for the trajectory timeline
+  };
+
+  state.pendingTurns[requestId].events.push({ type: 'user', t: Date.now(), detail: userContent });
+
+  scrollToBottom();
+}
+
+function appendDelta(rid, text) {
+  promoteThinkingPill(rid);
+  const pt = state.pendingTurns[rid];
+  if (!pt) return;
+  // First real content removes the typing spinner and records TTFT
+  if (pt.typingEl) {
+    pt.typingEl.remove();
+    pt.typingEl = null;
+  }
+  if (!pt.firstTokenTime) {
+    pt.firstTokenTime = Date.now();
+    // Anchor the call's first token on its LLM Call row so the trajectory can
+    // split the call into a "thinking" (prefill) and a "generating" (output)
+    // phase — independent of when this delta actually arrived.
+    if (pt.activeUsageRow) pt.activeUsageRow.firstTokenAt = pt.firstTokenTime;
+  }
+  pt.textContent += text;
+  // Append raw text to the stream (interleaved with tool cards)
+  var lastChild = pt.streamEl.lastElementChild;
+  if (lastChild && lastChild.classList.contains('chunk-text')) {
+    lastChild.textContent += text;
+  } else {
+    var span = document.createElement('span');
+    span.className = 'chunk-text';
+    span.textContent = text;
+    pt.streamEl.appendChild(span);
+  }
+  scrollToBottom();
+}
+
+function appendThinking(rid, text) {
+  promoteThinkingPill(rid);
+  const pt = state.pendingTurns[rid];
+  if (!pt || !text) return;
+  pt.reasonedInCall = true;
+  if (!pt.firstTokenTime) {
+    pt.firstTokenTime = Date.now();
+    if (pt.activeUsageRow) pt.activeUsageRow.firstTokenAt = pt.firstTokenTime;
+  }
+
+  if (!pt.thinkingEl) {
+    const block = document.createElement('div');
+    block.className = 'thinking-block';
+    const header = document.createElement('div');
+    header.className = 'thinking-header';
+    header.textContent = 'Reasoning…';
+    header.onclick = function() { header.classList.toggle('open'); };
+    const body = document.createElement('div');
+    body.className = 'thinking-body';
+    block.appendChild(header);
+    block.appendChild(body);
+    pt.streamEl.prepend(block);
+    pt.thinkingEl = body;
+    pt.thinkingHeader = header;
+  }
+  pt.thinkingEl.textContent += text;
+  // Accumulate reasoning chunks into a single timeline entry. Keep ``t`` as the
+  // first chunk (row anchor + thinking duration) and ``lastAt`` as the last chunk
+  // (so the following "generating" gap isn't collapsed by Date.now() rounding).
+  pt.events = pt.events || [];
+  var lastE = pt.events[pt.events.length - 1];
+  if (lastE && lastE.type === 'reasoning') {
+    lastE.detail += text;
+    lastE.lastAt = Date.now();
+  } else {
+    pt.events.push({ type: 'reasoning', t: Date.now(), lastAt: Date.now(), detail: text });
+  }
+  scrollToBottom();
+}
+
+/** Show the "Thinking…" pill for a model call that has started but not yet
+ *  streamed a token. Falls back to the most recent pending turn so it still
+ *  appears even if the request id is missing (sub-agent streams). */
+function showThinkingPill(rid, payload) {
+  var pt = state.pendingTurns[rid];
+  if (!pt) {
+    var ids = Object.keys(state.pendingTurns);
+    if (!ids.length) return;
+    pt = state.pendingTurns[ids[ids.length - 1]];
+  }
+  if (!pt || pt.thinkingPillEl) return;
+  var pill = document.createElement('div');
+  pill.className = 'thinking-pill';
+  pill.textContent = 'Thinking…';
+  pt.streamEl.appendChild(pill);
+  pt.thinkingPillEl = pill;
+  // Anchor the LLM Call row at the moment the call starts so there is no gap
+  // after the preceding tool result. updateUsage() fills in tokens + prompt.
+  pt.events = pt.events || [];
+  var evt = { type: 'usage', t: Date.now(), label: state.modelName || 'LLM Call' };
+  if (payload && typeof payload.prompt === 'string' && payload.prompt.trim()) {
+    evt.prompt = payload.prompt;
+  }
+  pt.events.push(evt);
+  pt.activeUsageRow = evt;
+  pt.callInFlight = true;
+  pt.generatingPushed = false;
+  pt.reasonedInCall = false;
+  scrollToBottom();
+}
+
+/** First streamed token for a call: flip the pill from "Thinking…" to "Generating…". */
+function promoteThinkingPill(rid) {
+  var pt = state.pendingTurns[rid];
+  if (!pt) return;
+  if (pt.thinkingPillEl && pt.thinkingPillEl.textContent !== 'Generating…') {
+    pt.thinkingPillEl.textContent = 'Generating…';
+    pt.thinkingPillEl.classList.add('generating');
+  }
+}
+
+function hideThinkingPill(rid) {
+  var pt = state.pendingTurns[rid];
+  if (!pt) return;
+  if (pt.thinkingPillEl) {
+    pt.thinkingPillEl.remove();
+    pt.thinkingPillEl = null;
+  }
+  pt.callInFlight = false;
+}
+
+function appendToolCall(rid, payload) {
+  const pt = state.pendingTurns[rid];
+  if (!pt) return;
+
+  const toolName = payload.tool_name || payload.name || (payload.tool_call && payload.tool_call.name) || 'tool';
+  let toolInput = payload.tool_args || payload.tool_input || payload.input || {};
+
+  if (payload.tool_call && typeof payload.tool_call.arguments === 'string') {
+    try { toolInput = JSON.parse(payload.tool_call.arguments); } catch (_) {}
+  } else if (payload.tool_call && typeof payload.tool_call.arguments === 'object') {
+    toolInput = payload.tool_call.arguments;
+  }
+
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  card.dataset.toolName = toolName;
+
+  // Tool activity tracking: session-level count + per-tool tally for the Tools chip
+  state.sessionStats.totalToolCalls++;
+  var tb = state.sessionStats.toolCallsByTool;
+  tb[toolName] = (tb[toolName] || 0) + 1;
+
+  const header = document.createElement('div');
+  header.className = 'tool-header';
+  var filePath = toolFilePath(toolName, toolInput);
+  var openBtnHtml = filePath
+    ? '<button class="tool-open" title="Open in IDE: ' + escapeHtml(filePath) + '" onclick="openToolFile(event)">\u2197 Open</button>'
+    : '';
+  header.innerHTML =
+    '<span style="opacity:0.6">⚙</span>' +
+    '<span class="tool-name" title="' + escapeHtml(toolName) + '">' + escapeHtml(friendlyToolName(toolName)) + '</span>' +
+    openBtnHtml +
+    '<span class="tool-status"><span class="tool-spinner">◌</span> running</span>';
+  header.onclick = function() { header.classList.toggle('open'); };
+  if (filePath) header.dataset.filePath = filePath;
+
+  const body = document.createElement('div');
+  body.className = 'tool-body';
+  body.textContent = 'Arguments\n' + formatToolInput(toolName, toolInput);
+
+  card.appendChild(header);
+  card.appendChild(body);
+  pt.streamEl.appendChild(card);
+  pt.toolCards.push(card);
+  pt.toolCallCount++;
+  pt.events = pt.events || [];
+  pt.events.push({ type: 'tool_call', t: Date.now(), label: toolName, detail: 'Arguments\n' + formatToolInput(toolName, toolInput) });
+  scrollToBottom();
+}
+
+function appendToolUpdate(rid, payload) {
+  const pt = state.pendingTurns[rid];
+  if (!pt || !pt.toolCards || pt.toolResultIdx >= pt.toolCards.length) return;
+  var targetCard = pt.toolCards[pt.toolResultIdx];
+  const statusEl = targetCard.querySelector('.tool-status');
+  if (statusEl) {
+    statusEl.innerHTML = '<span class="tool-spinner">◌</span> running';
+  }
+  pt.events = pt.events || [];
+  pt.events.push({ type: 'tool_update', t: Date.now(), label: targetCard.dataset.toolName || 'tool', detail: payload.status || 'in_progress' });
+}
+
+function appendToolResult(rid, payload) {
+  const pt = state.pendingTurns[rid];
+  if (!pt || !pt.toolCards || pt.toolResultIdx >= pt.toolCards.length) return;
+
+  // Index-based matching: results arrive in call order
+  var targetCard = pt.toolCards[pt.toolResultIdx];
+
+  const statusEl = targetCard.querySelector('.tool-status');
+  const raw = payload.result
+    || payload.tool_result
+    || payload.content
+    || payload.output
+    || payload.raw_output
+    || payload.text
+    || payload.message
+    || '';
+  const result = String(raw);
+  const toolName = targetCard.dataset.toolName || 'tool';
+
+  // exit_plan_mode is intercepted BEFORE execution by PlanApprovalInterruptRail and
+  // suspended with a rail hand-off error like
+  //   {"error": "[AgentModeRail] exit_plan_mode can only be called in plan mode."}
+  // (or the legacy empty-error shape success=False data=None error=''); the runtime
+  // then emits chat.ask_user_question. This is a hand-off, not a real failure:
+  // show "awaiting approval" and do NOT consume the result index — the real result
+  // (after the user approves/rejects) updates this same card in place.
+  const RAIL_ERR_RE = /\[AgentModeRail\] exit_plan_mode can only be called in plan mode/i;
+  const railErrorIn = function (x) {
+    if (typeof x === 'string') return RAIL_ERR_RE.test(x);
+    return !!(x && typeof x === 'object' && typeof x.error === 'string' && RAIL_ERR_RE.test(x.error));
+  };
+  const suspended = toolName === 'exit_plan_mode' &&
+    (railErrorIn(raw) || railErrorIn(payload.raw_output) || /^success=False\s+data=None\s+error=''?$/.test(result.trim()));
+  if (suspended) {
+    if (statusEl) {
+      statusEl.innerHTML = '<span style="color:#eab308">⏸ awaiting approval</span>';
+    }
+    scrollToBottom();
+    return;
+  }
+
+  pt.toolResultIdx++;
+
+  // Plan-approval outcomes on exit_plan_mode (approve → executes; reject → skipped)
+  // are not tool errors even when the payload carries success=False.
+  const isError = toolName === 'exit_plan_mode'
+    ? (payload.is_error === true)
+    : (payload.is_error || /^(Error|success=False|error=')/.test(result));
+  if (isError) {
+    pt.toolErrorCount++;
+    var errMsg = result.replace(/^success=False\s+data=None\s+error='/g, '').replace(/'$/g, '').trim();
+    pt.toolErrors = pt.toolErrors || [];
+    pt.toolErrors.push(toolName + ': ' + (errMsg || 'Unknown error'));
+  }
+
+  if (statusEl) {
+    statusEl.innerHTML = isError
+      ? '<span style="color:#f14c4c">✗ error</span>'
+      : '<span style="color:#4ec9b0">✓ done</span>';
+  }
+
+  const resultEl = document.createElement('div');
+  resultEl.className = 'tool-body result';
+  resultEl.textContent = 'Result\n' + truncate(result || '(no output)', 500);
+  targetCard.appendChild(resultEl);
+  pt.events = pt.events || [];
+  pt.events.push({
+    type: 'tool_result',
+    t: Date.now(),
+    label: toolName,
+    isError: isError,
+    icon: isError ? '\u274C' : '\u2705',
+    detail: isError ? (errMsg || result) : result,
+  });
+  scrollToBottom();
+}
+
+function getActivePendingTurn() {
+  const keys = Object.keys(state.pendingTurns);
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const t = state.pendingTurns[keys[i]];
+    if (!t.hasFinal) return t;
+  }
+  return null;
+}
+
+// Renders the plan-approval / ask-user interrupt as an inline card. Answering resumes
+// the suspended tool via the interrupt-resume form of chat.send (answers + request_id
+// + source). We reuse the original turn requestId so the resumed stream keeps mapping
+// into the same pending turn.
+function renderAskUserQuestion(rid, payload) {
+  // The interrupt question carries its OWN request_id (the suspended tool's id),
+  // different from the original chat.send id. chat.final for the original turn is
+  // emitted BEFORE the user answers and deletes that key — so register the same
+  // pending turn under THIS id too. The resumed stream echoes this id and needs a
+  // live pending turn to map into, otherwise the continuation never displays.
+  let pt = state.pendingTurns[rid];
+  if (!pt) {
+    pt = getActivePendingTurn();
+    if (pt) state.pendingTurns[rid] = pt;
+  }
+  if (!pt) return;
+  pt.questionAnswered = false;
+
+  const q = (payload.questions && payload.questions[0]) || payload;
+  const options = q.options || [];
+  const header = payload.header || q.header ||
+    (payload.source === 'confirm_interrupt' ? 'Exit Plan and Execute' : 'Question');
+  const question = payload.question || q.question || q.message || '';
+  const source = payload.source || q.source || 'confirm_interrupt';
+
+  // Waiting for the user — stop the typing animation
+  if (pt.typingEl) {
+    pt.typingEl.remove();
+    pt.typingEl = null;
+  }
+
+  const card = document.createElement('div');
+  card.className = 'question-card';
+
+  let html = '<div class="question-title">' + escapeHtml(header) + '</div>';
+  if (question) html += '<div class="question-text">' + escapeHtml(question) + '</div>';
+  if (payload.plan_content) {
+    html += '<div class="question-plan">' + escapeHtml(String(payload.plan_content)) + '</div>';
+  }
+  html += '<div class="question-actions">';
+  options.forEach(function(opt, idx) {
+    const label = opt.display || opt.label || opt.value || ('Option ' + (idx + 1));
+    const value = opt.value === undefined ? label : opt.value;
+    html += '<button class="question-btn" data-value="' + escapeHtml(String(value)) + '">' +
+      escapeHtml(String(label)) + '</button>';
+  });
+  html += '</div>';
+  html += '<div class="question-status"></div>';
+  card.innerHTML = html;
+
+  card.querySelectorAll('.question-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
+      card.classList.add('answered');
+      sendAnswerForInterrupt(pt, rid, source, btn.dataset.value);
+    });
+  });
+
+  pt.streamEl.appendChild(card);
+  pt.pendingQuestion = card;
+  scrollToBottom();
+}
+
+function sendAnswerForInterrupt(pt, rid, source, optionValue) {
+  pt.questionAnswered = true;
+  const statusEl = pt.pendingQuestion ? pt.pendingQuestion.querySelector('.question-status') : null;
+  if (statusEl) statusEl.textContent = 'Answer sent — waiting for the agent to continue…';
+  send({
+    type: 'answer',
+    mode: state.mode,
+    requestId: rid,
+    source: source,
+    answers: [{ selected_options: [optionValue], custom_input: '' }],
+  });
+}
+
+// ─────────────────────────────────────────────
+// History rendering (session restore)
+// ─────────────────────────────────────────────
+
+/** Extract injected blocks from a stored user message: the plugin's
+ *  `<!-- IDE Context -->` block and the harness's `<system-reminder>` blocks.
+ *  Returns the remaining user text plus the collapsed bodies. */
+function _splitHistoryUserContent(content) {
+  var text = content || '';
+  var ideContext = '';
+  var ideMatch = /<!--\s*IDE Context\s*-->([\s\S]*?)<!--\s*End IDE Context\s*-->/.exec(text);
+  if (ideMatch) {
+    ideContext = ideMatch[1].trim();
+    text = text.replace(ideMatch[0], '');
+  }
+  var systemReminders = [];
+  var remRe = /<system-reminder[^>]*>([\s\S]*?)<\/system-reminder>/g;
+  var m;
+  while ((m = remRe.exec(text)) !== null) {
+    var body = m[1].trim();
+    if (body) systemReminders.push(body);
+  }
+  text = text.replace(remRe, '');
+  return { text: text, ideContext: ideContext, systemReminders: systemReminders };
+}
+
+/** Build a native collapsible <details> block for an injected chunk. */
+function _makeCollapseBlock(summaryText, bodyText) {
+  var details = document.createElement('details');
+  details.className = 'history-collapse';
+  var sum = document.createElement('summary');
+  sum.textContent = summaryText;
+  details.appendChild(sum);
+  var body = document.createElement('div');
+  body.className = 'history-collapse-body';
+  body.textContent = bodyText;
+  details.appendChild(body);
+  return details;
+}
+
+// Called for each streaming history.message event.
+// Server sends newest-first, so we buffer and reverse before rendering.
+function renderHistoryMessage(payload) {
+  // Streaming done sentinel: payload.status === 'done'
+  if (payload && payload.status === 'done') {
+    _flushHistoryBuffer();
+    return;
+  }
+  _historyBuffer.push(payload);
+}
+
+// Render buffered history in chronological order and do cleanup.
+function _flushHistoryBuffer() {
+  var hFlushEl = document.getElementById('history-loading');
+  if (hFlushEl) hFlushEl.remove();
+  _historyBuffer.reverse(); // server sent newest-first; render oldest-first
+  for (var i = 0; i < _historyBuffer.length; i++) {
+    _renderHistoryMessageImmediate(_historyBuffer[i]);
+  }
+  _historyBuffer = [];
+  _historyPendingAssistant = null;
+  state.historyLoading = false;
+  // Add trajectory toggles to every restored turn that has recorded events
+  document.querySelectorAll('#messages .msg').forEach(function(el) {
+    if (!el.__events || !el.__events.length) return;
+    var footerEl = el.querySelector('.turn-stats');
+    if (!footerEl) {
+      footerEl = document.createElement('div');
+      footerEl.className = 'turn-stats';
+      el.appendChild(footerEl);
+    }
+    if (!footerEl.querySelector('.traj-toggle')) {
+      footerEl.insertBefore(makeTrajectoryToggle(el, el.__events.length), footerEl.children[0]);
+    }
+  });
+}
+
+function _renderHistoryMessageImmediate(payload) {
+  // Backend wraps each history record under payload.message; older flows send it flat.
+  var rec = (payload && typeof payload.message === 'object' && payload.message !== null)
+    ? payload.message
+    : (payload || {});
+  var role = rec.role;
+  var content = rec.content || '';
+  var innerType = rec.event_type;
+  var evtPayload = rec.event_payload || {};
+  var recTs = rec.timestamp;
+  var evtT = typeof recTs === 'number' ? (recTs > 1000000000000 ? recTs : recTs * 1000) : Date.now();
+  var msgs = document.getElementById('messages');
+
+  if (role === 'user') {
+    _historyPendingAssistant = null;
+    var el = document.createElement('div');
+    el.className = 'msg';
+    el.innerHTML = '<div class="msg-header user">You</div>';
+    var userBody = document.createElement('div');
+    userBody.className = 'msg-body user';
+    // Stored content includes injected blocks (IDE context, system reminders)
+    // that bury the real message — render them collapsed so the text is readable.
+    var userParts = _splitHistoryUserContent(content);
+    if (userParts.text.trim()) {
+      var userText = document.createElement('div');
+      userText.className = 'history-user-text';
+      userText.textContent = userParts.text.trim();
+      userBody.appendChild(userText);
+    }
+    if (userParts.systemReminders.length) {
+      userBody.appendChild(_makeCollapseBlock(
+        'System reminder' + (userParts.systemReminders.length > 1 ? ' (' + userParts.systemReminders.length + ')' : ''),
+        userParts.systemReminders.join('\n\n')));
+    }
+    if (userParts.ideContext) {
+      userBody.appendChild(_makeCollapseBlock('IDE Context', userParts.ideContext));
+    }
+    el.appendChild(userBody);
+    msgs.appendChild(el);
+    scrollToBottom();
+  } else if (role === 'assistant') {
+    if (!_historyPendingAssistant) {
+      var aEl = document.createElement('div');
+      aEl.className = 'msg';
+      aEl.__events = [];
+      var hdrEl = document.createElement('div');
+      hdrEl.className = 'msg-header assistant';
+      hdrEl.textContent = 'JiuwenSwarm';
+      aEl.appendChild(hdrEl);
+      var bdyEl = document.createElement('div');
+      bdyEl.className = 'msg-body assistant';
+      aEl.appendChild(bdyEl);
+      msgs.appendChild(aEl);
+      _historyPendingAssistant = { containerEl: aEl, bodyEl: bdyEl };
+    }
+    if (innerType === 'chat.tool_call') {
+      var toolName = evtPayload.tool_name || rec.tool_name || 'tool';
+      var toolInput = evtPayload.tool_input || evtPayload.input || evtPayload.arguments || {};
+      var card = document.createElement('div');
+      card.className = 'tool-card';
+      var hdr = document.createElement('div');
+      hdr.className = 'tool-header';
+      var hPath = toolFilePath(String(toolName), toolInput);
+      var hOpen = hPath
+        ? '<button class="tool-open" title="Open in IDE: ' + escapeHtml(hPath) + '" onclick="openToolFile(event)">\u2197 Open</button>'
+        : '';
+      hdr.innerHTML =
+        '<span style="opacity:0.6">\u2699</span>' +
+        '<span class="tool-name">' + escapeHtml(String(toolName)) + '</span>' +
+        hOpen +
+        '<span class="tool-status"><span style="color:#4ec9b0">\u2713 done</span></span>';
+      if (hPath) hdr.dataset.filePath = hPath;
+      hdr.onclick = function() { hdr.classList.toggle('open'); };
+      var bdy = document.createElement('div');
+      bdy.className = 'tool-body';
+      bdy.textContent = 'Arguments\n' + ((typeof formatToolInput === 'function')
+        ? formatToolInput(String(toolName), toolInput)
+        : JSON.stringify(toolInput, null, 2));
+      card.appendChild(hdr);
+      card.appendChild(bdy);
+      _historyPendingAssistant.bodyEl.appendChild(card);
+      _historyPendingAssistant.containerEl.__events.push({
+        type: 'tool_call', t: evtT, label: toolName, detail: 'Arguments\n' + bdy.textContent.replace('Arguments\n', ''),
+      });
+    } else if (!innerType || innerType === 'chat.final') {
+      if (content.trim()) {
+        var textEl = document.createElement('div');
+        textEl.innerHTML = renderMarkdown(content);
+        _historyPendingAssistant.bodyEl.appendChild(textEl);
+        _historyPendingAssistant.containerEl.__events.push({ type: 'final', t: evtT, detail: content });
+      }
+    }
+    scrollToBottom();
+  }
+}
+
+function updateUsage(rid, payload) {
+  const pt = state.pendingTurns[rid];
+  if (!pt) return;
+
+  // Server nests token data under payload.usage_metadata; tolerate a flat payload too.
+  const meta = (payload.usage_metadata && typeof payload.usage_metadata === 'object')
+    ? payload.usage_metadata
+    : payload;
+
+  // cache_tokens is a subset of input_tokens (cached portion of the prompt) — do not add.
+  const inTok  = meta.input_tokens  || meta.cache_tokens || 0;
+  const outTok = meta.output_tokens || 0;
+  const cost   = meta.total_cost || meta.cost_usd || 0;
+
+  pt.llmCallCount++;
+  pt.inputTokens  += inTok;
+  pt.outputTokens += outTok;
+  pt.costUsd      += cost;
+  pt.cacheTokens  += meta.cache_tokens || 0;
+  pt.inputCost    += meta.input_cost || 0;
+  pt.outputCost   += meta.output_cost || 0;
+  if (meta.model_name) pt.models[meta.model_name] = true;
+  // TTFT / TPOT live at the outer usage_metadata level (perf_metrics), not inside usage_metadata
+  if (typeof payload.ttft_ms === 'number' && payload.ttft_ms > 0) { pt.ttftMsSum += payload.ttft_ms; pt.ttftCount++; }
+  if (typeof payload.tpot_ms === 'number' && payload.tpot_ms > 0) { pt.tpotMsSum += payload.tpot_ms; pt.tpotCount++; }
+  // Per-call server-measured phases. These are authoritative for the trajectory
+  // labels: thinking = prefill (ttft), generating = decode (tpot x output tokens).
+  var ttftMs = (typeof payload.ttft_ms === 'number' && payload.ttft_ms > 0) ? payload.ttft_ms : null;
+  var tpotMs = (typeof payload.tpot_ms === 'number' && payload.tpot_ms > 0) ? payload.tpot_ms : null;
+  var genMs = (tpotMs != null && outTok > 0) ? Math.round(tpotMs * outTok) : null;
+
+  if (inTok || outTok) {
+    const total = pt.inputTokens + pt.outputTokens;
+    renderTokenCounter(state.sessionStats.totalTokens + total);
+  }
+
+  pt.events = pt.events || [];
+  // Prompt is serialized into usage_metadata.prompt only on some agent paths; keep it if present.
+  var evtPrompt = (typeof meta.prompt === 'string' && meta.prompt.trim()) ? meta.prompt : null;
+  var detailStr = 'in ' + (inTok || 0).toLocaleString() + ' / out ' + (outTok || 0).toLocaleString() +
+      ' = ' + (inTok + outTok).toLocaleString() + ' tok' +
+      ((meta.cache_tokens || 0) > 0 ? ' \u00B7 cache ' + meta.cache_tokens.toLocaleString() : '') +
+      (cost > 0 ? ' \u00B7 ' + fmtUsd(cost) : '');
+  if (pt.activeUsageRow) {
+    // Fill in the call-start row (anchored by llm_call_start) so the LLM Call
+    // row stays at the start of the call instead of jumping to its end.
+    pt.activeUsageRow.label = meta.model_name || pt.activeUsageRow.label || state.modelName || 'LLM';
+    if (evtPrompt) pt.activeUsageRow.prompt = evtPrompt;
+    pt.activeUsageRow.detail = detailStr;
+    pt.activeUsageRow.ttftMs = ttftMs;
+    pt.activeUsageRow.genMs = genMs;
+    var usageEvt = pt.activeUsageRow;
+    pt.activeUsageRow = null;
+  } else {
+    var lastE = pt.events[pt.events.length - 1];
+    if (lastE && lastE.type === 'usage') {
+      // Another usage_metadata for the same in-flight call (the server can emit
+      // several llm_usage chunks) — update the existing row, don't add a new one.
+      lastE.label = meta.model_name || lastE.label || state.modelName || 'LLM';
+      if (evtPrompt) lastE.prompt = evtPrompt;
+      lastE.detail = detailStr;
+      lastE.ttftMs = ttftMs;
+      lastE.genMs = genMs;
+      var usageEvt = lastE;
+    } else {
+      // No llm_call_start was seen (e.g. older server) — fall back to appending.
+      var usageEvt = {
+        type: 'usage',
+        t: Date.now(),
+        label: meta.model_name || state.modelName || 'LLM',
+        prompt: evtPrompt,
+        detail: detailStr,
+        ttftMs: ttftMs,
+        genMs: genMs,
+      };
+      pt.events.push(usageEvt);
+    }
+  }
+  // Propagate the server decode estimate to the reasoning row(s) that follow this
+  // call, so the "reasoning -> tool_call/final" gap uses server-measured time.
+  if (genMs != null && usageEvt && typeof pt.events === 'object' && pt.events.length) {
+    var uIdx = pt.events.indexOf(usageEvt);
+    if (uIdx < 0) uIdx = pt.events.length - 1;
+    for (var j = uIdx + 1; j < pt.events.length; j++) {
+      if (pt.events[j].type === 'usage') break;
+      if (pt.events[j].type === 'reasoning') pt.events[j].genMs = genMs;
+    }
+  }
+  pt.callInFlight = false;
+}
+
+function contextUsagePct() {
+  var limit = state.contextWindow;
+  if (state.contextUsagePercent != null) return Math.min(100, Math.max(0, Math.round(state.contextUsagePercent)));
+  if (state.contextTokensUsed > 0 && limit > 0) return Math.min(100, Math.max(0, Math.round(state.contextTokensUsed / limit * 100)));
+  return null;
+}
+
+function renderTokenCounter(total) {
+  state.lastTokenTotal = total;
+  var el = document.getElementById('token-counter');
+  if (!el) return;
+  // Bottom line: context occupancy only (total session tokens are shown in the stats bar up top)
+  if (state.contextWindow > 0) {
+    var ctxUsed = state.contextTokensUsed;
+    var pct = contextUsagePct();
+    if (ctxUsed <= 0 && pct != null) ctxUsed = Math.round(state.contextWindow * pct / 100);
+    if (ctxUsed > 0) {
+      var text = 'ctx ' + fmtTok(ctxUsed) + ' / ' + fmtTok(state.contextWindow);
+      if (pct != null) text += ' (' + pct + '%)';
+    } else {
+      text = 'ctx ' + fmtTok(state.contextWindow);
+    }
+    el.textContent = text;
+  }
+}
+
+function renderMemoryChip(msg) {
+  var el = document.getElementById('mem-chip');
+  if (!el) return;
+  var rss = msg.rssMb || 0;
+  var total = msg.totalMb || 0;
+  var avail = msg.availableMb || 0;
+  if (rss <= 0 && total <= 0) {
+    el.textContent = '';
+    return;
+  }
+  var text = 'mem ' + fmtMb(rss);
+  el.textContent = text;
+  el.title = 'Server memory \u2014 RSS ' + fmtMb(rss) + ' of ' + fmtMb(total) + ' total, ' + fmtMb(avail) + ' available';
+  el.style.display = '';
+}
+
+function fmtMb(mb) {
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+  return Math.round(mb) + ' MB';
+}
+
+/** Give every intermediate LLM call a "Response" row. A call that produced text
+ *  already has a 'final' row (from llm_call_end / chat.final); a call that only
+ *  produced tool calls gets a synthesized response showing those instructions,
+ *  anchored at the moment the call ended (its first tool call). */
+function attachIntermediateLlmResponses(events) {
+  var out = [];
+  for (var i = 0; i < events.length; i++) {
+    var e = events[i];
+    out.push(e);
+    if (e.type !== 'usage') continue;
+    var j = i + 1;
+    var toolParts = [];
+    var firstToolT = null;
+    var hasResponse = false;
+    while (j < events.length && events[j].type !== 'usage') {
+      var x = events[j];
+      if (x.type === 'final') hasResponse = true;
+      if (x.type === 'tool_call') {
+        if (firstToolT == null) firstToolT = x.t;
+        toolParts.push((x.label || 'tool') + (x.detail ? '\n' + x.detail : ''));
+      }
+      j++;
+    }
+    if (!hasResponse && j < events.length && toolParts.length) {
+      out.push({ type: 'final', t: firstToolT, detail: toolParts.join('\n\n---\n\n') });
+    }
+  }
+  return out;
+}
+
+function finalizeTurn(rid, payload) {
+  hideThinkingPill(rid);
+  const pt = state.pendingTurns[rid];
+  if (pt) {
+    if (pt.typingEl) {
+      pt.typingEl.remove();
+      pt.typingEl = null;
+    }
+    // Keep streaming content as-is (chunk-text and tool cards stay interleaved).
+    // No markdown replacement — the raw streaming text preserves the chronological layout.
+    if (pt.streamEl.querySelector('.typing-dots')) { pt.streamEl.querySelector('.typing-dots').remove(); }
+    if (pt.thinkingHeader) {
+      pt.thinkingHeader.textContent = 'Reasoning';
+    }
+    pt.containerEl.querySelectorAll('.tool-spinner').forEach(function(s) {
+      s.classList.remove('tool-spinner');
+    });
+    // Resolve any tool cards still showing "running" (no result event arrived)
+    pt.containerEl.querySelectorAll('.tool-status').forEach(function(s) {
+      if (s.textContent.indexOf('running') !== -1) {
+        s.innerHTML = '';
+      }
+    });
+
+    // Premature final: when an interrupt question is awaiting an answer, the server
+    // emits chat.final for the original turn BEFORE the user responds. Don't finalize
+    // then — the resumed stream (keyed by the question's request_id) continues this
+    // same turn and will produce the real final.
+    if (pt.pendingQuestion && !pt.questionAnswered) {
+      scrollToBottom();
+      return;
+    }
+
+    // ── Live metrics ──
+    pt.hasFinal = true;
+    if (payload.stopped) pt.stopped = true;
+
+    // Record the final response text as a 'final' event so the trajectory
+    // shows the turn's response as its own entry. Live streaming never emits a
+    // 'final' event itself (unlike history restore), so without this the
+    // timeline has no response entry to display. Intermediate calls stream no
+    // text deltas, so fall back to the chat.final payload content.
+    const finalText = (pt.textContent ? pt.textContent.trim() : '')
+      || (payload && payload.content ? String(payload.content).trim() : '')
+      || '';
+    if (finalText) {
+      const lastE = pt.events[pt.events.length - 1];
+      if (!lastE || lastE.type !== 'final' || Date.now() - lastE.t > 1500) {
+        pt.events.push({ type: 'final', t: Date.now(), detail: finalText });
+      }
+    }
+
+    const durationMs  = Date.now() - pt.startTime;
+    const outcome     = classifyOutcome(pt);
+    const totalTok    = pt.inputTokens + pt.outputTokens;
+    const ttftMs      = pt.firstTokenTime ? pt.firstTokenTime - pt.startTime : null;
+
+    // Derived values for chip tooltips
+    const toolsUsed = (pt.events || []).filter(function(e) { return e.type === 'tool_call' && e.label; })
+      .map(function(e) { return e.label; })
+      .filter(function(v, i, a) { return a.indexOf(v) === i; });
+    const modelsUsed = Object.keys(pt.models || {});
+    const avgTtft = pt.ttftCount ? Math.round(pt.ttftMsSum / pt.ttftCount) : null;
+    const avgTpot = pt.tpotCount ? Math.round(pt.tpotMsSum / pt.tpotCount) : null;
+    const ctxPct = contextUsagePct();
+    const respLen = pt.textContent.trim().length;
+
+    const outcomeColors = {
+      completed:             '#2563eb',
+      completed_with_issues: '#f59e0b',
+      error:                 '#ef4444',
+      no_response:           '#8b5cf6',
+      stopped:               '#6b7280',
+    };
+    const outcomeColor = outcomeColors[outcome] || '#6b7280';
+
+    // Tooltips: one value per line, consistent title-case labels
+    var outcomeTip = titleCase(outcome.replace(/_/g, ' '));
+    outcomeTip += '\nTurn: ' + (state.sessionStats.totalTurns + 1);
+    outcomeTip += '\nTime: ' + fmtTimeOfDay(pt.startTime);
+    if (respLen > 0) outcomeTip += '\nResponse: ' + respLen.toLocaleString() + ' chars';
+    if (pt.toolErrorCount) outcomeTip += '\nTool Failures: ' + pt.toolErrorCount;
+
+    var tokTip = 'Input Tokens: ' + fmtTok(pt.inputTokens);
+    tokTip += '\nOutput Tokens: ' + fmtTok(pt.outputTokens);
+    if (pt.cacheTokens > 0) tokTip += '\nCache Tokens: ' + fmtTok(pt.cacheTokens);
+    if (ctxPct != null) tokTip += '\nContext Usage: ' + ctxPct + '%';
+
+    // Combined "LLM Calls · Tools" bubble — one chip, one tooltip
+    var actChips = [];
+    var actTip = '';
+    if (pt.llmCallCount > 0) {
+      actChips.push(pt.llmCallCount + ' LLM Call' + (pt.llmCallCount !== 1 ? 's' : ''));
+      actTip += 'LLM Calls: ' + pt.llmCallCount;
+      if (modelsUsed.length) modelsUsed.forEach(function(m) { actTip += '\nModel: ' + m; });
+    }
+    if (pt.toolCallCount) {
+      actChips.push(pt.toolCallCount + ' Tool' + (pt.toolCallCount !== 1 ? 's' : ''));
+      actTip += (actTip ? '\n\n' : '') + 'Tools: ' + pt.toolCallCount;
+      toolsUsed.forEach(function(t) { actTip += '\n' + t; });
+      if (pt.toolErrors && pt.toolErrors.length) {
+        actTip += '\nFailed:';
+        pt.toolErrors.forEach(function(e) { actTip += '\n' + e; });
+      }
+    }
+
+    var costTip = 'Cost: ' + fmtUsd(pt.costUsd);
+    if (pt.inputCost > 0) costTip += '\nInput: ' + fmtUsd(pt.inputCost);
+    if (pt.outputCost > 0) costTip += '\nOutput: ' + fmtUsd(pt.outputCost);
+
+    var durTip = 'Total Duration: ' + fmtMs(durationMs);
+    if (ttftMs != null) durTip += '\nAvg First Token (Harness): ' + fmtMs(ttftMs);
+    if (avgTtft != null) durTip += '\nAvg First Token (Model): ' + fmtMs(avgTtft);
+    if (avgTpot != null) durTip += '\nAvg Between Tokens (Model): ' + fmtMs(avgTpot);
+
+    const footer = document.createElement('div');
+    footer.className = 'turn-stats';
+    let footerHtml =
+      '<span class="stat-badge" style="background:' + outcomeColor + '" data-tooltip="' + escapeHtml(outcomeTip) + '">' +
+      outcome.replace(/_/g, ' ') + '</span>';
+    if (totalTok)           footerHtml += '<span class="stat-chip" data-tooltip="' + escapeHtml(tokTip) + '">Toks In ' + fmtTok(pt.inputTokens) + ' · Out ' + fmtTok(pt.outputTokens) + '</span>';
+    if (actChips.length)    footerHtml += '<span class="stat-chip" data-tooltip="' + escapeHtml(actTip) + '">' + actChips.join(' \u00B7 ') + '</span>';
+    if (pt.costUsd > 0)     footerHtml += '<span class="stat-chip" data-tooltip="' + escapeHtml(costTip) + '">' + fmtUsd(pt.costUsd) + '</span>';
+    footerHtml += '<span class="stat-chip" data-tooltip="' + escapeHtml(durTip) + '">' + (durationMs !== null ? 'Dur ' + fmtMs(durationMs) : '') + '</span>';
+    if (pt.toolErrorCount) {
+      const errSummary = pt.toolErrors.map(function(e) { return '• ' + escapeHtml(e); }).join('\n');
+      footerHtml += '<span class="stat-chip stat-chip-warn" style="cursor:pointer;text-decoration:underline dotted rgba(245,158,11,0.5)" onclick="var n=this.nextElementSibling;n.style.display=n.style.display===\'none\'?\'block\':\'none\'">' + pt.toolErrorCount + ' Tool Err \u25BE</span>';
+      footerHtml += '<div class="tool-error-detail" style="display:none;margin-top:4px;padding:4px 8px;background:rgba(245,158,11,0.1);border-radius:4px;font-size:11px;white-space:pre-wrap;line-height:1.4">' + errSummary + '</div>';
+    }
+    footer.innerHTML = footerHtml;
+
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.style.marginLeft = 'auto';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    copyBtn.dataset.tooltip = 'Copy response';
+    copyBtn.onclick = function() { copyMessageContent(this); };
+    footer.appendChild(copyBtn);
+
+    pt.containerEl.appendChild(footer);
+    // Give every intermediate call a "Response" row: text responses are already
+    // recorded (llm_call_end / chat.final); tool-call-only calls get a
+    // synthesized response showing the tool instruction, at the call's end.
+    pt.events = attachIntermediateLlmResponses(pt.events || []);
+    insertTrajectoryToggle(footer, pt.containerEl, (pt.events || []).length);
+
+    pt.containerEl.__events = pt.events || [];
+
+    updateSessionStats(outcome, totalTok, durationMs, pt.llmCallCount, pt.costUsd, ttftMs);
+    delete state.pendingTurns[rid];
+    // An interrupted turn is registered under BOTH the original send id and the
+    // question's request_id — purge every key that still maps to this finalized turn.
+    Object.keys(state.pendingTurns).forEach(function(k) {
+      if (state.pendingTurns[k] === pt) delete state.pendingTurns[k];
+    });
+  }
+  setStreaming(false);
+  scrollToBottom();
+}
+
+function appendError(rid, errorText) {
+  const pt = state.pendingTurns[rid];
+  if (pt) {
+    if (pt.typingEl) {
+      pt.typingEl.remove();
+      pt.typingEl = null;
+    }
+    pt.hasError = true;
+    pt.events = pt.events || [];
+    pt.events.push({ type: 'error', t: Date.now(), detail: errorText });
+
+    var errorEl = document.createElement('div');
+    errorEl.className = 'error-msg';
+    errorEl.style.marginTop = '8px';
+    errorEl.innerHTML = '\u26A0 ' + escapeHtml(errorText);
+    pt.containerEl.appendChild(errorEl);
+    pt.containerEl.querySelectorAll('.tool-spinner').forEach(function(s) {
+      s.classList.remove('tool-spinner');
+    });
+    pt.containerEl.querySelectorAll('.tool-status').forEach(function(s) {
+      if (s.textContent.indexOf('running') !== -1) {
+        s.innerHTML = '';
+      }
+    });
+
+    // Render error turn stats footer
+    const durationMs = Date.now() - pt.startTime;
+    const totalTok   = pt.inputTokens + pt.outputTokens;
+    const errTtftMs  = pt.firstTokenTime ? pt.firstTokenTime - pt.startTime : null;
+    var errDurTip = 'total duration ' + fmtMs(durationMs) + (errTtftMs !== null ? ' \u00B7 time to first token ' + fmtMs(errTtftMs) : '');
+    var errTokTip = 'input / output tokens' + (pt.cacheTokens > 0 ? ' \u00B7 cache ' + fmtTok(pt.cacheTokens) : '');
+    var errBadgeTip = 'Error\nTurn: ' + (state.sessionStats.totalTurns + 1) + '\nTime: ' + fmtTimeOfDay(pt.startTime) + '\n' + errorText;
+    const footer = document.createElement('div');
+    footer.className = 'turn-stats';
+    footer.innerHTML =
+      '<span class="stat-badge" style="background:#ef4444" data-tooltip="' + escapeHtml(errBadgeTip) + '">error</span>' +
+      (totalTok ? '<span class="stat-chip" data-tooltip="' + escapeHtml(errTokTip) + '">Toks In ' + fmtTok(pt.inputTokens) + ' · Out ' + fmtTok(pt.outputTokens) + '</span>' : '') +
+      '<span class="stat-chip" data-tooltip="' + escapeHtml(errDurTip) + '">' + fmtMs(durationMs) + '</span>';
+    pt.containerEl.appendChild(footer);
+    insertTrajectoryToggle(footer, pt.containerEl, (pt.events || []).length);
+
+    pt.containerEl.__events = pt.events || [];
+
+    updateSessionStats('error', totalTok, durationMs, pt.llmCallCount, pt.costUsd,
+      pt.firstTokenTime ? pt.firstTokenTime - pt.startTime : null);
+    delete state.pendingTurns[rid];
+  } else {
+    showError(errorText);
+  }
+  setStreaming(false);
+  scrollToBottom();
+}
+
+// ─────────────────────────────────────────────
+// Input handling
+// ─────────────────────────────────────────────
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send-btn');
+const mentionPopupEl = document.getElementById('mention-popup');
+const skillPopupEl  = document.getElementById('skill-popup');
+const promptPopupEl = document.getElementById('prompt-popup');
+
+// ── Preset prompts (!): built-in templates the user can pick from ──────────
+var PRESETS = [
+  { label: 'Explain',      text: 'Explain what this code does and how it works.' },
+  { label: 'Fix bug',      text: 'Find and fix the bug in this code. Explain what caused it.' },
+  { label: 'Write tests',  text: 'Write unit tests for this code. Cover edge cases.' },
+  { label: 'Refactor',     text: 'Refactor this code to be cleaner and more maintainable.' },
+  { label: 'Optimize',     text: 'Optimize this code for performance. Explain the changes.' },
+  { label: 'Document',     text: 'Add clear documentation and comments to this code.' },
+  { label: 'Review',       text: 'Review this code for bugs, security issues, and improvements.' },
+  { label: 'Implement',    text: 'Implement the following feature: ' },
+];
+
+function getPromptMatches() {
+  var q = state.promptQuery.toLowerCase();
+  if (!q) return PRESETS;
+  return PRESETS.filter(function(p) {
+    return p.label.toLowerCase().includes(q) || p.text.toLowerCase().includes(q);
+  });
+}
+
+function renderPromptPopup(matches) {
+  if (!matches.length) { hidePromptPopup(); return; }
+  promptPopupEl.innerHTML = matches.map(function(p, i) {
+    var active = i === state.promptActive ? ' active' : '';
+    var preview = p.text.replace(/</g, '&lt;').substring(0, 55) + (p.text.length > 55 ? '…' : '');
+    return '<div class="prompt-item' + active + '" data-idx="' + i + '">' +
+      '<span class="pi-label">' + p.label.replace(/</g, '&lt;') + '</span>' +
+      '<span class="pi-preview">' + preview + '</span>' +
+      '</div>';
+  }).join('');
+  promptPopupEl.classList.remove('hidden');
+  var activeEl = promptPopupEl.querySelector('.active');
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+  promptPopupEl.onmousedown = function(e) {
+    var item = e.target.closest('.prompt-item');
+    if (item) {
+      e.preventDefault();
+      var idx = parseInt(item.dataset.idx, 10);
+      if (matches[idx]) selectPrompt(matches[idx]);
+    }
+  };
+}
+
+function hidePromptPopup() {
+  promptPopupEl.classList.add('hidden');
+  promptPopupEl.innerHTML = '';
+  state.promptActive = -1;
+}
+
+function selectPrompt(preset) {
+  inputEl.value = inputEl.value.replace(/!([^\s!]*)$/, preset.text);
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  sendBtn.disabled = !inputEl.value.trim() || !state.connected || state.streaming;
+  hidePromptPopup();
+  inputEl.focus();
+}
+
+function getMentionMatches() {
+  var q = state.mentionQuery.toLowerCase();
+  return state.mentionFiles.filter(function(f) {
+    return f.rel.toLowerCase().includes(q) || f.name.toLowerCase().includes(q);
+  }).slice(0, 20);
+}
+
+function renderMentionPopup(matches) {
+  if (!matches.length) { hideMentionPopup(); return; }
+  mentionPopupEl.innerHTML = matches.map(function(f, i) {
+    var active = i === state.mentionActive ? ' active' : '';
+    return '<div class="mention-item' + active + '" data-path="' + f.path.replace(/"/g, '&quot;') + '" data-rel="' + f.rel.replace(/"/g, '&quot;') + '">' +
+      f.name + '<span class="mi-rel">' + f.rel.replace(/</g, '&lt;') + '</span></div>';
+  }).join('');
+  mentionPopupEl.classList.remove('hidden');
+  // Scroll active item into view
+  var activeEl = mentionPopupEl.querySelector('.active');
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+  // Click handler
+  mentionPopupEl.onmousedown = function(e) {
+    var item = e.target.closest('.mention-item');
+    if (item) {
+      e.preventDefault();
+      selectMention({ path: item.dataset.path, name: item.dataset.path.split('/').pop(), rel: item.dataset.rel || '' });
+    }
+  };
+}
+
+function hideMentionPopup() {
+  mentionPopupEl.classList.add('hidden');
+  mentionPopupEl.innerHTML = '';
+  state.mentionActive = -1;
+}
+
+function selectMention(file) {
+  // Replace the @query in the textarea with @rel-path + space
+  inputEl.value = inputEl.value.replace(/@([^\s@]*)$/, '@' + file.rel + ' ');
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  // Programmatic value changes don't fire 'input' — update the send button state here
+  sendBtn.disabled = !inputEl.value.trim() || !state.connected || state.streaming;
+  // Track this path so submitMessage can forward it to the host
+  if (file.path && !state.pendingMentions.includes(file.path)) {
+    state.pendingMentions.push(file.path);
+  }
+  hideMentionPopup();
+  inputEl.focus();
+}
+
+// ── Skill picker (#) ──────────────────────────
+function getSkillMatches() {
+  var q = state.skillQuery.toLowerCase();
+  return state.skills.filter(function(s) {
+    return s.skill_id.toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q);
+  }).slice(0, 15);
+}
+
+function renderSkillPopup(matches) {
+  if (!matches.length) { hideSkillPopup(); return; }
+  skillPopupEl.innerHTML = matches.map(function(s, i) {
+    var active = i === state.skillActive ? ' active' : '';
+    var label = (s.name || s.skill_id).replace(/</g, '&lt;');
+    var idAttr = s.skill_id.replace(/"/g, '&quot;');
+    var nameAttr = label.replace(/"/g, '&quot;');
+    var desc = s.description ? '<span class="sk-desc">' + s.description.replace(/</g, '&lt;').substring(0, 60) + '</span>' : '';
+    return '<div class="skill-item' + active + '" data-id="' + idAttr + '" data-name="' + nameAttr + '">' +
+      label + desc + '</div>';
+  }).join('');
+  skillPopupEl.classList.remove('hidden');
+  var activeEl = skillPopupEl.querySelector('.active');
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+  skillPopupEl.onmousedown = function(e) {
+    var item = e.target.closest('.skill-item');
+    if (item) {
+      e.preventDefault();
+      selectSkill({ id: item.dataset.id, name: item.dataset.name });
+    }
+  };
+}
+
+function hideSkillPopup() {
+  skillPopupEl.classList.add('hidden');
+  skillPopupEl.innerHTML = '';
+  state.skillActive = -1;
+}
+
+function selectSkill(skill) {
+  inputEl.value = inputEl.value.replace(/#([^\s#]*)$/, '#' + (skill.name || skill.id) + ' ');
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  sendBtn.disabled = !inputEl.value.trim() || !state.connected || state.streaming;
+  hideSkillPopup();
+  inputEl.focus();
+}
+
+inputEl.addEventListener('keydown', function(e) {
+  // When prompt popup is open, intercept navigation keys
+  if (!promptPopupEl.classList.contains('hidden')) {
+    const prItems = promptPopupEl.querySelectorAll('.prompt-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      state.promptActive = Math.min(state.promptActive + 1, prItems.length - 1);
+      renderPromptPopup(getPromptMatches());
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      state.promptActive = Math.max(state.promptActive - 1, 0);
+      renderPromptPopup(getPromptMatches());
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      var idx = state.promptActive >= 0 ? state.promptActive : 0;
+      var matches = getPromptMatches();
+      if (matches[idx]) selectPrompt(matches[idx]);
+      return;
+    }
+    if (e.key === 'Escape') { hidePromptPopup(); return; }
+  }
+  // When skill popup is open, intercept navigation keys
+  if (!skillPopupEl.classList.contains('hidden')) {
+    const skItems = skillPopupEl.querySelectorAll('.skill-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      state.skillActive = Math.min(state.skillActive + 1, skItems.length - 1);
+      renderSkillPopup(getSkillMatches());
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      state.skillActive = Math.max(state.skillActive - 1, 0);
+      renderSkillPopup(getSkillMatches());
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      var idx = state.skillActive >= 0 ? state.skillActive : 0;
+      var matches = getSkillMatches();
+      if (matches[idx]) selectSkill({ id: matches[idx].skill_id, name: matches[idx].name || matches[idx].skill_id });
+      return;
+    }
+    if (e.key === 'Escape') { hideSkillPopup(); return; }
+  }
+  // When mention popup is open, intercept navigation keys
+  if (!mentionPopupEl.classList.contains('hidden')) {
+    const items = mentionPopupEl.querySelectorAll('.mention-item');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      state.mentionActive = Math.min(state.mentionActive + 1, items.length - 1);
+      renderMentionPopup(getMentionMatches());
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      state.mentionActive = Math.max(state.mentionActive - 1, 0);
+      renderMentionPopup(getMentionMatches());
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      var idx = state.mentionActive >= 0 ? state.mentionActive : 0;
+      var matches = getMentionMatches();
+      if (matches[idx]) selectMention(matches[idx]);
+      return;
+    }
+    if (e.key === 'Escape') {
+      hideMentionPopup();
+      return;
+    }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    submitMessage();
+  }
+});
+
+inputEl.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+  sendBtn.disabled = !this.value.trim() || !state.connected || state.streaming;
+  send({ type: 'input_changed', content: this.value });
+
+  var val = this.value.substring(0, this.selectionStart);
+
+  // @-mention detection: find last '@...' token before cursor
+  var atMatch = val.match(/@([^\s@]*)$/);
+  if (atMatch) {
+    state.mentionQuery = atMatch[1];
+    state.mentionActive = 0;
+    hideSkillPopup(); hidePromptPopup();
+    // Request file list from host the first time
+    if (state.mentionFiles.length === 0) send({ type: 'files_request' });
+    var atMatches = getMentionMatches();
+    if (atMatches.length > 0) {
+      renderMentionPopup(atMatches);
+    } else {
+      hideMentionPopup();
+    }
+  } else {
+    hideMentionPopup();
+  }
+
+  // #-skill detection: find last '#...' token before cursor
+  var hashMatch = val.match(/#([^\s#]*)$/);
+  if (hashMatch) {
+    state.skillQuery = hashMatch[1];
+    state.skillActive = 0;
+    hidePromptPopup();
+    // Fetch skills if not yet loaded
+    if (state.skills.length === 0) send({ type: 'list_skills' });
+    var skMatches = getSkillMatches();
+    if (skMatches.length > 0) {
+      renderSkillPopup(skMatches);
+    } else {
+      hideSkillPopup();
+    }
+  } else {
+    hideSkillPopup();
+  }
+
+  // !-prompt detection: find last '!...' token before cursor
+  var bangMatch = val.match(/!([^\s!]*)$/);
+  if (bangMatch) {
+    state.promptQuery = bangMatch[1];
+    state.promptActive = 0;
+    hideMentionPopup(); hideSkillPopup();
+    var prMatches = getPromptMatches();
+    if (prMatches.length > 0) {
+      renderPromptPopup(prMatches);
+    } else {
+      hidePromptPopup();
+    }
+  } else {
+    hidePromptPopup();
+  }
+});
+
+sendBtn.addEventListener('click', function() {
+  if (state.streaming) {
+    send({ type: 'stop' });
+    // Finalize all pending turns immediately — Gateway handles backend cancellation.
+    // Without this, the UI stays stuck in streaming mode because the Gateway's
+    // interrupt_result event is not handled by the webview.
+    Object.keys(state.pendingTurns).forEach(function(rid) {
+      finalizeTurn(rid, { stopped: true });
+    });
+  } else {
+    submitMessage();
+  }
+});
+
+const imageInputEl = document.getElementById('image-input');
+if (imageInputEl) {
+  imageInputEl.addEventListener('change', function(e) {
+    handleImageInput(e.target.files);
+    imageInputEl.value = '';
+  });
+}
+
+function submitMessage() {
+  var raw = inputEl.value.trim();
+  if (!raw || !state.connected || state.streaming) return;
+
+  const requestId = generateId();
+
+  beginTurn(requestId, raw);
+  setStreaming(true);
+
+  const msg = {
+    type: 'send',
+    content: raw,
+    mode: state.mode,
+    model: state.activeModel,
+    requestId: requestId,
+  };
+  // Attach @-mentioned file paths so the host can inject their contents into context
+  if (state.pendingMentions.length) {
+    msg.mentionedPaths = state.pendingMentions.slice();
+    state.pendingMentions = [];
+  }
+  // Attach images if any
+  if (state.attachments.length) {
+    msg.media_items = state.attachments.map(function(att) {
+      return {
+        type: 'image',
+        filename: att.filename,
+        mimeType: att.mimeType,
+        base64Data: att.base64Data,
+      };
+    });
+    clearAttachments();
+  }
+  send(msg);
+
+  hideMentionPopup();
+  hideSkillPopup();
+  hidePromptPopup();
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+}
+
+function setStreaming(yes) {
+  state.streaming = yes;
+  inputEl.disabled = yes || !state.connected;
+  sendBtn.disabled = false; // always clickable: sends message or stops
+  if (yes) {
+    sendBtn.classList.add('stop');
+    sendBtn.textContent = '\u25A0';
+    sendBtn.title = 'Stop generation';
+  } else {
+    sendBtn.classList.remove('stop');
+    sendBtn.textContent = '\u2191';
+    sendBtn.title = 'Send (Enter)';
+    sendBtn.disabled = !inputEl.value.trim() || !state.connected;
+    inputEl.focus();
+  }
+  const attachBtn = document.getElementById('attach-btn');
+  if (attachBtn) attachBtn.disabled = yes || !state.connected;
+}
+
+// ─────────────────────────────────────────────
+// Live metrics helpers (TraceHound-style)
+// ─────────────────────────────────────────────
+function fmtTok(n) {
+  return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+}
+
+function fmtBytes(n) {
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+function fmtMs(ms) {
+  return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms';
+}
+
+/** Phase durations: a zero/undetectable phase reads as "<1ms" rather than "0ms". */
+function fmtPhaseMs(ms) {
+  return ms < 1 ? '<1ms' : fmtMs(ms);
+}
+
+function fmtUsd(v) {
+  if (v == null || v <= 0) return '';
+  if (v >= 0.01) return '$' + v.toFixed(2);
+  return '$' + v.toPrecision(2);
+}
+
+function titleCase(s) {
+  return String(s || '').split(' ').map(function(w) {
+    return w ? w.charAt(0).toUpperCase() + w.slice(1) : w;
+  }).join(' ');
+}
+
+/** 24-hour time-of-day (HH:mm:ss). The webview cannot reliably read the OS clock format,
+ *  so this always uses the 24-hour cycle the user requested. */
+function fmtTimeOfDay(ts) {
+  var d = new Date(ts);
+  try {
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  } catch (_) {
+    return d.toLocaleTimeString();
+  }
+}
+
+function classifyOutcome(pt) {
+  if (pt.hasError)   return 'error';
+  if (pt.stopped)    return 'stopped';
+  if (!pt.hasFinal)  return 'no_response';
+  if (pt.toolErrorCount > 0) return 'completed_with_issues';
+  return 'completed';
+}
+
+// ── Per-turn trajectory (TraceHound-style event timeline) ──
+var TRAJ_EVENT_META = {
+  user:         { icon: '\u{1F9D1}', label: 'User Message' },
+  reasoning:    { icon: '\u{1F914}', label: 'LLM Reasoning' },
+  generating:   { icon: '\u{1F4DD}', label: 'LLM Generating' },
+  tool_call:    { icon: '\u{1F527}', label: 'Tool Call' },
+  tool_update:  { icon: '\u23F3',   label: 'Tool Update' },
+  tool_result:  { icon: '\u2705',   label: 'Tool Result' },
+  usage:        { icon: '\u26A1',   label: 'LLM Call' },
+  error:        { icon: '\u{1F6A8}', label: 'Error' },
+  final:        { icon: '\u{1F4AC}', label: 'LLM Response' },
+};
+
+function trajectoryBreakdown(events) {
+  var counts = {};
+  (events || []).forEach(function(e) { counts[e.type] = (counts[e.type] || 0) + 1; });
+  return Object.keys(counts).map(function(k) {
+    return k.replace(/_/g, ' ') + ': ' + counts[k];
+  }).join('\n');
+}
+
+function makeTrajectoryToggle(containerEl, count) {
+  if (!containerEl || !count) return null;
+  var btn = document.createElement('button');
+  btn.className = 'traj-toggle';
+  btn.textContent = '\u25B8 ' + count + ' Events';
+  var bd = trajectoryBreakdown(containerEl.__events);
+  btn.setAttribute('data-tooltip', 'Show / hide this turn\u2019s event timeline' + (bd ? '\n' + bd : ''));
+  btn.onclick = function() { toggleTrajectory(containerEl); };
+  return btn;
+}
+
+/** Insert the trajectory toggle as the 2nd bubble in a turn-stats footer (right after the outcome badge). */
+function insertTrajectoryToggle(footerEl, containerEl, count) {
+  var btn = makeTrajectoryToggle(containerEl, count);
+  if (!btn) return;
+  if (footerEl.querySelector('.traj-toggle')) return;
+  footerEl.insertBefore(btn, footerEl.children[1] || null);
+}
+
+function toggleTrajectory(containerEl) {
+  var traj = containerEl.querySelector('.trajectory');
+  var btn = containerEl.querySelector('.traj-toggle');
+  if (!traj) {
+    traj = document.createElement('div');
+    traj.className = 'trajectory';
+    traj.innerHTML = '<div class="traj-copybar"><button class="traj-copy" onclick="copyTrajectoryList(this)" title="Copy the event list">\u29c9 Copy list</button></div>'
+      + renderTrajectory(containerEl.__events || []);
+    containerEl.appendChild(traj);
+  }
+  var visible = traj.classList.toggle('visible');
+  if (btn) btn.classList.toggle('open', visible);
+  if (visible) scrollToBottom();
+}
+
+/** Compute the waiting-time labels between two consecutive trajectory rows.
+ *  Returns an array of strings (e.g. ["3.0s thinking", "769ms generating"]).
+ *  ``startT`` is the previous row's timestamp (gap = e.t - startT). */
+function trajGapLines(prevE, e, startT) {
+  if (!prevE) return [];
+  var gap = e.t - startT;
+  var lines = [];
+  if (prevE.type === 'usage') {
+    if (e.type !== 'reasoning') {
+      var thinkMs, genMs;
+      if (typeof prevE.ttftMs === 'number' && prevE.ttftMs > 0) {
+        // Server-measured phases (authoritative): thinking = prefill, generating = decode.
+        thinkMs = prevE.ttftMs;
+        genMs = (typeof prevE.genMs === 'number' && prevE.genMs > 0) ? prevE.genMs : 0;
+      } else if (typeof prevE.firstTokenAt === 'number'
+        && prevE.firstTokenAt >= startT && prevE.firstTokenAt <= e.t) {
+        thinkMs = prevE.firstTokenAt - startT;
+        genMs = e.t - prevE.firstTokenAt;
+      } else {
+        thinkMs = e.t - startT;
+        genMs = 0;
+      }
+      lines.push(fmtPhaseMs(thinkMs) + ' thinking');
+      lines.push(fmtPhaseMs(genMs) + ' generating');
+    } else {
+      // Gap to the first reasoning chunk is the prefill/thinking time. Prefer the
+      // server's ttft when available (reasoning may stream over many milliseconds,
+      // so a client Date.now() delta would overstate "thinking").
+      var thinkMs2 = (typeof prevE.ttftMs === 'number' && prevE.ttftMs > 0)
+        ? prevE.ttftMs
+        : gap;
+      lines.push(fmtPhaseMs(thinkMs2) + ' thinking');
+    }
+  } else if (prevE.type === 'reasoning' || prevE.type === 'generating') {
+    // Generating = time from the last reasoning chunk (or last token) to this row.
+    // Use the server decode estimate when present; otherwise fall back to the
+    // client delta measured from the reasoning event's last chunk (``lastAt``).
+    var fromT = (prevE.type === 'reasoning' && typeof prevE.lastAt === 'number') ? prevE.lastAt : startT;
+    var genMs2 = (typeof prevE.genMs === 'number' && prevE.genMs > 0)
+      ? prevE.genMs
+      : Math.max(0, e.t - fromT);
+    lines.push(fmtPhaseMs(genMs2) + ' generating');
+  } else {
+    // Every inter-row gap gets a label so no time is left unexplained. Before
+    // every model call the server assembles the LLM request (context collection,
+    // agent init, tool results, prompt building), so these gaps are collectively
+    // "llm prompt build" time — the model isn't running yet.
+    var gapWord = 'idle';
+    if (prevE.type === 'tool_call' || prevE.type === 'tool_update') {
+      // Tool sub-step transitions (call → update → result) are normally
+      // sub-millisecond stream bookkeeping; only surface ones that are really
+      // slow so the timeline isn't cluttered with noise.
+      if (gap >= 2000) {
+        lines.push(fmtMs(gap) + ' tool');
+      }
+      return lines;
+    } else if (prevE.type === 'user' || prevE.type === 'tool_result') {
+      gapWord = 'llm prompt-build';
+    }
+    lines.push(fmtMs(gap) + ' ' + gapWord);
+  }
+  return lines;
+}
+
+function renderTrajectory(events) {
+  if (!events || !events.length) return '';
+  var firstT = events[0].t;
+  var prevT = firstT;
+  var out = '';
+  for (var i = 0; i < events.length; i++) {
+    var e = events[i];
+    var gap = e.t - prevT;
+    var prevE = i > 0 ? events[i - 1] : null;
+    var gapLines = trajGapLines(prevE, e, prevT);
+    for (var gl = 0; gl < gapLines.length; gl++) {
+      var gw = gapLines[gl].split(' ').pop();
+      out += '<div class="traj-gap' + (gw === 'idle' ? '' : ' ' + gw) + '">' + gapLines[gl] + '</div>';
+    }
+    prevT = e.t;
+    var meta = TRAJ_EVENT_META[e.type] || { icon: '\u2022', label: e.type || '' };
+    var icon = e.icon || meta.icon;
+    var label = escapeHtml(meta.label + (e.label ? ': ' + e.label : ''));
+    var rawContent = e.detail ? e.detail : '';
+    // For an LLM call, show the prompt (when available) inside the usage row;
+    // the response it produced is a standalone row (reasoning / tool / result / final).
+    if (e.type === 'usage' && e.prompt) {
+      rawContent = (rawContent ? rawContent + '\n\n' : '') + 'LLM Prompt:\n' + e.prompt;
+    }
+    var content = rawContent ? escapeHtml(rawContent) : '';
+    var elapsed = e.t - firstT;
+    out += '<div class="traj-row ' + escapeHtml(e.type) + '">' +
+      '<div class="traj-header" onclick="this.classList.toggle(\'open\')">' +
+      '<span>' + icon + '</span>' +
+      '<span class="traj-label">' + label + '</span>' +
+      '<span class="traj-time">+' + fmtMs(elapsed) + '</span>' +
+      '</div>' +
+      (content ? '<div class="traj-body">' + content + '</div>' : '') +
+      '</div>';
+  }
+  return out;
+}
+
+function copyMessageContent(btn) {
+  var msg = btn.closest('.msg');
+  var stream = msg ? msg.querySelector('.stream') : null;
+  var text = stream ? stream.textContent : '';
+  if (!text) return;
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).catch(function() {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+  btn.textContent = '\u2713';
+  btn.classList.add('copied');
+  setTimeout(function() { btn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'; btn.classList.remove('copied'); }, 2000);
+}
+
+/** Plain-text list of a turn's events — labels + elapsed time + waiting times,
+ *  no detail content. */
+function trajectoryTextList(events) {
+  if (!events || !events.length) return '';
+  var firstT = events[0].t;
+  var prevT = firstT;
+  var lines = [];
+  for (var i = 0; i < events.length; i++) {
+    var e = events[i];
+    var prevE = i > 0 ? events[i - 1] : null;
+    var gaps = trajGapLines(prevE, e, prevT);
+    for (var g = 0; g < gaps.length; g++) lines.push(gaps[g]);
+    var meta = TRAJ_EVENT_META[e.type] || { label: e.type || '' };
+    var label = meta.label + (e.label ? ': ' + e.label : '');
+    lines.push('+' + fmtMs(e.t - firstT) + '  ' + label);
+    prevT = e.t;
+  }
+  return lines.join('\n');
+}
+
+function copyTrajectoryList(btn) {
+  var traj = btn.closest('.trajectory');
+  var containerEl = traj ? traj.parentElement : null;
+  var events = (containerEl && containerEl.__events) || [];
+  var text = trajectoryTextList(events);
+  if (!text) return;
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).catch(function() {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+  btn.textContent = '\u2713 Copied';
+  setTimeout(function() { btn.innerHTML = '\u29c9 Copy list'; }, 1500);
+}
+
+function resendMessage(btn) {
+  if (state.streaming) return;
+  var msg = btn.closest('.msg');
+  var body = msg ? msg.querySelector('.msg-body.user') : null;
+  if (!body) return;
+  var text = body.textContent;
+  var inputEl = document.getElementById('input');
+  if (inputEl) {
+    inputEl.value = text;
+    inputEl.dispatchEvent(new Event('input'));
+  }
+  submitMessage();
+}
+
+function updateTokenBar() {
+  var total = state.hostMetrics.sessionTokens || state.sessionStats.totalTokens;
+  var limit = state.contextWindow;
+  var pct;
+  if (state.contextUsagePercent != null) {
+    pct = Math.min(100, Math.round(state.contextUsagePercent));
+  } else if (state.contextTokensUsed > 0 && limit > 0) {
+    pct = Math.min(100, Math.round(state.contextTokensUsed / limit * 100));
+  } else {
+    pct = null;
+  }
+  var wrap = document.getElementById('token-bar-wrap');
+  var fill = document.getElementById('token-bar-fill');
+  if (!wrap || !fill) return;
+  if (pct == null) {
+    fill.style.width = '0%';
+    wrap.classList.remove('visible');
+  } else {
+    wrap.classList.add('visible');
+    pct = Math.max(pct, 6);
+    fill.style.width = pct + '%';
+    fill.style.background = pct > 80 ? '#ef4444' : pct > 60 ? '#f59e0b' : 'var(--accent)';
+  }
+  updateCtxWarning();
+}
+
+// Near-compaction warning + active-compaction chip on the token row.
+// Thresholds track the silent server-side auto-compaction trigger so the user
+// gets advance notice instead of the context being compacted with no feedback.
+function updateCtxWarning() {
+  var el = document.getElementById('ctx-warning');
+  if (!el) return;
+  if (state.compacting) {
+    el.textContent = '⟳ compacting' + (state.compactionPhase ? ' (' + state.compactionPhase + ')' : '');
+    el.classList.add('visible');
+    el.classList.add('compacting');
+    el.title = 'Auto-compaction is running — context is being summarized to free room';
+    return;
+  }
+  el.classList.remove('compacting');
+  var pct = contextUsagePct();
+  if (pct == null) {
+    el.textContent = '';
+    el.classList.remove('visible');
+    return;
+  }
+  if (pct >= 85) {
+    el.textContent = '⚠ compact imminent';
+    el.classList.add('visible', 'warn-high');
+    el.title = 'Context at ' + pct + '% — the auto-compaction trigger will fire soon';
+  } else if (pct >= 70) {
+    el.textContent = '⚠ nearing compact';
+    el.classList.add('visible');
+    el.classList.remove('warn-high');
+    el.title = 'Context at ' + pct + '% — approaching the auto-compaction trigger';
+  } else {
+    el.textContent = '';
+    el.classList.remove('visible', 'warn-high');
+  }
+}
+
+function renderHostMetrics() {
+  var m = state.hostMetrics || {};
+  if (m.sessionTokens) renderTokenCounter(m.sessionTokens);
+  renderStatsBar();
+  updateTokenBar();
+}
+
+function _avg(arr) {
+  return arr.length ? arr.reduce(function(a, b) { return a + b; }, 0) / arr.length : 0;
+}
+
+function updateSessionStats(outcome, tokens, durationMs, llmCalls, costUsd, ttftMs) {
+  var s = state.sessionStats;
+  s.totalTurns++;
+  if (outcome === 'error') s.totalErrors++;
+  s.totalTokens   += tokens;
+  s.totalLlmCalls += llmCalls;
+  s.totalCostUsd  += costUsd;
+  s.latencies.push(durationMs);
+  s.ttfts.push(ttftMs);
+  s.turnTokens.push(tokens);
+  s.turnDurations.push(durationMs);
+  s.outcomes.push(outcome);
+  renderStatsBar();
+  renderMiniCharts();
+  updateTokenBar();
+}
+
+function renderStatsBar() {
+  var s = state.sessionStats;
+  var m = state.hostMetrics || {};
+  var el = document.getElementById('session-stats-bar');
+  if (!el) return;
+  // Only show the stats bar once the first turn has completed
+  if (s.totalTurns < 1) {
+    el.classList.remove('visible');
+    el.innerHTML = '';
+    return;
+  }
+  var avgLat  = s.latencies.length ? fmtMs(Math.round(_avg(s.latencies))) : '\u2014';
+  var ttftArr = s.ttfts.filter(function(x) { return x != null; });
+  var avgTtft = ttftArr.length ? fmtMs(Math.round(_avg(ttftArr))) : '\u2014';
+  var sessionTokens = m.sessionTokens || s.totalTokens;
+  var showCost = (m.hasCost && Number(m.sessionCostUsd || 0) > 0) || s.totalCostUsd > 0;
+  var costLabel = showCost
+    ? '$' + (m.hasCost ? Number(m.sessionCostUsd || 0) : s.totalCostUsd).toFixed(3)
+    : '';
+  var html =
+    '<span class="ss-chip">Turns <b>' + s.totalTurns + '</b></span>' +
+    (s.totalErrors ? '<span class="ss-chip ss-chip-err">Errors <b>' + s.totalErrors + '</b></span>' : '') +
+    '<span class="ss-chip">Tokens <b>' + fmtTok(sessionTokens) + '</b></span>' +
+    '<span class="ss-chip">LLM calls <b>' + s.totalLlmCalls + '</b></span>' +
+    '<span class="ss-chip">Avg duration <b>' + avgLat + '</b></span>' +
+    '<span class="ss-chip">Avg first token <b>' + avgTtft + '</b></span>' +
+    (m.contextBytes || m.promptEstimatedTokens
+      ? '<span class="ss-chip" title="' + fmtBytes(m.contextBytes || 0) + ' injected IDE context, plus current input">Ctx Size <b>' + fmtTok(m.promptEstimatedTokens || 0) + ' est tok</b></span>'
+      : '') +
+    (showCost ? '<span class="ss-chip">Cost <b>' + costLabel + '</b></span>' : '');
+  // TODO checkbox progress (from todo.updated) — ✓ completed / ◐ in progress / ☐ pending
+  var td = state.todoStats;
+  if (td && (td.completed || td.inProgress || td.pending)) {
+    html += '<span class="ss-chip" title="TODO list progress — ✓ completed · ◐ in progress · ☐ pending">' +
+      '<b class="todo-ok">✓' + td.completed + '</b> ' +
+      '<b class="todo-run">◐' + td.inProgress + '</b> ' +
+      '<b class="todo-wait">☐' + td.pending + '</b></span>';
+  }
+  if (s.totalTurns >= 2) {
+    html += '<button class="charts-toggle" onclick="toggleCharts()" title="' + (state.chartsCollapsed ? 'Show charts' : 'Hide charts') + '">' + (state.chartsCollapsed ? '\u25B8' : '\u25BE') + '</button>';
+  }
+  el.innerHTML = html;
+  el.classList.add('visible');
+}
+
+function toggleCharts() {
+  state.chartsCollapsed = !state.chartsCollapsed;
+  var el = document.getElementById('mini-charts');
+  if (el) {
+    if (state.chartsCollapsed) el.classList.remove('visible');
+    else el.classList.add('visible');
+  }
+  renderStatsBar();
+}
+
+function renderMiniCharts() {
+  var el = document.getElementById('mini-charts');
+  if (!el) return;
+  var s = state.sessionStats;
+  if (s.totalTurns < 2) return;
+  var outcomeColor = {
+    completed:             '#2563eb',
+    completed_with_issues: '#f59e0b',
+    error:                 '#ef4444',
+    no_response:           '#8b5cf6',
+  };
+  function bars(values, isTokens, maxVal) {
+    return values.map(function(v, i) {
+      var pct = Math.max(6, Math.round(v / maxVal * 100));
+      var col = outcomeColor[s.outcomes[i]] || '#6b7280';
+      var ttft = s.ttfts[i];
+      var tip = 'Turn ' + (i + 1) + '\n' +
+        (isTokens ? 'Tokens: ' + fmtTok(v) : 'Duration: ' + fmtMs(v)) +
+        (!isTokens && ttft != null ? '\nFirst token: ' + fmtMs(ttft) : '') +
+        '\nStatus: ' + (s.outcomes[i] || 'unknown');
+      return '<div class="mini-bar" style="height:' + pct + '%;background:' + col + '" data-tip="' + tip + '"></div>';
+    }).join('');
+  }
+  var maxTok = Math.max.apply(null, s.turnTokens.concat([1]));
+  var maxDur = Math.max.apply(null, s.turnDurations.concat([1]));
+  el.innerHTML =
+    '<div class="mini-chart"><div class="mini-chart-label">Tokens / turn</div>' +
+    '<div class="mini-bars">' + bars(s.turnTokens, true, maxTok) + '</div></div>' +
+    '<div class="mini-chart"><div class="mini-chart-label">Duration / turn</div>' +
+    '<div class="mini-bars">' + bars(s.turnDurations, false, maxDur) + '</div></div>';
+  if (state.chartsCollapsed) el.classList.remove('visible');
+  else el.classList.add('visible');
+}
+
+// ─────────────────────────────────────────────
+// Rewind
+// ─────────────────────────────────────────────
+function requestRewind() {
+  var btn = document.getElementById('rewind-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+  }
+  send({ type: 'rewind' });
+}
+
+// ─────────────────────────────────────────────
+// Git quick actions
+// ─────────────────────────────────────────────
+function updateGitBar() {
+  var bar = document.getElementById('git-bar');
+  var branchEl = document.getElementById('git-branch');
+  var changesEl = document.getElementById('git-changes');
+  if (!bar || !branchEl || !changesEl) return;
+  if (!state.gitBranch) { bar.classList.remove('visible'); return; }
+  bar.classList.add('visible');
+  branchEl.textContent = '\u29bf ' + state.gitBranch;
+  if (state.gitChangedCount > 0) {
+    changesEl.textContent = state.gitChangedCount + ' changed';
+    changesEl.className = 'dirty';
+    document.getElementById('git-commit-btn').disabled = false;
+  } else {
+    changesEl.textContent = 'clean';
+    changesEl.className = '';
+    document.getElementById('git-commit-btn').disabled = true;
+  }
+}
+
+function requestGitCommit() {
+  document.getElementById('git-commit-btn').disabled = true;
+  send({ type: 'git_commit_request' });
+}
+
+function requestGitPush() {
+  document.getElementById('git-push-btn').disabled = true;
+  send({ type: 'git_push_request' });
+}
+
+function appendGitNotice(text, isError) {
+  var el = document.createElement('div');
+  el.className = isError ? 'usage-line' : 'usage-line';
+  el.style.color = isError ? 'var(--error-text)' : 'var(--text-muted)';
+  el.textContent = text;
+  var msgs = document.getElementById('messages');
+  if (msgs) { msgs.appendChild(el); scrollToBottom(); }
+  // Re-enable push button after push attempt
+  var pushBtn = document.getElementById('git-push-btn');
+  if (pushBtn) pushBtn.disabled = false;
+}
+
+// ─────────────────────────────────────────────
+// Utils
+// ─────────────────────────────────────────────
+function hideEmptyState() {
+  const es = document.getElementById('empty-state');
+  if (es) es.remove();
+}
+
+function clearMessages() {
+  const msgs = document.getElementById('messages');
+  msgs.innerHTML = '';
+  state.pendingTurns = {};
+  state.streaming = false;
+  state.rewindable = false;
+  _historyPendingAssistant = null;
+  document.getElementById('input').disabled = false;
+  document.getElementById('send-btn').disabled = false;
+  document.getElementById('token-counter').textContent = '';
+  var rewindBar = document.getElementById('rewind-bar');
+  if (rewindBar) rewindBar.classList.remove('visible');
+  // Reset live session metrics
+  state.sessionStats = {
+    totalTurns: 0, totalErrors: 0, totalTokens: 0, totalLlmCalls: 0, totalCostUsd: 0,
+    totalToolCalls: 0, toolCallsByTool: {},
+    latencies: [], ttfts: [], turnTokens: [], turnDurations: [], outcomes: [],
+  };
+  // New session starts with an empty context window — reset the token bar
+  state.contextTokensUsed = 0;
+  state.contextUsagePercent = null;
+  state.compacting = false;
+  state.compactionPhase = null;
+  state.modelName = null;
+  state.todoStats = { completed: 0, inProgress: 0, pending: 0 };
+  updateTokenBar();
+  state.hostMetrics = {
+    contextBytes: 0,
+    contextEstimatedTokens: 0,
+    promptEstimatedTokens: 0,
+    sessionTokens: 0,
+    sessionCostUsd: 0,
+    hasCost: false,
+    attachmentsCount: 0,
+  };
+  renderHostMetrics();
+  var mc = document.getElementById('mini-charts');
+  if (mc) { mc.innerHTML = ''; mc.classList.remove('visible'); }
+  state.chartsCollapsed = true;
+}
+
+function showError(msg) {
+  const msgs = document.getElementById('messages');
+  const el = document.createElement('div');
+  el.className = 'error-msg';
+  el.textContent = '⚠ ' + msg;
+  msgs.appendChild(el);
+  scrollToBottom();
+}
+
+function scrollToBottom() {
+  const msgs = document.getElementById('messages');
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ─────────────────────────────────────────────
+// Custom hover tooltips (native title= is unreliable in JetBrains' JCEF)
+// ─────────────────────────────────────────────
+var _tipEl = null;
+function showHoverTooltip(target) {
+  var text = target.getAttribute('data-tooltip');
+  if (!text) return;
+  if (!_tipEl) {
+    _tipEl = document.createElement('div');
+    _tipEl.className = 'custom-tooltip';
+    document.body.appendChild(_tipEl);
+  }
+  _tipEl.textContent = text;
+  _tipEl.style.display = 'block';
+  var rect = target.getBoundingClientRect();
+  var tw = _tipEl.offsetWidth;
+  var th = _tipEl.offsetHeight;
+  var x = Math.max(4, Math.min(rect.left + rect.width / 2 - tw / 2, window.innerWidth - tw - 4));
+  var y = rect.top - th - 8;
+  if (y < 4) y = rect.bottom + 8;
+  _tipEl.style.left = Math.round(x) + 'px';
+  _tipEl.style.top = Math.round(y) + 'px';
+}
+function hideHoverTooltip() {
+  if (_tipEl) _tipEl.style.display = 'none';
+}
+document.addEventListener('mouseover', function(e) {
+  var t = (e.target && e.target.closest)
+    ? e.target.closest('.stat-badge[data-tooltip], .stat-chip[data-tooltip], .traj-toggle[data-tooltip]')
+    : null;
+  if (t) showHoverTooltip(t);
+});
+document.addEventListener('mouseout', function(e) {
+  var t = (e.target && e.target.closest)
+    ? e.target.closest('.stat-badge[data-tooltip], .stat-chip[data-tooltip], .traj-toggle[data-tooltip]')
+    : null;
+  if (t) hideHoverTooltip();
+});
+
+function generateId() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function truncate(str, max) {
+  if (str.length <= max) return str;
+  return str.slice(0, max) + '\n… [truncated]';
+}
+
+// Friendly display names — mirrors the openjiuwen CLI tool_display.py mapping
+var _FRIENDLY_TOOL_NAMES = {
+  read_file: 'Read', write_file: 'Write', edit_file: 'Edit', str_replace_editor: 'Edit',
+  bash: 'Bash', run_command: 'Bash', grep: 'Grep', glob: 'Glob', ls: 'LS', list_dir: 'LS',
+  todo_create: 'TodoWrite', todo_modify: 'TodoWrite', todo_list: 'TodoList',
+  web_search: 'WebSearch', web_free_search: 'WebSearch', web_fetch: 'WebFetch', web_fetch_webpage: 'WebFetch',
+  image_ocr: 'ImageOCR', visual_question_answering: 'VisionQA',
+  audio_transcription: 'AudioTranscribe', audio_question_answering: 'AudioQA', audio_metadata: 'AudioMetadata',
+};
+
+function friendlyToolName(name) {
+  var n = name || '';
+  if (_FRIENDLY_TOOL_NAMES[n]) return _FRIENDLY_TOOL_NAMES[n];
+  // fallback: snake_case -> Title Case
+  return n.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+
+function formatToolInput(name, input) {
+  if (name === 'str_replace_editor' || name === 'write_file') {
+    return 'path: ' + (input.path || '') + '\n' +
+           (input.old_str ? 'old:\n' + truncate(input.old_str, 200) + '\n' : '') +
+           (input.new_str ? 'new:\n' + truncate(input.new_str, 200) : '');
+  }
+  if (name === 'edit_file') {
+    return 'file_path: ' + (input.file_path || '') + '\n' +
+           (input.old_string ? 'old:\n' + truncate(input.old_string, 200) + '\n' : '') +
+           (input.new_string ? 'new:\n' + truncate(input.new_string, 200) : '');
+  }
+  if (name === 'read_file') {
+    return 'file_path: ' + (input.file_path || '') +
+           (input.limit ? '\nlimit: ' + input.limit : '');
+  }
+  if (name === 'bash' || name === 'run_command') {
+    return input.command || input.cmd || JSON.stringify(input);
+  }
+  return JSON.stringify(input, null, 2);
+}
+
+/** Extract a file path from a tool call's arguments, if it targets a file. */
+var _FILE_TOOLS = {
+  read_file: 1, read_text_file: 1, read: 1, view: 1, list_files: 1,
+  edit_file: 1, edit: 1, str_replace_editor: 1, write_file: 1, write_text_file: 1,
+  create_file: 1, search_replace: 1, apply_patch: 1,
+};
+function toolFilePath(name, input) {
+  if (!input || typeof input !== 'object') return '';
+  if (!_FILE_TOOLS[name]) return '';
+  var p = input.file_path || input.path || input.target_file || input.filename || '';
+  if (!p) return '';
+  p = String(p).trim();
+  // A bare token (e.g. memory keys like "default") is not a file path.
+  if (p.indexOf('/') === -1 && p.indexOf('\\') === -1 && !/\.\w{1,10}$/.test(p)) return '';
+  return p;
+}
+
+// ─────────────────────────────────────────────
+// Minimal markdown renderer (no external deps)
+// ─────────────────────────────────────────────
+function renderMarkdown(text) {
+  let out = '';
+  const lines = text.split('\n');
+  let inCode = false;
+  let codeLang = '';
+  let codeLines = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('```')) {
+      if (!inCode) {
+        inCode = true;
+        codeLang = line.slice(3).trim();
+        codeLines = [];
+      } else {
+        inCode = false;
+        out += '<pre><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre>';
+        codeLines = [];
+        codeLang = '';
+      }
+      continue;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+    out += renderInline(line) + '\n';
+  }
+  if (inCode && codeLines.length) {
+    out += '<pre><code>' + escapeHtml(codeLines.join('\n')) + '</code></pre>';
+  }
+
+  return out.trimEnd();
+}
+
+function openFileLink(el) {
+  var path = el.getAttribute('data-path');
+  var line = parseInt(el.getAttribute('data-line'), 10) || 0;
+  send({ type: 'open_file', path: path, line: line });
+}
+
+/** Open the file targeted by a tool card's arguments in the IDE. */
+function openToolFile(ev) {
+  if (ev && ev.stopPropagation) ev.stopPropagation();
+  var btn = ev && ev.currentTarget ? ev.currentTarget : null;
+  var header = btn && btn.closest ? btn.closest('.tool-header') : null;
+  var path = header && header.dataset.filePath ? header.dataset.filePath : '';
+  if (path) send({ type: 'open_file', path: path, line: 0 });
+}
+
+function renderInline(line) {
+  line = line.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  line = line.replace(/_([^_]+)_/g, '<em>$1</em>');
+  // Pattern 1: backtick-wrapped file paths — run before generic backtick handler
+  line = line.replace(/`((?:(?:\.{1,2}\/)?(?:[\w\-]+\/)+)?[\w.\-]+\.\w{2,6}(?::\d+)?)`/g, function(_, raw) {
+    var m = raw.match(/^(.*?):(\d+)$/);
+    var filePath = m ? m[1] : raw;
+    var lineNum = m ? m[2] : '0';
+    var hasSlash = filePath.indexOf('/') !== -1;
+    var hasLine = !!m;
+    if (!hasSlash && !hasLine) return '<code>' + escapeHtml(raw) + '</code>';
+    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
+         + '" onclick="openFileLink(this)"><code>' + escapeHtml(raw) + '</code></a>';
+  });
+  // Generic backtick handler for remaining non-file spans
+  line = line.replace(/`([^`]+)`/g, function(_, c) {
+    return '<code>' + escapeHtml(c) + '</code>';
+  });
+  // Pattern 2: bare path/to/file.ext:N outside backticks and existing HTML
+  line = line.replace(/(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g, function(_, filePath, lineNum) {
+    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
+         + '" onclick="openFileLink(this)">' + escapeHtml(filePath) + ':' + lineNum + '</a>';
+  });
+  return line;
+}
+
+// ─────────────────────────────────────────────
+// Init: restore theme, notify host that webview is ready
+// ─────────────────────────────────────────────
+window.addEventListener('load', function() {
+  restoreTheme();
+
+  // Session rename on double-click
+  var htEl = document.getElementById('header-title');
+  if (htEl) htEl.addEventListener('dblclick', startRenameSession);
+
+  // Close model dropdown on click outside
+  document.addEventListener('click', function(e) {
+    var wrap = document.getElementById('model-wrap');
+    if (wrap && !wrap.contains(e.target)) closeModelDropdown();
+    // Also close mode dropdown
+    var modeWrap = document.getElementById('mode-wrap');
+    if (modeWrap && !modeWrap.contains(e.target)) closeModeDropdown();
+  });
+
+  send({ type: 'ready' });
+});
+</script>
+</body>
+</html>

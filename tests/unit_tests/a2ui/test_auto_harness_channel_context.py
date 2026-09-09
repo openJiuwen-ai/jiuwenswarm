@@ -156,8 +156,8 @@ async def test_runtime_config_syncs_channel_and_task_workspace(monkeypatch):
 
     assert captured == {
         "channel": "web",
-        "cwd": "/task/project/backend",
-        "workspace": "/task/project",
+        "cwd": "/different/project",
+        "workspace": "/different/project",
     }
 
     await adapter._update_runtime_config(

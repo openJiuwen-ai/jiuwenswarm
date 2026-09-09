@@ -20,6 +20,7 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
@@ -598,6 +599,41 @@ async def test_plan_mode_exited_push_uses_the_session_profile_mode() -> None:
     assert pushed["payload"]["mode"] == "agent"
 
 
+def _install_internal_heartbeat_runtime(server, agent) -> None:
+    manager = object()
+
+    class Runtime:
+        agent_manager = manager
+
+        def stream(
+            self,
+            request,
+            *,
+            trigger_hook,
+            background,
+            on_agent_ready,
+        ):
+            assert trigger_hook is False
+            assert background is True
+            assert on_agent_ready is not None
+
+            async def _events():
+                on_agent_ready(agent)
+                async for chunk in agent.process_message_stream(request):
+                    yield RuntimeEvent.from_agent_message(
+                        chunk,
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        session_id=request.session_id,
+                        default_agent_ref=request.agent_ref,
+                    )
+
+            return _events()
+
+    server._agent_manager = manager
+    server._runtime = Runtime()
+
+
 @pytest.mark.asyncio
 async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
     automation = {
@@ -629,10 +665,8 @@ async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
     agent.process_message_stream.return_value = response_stream()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._heartbeat_runtime = SimpleNamespace(retain_agent=MagicMock())
-    server._prepare_code_mode_chat_turn = AsyncMock(return_value=("agent", None, agent))
-    server._ensure_code_mode_state = AsyncMock(return_value=False)
-    server._check_post_process_plan_exit = AsyncMock()
-    server.send_push = AsyncMock()
+    _install_internal_heartbeat_runtime(server, agent)
+    server.send_push = AsyncMock(return_value=True)
     request = AgentRequest(
         request_id="run-1",
         channel_id="web",
@@ -642,11 +676,7 @@ async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
         metadata={"automation": automation},
     )
 
-    with patch(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.ensure_persistent_checkpointer",
-        AsyncMock(),
-    ):
-        await server.execute_internal_heartbeat(request)
+    await server.execute_internal_heartbeat(request)
 
     pushes = [call.args[0] for call in server.send_push.await_args_list]
     assert pushes[0]["payload"] == {
@@ -665,6 +695,7 @@ async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
         "is_processing": False,
         "is_complete": True,
     }
+    server._heartbeat_runtime.retain_agent.assert_called_once_with("sess-1", agent)
 
 
 @pytest.mark.asyncio
@@ -693,10 +724,8 @@ async def test_internal_heartbeat_cancel_closes_processing_status() -> None:
     agent.process_message_stream.return_value = response_stream()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._heartbeat_runtime = SimpleNamespace(retain_agent=MagicMock())
-    server._prepare_code_mode_chat_turn = AsyncMock(return_value=("agent", None, agent))
-    server._ensure_code_mode_state = AsyncMock(return_value=False)
-    server._check_post_process_plan_exit = AsyncMock()
-    server.send_push = AsyncMock()
+    _install_internal_heartbeat_runtime(server, agent)
+    server.send_push = AsyncMock(return_value=True)
     request = AgentRequest(
         request_id="run-cancelled",
         channel_id="web",
@@ -706,10 +735,7 @@ async def test_internal_heartbeat_cancel_closes_processing_status() -> None:
         metadata={"automation": automation},
     )
 
-    with patch(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.ensure_persistent_checkpointer",
-        AsyncMock(),
-    ), pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError):
         await server.execute_internal_heartbeat(request)
 
     pushes = [call.args[0] for call in server.send_push.await_args_list]
@@ -720,6 +746,7 @@ async def test_internal_heartbeat_cancel_closes_processing_status() -> None:
         "is_complete": True,
     }
     assert pushes[-1]["metadata"] == {"automation": automation}
+    server._heartbeat_runtime.retain_agent.assert_called_once_with("sess-1", agent)
 
 
 @pytest.mark.asyncio

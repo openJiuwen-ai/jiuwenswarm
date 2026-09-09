@@ -6,7 +6,18 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, ArrowRight, CheckCircle2, ClipboardList, Copy, Info, LoaderCircle, Share2, Sparkles, X } from 'lucide-react';
+import {
+  Activity,
+  ArrowRight,
+  CheckCircle2,
+  ClipboardList,
+  Copy,
+  Info,
+  LoaderCircle,
+  Share2,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
@@ -18,6 +29,8 @@ import { InputArea, type InputAreaHandle } from './InputArea';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
+import beeFlyingIcon from '../../assets/bee-flying.webp';
+import beeStaticIcon from '../../assets/bee-static.png';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import loadSendIcon from '../../assets/load-send.svg';
 import editIcon from '../../assets/edit.svg';
@@ -33,16 +46,12 @@ import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
 import { isTeamActivityMessage, parseTeamEventMessage } from './teamEventUtils';
 import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
-import beeBanner from '../../assets/蜜蜂.svg';
 import './ChatPanel.css';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
 import { turnDiffKey } from '../../features/code-mode/turnChangeState';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
-import {
-  canLoadOlderHistory,
-  shouldShowHistoryRetry,
-} from '../../features/historyPagination';
+import { canLoadOlderHistory, shouldShowHistoryRetry } from '../../features/historyPagination';
 import {
   DESKTOP_FILE_DRAG_EVENT,
   DESKTOP_LOCAL_FILES_EVENT,
@@ -66,13 +75,19 @@ export interface ChatHistoryPagerProps {
 interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
   onInputIntent?: (sessionId: string) => void;
-  onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<{
+  onPersistMedia: (
+    content: string,
+    mediaItems: MediaItem[],
+  ) => Promise<{
     content?: string;
     query?: string;
     media_items?: Record<string, unknown>[];
     files?: Record<string, unknown>;
   }>;
-  onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<{
+  onPersistDocuments: (
+    content: string,
+    mediaItems: MediaItem[],
+  ) => Promise<{
     content?: string;
     query?: string;
     media_items?: Record<string, unknown>[];
@@ -82,7 +97,11 @@ interface ChatPanelProps {
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
   isProcessing: boolean;
-  onUserAnswer: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onUserAnswer: (
+    requestId: string,
+    answers: UserAnswer[],
+    source?: string,
+  ) => Promise<boolean>;
   onExportShare?: () => void | Promise<void>;
   isExportingShare?: boolean;
   canExportShare?: boolean;
@@ -125,7 +144,12 @@ const HUMAN_SHARE_IDENTITY: TeamMemberIdentity = { role: 'human_agent' };
 
 function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }) {
   return (
-    <button className="chat-suggestion-card" data-testid="chat-panel-welcome-suggestion" data-variant={text} onClick={onClick}>
+    <button
+      className="chat-suggestion-card"
+      data-testid="chat-panel-welcome-suggestion"
+      data-variant={text}
+      onClick={onClick}
+    >
       <Sparkles className="chat-suggestion-card__icon" strokeWidth={2} />
       <span className="chat-suggestion-card__text">{text}</span>
       <ArrowRight className="chat-suggestion-card__arrow" strokeWidth={2} />
@@ -153,22 +177,30 @@ function InterruptResultBubble() {
   );
 }
 
-function ActiveTeamGroupEntry({ isProcessing, teamAreaExpanded }: { isProcessing: boolean; teamAreaExpanded?: boolean | null }) {
+function ActiveTeamGroupEntry({
+  isProcessing,
+  teamAreaExpanded,
+}: {
+  isProcessing: boolean;
+  teamAreaExpanded?: boolean | null;
+}) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const teamHistoryMessages = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamHistoryMessages ?? []);
-  const teamMemberExecutionEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? []);
+  const teamMemberExecutionEvents = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? [],
+  );
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? []);
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const activeTeamMessages = useMemo(
     () => getActiveTeamMessages(teamHistoryMessages, messages),
-    [teamHistoryMessages, messages]
+    [teamHistoryMessages, messages],
   );
   const hasVisibleMembers = teamMembers.some(
-    (m) => m.member_id && m.member_id !== 'user' && !isTeamLeaderMember(m.member_id)
+    (m) => m.member_id && m.member_id !== 'user' && !isTeamLeaderMember(m.member_id),
   );
 
   if (mode !== 'team' || !hasVisibleMembers || teamAreaExpanded) {
@@ -188,7 +220,13 @@ function ActiveTeamGroupEntry({ isProcessing, teamAreaExpanded }: { isProcessing
 }
 
 /** 单 Agent 模式的消息队列卡片，展示在输入框上方 */
-function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProcessing: boolean; onSendTask?: (content: string, mediaItems?: MediaItem[]) => void }) {
+function AgentActivityCard({
+  isProcessing: _isProcessing,
+  onSendTask,
+}: {
+  isProcessing: boolean;
+  onSendTask?: (content: string, mediaItems?: MediaItem[]) => void;
+}) {
   const [expanded, setExpanded] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
@@ -237,21 +275,13 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
     }
   };
 
-  const handleEditTask = (
-    e: React.MouseEvent,
-    taskId: string,
-    content: string,
-    mediaItemCount = 0,
-  ) => {
+  const handleEditTask = (e: React.MouseEvent, taskId: string, content: string, mediaItemCount = 0) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (sid) {
       // Editing restores only the text into the input; attachments cannot follow
       // and will be removed together with the task — confirm first.
-      if (
-        mediaItemCount > 0 &&
-        !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))
-      ) {
+      if (mediaItemCount > 0 && !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))) {
         return;
       }
       setInputValue(sid, content);
@@ -260,12 +290,7 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
     }
   };
 
-  const handleSendTask = (
-    e: React.MouseEvent,
-    taskId: string,
-    content: string,
-    mediaItems?: MediaItem[],
-  ) => {
+  const handleSendTask = (e: React.MouseEvent, taskId: string, content: string, mediaItems?: MediaItem[]) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (sid) {
@@ -309,14 +334,25 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
           type="button"
           className="team-event-group-summary"
           data-testid="chat-panel-task-queue-header"
-          onClick={() => setExpanded(prev => !prev)}
+          onClick={() => setExpanded((prev) => !prev)}
           aria-expanded={expanded}
         >
           <span className="team-event-group-summary__main">
             <span className="team-event-group-summary__title">{t('chatUi.messageQueue')}</span>
             {queuePaused && (
-              <span data-testid="chat-panel-task-queue-paused-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginLeft: '8px' }}>
-                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--color-chat-paused)', flexShrink: 0 }} />
+              <span
+                data-testid="chat-panel-task-queue-paused-badge"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginLeft: '8px' }}
+              >
+                <span
+                  style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    background: 'var(--color-chat-paused)',
+                    flexShrink: 0,
+                  }}
+                />
                 <span style={{ fontSize: '13px', color: 'var(--color-text-secondary)' }}>{t('chat.paused')}</span>
               </span>
             )}
@@ -327,9 +363,22 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
               tabIndex={0}
               className="team-event-group-summary__activity"
               data-testid="chat-panel-task-queue-resume"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginLeft: 'auto', justifyContent: 'end', flexShrink: 0, cursor: 'pointer' }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                marginLeft: 'auto',
+                justifyContent: 'end',
+                flexShrink: 0,
+                cursor: 'pointer',
+              }}
               onClick={handleResume}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); handleResume(e as unknown as React.MouseEvent); } }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.stopPropagation();
+                  handleResume(e as unknown as React.MouseEvent);
+                }
+              }}
             >
               <img src={restartIcon} alt="" className="w-3.5 h-3.5" />
               {t('chat.resume')}
@@ -356,7 +405,10 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
                 onDrop={() => handleDrop(index)}
                 onDragEnd={handleDragEnd}
               >
-                <div className="team-event-group-row__main" style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                <div
+                  className="team-event-group-row__main"
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}
+                >
                   {/* 拖动图标：所有任务可拖，悬浮显示 */}
                   <img
                     src={moveIcon}
@@ -370,7 +422,10 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
                   <div className="team-event-group-row__avatar" style={{ display: 'flex', alignItems: 'center' }}>
                     <img src={lineUpIcon} alt="" className="w-4 h-4" />
                   </div>
-                  <span className="team-event-group-row__member" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span
+                    className="team-event-group-row__member"
+                    style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
                     {task.content}
                   </span>
                   {(task.mediaItems?.length ?? 0) > 0 && (
@@ -433,16 +488,14 @@ function AgentActivityCard({ isProcessing: _isProcessing, onSendTask }: { isProc
 
 function getActiveTeamMessages(historyMessages: Message[], messages: Message[]): Message[] {
   const seen = new Set<string>();
-  return [...historyMessages, ...messages]
-    .filter(isTeamActivityMessage)
-    .filter((message) => {
-      const key = getTeamMessageIdentity(message);
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
+  return [...historyMessages, ...messages].filter(isTeamActivityMessage).filter((message) => {
+    const key = getTeamMessageIdentity(message);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function getTeamMessageIdentity(message: Message): string {
@@ -468,23 +521,21 @@ function WelcomeHeading() {
   if (isZh) {
     return (
       <>
-        <span className="chat-welcome__heading-highlight">WorkSwarm</span> 轻松解决工作每个问题！
+        <span className="chat-welcome__heading-highlight">WorkSwarm</span>
+        <span>轻松解决工作每个问题！</span>
       </>
     );
   }
 
   return (
     <>
-      <span className="chat-welcome__heading-highlight">WorkSwarm</span> makes work easier!
+      <span className="chat-welcome__heading-highlight">WorkSwarm</span>
+      <span>makes work easier!</span>
     </>
   );
 }
 
-function getShareExportTitle(
-  t: TFunction,
-  isExportingShare: boolean,
-  canExportShare: boolean
-): string {
+function getShareExportTitle(t: TFunction, isExportingShare: boolean, canExportShare: boolean): string {
   if (isExportingShare) {
     return t('share.exporting');
   }
@@ -506,18 +557,12 @@ function getHumanShareStatusClass(command: HumanShareCommand): string {
   return 'human-share-modal__badge';
 }
 
-function HumanSharePanel({
-  commands,
-  onClose,
-}: {
-  commands: HumanShareCommand[];
-  onClose: () => void;
-}) {
+function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[]; onClose: () => void }) {
   const { t } = useTranslation();
   const [copiedKey, setCopiedKey] = React.useState<string | null>(null);
   const sortedCommands = useMemo(
     () => [...commands].sort((a, b) => a.memberName.localeCompare(b.memberName)),
-    [commands]
+    [commands],
   );
   const joinedCount = sortedCommands.filter((command) => command.status === 'joined').length;
   const exitCommand =
@@ -544,7 +589,7 @@ function HumanSharePanel({
     await navigator.clipboard.writeText(text);
     setCopiedKey(key);
     window.setTimeout(() => {
-      setCopiedKey((current) => current === key ? null : current);
+      setCopiedKey((current) => (current === key ? null : current));
     }, 1200);
   }, []);
 
@@ -561,7 +606,13 @@ function HumanSharePanel({
         <div className="human-share-modal__header" data-testid="chat-panel-human-share-modal-header">
           <div>
             <div className="human-share-modal__title-row">
-              <h2 id="human-share-title" className="human-share-modal__title" data-testid="chat-panel-human-share-modal-title">{t('humanShare.title')}</h2>
+              <h2
+                id="human-share-title"
+                className="human-share-modal__title"
+                data-testid="chat-panel-human-share-modal-title"
+              >
+                {t('humanShare.title')}
+              </h2>
             </div>
             <p className="human-share-modal__summary" data-testid="chat-panel-human-share-modal-summary">
               {allJoined
@@ -569,7 +620,13 @@ function HumanSharePanel({
                 : t('humanShare.waiting', { joined: joinedCount, total: sortedCommands.length })}
             </p>
           </div>
-          <button type="button" className="human-share-modal__close" data-testid="chat-panel-human-share-modal-close" onClick={onClose} aria-label={t('common.close')}>
+          <button
+            type="button"
+            className="human-share-modal__close"
+            data-testid="chat-panel-human-share-modal-close"
+            onClick={onClose}
+            aria-label={t('common.close')}
+          >
             <X size={18} />
           </button>
         </div>
@@ -584,7 +641,12 @@ function HumanSharePanel({
             const copied = copiedKey === `join:${command.memberName}`;
             const shouldShowJoinCommand = command.status !== 'joined' && Boolean(command.joinCommand);
             return (
-              <section key={`${command.sessionId}:${command.memberName}`} className="human-share-modal__item" data-testid="chat-panel-human-share-modal-member" data-variant={command.memberName}>
+              <section
+                key={`${command.sessionId}:${command.memberName}`}
+                className="human-share-modal__item"
+                data-testid="chat-panel-human-share-modal-member"
+                data-variant={command.memberName}
+              >
                 <div className="human-share-modal__member" data-testid="chat-panel-human-share-modal-member-info">
                   <TeamMemberAvatar
                     member={command.memberName}
@@ -597,13 +659,26 @@ function HumanSharePanel({
                       <div className="human-share-modal__member-id">{command.memberName}</div>
                     )}
                   </div>
-                  <span className={getHumanShareStatusClass(command)} data-testid="chat-panel-human-share-modal-member-status" data-variant={command.status}>
+                  <span
+                    className={getHumanShareStatusClass(command)}
+                    data-testid="chat-panel-human-share-modal-member-status"
+                    data-variant={command.status}
+                  >
                     {getHumanShareStatusLabel(command, t)}
                   </span>
                 </div>
                 {shouldShowJoinCommand ? (
-                  <div className="human-share-modal__command-row" data-testid="chat-panel-human-share-modal-member-join" data-variant="pending">
-                    <code className="human-share-modal__command" data-testid="chat-panel-human-share-modal-member-join-command">{command.joinCommand}</code>
+                  <div
+                    className="human-share-modal__command-row"
+                    data-testid="chat-panel-human-share-modal-member-join"
+                    data-variant="pending"
+                  >
+                    <code
+                      className="human-share-modal__command"
+                      data-testid="chat-panel-human-share-modal-member-join-command"
+                    >
+                      {command.joinCommand}
+                    </code>
                     <button
                       type="button"
                       className="human-share-modal__copy"
@@ -626,9 +701,7 @@ function HumanSharePanel({
                   >
                     {command.status === 'joined' ? <CheckCircle2 size={15} /> : <ClipboardList size={15} />}
                     <span>
-                      {command.status === 'joined'
-                        ? t('humanShare.joinedNote')
-                        : t('humanShare.commandPending')}
+                      {command.status === 'joined' ? t('humanShare.joinedNote') : t('humanShare.commandPending')}
                     </span>
                   </div>
                 )}
@@ -638,9 +711,13 @@ function HumanSharePanel({
 
           {exitCommand && (
             <section className="human-share-modal__exit" data-testid="chat-panel-human-share-modal-exit">
-              <div className="human-share-modal__exit-title" data-testid="chat-panel-human-share-modal-exit-title">{t('humanShare.exitTitle')}</div>
+              <div className="human-share-modal__exit-title" data-testid="chat-panel-human-share-modal-exit-title">
+                {t('humanShare.exitTitle')}
+              </div>
               <div className="human-share-modal__command-row">
-                <code className="human-share-modal__command" data-testid="chat-panel-human-share-modal-exit-command">{exitCommand}</code>
+                <code className="human-share-modal__command" data-testid="chat-panel-human-share-modal-exit-command">
+                  {exitCommand}
+                </code>
                 <button
                   type="button"
                   className="human-share-modal__copy"
@@ -656,21 +733,15 @@ function HumanSharePanel({
         </div>
       </section>
     </div>,
-    document.body
+    document.body,
   );
 }
 
-function HumanShareCard({
-  commands,
-  onShare,
-}: {
-  commands: HumanShareCommand[];
-  onShare: () => void;
-}) {
+function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; onShare: () => void }) {
   const { t } = useTranslation();
   const sortedCommands = useMemo(
     () => [...commands].sort((a, b) => a.memberName.localeCompare(b.memberName)),
-    [commands]
+    [commands],
   );
   const joinedCount = sortedCommands.filter((command) => command.status === 'joined').length;
   const pendingCount = sortedCommands.filter((command) => command.status !== 'joined').length;
@@ -689,7 +760,9 @@ function HumanShareCard({
         <ClipboardList size={18} strokeWidth={2} />
       </div>
       <div className="human-share-card__content" data-testid="chat-panel-human-share-card-content">
-        <div className="human-share-card__title" data-testid="chat-panel-human-share-card-title">{t('humanShare.cardTitle')}</div>
+        <div className="human-share-card__title" data-testid="chat-panel-human-share-card-title">
+          {t('humanShare.cardTitle')}
+        </div>
         <div className="human-share-card__summary" data-testid="chat-panel-human-share-card-summary">
           {t('humanShare.cardSummary', {
             pending: pendingCount,
@@ -699,7 +772,12 @@ function HumanShareCard({
         </div>
         <div className="human-share-card__members" data-testid="chat-panel-human-share-card-members">
           {previewCommands.map((command) => (
-            <span key={command.memberName} className="human-share-card__member-pill" data-testid="chat-panel-human-share-card-member-pill" data-variant={command.memberName}>
+            <span
+              key={command.memberName}
+              className="human-share-card__member-pill"
+              data-testid="chat-panel-human-share-card-member-pill"
+              data-variant={command.memberName}
+            >
               <TeamMemberAvatar
                 member={command.memberName}
                 identity={HUMAN_SHARE_IDENTITY}
@@ -709,7 +787,9 @@ function HumanShareCard({
             </span>
           ))}
           {sortedCommands.length > previewCommands.length ? (
-            <span className="human-share-card__more" data-testid="chat-panel-human-share-card-more">+{sortedCommands.length - previewCommands.length}</span>
+            <span className="human-share-card__more" data-testid="chat-panel-human-share-card-more">
+              +{sortedCommands.length - previewCommands.length}
+            </span>
           ) : null}
         </div>
       </div>
@@ -738,7 +818,47 @@ function scrollToBottom(el: HTMLDivElement): void {
   el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
 }
 
-export function ChatPanel({
+const BEE_ANIMATION_DURATION = 4536;
+
+function BeeBanner({ className, altText, onTrigger }: { className: string; altText: string; onTrigger: () => void }) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleMouseEnter = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+    setIsPlaying(true);
+    onTrigger();
+    timerRef.current = setTimeout(() => {
+      setIsPlaying(false);
+      timerRef.current = null;
+    }, BEE_ANIMATION_DURATION);
+  }, [onTrigger]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  return (
+    <img
+      className={className}
+      src={isPlaying ? beeFlyingIcon : beeStaticIcon}
+      alt={altText}
+      data-testid="chat-panel-welcome-banner"
+      onMouseEnter={handleMouseEnter}
+    />
+  );
+}
+
+/**
+ * The chat surface stays mounted while the user inspects trajectory data.
+ * Keep this boundary memoized so changing only the active surface does not
+ * rebuild a potentially very large message timeline and composer subtree.
+ */
+export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
   onInputIntent,
   onPersistMedia,
@@ -780,10 +900,12 @@ export function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
-  const hasHarnessProgress = useHarnessStore((s) => (
-    mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0
-  ));
-  const teamHumanShareCommands = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamHumanShareCommands ?? []);
+  const hasHarnessProgress = useHarnessStore(
+    (s) => mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0,
+  );
+  const teamHumanShareCommands = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamHumanShareCommands ?? [],
+  );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const panelShellRef = useRef<HTMLDivElement>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
@@ -815,28 +937,24 @@ export function ChatPanel({
     loadingMore: historyLoadingMore,
     prepending: historyPrepending,
   };
-  const canRequestOlderHistory = Boolean(
-    historyOnLoadMore && canLoadOlderHistory(historyLoadMoreState)
-  );
+  const canRequestOlderHistory = Boolean(historyOnLoadMore && canLoadOlderHistory(historyLoadMoreState));
   const showHistoryRetry = Boolean(
     historyOnLoadMore &&
-      shouldShowHistoryRetry({
-        ...historyLoadMoreState,
-        retryAvailable: historyRetryAvailable,
-      })
+    shouldShowHistoryRetry({
+      ...historyLoadMoreState,
+      retryAvailable: historyRetryAvailable,
+    }),
   );
   const chatContentClassName = hasConversation
     ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
     : 'chat-content chat-content--welcome';
-  const suggestions = [
-    t('chat.welcomeSuggestions.journey'),
-    t('chat.welcomeSuggestions.skills'),
-  ];
+  const suggestions = [t('chat.welcomeSuggestions.journey'), t('chat.welcomeSuggestions.skills')];
   const shouldShowChatHeader = hasConversation;
   const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
+  const [bubbleVisible, setBubbleVisible] = useState(false);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
   const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const {
@@ -855,40 +973,43 @@ export function ChatPanel({
     isProcessing,
     messages,
   });
-  const renderCodeChangesAfterMessage = useCallback((message: Message) => {
-    const turns = codeTurnsByMessageId.get(message.id);
-    if (!turns?.length) return null;
-    return turns.map(turn => {
-      const turnKey = turnDiffKey(turn);
-      const isLatest = turnKey === latestCodeTurnKey;
-      return (
-        <CodeChangesCard
-          key={turnKey}
-          diff={turn}
-          refreshing={codeTurnHistoryLoading}
-          isLatest={isLatest}
-          isProcessing={isProcessing}
-          operation={isLatest ? turnChangeOperation?.action ?? null : null}
-          operationError={turnChangeError?.turnKey === turnKey ? turnChangeError.message : null}
-          onRefresh={() => void reloadCodeTurnHistory()}
-          onReview={target => onOpenCodeReview?.(target)}
-          onDiscard={() => void discardLatestTurn()}
-          onRedo={() => void redoLatestTurn()}
-        />
-      );
-    });
-  }, [
-    codeTurnHistoryLoading,
-    codeTurnsByMessageId,
-    discardLatestTurn,
-    isProcessing,
-    latestCodeTurnKey,
-    onOpenCodeReview,
-    redoLatestTurn,
-    reloadCodeTurnHistory,
-    turnChangeError,
-    turnChangeOperation,
-  ]);
+  const renderCodeChangesAfterMessage = useCallback(
+    (message: Message) => {
+      const turns = codeTurnsByMessageId.get(message.id);
+      if (!turns?.length) return null;
+      return turns.map((turn) => {
+        const turnKey = turnDiffKey(turn);
+        const isLatest = turnKey === latestCodeTurnKey;
+        return (
+          <CodeChangesCard
+            key={turnKey}
+            diff={turn}
+            refreshing={codeTurnHistoryLoading}
+            isLatest={isLatest}
+            isProcessing={isProcessing}
+            operation={isLatest ? (turnChangeOperation?.action ?? null) : null}
+            operationError={turnChangeError?.turnKey === turnKey ? turnChangeError.message : null}
+            onRefresh={() => void reloadCodeTurnHistory()}
+            onReview={(target) => onOpenCodeReview?.(target)}
+            onDiscard={() => void discardLatestTurn()}
+            onRedo={() => void redoLatestTurn()}
+          />
+        );
+      });
+    },
+    [
+      codeTurnHistoryLoading,
+      codeTurnsByMessageId,
+      discardLatestTurn,
+      isProcessing,
+      latestCodeTurnKey,
+      onOpenCodeReview,
+      redoLatestTurn,
+      reloadCodeTurnHistory,
+      turnChangeError,
+      turnChangeOperation,
+    ],
+  );
 
   // 跟踪用户是否正在查看历史消息（不在底部）
   const userScrolledUpRef = useRef(false);
@@ -905,28 +1026,34 @@ export function ChatPanel({
     }
   }, []);
 
-  const updateHistoryLayoutSnapshot = useCallback((sessionId: string, el: HTMLDivElement) => {
-    historyLayoutSnapshotRef.current = {
-      sessionId,
-      loadedPages: historyLoadedPages,
-      scrollHeight: el.scrollHeight,
-      scrollTop: el.scrollTop,
-    };
-  }, [historyLoadedPages]);
+  const updateHistoryLayoutSnapshot = useCallback(
+    (sessionId: string, el: HTMLDivElement) => {
+      historyLayoutSnapshotRef.current = {
+        sessionId,
+        loadedPages: historyLoadedPages,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+      };
+    },
+    [historyLoadedPages],
+  );
 
-  const restoreSessionScrollTop = useCallback((sessionId: string, el: HTMLDivElement): boolean => {
-    const savedScrollTop = sessionScrollTopMapRef.current.get(sessionId);
-    if (savedScrollTop === undefined) {
-      return false;
-    }
+  const restoreSessionScrollTop = useCallback(
+    (sessionId: string, el: HTMLDivElement): boolean => {
+      const savedScrollTop = sessionScrollTopMapRef.current.get(sessionId);
+      if (savedScrollTop === undefined) {
+        return false;
+      }
 
-    el.scrollTop = savedScrollTop;
-    const atBottom = isScrollAtBottom(el);
-    userScrolledUpRef.current = !atBottom;
-    stickToBottomUntilStableRef.current = atBottom;
-    updateHistoryLayoutSnapshot(sessionId, el);
-    return true;
-  }, [updateHistoryLayoutSnapshot]);
+      el.scrollTop = savedScrollTop;
+      const atBottom = isScrollAtBottom(el);
+      userScrolledUpRef.current = !atBottom;
+      stickToBottomUntilStableRef.current = atBottom;
+      updateHistoryLayoutSnapshot(sessionId, el);
+      return true;
+    },
+    [updateHistoryLayoutSnapshot],
+  );
 
   // 检测用户滚动位置
   const handleScroll = useCallback(() => {
@@ -965,12 +1092,7 @@ export function ChatPanel({
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [
-    activeSessionId,
-    historyLoadingMore,
-    historyPrepending,
-    updateHistoryLayoutSnapshot,
-  ]);
+  }, [activeSessionId, historyLoadingMore, historyPrepending, updateHistoryLayoutSnapshot]);
 
   // 根据 chat-panel 宽度动态调整 welcome bubble 的 right 值
   useWelcomeBubblePosition({
@@ -980,19 +1102,22 @@ export function ChatPanel({
   });
 
   // 检测鼠标滚轮事件，即使没有滚动条也能触发加载更多
-  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    // 只有向上滚动时才触发
-    if (e.deltaY < 0) {
-      stickToBottomUntilStableRef.current = false;
-    }
-    if (e.deltaY < 0 && canRequestOlderHistory && historyOnLoadMore) {
-      // 检查是否已经在顶部（没有滚动条时 scrollTop 始终为 0）
-      const el = scrollContainerRef.current;
-      if (el && el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
-        void historyOnLoadMore();
+  const handleWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      // 只有向上滚动时才触发
+      if (e.deltaY < 0) {
+        stickToBottomUntilStableRef.current = false;
       }
-    }
-  }, [canRequestOlderHistory, historyOnLoadMore]);
+      if (e.deltaY < 0 && canRequestOlderHistory && historyOnLoadMore) {
+        // 检查是否已经在顶部（没有滚动条时 scrollTop 始终为 0）
+        const el = scrollContainerRef.current;
+        if (el && el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
+          void historyOnLoadMore();
+        }
+      }
+    },
+    [canRequestOlderHistory, historyOnLoadMore],
+  );
 
   // 监听浏览器 tab 可见性变化：隐藏时记录位置，恢复可见时抑制自动滚底
   useEffect(() => {
@@ -1105,10 +1230,13 @@ export function ChatPanel({
   ]);
 
   // 包装发送消息函数，添加滚动逻辑
-  const handleSendMessage = useCallback((content: string, mediaItems?: MediaItem[]) => {
-    setIsSending(true);
-    onSendMessage(content, mediaItems);
-  }, [onSendMessage]);
+  const handleSendMessage = useCallback(
+    (content: string, mediaItems?: MediaItem[]) => {
+      setIsSending(true);
+      onSendMessage(content, mediaItems);
+    },
+    [onSendMessage],
+  );
 
   // 当发送消息时强制滚动到底部
   useEffect(() => {
@@ -1124,10 +1252,7 @@ export function ChatPanel({
     }
   }, [activeSessionId, isSending, updateHistoryLayoutSnapshot]);
 
-  const handleSuggestion = useCallback(
-    (text: string) => handleSendMessage(text),
-    [handleSendMessage],
-  );
+  const handleSuggestion = useCallback((text: string) => handleSendMessage(text), [handleSendMessage]);
 
   const markDesktopFileDropZoneActive = useCallback(() => {
     desktopFileDropAcceptUntilRef.current = Date.now() + 1200;
@@ -1185,9 +1310,7 @@ export function ChatPanel({
       let inZone = false;
       if (hasCoords) {
         const hit = document.elementFromPoint(clientX, clientY);
-        inZone = Boolean(
-          hit?.closest('.chat-panel-shell') || hit?.closest('.chat-layout__surface'),
-        );
+        inZone = Boolean(hit?.closest('.chat-panel-shell') || hit?.closest('.chat-layout__surface'));
       }
       // Native bridge trusted=true always accepts (coords from WebView2 are often wrong).
       const trusted = detail?.trusted === true;
@@ -1255,7 +1378,12 @@ export function ChatPanel({
       onDrop={handleDesktopFileDrop}
     >
       {turnChangeNotice ? (
-        <div className="code-turn-change-toast" role="status" aria-live="polite" data-testid="chat-panel-code-turn-change-toast">
+        <div
+          className="code-turn-change-toast"
+          role="status"
+          aria-live="polite"
+          data-testid="chat-panel-code-turn-change-toast"
+        >
           <CheckCircle2 size={17} aria-hidden="true" />
           <span>{turnChangeNotice}</span>
         </div>
@@ -1267,7 +1395,11 @@ export function ChatPanel({
               {sessionTitle}
             </div>
             {sessionProjectName && (
-              <div className="chat-panel-header__project" title={sessionProjectName} data-testid="chat-panel-header-project">
+              <div
+                className="chat-panel-header__project"
+                title={sessionProjectName}
+                data-testid="chat-panel-header-project"
+              >
                 <span className="chat-config-icon chat-config-icon--folder" aria-hidden="true" />
                 <span>{sessionProjectName}</span>
               </div>
@@ -1277,7 +1409,7 @@ export function ChatPanel({
             {shouldShowShareExport && (
               <button
                 type="button"
-                className={`icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
+                className={`chat-header-icon-btn icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
                 data-testid="chat-panel-share-export"
                 data-variant={isExportingShare ? 'exporting' : 'ready'}
                 title={shareExportTitle}
@@ -1291,7 +1423,9 @@ export function ChatPanel({
                 {isExportingShare ? (
                   <>
                     <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />
-                    <span className="share-export-btn__label" data-testid="chat-panel-share-export-loading-label">{t('share.generating')}</span>
+                    <span className="share-export-btn__label" data-testid="chat-panel-share-export-loading-label">
+                      {t('share.generating')}
+                    </span>
                   </>
                 ) : (
                   <ShareExportIcon className="h-[32px] w-[32px]" />
@@ -1324,17 +1458,19 @@ export function ChatPanel({
               className={`chat-header-icon-btn ${teamAreaExpanded === false && !heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
               data-testid="chat-panel-header-chat-toggle"
               data-variant="collapse"
+              data-team-area-toggle="true"
               onClick={() => onToggleTeamArea?.(teamAreaExpanded === false ? null : false)}
             >
               <ChatOverviewIcon className="h-[32px] w-[32px]" aria-hidden />
             </button>
-            {!(teamAreaExpanded && mode !== 'team') && (
+            {!teamAreaExpanded && (
               <button
                 type="button"
-                className={`chat-header-icon-btn ${teamAreaExpanded === true && !heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
+                className="chat-header-icon-btn"
                 data-testid="chat-panel-header-expand-toggle"
                 data-variant="expand"
-                onClick={() => onToggleTeamArea?.(teamAreaExpanded === true ? null : true)}
+                data-team-area-toggle="true"
+                onClick={() => onToggleTeamArea?.(true)}
               >
                 <PanelCollapseIcon className="h-[32px] w-[32px]" aria-hidden />
               </button>
@@ -1343,17 +1479,21 @@ export function ChatPanel({
         </div>
       )}
       {hasHarnessProgress && (
-        <div className="sticky top-0 z-10 px-3 pt-2 bg-bg/95 backdrop-blur-sm" data-testid="chat-panel-harness-progress-mount">
+        <div
+          className="sticky top-0 z-10 px-3 pt-2 bg-bg/95 backdrop-blur-sm"
+          data-testid="chat-panel-harness-progress-mount"
+        >
           <HarnessProgressBar />
         </div>
       )}
-      {humanShareOpen && (
-        <HumanSharePanel
-          commands={teamHumanShareCommands}
-          onClose={() => setHumanShareOpen(false)}
-        />
-      )}
-      <div ref={scrollContainerRef} className="chat-scroll flex-1 overflow-y-auto" data-testid="chat-panel-scroll" onScroll={handleScroll} onWheel={handleWheel}>
+      {humanShareOpen && <HumanSharePanel commands={teamHumanShareCommands} onClose={() => setHumanShareOpen(false)} />}
+      <div
+        ref={scrollContainerRef}
+        className="chat-scroll flex-1 overflow-y-auto"
+        data-testid="chat-panel-scroll"
+        onScroll={handleScroll}
+        onWheel={handleWheel}
+      >
         <div className={chatContentClassName} data-testid="chat-panel-content">
           {hasConversation ? (
             <>
@@ -1373,32 +1513,41 @@ export function ChatPanel({
                 <>
                   <MessageList messages={messages} renderAfterMessage={renderCodeChangesAfterMessage} />
                   {shouldShowHumanShare && (
-                    <HumanShareCard
-                      commands={teamHumanShareCommands}
-                      onShare={() => setHumanShareOpen(true)}
-                    />
+                    <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
                   {/* 内联审批卡片（演进审批 & 权限审批共用） */}
                   <InlineQuestionCard onSubmit={onUserAnswer} />
-                  <ContextCompressionLines
-                    runtime={contextCompressionRuntime}
-                    summary={contextCompressionSummary}
-                  />
+                  <ContextCompressionLines runtime={contextCompressionRuntime} summary={contextCompressionSummary} />
                 </>
               ) : isHistoryRestoring ? (
-                <div className="flex h-32 items-center justify-center" role="status" aria-live="polite" data-testid="chat-panel-history-loading">
-                  <div className="text-sm text-text-muted">
-                    {t('chat.historyLoading')}
-                  </div>
+                <div
+                  className="flex h-32 items-center justify-center"
+                  role="status"
+                  aria-live="polite"
+                  data-testid="chat-panel-history-loading"
+                >
+                  <div className="text-sm text-text-muted">{t('chat.historyLoading')}</div>
                 </div>
               ) : null}
             </>
           ) : (
             <div className="chat-welcome" data-testid="chat-panel-welcome">
-              <div ref={bubbleRef} className="chat-welcome__banner chat-welcome__banner--bubble" data-testid="chat-panel-welcome-banner-bubble">{t('chat.welcomeBubbleText')}</div>
-              <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading"><WelcomeHeading /></h2>
+              <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
+                <WelcomeHeading />
+              </h2>
               <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
-                <img className="chat-welcome__banner chat-welcome__banner--bee" src={beeBanner} alt={t('chat.welcomeLogoAlt')} data-testid="chat-panel-welcome-banner" />
+                <div
+                  ref={bubbleRef}
+                  className={`chat-welcome__banner chat-welcome__banner--bubble${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                  data-testid="chat-panel-welcome-banner-bubble"
+                >
+                  {t('chat.welcomeBubbleText')}
+                </div>
+                <BeeBanner
+                  className="chat-welcome__banner chat-welcome__banner--bee"
+                  altText={t('chat.welcomeLogoAlt')}
+                  onTrigger={() => setBubbleVisible(true)}
+                />
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
                 <InterruptResultBubble />
@@ -1473,4 +1622,4 @@ export function ChatPanel({
       </div>
     </div>
   );
-}
+});

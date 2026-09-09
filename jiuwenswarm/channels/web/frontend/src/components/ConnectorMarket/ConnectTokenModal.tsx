@@ -60,9 +60,9 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   // 是弹窗内部"从而跳过关闭，否则点弹窗任何地方都会被误判成"点了外面"，把外层菜单和面板一起
   // 带崩（2026-08-25 用户反馈：点连接弹窗，整个"+"扩展下拉框直接退出）。
   return (
-    <div data-connector-auth-modal="true" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
+    <div data-connector-auth-modal="true" data-testid="connector-market-token-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[400px] rounded-2xl bg-card p-6 shadow-xl">
-        <button type="button" onClick={onCancel} className="absolute right-5 top-5 text-text-muted hover:text-text">
+        <button type="button" onClick={onCancel} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-token-modal-close">
           <X size={18} />
         </button>
 
@@ -103,6 +103,8 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
                 onChange={(event) => setTokens((prev) => ({ ...prev, [key]: event.target.value }))}
                 placeholder={field?.placeholder ?? t('connectorMarket.tokenModal.placeholder', { name: displayName })}
                 className="h-9 w-full rounded-lg border border-border bg-bg px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
+                data-testid="connector-market-token-modal-field"
+                data-variant={key}
               />
               {field?.description && <p className="mt-1 text-[12px] leading-[18px] text-text-muted">{field.description}</p>}
             </div>
@@ -115,6 +117,7 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
             target="_blank"
             rel="noopener noreferrer"
             className="mb-4 flex items-center gap-1 text-[12px] text-[color:var(--color-chat-accent)] hover:underline"
+            data-testid="connector-market-token-modal-doc-link"
           >
             <ExternalLink size={12} />
             {response.docLabel ?? response.docUrl}
@@ -128,6 +131,7 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           disabled={!allFilled || connecting}
           onClick={handleSubmit}
           className="flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-text text-[13px] text-text-inverse disabled:opacity-40"
+          data-testid="connector-market-token-modal-submit"
         >
           {connecting && <Loader2 size={14} className="animate-spin" />}
           {t('connectorMarket.tokenModal.saveAndConnect')}

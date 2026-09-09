@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
-from openjiuwen.rsi.auto_harness.pipelines import META_EVOLVE_PIPELINE
+from openjiuwen.rsi.harness_rsi.auto_harness.pipelines import META_EVOLVE_PIPELINE
 
 from .code_rules import format_code_rules_prompt
 from .gitcode_issue_client import GitCodeIssue, GitCodeIssueClient

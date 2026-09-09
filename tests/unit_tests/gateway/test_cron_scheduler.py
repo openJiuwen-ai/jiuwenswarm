@@ -133,6 +133,22 @@ class _TestableScheduler(CronSchedulerService):
     async def on_wake(self, job, run_id):
         return await self._on_wake(job, run_id)
 
+    async def cancel_agent_session(self, state, *, reason="test"):
+        return await self._cancel_agent_session(state, reason=reason)
+
+    async def cancel_team_agent_session(
+        self,
+        *,
+        envelope,
+        exec_session_id,
+        mode,
+    ):
+        return await self._cancel_cron_team_agent_session(
+            envelope=envelope,
+            exec_session_id=exec_session_id,
+            mode=mode,
+        )
+
     async def run_unary_cron_job(self, *, envelope, timeout_seconds, state):
         return await self._run_unary_cron_job(
             envelope=envelope, timeout_seconds=timeout_seconds, state=state
@@ -273,7 +289,7 @@ class FakeMessageHandler:
         self.cancel_calls.append((msg, old_sid, kwargs))
 
 
-async def _create_one_job(store, name="job", targets="tui"):
+async def _create_one_job(store, name="job", targets="tui", user_id="", mode=None):
     """Convenience: create a single cron job via the store."""
     return await store.create_job(
         name=name,
@@ -281,6 +297,8 @@ async def _create_one_job(store, name="job", targets="tui"):
         timezone="Asia/Shanghai",
         description="reminder",
         targets=targets,
+        user_id=user_id,
+        mode=mode,
     )
 
 
@@ -329,18 +347,38 @@ class TestCronLastSessionId:
         assert stored.last_session_id == "cron_agentserver_allocated"
 
     @pytest.mark.asyncio
-    async def test_run_now_info_returns_current_execution_session_id(self, tmp_path):
+    async def test_run_now_info_returns_agentserver_execution_session_id(self, tmp_path):
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
-        job = await _create_one_job(store)
-        svc = _make_scheduler(store)
+        job = await _create_one_job(store, user_id="run-now-owner")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
 
         info = await svc.trigger_run_now_info(job.id)
 
         assert info["run_id"].startswith(f"{job.id}:")
-        assert info["session_id"].startswith("cron_")
-        assert info["session_id"].endswith(f"_{job.id}")
+        assert info["session_id"] == "cron_agentserver_allocated"
         state = svc.runs[info["run_id"]]
         assert state.exec_session_id == info["session_id"]
+        assert state.exec_user_id == "run-now-owner"
+        assert state.execution_session_allocated is True
+
+        await svc.on_wake(job, info["run_id"])
+        await svc.run_tasks[info["run_id"]]
+        assert [request.method for request in agent.unary_requests].count("session.create") == 1
+
+    @pytest.mark.asyncio
+    async def test_run_now_info_does_not_allocate_session_for_proactive_tick(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, mode="proactive.tick")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        info = await svc.trigger_run_now_info(job.id)
+
+        assert info["session_id"].startswith("cron_")
+        state = svc.runs[info["run_id"]]
+        assert state.execution_session_allocated is False
+        assert not agent.unary_requests
 
 
 class TestCheckStoreChanged:
@@ -847,7 +885,7 @@ class TestGhostTaskAgentCancelNotification:
         """Ghost task cancellation should fire CHAT_CANCEL to AgentServer."""
         store_file = tmp_path / "cron_jobs.json"
         store = CronJobStore(path=store_file)
-        job = await _create_one_job(store)
+        job = await _create_one_job(store, user_id="ghost-owner")
 
         # Use a FakeAgentClient that records all requests
         cancel_requests = []
@@ -879,6 +917,7 @@ class TestGhostTaskAgentCancelNotification:
             chat_type=None,
             timezone=job.timezone,
             status="running",
+            exec_user_id=job.user_id,
         )
 
         # Create a blocking asyncio Task (simulating agent execution)
@@ -916,6 +955,7 @@ class TestGhostTaskAgentCancelNotification:
         assert "cron" in (cancel_env.params or {})
         assert cancel_env.params["cron"]["job_id"] == job.id
         assert cancel_env.params["cron"]["run_id"] == run_id
+        assert cancel_env.user_id == "ghost-owner"
 
         # Cleanup
         block_event.set()
@@ -983,6 +1023,127 @@ class TestGhostTaskAgentCancelNotification:
 # ── Team mode execution ──────────────────────────────────────────────────────
 
 
+class TestCronMultiModeCancellation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mode",
+        ["agent", "team", "team.plan.normal", "team.plan.code", "code.team"],
+    )
+    async def test_ghost_cancel_uses_execution_mode_after_job_removal(
+        self,
+        tmp_path,
+        mode,
+    ):
+        agent = FakeAgentClient()
+        svc = _make_scheduler(
+            CronJobStore(path=tmp_path / "cron_jobs.json"),
+            agent_client=agent,
+        )
+        state = CronRunState(
+            run_id="job-1:run-1",
+            job_id="job-1",
+            wake_at_iso="2026-08-25T09:00:00+08:00",
+            push_at_iso="2026-08-25T09:05:00+08:00",
+            exec_mode=mode,
+            exec_channel_id="tui",
+            exec_session_id="cron-session-1",
+            exec_user_id="owner-user",
+            exec_work_mode="code",
+            exec_project_id="project-a",
+            exec_project_dir="D:/workspace/project-a",
+        )
+
+        await svc.cancel_agent_session(state, reason="ghost")
+
+        cancel = agent.unary_requests[-1]
+        assert cancel.method == "chat.interrupt"
+        assert cancel.channel == "tui"
+        assert cancel.session_id == "cron-session-1"
+        assert cancel.user_id == "owner-user"
+        assert cancel.params == {
+            "intent": "cancel",
+            "mode": mode,
+            "work_mode": "code",
+            "session_id": "cron-session-1",
+            "cron": {"job_id": "job-1", "run_id": "job-1:run-1"},
+            "project_id": "project-a",
+            "project_dir": "D:/workspace/project-a",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mode",
+        ["team", "team.plan.normal", "team.plan.code", "code.team"],
+    )
+    async def test_team_stream_cancel_preserves_team_submode(self, tmp_path, mode):
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(
+            CronJobStore(path=tmp_path / "cron_jobs.json"),
+            handler=handler,
+        )
+        envelope = SimpleNamespace(
+            request_id="cron-team-run",
+            channel="tui",
+            params={
+                "work_mode": "code",
+                "project_id": "team-project",
+                "project_dir": "D:/workspace/team-project",
+            },
+        )
+
+        await svc.cancel_team_agent_session(
+            envelope=envelope,
+            exec_session_id="cron-team-session",
+            mode=mode,
+        )
+
+        cancel_message, old_session_id, kwargs = handler.cancel_calls[-1]
+        assert old_session_id == "cron-team-session"
+        assert cancel_message.params == {
+            "intent": "cancel",
+            "mode": mode,
+            "session_id": "cron-team-session",
+            "work_mode": "code",
+            "project_id": "team-project",
+            "project_dir": "D:/workspace/team-project",
+        }
+        assert kwargs["channel_id"] == "tui"
+        assert kwargs["cancel_gateway_tasks"] is False
+
+
+class TestCronUnknownModeBoundary:
+    @pytest.mark.asyncio
+    async def test_run_now_rejects_unknown_mode_before_scheduling(self, tmp_path):
+        svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
+        job = _make_job(mode="future.mode")
+        svc.jobs[job.id] = job
+
+        with pytest.raises(ValueError, match="Invalid cron job mode"):
+            await svc.trigger_run_now_info(job.id)
+
+        assert svc.runs == {}
+        assert svc.events == []
+
+    @pytest.mark.asyncio
+    async def test_wake_rejects_unknown_mode_without_agent_request(self, tmp_path):
+        agent = FakeAgentClient()
+        svc = _make_scheduler(
+            CronJobStore(path=tmp_path / "cron_jobs.json"),
+            agent_client=agent,
+        )
+        job = _make_job(mode="future.mode")
+        run_id = f"{job.id}:unknown-mode"
+
+        await svc.on_wake(job, run_id)
+
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        assert state.error is not None
+        assert "Invalid cron job mode" in state.error
+        assert agent.unary_requests == []
+        assert agent.stream_requests == []
+
+
 class TestTeamModeWake:
     """Team-mode cron jobs stream to AgentServer and publish SwarmFlow chunks."""
 
@@ -994,6 +1155,7 @@ class TestTeamModeWake:
             session_id="user-session-1",
             targets="tui",
             description="run swarmflow",
+            user_id="team-owner",
         )
 
         agent = FakeAgentClient()
@@ -1012,9 +1174,11 @@ class TestTeamModeWake:
         assert env.is_stream is True
         assert env.channel == "tui"
         assert env.session_id.startswith("cron_") and env.session_id.endswith(f"_{job.id}")
-        assert env.params["mode"] == "team"
+        assert env.params["mode"] == "team.work.normal"
+        assert env.user_id == "team-owner"
 
         state = svc.runs[run_id]
+        assert state.exec_user_id == "team-owner"
         assert state.status == "succeeded"
         assert state.result_text == "team result"
         assert len(handler.published) == 2

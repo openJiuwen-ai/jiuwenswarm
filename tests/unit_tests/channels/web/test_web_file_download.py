@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import io
 import json
 import logging
 import mimetypes
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +18,9 @@ from urllib.parse import parse_qs, quote, urlsplit
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools import web_file_download
+from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
+    VerifiedDownloadAssetOwner,
+)
 from jiuwenswarm.agents.harness.common.tools.web_file_download import (
     WebFileDownloadManager,
 )
@@ -178,6 +185,37 @@ def test_valid_token_is_accepted() -> None:
     assert payload["sid"] == "session-1"
 
 
+def test_non_expiring_token_omits_exp() -> None:
+    """send_file_to_user 交付产物应签发不过期令牌（payload 无 exp）。"""
+    manager = WebFileDownloadManager(secret="s" * 32)
+    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=None)
+
+    payload = manager.validate_token(token)
+    assert payload is not None
+    assert payload["path"] == "/tmp/report.xlsx"
+    assert "exp" not in payload
+    assert payload["sid"] == "session-1"
+
+
+def test_non_expiring_download_info_stays_valid(tmp_path: Path) -> None:
+    file_path = tmp_path / "deliverable.txt"
+    file_path.write_text("ok", encoding="utf-8")
+    info = web_file_download.build_file_download_info(
+        str(file_path), "deliverable.txt", "session-1"
+    )
+    payload = web_file_download.validate_file_download_token(info["download_token"])
+    assert payload is not None
+    assert "exp" not in payload
+
+
+def test_expired_token_is_rejected() -> None:
+    manager = WebFileDownloadManager(secret="s" * 32)
+    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=-1)
+
+    assert manager.validate_token(token) is None
+    assert manager.validate_token(token, check_expiry=False) is not None
+
+
 def test_tampered_token_is_rejected() -> None:
     manager = WebFileDownloadManager(secret="s" * 32)
     token = manager.generate_token("/tmp/report.xlsx", expires_in=60)
@@ -186,15 +224,79 @@ def test_tampered_token_is_rejected() -> None:
     assert manager.validate_token(f"{encoded}x.{signature}") is None
 
 
+def _signed_token(secret: str, payload: object) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    signature = hmac.new(
+        secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def test_strict_legacy_token_without_expiration_remains_compatible() -> None:
+    secret = "s" * 32
+    manager = WebFileDownloadManager(secret=secret)
+    token = _signed_token(
+        secret,
+        {"path": "/tmp/report.xlsx", "sid": "session-1"},
+    )
+
+    assert manager.validate_token(token) == {
+        "path": "/tmp/report.xlsx",
+        "sid": "session-1",
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"path": "/tmp/report.xlsx"},
+        {"path": "", "sid": "session-1"},
+        {"path": "/tmp/report.xlsx", "sid": ""},
+        {"path": 1, "sid": "session-1"},
+        {"path": "/tmp/report.xlsx", "sid": 1},
+        {"path": "/tmp/report.xlsx", "sid": "session-1", "extra": "claim"},
+        {
+            "path": "/tmp/report.xlsx",
+            "sid": "session-1",
+            "download_http_base": "",
+        },
+        {
+            "path": "/tmp/report.xlsx",
+            "sid": "session-1",
+            "download_http_base": "http://test.invalid",
+            "extra": "claim",
+        },
+        {
+            "kind": "verified_asset_v1",
+            "asset_id": "asset-1",
+            "path": "/tmp/report.xlsx",
+            "size": 1,
+            "digest": "sha256:digest",
+            "name": "report.xlsx",
+            "sid": "session-1",
+        },
+    ],
+)
+def test_only_exact_legacy_no_expiration_payload_is_accepted(
+    payload: dict[str, object],
+) -> None:
+    secret = "s" * 32
+    manager = WebFileDownloadManager(secret=secret)
+
+    assert manager.validate_token(_signed_token(secret, payload)) is None
+
+
 def test_agent_http_bases_use_trusted_resolver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """可信 resolver 可按 token payload 将请求路由到用户 sandbox。"""
     monkeypatch.setenv(
-        "JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE", "http://agent-a:18092"
+        "JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE", "http://agent-a.invalid:18092"
     )
     monkeypatch.setenv(
-        "JIUWENSWARM_AGENT_UPLOAD_HTTP_BASE", "http://agent-a:18093"
+        "JIUWENSWARM_AGENT_UPLOAD_HTTP_BASE", "http://agent-a.invalid:18093"
     )
     download_token = web_file_download.generate_file_download_token("/tmp/a.txt", "s1")
     upload_token = web_file_download.generate_file_upload_token("agent/workspace/a.txt", "s1")
@@ -205,6 +307,10 @@ def test_agent_http_bases_use_trusted_resolver(
             "http://agent-a:18092" if endpoint == "download" else "http://agent-a:18093"
         ),
     )
+
+    download_payload = web_file_download.validate_file_download_token(download_token)
+    assert download_payload is not None
+    assert download_payload["download_http_base"] == "http://agent-a.invalid:18092"
 
     assert (
         app_web.resolve_agent_http_base_for_token(
@@ -256,7 +362,9 @@ def test_upload_base_does_not_reuse_download_http_base(
 ) -> None:
     monkeypatch.delenv("JIUWENSWARM_AGENT_UPLOAD_HTTP_BASE", raising=False)
     monkeypatch.delenv("JIUWENSWARM_AGENT_HTTP_PORT", raising=False)
-    monkeypatch.setenv("JIUWENSWARM_AGENT_HTTP_BASE", "http://agent-a:18092")
+    monkeypatch.setenv(
+        "JIUWENSWARM_AGENT_HTTP_BASE", "http://agent-a.invalid:18092"
+    )
     monkeypatch.setenv("AGENT_SERVER_PORT", "18092")
 
     assert app_web._resolve_agent_upload_base() == "http://127.0.0.1:18093"
@@ -440,13 +548,12 @@ def test_verified_agentos_token_uses_bridge_when_gateway_cannot_see_user_path(
 ) -> None:
     """共享密钥不应让 Gateway 把容器内路径误判为本地 404。"""
     container_only_path = tmp_path / "not-mounted-in-gateway" / "report.txt"
-    monkeypatch.setattr(
-        web_file_download,
-        "validate_file_download_token",
-        lambda _token: {
-            "path": str(container_only_path),
-            "download_http_base": "http://agentserver-for-user:18092",
-        },
+    monkeypatch.setenv(
+        "JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE",
+        "http://agentserver-for-user.invalid:18092",
+    )
+    token = web_file_download.generate_file_download_token(
+        str(container_only_path), "session-1"
     )
     calls: list[tuple[str, bool]] = []
 
@@ -457,9 +564,9 @@ def test_verified_agentos_token_uses_bridge_when_gateway_cannot_see_user_path(
     monkeypatch.setattr(_DownloadHandlerStub, "_proxy_file_download", _proxy)
     handler = _DownloadHandlerStub(command="GET")
 
-    _SpaStaticHandler._handle_file_download(handler, {"token": "shared-secret-token"})
+    _SpaStaticHandler._handle_file_download(handler, {"token": token})
 
-    assert calls == [("shared-secret-token", False)]
+    assert calls == [(token, False)]
 
 
 def test_verified_single_user_upload_persists_without_http_bridge(
@@ -483,3 +590,47 @@ def test_verified_single_user_upload_persists_without_http_bridge(
     target = tmp_path / "agent" / "sessions" / "s1" / "uploads" / "report.txt"
     assert target.read_bytes() == b"legacy upload"
     assert handler.response == (200, {"path": str(target), "size": 13})
+
+
+def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "media.bin"
+    source.write_bytes(b"0123456789")
+    owner = VerifiedDownloadAssetOwner(
+        root=tmp_path / "assets",
+        start_sweeper=False,
+    )
+    asset = owner.stage(
+        source,
+        file_name=source.name,
+        expires_at=time.time() + 60,
+    )
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    token = manager.generate_verified_asset_token(
+        asset,
+        file_name=source.name,
+        session_id="session-a",
+    )
+    source.write_bytes(b"changed-after-capture")
+
+    def fetch(headers: dict[str, str] | None = None) -> _DownloadHandlerStub:
+        handler = _DownloadHandlerStub(command="GET", headers=headers)
+        _SpaStaticHandler._handle_file_download(handler, {"token": token})
+        return handler
+
+    first = fetch()
+    retry = fetch()
+    partial = fetch({"Range": "bytes=2-5"})
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        concurrent_bodies = tuple(
+            executor.map(lambda _index: fetch().wfile.getvalue(), range(4))
+        )
+
+    assert first.status == retry.status == 200
+    assert first.wfile.getvalue() == retry.wfile.getvalue() == b"0123456789"
+    assert partial.status == 206
+    assert partial.wfile.getvalue() == b"2345"
+    assert concurrent_bodies == (b"0123456789",) * 4

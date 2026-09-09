@@ -16,7 +16,7 @@ Agent 可以通过以下工具操控协程
 协程管理原则：
 1. 协程创建后，任务信息保存在self.sessions中
 2. 协程取消后，对应信息需要同步在self.sessions中
-3. 某一协程结束后，会调用notify方法，通过AgentWebSocketServer将消息推送出去
+3. 某一协程结束后，会调用 notify，通过 Runtime Host 能力推送消息
 """
 
 from __future__ import annotations
@@ -36,6 +36,8 @@ from pydantic import BaseModel
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
 from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import get_mcp_tools
+from jiuwenswarm.runtime.context import get_current_agent_manager
+from jiuwenswarm.runtime.host_services import send_runtime_push
 
 logger = logging.getLogger(__name__)
 
@@ -243,9 +245,12 @@ class MultiSessionToolkit:
             index + 1,
             total,
         )
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-        server = AgentWebSocketServer.get_instance()
-        await server.send_push(msg)
+        if not await send_runtime_push(msg):
+            logger.info(
+                "[MultiSessionToolkit] Runtime push host unavailable; "
+                "task notification kept local session_id=%s",
+                session_id,
+            )
 
     async def notify(
             self,
@@ -254,23 +259,23 @@ class MultiSessionToolkit:
             result: str = "",
             error: str = "",
     ) -> None:
-        """Send subtask update via AgentWebSocketServer. Called on completion (success/cancel/error/timeout)."""
+        """Send a subtask update through the active Runtime host."""
         # 发送单个任务的状态更新
         await self._send_task_notification(session_id, status, result, error)
 
         # 检查是否所有任务都已完成，如果是则发送最终汇总
         if self.all_tasks_done():
-            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-            server = AgentWebSocketServer.get_instance()
-
             session_result_summary = "后台会话任务均已完成：\n"
             for st in self.sessions:
                 session_result_summary += (f"\nsession_id: {st.session_id}\n"
                                            f"description: {st.description}\nresult: {st.result}\n")
 
-            agent_wrapper = server.get_agent_manager().get_agent_nowait(self.channel_id)
-            if agent_wrapper is None:
-                agent_wrapper = server.get_agent()
+            agent_manager = get_current_agent_manager()
+            agent_wrapper = (
+                agent_manager.get_agent_nowait(self.channel_id)
+                if agent_manager is not None
+                else None
+            )
             agent_instance = (
                 await agent_wrapper.ensure_instance() if agent_wrapper is not None else None
             )
@@ -337,7 +342,12 @@ class MultiSessionToolkit:
                 "payload": payload,
                 "is_complete": True,
             }
-            await server.send_push(msg)
+            if not await send_runtime_push(msg):
+                logger.info(
+                    "[MultiSessionToolkit] Runtime push host unavailable; "
+                    "final summary kept in Runtime context session_id=%s",
+                    self.session_id,
+                )
 
     async def create_new_sessions(self, task_descriptions: List[str]) -> str:
         """Create sub-agent sessions for each task description."""

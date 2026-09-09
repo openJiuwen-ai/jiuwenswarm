@@ -245,7 +245,6 @@ Working tree changes are obtained via `git diff HEAD` (tracked files only). The 
 | Boundary | Value | Behavior |
 |---|---|---|
 | Max files in detail | 50 | Only the first 50 tracked files get hunks; stats still cover all changed files |
-| Max lines per file | 400 | Hunks are truncated beyond 400 lines per file; `isTruncated` flag is set |
 | Max diff size per file | 1 MB | Files whose diff exceeds 1 MB are skipped in hunk parsing; `isLargeFile` flag is set, stats still counted |
 | Max files for details | 500 | If more than 500 files changed, only aggregate stats are returned (no per-file hunks) |
 | Git command timeout | 10s | Git commands that exceed 10 seconds return `None` |

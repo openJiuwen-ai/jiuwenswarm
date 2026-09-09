@@ -13,7 +13,22 @@ export const agentModule: SettingsModuleDefinition = {
       titleKey: 'settingsPanel.agent.skills',
       items: [
         { id: 'skill-evolution', component: 'switch', key: 'skill_evolution' },
-        { id: 'skill-retrieval', component: 'switch', key: 'skill_retrieval_enabled' },
+        {
+          id: 'skill-retrieval',
+          component: 'switch',
+          key: 'skill_retrieval_enabled',
+          subItems: {
+            show: 'always',
+            disabled: 'when-parent-unchecked',
+            items: [
+              {
+                id: 'skill-retrieval-index',
+                component: 'switch',
+                key: 'skill_retrieval_index_enabled',
+              },
+            ],
+          },
+        },
       ],
     },
     {
@@ -29,11 +44,6 @@ export const agentModule: SettingsModuleDefinition = {
       id: 'media-tools',
       titleKey: 'settingsPanel.agent.mediaTools',
       items: [{ id: 'media-tools-settings', component: 'custom', render: AgentMediaSettings }],
-    },
-    {
-      id: 'team',
-      titleKey: 'settingsPanel.agent.team',
-      items: [{ id: 'swarmflow', component: 'switch', key: 'swarmflow_enabled' }],
     },
   ],
 };

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# TEST ONLY: URL literals use RFC-reserved domains or ASGI's synthetic
+# ``http://test`` base; loopback listeners bind ephemeral local test servers.
+
 import base64
 import json
 from typing import Any
@@ -824,6 +827,191 @@ async def test_container_file_http_downloads_sent_file_from_token() -> None:
 
 
 @pytest.mark.asyncio
+async def test_container_file_http_routes_verified_download_through_e2a(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from jiuwenswarm.gateway.routing import e2a_proxy
+
+    content = b"x" * (512 * 1024 + 17)
+    calls: list[dict[str, Any]] = []
+
+    async def _fetch(**kwargs: Any) -> tuple[bool, dict[str, Any]]:
+        calls.append(kwargs)
+        params = kwargs["params"]
+        offset = int(params["offset"])
+        limit = int(params["limit"])
+        data = content[offset:offset + limit]
+        return True, {
+            "data_base64": base64.b64encode(data).decode("ascii"),
+            "offset": offset,
+            "chunk_size": len(data),
+            "size": len(content),
+            "eof": offset + len(data) >= len(content),
+            "name": "approved report.txt",
+            "mime_type": "text/plain",
+        }
+
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", _fetch)
+    router = _make_router_with_runtime()
+    router.download_container_file = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("verified download must not use generic container path")
+    )
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "kind": "verified_asset_v1",
+                "path": "/tmp/sealed.txt",
+                "sid": "session-1",
+            }
+        ).encode()
+    ).decode().rstrip("=")
+    channel = WebChannel(
+        WebChannelConfig(enabled=True, dual_protocol=True),
+        RobotMessageRouter(),
+        agent_client=router,
+    )
+    channel.container_file_client = router
+    app = build_web_channel_app(channel)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        head = await client.head(
+            f"/file-api/download?token={payload}.signature&user_id=user-a"
+        )
+        partial = await client.get(
+            f"/file-api/download?token={payload}.signature&user_id=user-a",
+            headers={"Range": "bytes=2-7"},
+        )
+        full = await client.get(
+            f"/file-api/download?token={payload}.signature&user_id=user-a"
+        )
+
+    assert head.status_code == 200
+    assert head.headers["content-disposition"] == (
+        "attachment; filename*=UTF-8''approved%20report.txt"
+    )
+    assert partial.status_code == 206
+    assert partial.content == content[2:8]
+    assert partial.headers["content-range"] == f"bytes 2-7/{len(content)}"
+    assert partial.headers["cache-control"] == "no-store"
+    assert full.status_code == 200
+    assert full.content == content
+    assert [int(call["params"]["limit"]) for call in calls[-3:]] == [
+        1,
+        512 * 1024,
+        17,
+    ]
+    assert {call["user_id"] for call in calls} == {"user-a"}
+    assert {call["session_id"] for call in calls} == {"session-1"}
+    router.download_container_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_container_file_http_rejects_verified_chunk_past_declared_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from jiuwenswarm.gateway.routing import e2a_proxy
+
+    async def _fetch(**kwargs: Any) -> tuple[bool, dict[str, Any]]:
+        offset = int(kwargs["params"]["offset"])
+        data = b"ab"
+        return True, {
+            "data_base64": base64.b64encode(data).decode("ascii"),
+            "offset": offset,
+            "chunk_size": len(data),
+            "size": 1,
+            "eof": True,
+            "name": "report.txt",
+            "mime_type": "text/plain",
+        }
+
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", _fetch)
+    router = _make_router_with_runtime()
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "kind": "verified_asset_v1",
+                "path": "/tmp/sealed.txt",
+                "sid": "session-1",
+            }
+        ).encode()
+    ).decode().rstrip("=")
+    channel = WebChannel(
+        WebChannelConfig(enabled=True, dual_protocol=True),
+        RobotMessageRouter(),
+        agent_client=router,
+    )
+    channel.container_file_client = router
+    app = build_web_channel_app(channel)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/file-api/download?token={payload}.signature&user_id=user-a"
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "invalid verified download response"
+
+
+@pytest.mark.asyncio
+async def test_container_file_http_verified_cross_user_rejection_has_no_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+    from jiuwenswarm.gateway.routing import e2a_proxy
+
+    async def _reject(**kwargs: Any) -> tuple[bool, dict[str, Any]]:
+        assert kwargs["user_id"] == "user-b"
+        return False, {"error": "verified download token rejected", "code": "FORBIDDEN"}
+
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", _reject)
+    router = _make_router_with_runtime()
+    router.download_container_file = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("rejected verified token must not fall back")
+    )
+    payload = base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "kind": "verified_asset_v1",
+                "path": "/tmp/user-a.txt",
+                "sid": "session-a",
+            }
+        ).encode()
+    ).decode().rstrip("=")
+    channel = WebChannel(
+        WebChannelConfig(enabled=True, dual_protocol=True),
+        RobotMessageRouter(),
+        agent_client=router,
+    )
+    channel.container_file_client = router
+    app = build_web_channel_app(channel)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/file-api/download?token={payload}.signature&user_id=user-b"
+        )
+
+    assert response.status_code == 403
+    router.download_container_file.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_container_file_http_upload_multipart() -> None:
     import httpx
 
@@ -1064,8 +1252,6 @@ async def test_container_file_http_list_files_and_markdown() -> None:
     assert kwargs["max_depth"] == 3
     assert kwargs["user_id"] == "user-1"
     assert kwargs["session_id"] == ""
-
-
 @pytest.mark.asyncio
 async def test_container_file_http_mkdir() -> None:
     import httpx
@@ -1120,4 +1306,3 @@ async def test_container_file_http_mkdir() -> None:
     assert kwargs["user_id"] == "user-1"
     assert kwargs["session_id"] == "sess-1"
     assert kwargs["auth_headers"].get("Authorization") == "Bearer tok-1"
-

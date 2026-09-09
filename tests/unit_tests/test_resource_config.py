@@ -40,6 +40,8 @@ def test_distributed_team_configs_separate_heartbeat_jobs_and_health_check():
         data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert set(data["heartbeat"]) == {"jobs"}
         assert data["heartbeat"]["jobs"]["min_interval_seconds"] == 60
+        assert data["heartbeat"]["jobs"]["execution_timeout_seconds"] == 300
+        assert data["heartbeat"]["jobs"]["user_preemption_timeout_seconds"] == 10
         assert data["health_check"]["every"] == 3600
         assert data["health_check"]["target"] == "web"
 
@@ -51,6 +53,8 @@ def test_default_config_separates_heartbeat_jobs_and_health_check():
 
     assert set(data["heartbeat"]) == {"jobs"}
     assert data["heartbeat"]["jobs"]["min_interval_seconds"] == 60
+    assert data["heartbeat"]["jobs"]["execution_timeout_seconds"] == 300
+    assert data["heartbeat"]["jobs"]["user_preemption_timeout_seconds"] == 10
     assert data["health_check"]["every"] == 3600
     assert data["health_check"]["target"] == "web"
 

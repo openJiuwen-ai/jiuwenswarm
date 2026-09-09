@@ -100,3 +100,21 @@ test('does not bind hidden team collaboration broadcasts as visible anchors', ()
 
   assert.equal(result.size, 0);
 });
+
+test('binds a cron final broadcast to its persisted turn diff', () => {
+  const cronTurn = turn({
+    request_id: 'cron-nightly:1720000000',
+    user_message_id: 'cron-nightly:1720000000:user',
+    assistant_message_id: 'cron-nightly:1720000000:assistant',
+  });
+  const result = bindTurnDiffsToMessages([
+    {
+      id: 'cron-final-nightly:1720000000',
+      role: 'assistant',
+      content: 'done',
+      timestamp: '2026-07-23T10:00:02.000Z',
+    },
+  ], [cronTurn]);
+
+  assert.deepEqual(result.get('cron-final-nightly:1720000000'), [cronTurn]);
+});

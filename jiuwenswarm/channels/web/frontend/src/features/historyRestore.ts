@@ -11,6 +11,12 @@ import {
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { readAgentTemplateName } from './agentIdentity';
+import {
+  isSingleAgentContextUsageSnapshot,
+  isTeamLeaderContextUsageSnapshot,
+  parseContextUsageSnapshot,
+} from './contextUsage/contextUsageModel';
 
 export { HistoryRecordReassembler };
 
@@ -41,6 +47,7 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'harness.message',
   'harness.stage_result',
   'harness.extension_ready',
+  'context.usage',
   'context.compact_boundary'
 ]);
 
@@ -401,6 +408,8 @@ export function recoverSubagentToolHistory(
 export interface HistoryReasoningReplayItem {
   at: string;
   text: string;
+  /** Web 单 Agent reasoning 所属的专家；Team/旧 history 缺失时为空。 */
+  agentTemplateName?: string;
   /** 末帧时刻（epoch ms）；异常结束时即使无收尾事件，耗时终点也能落在最后一个真实帧。 */
   updatedAt?: number;
 }
@@ -432,18 +441,25 @@ export interface HistorySubagentReplayItem {
   payload: Record<string, unknown>;
 }
 
+/** 完整恢复 context.usage；payload 不在这里裁剪，交给 context usage parser 校验。 */
+export interface HistoryContextUsageReplayItem {
+  at: string;
+  payload: Record<string, unknown>;
+}
+
 type HistoryTimelineEntry =
   | { kind: 'message'; message: Message }
   | { kind: 'tool_call'; at: string; payload: Record<string, unknown> }
   | { kind: 'tool_result'; at: string; payload: Record<string, unknown> }
   | { kind: 'usage_summary'; at: string; usage: UsageSummary }
+  | { kind: 'context_usage'; at: string; payload: Record<string, unknown> }
   | { kind: 'file_items'; at: string; files: FileDownloadItem[] }
   | { kind: 'team_member'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'team_task'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'harness_message'; at: string; content: string; stage?: string }
   | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> }
   | { kind: 'compaction'; at: string; summary: string }
-  | { kind: 'reasoning'; at: string; text: string; updatedAt?: number }
+  | { kind: 'reasoning'; at: string; text: string; agentTemplateName?: string; updatedAt?: number }
   | { kind: 'subagent_update'; at: string; payload: Record<string, unknown> }
   | { kind: 'subagent_message'; at: string; payload: Record<string, unknown> }
   | { kind: 'subagent_activity'; at: string; payload: Record<string, unknown> };
@@ -470,6 +486,8 @@ interface BeginHistoryRestoreOptions {
   onReasoningReplay?: (items: HistoryReasoningReplayItem[]) => void;
   /** 恢复上下文压缩汇总（context.compact_boundary），用于回显「本轮完成上下文压缩 N 次」 */
   onCompactionReplay?: (info: HistoryCompactionReplay) => void;
+  /** 恢复最新的完整 context.usage 快照，供刷新/续接后恢复上下文用量指示器 */
+  onContextUsage?: (payload: Record<string, unknown>) => void;
   /** 无消息且无工具回放时调用；`totalPages` 来自流中最后一帧（若有） */
   onEmpty?: (totalPages: number | null) => void;
   onError?: (message: string) => void;
@@ -676,6 +694,12 @@ function buildEventPayloadForRecord(record: Record<string, unknown>): Record<str
     base.content = record.content;
   }
   return base;
+}
+
+function readHistoryAgentTemplateName(record: Record<string, unknown>): string | undefined {
+  if (isProactiveRecommendationRecord(record)) return undefined;
+  const payload = buildEventPayloadForRecord(record);
+  return readAgentTemplateName(payload) ?? readAgentTemplateName(record);
 }
 
 function hasMismatchedHistoryBoundary(value: unknown, sessionId: string): boolean {
@@ -901,7 +925,6 @@ function parseHistoryTimelineEntry(
   subagentId?: string,
 ): HistoryTimelineEntry | null {
   const role = normalizeHistoryRole(record.role);
-  // 无有效时间戳时用空串占位（勿用 Date.now()）；排序/工具构建侧已对空串做防护。
   const at = recordTimestampIso(record) ?? '';
 
   if (role === 'user') {
@@ -1057,6 +1080,11 @@ function parseHistoryTimelineEntry(
     const histSource = typeof payload.source === 'string' ? payload.source : '';
     const isProactiveRecommendation = histSource === 'proactive_recommendation';
     const histProactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
+    const agentTemplateName = isProactiveRecommendation
+      ? undefined
+      : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
+    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
+    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const completedAt =
       (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'
@@ -1077,6 +1105,8 @@ function parseHistoryTimelineEntry(
         ...(isProactiveRecommendation && histProactiveType
           ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
           : {}),
+        ...(agentTemplateName ? { agentTemplateName } : {}),
+        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
         ...((extractAutomation(payload) ?? extractAutomation(record))
@@ -1128,6 +1158,29 @@ function parseHistoryTimelineEntry(
       return { kind: 'usage_summary', at, usage };
     }
     return null;
+  }
+
+  if (eventType === 'context.usage') {
+    const contextPayload: Record<string, unknown> = { ...payload, event_type: eventType };
+    // These keys are normally history-record metadata and are therefore
+    // omitted by buildEventPayloadForRecord. They are also part of the full
+    // context.usage event, so put them back for the restored frontend payload.
+    for (const key of ['request_id', 'session_id', 'timestamp', 'mode']) {
+      if (contextPayload[key] === undefined && record[key] !== undefined) {
+        contextPayload[key] = record[key];
+      }
+    }
+    if (
+      contextPayload.role === undefined &&
+      (record.role === 'leader' || record.role === 'teammate')
+    ) {
+      contextPayload.role = record.role;
+    }
+    return {
+      kind: 'context_usage',
+      at,
+      payload: contextPayload,
+    };
   }
 
   if (eventType === 'chat.file') {
@@ -1214,6 +1267,7 @@ interface MaterializedHistoryTimeline {
   teamReplay: HistoryTeamReplayItem[];
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
+  contextUsageReplay: HistoryContextUsageReplayItem[];
 }
 
 function entryTimestamp(entry: HistoryTimelineEntry): string {
@@ -1281,6 +1335,7 @@ function materializeHistoryTimeline(
   const teamReplay: HistoryTeamReplayItem[] = [];
   const subagentReplay: HistorySubagentReplayItem[] = [];
   const reasoningReplay: HistoryReasoningReplayItem[] = [];
+  const contextUsageReplay: HistoryContextUsageReplayItem[] = [];
 
   for (const e of entries) {
     if (e.kind === 'message') {
@@ -1294,6 +1349,10 @@ function materializeHistoryTimeline(
           break;
         }
       }
+      continue;
+    }
+    if (e.kind === 'context_usage') {
+      contextUsageReplay.push({ at: e.at, payload: e.payload });
       continue;
     }
     if (e.kind === 'harness_message') {
@@ -1348,7 +1407,12 @@ function materializeHistoryTimeline(
       continue;
     }
     if (e.kind === 'reasoning') {
-      reasoningReplay.push({ at: e.at, text: e.text, updatedAt: e.updatedAt });
+      reasoningReplay.push({
+        at: e.at,
+        text: e.text,
+        agentTemplateName: e.agentTemplateName,
+        updatedAt: e.updatedAt,
+      });
       continue;
     }
     if (e.kind === 'compaction') {
@@ -1358,7 +1422,33 @@ function materializeHistoryTimeline(
     toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
   }
 
-  return { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay };
+  return {
+    messages,
+    toolReplay,
+    harnessReplay,
+    teamReplay,
+    subagentReplay,
+    reasoningReplay,
+    contextUsageReplay,
+  };
+}
+
+function selectLatestContextUsagePayload(items: HistoryContextUsageReplayItem[]): Record<string, unknown> | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const snapshot = parseContextUsageSnapshot(item.payload);
+    if (!snapshot) continue;
+
+    const mode = typeof item.payload.mode === 'string' ? item.payload.mode.trim().toLowerCase() : '';
+    const eligible =
+      mode === 'team'
+        ? isTeamLeaderContextUsageSnapshot(snapshot)
+        : mode === 'agent'
+          ? isSingleAgentContextUsageSnapshot(snapshot)
+          : isTeamLeaderContextUsageSnapshot(snapshot) || isSingleAgentContextUsageSnapshot(snapshot);
+    if (eligible) return item.payload;
+  }
+  return null;
 }
 
 /**
@@ -1375,8 +1465,17 @@ export function parseHistoryJsonFileToPreviewMessages(
 export interface HistoryTimelinePreview {
   messages: Message[];
   executions: ToolExecution[];
-  reasoningSegments: { id: string; text: string; startedAt: number; closed: true; updatedAt?: number; closedAt?: number }[];
+  reasoningSegments: {
+    id: string;
+    text: string;
+    startedAt: number;
+    closed: true;
+    agentTemplateName?: string;
+    updatedAt?: number;
+    closedAt?: number;
+  }[];
   mode: 'team' | null;
+  contextUsageSnapshot: Record<string, unknown> | null;
 }
 
 /**
@@ -1387,7 +1486,7 @@ export function parseHistoryJsonFileToTimelinePreview(
   sessionId: string
 ): HistoryTimelinePreview {
   if (!Array.isArray(parsed)) {
-    return { messages: [], executions: [], reasoningSegments: [], mode: null };
+    return { messages: [], executions: [], reasoningSegments: [], mode: null, contextUsageSnapshot: null };
   }
 
   const entries: HistoryTimelineEntry[] = [];
@@ -1410,6 +1509,7 @@ export function parseHistoryJsonFileToTimelinePreview(
         kind: 'reasoning',
         at: recordTimestampIso(item) ?? '',
         text: reasoningText,
+        agentTemplateName: readHistoryAgentTemplateName(item),
         updatedAt: extractHistoryReasoningUpdatedAt(item),
       });
     }
@@ -1422,7 +1522,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     return safeTimestampMs(aAt) - safeTimestampMs(bAt);
   });
 
-  const { messages, toolReplay, reasoningReplay } = materializeHistoryTimeline(entries);
+  const { messages, toolReplay, reasoningReplay, contextUsageReplay } = materializeHistoryTimeline(entries);
   const executions = buildToolExecutionsFromReplay(toolReplay);
   const reasoningSegments = buildReasoningSegmentsFromReplay(sessionId, reasoningReplay);
 
@@ -1431,6 +1531,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     executions,
     reasoningSegments,
     mode: isTeam ? 'team' : null,
+    contextUsageSnapshot: selectLatestContextUsagePayload(contextUsageReplay),
   };
 }
 
@@ -1464,6 +1565,7 @@ function buildReasoningSegmentsFromReplay(
       text,
       startedAt,
       closed: true,
+      ...(item.agentTemplateName ? { agentTemplateName: item.agentTemplateName } : {}),
       closedAt: startedAt,
       updatedAt,
     });
@@ -1491,6 +1593,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       if (!startedAt) {
         continue;
       }
+      const agentTemplateName = readAgentTemplateName(item.payload);
       byId.set(n.id, {
         toolCallId: n.id,
         toolCall: {
@@ -1507,6 +1610,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
         startedAt,
         updatedAt: startedAt,
         timeoutAt: startedAt,
+        ...(agentTemplateName ? { agentTemplateName } : {}),
       });
       order.push(n.id);
       continue;
@@ -1525,6 +1629,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       toolCallId: n.toolCallId,
       summary: n.summary,
       skillTree: n.skillTree,
+      ...(n.mermaid ? { mermaid: n.mermaid } : {}),
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
     };
@@ -1696,6 +1801,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
           kind: 'reasoning',
           at: recordTimestampIso(full) ?? '',
           text: reasoningText,
+          agentTemplateName: readHistoryAgentTemplateName(full),
           updatedAt: extractHistoryReasoningUpdatedAt(full),
         });
       }
@@ -1729,17 +1835,21 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     finalized = true;
     reassembler.flush();
 
-    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay } =
+    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
       materializeHistoryTimeline(entries);
+    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     stopListening();
 
     try {
-      if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0) {
+      if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0 && !latestContextUsage) {
         options.onEmpty?.(totalPages);
         return;
       }
       options.onReady(messages, totalPages);
+      if (latestContextUsage) {
+        options.onContextUsage?.(latestContextUsage);
+      }
       if (toolReplay.length > 0) {
         options.onToolReplay?.(toolReplay);
       }
@@ -1786,6 +1896,7 @@ export interface FetchHistoryPageResult {
   teamReplay: HistoryTeamReplayItem[];
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
+  contextUsageSnapshot: Record<string, unknown> | null;
   totalPages: number | null;
 }
 
@@ -1860,6 +1971,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
           kind: 'reasoning',
           at: recordTimestampIso(full) ?? '',
           text: reasoningText,
+          agentTemplateName: readHistoryAgentTemplateName(full),
           updatedAt: extractHistoryReasoningUpdatedAt(full),
         });
       }
@@ -1894,16 +2006,26 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
       return;
     }
 
-    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay } =
+    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
       materializeHistoryTimeline(entries);
+    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     dispose();
 
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0) {
+    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0 && !latestContextUsage) {
       options.onEmpty?.(totalPages);
       return;
     }
-    options.onReady({ messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, totalPages });
+    options.onReady({
+      messages,
+      toolReplay,
+      harnessReplay,
+      teamReplay,
+      subagentReplay,
+      reasoningReplay,
+      contextUsageSnapshot: latestContextUsage,
+      totalPages,
+    });
   }
 
   const handle: HistoryRestoreHandle = { generation, dispose };

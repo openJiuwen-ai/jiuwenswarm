@@ -33,9 +33,9 @@ export default function HeartbeatPagination({
   );
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border px-4 py-2 text-xs text-text-muted">
-      <div className="flex items-center gap-2">
-        <span>{t('heartbeat.pagination.pageSize')}</span>
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-border px-4 py-2 text-xs text-text-muted" data-testid="heartbeat-panel-pagination">
+      <div className="flex items-center gap-2" data-testid="heartbeat-panel-page-size-field">
+        <span data-testid="heartbeat-panel-page-size-label">{t('heartbeat.pagination.pageSize')}</span>
         <SimpleSelect
           value={String(pageSize)}
           onChange={(v) => onPageSizeChange(Number(v))}
@@ -45,19 +45,20 @@ export default function HeartbeatPagination({
         />
       </div>
       <div className="flex items-center gap-2">
-        <span>{t('heartbeat.pagination.total', { total: totalCount })}</span>
+        <span data-testid="heartbeat-panel-pagination-total">{t('heartbeat.pagination.total', { total: totalCount })}</span>
         {totalPages > 1 && (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1" data-testid="heartbeat-panel-pagination-controls">
             <button
               type="button"
               disabled={currentPage <= 1}
               onClick={() => onPageChange(currentPage - 1)}
               aria-label={t('heartbeat.pagination.prev') ?? undefined}
               className="flex h-6 w-6 items-center justify-center rounded-md border border-border text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              data-testid="heartbeat-panel-pagination-prev-btn"
             >
               <ChevronLeft size={13} />
             </button>
-            <span className="min-w-[2.5rem] text-center tabular-nums text-text">
+            <span className="min-w-[2.5rem] text-center tabular-nums text-text" data-testid="heartbeat-panel-pagination-page-info">
               {currentPage} / {totalPages}
             </span>
             <button
@@ -66,6 +67,7 @@ export default function HeartbeatPagination({
               onClick={() => onPageChange(currentPage + 1)}
               aria-label={t('heartbeat.pagination.next') ?? undefined}
               className="flex h-6 w-6 items-center justify-center rounded-md border border-border text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              data-testid="heartbeat-panel-pagination-next-btn"
             >
               <ChevronRight size={13} />
             </button>

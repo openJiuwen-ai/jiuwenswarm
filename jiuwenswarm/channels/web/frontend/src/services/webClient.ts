@@ -22,6 +22,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeoutId: number;
+  awaitRuntimeAccepted: boolean;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -287,6 +288,7 @@ class WebClient {
         resolve: (value) => resolve(value as T),
         reject,
         timeoutId,
+        awaitRuntimeAccepted: options.awaitRuntimeAccepted === true,
       };
       this.pending.set(id, pending);
 
@@ -389,6 +391,7 @@ class WebClient {
       return;
     }
 
+    this.resolveRuntimeAcceptedPending(message);
     this.dispatchEvent(message);
   }
 
@@ -453,6 +456,9 @@ class WebClient {
     if (!pending) {
       return;
     }
+    if (message.ok && pending.awaitRuntimeAccepted) {
+      return;
+    }
     window.clearTimeout(pending.timeoutId);
     this.pending.delete(message.id);
 
@@ -470,6 +476,31 @@ class WebClient {
         message.payload
       )
     );
+  }
+
+  private resolveRuntimeAcceptedPending(message: WsEvent): void {
+    if (message.event !== 'runtime.accepted' && message.event !== 'chat.error') {
+      return;
+    }
+    const requestId = message.payload.request_id;
+    if (typeof requestId !== 'string') {
+      return;
+    }
+    const pending = this.pending.get(requestId);
+    if (!pending?.awaitRuntimeAccepted) {
+      return;
+    }
+    window.clearTimeout(pending.timeoutId);
+    this.pending.delete(requestId);
+    if (message.event === 'runtime.accepted') {
+      pending.resolve(message.payload);
+      return;
+    }
+    const error =
+      typeof message.payload.error === 'string'
+        ? message.payload.error
+        : i18n.t('network.requestFailed');
+    pending.reject(this.createWebError(error, undefined, requestId, true));
   }
 
   private dispatchEvent(event: WsEvent): void {
@@ -584,6 +615,100 @@ export async function webRequest<T = unknown>(
   options?: WebRequestOptions
 ): Promise<T> {
   return webClient.request<T>(method, params, options);
+}
+
+// ── SwarmFlow workflow 分页 RPC 封装（command.workflows） ─────────
+
+export interface WorkflowListResponse {
+  type?: string;
+  workflows?: unknown[];
+  session_id?: string;
+  total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowDetailResponse {
+  type?: string;
+  workflow?: unknown;
+  session_id?: string;
+  phase_total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowPhaseResponse {
+  type?: string;
+  phase?: unknown;
+  session_id?: string;
+  agent_total?: number;
+  has_more?: boolean;
+  error?: unknown;
+}
+
+export interface WorkflowAgentResponse {
+  type?: string;
+  agent?: unknown;
+  session_id?: string;
+  error?: unknown;
+}
+
+export async function requestWorkflowList(
+  sessionId: string,
+  offset = 0,
+  limit?: number,
+): Promise<WorkflowListResponse> {
+  return webRequest<WorkflowListResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'list',
+    offset,
+    ...(limit == null ? {} : { limit }),
+  });
+}
+
+export async function requestWorkflowDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseOffset = 0,
+  phaseLimit?: number,
+): Promise<WorkflowDetailResponse> {
+  return webRequest<WorkflowDetailResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_workflow',
+    workflow_id: workflowId,
+    phase_offset: phaseOffset,
+    ...(phaseLimit == null ? {} : { phase_limit: phaseLimit }),
+  });
+}
+
+export async function requestPhaseAgents(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentOffset = 0,
+  agentLimit?: number,
+): Promise<WorkflowPhaseResponse> {
+  return webRequest<WorkflowPhaseResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_phase',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_offset: agentOffset,
+    ...(agentLimit == null ? {} : { agent_limit: agentLimit }),
+  });
+}
+
+export async function requestAgentDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentId: string,
+): Promise<WorkflowAgentResponse> {
+  return webRequest<WorkflowAgentResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_agent',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_id: agentId,
+  });
 }
 
 interface GoalCommandResponsePayload {

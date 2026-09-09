@@ -13,14 +13,12 @@ import {
   normalizeModelOptions,
   parseVendorCatalog,
   rebaseModelDraft,
+  reconcileModelReasoning,
   resolveModelPreset,
   selectProviderDefaultModel,
   vendorSelectionKey,
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
-import {
-  SUPPORTED_REASONING_LEVELS,
-  validateModelDraft,
-} from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
+import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
 import {
   getEditableModels,
   getModelDisplayGroups,
@@ -32,6 +30,13 @@ import {
 const root = new URL('../', import.meta.url);
 const source = (path) => readFileSync(new URL(path, root), 'utf8');
 const t = (key, values = {}) => `${key}:${JSON.stringify(values)}`;
+const reasoning = {
+  protocol_defaults: {
+    openai: { options: ['off', 'low', 'medium', 'high'], recommended: null },
+    anthropic: { options: ['off', 'low', 'medium', 'high', 'max'], recommended: null },
+  },
+  model_fallbacks: [],
+};
 
 function preset(overrides = {}) {
   return {
@@ -49,11 +54,14 @@ function preset(overrides = {}) {
     supports_anthropic: true,
     anthropic_base: 'https://anthropic.example',
     anthropic_client_provider: 'Anthropic',
+    reasoning_capabilities: {},
+    reasoning_rules: [],
     ...overrides,
   };
 }
 
 const catalog = parseVendorCatalog({
+  reasoning,
   token_plan: [preset()],
   coding_plan: [preset({ plan: 'coding_plan', api_base: 'https://coding.example/v1' })],
   custom_api: [preset({ vendor_key: 'openrouter', plan: 'custom_api', endpoint_profile: 'openrouter' })],
@@ -63,6 +71,7 @@ test('vendor catalog validation is strict and plan identity is never inferred fr
   assert.throws(
     () =>
       parseVendorCatalog({
+        reasoning,
         token_plan: [preset({ plan: 'coding_plan' })],
         coding_plan: [],
         custom_api: [],
@@ -311,24 +320,59 @@ test('model API keys accept 2048 characters and reject longer values', () => {
   );
 });
 
-test('reasoning strength exposes exactly the backend-supported values', () => {
-  assert.deepEqual([...SUPPORTED_REASONING_LEVELS], ['', 'off', 'low', 'medium', 'high']);
+test('reasoning validation uses the selected model capability rather than a frontend enum', () => {
+  const modelCatalog = parseVendorCatalog({
+    reasoning,
+    token_plan: [
+      preset({
+        reasoning_capabilities: {
+          'qwen-default': { openai: { options: ['off', 'on', 'new-tier'], recommended: 'on' } },
+        },
+      }),
+    ],
+    coding_plan: [],
+    custom_api: [],
+  });
   const draft = {
     alias: 'unique',
     protocol: 'openai',
-    vendor_selection: CUSTOM_VENDOR_SELECTION,
-    model_name: 'model',
+    vendor_selection: 'token_plan:alibaba',
+    model_name: 'qwen-default',
     model_input_mode: 'manual',
     api_key: 'secret',
     api_base: 'https://custom.example/v1',
     reasoning_level: 'extreme',
     is_default: false,
   };
-  assert.match(validateModelDraft(draft, [], undefined, catalog, t).reasoning_level, /reasoningUnsupported/);
+  for (const level of ['extreme', 'low', 'medium', 'high']) {
+    assert.match(
+      validateModelDraft({ ...draft, reasoning_level: level }, [], undefined, modelCatalog, t).reasoning_level,
+      /reasoningUnsupported/,
+    );
+  }
+  for (const level of ['', 'off', 'on', 'new-tier']) {
+    assert.equal(
+      validateModelDraft({ ...draft, reasoning_level: level }, [], undefined, modelCatalog, t).reasoning_level,
+      undefined,
+    );
+  }
+  assert.equal(reconcileModelReasoning(draft, modelCatalog).reasoning_level, '');
+  assert.equal(
+    reconcileModelReasoning({ ...draft, reasoning_level: 'new-tier' }, modelCatalog).reasoning_level,
+    'new-tier',
+  );
+  assert.equal(
+    createModelDraft(
+      { ...modelDraftToEntry(draft, undefined, modelCatalog, true), reasoning_level: 'historical' },
+      modelCatalog,
+    ).reasoning_level,
+    'historical',
+  );
 });
 
 test('Anthropic is rejected when the exact vendor preset does not support it', () => {
   const restrictedCatalog = parseVendorCatalog({
+    reasoning,
     token_plan: [
       preset({
         supports_anthropic: false,
@@ -352,8 +396,8 @@ test('Anthropic is rejected when the exact vendor preset does not support it', (
   assert.match(validateModelDraft(draft, [], undefined, restrictedCatalog, t).protocol, /anthropicUnavailable/);
 });
 
-test('custom vendor remains valid when the built-in vendor catalog is unavailable', () => {
-  const emptyCatalog = parseVendorCatalog({ token_plan: [], coding_plan: [], custom_api: [] });
+test('custom vendor uses server reasoning data even when there are no built-in presets', () => {
+  const emptyCatalog = parseVendorCatalog({ reasoning, token_plan: [], coding_plan: [], custom_api: [] });
   const draft = {
     alias: 'custom-only',
     protocol: 'anthropic',
@@ -371,6 +415,10 @@ test('custom vendor remains valid when the built-in vendor catalog is unavailabl
   assert.equal(entry.api_base, 'https://custom.example/v1');
   assert.equal('vendor_key' in entry, false);
   assert.equal('plan' in entry, false);
+  assert.match(
+    validateModelDraft(draft, [], undefined, { ...emptyCatalog, reasoning: null }, t).reasoning_level,
+    /reasoningUnavailable/,
+  );
 });
 
 test('default and deletion operations preserve identity, group semantics, and read-only filtering', () => {
@@ -450,7 +498,8 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(dialog, /'config\.validate_model'/);
   assert.match(dialog, /name: 'protocol',[\s\S]{0,160}component: 'select'/);
   assert.doesNotMatch(dialog, /name: 'protocol',[\s\S]{0,160}component: 'radioGroup'/);
-  assert.match(dialog, /catalogLoadFailedCustomAvailable/);
+  assert.match(dialog, /catalogLoadFailed/);
+  assert.doesNotMatch(dialog, /SUPPORTED_REASONING_LEVELS|settingsPanel\.models\.reasoning\.\$\{/);
   assert.match(dialog, /onRetryCatalog/);
   assert.match(dialog, /if \(Object\.keys\(errors\)\.length\) \{\s*form\.validate\(\);\s*return;/);
   assert.doesNotMatch(dialog, /confirmDisabled=\{[\s\S]*?Object\.keys\(errors\)\.length > 0/);
@@ -460,7 +509,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(provider, /useEffect\(\(\) => \{\s*if \(!open\) setQuery\(''\);\s*\}, \[open\]\)/);
   assert.doesNotMatch(provider, /useEffect\(\(\) => \{\s*if \(!open\) return;\s*setQuery\(''\)/);
   assert.match(dialog, /<OpenAIAccountSettings[\s\S]{0,260}onRequestLogout/);
-  assert.match(dialog, /confirmDisabled=\{[\s\S]{0,180}account && openAIAccount\.busy/);
+  assert.match(dialog, /confirmDisabled=\{[\s\S]{0,300}account && openAIAccount\.busy/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.pendingLogin/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.startLogin/);
   assert.match(account, /OPENAI_ACCOUNT_RPC\.pollLogin/);

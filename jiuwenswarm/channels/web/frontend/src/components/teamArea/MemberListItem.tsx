@@ -55,7 +55,7 @@ export function MemberListItem({
         <TeamMemberAvatar
           member={member.member_id}
           alt={displayName}
-          className={`${compact ? 'h-8 w-8' : 'h-10 w-10'} rounded-full`}
+          className="h-8 w-8 rounded-full"
           imageClassName="rounded-full"
         />
       </div>

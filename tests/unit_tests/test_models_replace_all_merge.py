@@ -5,6 +5,7 @@
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _is_env_var_placeholder,
     _merge_models_for_replace_all,
+    _reasoning_level_display,
     _values_match,
 )
 
@@ -73,6 +74,92 @@ def test_values_match_normalizes_numeric_string_from_env_resolution():
 def test_values_match_treats_none_and_empty_as_equal():
     assert _values_match("", None)
     assert _values_match(None, None)
+
+
+def test_reasoning_level_display_maps_legacy_yaml_booleans():
+    # Bare on/off YAML scalars load as booleans under YAML 1.1 loaders.
+    assert _reasoning_level_display(True) == "on"
+    assert _reasoning_level_display(False) == "off"
+    assert _reasoning_level_display(None) == ""
+    assert _reasoning_level_display("") == ""
+    assert _reasoning_level_display("high") == "high"
+
+
+def test_clearing_reasoning_level_over_legacy_boolean_off_removes_it():
+    """Regression: stored bare `off` loads as False; switching the UI back to
+    "default" (empty level) must delete the stored value instead of being
+    swallowed by _values_match's boolean branch (bool("")==bool(False))."""
+    raw = _raw_entry_with_placeholder()
+    raw["model_config_obj"]["reasoning_level"] = False  # legacy bare `off`
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "reasoning_level": "",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert "reasoning_level" not in out[0]["model_config_obj"]
+
+
+def test_reasoning_level_over_legacy_boolean_on_is_rewritten_as_string():
+    raw = _raw_entry_with_placeholder()
+    raw["model_config_obj"]["reasoning_level"] = True  # legacy bare `on`
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "reasoning_level": "off",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    level = out[0]["model_config_obj"]["reasoning_level"]
+    assert level == "off"
+    assert isinstance(level, str)
+
+
+def test_unchanged_reasoning_level_string_keeps_raw_value():
+    raw = _raw_entry_with_placeholder()
+    raw["model_config_obj"]["reasoning_level"] = "high"
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "reasoning_level": "high",
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_config_obj"]["reasoning_level"] == "high"
 
 
 def test_is_env_var_placeholder():

@@ -164,11 +164,11 @@ async def test_session_create_forwards_previous_plan_root_to_agentserver(
         lambda **kwargs: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.dispatch_offload_session_kv_cache",
+        "openjiuwen.core.session.agent.create_agent_session",
         lambda **kwargs: calls.append(kwargs),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.is_kv_cache_affinity_enabled",
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
         lambda: True,
     )
     register_cli_handlers(
@@ -215,11 +215,11 @@ async def test_session_create_does_not_apply_plan_root_action_to_team_owner(
         lambda **kwargs: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.dispatch_offload_session_kv_cache",
+        "openjiuwen.core.session.agent.create_agent_session",
         lambda **kwargs: calls.append(kwargs),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.is_kv_cache_affinity_enabled",
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
         lambda: True,
     )
     register_cli_handlers(
@@ -263,11 +263,11 @@ async def test_session_create_skips_kvc_metadata_when_affinity_disabled(
         lambda session_id: pytest.fail("disabled affinity must not read previous metadata"),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.is_kv_cache_affinity_enabled",
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
         lambda: False,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.dispatch_offload_session_kv_cache",
+        "openjiuwen.core.session.agent.create_agent_session",
         lambda **kwargs: pytest.fail("disabled affinity must not dispatch offload"),
     )
     register_cli_handlers(
@@ -309,7 +309,7 @@ async def test_session_create_contains_kvc_metadata_failure(
         lambda session_id: (_ for _ in ()).throw(RuntimeError("metadata broken")),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.is_kv_cache_affinity_enabled",
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
         lambda: True,
     )
     register_cli_handlers(
@@ -347,7 +347,7 @@ async def test_session_create_prefers_canonical_switch_owner_dispatch(
         lambda **kwargs: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.dispatch_offload_session_kv_cache",
+        "openjiuwen.core.session.agent.create_agent_session",
         lambda **kwargs: pytest.fail("forwarded lifecycle must not also run local fallback"),
     )
     register_cli_handlers(

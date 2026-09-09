@@ -458,6 +458,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       timestamp: Math.max(existing?.timestamp || 0, nextTimestamp),
       skills: skills || existing?.skills,
       files: files || existing?.files,
+      workflow_run_id: pickString(rawTask, ['workflow_run_id']) || existing?.workflow_run_id,
       // Truncation flags: read raw with explicit guards so a status-only
       // record (no flags) falls back to `existing?` — never resets to false.
       // Mirrors the title/content `|| existing?` pattern above.

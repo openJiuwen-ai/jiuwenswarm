@@ -61,7 +61,11 @@ def test_multimodal_switch_hot_reload_registers_and_removes_vision_tools(
 
     adapter = JiuWenSwarmDeepAdapter()
     ability_manager = _AbilityManager()
-    adapter._instance = SimpleNamespace(ability_manager=ability_manager)
+    native_config = SimpleNamespace(enable_read_image_multimodal=None)
+    adapter._instance = SimpleNamespace(
+        ability_manager=ability_manager,
+        deep_config=native_config,
+    )
     adapter._tool_cards = []
     config = _vision_config()
 
@@ -86,6 +90,62 @@ def test_multimodal_switch_hot_reload_registers_and_removes_vision_tools(
     assert unregistered == [tool]
     assert ability_manager.removed == ["vision_test"]
     assert adapter._tool_cards == []
+    assert adapter._resolve_enable_read_image_multimodal({}) is None
+    assert adapter._resolve_enable_read_image_multimodal(
+        {"enable_read_image_multimodal": True}
+    ) is True
+    assert native_config.enable_read_image_multimodal is None
+
+
+def test_native_image_auto_uses_probe_cache_independently_of_vision_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._vision_model_config = SimpleNamespace(model="vision-model")
+    model = object()
+
+    monkeypatch.setattr(
+        interface_deep,
+        "get_cached_image_support",
+        lambda candidate: candidate is model,
+    )
+
+    assert adapter._native_image_input_enabled({}, model) is True
+    assert adapter._native_image_input_enabled({}, object()) is False
+    assert adapter._native_image_input_enabled(
+        {"enable_read_image_multimodal": False},
+        model,
+    ) is False
+
+
+def test_image_fallback_prompt_reports_missing_vision_capability() -> None:
+    request = SimpleNamespace(
+        params={
+            "query": "这张图片是什么？",
+            "media_items": [
+                {
+                    "type": "image",
+                    "filename": "sample.png",
+                    "path": "C:/tmp/sample.png",
+                    "mime_type": "image/png",
+                }
+            ],
+        }
+    )
+    inputs = {
+        "query": "这张图片是什么？",
+        "_multimodal_image_files": request.params["media_items"],
+    }
+
+    updated = JiuWenSwarmDeepAdapter._prepare_react_image_tool_prompt(
+        request,
+        inputs,
+        enable_read_image_multimodal=False,
+        vision_tool_available=False,
+    )
+
+    assert "没有配置可用的视觉模型工具" in updated["query"]
+    assert "不要猜测图片内容" in updated["query"]
 
 
 @pytest.mark.asyncio

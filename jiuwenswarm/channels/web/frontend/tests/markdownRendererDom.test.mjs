@@ -279,6 +279,80 @@ test('renders Mermaid through the shared viewer and preserves the code fallback 
   }
 });
 
+test('preserves Mermaid zoom when the canvas is re-measured', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://example.test/' });
+  let resizeCallback;
+  class ResizeObserverStub {
+    constructor(callback) {
+      resizeCallback = callback;
+    }
+    observe() {}
+    disconnect() {}
+  }
+  const restore = installGlobals({
+    HTMLElement: dom.window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    MouseEvent: dom.window.MouseEvent,
+    ResizeObserver: ResizeObserverStub,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+  });
+  const container = dom.window.document.querySelector('#root');
+  const i18n = createI18n();
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        createElement(
+          I18nextProvider,
+          { i18n },
+          createElement(MermaidDiagram, {
+            code: 'graph TD; A-->B',
+            canvasMinHeight: 168,
+            renderSvg: async () => '<svg viewBox="0 0 120 60"><rect width="120" height="60" /></svg>',
+          }),
+        ),
+      );
+    });
+
+    const diagram = container.querySelector('[data-mermaid-status="rendered"]');
+    const zoomIn = diagram?.querySelector('[aria-label="Zoom in"]');
+    const wrapper = diagram?.querySelector('.mermaid-svg-wrapper');
+    const canvas = diagram?.querySelector('[data-testid="markdown-mermaid-canvas"]');
+    assert.ok(zoomIn);
+    assert.ok(wrapper);
+    assert.ok(canvas);
+    Object.defineProperties(canvas, {
+      clientHeight: { configurable: true, value: 168 },
+      clientWidth: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 600 },
+      scrollWidth: { configurable: true, value: 1000 },
+    });
+    canvas.scrollLeft = 100;
+    canvas.scrollTop = 50;
+    assert.equal(wrapper.style.transformOrigin, 'top left');
+    assert.match(wrapper.style.transform, /scale\(1\)$/);
+
+    await act(async () => {
+      zoomIn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.match(wrapper.style.transform, /scale\(1\.25\)$/);
+    assert.equal(canvas.scrollLeft, 163);
+    assert.equal(canvas.scrollTop, 84);
+
+    await act(async () => {
+      resizeCallback?.();
+    });
+    assert.match(wrapper.style.transform, /scale\(1\.25\)$/);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
 test('ignores a stale Mermaid render after the source changes', async () => {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
   class ResizeObserverStub {

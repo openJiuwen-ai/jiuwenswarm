@@ -36,8 +36,8 @@
 					<circle id="path2" cx="8" cy="8" r="8" fill="rgb(255,255,255)" fill-opacity="0" />
 				</g>
 			</g>
-			<ellipse id="path3" rx="7.333333" ry="7.333102" cx="7.99983692" cy="8.00009346" stroke="rgb(119,119,119)" stroke-width="1.000000" />
-			<path id="path4" d="M8 3.32031L8 7.87031L10.18 10.1803" fill-rule="nonzero" stroke="rgb(119,119,119)" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.000000" />
+			<ellipse id="path3" rx="7.333333" ry="7.333102" cx="7.99983692" cy="8.00009346" stroke="currentColor" stroke-width="1.000000" />
+			<path id="path4" d="M8 3.32031L8 7.87031L10.18 10.1803" fill-rule="nonzero" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.000000" />
 			<g id="mask" mask="url(#mask_61)">
 				<g id="Group 729">
 					<ellipse id="path4" rx="8.000000" ry="7.999748" cx="8" cy="7.99974775" fill="rgb(255,255,255)" fill-opacity="0" />

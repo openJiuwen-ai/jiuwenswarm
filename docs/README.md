@@ -116,6 +116,11 @@
       <td width="50%">网页访问、信息获取与浏览器工具调用能力。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>浏览器扩展</strong></td>
+      <td width="28%"><a href="zh/browser-extension/浏览器扩展.md">浏览器扩展</a> / <a href="zh/browser-extension/浏览器扩展指南.md">指南</a> / <a href="zh/browser-extension/浏览器扩展安装.md">安装</a></td>
+      <td width="50%">一款 Chromium 扩展，将 JiuwenSwarm 智能体带到你阅读的任意页面旁。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>日志</strong></td>
       <td width="28%"><a href="zh/日志.md">日志</a></td>
       <td width="50%">系统日志路径、运行记录与常见排错入口。</td>

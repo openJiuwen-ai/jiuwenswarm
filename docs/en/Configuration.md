@@ -49,7 +49,7 @@ Each model type supports the following parameters:
 | `api_base`       | `api_base`                  | Base URL for model API        | Use the provider's API endpoint; **do not include `/chat/completions`**; appended automatically |
 | `api_key`        | `api_key`                   | Model API key                | Obtained from the model provider; keep confidential                                           |
 | `model`          | `model_name`                | Model identifier             | Use exact model ID such as `gpt-4o`, `claude-3-opus`, `deepseek-chat`                                         |
-| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
+| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `AscendAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
 
 > 💡 **Field Mapping**: The frontend panel uses `model` / `model_provider` as display field names; when saved to `config.yaml` they are mapped to backend fields `model_name` / `client_provider`. Both refer to the same thing, only the naming in the config file differs.
 
@@ -108,7 +108,7 @@ Each model entry contains the following fields:
 - Must be globally unique across all configured models: cannot duplicate another model's `alias` or `model_name`;
 - When switching models (Web dropdown / CLI `/model <name>`), you can use either `alias` or `model_name` as the identifier.
 
-The first item in the list is the default model; you can drag to reorder or click "Set as Default" to change the default.
+The model marked with `is_default: true` is the default-used model; you can switch the default flag via the "Set as Default" button.
 
 ### 2.4 Multimodal Model Usage Examples
 
@@ -211,7 +211,9 @@ This section summarizes configuration for search and external services. All item
 
 Two additional related configuration groups:
 
-- **Free Search Engine Configuration**: `free_search_ddg_enabled` (DuckDuckGo) and `free_search_bing_enabled` (Bing) toggles control whether free search engines are enabled.
+- **Free Search Engine Configuration**:
+  - `free_search_ddg_enabled` (DuckDuckGo toggle) and `free_search_bing_enabled` (Bing toggle): control whether the free search engines are enabled. These two toggles are set via the "Configuration" page on the frontend and reset to `false` on every process startup; they must be explicitly enabled in the UI.
+  - `FREE_SEARCH_PROXY_URL`, `FREE_SEARCH_SSL_VERIFY`, `FREE_SEARCH_DDG_URL`: DuckDuckGo endpoint URL, SSL verification, and proxy URL, written to `.env`. Bing is not enabled by default.
 - **Other TeamSkillsHub settings**: `teamskills_market_url` (marketplace URL), `teamskills_system_token` (system token), and `teamskills_allowed_download_hosts` (allowed download hosts), configured as needed.
 
 ---
@@ -249,26 +251,24 @@ Context compression manages dialogue history retention strategies.
 - **Default**: `true` (enabled)
 - **Purpose**: Automatically compress and offload dialogue history when exceeding context window limits to maintain fluent interaction.
 
-This section also provides a **Compute Affinity (KV Release)** toggle (`react.context_engine_config.enable_kv_cache_release`, default `false`).
-
 When enabled, the system will:
 
 1. Monitor message count and token usage
 2. Archive low-priority content when thresholds are reached
 3. Preserve lightweight indexes to free space for ongoing tasks
 
-### Compute Affinity (KV Release)
+### KV Cache Compute Affinity
 
-**Compute Affinity (KV Release)** is an advanced optimization feature of context compression for managing GPU memory usage.
+KV Cache compute affinity manages Session cache through the unified `agent_hint` protocol.
 
-- **Field**: `react.context_engine_config.enable_kv_cache_release`
+- **Field**: `kv_cache_affinity_config.enable_kv_cache_affinity`
 - **Default**: `false` (disabled)
-- **Purpose**: When enabled, the system dynamically releases KV Cache (key-value cache) that is no longer needed during conversations, saving GPU memory and allowing longer dialogue contexts.
+- **Purpose**: When enabled, the system prefetches, offloads, and evicts KV Cache along the Session lifecycle.
 
 **KV Cache Explanation**:
 - KV Cache is a cache used by large language models during inference to store intermediate computation results
 - As conversation rounds increase, KV Cache continues to grow, consuming significant GPU memory
-- With KV Release enabled, the system intelligently determines and releases cache data from historical conversations that are no longer needed
+- Suspended Sessions can offload cache, resumed Sessions can prefetch it, and permanently released Sessions evict it.
 
 **Applicable Scenarios**:
 - Long-running conversations requiring extensive history retention
@@ -308,15 +308,16 @@ permissions:
     "*": "allow"           # Allow all actions by default
   tools:
     bash: ask              # Require confirmation for command execution
+    powershell: ask
     mcp_exec_command: ask
     write_file: ask
   rules:
     - id: shell_allow_ls
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "ls *"
       severity: LOW        # normal mode: LOW/MEDIUM → allow
     - id: shell_ask_rm
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "rm *"
       severity: HIGH       # normal mode: HIGH/CRITICAL → ask
 ```
@@ -445,8 +446,11 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `models.*.model_client_config.timeout` | Model request timeout (seconds) | `1800` |
 | `models.*.model_client_config.verify_ssl` | Verify SSL | `false` |
 | `models.*.model_config_obj.temperature` | Temperature | `0.95` |
-| `react.context_engine_config.dialogue_compressor_config.tokens_threshold` | Dialogue compression token threshold | `100000` |
-| `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.9` |
+| `react.context_engine_config.dialogue_compressor_config.trigger_context_ratio` | Dialogue compression trigger ratio of the effective context budget | `0.8` |
+| `react.context_engine_config.dialogue_compressor_config.min_target_context_ratio` | Dialogue compression target lower bound (fraction of window) | `0.1` |
+| `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
+| `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
+| `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
 
 <a id="dotenv-configuration"></a>
 

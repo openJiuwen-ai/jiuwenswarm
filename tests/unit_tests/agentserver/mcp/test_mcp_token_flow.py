@@ -13,15 +13,28 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from jiuwenswarm.server.runtime.mcp import registry
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _mk_marketplace(workspace: Path, name: str, mcp: dict) -> None:
     pkg = workspace / "mcp" / "mcp_builtins" / name
     pkg.mkdir(parents=True, exist_ok=True)
     (pkg / "mcp.json").write_text(json.dumps(mcp), encoding="utf-8")
+    content = json.dumps(mcp)
+    is_token = "${" in content
+    if is_token:
+        (pkg / "token-schema.json").write_text(
+            '{"fields":[{"key":"TIANYANCHA_API_KEY","required":true}]}',
+            encoding="utf-8",
+        )
+    server = next(iter(mcp["mcpServers"].values()))
+    write_manifest(
+        pkg,
+        "stdio-mcp" if server.get("command") else "remote-mcp",
+        credentials_type="token" if is_token else None,
+    )
 
 
 def _tyc_mcp() -> dict:
@@ -100,10 +113,12 @@ class _ws_ctx:
     def __enter__(self):
         self._p1 = patch("jiuwenswarm.server.runtime.mcp.registry.get_workspace_dir", return_value=self.path)
         self._p2 = patch("jiuwenswarm.server.runtime.mcp.credential.get_workspace_dir", return_value=self.path)
-        self._p1.start(); self._p2.start()
+        self._p1.start()
+        self._p2.start()
         return self
     def __exit__(self, *exc):
-        self._p1.stop(); self._p2.stop()
+        self._p1.stop()
+        self._p2.stop()
 
 
 def _ws(path: Path) -> _ws_ctx:

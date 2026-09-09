@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ModelEntry, VendorFetchModelsResult, VendorPreset, VendorPresetMap } from '../../../../types';
 import { Button } from '../../../../components/ui';
@@ -20,11 +20,13 @@ import {
   modelDraftToEntry,
   normalizeModelOptions,
   rebaseModelDraft,
+  reconcileModelReasoning,
   selectProviderDefaultModel,
   type ModelDraft,
   type ModelProtocol,
 } from './modelAdapters';
-import { SUPPORTED_REASONING_LEVELS, validateModelDraft } from './modelValidation';
+import { validateModelDraft } from './modelValidation';
+import { buildReasoningOptions, resolveModelReasoning } from './modelReasoning';
 
 type ConnectionFailure = {
   error: string;
@@ -35,6 +37,9 @@ const FETCH_REASON_KEYS: Record<string, string> = {
   'no remote models endpoint': 'noEndpoint',
   'api_key required for fetch': 'apiKeyRequired',
   'remote fetch failed or empty': 'remoteFailed',
+  'remote returned HTTP 401': 'remoteAuthFailed',
+  'remote returned HTTP 403': 'remoteAuthFailed',
+  'remote returned HTTP 429': 'remoteRateLimited',
 };
 
 function getPresetStatusKey(
@@ -118,17 +123,33 @@ export function ModelDialog({
   const account = values.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
+  const reasoning = values.vendor_selection
+    ? resolveModelReasoning(catalog, preset, values.model_name, values.protocol)
+    : null;
+  const applyModelDraft = useCallback(
+    (draft: ModelDraft): void => {
+      form.setValues(reconcileModelReasoning(draft, catalog));
+      form.clearValidate('reasoning_level');
+    },
+    [catalog, form],
+  );
   const openAIAccount = useOpenAIAccountController({
     active: account,
     model: modelDraftToEntry(values, model, catalog, connectionChanged.current),
     connected: isConnected,
     request,
     onModelPatch: (patch) => {
-      form.setValues({
+      const current = form.getValues();
+      const next = {
+        ...current,
         ...(patch.model_name !== undefined ? { model_name: patch.model_name } : {}),
         ...(patch.api_base !== undefined ? { api_base: patch.api_base } : {}),
         ...(patch.api_key !== undefined ? { api_key: patch.api_key } : {}),
-      });
+      };
+      if (next.model_name !== current.model_name) {
+        invalidateConnectionState();
+      }
+      applyModelDraft(next);
     },
   });
 
@@ -152,14 +173,22 @@ export function ModelDialog({
   );
 
   useEffect(() => {
-    if (!model?.vendor_key || connectionChanged.current) return;
-    const next = createModelDraft(model, catalog);
-    if (!next.vendor_selection || next.vendor_selection === CUSTOM_VENDOR_SELECTION) return;
+    if (!catalog.reasoning) return;
     const current = form.getValues();
-    if (current.vendor_selection === next.vendor_selection) return;
+    const next = createModelDraft(model, catalog);
+    if (
+      !model?.vendor_key ||
+      connectionChanged.current ||
+      !next.vendor_selection ||
+      next.vendor_selection === CUSTOM_VENDOR_SELECTION ||
+      current.vendor_selection === next.vendor_selection
+    ) {
+      applyModelDraft(current);
+      return;
+    }
     const rebasedValues = rebaseModelDraft(current, catalogBaseline.current, next);
     form.reset(next);
-    form.setValues(rebasedValues);
+    applyModelDraft(rebasedValues);
     catalogBaseline.current = next;
     const nextPreset = findVendorPreset(catalog, next.vendor_selection);
     const presetOptions = normalizeModelOptions(nextPreset?.model_options ?? []);
@@ -167,7 +196,7 @@ export function ModelDialog({
       next.model_name && !presetOptions.includes(next.model_name) ? [next.model_name, ...presetOptions] : presetOptions;
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
-  }, [catalog, form, model, t]);
+  }, [applyModelDraft, catalog, form, model, t]);
 
   const invalidateConnectionState = () => {
     validationRequestId.current += 1;
@@ -182,7 +211,7 @@ export function ModelDialog({
     connectionChanged.current = true;
     invalidateConnectionState();
     const next = applyModelProtocol(form.getValues(), protocol, catalog);
-    form.setValues(next);
+    applyModelDraft(next);
     setFetchStatus(describePresetStatus(findVendorPreset(catalog, next.vendor_selection), next.api_key, modelOptions));
   };
 
@@ -194,10 +223,7 @@ export function ModelDialog({
     const nextPreset = findVendorPreset(catalog, selection);
     const nextOptions = normalizeModelOptions(nextPreset?.model_options ?? []);
     const nextModel = selectProviderDefaultModel(next.model_name, nextOptions);
-    form.setValues({
-      ...next,
-      model_name: nextModel,
-    });
+    applyModelDraft({ ...next, model_name: nextModel });
     form.clearValidate(['api_key', 'model_name']);
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
@@ -236,8 +262,11 @@ export function ModelDialog({
       }
     } catch (error) {
       if (currentRequestId === validationRequestId.current) {
+        const detail = error instanceof Error ? error.message.trim() : '';
         setValidationFailure({
-          error: error instanceof Error ? error.message : t('settingsPanel.models.validationFailed'),
+          error: detail
+            ? t('settingsPanel.models.validationFailedWithDetail', { detail })
+            : t('settingsPanel.models.validationFailed'),
           snapshot,
         });
       }
@@ -279,9 +308,14 @@ export function ModelDialog({
         updateModelOptions(nextOptions);
         fetchedModelLists.current.add(getModelFetchKey(currentPreset, currentValues.api_key));
         setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
-      } else if (result.source === 'preset' && result.reason && FETCH_REASON_KEYS[result.reason]) {
+      } else if (result.source === 'preset' && result.reason) {
         updateModelOptions(nextOptions);
-        setFetchStatus(t(`settingsPanel.models.fetchReasons.${FETCH_REASON_KEYS[result.reason]}`));
+        const reasonKey = FETCH_REASON_KEYS[result.reason];
+        setFetchStatus(
+          reasonKey
+            ? t(`settingsPanel.models.fetchReasons.${reasonKey}`)
+            : result.reason,
+        );
       } else {
         throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
       }
@@ -403,6 +437,11 @@ export function ModelDialog({
     label: t('settingsPanel.models.model'),
     component: 'custom',
     required: true,
+    helpTips: t('settingsPanel.models.modelIdHint'),
+    onChange: (_modelName, nextValues) => {
+      invalidateConnectionState();
+      applyModelDraft(nextValues);
+    },
     render: ({ id, value, error, disabled, onChange, onBlur }) => (
       <ModelNameField
         id={id}
@@ -438,10 +477,7 @@ export function ModelDialog({
         }
         onOpen={account ? () => undefined : openModelList}
         onFetch={() => void (account ? openAIAccount.refreshModels() : fetchModels())}
-        onChange={(nextValue) => {
-          invalidateConnectionState();
-          onChange(nextValue);
-        }}
+        onChange={onChange}
         onBlur={onBlur}
       />
     ),
@@ -452,16 +488,17 @@ export function ModelDialog({
     component: 'input',
     placeholder: t('settingsPanel.models.customNamePlaceholder'),
   });
-  formItems.push({
-    name: 'reasoning_level',
-    label: t('settingsPanel.fields.reasoning_level.title'),
-    component: 'select',
-    options: SUPPORTED_REASONING_LEVELS.map((value) => ({
-      value,
-      label: value ? t(`settingsPanel.models.reasoning.${value}`) : t('settingsPanel.models.reasoning.auto'),
-    })),
-    onChange: invalidateConnectionState,
-  });
+  if (reasoning && reasoning.options.length > 0) {
+    formItems.push({
+      name: 'reasoning_level',
+      label: t('settingsPanel.fields.reasoning_level.title'),
+      component: 'select',
+      options: buildReasoningOptions(reasoning, t('settingsPanel.models.reasoning.auto'), (value) =>
+        t(`settingsPanel.models.reasoning.options.${value}`, { defaultValue: value }),
+      ),
+      onChange: invalidateConnectionState,
+    });
+  }
 
   return (
     <>
@@ -470,7 +507,16 @@ export function ModelDialog({
         title={t(model ? 'settingsPanel.models.editModel' : 'settingsPanel.models.addModel')}
         submitting={closeBlocked}
         confirmLoading={testing}
-        confirmDisabled={!isConnected || saving || testing || fetching || (account && openAIAccount.busy)}
+        confirmDisabled={
+          !isConnected ||
+          saving ||
+          testing ||
+          fetching ||
+          catalogLoading ||
+          Boolean(catalogError) ||
+          !catalog.reasoning ||
+          (account && openAIAccount.busy)
+        }
         confirmLabel={t(
           testing
             ? 'settingsPanel.models.testingConnection'
@@ -480,27 +526,30 @@ export function ModelDialog({
         )}
         cancelLabel={t('common.cancel')}
         dialogClassName="settings-model-dialog"
+        testIdPrefix="settings-model-dialog"
         onConfirm={() => void validateAndSave()}
         onCancel={requestClose}
       >
-        {!account && catalogLoading ? (
-          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite">
-            {t('settingsPanel.models.catalogLoadingCustomAvailable')}
+        {catalogLoading ? (
+          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite" data-testid="settings-model-dialog-catalog-loading">
+            {t('settingsPanel.models.catalogLoading')}
           </div>
         ) : null}
-        {!account && catalogError ? (
+        {catalogError ? (
           <div
             className="settings-model-dialog__catalog-status settings-model-dialog__catalog-status--error"
             role="alert"
+            data-testid="settings-model-dialog-catalog-error"
           >
             <span>
-              {t('settingsPanel.models.catalogLoadFailedCustomAvailable')}
+              {t('settingsPanel.models.catalogLoadFailed')}
               <small>{catalogError}</small>
             </span>
             <Button
               size="sm"
               disabled={!isConnected || catalogLoading || testing || submitting || saving}
               onClick={onRetryCatalog}
+              data-testid="settings-model-dialog-catalog-retry-btn"
             >
               {t('settingsPanel.feedback.retry')}
             </Button>
@@ -508,9 +557,10 @@ export function ModelDialog({
         ) : null}
         <Form<ModelDraft>
           form={form}
-          disabled={testing || submitting || saving}
+          disabled={testing || submitting || saving || !catalog.reasoning}
           optionalText={t('common.optional')}
           showOptional={false}
+          testIdPrefix="settings-model-dialog"
           rules={{
             alias: [
               {
@@ -529,7 +579,7 @@ export function ModelDialog({
           items={formItems}
         />
         {saveError ? (
-          <div className="settings-page__error" role="alert">
+          <div className="settings-page__error" role="alert" data-testid="settings-model-dialog-error">
             {saveError}
           </div>
         ) : null}

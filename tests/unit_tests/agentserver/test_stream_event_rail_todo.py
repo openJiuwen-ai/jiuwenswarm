@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 from types import SimpleNamespace
 
 import pytest
@@ -125,6 +127,39 @@ async def test_context_usage_keeps_zero_input_tokens_instead_of_falling_back(mon
     await _TestRail().emit_context_usage(ctx)
 
     assert session.outputs[0].payload["tokens_used"] == 0
+
+
+@pytest.mark.asyncio
+async def test_context_usage_rail_does_not_duplicate_core_snapshot():
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(),
+        context_usage_report=SimpleNamespace(parts={"tools": {"tokens": 1}}),
+        agent=None,
+        inputs=SimpleNamespace(response=None),
+    )
+
+    await _TestRail().after_model_call(ctx)
+
+    assert session.outputs == []
+
+
+@pytest.mark.asyncio
+async def test_context_usage_rail_does_not_duplicate_core_snapshot_without_report():
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(),
+        context_usage_report=None,
+        extra={"_context_usage_event_emitted": True},
+        agent=None,
+        inputs=SimpleNamespace(response=None, context_usage_report=None),
+    )
+
+    await _TestRail().after_model_call(ctx)
+
+    assert session.outputs == []
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,140 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _model_dump_without_mode(dumper: Any) -> dict[str, Any]:
+    """Call a legacy model dumper without passing a mode argument."""
+    try:
+        result = dumper()
+    except (AttributeError, TypeError, ValueError):
+        logger.debug("[stream_utils] model serialization failed", exc_info=True)
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _model_dump_dict(value: Any, *, mode: str = "json") -> dict[str, Any]:
+    """Return a model dump without allowing serialization errors to escape."""
+    dumper = getattr(value, "model_dump", None)
+    if not callable(dumper):
+        return {}
+    try:
+        result = dumper(mode=mode)
+    except TypeError:
+        return _model_dump_without_mode(dumper)
+    except (AttributeError, ValueError):
+        logger.debug("[stream_utils] model serialization failed", exc_info=True)
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _finite_number(value: Any) -> int | float | None:
+    """Return numeric values that are safe to expose to the frontend."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return value if math.isfinite(float(value)) else None
+    except (OverflowError, ValueError):
+        return None
+
+
+def _normalize_occupancy_rate(value: Any) -> float | None:
+    """Normalize ratio or percentage values to a ``[0, 1]`` ratio."""
+    numeric_value = _finite_number(value)
+    if numeric_value is None:
+        return None
+    occupancy_rate = float(numeric_value)
+    if occupancy_rate > 1:
+        occupancy_rate /= 100
+    return occupancy_rate if 0 <= occupancy_rate <= 1 else None
+
+
+def normalize_context_usage_payload(payload: Any) -> dict[str, Any] | None:
+    """Keep the complete Core context-usage snapshot on the wire.
+
+    Newer ``agent-core`` versions send a ``ContextUsageSnapshot`` containing
+    ``context_window`` and per-category ``parts``.  Older Swarm code reduced
+    that payload to three legacy fields, which made the category breakdown
+    disappear before it reached the Web channel.  Preserve every field and
+    only add the legacy aliases still consumed by the existing frontend.
+    """
+    if hasattr(payload, "model_dump"):
+        payload = _model_dump_dict(payload)
+    if not isinstance(payload, dict):
+        return None
+
+    usage_payload = _serialize_chunk_recursive(dict(payload))
+    if not isinstance(usage_payload, dict):
+        return None
+
+    usage_payload["event_type"] = "context.usage"
+    context_window = usage_payload.get("context_window")
+    if isinstance(context_window, dict):
+        # Compatibility aliases: the frontend's summary card still reads
+        # these names while the full category breakdown is carried in parts.
+        occupancy_rate = _normalize_occupancy_rate(
+            context_window.get("occupancy_rate")
+        )
+        if usage_payload.get("rate") is None:
+            # Core protocol percentages are ratios in [0, 1], while the
+            # legacy frontend alias is displayed as a percentage in [0, 100].
+            usage_payload["rate"] = (
+                occupancy_rate * 100
+                if occupancy_rate is not None
+                else 0
+            )
+        if usage_payload.get("context_max") is None:
+            usage_payload["context_max"] = context_window.get("limit_tokens") or 0
+        if usage_payload.get("tokens_used") is None:
+            usage_payload["tokens_used"] = context_window.get("input_tokens") or 0
+
+        # Keep a small structured summary for the frontend. The display text
+        # is rendered by the frontend so it can follow the active locale;
+        # the wire payload only carries numeric values.
+        raw_summary = usage_payload.get("context_usage_summary")
+        summary = dict(raw_summary) if isinstance(raw_summary, dict) else {}
+        used_tokens = _finite_number(summary.get("used_tokens"))
+        if used_tokens is None:
+            used_tokens = _finite_number(context_window.get("input_tokens"))
+        limit_tokens = _finite_number(summary.get("limit_tokens"))
+        if limit_tokens is None:
+            limit_tokens = _finite_number(context_window.get("limit_tokens"))
+        summary_rate = _normalize_occupancy_rate(summary.get("occupancy_rate"))
+        if summary_rate is None:
+            summary_rate = occupancy_rate
+        if summary_rate is None and used_tokens is not None:
+            if limit_tokens is not None and limit_tokens > 0:
+                summary_rate = float(used_tokens) / float(limit_tokens)
+        summary["used_tokens"] = used_tokens
+        summary["limit_tokens"] = limit_tokens
+        summary["occupancy_rate"] = summary_rate
+        summary["percentage"] = (
+            summary_rate * 100 if summary_rate is not None else None
+        )
+        usage_payload["context_usage_summary"] = summary
+    else:
+        for key in ("rate", "context_max", "tokens_used"):
+            if usage_payload.get(key) is None:
+                usage_payload[key] = 0
+
+    # The Core snapshot exposes the token-weighted session average as a
+    # top-level scalar.  Backfill it for older Core payloads that only have
+    # the nested aggregate, keeping the frontend protocol version-tolerant.
+    if usage_payload.get("session_kv_cache_hit_rate") is None:
+        kv_cache = usage_payload.get("kv_cache")
+        session_usage = (
+            kv_cache.get("session") if isinstance(kv_cache, dict) else None
+        )
+        if isinstance(session_usage, dict):
+            usage_payload["session_kv_cache_hit_rate"] = session_usage.get(
+                "weighted_hit_rate"
+            )
+    return usage_payload
 
 
 def parse_stream_chunk(chunk: Any, *, _has_streamed_content: bool = False) -> dict[str, Any] | None:
@@ -47,6 +180,10 @@ def parse_stream_chunk(chunk: Any, *, _has_streamed_content: bool = False) -> di
 def _parse_dict_chunk(chunk: dict[str, Any], _has_streamed_content: bool) -> dict[str, Any] | None:
     """Parse dict chunk."""
     if "event_type" in chunk:
+        if chunk.get("event_type") == "context.usage":
+            usage_payload = normalize_context_usage_payload(chunk)
+            if usage_payload is not None:
+                return usage_payload
         if chunk.get("event_type") == "chat.tracer_agent":
             return _serialize_chunk_recursive(chunk)
         return _serialize_chunk_recursive(chunk)
@@ -118,12 +255,13 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
         return JiuWenSwarmDeepAdapter.parse_stream_chunk(chunk)
 
     if isinstance(chunk_type, str) and "." in chunk_type:
+        if chunk_type == "context.usage":
+            usage_payload = normalize_context_usage_payload(payload)
+            if usage_payload is not None:
+                return usage_payload
         if chunk_type == "context.compression_state":
             if hasattr(payload, "model_dump"):
-                try:
-                    payload_dict = payload.model_dump(mode="json")
-                except Exception:
-                    payload_dict = payload.model_dump()
+                payload_dict = _model_dump_dict(payload)
             elif isinstance(payload, dict):
                 payload_dict = payload
             else:
@@ -140,10 +278,7 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                    for k, v in payload.items()},
             }
         if hasattr(payload, "model_dump"):
-            try:
-                payload_dict = payload.model_dump(mode="json")
-            except Exception:
-                payload_dict = payload.model_dump()
+            payload_dict = _model_dump_dict(payload)
             return {
                 "event_type": chunk_type,
                 **{k: _serialize_chunk_recursive(v) if isinstance(v, (dict, list)) else _serialize_value(v)
@@ -331,20 +466,6 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
         )
         return {"event_type": "todo.updated", "todos": todos}
 
-    if chunk_type == "context.usage":
-        if isinstance(payload, dict):
-            usage_payload = {
-                "event_type": "context.usage",
-                "rate": payload.get("rate", 0),
-                "context_max": payload.get("context_max") or 0,
-                "tokens_used": payload.get("tokens_used") or 0,
-            }
-            for key in ("role", "member_name"):
-                value = payload.get(key)
-                if value is not None:
-                    usage_payload[key] = value
-            return usage_payload
-
     if chunk_type == "chat.retract":
         if isinstance(payload, dict):
             return {
@@ -463,10 +584,7 @@ def _find_interaction_payloads(
         return found
 
     if hasattr(obj, "model_dump"):
-        try:
-            dumped = obj.model_dump(mode="python")
-        except Exception:
-            dumped = obj.model_dump()
+        dumped = _model_dump_dict(obj, mode="python")
         return _find_interaction_payloads(dumped, _depth=_depth + 1, _seen=_seen)
 
     found: list[Any] = []
@@ -500,13 +618,7 @@ def _parse_event_typed_chunk(chunk: Any) -> dict[str, Any]:
     
     # 优先使用 Pydantic 的 model_dump/dict 方法
     if hasattr(chunk, "model_dump"):
-        # Pydantic v2 - mode='json' 会将 datetime 转换为 ISO 格式字符串
-        try:
-            data = chunk.model_dump(mode="json")
-        except Exception:
-            # 如果 mode='json' 失败，回退到默认模式并手动序列化
-            data = chunk.model_dump()
-            data = {k: _serialize_value(v) for k, v in data.items()}
+        data = _model_dump_dict(chunk)
         result.update({k: v for k, v in data.items() if k != "event_type"})
     elif hasattr(chunk, "dict"):
         # Pydantic v1
@@ -537,6 +649,10 @@ def _parse_response_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, 
 
     if isinstance(payload, dict):
         if "event_type" in payload:
+            if payload.get("event_type") == "context.usage":
+                usage_payload = normalize_context_usage_payload(payload)
+                if usage_payload is not None:
+                    return usage_payload
             return payload
 
         if "output" in payload:

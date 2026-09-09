@@ -282,6 +282,7 @@ async def _team_agent_for_session(
     session_id: str,
     *,
     channel_id: str = "default",
+    agent_manager: Any | None = None,
 ) -> Any | None:
     """Resolve the auxiliary team agent used on a teammate process for ``session_id``."""
     sid = str(session_id or "").strip()
@@ -291,11 +292,12 @@ async def _team_agent_for_session(
         from openjiuwen.agent_teams.context import reset_session_id, set_session_id
 
         from jiuwenswarm.agents.harness.team.team_manager import get_team_manager
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+        from jiuwenswarm.runtime.context import get_current_agent_manager
 
-        server = AgentWebSocketServer.get_instance()
-        agent_manager = server.get_agent_manager()
-        host = agent_manager.get_agent_nowait(channel_id) or await agent_manager.get_agent(
+        manager = get_current_agent_manager() or agent_manager
+        if manager is None:
+            return None
+        host = manager.get_agent_nowait(channel_id) or await manager.get_agent(
             channel_id,
             "agent",
         )
@@ -328,10 +330,15 @@ async def _member_status_for_session(
     member_name: str,
     *,
     channel_id: str = "default",
+    agent_manager: Any | None = None,
 ) -> str | None:
     """Return member status from shared DB, or None when lookup is unavailable."""
     try:
-        team_agent = await _team_agent_for_session(session_id, channel_id=channel_id)
+        team_agent = await _team_agent_for_session(
+            session_id,
+            channel_id=channel_id,
+            agent_manager=agent_manager,
+        )
         if team_agent is None:
             return None
         existing = await _existing_team_member(team_agent, member_name)
@@ -366,8 +373,13 @@ async def _update_member_status_for_session(
     status: str,
     *,
     channel_id: str = "default",
+    agent_manager: Any | None = None,
 ) -> bool:
-    team_agent = await _team_agent_for_session(session_id, channel_id=channel_id)
+    team_agent = await _team_agent_for_session(
+        session_id,
+        channel_id=channel_id,
+        agent_manager=agent_manager,
+    )
     if team_agent is None:
         return False
     tb = getattr(team_agent, "team_backend", None)
@@ -1599,7 +1611,7 @@ async def _push_shutdown_cleanup_notice(
     deleted: bool,
 ) -> None:
     try:
-        from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
+        from jiuwenswarm.runtime.host_services import RuntimeHostPushTransport
         from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 
         request_id = f"team_shutdown_cleanup_{session_id}"
@@ -1608,7 +1620,7 @@ async def _push_shutdown_cleanup_notice(
             if deleted
             else "团队解散清理未完成，请查看后端日志确认原因。"
         )
-        await WebSocketGatewayPushTransport().send_push(
+        await RuntimeHostPushTransport().send_push(
             build_server_push_message(
                 session_id=session_id,
                 request_id=request_id,
@@ -2272,6 +2284,7 @@ async def finalize_remote_member_shutdown_on_teammate(
     force: bool = False,
     kickoff_tasks: set[asyncio.Task[Any]] | None = None,
     loop_kicked_members: set[tuple[str, str]] | None = None,
+    agent_manager: Any | None = None,
 ) -> bool:
     """Cancel delayed bootstrap kickoff, stop dynamic runtime, and mark member SHUTDOWN."""
     from openjiuwen.agent_teams.schema.status import MemberStatus
@@ -2289,7 +2302,15 @@ async def finalize_remote_member_shutdown_on_teammate(
     )
     await _stop_dynamic_member_agent(sid, member)
 
-    current = await _member_status_for_session(sid, member, channel_id=channel_id)
+    manager_kwargs = (
+        {"agent_manager": agent_manager} if agent_manager is not None else {}
+    )
+    current = await _member_status_for_session(
+        sid,
+        member,
+        channel_id=channel_id,
+        **manager_kwargs,
+    )
     if current == MemberStatus.SHUTDOWN.value:
         return True
     if current == MemberStatus.SHUTDOWN_REQUESTED.value or force or current is None:
@@ -2298,6 +2319,7 @@ async def finalize_remote_member_shutdown_on_teammate(
             member,
             MemberStatus.SHUTDOWN.value,
             channel_id=channel_id,
+            **manager_kwargs,
         )
         if updated:
             logger.info(
@@ -2361,6 +2383,7 @@ async def _ensure_dynamic_member_execution_loop(
     card_replaced: bool = False,
     assembly_mode: str = "",
     assembly_project_dir: str = "",
+    agent_manager: Any | None = None,
 ) -> tuple[bool, bool]:
     """Best-effort bootstrap for teammate runtime loop after dynamic member takeover.
 
@@ -2378,10 +2401,15 @@ async def _ensure_dynamic_member_execution_loop(
         from openjiuwen.agent_teams.context import reset_session_id, set_session_id
         from openjiuwen.agent_teams.schema.status import MemberStatus
 
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
         from jiuwenswarm.agents.harness.team.team_manager import get_team_manager
+        from jiuwenswarm.runtime.context import get_current_agent_manager
 
-        current_status = await _member_status_for_session(sid, member, channel_id=channel_id)
+        current_status = await _member_status_for_session(
+            sid,
+            member,
+            channel_id=channel_id,
+            agent_manager=agent_manager,
+        )
         if current_status == MemberStatus.SHUTDOWN.value:
             return False, False
         if current_status == MemberStatus.SHUTDOWN_REQUESTED.value:
@@ -2389,12 +2417,23 @@ async def _ensure_dynamic_member_execution_loop(
                 sid,
                 member,
                 channel_id=channel_id,
+                agent_manager=agent_manager,
             )
             return False, False
 
-        server = AgentWebSocketServer.get_instance()
-        agent_manager = server.get_agent_manager()
-        agent = agent_manager.get_agent_nowait(channel_id) or await agent_manager.get_agent(channel_id, "agent")
+        manager = get_current_agent_manager() or agent_manager
+        if manager is None:
+            logger.warning(
+                "[RemoteMemberBootstrap] teammate loop start skipped: "
+                "agent manager unavailable channel=%s session_id=%s",
+                channel_id,
+                sid,
+            )
+            return False, False
+        agent = manager.get_agent_nowait(channel_id) or await manager.get_agent(
+            channel_id,
+            "agent",
+        )
         if agent is None:
             logger.warning(
                 "[RemoteMemberBootstrap] teammate loop start skipped: agent unavailable channel=%s session_id=%s",
@@ -2513,12 +2552,20 @@ async def _ensure_dynamic_member_execution_loop(
         async def _run_invoke_loop() -> None:
             try:
                 from openjiuwen.core.runner import Runner
+                from openjiuwen.core.session.agent_team import create_agent_team_session
+                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+                    get_kv_cache_runtime,
+                )
 
+                team_session = create_agent_team_session(
+                    session_id=sid,
+                    kv_cache_runtime=get_kv_cache_runtime(),
+                )
                 await Runner.run_agent_team(
                     teammate_agent,
                     {"query": kickoff},
                     member=True,
-                    session=sid,
+                    session=team_session,
                 )
             except Exception as exc:
                 logger.warning(
@@ -2571,18 +2618,29 @@ async def _replace_teammate_card_after_direct_bootstrap(
     *,
     channel_id: str,
     member_name: str,
+    agent_manager: Any | None = None,
 ) -> bool:
     """Replace this teammate's A2X card after direct control-plane bootstrap."""
     member = str(member_name or "").strip()
     if not member:
         return False
     try:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
         from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import replace_teammate_agent_card_after_bootstrap
+        from jiuwenswarm.runtime.context import get_current_agent_manager
 
-        server = AgentWebSocketServer.get_instance()
-        agent_manager = server.get_agent_manager()
-        agent = agent_manager.get_agent_nowait(channel_id) or await agent_manager.get_agent(channel_id, "agent")
+        manager = get_current_agent_manager() or agent_manager
+        if manager is None:
+            logger.warning(
+                "[RemoteMemberBootstrap] teammate registry card replace skipped: "
+                "agent manager unavailable channel=%s member=%s",
+                channel_id,
+                member,
+            )
+            return False
+        agent = manager.get_agent_nowait(channel_id) or await manager.get_agent(
+            channel_id,
+            "agent",
+        )
         deep_agent = await agent.ensure_instance() if agent is not None else None
         if deep_agent is None:
             logger.warning(
@@ -2643,6 +2701,7 @@ async def apply_bootstrap_envelope_from_control_plane(
     adopted_member: str,
     envelope: dict[str, Any],
     source_id: str,
+    agent_manager: Any | None = None,
 ) -> str:
     """Handle leader bootstrap notification on a remote teammate process."""
     if not isinstance(envelope, dict):
@@ -2678,10 +2737,14 @@ async def apply_bootstrap_envelope_from_control_plane(
 
     from openjiuwen.agent_teams.schema.status import MemberStatus
 
+    manager_kwargs = (
+        {"agent_manager": agent_manager} if agent_manager is not None else {}
+    )
     bootstrap_status = await _member_status_for_session(
         effective_sid,
         target_member,
         channel_id="default",
+        **manager_kwargs,
     )
     if bootstrap_status == MemberStatus.SHUTDOWN.value:
         processed_ids.add(bootstrap_id)
@@ -2692,6 +2755,7 @@ async def apply_bootstrap_envelope_from_control_plane(
     card_replaced = await _replace_teammate_card_after_direct_bootstrap(
         channel_id="default",
         member_name=target_member,
+        **manager_kwargs,
     )
     if effective_sid and loop_key not in loop_kicked_members:
         loop_kicked_members.add(loop_key)
@@ -2706,6 +2770,7 @@ async def apply_bootstrap_envelope_from_control_plane(
                 card_replaced=card_replaced,
                 assembly_mode=assembly_mode,
                 assembly_project_dir=assembly_project_dir,
+                **manager_kwargs,
             )
             if kicked:
                 logger.info(
@@ -2763,6 +2828,7 @@ async def apply_member_shutdown_envelope_from_control_plane(
     envelope: dict[str, Any],
     source_id: str,
     channel_id: str = "default",
+    agent_manager: Any | None = None,
 ) -> bool:
     """Handle leader shutdown finalize notification on a remote teammate process."""
     if not isinstance(envelope, dict):
@@ -2779,6 +2845,11 @@ async def apply_member_shutdown_envelope_from_control_plane(
         force=force,
         kickoff_tasks=kickoff_tasks,
         loop_kicked_members=loop_kicked_members,
+        **(
+            {"agent_manager": agent_manager}
+            if agent_manager is not None
+            else {}
+        ),
     )
     return finalized
 
@@ -2871,7 +2942,12 @@ async def apply_team_destroy_envelope_from_control_plane(
     return adopted_member
 
 
-async def run_teammate_bootstrap_daemon(*, stop_event: asyncio.Event, poll_interval: float = 1.0) -> None:
+async def run_teammate_bootstrap_daemon(
+    *,
+    stop_event: asyncio.Event,
+    poll_interval: float = 1.0,
+    agent_manager: Any | None = None,
+) -> None:
     """Startup daemon for distributed teammate: consume bootstrap even before team runtime exists."""
     from jiuwenswarm.common.config import get_config as _get_config
 
@@ -2976,6 +3052,11 @@ async def run_teammate_bootstrap_daemon(*, stop_event: asyncio.Event, poll_inter
                             adopted_member=adopted_member,
                             envelope=env,
                             source_id=source_id,
+                            **(
+                                {"agent_manager": agent_manager}
+                                if agent_manager is not None
+                                else {}
+                            ),
                         )
                     elif isinstance(env, dict) and event_type == REMOTE_TEAM_DESTROY_DIRECT_EVENT_TYPE:
                         source_id = str(env.get("destroy_id", "")).strip() or str(uuid.uuid4())
@@ -2994,6 +3075,11 @@ async def run_teammate_bootstrap_daemon(*, stop_event: asyncio.Event, poll_inter
                             loop_kicked_members=loop_kicked_members,
                             envelope=env,
                             source_id=source_id,
+                            **(
+                                {"agent_manager": agent_manager}
+                                if agent_manager is not None
+                                else {}
+                            ),
                         )
                     await bootstrap_router.send_multipart([identity, b"ok"])
 

@@ -75,8 +75,36 @@ def test_build_app_exposes_ws_routes_only() -> None:
     paths = _route_paths(app)
     assert "/ws" in paths
     assert "/ws/git" in paths
+    assert "/ws/plugin/test" not in paths
     assert "/container-file-api/upload" not in paths
     assert "/file-api/upload" not in paths
+
+
+def test_build_app_mounts_application_plugin_websocket_routes() -> None:
+    from types import SimpleNamespace
+
+    from jiuwenswarm.extensions.sdk import WebSocketRouteContribution
+
+    async def endpoint(websocket) -> None:  # noqa: ANN001
+        await websocket.close()
+
+    plugin = SimpleNamespace(
+        plugin_id="test-plugin",
+        metadata=SimpleNamespace(id="test-plugin"),
+        is_enabled=lambda: True,
+        websocket_routes=lambda: (
+            WebSocketRouteContribution(path="/ws/plugin/test", endpoint=endpoint),
+        ),
+    )
+    channel = _make_channel()
+    channel.application_plugin_registry = SimpleNamespace(
+        get_application_plugins=lambda: (plugin,),
+        get_application_plugin=lambda plugin_id: plugin if plugin_id == "test-plugin" else None,
+    )
+
+    paths = _route_paths(build_web_channel_app(channel))
+
+    assert "/ws/plugin/test" in paths
 
 
 def test_build_app_registers_custom_config_path() -> None:

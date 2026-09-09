@@ -14,9 +14,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from jiuwenswarm.server.runtime.mcp.cli_driver import InstallResult
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _feishu_pkg(tmp_path: Path) -> Path:
@@ -37,6 +37,7 @@ def _feishu_pkg(tmp_path: Path) -> Path:
     # A bundled skills dir (flat layout) — install_only must NOT copy it.
     (mp / "skills" / "SKILL.md").parent.mkdir(parents=True, exist_ok=True)
     (mp / "skills" / "SKILL.md").write_text("---\ndescription: feishu skill\n---", encoding="utf-8")
+    write_manifest(mp, "cli", credentials_type="cli-oauth", skills=True)
     return mp
 
 

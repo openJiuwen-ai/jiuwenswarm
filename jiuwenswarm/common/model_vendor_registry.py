@@ -18,7 +18,7 @@ one-(vendor,plan) ⇒ one-base_url mapping.
 ``client_provider`` values align strictly with the ``ProviderType`` enum in
 ``openjiuwen.core.foundation.llm.schema.config`` (OpenAI / DashScope /
 DeepSeek / OpenRouter / Anthropic / OpenAIAccount / SiliconFlow /
-InferenceAffinity / AscendAffinity / IntelliRouter). Chinese vendors without a
+AscendAffinity / IntelliRouter). Chinese vendors without a
 native enum entry borrow ``OpenAI`` (their endpoints are OpenAI-compatible) and
 are distinguished by ``api_base``; ``icon_key`` matches
 ``ModelProviderIcon.PROVIDER_SPECS`` keys for correct frontend icon display.
@@ -39,9 +39,18 @@ Notes on verified endpoints:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+
+from openjiuwen.core.foundation.llm import (
+    get_provider_reasoning_rules,
+    get_reasoning_capability,
+    get_reasoning_capability_catalog,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class PlanKind(str, Enum):
@@ -110,9 +119,11 @@ _PRESETS: list[VendorPreset] = [
         default_model="qwen3.7-max",
         model_options=("qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.7-flash", "qwen3.6-max-preview"),
         icon_key="qwen",
-        models_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        # token-plan key 只在 token-plan 域名有效,通用 dashscope 域名 401 invalid_api_key,
+        # 所以拉列表也必须走 token-plan maas 域名(实测 200,12 个模型)。
+        models_endpoint="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models",
         models_needs_key=True,
-        anthropic_base="https://token-plan.cn-beijing.maas.aliyuncs.com/anthropic",
+        anthropic_base="https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic",
     ),
     VendorPreset(
         vendor_key="minimax", display_name="MiniMax", plan=PlanKind.TOKEN_PLAN,
@@ -127,15 +138,13 @@ _PRESETS: list[VendorPreset] = [
     ),
     VendorPreset(
         vendor_key="maas", display_name="Maas盘古", plan=PlanKind.TOKEN_PLAN,
-        client_provider="OpenAI",  # 华为云盘古借壳 OpenAI provider;实际走 ModelArts MaaS,默认OpenAI格式
+        client_provider="ModelArts",
         api_base="https://api.modelarts-maas.com/plan/v2",
-        default_model="pangu-large",
-        model_options=("pangu-ultra", "pangu-large", "pangu-small"),
+        endpoint_profile="modelarts",
+        default_model="glm-5.1",
+        model_options=("glm-5.1", "kimi-k2.6", "deepseek-v4-flash"),
         icon_key="pangu",
-        # 已知限制:此 URL 存在(实测 401 而非 404),但 ModelArts MaaS 不接受简单
-        # Bearer,要求华为云 SDK 签名(X-Sdk-Date + V4 签名 Authorization)。当前
-        # fetch_models handler 只发 Bearer,故 maas 拉列表恒 401 → 回退预设。签名支持待补。
-        models_endpoint="https://api.modelarts-maas.com/openai/v1/models",
+        models_endpoint="https://api.modelarts-maas.com/v2/models",
         models_needs_key=True,
         anthropic_base="https://api.modelarts-maas.com/plan/anthropic",
     ),
@@ -153,21 +162,23 @@ _PRESETS: list[VendorPreset] = [
             "mimo-v2.5",
         ),
         icon_key="baidu",
-        models_endpoint="https://qianfan.baidubce.com/v2/models",
-        models_needs_key=True,  # 实测无 key 返回 403 AccessDenied;带 Bearer 才 200
+        # token plan key 走 tokenplan 端点;/v2/models 是通用端点。/v2/tokenplan/models 404,
+        # personal 变体 401(端点存在,对齐 api_base)。
+        models_endpoint="https://qianfan.baidubce.com/v2/tokenplan/personal/models",
+        models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
         anthropic_base="https://qianfan.baidubce.com/anthropic/tokenplan/personal",
     ),
     VendorPreset(
         vendor_key="mimo", display_name="小米Mimo", plan=PlanKind.TOKEN_PLAN,
-        client_provider="OpenAI",
+        client_provider="MiMo",
         api_base="https://token-plan-cn.xiaomimimo.com/v1",  # 套餐调用走套餐域名(需套餐 key)
+        endpoint_profile="mimo",
         default_model="mimo-v2.5-pro",
         model_options=("mimo-v2.5-pro", "mimo-v2.5"),
         icon_key="mimo",
-        # 拉列表走通用域名:套餐域名 token-plan-cn.* 只认套餐 key,通用 key 实测 401;
-        # 通用 api.xiaomimimo.com/v1/models + 通用 key 实测 200。与 alibaba Token Plan 同款
-        # (套餐调用走 token-plan 域名、拉列表走通用 dashscope 域名)。
-        models_endpoint="https://api.xiaomimimo.com/v1/models",
+        # 拉列表也必须走套餐域名:通用 api.xiaomimimo.com 对套餐 key 返回 401 Invalid API Key,
+        # 套餐域名 token-plan-cn.xiaomimimo.com/v1/models 才 200。
+        models_endpoint="https://token-plan-cn.xiaomimimo.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://token-plan-cn.xiaomimimo.com/anthropic",
     ),
@@ -181,7 +192,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="qwen3-coder-next",
         model_options=("qwen3-coder-next", "qwen3.7-max", "qwen3.6-max-preview"),
         icon_key="qwen",
-        models_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+        # coding key 只在 coding 域名有效,通用 dashscope 域名 401。coding 域名 /v1/models 实测 200(公开)。
+        models_endpoint="https://coding.dashscope.aliyuncs.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://coding.dashscope.aliyuncs.com/apps/anthropic",
     ),
@@ -192,7 +204,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="kimi-k2.7-code",
         model_options=("kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking"),
         icon_key="kimi",
-        models_endpoint="https://api.moonshot.cn/v1/models",
+        # coding key 只在 api.kimi.com 有效,moonshot.cn 是通用域。coding 域 /coding/v1/models 实测 401(端点存在,非 404)。
+        models_endpoint="https://api.kimi.com/coding/v1/models",
         models_needs_key=True,
         anthropic_base="https://api.kimi.com/coding",
     ),
@@ -203,7 +216,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="glm-4.7",
         model_options=("glm-5.2", "glm-5.1", "glm-5", "glm-4.7", "glm-4.7-flash", "codegeex-4"),
         icon_key="zhipu",
-        models_endpoint="https://open.bigmodel.cn/api/paas/v4/models",
+        # coding key 走 coding 路径;/api/paas/v4/models 是通用端点。/api/coding/paas/v4/models 实测 401(端点存在)。
+        models_endpoint="https://open.bigmodel.cn/api/coding/paas/v4/models",
         models_needs_key=True,
         anthropic_base="https://open.bigmodel.cn/api/anthropic",
     ),
@@ -214,7 +228,8 @@ _PRESETS: list[VendorPreset] = [
         default_model="seed-2.0-mini",
         model_options=("seed-2.0-mini", "seed-2.0-lite", "seed-1.6", "seed-1.6-flash"),
         icon_key="doubao",
-        models_endpoint="https://ark.cn-beijing.volces.com/api/v3/models",
+        # coding key 走 coding 端点;/api/v3/models 是通用端点。/api/coding/v3/models 实测 401(端点存在)。
+        models_endpoint="https://ark.cn-beijing.volces.com/api/coding/v3/models",
         models_needs_key=True,
         anthropic_base="https://ark.cn-beijing.volces.com/api/coding",
     ),
@@ -225,8 +240,9 @@ _PRESETS: list[VendorPreset] = [
         default_model="deepseek-v4-pro",
         model_options=("deepseek-v4-pro", "deepseek-v4-flash", "glm-5.1", "kimi-k2.5"),
         icon_key="baidu",
-        models_endpoint="https://qianfan.baidubce.com/v2/models",
-        models_needs_key=True,  # 实测无 key 返回 403;带 Bearer 才 200
+        # coding key 走 /v2/coding 端点;/v2/models 是通用端点。/v2/coding/models 实测 401(端点存在)。
+        models_endpoint="https://qianfan.baidubce.com/v2/coding/models",
+        models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
         anthropic_base="https://qianfan.baidubce.com/anthropic/coding",
     ),
 
@@ -238,13 +254,61 @@ _PRESETS: list[VendorPreset] = [
         endpoint_profile="dashscope",
         default_model="qwen3.8-max",
         model_options=(
+            # 通义旗舰/通用
             "qwen3.8-max",
-            "qwen3.7-max",
+            "qwen3.8-max-0902",
+            "qwen3.8-flash",
             "qwen3.7-plus",
-            "qwen3.7-flash",
-            "qwen3.6-max-preview",
+            # 代码
             "qwen3-coder-next",
-            "qwen3-vl-235b-a22b-thinking",
+            "qwen3-coder-plus",
+            "qwen3-coder-flash",
+            "kimi-k2.7-code",
+            # 第三方模型（百炼直供裸 ID，探活报告中全部实测 200）
+            "MiniMax-M2.1",
+            "MiniMax-M2.5",
+            "deepseek-r1",
+            "deepseek-r1-distill-llama-8b",
+            "deepseek-r1-distill-qwen-1.5b",
+            "deepseek-r1-distill-qwen-7b",
+            "deepseek-r1-distill-qwen-14b",
+            "deepseek-r1-distill-qwen-32b",
+            "deepseek-v3",
+            "deepseek-v3.1",
+            "deepseek-v3.2",
+            "deepseek-v4-pro",
+            "deepseek-v4-pro-0813",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-0731",
+            "kimi-k2-thinking",
+            "kimi-k2.5",
+            "kimi-k2.6",
+            "kimi-k3",
+            "glm-4.7",
+            "glm-5",
+            "glm-5.1",
+            "glm-5.2",
+            "glm-5.2-fast-preview",
+            # 视觉/OCR
+            "qwen3-vl-plus",
+            "qwen3-vl-flash",
+            "qwen-vl-ocr-latest",
+            "qwen3.5-ocr",
+            # 全模态
+            "qwen3.5-omni-plus",
+            "qwen3.5-omni-flash",
+            # 通义开源
+            "qwen3.8-2.4t-a95b",
+            "qwen3.8-27b",
+            "qwen3-next-80b-a3b-instruct",
+            "qwen3-next-80b-a3b-thinking",
+            # 数学/翻译/长文本
+            "qwen-math-plus-latest",
+            "qwen-mt-plus",
+            "qwen-long",
+            # 研究/搜索
+            "qwen-deep-research-2025-12-15",
+            "qwen-deep-search-planning",
         ),
         icon_key="qwen",
         models_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1/models",
@@ -261,8 +325,6 @@ _PRESETS: list[VendorPreset] = [
             "deepseek-v4-pro",
             "deepseek-v4-flash",
             "deepseek-v4-flash-latest",
-            "deepseek-v3.2",
-            "deepseek-r1",
         ),
         icon_key="deepseek",
         models_endpoint="https://api.deepseek.com/models",
@@ -274,7 +336,7 @@ _PRESETS: list[VendorPreset] = [
         client_provider="OpenAI",
         api_base="https://api.moonshot.cn/v1",
         default_model="kimi-k3",
-        model_options=("kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking", "kimi-latest"),
+        model_options=("kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking"),
         icon_key="kimi",
         models_endpoint="https://api.moonshot.cn/v1/models",
         models_needs_key=True,
@@ -332,16 +394,23 @@ _PRESETS: list[VendorPreset] = [
     ),
     VendorPreset(
         vendor_key="maas", display_name="Maas盘古", plan=PlanKind.CUSTOM_API,
-        client_provider="OpenAI",
-        api_base="https://api.modelarts-maas.com/openai/v1",
-        default_model="pangu-large",
-        model_options=("pangu-ultra", "pangu-large", "pangu-small"),
+        client_provider="ModelArts",
+        api_base="https://api.modelarts-maas.com/v2",
+        endpoint_profile="modelarts",
+        default_model="openpangu-2.0-pro",
+        model_options=(
+            "openpangu-2.0-pro",
+            "openpangu-2.0-flash",
+            "glm-5.2",
+            "glm-5.1",
+            "kimi-k2.6",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+        ),
         icon_key="pangu",
-        # 已知限制:同 Token Plan 的 maas 条目,ModelArts MaaS 需华为云 SDK 签名,
-        # handler 仅发 Bearer 故恒 401 → 回退预设。签名支持待补。
-        models_endpoint="https://api.modelarts-maas.com/openai/v1/models",
+        models_endpoint="https://api.modelarts-maas.com/v2/models",
         models_needs_key=True,
-        anthropic_base="https://api.modelarts-maas.com/anthropic/v1",
+        anthropic_base="https://api.modelarts-maas.com/anthropic",
     ),
     VendorPreset(
         vendor_key="volcengine", display_name="火山引擎", plan=PlanKind.CUSTOM_API,
@@ -376,8 +445,9 @@ _PRESETS: list[VendorPreset] = [
     ),
     VendorPreset(
         vendor_key="mimo", display_name="小米Mimo", plan=PlanKind.CUSTOM_API,
-        client_provider="OpenAI",
+        client_provider="MiMo",
         api_base="https://api.xiaomimimo.com/v1",
+        endpoint_profile="mimo",
         default_model="mimo-v2.5-pro",
         model_options=("mimo-v2.5-pro", "mimo-v2.5"),
         icon_key="mimo",
@@ -423,9 +493,46 @@ def get_all_presets() -> list[VendorPreset]:
     return list(_PRESETS)
 
 
+def _reasoning_capabilities(preset: VendorPreset) -> dict[str, dict[str, Any]]:
+    capabilities: dict[str, dict[str, Any]] = {}
+    for model in preset.model_options:
+        # 逐模型隔离：能力查询是静态表 lookup，正常不会抛，但 vendors.list 是
+        # 前端配置页入口 RPC，不能因单个模型异常导致整个厂商列表挂掉。失败
+        # 时跳过该模型，前端会回落到 reasoning_rules / model_fallbacks。
+        try:
+            protocols = {
+                "openai": get_reasoning_capability(
+                    provider=preset.client_provider,
+                    model=model,
+                    protocol="openai",
+                    api_base=preset.api_base,
+                    endpoint_profile=preset.endpoint_profile,
+                ).to_dict(),
+            }
+            if preset.anthropic_base:
+                protocols["anthropic"] = get_reasoning_capability(
+                    provider=ANTHROPIC_CLIENT_PROVIDER,
+                    model=model,
+                    protocol="anthropic",
+                    api_base=preset.anthropic_base,
+                ).to_dict()
+        except Exception:
+            logger.warning(
+                "skip reasoning capability for vendor=%s model=%s",
+                preset.vendor_key,
+                model,
+                exc_info=True,
+            )
+            continue
+        capabilities[model] = protocols
+    return capabilities
+
+
 def to_frontend_payload() -> dict[str, Any]:
     """Grouped payload for the ``vendors.list`` RPC (plan -> [vendor cards])."""
-    out: dict[str, list[dict[str, Any]]] = {}
+    out: dict[str, Any] = {
+        "reasoning": get_reasoning_capability_catalog(),
+    }
     for plan in PlanKind:
         out[plan.value] = [
             {
@@ -441,6 +548,15 @@ def to_frontend_payload() -> dict[str, Any]:
                 "icon_key": p.icon_key,
                 "models_endpoint": p.models_endpoint,
                 "models_needs_key": p.models_needs_key,
+                "reasoning_capabilities": _reasoning_capabilities(p),
+                # Provider-scoped pattern 规则：给 models_endpoint 拉取到的、
+                # 不在 model_options 精确表里的新模型用，避免前端退到跨厂商
+                # model_fallbacks 时与后端 provider 级校验产生漂移。
+                "reasoning_rules": get_provider_reasoning_rules(
+                    provider=p.client_provider,
+                    api_base=p.api_base,
+                    endpoint_profile=p.endpoint_profile,
+                ),
                 # Anthropic 格式(可选切换): 仅当 anthropic_base 非空时可用,
                 # 切换后落库 client_provider=ANTHROPIC_CLIENT_PROVIDER、
                 # api_base=anthropic_base(core 用 AnthropicModelClient 走 /v1/messages)。

@@ -372,6 +372,58 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
 
 
 @pytest.mark.asyncio
+async def test_handle_command_compact_attributes_team_work_to_live_leader(server, fake_ws, monkeypatch):
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability
+    from jiuwenswarm.agents.harness import team as team_package
+
+    request = AgentRequest(
+        request_id="req-team-compact",
+        channel_id="web",
+        session_id="session-team",
+        req_method=ReqMethod.COMMAND_COMPACT,
+        params={"mode": "team.work.normal"},
+    )
+
+    class MockAgent:
+        async def ensure_instance(self):
+            return None
+
+        async def compress_context(self, session_id, *, return_state=False):
+            return {"result": "noop", "stats": None}
+
+    subject = SimpleNamespace(
+        subject_id="team-member:session-team:demo:leader",
+        display_name="Leader",
+        kind="team_leader",
+        parent_subject_id="",
+        session_id="session-team",
+    )
+    leader = SimpleNamespace(observability_execution_subject=lambda session_id: subject)
+    team_manager = SimpleNamespace(get_team_agent=lambda session_id: leader)
+    captured = {}
+
+    monkeypatch.setattr(
+        server.get_agent_manager_for_test(),
+        "get_agent_for_session_nowait",
+        lambda channel_id, session_id: MockAgent(),
+    )
+    monkeypatch.setattr(team_package, "get_team_manager", lambda channel_id: team_manager)
+    monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda: None)
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(),
+    )
+    monkeypatch.setattr(harness_observability, "close_agent_run_span", lambda *args, **kwargs: None)
+
+    await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
+
+    assert captured["execution_subject"] is subject
+    assert captured["mode"] == "team.work.normal"
+
+
+@pytest.mark.asyncio
 async def test_handle_command_diff_returns_summary_payload(server, fake_ws):
     request = AgentRequest(
         request_id="req-diff",

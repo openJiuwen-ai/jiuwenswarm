@@ -4,8 +4,11 @@
 
 import importlib
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from jiuwenswarm.common import utils
 
@@ -410,6 +413,96 @@ class TestMultiInstanceEnvVars:
                 os.environ["JIUWENSWARM_DATA_DIR"] = original_workspace_env
 
 
+class TestFreeSearchRuntimeDefaults:
+    """Test apply_free_search_runtime_defaults (free-search opt-in survives process start).
+
+    Every entrypoint calls this immediately after loading `.env`. Its predecessor
+    assigned both flags unconditionally, so a value read from `.env` — including one
+    the config UI had just persisted — was discarded one line later, and enabling free
+    search was silently lost on the next restart.
+    """
+
+    DDG_FLAG = "FREE_SEARCH_DDG_ENABLED"
+    BING_FLAG = "FREE_SEARCH_BING_ENABLED"
+
+    @staticmethod
+    def _unset(monkeypatch, *names):
+        """Unset flags so monkeypatch still restores them after the test.
+
+        `delenv` alone records nothing when the variable is already absent, so the
+        `setdefault` under test would leak its value into later tests.
+        """
+        for name in names:
+            monkeypatch.setenv(name, "")
+            monkeypatch.delenv(name)
+
+    def test_explicit_opt_in_survives(self, monkeypatch):
+        """An explicit opt-in from .env, the config UI, or the shell is preserved."""
+        monkeypatch.setenv(self.DDG_FLAG, "true")
+        monkeypatch.setenv(self.BING_FLAG, "true")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "true", "explicit DDG opt-in was discarded"
+        assert os.environ[self.BING_FLAG] == "true", "explicit Bing opt-in was discarded"
+
+    def test_explicit_opt_out_is_left_alone(self, monkeypatch):
+        """An explicit "false" stays disabled — the default never re-enables anything."""
+        monkeypatch.setenv(self.DDG_FLAG, "false")
+        monkeypatch.setenv(self.BING_FLAG, "false")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "false"
+        assert os.environ[self.BING_FLAG] == "false"
+
+    def test_unset_flags_get_the_disabled_default(self, monkeypatch):
+        """A fresh install that configures nothing still starts with both engines off."""
+        self._unset(monkeypatch, self.DDG_FLAG, self.BING_FLAG)
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "false"
+        assert os.environ[self.BING_FLAG] == "false"
+
+    def test_empty_value_is_kept_and_still_reads_as_disabled(self, monkeypatch):
+        """An empty value counts as set, and both consumers still treat it as off."""
+        from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import _is_free_search_enabled
+        from jiuwenswarm.agents.harness.common.tools.search_tools import _env_flag
+
+        monkeypatch.setenv(self.DDG_FLAG, "")
+        monkeypatch.setenv(self.BING_FLAG, "")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert (
+            os.environ[self.DDG_FLAG] == ""
+        ), "an empty value is set, so it is not a default to fill"
+        assert os.environ[self.BING_FLAG] == ""
+        # Blank reads as disabled on both sides, so keeping it changes no behaviour.
+        assert _env_flag(self.DDG_FLAG, default=False) is False
+        assert _env_flag(self.BING_FLAG, default=False) is False
+        assert _is_free_search_enabled() is False
+
+    def test_flags_are_handled_independently(self, monkeypatch):
+        """Opting one engine in leaves the other at the disabled default."""
+        self._unset(monkeypatch, self.BING_FLAG)
+        monkeypatch.setenv(self.DDG_FLAG, "true")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "true", "DDG opt-in was discarded"
+        assert os.environ[self.BING_FLAG] == "false", "unset Bing flag should take the default"
+
+        self._unset(monkeypatch, self.DDG_FLAG)
+        monkeypatch.setenv(self.BING_FLAG, "true")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.BING_FLAG] == "true", "Bing opt-in was discarded"
+        assert os.environ[self.DDG_FLAG] == "false", "unset DDG flag should take the default"
+
+
 class TestHardcodedPathsPhase2:
     """Test that hardcoded paths are fixed to use getter functions (Phase 2).
 
@@ -523,3 +616,118 @@ class TestAdditionalHardcodedPaths:
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
             f"Expected: {expected_path.resolve()}, Got: {actual_path.resolve()}"
+
+
+class TestCleanupStaleOpenjiuwenDescs:
+    @staticmethod
+    def _fake_package(tmp_path):
+        import types
+
+        package_dir = tmp_path / "openjiuwen"
+        package_dir.mkdir()
+        fake = types.ModuleType("openjiuwen")
+        fake.__file__ = str(package_dir / "__init__.py")
+        return fake, package_dir / "agent_teams" / "tools" / "locales" / "descs"
+
+    @staticmethod
+    def test_removes_only_flat_files_with_nested_replacements(tmp_path):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+
+        for lang in ("cn", "en"):
+            domain_dir = descs / lang / "async_task"
+            domain_dir.mkdir(parents=True)
+            (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+            (descs / lang / "async_task_cancel.md").write_text("old", encoding="utf-8")
+            (descs / lang / "flat_only.md").write_text("canonical", encoding="utf-8")
+
+            fragments = descs / lang / "fragments"
+            fragments.mkdir()
+            (fragments / "fragment_name.md").write_text("fragment", encoding="utf-8")
+            (descs / lang / "fragment_name.md").write_text("canonical", encoding="utf-8")
+
+        with patch.dict(sys.modules, {"openjiuwen": fake}):
+            utils.cleanup_stale_openjiuwen_descs()
+
+        for lang in ("cn", "en"):
+            assert not (descs / lang / "async_task_cancel.md").exists()
+            assert (descs / lang / "async_task" / "async_task_cancel.md").exists()
+            assert (descs / lang / "flat_only.md").exists()
+            assert (descs / lang / "fragment_name.md").exists()
+
+    @staticmethod
+    def test_raises_actionable_error_when_stale_file_is_not_writable(tmp_path):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+        domain_dir = descs / "cn" / "async_task"
+        domain_dir.mkdir(parents=True)
+        (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+        flat = descs / "cn" / "async_task_cancel.md"
+        flat.write_text("old", encoding="utf-8")
+
+        with (
+            patch.dict(sys.modules, {"openjiuwen": fake}),
+            patch.object(Path, "unlink", side_effect=PermissionError("read-only")),
+            pytest.raises(RuntimeError, match="reinstall OpenJiuwen"),
+        ):
+            utils.cleanup_stale_openjiuwen_descs()
+
+        assert flat.exists()
+
+    @staticmethod
+    def test_tolerates_concurrent_removal(tmp_path):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+        domain_dir = descs / "cn" / "async_task"
+        domain_dir.mkdir(parents=True)
+        (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+        (descs / "cn" / "async_task_cancel.md").write_text("old", encoding="utf-8")
+
+        with (
+            patch.dict(sys.modules, {"openjiuwen": fake}),
+            patch.object(Path, "unlink", side_effect=FileNotFoundError),
+        ):
+            utils.cleanup_stale_openjiuwen_descs()
+
+    @staticmethod
+    def test_skips_cleanup_for_frozen_windows_bundle(tmp_path, monkeypatch):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+        domain_dir = descs / "cn" / "async_task"
+        domain_dir.mkdir(parents=True)
+        (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+        flat = descs / "cn" / "async_task_cancel.md"
+        flat.write_text("old", encoding="utf-8")
+
+        monkeypatch.setattr(utils.sys, "platform", "win32")
+        monkeypatch.setattr(utils.sys, "frozen", True, raising=False)
+        with (
+            patch.dict(sys.modules, {"openjiuwen": fake}),
+            patch.object(Path, "unlink", side_effect=PermissionError("read-only")),
+        ):
+            utils.cleanup_stale_openjiuwen_descs()
+
+        assert flat.exists()
+
+    @staticmethod
+    def test_noop_when_openjiuwen_missing():
+        with patch.dict(sys.modules, {"openjiuwen": None}):
+            utils.cleanup_stale_openjiuwen_descs()
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "relative_path",
+        (
+            "jiuwenswarm/app.py",
+            "jiuwenswarm/gateway/app_gateway.py",
+            "jiuwenswarm/server/app_agentserver.py",
+        ),
+    )
+    def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / relative_path).read_text(encoding="utf-8")
+        cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
+
+        openjiuwen_imports = [
+            source.find(marker)
+            for marker in ("from openjiuwen", "import openjiuwen")
+            if source.find(marker) >= 0
+        ]
+        if openjiuwen_imports:
+            assert cleanup_call < min(openjiuwen_imports)

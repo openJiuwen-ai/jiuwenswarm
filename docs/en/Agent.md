@@ -154,13 +154,13 @@ Loadable modules. Each skill typically defines goals, steps, tool usage, and out
 
 #### 5. Memory
 
-Three kinds:
+Memory is organized into three files:
 
-- **User profile** — who you are, preferences, habits  
-- **Episodic** — events, decisions, conversation snippets  
-- **Semantic** — background knowledge and concepts  
+- **USER.md (user profile)** — Located at the workspace root; stores user identity, preferences, and habits
+- **MEMORY.md (long-term memory)** — Under `memory/`; stores durable, reusable content like decisions and persistent facts
+- **YYYY-MM-DD.md (daily log)** — Under `memory/daily_memory/`; archives daily runtime context and conversation snippets by date
 
-**Note:** Memory is mostly automatic; you can search history when needed.
+**Note:** Memory is mostly automatic; you can search history when needed. See [Memory](Memory.md) for the full structure.
 
 #### 6. Config
 
@@ -189,7 +189,7 @@ JiuwenSwarm supports multi-agent collaboration through team-based workflows to h
 - Result aggregation: The leader collects and integrates results from teammates  
 - Dynamic adjustment: Task assignments adapt based on execution progress  
 
-**Configuration:** Team settings are configured in the `team` section of `config/config.yaml`
+**Configuration:** Team settings are configured under `modes.team.<team_name>` in `config/config.yaml`
 
 > See team collaboration documentation for more details on multi-agent workflows.
 
@@ -208,10 +208,13 @@ C:\Users\<username>\.jiuwenswarm\
 │
 ├── config/                          # Configuration
 │   ├── config.yaml                  # Main config (models, channels, permissions)
-│   └── builtin_rules.yaml           # Built-in rules
+│   ├── builtin_rules.yaml           # Built-in rules
+│   ├── .env                         # Environment variables
+│   └── runtime_state/               # Runtime state directory (per-session / per-task files)
 │
 ├── agent/                           # Agent-related data
 │   ├── sessions/                    # Session history storage
+│   ├── home/                        # Agent home data
 │   └── workspace/                   # Agent workspace
 │       ├── AGENT_ZH.md              # Agent bootstrap config (Chinese)
 │       ├── AGENT_EN.md              # Agent bootstrap config (English)
@@ -224,12 +227,14 @@ C:\Users\<username>\.jiuwenswarm\
 │       ├── todo/                    # Agent todo items storage
 │       └── skills/                  # Skills
 │
-├── todo/                            # Global todo items storage
+├── .agent_teams/                    # Team-related data (bindings.json, team.db, trio-count/, etc.)
+├── .updates/                        # Version update cache
 ├── gateway/                         # Gateway data
 ├── logs/                            # Log files
 ├── memory/                          # Global memory store
 ├── received_files/                  # Incoming external files
-└── web/                             # Web channel assets
+├── web/                             # Web channel assets
+└── .trace/                          # Trace data (created on demand)
 ```
 
 **Key files:**
@@ -244,7 +249,7 @@ C:\Users\<username>\.jiuwenswarm\
 | `agent/workspace/SOUL_ZH.md` | Values and persona (Chinese) | Customizable | Affects tone and style |
 | `agent/workspace/USER.md` | User profile and preferences | Auto-managed by system | Affects personalization; update via agent conversation |
 | `agent/workspace/skills/` | Skills | Add skills | Extends capabilities |
-| `agent/workspace/memory/` | Memory store (user profile, episodic, semantic) | Do not edit by hand | Risk of corrupting memory data |
+| `agent/workspace/memory/` | Memory store (MEMORY.md, daily_memory/) | Do not edit by hand | Risk of corrupting memory data |
 | `agent/workspace/todo/` | Agent todo items storage | Auto-managed by system | Affects task tracking; manage via agent conversation |
 | `todo/` | Global todo items storage | Auto-managed by system | Affects task tracking; manage via agent conversation |
 | `logs/` | Logs | View only | Used for troubleshooting |
@@ -254,9 +259,13 @@ C:\Users\<username>\.jiuwenswarm\
 ```text
 C:\Users\Administrator\.jiuwenswarm\
 ├── config\config.yaml
+├── config\builtin_rules.yaml
+├── config\runtime_state\           # Runtime state directory (per-session / per-task files)
+├── .agent_teams\                    # Team-related data
 ├── todo\                            # Global todo items
 ├── agent\
 │   ├── sessions\                    # Session history
+│   ├── home\                       # Agent home data
 │   └── workspace\
 │       ├── AGENT_ZH.md
 │       ├── AGENT_EN.md
@@ -268,6 +277,9 @@ C:\Users\Administrator\.jiuwenswarm\
 │       ├── memory\
 │       ├── todo\                    # Agent todo items
 │       └── skills\
+├── .updates\                        # Version update cache
+├── logs\                            # Log files
+└── .trace\                          # Trace data (created on demand)
 ```
 
 > **Notes:**  
@@ -395,9 +407,11 @@ models:
 ```yaml
 channels:
   feishu:
-    enabled: true
+    apps:
+      - name: Feishu default app
+        enabled: true  # Enable the Feishu channel (enabled is inside the apps list element)
   telegram:
-    enabled: false
+    enabled: false  # Disable the Telegram channel (telegram has enabled at the top level)
 ```
 
 #### Troubleshooting

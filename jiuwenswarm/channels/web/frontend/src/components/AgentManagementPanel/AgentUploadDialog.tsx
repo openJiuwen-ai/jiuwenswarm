@@ -9,7 +9,7 @@ import {
   selectLocalFiles,
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
-import { isAgentUploadFilename } from '../../features/agentManagement';
+import { isAgentUploadFilename, mapLocalPackageImportError } from '../../features/agentManagement';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
 
 type AgentUploadDialogProps = {
@@ -149,6 +149,14 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
     }
   };
 
+  const displayError = error
+    ? mapLocalPackageImportError(error, t, {
+        readme: 'agentManagement.states.uploadMissingReadme',
+        manifest: 'agentManagement.states.uploadMissingManifest',
+        persona: 'agentManagement.states.uploadMissingPersona',
+      })
+    : pickerError;
+
   return createPortal(
     <div
       className="agent-management-selection-overlay"
@@ -165,16 +173,17 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
         tabIndex={-1}
         aria-labelledby="agent-upload-dialog-title"
         aria-describedby="agent-upload-dialog-hint"
+        data-testid="agent-management-upload-dialog"
         onMouseDown={event => event.stopPropagation()}
       >
         <header>
-          <h2 id="agent-upload-dialog-title">{t('agentManagement.actions.createByUpload')}</h2>
-          <button type="button" onClick={onCancel} aria-label={t('common.close')} disabled={submitting}>
+          <h2 id="agent-upload-dialog-title" data-testid="agent-management-upload-dialog-title">{t('agentManagement.actions.createByUpload')}</h2>
+          <button type="button" onClick={onCancel} aria-label={t('common.close')} disabled={submitting} data-testid="agent-management-upload-dialog-close-btn">
             <X size={18} aria-hidden="true" />
           </button>
         </header>
 
-        <p id="agent-upload-dialog-hint" className="agent-management-upload-dialog__hint">
+        <p id="agent-upload-dialog-hint" className="agent-management-upload-dialog__hint" data-testid="agent-management-upload-dialog-hint">
           <Info size={14} aria-hidden="true" />
           <span>{t('agentManagement.form.uploadHint')}</span>
         </p>
@@ -184,6 +193,7 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
           role="button"
           tabIndex={filePick || submitting ? -1 : 0}
           aria-label={t('agentManagement.form.uploadPlaceholder')}
+          data-testid="agent-management-upload-dialog-picker"
           onKeyDown={event => {
             if ((event.key === 'Enter' || event.key === ' ') && !filePick && !submitting) {
               event.preventDefault();
@@ -211,7 +221,7 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
           }}
         >
           {filePick ? (
-            <div className="agent-management-upload-picker__selected">
+            <div className="agent-management-upload-picker__selected" data-testid="agent-management-upload-dialog-selected-file">
               <FileArchive size={22} aria-hidden="true" />
               <div>
                 <p title={filePick.filename}>{filePick.filename}</p>
@@ -220,6 +230,7 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
               <button
                 type="button"
                 aria-label={t('agentManagement.form.removeUpload')}
+                data-testid="agent-management-upload-dialog-remove-btn"
                 onClick={event => {
                   event.stopPropagation();
                   setFilePick(null);
@@ -239,13 +250,13 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
             </>
           )}
         </div>
-        {error || pickerError ? <p className="agent-management-upload-dialog__error" role="alert">{error || pickerError}</p> : null}
+        {displayError ? <p className="agent-management-upload-dialog__error" role="alert" data-testid="agent-management-upload-dialog-error">{displayError}</p> : null}
 
         <footer>
-          <button type="button" className="agent-management-button agent-management-button--secondary" onClick={onCancel} disabled={submitting}>
+          <button type="button" className="agent-management-button agent-management-button--secondary" onClick={onCancel} disabled={submitting} data-testid="agent-management-upload-dialog-cancel-btn">
             {t('common.cancel')}
           </button>
-          <button type="button" className="agent-management-button agent-management-button--primary" onClick={() => void handleConfirm()} disabled={!filePick || submitting}>
+          <button type="button" className="agent-management-button agent-management-button--primary" onClick={() => void handleConfirm()} disabled={!filePick || submitting} data-testid="agent-management-upload-dialog-confirm-btn">
             {submitting ? t('agentManagement.actions.uploading') : t('common.confirm')}
           </button>
         </footer>

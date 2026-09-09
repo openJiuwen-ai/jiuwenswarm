@@ -9,10 +9,13 @@ phases share one set of low-level tools:
 * **History records** — ``_sanitize_history_record_for_wire`` /
   ``_select_history_record_page`` paginate a session's history under a byte
   budget, collapsing oversized records down to a metadata stub.
-* **Workflow snapshots** — ``_build_workflow_list_payload`` /
-  ``_build_workflow_detail_payload`` shape swarmflow runs for the
-  ``command.workflows`` RPC, with a HITL carve-out that always preserves a
-  ``waiting_for_human`` node's ``human_prompt``.
+* **Workflow snapshots** — ``command.workflows`` serves swarmflow runs via a
+  four-layer paging ladder: ``_build_workflow_list_payload`` (``list``, run
+  summaries without phases), ``_build_workflow_detail_paginated``
+  (``get_workflow``, run meta + paged phase summaries), ``_build_phase_detail_paginated``
+  (``get_phase``, phase meta + paged agents) and ``_build_agent_detail``
+  (``get_agent``, a single agent). Oversized agent string fields are split into
+  ``_{field}_parts`` arrays via ``_split_oversized_agent_fields``.
 
 Everything is pure: given an input dict and a byte budget, return a wire-safe
 dict. The only I/O is the caller's. Sized via ``_json_wire_size`` (UTF-8 bytes
@@ -43,12 +46,14 @@ _TEAM_HISTORY_DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 _TEAM_HISTORY_MIN_MAX_BYTES = 2048
 _TEAM_HISTORY_MAX_MAX_BYTES = 6 * 1024 * 1024
 _TEAM_HISTORY_FRAME_OVERHEAD_BYTES = 1024
-_WORKFLOW_SNAPSHOT_MAX_BYTES = 6 * 1024 * 1024
-_WORKFLOW_SNAPSHOT_FRAME_OVERHEAD_BYTES = 2048
-_WORKFLOW_SNAPSHOT_MAX_WORKFLOWS = 1000
-_WORKFLOW_LIST_SUMMARY_STRING_LIMIT = 256
-_WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT = 512
-_WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES = 512 * 1024
+_WORKFLOW_AGENT_FIELD_PART_BYTES = 32 * 1024
+_WORKFLOW_LIST_DEFAULT_LIMIT = 50
+_WORKFLOW_LIST_MAX_LIMIT = 200
+_WORKFLOW_PHASE_DEFAULT_LIMIT = 20
+_WORKFLOW_PHASE_MAX_LIMIT = 100
+_WORKFLOW_AGENT_DEFAULT_LIMIT = 50
+_WORKFLOW_AGENT_MAX_LIMIT = 200
+_SPLITTABLE_AGENT_FIELDS = ("prompt", "outcome", "human_prompt", "human_reply", "activity", "error")
 
 _TRUNCATE_SUFFIX = " [truncated]"
 
@@ -63,6 +68,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.usage_summary",
         "chat.file",
         "team.message",
+        "context.usage",
         "context.compact_boundary",
         "context.compact_summary",
         "context.rewind_summary",
@@ -87,20 +93,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
-}
-
-_WORKFLOW_SNAPSHOT_KEEP_KEYS = {
-    "id",
-    "name",
-    "status",
-    "agent_count",
-    "completed_agent_count",
-    "started_at",
-    "completed_at",
-    "duration_ms",
-    "token_count",
-    "estimated_token_count",
-    "budget",
+    "agent_template_name",
 }
 
 _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
@@ -115,6 +108,8 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
     "token_count",
     "estimated_token_count",
     "budget",
+    "workflow_budget",
+    "budget_exhausted_scope",
 )
 
 
@@ -374,487 +369,313 @@ def _select_history_record_page(
 
 
 # ---------------------------------------------------------------------------
-# Workflow snapshot — HITL (waiting-for-human) helpers
+# Workflow snapshot — agent field part splitting
 # ---------------------------------------------------------------------------
 
-def _is_waiting_human_agent(agent: dict[str, Any]) -> bool:
-    return agent.get("status") == "waiting_for_human" and agent.get("kind") == "human"
-
-
-def _extract_waiting_human_prompts(workflow: dict[str, Any]) -> dict[str, str]:
-    """Pull every waiting-human node's prompt, keyed by agent id, before shrink."""
-    prompts: dict[str, str] = {}
-    phases = workflow.get("phases")
-    if not isinstance(phases, list):
-        return prompts
-    for phase in phases:
-        if not isinstance(phase, dict):
-            continue
-        agents = phase.get("agents")
-        if not isinstance(agents, list):
-            continue
-        for agent in agents:
-            if not isinstance(agent, dict) or not _is_waiting_human_agent(agent):
-                continue
-            prompt = agent.get("human_prompt")
-            agent_id = agent.get("id")
-            has_prompt = isinstance(prompt, str) and bool(prompt.strip())
-            has_agent_id = isinstance(agent_id, str) and bool(agent_id)
-            if has_prompt and has_agent_id:
-                prompts[agent_id] = prompt
-    return prompts
-
-
-def _restore_waiting_human_prompts(item: dict[str, Any], prompts: dict[str, str]) -> None:
-    """Re-attach preserved human prompts onto a shrunk item's waiting nodes."""
-    if not prompts:
-        return
-    phases = item.get("phases")
-    if not isinstance(phases, list):
-        return
-    for phase in phases:
-        if not isinstance(phase, dict):
-            continue
-        agents = phase.get("agents")
-        if not isinstance(agents, list):
-            continue
-        for agent in agents:
-            if not isinstance(agent, dict):
-                continue
-            agent_id = agent.get("id")
-            if isinstance(agent_id, str) and agent_id in prompts:
-                agent["human_prompt"] = prompts[agent_id]
-
-
-def _workflow_agent_for_collapse(agent: dict[str, Any]) -> dict[str, Any]:
-    """Collapse one agent: keep identity + short text fields, bigger human_prompt."""
-    collapsed_agent: dict[str, Any] = {
-        "id": agent.get("id", ""),
-        "name": agent.get("name", ""),
-        "status": agent.get("status", "running"),
-        "kind": agent.get("kind", "agent"),
-    }
-    if agent.get("token_count") is not None:
-        collapsed_agent["token_count"] = agent["token_count"]
-    if agent.get("model"):
-        collapsed_agent["model"] = agent["model"]
-    if agent.get("correlation_id"):
-        collapsed_agent["correlation_id"] = agent["correlation_id"]
-    for time_key in ("started_at", "completed_at", "duration_ms"):
-        if time_key in agent:
-            collapsed_agent[time_key] = agent[time_key]
-
-    if _is_waiting_human_agent(agent):
-        prompt = agent.get("human_prompt")
-        if isinstance(prompt, str) and prompt.strip():
-            collapsed_agent["human_prompt"] = _truncate_string_by_bytes(
-                prompt,
-                _WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES,
-            )
-        return collapsed_agent
-
-    for text_key in ("prompt", "outcome", "error", "human_prompt", "human_reply"):
-        value = agent.get(text_key)
-        if isinstance(value, str) and value.strip():
-            collapsed_agent[text_key] = _truncate_string_by_bytes(
-                value,
-                _WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT,
-            )
-        elif value is not None:
-            collapsed_agent[text_key] = _truncate_string_by_bytes(
-                str(value),
-                _WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT,
-            )
-    return collapsed_agent
-
-
-# ---------------------------------------------------------------------------
-# Workflow snapshot — single-item shrink ladder
-# ---------------------------------------------------------------------------
-
-def _collapse_oversized_workflow_snapshot_item(item: dict[str, Any]) -> dict[str, Any]:
-    """Collapse a too-large workflow item: keep structure, truncate large text."""
-    collapsed = {
-        key: _sanitize_history_wire_value(value)
-        for key, value in item.items()
-        if key in _WORKFLOW_SNAPSHOT_KEEP_KEYS
-    }
-    for key in ("summary", "description", "error", "result"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            collapsed[key] = _truncate_string_by_bytes(value, 512)
-        elif value is not None:
-            collapsed[key] = _truncate_string_by_bytes(str(value), 512)
-
-    phases = item.get("phases")
-    if isinstance(phases, list):
-        collapsed_phases = []
-        for phase in phases:
-            if not isinstance(phase, dict):
-                continue
-            collapsed_phase = {
-                "id": phase.get("id", ""),
-                "name": phase.get("name", ""),
-                "status": phase.get("status", "running"),
-                "agent_count": phase.get("agent_count", 0),
-                "completed_agent_count": phase.get("completed_agent_count", 0),
-            }
-            for child_key in ("phase_type", "nested_phase", "parent_phase"):
-                if child_key in phase:
-                    collapsed_phase[child_key] = phase[child_key]
-            agents = phase.get("agents")
-            if isinstance(agents, list):
-                collapsed_agents = []
-                for agent in agents:
-                    if not isinstance(agent, dict):
-                        continue
-                    collapsed_agents.append(_workflow_agent_for_collapse(agent))
-                collapsed_phase["agents"] = collapsed_agents
-            collapsed_phases.append(collapsed_phase)
-        collapsed["phases"] = collapsed_phases
-
-    logs = item.get("logs")
-    if isinstance(logs, list) and logs:
-        collapsed["logs"] = [
-            _truncate_string_by_bytes(str(log), 512)
-            for log in logs[-10:]
-        ]
-
-    collapsed["truncated"] = True
-    return collapsed
-
-
-def _minimal_workflow_snapshot_item_for_wire(item: dict[str, Any]) -> dict[str, Any]:
-    """Bare workflow item: metadata only, summary replaced, no phases."""
-    minimal = {
-        key: _compact_wire_metadata_value(value)
-        for key, value in item.items()
-        if key in _WORKFLOW_SNAPSHOT_KEEP_KEYS
-    }
-    minimal["summary"] = "[truncated]"
-    minimal["truncated"] = True
-    return minimal
-
-
-def _minimal_workflow_detail_preserving_waiting_human(item: dict[str, Any]) -> dict[str, Any]:
-    """Minimal item that still carries its waiting-human nodes (HITL carve-out)."""
-    minimal = _minimal_workflow_snapshot_item_for_wire(item)
-    phases = item.get("phases")
-    if not isinstance(phases, list):
-        return minimal
-
-    preserved_phases: list[dict[str, Any]] = []
-    for phase in phases:
-        if not isinstance(phase, dict):
-            continue
-        agents = phase.get("agents")
-        if not isinstance(agents, list):
-            continue
-        waiting_agents = [
-            _workflow_agent_for_collapse(agent)
-            for agent in agents
-            if isinstance(agent, dict) and _is_waiting_human_agent(agent)
-        ]
-        if not waiting_agents:
-            continue
-        preserved_phases.append(
-            {
-                "id": phase.get("id", ""),
-                "name": phase.get("name", ""),
-                "status": phase.get("status", "running"),
-                "agent_count": phase.get("agent_count", len(waiting_agents)),
-                "completed_agent_count": phase.get("completed_agent_count", 0),
-                "agents": waiting_agents,
-            }
-        )
-    if preserved_phases:
-        minimal["phases"] = preserved_phases
-    return minimal
-
-
-def _sanitize_workflow_snapshot_item_for_wire(item: Any) -> dict[str, Any]:
-    """Sanitize one workflow item, collapsing if it exceeds the per-record budget."""
-    if not isinstance(item, dict):
-        return {"summary": _sanitize_history_wire_value(item), "truncated": True}
-    sanitized = _sanitize_history_wire_value(item)
-    if not isinstance(sanitized, dict):
-        return {"summary": str(sanitized), "truncated": True}
-    if _json_wire_size(sanitized) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
-        return sanitized
-    return _collapse_oversized_workflow_snapshot_item(item)
-
-
-def _fit_workflow_detail_to_budget(
-    item: dict[str, Any],
+def _split_oversized_agent_fields(
+    agent: dict[str, Any],
     *,
-    budget: int,
-    preserved_prompts: dict[str, str],
+    part_bytes: int = _WORKFLOW_AGENT_FIELD_PART_BYTES,
 ) -> dict[str, Any]:
-    """Shrink a workflow detail item until it fits ``budget`` bytes.
+    """Replace oversized string fields with ``_{field}_parts`` arrays.
 
-    Drop logs first, then strip to waiting-human-only, then bare metadata.
-    Preserved human prompts are re-attached after every shrink so a HITL turn
-    is never left without its question.
+    A field whose UTF-8 byte length exceeds ``part_bytes`` is sliced by
+    **character** boundary (not byte) so every slice is valid UTF-8, mirroring
+    ``split_history_record_for_stream``. Small fields are left untouched.
     """
-    if _json_wire_size(item) <= budget:
-        return item
-
-    trimmed = dict(item)
-    trimmed.pop("logs", None)
-    _restore_waiting_human_prompts(trimmed, preserved_prompts)
-    if _json_wire_size(trimmed) <= budget:
-        trimmed["truncated"] = True
-        return trimmed
-
-    if preserved_prompts:
-        trimmed = _minimal_workflow_detail_preserving_waiting_human(item)
-        _restore_waiting_human_prompts(trimmed, preserved_prompts)
-        if _json_wire_size(trimmed) <= budget:
-            trimmed["truncated"] = True
-            return trimmed
-
-    minimal = _minimal_workflow_snapshot_item_for_wire(item)
-    minimal["truncated"] = True
-    return minimal
+    out = dict(agent)
+    for field in _SPLITTABLE_AGENT_FIELDS:
+        val = out.get(field)
+        if not isinstance(val, str):
+            continue
+        if len(val.encode("utf-8")) <= part_bytes:
+            continue
+        chars_per_part = max(256, part_bytes // 4)
+        total = max(1, (len(val) + chars_per_part - 1) // chars_per_part)
+        out[f"{field}_parts"] = [
+            {
+                "part_idx": i,
+                "total_parts": total,
+                "content": val[i * chars_per_part:(i + 1) * chars_per_part],
+            }
+            for i in range(total)
+        ]
+        del out[field]
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Workflow snapshot — list shaping
+# Workflow snapshot — list summary shaping
 # ---------------------------------------------------------------------------
-
-def _workflow_list_summary_phase(phase: dict[str, Any]) -> dict[str, Any]:
-    """Phase skeleton for list — counts and status only, no agent bodies."""
-    return {
-        "id": phase.get("id", ""),
-        "name": phase.get("name", ""),
-        "status": phase.get("status", "running"),
-        "agent_count": phase.get("agent_count", 0),
-        "completed_agent_count": phase.get("completed_agent_count", 0),
-        "agents": [],
-    }
-
 
 def _workflow_list_summary_item(item: dict[str, Any]) -> dict[str, Any]:
-    """Compact workflow row for ``command.workflows`` list — omits large text fields."""
+    """Compact workflow row for ``action=list`` — no phases, detail_pending.
+
+    Fields are carried in full — pagination bounds the frame, so there is no
+    per-string truncation.
+    """
     summary: dict[str, Any] = {}
     for key in _WORKFLOW_LIST_SUMMARY_KEEP_KEYS:
         value = item.get(key)
         if value is None:
             continue
-        # budget is a small dict object; must not be str()'d by
-        # _compact_wire_metadata_value, or the frontend receives a string
-        # instead of an object and cannot read spent/total/remaining.
-        if key == "budget" and isinstance(value, dict):
-            summary[key] = value
-        else:
-            summary[key] = _compact_wire_metadata_value(value)
+        summary[key] = value
     for key in ("summary", "error", "result"):
         value = item.get(key)
         if isinstance(value, str) and value.strip():
-            summary[key] = _truncate_string_by_bytes(value, _WORKFLOW_LIST_SUMMARY_STRING_LIMIT)
+            summary[key] = value
         elif value is not None and key not in summary:
-            summary[key] = _truncate_string_by_bytes(str(value), _WORKFLOW_LIST_SUMMARY_STRING_LIMIT)
-
-    phases = item.get("phases")
-    if isinstance(phases, list):
-        summary["phases"] = [
-            _workflow_list_summary_phase(phase)
-            for phase in phases
-            if isinstance(phase, dict)
-        ]
-
+            summary[key] = value
     summary["detail_pending"] = True
     return summary
 
 
-def _minimal_workflow_list_item(item: dict[str, Any]) -> dict[str, Any]:
-    """Smallest list row when the full summary still exceeds the wire budget."""
-    return {
-        "id": _compact_wire_metadata_value(item.get("id")),
-        "name": _truncate_string_by_bytes(str(item.get("name") or "workflow"), 128),
-        "status": _compact_wire_metadata_value(item.get("status") or "running"),
-        "agent_count": item.get("agent_count", 0),
-        "completed_agent_count": item.get("completed_agent_count", 0),
-        "detail_pending": True,
+def _workflow_phase_summary(phase: dict[str, Any]) -> dict[str, Any]:
+    """Phase meta for ``action=get_workflow`` — no agents, detail_pending."""
+    out: dict[str, Any] = {
+        "id": phase.get("id", ""),
+        "name": phase.get("name", ""),
+        "status": phase.get("status", "running"),
+        "agent_count": phase.get("agent_count", 0),
+        "completed_agent_count": phase.get("completed_agent_count", 0),
     }
+    for opt_key in ("phase_type", "parent_phase", "nested_phase", "iteration"):
+        if opt_key in phase:
+            out[opt_key] = phase[opt_key]
+    out["detail_pending"] = True
+    return out
 
 
-def _fit_workflow_list_item_for_budget(item: dict[str, Any], budget: int) -> dict[str, Any]:
-    """Shrink a list row until it fits the remaining byte budget."""
-    candidate = _workflow_list_summary_item(item)
-    if _json_wire_size(candidate) + 1 <= budget:
-        return candidate
-    candidate = _minimal_workflow_list_item(item)
-    if _json_wire_size(candidate) + 1 <= budget:
-        return candidate
-    shrunk = {
-        "id": _compact_wire_metadata_value(item.get("id")),
-        "name": _truncate_string_by_bytes(str(item.get("name") or "workflow"), 64),
-        "status": _compact_wire_metadata_value(item.get("status") or "running"),
-        "detail_pending": True,
-    }
-    if _json_wire_size(shrunk) + 1 <= budget:
-        return shrunk
-    return {
-        "id": _compact_wire_metadata_value(item.get("id")),
-        "detail_pending": True,
-        "truncated": True,
-    }
+# Fields carried in the agent summary (get_phase). Heavy text fields
+# (prompt/outcome/human_prompt/human_reply/activity/error) are omitted —
+# get_agent is the universal layer for full agent content. A short preview
+# (~200 chars) of outcome/error is carried so the tree row can show a
+# one-line stub without a per-agent RPC; the full text is still get_agent.
+_WORKFLOW_AGENT_SUMMARY_KEEP_KEYS = (
+    "id", "name", "status", "model", "kind", "node_type",
+    "started_at", "completed_at", "duration_ms", "token_count",
+    "correlation_id",
+)
+_WORKFLOW_AGENT_SUMMARY_PREVIEW_CHARS = 200
 
 
-# ---------------------------------------------------------------------------
-# Workflow snapshot — public payload builders
-# ---------------------------------------------------------------------------
-
-def _build_workflow_list_payload(workflows: Any, *, session_id: str) -> dict[str, Any]:
-    """Return lightweight workflow summaries — every run listed, detail via ``action=get``."""
-    source = [item for item in (workflows if isinstance(workflows, list) else []) if isinstance(item, dict)]
-    total = len(source)
-    payload: dict[str, Any] = {
-        "type": "workflow_run_snapshot",
-        "action": "list",
-        "workflows": [],
-        "session_id": session_id,
-        "total": total,
-        "truncated": False,
-    }
-    budget = max(
-        _TEAM_HISTORY_MIN_MAX_BYTES,
-        _WORKFLOW_SNAPSHOT_MAX_BYTES - _WORKFLOW_SNAPSHOT_FRAME_OVERHEAD_BYTES,
-    )
-    used = _json_wire_size(payload)
-    page: list[dict[str, Any]] = []
-
-    for raw in source[:_WORKFLOW_SNAPSHOT_MAX_WORKFLOWS]:
-        remaining = max(256, budget - used)
-        item = _fit_workflow_list_item_for_budget(raw, remaining)
-        item_size = _json_wire_size(item) + 1
-        if page and used + item_size > budget:
-            payload["truncated"] = True
-            item = _fit_workflow_list_item_for_budget(raw, max(128, budget - used))
-            item_size = _json_wire_size(item) + 1
-        if used + item_size > budget:
-            payload["truncated"] = True
-            break
-        page.append(item)
-        used += item_size
-
-    if len(page) < total:
-        payload["truncated"] = True
-    payload["workflows"] = page
-    return payload
+def _preview_text(value: Any, *, limit: int = _WORKFLOW_AGENT_SUMMARY_PREVIEW_CHARS) -> str | None:
+    """First ~`limit` chars of a string, whitespace-normalized; None if empty."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return text[:limit]
 
 
-def _build_workflow_detail_payload(workflow: dict[str, Any], *, session_id: str) -> dict[str, Any]:
-    """Return one workflow with full detail (subject to single-record sanitize/collapse)."""
-    preserved_prompts = _extract_waiting_human_prompts(workflow)
-    sanitized = _sanitize_workflow_snapshot_item_for_wire(workflow)
-    detail_budget = max(
-        _TEAM_HISTORY_MIN_MAX_BYTES,
-        _WORKFLOW_SNAPSHOT_MAX_BYTES - _WORKFLOW_SNAPSHOT_FRAME_OVERHEAD_BYTES,
-    )
-    item = sanitized
-    truncated = bool(item.get("truncated"))
-    if _json_wire_size(item) > detail_budget:
-        item = _collapse_oversized_workflow_snapshot_item(workflow)
-        truncated = True
-        if _json_wire_size(item) > detail_budget:
-            item = _minimal_workflow_detail_preserving_waiting_human(workflow)
-            truncated = True
-            if _json_wire_size(item) > detail_budget:
-                item = _minimal_workflow_snapshot_item_for_wire(workflow)
-                truncated = True
-    _restore_waiting_human_prompts(item, preserved_prompts)
-    item = _fit_workflow_detail_to_budget(
-        item,
-        budget=detail_budget,
-        preserved_prompts=preserved_prompts,
-    )
-    truncated = truncated or bool(item.get("truncated"))
-    if truncated:
-        item["truncated"] = True
-    else:
-        item.pop("truncated", None)
-    return {
-        "type": "workflow_run_detail",
-        "action": "get",
-        "workflow": item,
-        "session_id": session_id,
-        "truncated": truncated,
-    }
+def _workflow_agent_summary(agent: dict[str, Any]) -> dict[str, Any]:
+    """Agent summary for ``action=get_phase`` — no heavy text fields, detail_pending.
+
+    Carries only the fields the tree/list row needs to render; the full body
+    (prompt/outcome/human_prompt/human_reply/activity/error) is fetched on
+    demand via ``action=get_agent``. A short ``outcome_preview``/``error_preview``
+    (~200 chars) is included so the row can show a stub line without a per-agent
+    RPC.
+    """
+    out: dict[str, Any] = {}
+    for key in _WORKFLOW_AGENT_SUMMARY_KEEP_KEYS:
+        value = agent.get(key)
+        if value is None:
+            continue
+        out[key] = value
+    outcome_preview = _preview_text(agent.get("outcome"))
+    if outcome_preview is not None:
+        out["outcome_preview"] = outcome_preview
+    error_preview = _preview_text(agent.get("error"))
+    if error_preview is not None:
+        out["error_preview"] = error_preview
+    out["detail_pending"] = True
+    return out
 
 
-def _find_workflow_agent(
-    workflow: dict[str, Any],
-    *,
-    agent_id: str | None = None,
-    correlation_id: str | None = None,
-) -> dict[str, Any] | None:
-    """Locate one agent node across a workflow's phases by id / correlation_id."""
+def _workflow_run_meta(workflow: dict[str, Any]) -> dict[str, Any]:
+    """Run-level meta for ``action=get_workflow`` — run fields, no phases.
+
+    Fields are carried in full — ``get_workflow`` returns a single run, so
+    there is no per-string truncation.
+    """
+    meta: dict[str, Any] = {}
+    for key in _WORKFLOW_LIST_SUMMARY_KEEP_KEYS:
+        value = workflow.get(key)
+        if value is None:
+            continue
+        meta[key] = value
+    for key in ("summary", "error", "result"):
+        value = workflow.get(key)
+        if isinstance(value, str) and value.strip():
+            meta[key] = value
+        elif value is not None and key not in meta:
+            meta[key] = value
+    logs = workflow.get("logs")
+    if isinstance(logs, list) and logs:
+        meta["logs"] = [str(log) for log in logs[-10:]]
+        if len(logs) > 10:
+            meta["logs_truncated"] = True
+    return meta
+
+
+def _find_phase(workflow: dict[str, Any], phase_id: str) -> dict[str, Any] | None:
     phases = workflow.get("phases")
     if not isinstance(phases, list):
         return None
     for phase in phases:
-        if not isinstance(phase, dict):
-            continue
-        agents = phase.get("agents")
-        if not isinstance(agents, list):
-            continue
-        for agent in agents:
-            if not isinstance(agent, dict):
-                continue
-            if agent_id and agent.get("id") == agent_id:
-                return agent
-            if correlation_id and agent.get("correlation_id") == correlation_id:
-                return agent
+        if isinstance(phase, dict) and phase.get("id") == phase_id:
+            return phase
     return None
 
 
-def _build_workflow_human_prompt_payload(
-    workflow: dict[str, Any],
+def _find_agent(phase: dict[str, Any], agent_id: str) -> dict[str, Any] | None:
+    agents = phase.get("agents")
+    if not isinstance(agents, list):
+        return None
+    for agent in agents:
+        if isinstance(agent, dict) and agent.get("id") == agent_id:
+            return agent
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Workflow snapshot — public paging builders
+# ---------------------------------------------------------------------------
+
+def _build_workflow_list_payload(
+    workflows: Any,
     *,
     session_id: str,
-    agent_id: str | None = None,
-    correlation_id: str | None = None,
+    offset: int = 0,
+    limit: int = _WORKFLOW_LIST_DEFAULT_LIMIT,
+    total: int | None = None,
 ) -> dict[str, Any]:
-    """Build the ``workflow_human_prompt`` payload for ``action=get_human_prompt``."""
-    agent = _find_workflow_agent(
-        workflow,
-        agent_id=agent_id,
-        correlation_id=correlation_id,
-    )
-    if agent is None:
-        return {
-            "type": "workflow_human_prompt",
-            "action": "get_human_prompt",
-            "session_id": session_id,
-            "error": "agent not found",
-        }
-    prompt = agent.get("human_prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        return {
-            "type": "workflow_human_prompt",
-            "action": "get_human_prompt",
-            "session_id": session_id,
-            "workflow_id": workflow.get("id"),
-            "agent_id": agent.get("id"),
-            "correlation_id": agent.get("correlation_id"),
-            "human_prompt": "",
-        }
+    """``action=list`` — paged workflow summaries, no phases."""
+    source = [item for item in (workflows if isinstance(workflows, list) else []) if isinstance(item, dict)]
+    real_total = total if total is not None else len(source)
+    clamped_limit = max(1, min(limit, _WORKFLOW_LIST_MAX_LIMIT))
+    page = source[offset:offset + clamped_limit]
     return {
-        "type": "workflow_human_prompt",
-        "action": "get_human_prompt",
+        "type": "workflow_run_snapshot",
+        "action": "list",
         "session_id": session_id,
-        "workflow_id": workflow.get("id"),
-        "agent_id": agent.get("id"),
-        "correlation_id": agent.get("correlation_id"),
-        "human_prompt": prompt,
+        "workflows": [_workflow_list_summary_item(item) for item in page],
+        "total": real_total,
+        "has_more": (offset + clamped_limit) < real_total,
     }
 
 
-def _build_workflow_snapshot_payload(workflows: Any, *, session_id: str) -> dict[str, Any]:
-    """Backward-compatible alias — defaults to lightweight list summaries."""
-    return _build_workflow_list_payload(workflows, session_id=session_id)
+def _build_workflow_detail_paginated(
+    workflow: dict[str, Any],
+    *,
+    session_id: str,
+    phase_offset: int = 0,
+    phase_limit: int = _WORKFLOW_PHASE_DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    """``action=get_workflow`` — run meta + paged phase summaries, no agents."""
+    phases = workflow.get("phases") if isinstance(workflow.get("phases"), list) else []
+    phase_total = len(phases)
+    clamped_limit = max(1, min(phase_limit, _WORKFLOW_PHASE_MAX_LIMIT))
+    page = phases[phase_offset:phase_offset + clamped_limit]
+    wf = _workflow_run_meta(workflow)
+    wf["phases"] = [_workflow_phase_summary(p) for p in page if isinstance(p, dict)]
+    return {
+        "type": "workflow_run_detail",
+        "action": "get_workflow",
+        "session_id": session_id,
+        "workflow": wf,
+        "phase_total": phase_total,
+        "has_more": (phase_offset + clamped_limit) < phase_total,
+    }
+
+
+def _build_phase_detail_paginated(
+    workflow: dict[str, Any],
+    *,
+    session_id: str,
+    phase_id: str,
+    agent_offset: int = 0,
+    agent_limit: int = _WORKFLOW_AGENT_DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    """``action=get_phase`` — phase meta + paged agent summaries, no heavy text.
+
+    Each agent is returned as a lightweight summary (id/name/status/model/...),
+    marked ``detail_pending:true``; the full body (prompt/outcome/human_prompt/
+    human_reply/activity/error) is fetched on demand via ``action=get_agent``.
+    """
+    phase = _find_phase(workflow, phase_id)
+    if phase is None:
+        return {
+            "type": "workflow_phase_detail",
+            "action": "get_phase",
+            "session_id": session_id,
+            "workflow_id": workflow.get("id"),
+            "phase_id": phase_id,
+            "ok": False,
+            "error": f"phase not found: {phase_id}",
+        }
+    agents = phase.get("agents") if isinstance(phase.get("agents"), list) else []
+    agent_total = len(agents)
+    clamped_limit = max(1, min(agent_limit, _WORKFLOW_AGENT_MAX_LIMIT))
+    page = agents[agent_offset:agent_offset + clamped_limit]
+    phase_meta = _workflow_phase_summary(phase)
+    phase_meta.pop("detail_pending", None)
+    phase_meta["agents"] = [_workflow_agent_summary(a) for a in page if isinstance(a, dict)]
+    return {
+        "type": "workflow_phase_detail",
+        "action": "get_phase",
+        "session_id": session_id,
+        "workflow_id": workflow.get("id"),
+        "phase": phase_meta,
+        "agent_total": agent_total,
+        "has_more": (agent_offset + clamped_limit) < agent_total,
+    }
+
+
+def _build_agent_detail(
+    workflow: dict[str, Any],
+    *,
+    session_id: str,
+    phase_id: str,
+    agent_id: str,
+) -> dict[str, Any]:
+    """``action=get_agent`` — single full agent (field parts applied)."""
+    phase = _find_phase(workflow, phase_id)
+    if phase is None:
+        return {
+            "type": "workflow_agent_detail",
+            "action": "get_agent",
+            "session_id": session_id,
+            "workflow_id": workflow.get("id"),
+            "phase_id": phase_id,
+            "agent_id": agent_id,
+            "ok": False,
+            "error": f"phase not found: {phase_id}",
+        }
+    agent = _find_agent(phase, agent_id)
+    if agent is None:
+        return {
+            "type": "workflow_agent_detail",
+            "action": "get_agent",
+            "session_id": session_id,
+            "workflow_id": workflow.get("id"),
+            "phase_id": phase_id,
+            "agent_id": agent_id,
+            "ok": False,
+            "error": f"agent not found: {agent_id}",
+        }
+    return {
+        "type": "workflow_agent_detail",
+        "action": "get_agent",
+        "session_id": session_id,
+        "workflow_id": workflow.get("id"),
+        "phase_id": phase_id,
+        "agent": _split_oversized_agent_fields(agent),
+    }
 
 
 __all__ = [
@@ -872,12 +693,14 @@ __all__ = [
     "_TEAM_HISTORY_MIN_MAX_BYTES",
     "_TEAM_HISTORY_MAX_MAX_BYTES",
     "_TEAM_HISTORY_FRAME_OVERHEAD_BYTES",
-    "_WORKFLOW_SNAPSHOT_MAX_BYTES",
-    "_WORKFLOW_SNAPSHOT_FRAME_OVERHEAD_BYTES",
-    "_WORKFLOW_SNAPSHOT_MAX_WORKFLOWS",
-    "_WORKFLOW_LIST_SUMMARY_STRING_LIMIT",
-    "_WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT",
-    "_WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES",
+    "_WORKFLOW_AGENT_FIELD_PART_BYTES",
+    "_WORKFLOW_LIST_DEFAULT_LIMIT",
+    "_WORKFLOW_LIST_MAX_LIMIT",
+    "_WORKFLOW_PHASE_DEFAULT_LIMIT",
+    "_WORKFLOW_PHASE_MAX_LIMIT",
+    "_WORKFLOW_AGENT_DEFAULT_LIMIT",
+    "_WORKFLOW_AGENT_MAX_LIMIT",
+    "_SPLITTABLE_AGENT_FIELDS",
     "_HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES",
     "_json_wire_size",
     "_coerce_int",
@@ -889,22 +712,18 @@ __all__ = [
     "_sanitize_history_record_for_wire",
     "split_history_record_for_stream",
     "_select_history_record_page",
-    "_is_waiting_human_agent",
-    "_extract_waiting_human_prompts",
-    "_restore_waiting_human_prompts",
-    "_workflow_agent_for_collapse",
-    "_collapse_oversized_workflow_snapshot_item",
-    "_minimal_workflow_snapshot_item_for_wire",
-    "_minimal_workflow_detail_preserving_waiting_human",
-    "_sanitize_workflow_snapshot_item_for_wire",
-    "_fit_workflow_detail_to_budget",
-    "_workflow_list_summary_phase",
+    "_split_oversized_agent_fields",
     "_workflow_list_summary_item",
-    "_minimal_workflow_list_item",
-    "_fit_workflow_list_item_for_budget",
+    "_workflow_phase_summary",
+    "_workflow_agent_summary",
+    "_preview_text",
+    "_WORKFLOW_AGENT_SUMMARY_KEEP_KEYS",
+    "_WORKFLOW_AGENT_SUMMARY_PREVIEW_CHARS",
+    "_workflow_run_meta",
+    "_find_phase",
+    "_find_agent",
     "_build_workflow_list_payload",
-    "_build_workflow_detail_payload",
-    "_find_workflow_agent",
-    "_build_workflow_human_prompt_payload",
-    "_build_workflow_snapshot_payload",
+    "_build_workflow_detail_paginated",
+    "_build_phase_detail_paginated",
+    "_build_agent_detail",
 ]

@@ -9,6 +9,7 @@ export * from './beamSearch';
 export * from './todo';
 export * from './websocket';
 export * from './subagent';
+export * from './contextUsage';
 export * from '../features/workspace/projectTypes';
 
 // 会话类型
@@ -42,6 +43,13 @@ export interface Session {
   user_id?: string;            // 创建人ID
   last_message_at?: number;    // 最近对话时间(Unix时间戳)
   last_user_message_at?: number; // 最后一条用户消息时间(Unix时间戳)
+  cron_id?: string;            // 定时任务ID；非空表示 cron 触发的会话，侧栏仅归属定时任务分组
+  /** 后端保存的会话级装备快照，用于刷新页面后恢复插件/MCP选择。 */
+  session_equipment?: {
+    agent_template_name?: string;
+    plugin_names?: string[];
+    mcp?: string[];
+  };
 }
 
 export type AgentMode =
@@ -62,6 +70,26 @@ export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
 export type Permission = 'default' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
+
+export type ModelReasoningCapability = {
+  options: string[];
+  recommended: string | null;
+};
+
+export type ModelReasoningProtocols = {
+  openai: ModelReasoningCapability;
+  anthropic?: ModelReasoningCapability;
+};
+
+export type ModelReasoningRule = {
+  patterns: string[];
+  capabilities: Required<ModelReasoningProtocols>;
+};
+
+export type ModelReasoningCatalog = {
+  protocol_defaults: Required<ModelReasoningProtocols>;
+  model_fallbacks: ModelReasoningRule[];
+};
 
 export interface ModelEntry {
   model_name: string;
@@ -111,9 +139,14 @@ export interface VendorPreset {
   supports_anthropic: boolean;
   anthropic_base: string | null;
   anthropic_client_provider: string | null;
+  reasoning_capabilities: Record<string, ModelReasoningProtocols>;
+  reasoning_rules: ModelReasoningRule[];
 }
 
-export type VendorPresetMap = Record<ModelPlan, VendorPreset[]>;
+export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {
+  /** Null only while the server catalog has not loaded successfully. */
+  reasoning: ModelReasoningCatalog | null;
+};
 
 export interface VendorFetchModelsResult {
   models: string[];

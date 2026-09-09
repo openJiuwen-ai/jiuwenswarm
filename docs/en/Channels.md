@@ -91,3 +91,7 @@ In addition to the end-user chat platforms above, JiuwenSwarm also provides inte
 | Integration | Description |
 |-------------|-------------|
 | [ACP Plugin Usage](ACP_Client_Config.md) | Integrate with JiuwenSwarm via the ACP protocol, suitable for custom integrations |
+
+The **Browser Extension** (`browser-extension/BrowserExtension.md`) is a WebSocket client of the
+gateway (like the built-in Web UI), not an IM ingress channel — it connects to `ws://<host>:19000/ws`
+and shares sessions/history with the webview. See its docs for details.

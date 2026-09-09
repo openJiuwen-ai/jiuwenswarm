@@ -8,29 +8,37 @@ from typing import Any, Optional
 
 from openjiuwen.harness.tools.cron import CronToolBackend, CronToolContext, create_cron_tools
 
-from jiuwenswarm.gateway.cron import CronTargetChannel
-from jiuwenswarm.gateway.cron.dingtalk_routing import (
+from jiuwenswarm.runtime.cron import CronTargetChannel
+from jiuwenswarm.runtime.cron.dingtalk_routing import (
     build_dingtalk_cron_session_id_from_context,
     dingtalk_chat_type_from_metadata,
 )
-from jiuwenswarm.gateway.cron.models import (
+from jiuwenswarm.runtime.cron.models import (
     CRON_JOB_DEFAULT_MODE,
     coerce_cron_job_mode,
     is_valid_target_channel_id,
     normalize_target_channel_id,
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.runtime.host_services import send_runtime_wake
 
 
 class _CronToolsCronBackend(CronToolBackend):
     """Adapt AgentServer CronTools to the DeepAgents CronToolBackend interface."""
 
-    def __init__(self, cron_tools: CronTools, message_handler: MessageHandler | None = None) -> None:
+    def __init__(
+        self,
+        cron_tools: CronTools,
+        message_handler: Any | None = None,
+    ) -> None:
         self._cron_tools = cron_tools
-        self._message_handler = message_handler
+        self._wake_handler = (
+            getattr(message_handler, "publish_user_messages", None)
+            if message_handler is not None
+            else None
+        )
         # build_tools() 注入的稳定请求上下文。openjiuwen wrapper 只给
         # create/update 传 context，其余 cron 操作（list/get/delete/toggle/
         # preview/run_now）拿不到调用级 context，统一回退到该稳定上下文，
@@ -137,7 +145,7 @@ class _CronToolsCronBackend(CronToolBackend):
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
-            from jiuwenswarm.gateway.cron.models import validate_cron_model
+            from jiuwenswarm.runtime.cron.models import validate_cron_model
 
             canonical = validate_cron_model(inherited)
             if canonical:
@@ -257,9 +265,6 @@ class _CronToolsCronBackend(CronToolBackend):
             raise ValueError("text is required")
         if context is None or not (context.channel_id or "").strip():
             raise ValueError("wake requires an active session context")
-        if self._message_handler is None:
-            raise RuntimeError("cron wake is unavailable before message handler startup")
-
         msg = Message(
             id=f"cron-wake-{int(time.time() * 1000)}",
             type="req",
@@ -275,7 +280,10 @@ class _CronToolsCronBackend(CronToolBackend):
             req_method=ReqMethod.CHAT_SEND,
             metadata=deepcopy(context.metadata) if isinstance(context.metadata, dict) else None,
         )
-        await self._message_handler.publish_user_messages(msg)
+        if self._wake_handler is not None:
+            await self._wake_handler(msg)
+        elif not await send_runtime_wake(msg):
+            raise RuntimeError("cron wake is unavailable without a resident host")
         return {"queued": True}
 
     async def ensure_scheduler_started(self) -> None:
@@ -351,7 +359,7 @@ def _extract_legacy_params(
             at_raw = str(schedule.get("at") or "").strip()
             if at_raw:
                 try:
-                    from jiuwenswarm.gateway.cron.cron_expr import iso_to_seven_field_cron
+                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_seven_field_cron
                     cron_expr = iso_to_seven_field_cron(at_raw, timezone=timezone)
                     logger.info(
                         "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' to cron_expr='%s'",
@@ -654,13 +662,7 @@ class CronRuntimeBridge:
         if self._resolved_backend is not None:
             return self._resolved_backend
 
-        message_handler = None
-        try:
-            message_handler = MessageHandler.get_instance()
-        except RuntimeError:
-            message_handler = None
-
-        backend: CronToolBackend = _CronToolsCronBackend(CronTools(), message_handler=message_handler)
+        backend: CronToolBackend = _CronToolsCronBackend(CronTools())
         self._resolved_backend = backend
         logger.info("[CronRuntimeBridge] CronTools backend initialized successfully")
         return backend

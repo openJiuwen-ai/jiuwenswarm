@@ -8,7 +8,10 @@ import os
 from openjiuwen.core.foundation.tool import Tool
 
 from jiuwenswarm.agents.harness.common.tools.command_tools import mcp_exec_command
-from jiuwenswarm.agents.harness.common.tools.search_tools import mcp_free_search, mcp_paid_search
+from jiuwenswarm.agents.harness.common.tools.trusted_search_tool_adapter import (
+    mcp_free_search,
+    mcp_paid_search,
+)
 from jiuwenswarm.agents.harness.common.tools.web_fetch_tools import mcp_fetch_webpage
 
 

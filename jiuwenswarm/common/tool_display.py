@@ -68,8 +68,12 @@ _SKILL_ARG_KEYS = ("skill_name", "skillName", "name")
 _CALL_GOAL_SCHEMA: dict[str, Any] = {
     "type": "string",
     "description": (
-        "一句简短中文，说明这次工具调用要达成的目标（仅界面展示），"
-        "例如「调研 openJiuwen 官网信息」「创建三子棋对战团队」「通知 player-x 落子」。"
+        "一句简短说明，讲清这次工具调用要达成的目标（仅界面展示）。"
+        "必须使用当前对话所用的语言，不要固定用中文。"
+        "Write it in the same language as the conversation with the user; "
+        "do not default to Chinese. "
+        "中文对话写「调研 openJiuwen 官网信息」「创建三子棋对战团队」「通知 player-x 落子」，"
+        "英文对话写 \"Research the openJiuwen website\" \"Create a tic-tac-toe team\"。"
         "不要只写工具名或裸 URL；不影响工具实际执行。"
         "与工具自带的 display_name（成员/团队展示名）以及 send_message.summary 都不是同一个字段，"
         "调用 spawn_member / spawn_teammate / send_message / build_team 时也必须填写。"

@@ -4,15 +4,12 @@
  * 单条消息显示，支持 TTS 朗读
  */
 
-import { useState, useCallback, useEffect, useRef, memo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
   Check,
-  ChevronDown,
-  ChevronUp,
   Copy,
   Info,
-  MessageCircle,
   Square,
   Target,
   Volume2,
@@ -27,6 +24,7 @@ import {
   WebError,
 } from '../../types';
 import { StreamingContent } from './StreamingContent';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { ToolCallDisplay } from './ToolCallDisplay';
 import { MediaRenderer, stripUploadDocumentBlocks } from './MediaRenderer';
 import { A2UIMessageContent } from '../../features/a2ui/A2UIMessageContent';
@@ -41,6 +39,8 @@ import clsx from 'clsx';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { isTeamP2PMessageToUser, parseTeamEventMessage } from './teamEventUtils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
+import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
+import { AgentAvatar } from '../AgentAvatar';
 import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
@@ -80,95 +80,6 @@ export const MarkdownMessageBody = memo(function MarkdownMessageBody({
   );
 });
 
-function BtwCommandCard({
-  command,
-  output,
-}: {
-  command: string;
-  output: string;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const [answerCopied, setAnswerCopied] = useState(false);
-  const question = command.replace(/^\/btw(?:\s+|$)/i, '').trim();
-
-  const copyAnswer = useCallback(async () => {
-    if (!output) return;
-    try {
-      await navigator.clipboard.writeText(output);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = output;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    setAnswerCopied(true);
-    window.setTimeout(() => setAnswerCopied(false), 2000);
-  }, [output]);
-
-  return (
-    <section className="chat-btw-card animate-fade-in" data-testid="chat-panel-btw-card">
-      <button
-        type="button"
-        className="chat-btw-card__header"
-        aria-expanded={expanded}
-        data-testid="chat-panel-btw-card-toggle"
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <span className="chat-btw-card__icon" aria-hidden="true">
-          <MessageCircle size={16} strokeWidth={2} />
-        </span>
-        <span className="chat-btw-card__heading">
-          <span className="chat-btw-card__badge">BTW</span>
-          <span className="chat-btw-card__title">侧问</span>
-        </span>
-        <span className="chat-btw-card__scope">快速侧问，不打断主对话（基于当前上下文）</span>
-        <span className="chat-btw-card__chevron" aria-hidden="true">
-          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="chat-btw-card__body" data-testid="chat-panel-btw-card-body">
-          {question && (
-            <div className="chat-btw-card__question">
-              <span className="chat-btw-card__section-label">问题</span>
-              <span className="chat-btw-card__question-text">{question}</span>
-            </div>
-          )}
-          <div className="chat-btw-card__answer">
-            <div className="chat-btw-card__answer-header">
-              <span className="chat-btw-card__section-label">回答</span>
-              <button
-                type="button"
-                className="chat-btw-card__copy"
-                onClick={() => void copyAnswer()}
-                disabled={!output}
-                data-testid="chat-panel-btw-card-copy"
-              >
-                {answerCopied ? <Check size={14} strokeWidth={2.2} /> : <Copy size={14} />}
-                <span>{answerCopied ? '已复制' : '复制'}</span>
-              </button>
-            </div>
-            {output ? (
-              <MarkdownMessageBody
-                content={output}
-                className="chat-btw-card__answer-content"
-                testId="chat-panel-btw-card-answer"
-              />
-            ) : (
-              <span className="chat-btw-card__empty">暂无回答</span>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function CompactCommandDivider({ output }: { output: string }) {
   return (
     <div
@@ -193,12 +104,27 @@ export function TeamMemberMessageFrame({
   children: ReactNode;
   contentClassName?: string;
 }) {
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
+  // 头像旁的成员名：名册 display name 优先，leader 固定 Jiuwen，查不到退回 member_id。
+  // 订阅名册而非 getState 直读，成员迟到时名字能跟着刷新（同 TeamMemberAvatar 的考量）。
+  const memberName = useMemo(() => {
+    const id = member?.trim() ?? '';
+    if (!id) return '';
+    if (isTeamLeaderMember(id)) return 'Jiuwen';
+    const known = teamMembers?.find((item) => item.member_id === id);
+    return known?.name?.trim() || id;
+  }, [member, teamMembers]);
+
   return (
     <div className="team-member-message animate-fade-in" data-testid="chat-panel-team-member-message">
-      {/* 始终占住头像列，避免 showAvatar 在多轮/折叠间切换时整列塌掉看起来像「头像消失」。 */}
-      <div className="team-member-message__header" aria-hidden={!showAvatar} data-testid="chat-panel-team-member-message-header">
-        {showAvatar ? <TeamMemberAvatar member={member} /> : null}
-      </div>
+      {/* 与单 agent 的 assistant-row 一致：无头像时整列不渲染，正文直接对齐最左边。 */}
+      {showAvatar ? (
+        <div className="team-member-message__header" data-testid="chat-panel-team-member-message-header">
+          <TeamMemberAvatar member={member} />
+          {memberName ? <span className="chat-avatar-name">{memberName}</span> : null}
+        </div>
+      ) : null}
       <div className={clsx('team-member-message__body', contentClassName)} data-testid="chat-panel-team-member-message-body">
         {children}
       </div>
@@ -385,12 +311,14 @@ export const MessageItem = memo(function MessageItem({
     commandName,
     commandInput,
     commandOutput,
+    agentTemplateName,
   } = message;
   const [hasAutoSpoken, setHasAutoSpoken] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
 
   // TTS
   const { isSpeaking, speak, stop, isSupported: ttsSupported } = useSpeechSynthesis({
@@ -519,7 +447,7 @@ export const MessageItem = memo(function MessageItem({
             {showAvatar ? <TeamMemberAvatar member="team_leader" /> : null}
           </div>
         )}
-        <div className="chat-bubble-wrapper max-w-[82%] min-w-0 flex-1" data-testid="chat-panel-proactive-bubble-wrapper">
+        <div className="chat-bubble-wrapper  min-w-0 flex-1" data-testid="chat-panel-proactive-bubble-wrapper">
           <ProactiveRecommendationCard message={message} />
         </div>
       </div>
@@ -548,17 +476,13 @@ export const MessageItem = memo(function MessageItem({
 
   // 系统消息
   if (role === 'system') {
-    // slash 命令输出按命令类型路由：BTW 使用侧问卡片，compact 使用时间线分隔条，
+    // slash 命令输出按命令类型路由：compact 使用时间线分隔条，
     // 其余命令退回通用文本；isCommandOutput 标记不会影响其他 system 消息。
     if (isCommandOutput) {
       const newlineIdx = content.indexOf('\n');
       const command = commandInput ?? (newlineIdx >= 0 ? content.slice(0, newlineIdx) : content);
       const output = commandOutput ?? (newlineIdx >= 0 ? content.slice(newlineIdx + 1).trim() : '');
       const normalizedCommandName = commandName || command.match(/^\/([\w-]+)/)?.[1]?.toLowerCase();
-
-      if (normalizedCommandName === 'btw') {
-        return <BtwCommandCard command={command} output={output} />;
-      }
 
       if (normalizedCommandName === 'compact') {
         return <CompactCommandDivider output={output} />;
@@ -749,19 +673,24 @@ export const MessageItem = memo(function MessageItem({
     <div
     data-testid="chat-panel-message-row"
     className={clsx(
-      'flex animate-rise',
+      'message-row flex animate-rise',
       isUser ? 'justify-end' : 'justify-start',
       withAssistantAvatar && 'assistant-row',
       withAssistantAvatar && !showAvatar && 'assistant-row--no-avatar'
     )}>
       {withAssistantAvatar && showAvatar ? (
         <div className="assistant-row__avatar" data-testid="chat-panel-assistant-row-avatar">
-          <TeamMemberAvatar member="team_leader" />
+          {role === 'assistant' && agentTemplateName ? (
+            <AgentAvatar agentId={agentTemplateName} alt="" />
+          ) : (
+            <TeamMemberAvatar member="team_leader" />
+          )}
         </div>
       ) : null}
       <div
         className={clsx(
-          'chat-bubble-wrapper max-w-[82%] min-w-0',
+          'chat-bubble-wrapper  min-w-0',
+          isUser && 'flex-1',
           !isUser && visibleFileItems && 'chat-bubble-wrapper--with-files'
         )}
         data-testid="chat-panel-bubble-wrapper"
@@ -851,14 +780,14 @@ export const MessageItem = memo(function MessageItem({
           <div
             data-testid="chat-panel-message-meta"
             className={clsx(
-              'flex items-center gap-3 text-sm mt-2 text-text-muted',
+              'flex items-center gap-1 text-sm mt-2 text-text-meta',
               isUser ? 'justify-end' : 'justify-start'
             )}
           >
             <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
 
             {isUser && isGoalObjectiveMessage && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-muted" data-testid="chat-panel-message-goal-badge">
+              <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-meta" data-testid="chat-panel-message-goal-badge">
                 <Target className="w-3 h-3" strokeWidth={2} />
                 {t('goal.badge')}
               </span>
@@ -866,19 +795,15 @@ export const MessageItem = memo(function MessageItem({
 
             {showCopy && (
               <div className="relative" data-testid="chat-panel-message-copy">
-                {copied && (
-                  <span className="animate-fade-in absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 whitespace-nowrap rounded-md border border-border bg-card px-2 py-1 text-xs text-text shadow-md" data-testid="chat-panel-message-copied-tip">
-                    {t('chatUi.copied')}
-                  </span>
-                )}
                 <button
                   data-testid="chat-panel-message-copy-btn"
+                  data-tooltip={copied ? t('chatUi.copied') : t('chatUi.copyMessage')}
+                  {...tooltipHandlers}
                   onClick={handleCopy}
                   className={clsx(
-                    'p-1.5 rounded-md ',
+                    'p-1.5 rounded-md',
                     copied ? 'text-accent' : 'hover:text-accent hover:bg-secondary'
                   )}
-                  title={t('chatUi.copyMessage')}
                 >
                   {copied ? (
                     <Check className="w-4 h-4" strokeWidth={1.5} />
@@ -886,28 +811,33 @@ export const MessageItem = memo(function MessageItem({
                     <Copy className="w-4 h-4" strokeWidth={1.5} />
                   )}
                 </button>
+                {tooltip}
               </div>
             )}
 
             {showTTS && (
-              <button
-                data-testid="chat-panel-message-tts-btn"
-                data-variant={isPlaying ? 'playing' : 'idle'}
-                onClick={handleSpeak}
-                className={clsx(
-                  'p-1.5 rounded-md ',
-                  isPlaying
-                    ? 'text-accent bg-accent/10'
-                    : 'hover:text-accent hover:bg-secondary'
-                )}
-                title={isPlaying ? t('chatUi.stopReading') : t('chatUi.readMessage')}
-              >
-                {isPlaying ? (
-                  <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
-                ) : (
-                  <Volume2 className="w-4 h-4" strokeWidth={1.5} />
-                )}
-              </button>
+              <div className="relative" data-testid="chat-panel-message-tts">
+                <button
+                  data-testid="chat-panel-message-tts-btn"
+                  data-variant={isPlaying ? 'playing' : 'idle'}
+                  data-tooltip={isPlaying ? t('chatUi.stopReading') : t('chatUi.readMessage')}
+                  {...tooltipHandlers}
+                  onClick={handleSpeak}
+                  className={clsx(
+                    'p-1.5 rounded-md ',
+                    isPlaying
+                      ? 'text-accent bg-accent/10'
+                      : 'hover:text-accent hover:bg-secondary'
+                  )}
+                >
+                  {isPlaying ? (
+                    <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
+                  ) : (
+                    <Volume2 className="w-4 h-4" strokeWidth={1.5} />
+                  )}
+                </button>
+                {tooltip}
+              </div>
             )}
           </div>
         )}
@@ -925,16 +855,12 @@ function formatFileSize(bytes: number | undefined): string {
   return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-/** 识别可保存的 Skill 包：`.skill` / `.zip` / `.skill.zip` */
+/** 识别可保存的 Skill 包：`.skill` / `.skill.zip` */
 function isSkillPackageFile(file: FileDownloadItem): boolean {
   const candidates = [file.name, file.path].filter(Boolean) as string[];
   for (const candidate of candidates) {
     const base = candidate.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '';
-    if (
-      base.endsWith('.skill.zip') ||
-      base.endsWith('.skill') ||
-      base.endsWith('.zip')
-    ) {
+    if (base.endsWith('.skill.zip') || base.endsWith('.skill')) {
       return true;
     }
   }
@@ -1116,13 +1042,10 @@ function FileDownloadList({
             data-testid="chat-panel-file-download-item"
             data-variant={file.name}
             className={clsx(
-              'flex items-center gap-3 rounded-lg border px-3 py-2.5  ',
+              'chat-panel-file-download-item group',
               expired
-                ? 'border-border/50 bg-card/50 cursor-not-allowed opacity-60'
-                : clsx(
-                  'border-border bg-card',
-                  onPreview && 'cursor-pointer group hover:border-border-hover hover:shadow-md'
-                )
+                ? 'chat-panel-file-download-item--expired'
+                : !onPreview && 'chat-panel-file-download-item--no-preview',
             )}
             onClick={() => {
               if (!expired) onPreview?.(index);
@@ -1141,13 +1064,13 @@ function FileDownloadList({
               aria-label={onPreview ? t('artifacts.openPreview', { name: displayName }) : undefined}
             >
               {isSkill ? (
-                <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-accent-subtle flex items-center justify-center">
+                <div className="flex-shrink-0 w-6 h-6 rounded-lg bg-accent-subtle flex items-center justify-center">
                   <svg className="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
                   </svg>
                 </div>
               ) : (
-                <FileIcon fileName={file.name} size={40} className="flex-shrink-0 select-none" />
+                <FileIcon fileName={file.name} size={24} className="flex-shrink-0 select-none" />
               )}
               <div className="flex-1 min-w-0" data-testid="chat-panel-file-download-info">
                 <div className="text-sm font-medium text-text leading-snug truncate" data-testid="chat-panel-file-download-name">{displayName}</div>

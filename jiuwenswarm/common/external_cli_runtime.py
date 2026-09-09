@@ -24,14 +24,32 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import certifi
-import httpx
-import portalocker
-
 from jiuwenswarm.common._build_config import DISPLAY_NAME
 
 
 logger = logging.getLogger(__name__)
+
+
+class _LazyHttpx:
+    """Preserve the module-level mock seam without importing httpx at startup."""
+
+    _module: Any | None = None
+
+    def _load(self) -> Any:
+        if self._module is None:
+            import httpx as httpx_module
+
+            self._module = httpx_module
+        return self._module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._load(), name)
+
+
+# Kept as a module attribute because installer tests and downstream extensions
+# patch ``external_cli_runtime.httpx.Client``. The proxy loads the real module
+# only when a download actually needs it.
+httpx = _LazyHttpx()
 
 _SUPPORTED_AGENTS = ("claude", "codex")
 _REQUIRED_MODULES = {
@@ -131,6 +149,8 @@ def _wait_for_elevated_windows_installer(
 
 def _download_ssl_context() -> ssl.SSLContext:
     """Build a verified TLS context from OS and bundled public CA roots."""
+    import certifi
+
     context = ssl.create_default_context()
     try:
         context.load_verify_locations(cafile=certifi.where())
@@ -246,6 +266,8 @@ def install_external_cli_runtime(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     """Download and install a pinned optional CLI runtime."""
+    import portalocker
+
     _validate_cli_agent(cli_agent)
     emit = log_callback or (lambda _message: None)
     report_progress = progress_callback or (lambda _progress: None)
@@ -256,6 +278,7 @@ def install_external_cli_runtime(
     if not artifacts:
         raise RuntimeError(f"{cli_agent} runtime is not available for {platform_key}")
 
+    activate_external_cli_runtime_paths()
     if _is_frozen_windows():
         with tempfile.TemporaryDirectory(
             prefix=f"{DISPLAY_NAME}-{cli_agent}-runtime-",
@@ -274,7 +297,19 @@ def install_external_cli_runtime(
                     "eta_seconds": 0.0,
                 },
             )
-            _run_elevated_windows_runtime_installer(cli_agent, artifact_directory)
+            try:
+                _install_external_cli_runtime_artifacts_with_lock(
+                    cli_agent,
+                    platform_key,
+                    artifacts,
+                    artifact_directory,
+                )
+            except PermissionError:
+                emit(
+                    f"Current user cannot update the {cli_agent} runtime; "
+                    "requesting administrator permission"
+                )
+                _run_elevated_windows_runtime_installer(cli_agent, artifact_directory)
     else:
         target = external_cli_site_packages(cli_agent)
         agent_root = target.parent
@@ -312,6 +347,8 @@ def install_external_cli_runtime_from_artifacts(
     cli_agent: str, artifact_directory: Path
 ) -> None:
     """Install a verified Windows runtime from previously downloaded wheels."""
+    import portalocker
+
     _validate_cli_agent(cli_agent)
     if not _is_frozen_windows():
         raise RuntimeError(
@@ -322,6 +359,25 @@ def install_external_cli_runtime_from_artifacts(
     artifacts = manifest["agents"][cli_agent].get("platforms", {}).get(platform_key)
     if not artifacts:
         raise RuntimeError(f"{cli_agent} runtime is not available for {platform_key}")
+
+    activate_external_cli_runtime_paths()
+    _install_external_cli_runtime_artifacts_with_lock(
+        cli_agent,
+        platform_key,
+        artifacts,
+        artifact_directory,
+    )
+    _verify_installed_runtime(cli_agent)
+
+
+def _install_external_cli_runtime_artifacts_with_lock(
+    cli_agent: str,
+    platform_key: str,
+    artifacts: list[dict[str, str]],
+    artifact_directory: Path,
+) -> None:
+    """Install downloaded runtime artifacts while holding the agent lock."""
+    import portalocker
 
     target = external_cli_site_packages(cli_agent)
     agent_root = target.parent
@@ -341,15 +397,13 @@ def install_external_cli_runtime_from_artifacts(
             f"another {cli_agent} runtime installation is already running"
         ) from exc
 
-    _verify_installed_runtime(cli_agent)
-
 
 def _download_and_install_external_cli_runtime_files(
     artifacts: list[dict[str, str]],
     context: _RuntimeInstallContext,
 ) -> None:
     agent_root = context.target.parent
-    staging_root = Path(tempfile.mkdtemp(prefix=".install-", dir=agent_root))
+    staging_root = _create_runtime_staging_root(agent_root)
     staging_site_packages = staging_root / "site-packages"
     staging_site_packages.mkdir()
     try:
@@ -410,7 +464,7 @@ def _install_external_cli_runtime_from_artifacts(
             f"external CLI artifact directory does not exist: {artifact_directory}"
         )
     agent_root = target.parent
-    staging_root = Path(tempfile.mkdtemp(prefix=".install-", dir=agent_root))
+    staging_root = _create_runtime_staging_root(agent_root)
     staging_site_packages = staging_root / "site-packages"
     staging_site_packages.mkdir()
     try:
@@ -430,6 +484,13 @@ def _install_external_cli_runtime_from_artifacts(
         )
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def _create_runtime_staging_root(agent_root: Path) -> Path:
+    """Create a unique staging directory that inherits its parent permissions."""
+    staging_root = agent_root / f".install-{uuid.uuid4().hex}"
+    staging_root.mkdir()
+    return staging_root
 
 
 def _complete_staged_runtime_install(
@@ -562,6 +623,13 @@ def _is_frozen_macos() -> bool:
 
 def _verify_installed_runtime(cli_agent: str) -> None:
     importlib.invalidate_caches()
+    target = external_cli_site_packages(cli_agent)
+    try:
+        next(target.iterdir(), None)
+    except OSError as exc:
+        raise RuntimeError(
+            f"installed {cli_agent} runtime directory is not readable: {target}: {exc}"
+        ) from exc
     missing = [
         module
         for module in _REQUIRED_MODULES[cli_agent]
@@ -578,6 +646,34 @@ def _runtime_package_versions(artifacts: list[dict[str, str]]) -> list[dict[str,
         {"name": artifact["name"], "version": artifact["version"]}
         for artifact in artifacts
     ]
+
+
+def pinned_sdk_requirements(cli_agent: str) -> list[str]:
+    """Return ``name==version`` requirements for an agent's SDK packages.
+
+    Reads the managed-runtime manifest (the single source of truth for the SDK
+    versions this product ships, already used by the frozen-app installer) so
+    source installs resolve the exact same versions instead of whatever the
+    index happens to list as latest. Returns [] when the manifest has no
+    entry for the agent, letting the plain extra resolve as before.
+    """
+    _validate_cli_agent(cli_agent)
+    try:
+        manifest = _load_manifest()
+        platforms = manifest["agents"][cli_agent].get("platforms", {})
+    except RuntimeError:
+        # An unreadable manifest should not break source installs; fall back
+        # to the unpinned extra.
+        logger.debug("Falling back to unpinned %s SDK requirements", cli_agent)
+        return []
+    # SDK versions are identical across platforms in the manifest; take any.
+    for artifacts in platforms.values():
+        return [
+            f"{artifact['name']}=={artifact['version']}"
+            for artifact in artifacts
+            if artifact.get("name") and artifact.get("version")
+        ]
+    return []
 
 
 def _required_runtime_files_present(cli_agent: str, site_packages: Path) -> bool:

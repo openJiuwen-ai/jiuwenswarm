@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
-import ModelPicker from './ModelPicker';
+import ModelPicker from '../ModelPicker';
 import ModeSelector from './ModeSelector';
 import DatePicker from './DatePicker';
 import SimpleSelect from './SimpleSelect';
@@ -295,6 +295,7 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
                   disabled={proactiveLocked}
                 />
                 <ModelPicker
+                  testIdPrefix="cron-model-picker"
                   value={form.modelName}
                   onChange={(modelName) => setForm({ ...form, modelName })}
                   disabled={proactiveLocked}

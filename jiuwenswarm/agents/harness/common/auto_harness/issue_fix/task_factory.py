@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from openjiuwen.rsi.auto_harness.schema import OptimizationTask
+from openjiuwen.rsi.harness_rsi.auto_harness.schema import OptimizationTask
 
 
 def build_issue_fix_task(issue_number: int, query: str) -> OptimizationTask:

@@ -15,8 +15,12 @@ from jiuwenswarm.server.runtime.session.git_diff_status import (
     DiffFileEntry,
     DiffStatusService,
 )
-from jiuwenswarm.server.runtime.session.project_git import GitError, GitOperationError
-from jiuwenswarm.server.utils.diff_service import DiffHistoryExpiredError, DiffService
+from jiuwenswarm.server.runtime.session.project_git import GitError
+from jiuwenswarm.server.utils.diff_service import (
+    MAX_DIFF_SIZE_BYTES,
+    DiffHistoryExpiredError,
+    DiffService,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +147,140 @@ def test_get_turn_diff_finds_second_turn():
     assert turn["turnIndex"] == 2
     assert "/proj/file_b.py" in turn["files"]
     assert turn["request_id"] == "req-002"
+
+
+def _patch_turn_diff(file_ops: dict) -> tuple:
+    ph = patch.object(DiffService, "_read_history", return_value=_HISTORY)
+    pa = patch.object(DiffService, "_read_agent_history", return_value=file_ops)
+    pl = patch.object(DiffService, "_load_change_sets", return_value=[])
+    ps = patch.object(DiffService, "_save_change_sets", return_value=None)
+    return ph, pa, pl, ps
+
+
+def test_get_turn_diff_large_file_marked_large():
+    """超过 1MB 的 turn 改动标记 isLargeFile、不返回内容（与工作区 diff 对齐）。"""
+    big_content = "".join(f"line {i}: " + "x" * 250 + "\n" for i in range(5000))
+    assert len(big_content.encode("utf-8")) > MAX_DIFF_SIZE_BYTES
+    file_ops = {
+        "/proj/big.py": [{
+            "action": "write",
+            "timestamp": _ts(1784542850.0),
+            "old_content": None,
+            "new_content": big_content,
+        }],
+    }
+    ph, pa, pl, ps = _patch_turn_diff(file_ops)
+    with ph, pa, pl, ps:
+        turn = DiffService().get_turn_diff("sess-1", turn_index=1, project_dir="/proj")
+    assert turn is not None
+    info = turn["files"]["/proj/big.py"]
+    assert info["isLargeFile"] is True
+    assert info["hunks"] == []
+    assert info["isTruncated"] is False
+    assert info["linesAdded"] == 5000
+    assert info["linesRemoved"] == 0
+
+
+def test_get_turn_diff_large_rewrite_marked_large():
+    """实际 diff 超过 1MB 的大文件改写标记为大文件预览。"""
+    old_content = "".join(f"old {i}: " + "x" * 250 + "\n" for i in range(5000))
+    new_content = "".join(f"new {i}: " + "y" * 250 + "\n" for i in range(5000))
+    assert len(old_content) > MAX_DIFF_SIZE_BYTES
+    assert len(new_content) > MAX_DIFF_SIZE_BYTES
+    file_ops = {
+        "/proj/rewrite.py": [{
+            "action": "write",
+            "timestamp": _ts(1784542850.0),
+            "old_content": old_content,
+            "new_content": new_content,
+        }],
+    }
+    ph, pa, pl, ps = _patch_turn_diff(file_ops)
+    with ph, pa, pl, ps:
+        turn = DiffService().get_turn_diff("sess-1", turn_index=1, project_dir="/proj")
+    assert turn is not None
+    info = turn["files"]["/proj/rewrite.py"]
+    assert info["isLargeFile"] is True
+    assert info["hunks"] == []
+    assert info["linesAdded"] == 5000
+    assert info["linesRemoved"] == 5000
+
+
+def test_get_turn_diff_large_file_small_edit_shows_actual_diff():
+    """大文件仅修改一行时，按实际 patch 大小返回预览与行数统计。"""
+    old_lines = [f"line {i}: " + "x" * 250 + "\n" for i in range(5000)]
+    new_lines = old_lines.copy()
+    new_lines[2500] = "line 2500: " + "y" * 250 + "\n"
+    old_content = "".join(old_lines)
+    new_content = "".join(new_lines)
+    assert len(old_content.encode("utf-8")) > MAX_DIFF_SIZE_BYTES
+
+    file_ops = {
+        "/proj/small-edit.py": [{
+            "action": "write",
+            "timestamp": _ts(1784542850.0),
+            "old_content": old_content,
+            "new_content": new_content,
+        }],
+    }
+    ph, pa, pl, ps = _patch_turn_diff(file_ops)
+    with ph, pa, pl, ps:
+        turn = DiffService().get_turn_diff("sess-1", turn_index=1, project_dir="/proj")
+
+    assert turn is not None
+    info = turn["files"]["/proj/small-edit.py"]
+    assert info["isLargeFile"] is False
+    assert info["linesAdded"] == 1
+    assert info["linesRemoved"] == 1
+    assert [line for hunk in info["hunks"] for line in hunk["lines"] if line.startswith("+")] == [
+        "+line 2500: " + "y" * 250
+    ]
+
+
+def test_get_turn_diff_file_under_1mb_shows_full():
+    """1MB 以内的 turn 改动整段返回，不做 400 行截断。"""
+    content = "".join(f"line {i}: " + "y" * 50 + "\n" for i in range(500))
+    assert len(content.encode("utf-8")) < MAX_DIFF_SIZE_BYTES
+    file_ops = {
+        "/proj/small.py": [{
+            "action": "write",
+            "timestamp": _ts(1784542850.0),
+            "old_content": None,
+            "new_content": content,
+        }],
+    }
+    ph, pa, pl, ps = _patch_turn_diff(file_ops)
+    with ph, pa, pl, ps:
+        turn = DiffService().get_turn_diff("sess-1", turn_index=1, project_dir="/proj")
+    assert turn is not None
+    info = turn["files"]["/proj/small.py"]
+    assert info["isLargeFile"] is False
+    assert info["isTruncated"] is False
+    assert len(info["hunks"]) == 1
+    assert len(info["hunks"][0]["lines"]) == 500
+    assert info["linesAdded"] == 500
+
+
+def test_legacy_snapshot_normalizes_oversized_preview():
+    """旧快照也按实际 diff 内容大小限制预览。"""
+    snapshot = {
+        "turnIndex": 1,
+        "files": {
+            "/proj/legacy.py": {
+                "isLargeFile": False,
+                "linesAdded": 1,
+                "linesRemoved": 0,
+                "hunks": [{"lines": ["+" + "x" * MAX_DIFF_SIZE_BYTES]}],
+            }
+        },
+    }
+
+    DiffService._normalize_snapshot_diff_sizes(snapshot)
+
+    entry = snapshot["files"]["/proj/legacy.py"]
+    assert entry["isLargeFile"] is True
+    assert entry["hunks"] == []
+    assert entry["linesAdded"] == 1
 
 
 def test_get_turn_diffs_reads_extra_history_roots(tmp_path, monkeypatch):

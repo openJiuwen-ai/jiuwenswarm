@@ -6,15 +6,18 @@ export interface SingleAgentPanelState {
   expanded: boolean;
   activeTab: SingleAgentToolTab;
   selectedArtifactId?: string;
+  selectedSubagentId?: string | null;
 }
 
 interface UseSingleAgentPanelStateResult {
   singleAgentPanelExpanded: boolean;
   singleAgentPanelActiveTab: SingleAgentToolTab;
   singleAgentPanelSelectedArtifactId?: string;
+  singleAgentPanelSelectedSubagentId?: string | null;
   setSingleAgentPanelExpanded: (expanded: boolean) => void;
   setSingleAgentPanelActiveTab: (tab: SingleAgentToolTab) => void;
   setSingleAgentPanelSelectedArtifactId: (artifactId: string) => void;
+  setSingleAgentPanelSelectedSubagentId: (subagentId: string | null) => void;
 }
 
 const SINGLE_AGENT_PANEL_STATE_KEY = 'jiuwenclaw_single_agent_panel_state';
@@ -33,6 +36,7 @@ function normalizeState(value: unknown): SingleAgentPanelState {
     activeTab:
       activeTab === 'planning' || activeTab === 'subagents' || activeTab === 'artifacts' || activeTab === 'review' ? activeTab : DEFAULT_STATE.activeTab,
     ...(typeof raw.selectedArtifactId === 'string' && raw.selectedArtifactId.trim() ? { selectedArtifactId: raw.selectedArtifactId } : {}),
+    ...(typeof raw.selectedSubagentId === 'string' && raw.selectedSubagentId.trim() ? { selectedSubagentId: raw.selectedSubagentId } : {}),
   };
 }
 
@@ -105,12 +109,21 @@ export function useSingleAgentPanelState(): UseSingleAgentPanelStateResult {
     [updateState],
   );
 
+  const setSingleAgentPanelSelectedSubagentId = useCallback(
+    (selectedSubagentId: string | null) => {
+      updateState({ selectedSubagentId });
+    },
+    [updateState],
+  );
+
   return {
     singleAgentPanelExpanded: state.expanded,
     singleAgentPanelActiveTab: state.activeTab,
     singleAgentPanelSelectedArtifactId: state.selectedArtifactId,
+    singleAgentPanelSelectedSubagentId: state.selectedSubagentId,
     setSingleAgentPanelExpanded,
     setSingleAgentPanelActiveTab,
     setSingleAgentPanelSelectedArtifactId,
+    setSingleAgentPanelSelectedSubagentId,
   };
 }

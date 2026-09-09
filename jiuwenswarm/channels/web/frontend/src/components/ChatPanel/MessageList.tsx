@@ -7,6 +7,8 @@ import { MessageItem } from './MessageItem';
 import { ToolGroupDisplay } from './ToolGroupDisplay';
 import { useNow, formatDurationPrecise } from './chatTimelineClock';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
+import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
+import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import {
@@ -21,6 +23,7 @@ import {
   formatStreakSummaryLabel,
   messageHasDeliverable,
   filterDeliverableExecutions,
+  completedWorkDurationMs,
   turnElapsedRangeMs,
   REASONING_COLLAPSE_DELAY_MS,
   STREAK_FOLD_TRANSITION_DELAY_MS,
@@ -61,15 +64,19 @@ function formatElapsedCoarse(ms: number): string {
 /** 与 buildTurnTimeline 中异常回退阈值一致：超过则视为 startMs 脏数据。 */
 const MAX_PLAUSIBLE_TURN_MS = 24 * 60 * 60 * 1000;
 
-function TurnElapsed({
+export function TurnElapsed({
   startMs,
   endMs,
   isLastTurn,
+  showAvatar,
+  agentTemplateName,
   teamLayout,
 }: {
   startMs: number;
   endMs: number;
   isLastTurn: boolean;
+  showAvatar?: boolean;
+  agentTemplateName?: string;
   teamLayout: boolean;
 }) {
   const { t } = useTranslation();
@@ -89,9 +96,10 @@ function TurnElapsed({
   if (!showActive && elapsed <= 0) {
     return null;
   }
-  return (
+  // 不带头像的独立时间行（如成员消息轮次）：team 模式下与 920px 栅格对齐。
+  const timeLine = (
     <div
-      className={clsx('turn-elapsed', teamLayout && 'turn-elapsed--team', showActive && 'is-active')}
+      className={clsx('turn-elapsed', !showAvatar && teamLayout && 'turn-elapsed--team', showActive && 'is-active')}
       data-testid="chat-panel-turn-elapsed"
       data-variant={showActive ? 'active' : 'finished'}
     >
@@ -106,6 +114,25 @@ function TurnElapsed({
       </span>
     </div>
   );
+  if (!showAvatar) {
+    return timeLine;
+  }
+  // 与折叠条同构：头像 + 名称在第一行，耗时行紧随其下。
+  return (
+    <div className={clsx('completed-work-col', teamLayout && 'completed-work-col--team')} data-testid="chat-panel-turn-elapsed-block">
+      <div className="completed-work-col__avatar pt-0.5">
+        {!teamLayout && agentTemplateName ? (
+          <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
+        ) : (
+          <>
+            <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
+            <span className="chat-avatar-name">Jiuwen</span>
+          </>
+        )}
+      </div>
+      {timeLine}
+    </div>
+  );
 }
 
 function CompletedWorkChip({
@@ -117,6 +144,8 @@ function CompletedWorkChip({
   onToggle,
   showAvatar,
   teamLayout,
+  elapsedMs = 0,
+  agentTemplateName,
 }: {
   variant: 'turn' | 'streak';
   thinkingCount?: number;
@@ -126,17 +155,19 @@ function CompletedWorkChip({
   onToggle: () => void;
   showAvatar: boolean;
   teamLayout: boolean;
+  elapsedMs?: number;
+  agentTemplateName?: string;
 }) {
   const { t } = useTranslation();
-  // 耗时统一由底部 TurnElapsed 展示，避免「已完成」在上、「任务用时」在下两套位置互相打架。
+  // 耗时并入 turn 折叠条文案（原底部 TurnElapsed 已移除），位置唯一不再打架。
   const label =
     variant === 'turn'
-      ? t('chatUi.workCompletedFallback')
+      ? elapsedMs > 0
+        ? `${t('chatUi.turnElapsed')} ${formatDurationPrecise(elapsedMs)}`
+        : t('chatUi.workCompletedFallback')
       : formatStreakSummaryLabel(t, thinkingCount, toolCount, outcomeTone);
-  // 最外层「已完成」始终绿勾；展开后的 streak：全成功绿勾 / 部分失败黄勾+标签 / 全失败红叉。
+  // 图标统一用 status-waiting 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
   const applyOutcome = variant === 'streak';
-  const showErrorIcon = applyOutcome && outcomeTone === 'error';
-  const showPartialBadge = applyOutcome && outcomeTone === 'partial';
   const toneClass = !applyOutcome
     ? 'is-success'
     : outcomeTone === 'error'
@@ -160,28 +191,9 @@ function CompletedWorkChip({
       data-variant={variant}
     >
       <span className={clsx('completed-work-chip__icon', toneClass)} aria-hidden="true" data-testid="chat-panel-completed-work-chip-icon">
-        {showErrorIcon ? (
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="10" cy="10" r="6.5" />
-            <path d="m7.6 7.6 4.8 4.8M12.4 7.6l-4.8 4.8" />
-          </svg>
-        ) : (
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="10" cy="10" r="6.5" />
-            <path d="m7.2 10.1 1.8 1.8 3.8-3.8" />
-          </svg>
-        )}
+        <WaitingStatusIcon />
       </span>
       <span className="completed-work-chip__label" data-testid="chat-panel-completed-work-chip-label">{label}</span>
-      {showPartialBadge ? (
-        <span
-          className="completed-work-chip__badge is-partial"
-          data-testid="chat-panel-completed-work-chip-badge"
-          data-variant="partial"
-        >
-          {t('chatUi.workOutcomePartial')}
-        </span>
-      ) : null}
       <span className={clsx('tool-tree-item__disclosure', expanded && 'is-open')} aria-hidden="true">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
           <path strokeLinecap="round" strokeLinejoin="round" d="m8 6 4 4-4 4" />
@@ -194,15 +206,15 @@ function CompletedWorkChip({
     return (
       <div
         className={clsx(
-          'completed-work-row',
-          'completed-work-row--team',
-          variant === 'streak' && 'completed-work-row--nested',
-          !showAvatar && 'completed-work-row--team-no-avatar'
+          'completed-work-col',
+          'completed-work-col--team',
+          variant === 'streak' && 'completed-work-col--nested'
         )}
       >
         {showAvatar ? (
-          <div className="pt-0.5">
-            <TeamMemberAvatar member="team_leader" />
+          <div className="completed-work-col__avatar pt-0.5">
+            <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
+            <span className="chat-avatar-name">Jiuwen</span>
           </div>
         ) : null}
         {chip}
@@ -213,14 +225,20 @@ function CompletedWorkChip({
   return (
     <div
       className={clsx(
-        'completed-work-row',
-        variant === 'streak' && 'completed-work-row--nested',
-        !showAvatar && 'completed-work-row--no-avatar'
+        'completed-work-col',
+        variant === 'streak' && 'completed-work-col--nested'
       )}
     >
       {showAvatar ? (
-        <div className="completed-work-row__avatar">
-          <TeamMemberAvatar member="team_leader" />
+        <div className="completed-work-col__avatar">
+          {agentTemplateName ? (
+            <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
+          ) : (
+            <>
+              <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
+              <span className="chat-avatar-name">Jiuwen</span>
+            </>
+          )}
         </div>
       ) : null}
       {chip}
@@ -230,10 +248,12 @@ function CompletedWorkChip({
 
 function ReasoningSegmentBlock({
   segment,
+  agentTemplateName,
   showAvatar,
   teamLayout,
 }: {
   segment: ReasoningSegment;
+  agentTemplateName?: string;
   showAvatar: boolean;
   teamLayout: boolean;
 }) {
@@ -242,6 +262,7 @@ function ReasoningSegmentBlock({
   const userToggledRef = useRef(false);
   const prevClosedRef = useRef(segment.closed);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
 
   useEffect(() => {
     if (!prevClosedRef.current && segment.closed && !userToggledRef.current) {
@@ -264,7 +285,7 @@ function ReasoningSegmentBlock({
       return;
     }
     const el = bodyRef.current;
-    if (!el) {
+    if (!el || !autoScrollRef.current) {
       return;
     }
     el.scrollTop = el.scrollHeight;
@@ -310,7 +331,18 @@ function ReasoningSegmentBlock({
       </button>
       <div className={clsx('reasoning-panel__collapse', open && 'is-open')}>
         <div className="reasoning-panel__collapse-inner">
-          <div ref={bodyRef} className="reasoning-panel__body" data-testid="chat-panel-reasoning-panel-body">
+          <div
+            ref={bodyRef}
+            className="reasoning-panel__body"
+            data-testid="chat-panel-reasoning-panel-body"
+            onScroll={() => {
+              const el = bodyRef.current;
+              if (!el) {
+                return;
+              }
+              autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+            }}
+          >
             {body}
           </div>
         </div>
@@ -321,13 +353,14 @@ function ReasoningSegmentBlock({
   if (teamLayout) {
     return (
       <div
-        className={clsx('reasoning-row', 'reasoning-row--team', !showAvatar && 'reasoning-row--team-no-avatar')}
+        className={clsx('reasoning-col', 'reasoning-col--team')}
         data-testid="chat-panel-reasoning-block"
         data-variant="team"
       >
         {showAvatar ? (
-          <div className="pt-0.5">
+          <div className="reasoning-col__avatar pt-0.5">
             <TeamMemberAvatar member="team_leader" />
+            <span className="chat-avatar-name">Jiuwen</span>
           </div>
         ) : null}
         {content}
@@ -337,13 +370,20 @@ function ReasoningSegmentBlock({
 
   return (
     <div
-      className={clsx('reasoning-row', !showAvatar && 'reasoning-row--no-avatar')}
+      className="reasoning-col"
       data-testid="chat-panel-reasoning-block"
       data-variant="default"
     >
       {showAvatar ? (
-        <div className="reasoning-row__avatar">
-          <TeamMemberAvatar member="team_leader" />
+        <div className="reasoning-col__avatar">
+          {agentTemplateName ? (
+            <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
+          ) : (
+            <>
+              <TeamMemberAvatar member="team_leader" />
+              <span className="chat-avatar-name">Jiuwen</span>
+            </>
+          )}
         </div>
       ) : null}
       {content}
@@ -373,6 +413,23 @@ export function ChatTimelineList({
     () => buildRenderItems(buildTimelineItems(messages, executions, reasoningSegments), isTeamMode, isProcessing),
     [messages, executions, reasoningSegments, isTeamMode, isProcessing]
   );
+  const agentTemplateNameByTurn = useMemo(() => {
+    const names = new Map<number, string>();
+    for (const item of renderItems) {
+      const name =
+        item.type === 'reasoning'
+          ? item.segment.agentTemplateName?.trim()
+          : item.type === 'toolGroup'
+            ? item.agentTemplateName?.trim()
+          : item.type === 'message' && item.message.role === 'assistant'
+            ? item.message.agentTemplateName?.trim()
+            : undefined;
+      if (name) {
+        names.set(item.turnId, name);
+      }
+    }
+    return names;
+  }, [renderItems]);
   const settlingForStreak = isSettlingForStreak(renderItems, Date.now());
   const settleNow = useNow(settlingForStreak);
   const streakNowMs = settlingForStreak ? settleNow : Date.now();
@@ -504,8 +561,10 @@ export function ChatTimelineList({
                     outcomeTone={meta.outcomeTone}
                     expanded={turnOpen}
                     onToggle={() => toggleTurn(item.turnId)}
+                    elapsedMs={completedWorkDurationMs(meta)}
                     showAvatar
                     teamLayout={isTeamMode}
+                    agentTemplateName={item.message.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
                   />
                 ) : null}
                 {/* 折叠态：交付物与代码变更卡需留在文档流内，不能放进被 absolute 隐藏的 collapse */}
@@ -584,8 +643,10 @@ export function ChatTimelineList({
                 expanded={turnOpen}
                 onToggle={() => toggleTurn(item.turnId)}
                 // 折叠条就是该轮视觉顶部：头像必须挂在这里，不能跟 meta/内容区抢来抢去。
+                elapsedMs={completedWorkDurationMs(meta)}
                 showAvatar
                 teamLayout={isTeamMode}
+                agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               />
             );
           }
@@ -606,6 +667,7 @@ export function ChatTimelineList({
                 // 仅当这条 streak 本身吃到了本轮顶部头像时才画；后续 streak 一律不画
                 showAvatar={!turnFoldable && isTopStreakInTurn && streak.showAvatar}
                 teamLayout={isTeamMode}
+                agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               />
             );
           }
@@ -641,6 +703,7 @@ export function ChatTimelineList({
             item.type === 'reasoning' ? (
               <ReasoningSegmentBlock
                 segment={item.segment}
+                agentTemplateName={item.segment.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
               />
@@ -650,6 +713,7 @@ export function ChatTimelineList({
                 notices={item.notices}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
+                agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
                 collapseSkillTreeWhenContentStarts={item.collapseSkillTreeWhenContentStarts}
                 viewedSkillIds={item.viewedSkillIds}
               />
@@ -680,7 +744,10 @@ export function ChatTimelineList({
 
         if (item.type === 'turnSummary') {
           const meta = turnWorkMeta.get(item.turnId);
-          // 有折叠工作的回合也始终在底部展示耗时，与无工具回合位置一致。
+          // 有折叠工作的已完成轮次：耗时已并入折叠条文案（头像下第一行），时间行不再重复渲染。
+          if (meta?.completed && meta.hasWork) {
+            return null;
+          }
           const range = meta
             ? turnElapsedRangeMs(meta)
             : { startMs: item.startMs, endMs: item.hasWork ? item.workEndMs : item.endMs };
@@ -690,6 +757,8 @@ export function ChatTimelineList({
               startMs={range.startMs}
               endMs={range.endMs}
               isLastTurn={item.isLastTurn}
+              showAvatar={item.showAvatar}
+              agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               teamLayout={isTeamMode}
             />
           );

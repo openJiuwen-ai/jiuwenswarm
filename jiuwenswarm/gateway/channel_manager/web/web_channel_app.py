@@ -16,6 +16,10 @@ from jiuwenswarm.common.security.ws_origin import (
     is_origin_check_enabled,
 )
 from jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter import StarletteWsAdapter
+from jiuwenswarm.extensions.application_host import (
+    iter_websocket_routes,
+    mount_application_plugin_http_routes,
+)
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
@@ -51,10 +55,12 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
         openapi_url=None,
     )
     app.state.web_channel = channel
+    plugin_registry = getattr(channel, "application_plugin_registry", None)
 
     # Extension point for future same-port HTTP (e.g. container file API).
     # Keep unused in Phase 1 so WS behavior stays the sole surface.
     register_http_routes(app, channel)
+    mount_application_plugin_http_routes(app, plugin_registry)
 
     main_path = normalize_web_ws_path(channel.config.path)
 
@@ -63,6 +69,32 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
 
     # Honor WEB_PATH / --web-path (same as legacy handle_connection path check).
     app.add_api_websocket_route(main_path, websocket_endpoint)
+    reserved_paths = {main_path, _GIT_WS_PATH}
+    for plugin_id, route in iter_websocket_routes(plugin_registry):
+        path = normalize_web_ws_path(route.path)
+        if path in reserved_paths:
+            raise ValueError(
+                f"application plugin {plugin_id} websocket route conflicts with {path}"
+            )
+        reserved_paths.add(path)
+
+        def _plugin_endpoint_factory(plugin_identifier, route_contribution):
+            async def _plugin_endpoint(websocket: WebSocket) -> None:
+                if route_contribution.check_origin and await _reject_disallowed_origin(websocket):
+                    return
+                plugin = (
+                    plugin_registry.get_application_plugin(plugin_identifier)
+                    if plugin_registry is not None
+                    else None
+                )
+                if plugin is None or not plugin.is_enabled():
+                    await websocket.close(code=1008, reason="application plugin is disabled")
+                    return
+                await route_contribution.endpoint(websocket)
+
+            return _plugin_endpoint
+
+        app.add_api_websocket_route(path, _plugin_endpoint_factory(plugin_id, route))
     if main_path != _GIT_WS_PATH:
         app.add_api_websocket_route(_GIT_WS_PATH, websocket_endpoint)
     else:
@@ -84,8 +116,12 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     from jiuwenswarm.gateway.channel_manager.web.container_file_http import (
         attach_container_file_routes,
     )
+    from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
+        attach_trajectory_routes,
+    )
 
     attach_container_file_routes(app, channel)
+    attach_trajectory_routes(app, channel)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

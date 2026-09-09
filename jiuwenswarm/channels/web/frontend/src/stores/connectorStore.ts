@@ -60,6 +60,7 @@ interface ConnectorState {
   // 成功操作后的反馈文案（连接成功/删除成功等），顶层 index.tsx 订阅它弹绿色 Toast，
   // 和 error 对称——之前只有 error 没有 success，导致注册成功只能靠 UI 跳转暗示，没有明确提示。
   successMessage: string | null;
+  noticeMessage: string | null;
   // per-name 重操作进行中标记，取值是具体操作种类（connect/disconnect/saveCredentialsAndConnect
   // 之一），不忙就是 undefined。操作前置具体种类、完成/失败清
   // undefined。mcpState.ts deriveCardState 据此判断"连接中"占位，优先于 connectionState——
@@ -73,6 +74,8 @@ interface ConnectorState {
 
   loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
   loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
+  installPackage: (assetId: string) => Promise<boolean>;
+  uninstallPackage: (identifier: string) => Promise<boolean>;
   connect: (name: string) => Promise<ConnectorConnectResponse | null>;
   disconnect: (name: string) => Promise<void>;
   // 2026-08-17：deleteConnector（mcp.delete_custom，彻底删除自定义 MCP）的 UI 入口一度在
@@ -104,12 +107,10 @@ interface ConnectorState {
     headers?: Record<string, string>;
     timeoutS?: number;
   }) => Promise<ConnectorConnectResponse | null>;
-  saveCredentialsAndConnect: (
-    name: string,
-    tokens: Record<string, string>,
-  ) => Promise<ConnectorConnectResponse | null>;
+  saveCredentialsAndConnect: (name: string, tokens: Record<string, string>) => Promise<ConnectorConnectResponse | null>;
   clearError: () => void;
   clearSuccess: () => void;
+  clearNotice: () => void;
 }
 
 function patchConnection(
@@ -170,8 +171,7 @@ const RUNTIME_LABELS: Record<string, string> = { node: 'Node.js', python: 'Pytho
 function friendlyCliError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const code = (error as WebError).code;
-  const payload = (error as WebError).payload as
-    { runtime?: string; install_cmd?: string } | undefined;
+  const payload = (error as WebError).payload as { runtime?: string; install_cmd?: string } | undefined;
   const runtime = payload?.runtime ?? '';
   const label = (runtime && RUNTIME_LABELS[runtime]) || runtime;
   const installCmd = payload?.install_cmd ?? '';
@@ -190,12 +190,7 @@ function friendlyCliError(error: unknown): string {
   return error.message; // 兜底：非 CLI 边界失败，展示原文
 }
 
-// 2026-08-11：用户反馈列表页点了操作（连接/断开/启用/禁用/删除）之后，要等到下一次常规轮询
-// （ConnectorMarket/index.tsx LIST_POLL_INTERVAL_MS=10s）才能看到后端真实态，10s 等得太久。
-// 这里不是缩短常规轮询间隔本身（那会让所有用户、所有时刻都承担更高的轮询频率，没必要），而是
-// 在每次重操作完成（不管成功失败）后额外补一次快速刷新——多数操作（disconnect/enable/disable/
-// delete）后端秒级就能落地，1.5s 后拉一次基本就能拿到真实结果；connect 这类可能要后端处理很久
-// 的操作，这次快速刷新大概率还是"进行中"，但至少不会比现在更差，且后续常规轮询依然兜底。
+// 连接、断开或删除完成后补一次快速刷新，将乐观更新校准为后端真实状态。
 // 用 debounce（清掉上一个定时器再重新计时）而不是每次操作都各自起一个 setTimeout，避免短时间
 // 连点多个操作（比如切换好几个 MCP 的启用开关）时打出一串重复的 list 请求。
 //
@@ -215,7 +210,7 @@ function scheduleQuickRefresh(get: () => ConnectorState): void {
   }, QUICK_REFRESH_DELAY_MS);
 }
 
-// 2026-08-18：ExtensionPickerPanel 每次打开都无条件重新 loadList（stale-while-revalidate），
+// ExtensionPickerPanel 每次打开都无条件重新 loadList，
 // 同一个 filter 可能有多次调用同时在途（比如上一次请求撞上网关卡顿还没回来，用户就关了面板
 // 又重新打开，打出了第二次）。没有这层保护时，先发出但后落地的旧请求——不管它最终是成功还是
 // 超时失败——会在它姗姗来迟的那一刻，把这期间已经由更新的请求成功写入的数据重新覆盖掉：这正是
@@ -233,18 +228,18 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   isLoading: false,
   error: null,
   successMessage: null,
+  noticeMessage: null,
   busyMap: {},
 
-  // silent=true 用于切页/回到市场页时的轮询兜底刷新（每 10s，见 ConnectorMarket/index.tsx）：
-  // 不切 isLoading、失败时保留现有列表且不弹 error，避免偶发网络抖动打断用户正在看的内容
-  // ——同款静默刷新模式抄自 CronPanel/index.tsx 的 loadJobs(silent)。
+  // silent=true 仅用于安装/连接后的快速校准，不改变页面的加载状态。
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
     const mySeq = ++listRequestSeq[filter];
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const fresh = await connectorApi.list(filter);
+      const response = await connectorApi.list(filter);
       if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
+      const fresh = response;
       set((state) => ({
         connectors: mergeByName(state.connectors, fresh),
         ...(filter === 'builtin' ? { builtinConnectors: fresh } : { myConnectors: fresh }),
@@ -270,6 +265,84 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       }));
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  installPackage: async (assetId: string) => {
+    set((state) => ({
+      busyMap: { ...state.busyMap, [assetId]: 'install' },
+      error: null,
+    }));
+    try {
+      const response = await connectorApi.install(assetId);
+      const runtimeName = response.item.name;
+      const patchInstalled = (items: ConnectorSummary[]) =>
+        items.map((item) =>
+          item.id === assetId || item.runtimePackageName === runtimeName
+            ? { ...item, name: runtimeName, runtimePackageName: runtimeName, installed: true }
+            : item,
+        );
+      set((state) => ({
+        connectors: patchInstalled(state.connectors),
+        builtinConnectors: patchInstalled(state.builtinConnectors),
+        myConnectors: patchInstalled(state.myConnectors),
+        busyMap: { ...state.busyMap, [assetId]: undefined },
+        successMessage: successKey.mcpInstalled,
+      }));
+      void get().loadList('builtin', { silent: true });
+      void get().loadList('local', { silent: true });
+      return true;
+    } catch (error) {
+      set((state) => ({
+        busyMap: { ...state.busyMap, [assetId]: undefined },
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return false;
+    }
+  },
+
+  uninstallPackage: async (identifier: string) => {
+    set((state) => ({
+      busyMap: { ...state.busyMap, [identifier]: 'uninstall' },
+      error: null,
+      noticeMessage: null,
+    }));
+    try {
+      const response = await connectorApi.uninstall(identifier);
+      const assetId = response.item.id;
+      const runtimeName = response.item.name;
+      const keepCatalogCard = (item: ConnectorSummary) =>
+        item.id === assetId || item.runtimePackageName === runtimeName
+          ? { ...item, installed: false, connectionState: 'disconnected' as const }
+          : item;
+      set((state) => {
+        const detailCache = { ...state.detailCache };
+        delete detailCache[identifier];
+        delete detailCache[assetId];
+        delete detailCache[runtimeName];
+        return {
+          connectors: state.connectors.map(keepCatalogCard),
+          builtinConnectors: state.builtinConnectors.map(keepCatalogCard),
+          myConnectors: state.myConnectors.filter(
+            (item) => item.id !== assetId && item.runtimePackageName !== runtimeName,
+          ),
+          detailCache,
+          busyMap: { ...state.busyMap, [identifier]: undefined },
+          successMessage: successKey.mcpUninstalled,
+          noticeMessage: response.applied
+            ? null
+            : response.error || i18n.t('connectorMarket.toast.mcpUninstallPendingReload'),
+        };
+      });
+      void get().loadList('builtin', { silent: true });
+      void get().loadList('local', { silent: true });
+      return true;
+    } catch (error) {
+      set((state) => ({
+        busyMap: { ...state.busyMap, [identifier]: undefined },
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return false;
     }
   },
 
@@ -400,7 +473,9 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     // connectionState=connecting、icon/description 留空。
     // RPC 完成后 loadList 会用真实数据覆盖。
     const placeholder: ConnectorSummary = {
+      id: params.name,
       name: params.name,
+      runtimePackageName: params.name,
       displayName: params.name,
       description: '',
       category: 'custom',
@@ -408,6 +483,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       connectionState: 'connecting',
       hasBundledSkills: false,
       source: 'customize',
+      installed: true,
     };
     // 占位卡只可能是 customize（register_custom 只用来注册自定义 MCP），只插进 myConnectors +
     // 合并视图 connectors，不碰 builtinConnectors（customize 恒不出现在 filter=builtin 的结果里）。
@@ -434,9 +510,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       const response = await connectorApi.registerCustom(params);
       const connectResult = await get().connect(params.name);
       set({
-        successMessage: connectResult?.type === 'connected'
-          ? successKey.mcpCreatedAndConnected
-          : successKey.mcpCreated,
+        successMessage: connectResult?.type === 'connected' ? successKey.mcpCreatedAndConnected : successKey.mcpCreated,
       });
       void get().loadList('local');
       return response;
@@ -487,6 +561,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
 
   clearError: () => set({ error: null }),
   clearSuccess: () => set({ successMessage: null }),
+  clearNotice: () => set({ noticeMessage: null }),
 }));
 
 // TEMP DEBUG（2026-08-18，排查"扩展面板 MCP 列表后端已返回数据但界面不显示"，定位后删除）：
@@ -499,6 +574,8 @@ if (typeof window !== 'undefined') {
 // success Toast 文案 key——放 store 顶层而不是组件内联，是因为 registerCustom 是 fire-and-reload，
 // 成功发生在后台 .then 里，那时组件上下文已经不在了，得用稳定的常量 key 让顶层订阅者去翻译。
 const successKey = {
+  mcpInstalled: 'connectorMarket.toast.mcpInstalled',
+  mcpUninstalled: 'connectorMarket.toast.mcpUninstalled',
   mcpConnected: 'connectorMarket.toast.mcpConnected',
   mcpCreated: 'connectorMarket.toast.mcpCreated',
   mcpCreatedAndConnected: 'connectorMarket.toast.mcpCreatedAndConnected',
