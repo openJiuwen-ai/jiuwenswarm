@@ -22,6 +22,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_INTERNAL_KEY,
+    SESSION_MESSAGE_ORIGIN,
+)
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     SKILLS_REBUILD_SILENT,
@@ -430,6 +434,26 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
         return None
 
     extra: dict[str, Any] = {}
+    raw_cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
+    if isinstance(raw_cross_session, dict):
+        cross_session = {
+            key: raw_cross_session[key]
+            for key in (
+                "message_id",
+                "source_session_id",
+                "source_title",
+                "chain_id",
+                "parent_message_id",
+                "hop_count",
+                "language",
+            )
+            if key in raw_cross_session
+        }
+        extra["message_origin"] = SESSION_MESSAGE_ORIGIN
+        extra["cross_session"] = cross_session
+        message_id = str(cross_session.get("message_id") or "").strip()
+        if message_id:
+            extra["session_message_id"] = message_id
     raw_media_items = params.get("media_items")
     if isinstance(raw_media_items, list):
         media_items: list[dict[str, Any]] = []
@@ -1386,7 +1410,12 @@ class JiuWenSwarm:
         _request_debug = False
         _dbg_mode = params.get("mode")
         _dbg_mode_s = _dbg_mode.strip().lower() if isinstance(_dbg_mode, str) else ""
-        if not (params.get("team") or is_team_runtime_mode(_dbg_mode_s)):
+        cross_session_turn = isinstance(
+            params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        if not cross_session_turn and not (
+            params.get("team") or is_team_runtime_mode(_dbg_mode_s)
+        ):
             if isinstance(query, str):
                 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
                 query, _request_debug = strip_debug_directive(query)

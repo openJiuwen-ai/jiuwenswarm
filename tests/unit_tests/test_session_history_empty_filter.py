@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import time
+from concurrent.futures import Future
 
 import pytest
 
@@ -370,6 +371,24 @@ def test_request_completion_is_persisted_after_prior_history(tmp_path, monkeypat
         session_history.SESSION_REQUEST_COMPLETED_EVENT,
     ]
     assert records[-1]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_history_receipt_timeout_does_not_cancel_writer_future() -> None:
+    receipt: Future[None] = Future()
+
+    with pytest.raises(TimeoutError):
+        await session_history.wait_for_history_receipt(receipt, timeout=0.001)
+
+    assert receipt.cancelled() is False
+    receipt.set_result(None)
+
+
+def test_history_worker_ignores_a_cancelled_receipt() -> None:
+    receipt: Future[None] = Future()
+    receipt.cancel()
+
+    session_history._settle_history_receipt(receipt)
 
 
 def test_append_history_persists_tool_result_with_nested_payload(tmp_path, monkeypatch):

@@ -287,6 +287,7 @@ class AgentRuntime:
             plan_controller = PlanModeController()
         self._plan_controller = plan_controller
         self._admission_controller = admission_controller
+        self._session_message_service: Any | None = None
         self._session_provisioner = RuntimeSessionProvisioner(
             agent_manager=self._agent_manager,
             plan_controller=self._plan_controller,
@@ -345,6 +346,17 @@ class AgentRuntime:
         )
         if callable(clearer):
             await clearer(session_id, request_id)
+
+    @property
+    def session_message_service(self) -> Any | None:
+        """Return the optional AgentServer-owned cross-Session mailbox."""
+
+        return self._session_message_service
+
+    def set_session_message_service(self, service: Any | None) -> None:
+        """Attach a transport-neutral Host capability used by Agent tools."""
+
+        self._session_message_service = service
 
     def set_session_delete_lifecycle(
         self,
@@ -867,7 +879,7 @@ class AgentRuntime:
                 response = await agent.execute_message(request)
             else:
                 response = await agent.process_message(request)
-            response_event = RuntimeEvent.from_agent_message(
+            event = RuntimeEvent.from_agent_message(
                 response,
                 request_id=request.request_id,
                 channel_id=channel_id,
@@ -875,8 +887,10 @@ class AgentRuntime:
                 default_agent_ref=request.agent_ref,
                 default_complete=True,
             )
-            await self._mark_pending_interaction(response_event)
-            events.append(response_event)
+            await self._mark_pending_interaction(event)
+            if admission_started and self._event_confirms_user_turn(event):
+                await self._supersede_bypassed_session_messages(request)
+            events.append(event)
             kvc_task_succeeded = True
         except asyncio.CancelledError as exc:
             cancellation = exc
@@ -1097,6 +1111,7 @@ class AgentRuntime:
         error: Exception | None = None
         cancellation: asyncio.CancelledError | None = None
         generator_exit: GeneratorExit | None = None
+        supersede_attempted = False
         try:
             if tracks_kvc_task:
                 await self._record_kvc_chat_started(request)
@@ -1158,6 +1173,13 @@ class AgentRuntime:
                         default_agent_ref=request.agent_ref,
                     )
                     await self._mark_pending_interaction(event)
+                    if (
+                        admission_started
+                        and not supersede_attempted
+                        and self._event_confirms_user_turn(event)
+                    ):
+                        supersede_attempted = True
+                        await self._supersede_bypassed_session_messages(request)
                     yield event
                 kvc_task_succeeded = True
             finally:
@@ -1460,6 +1482,55 @@ class AgentRuntime:
 
         return is_interrupt_resume_payload(request.params)
 
+    @staticmethod
+    def _event_confirms_user_turn(event: RuntimeEvent) -> bool:
+        """Return whether an Agent response accepted an ordinary user turn."""
+
+        return bool(
+            event.ok
+            and event.event_type
+            not in {"chat.error", "runtime.error", "execution.error", "error"}
+        )
+
+    async def _supersede_bypassed_session_messages(
+        self,
+        request: AgentRequest,
+    ) -> None:
+        """Resolve stale mailbox waits while this user still owns admission."""
+
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+
+        if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME):
+            return
+        params = request.params if isinstance(request.params, dict) else {}
+        if params.get(SESSION_MESSAGE_INTERNAL_KEY) is not None:
+            return
+        if self._is_interrupt_resume_request(request):
+            return
+        service = self._session_message_service
+        if service is None:
+            return
+        target_session_id = str(request.session_id or "").strip()
+        if not target_session_id:
+            return
+        try:
+            superseded = await service.supersede_waiting_for_target(target_session_id)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[SessionMessaging] failed to supersede bypassed messages: "
+                "session_id=%s",
+                target_session_id,
+            )
+            return
+        if superseded:
+            logger.info(
+                "[SessionMessaging] user turn superseded %d waiting message(s): "
+                "session_id=%s",
+                superseded,
+                target_session_id,
+            )
+
     def _should_admit_interrupt_resume(self, request: AgentRequest) -> bool:
         """Admit a stale answer, but let a live turn inject without waiting.
 
@@ -1473,7 +1544,15 @@ class AgentRuntime:
             return False
         if not callable(getattr(controller, "is_user_active", None)):
             return False
-        return not bool(controller.is_user_active(request.session_id or "default"))
+        session_id = request.session_id or "default"
+        if bool(controller.is_user_active(session_id)):
+            return False
+        is_session_message_active = getattr(
+            controller, "is_session_message_active", None
+        )
+        if callable(is_session_message_active) and is_session_message_active(session_id):
+            return False
+        return True
 
     @staticmethod
     def _request_targets_team(request: AgentRequest) -> bool:

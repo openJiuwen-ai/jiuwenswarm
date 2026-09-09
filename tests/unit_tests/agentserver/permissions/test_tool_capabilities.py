@@ -32,6 +32,26 @@ def test_classifies_high_effect_tools() -> None:
     assert "memory_write" in classify_tool("mem0_conclude").static_side_effects
 
 
+def test_classifies_cross_session_send_as_high_flex_delegation() -> None:
+    capability = classify_tool("session_send_message")
+
+    assert capability.category == "task_management"
+    assert capability.operation_family == "cross_session_send"
+    assert capability.static_side_effects == frozenset({"delegation"})
+    assert capability.risk_tier == "high"
+    assert capability.high_flex is True
+
+
+def test_classifies_cross_session_resolution_as_high_risk_state_change() -> None:
+    capability = classify_tool("session_message_resolve")
+
+    assert capability.category == "task_management"
+    assert capability.operation_family == "cross_session_resolution"
+    assert capability.static_side_effects == frozenset({"session_state_write"})
+    assert capability.risk_tier == "high"
+    assert capability.high_flex is True
+
+
 def test_domain_tools_remain_high_flex_by_default() -> None:
     for tool_name in (
         "browser_snapshot",
@@ -209,11 +229,12 @@ def test_search_skill_is_medium_skill_discovery_without_high_flex() -> None:
 
 
 def test_session_list_is_low_risk_task_status_query() -> None:
-    info = classify_tool("session_list")
-    assert info.category == "task_management"
-    assert info.risk_tier == "low"
-    assert info.high_flex is False
-    assert info.static_side_effects == frozenset()
+    for tool_name in ("session_list", "session_message_list"):
+        info = classify_tool(tool_name)
+        assert info.category == "task_management"
+        assert info.risk_tier == "low"
+        assert info.high_flex is False
+        assert info.static_side_effects == frozenset()
 
 
 def test_install_uninstall_skill_remain_high_risk_manual_tools() -> None:

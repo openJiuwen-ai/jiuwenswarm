@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hashlib
 import logging
@@ -9,11 +10,12 @@ import queue
 import re
 import threading
 import time
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 
 
 logger = logging.getLogger(__name__)
@@ -695,18 +697,47 @@ def _ensure_worker_started() -> None:
                 try:
                     _write_item(sid, item, subagent_id=subagent_id)
                 except Exception as exc:  # noqa: BLE001
-                    if receipt is not None:
-                        receipt.set_exception(exc)
+                    _settle_history_receipt(receipt, error=exc)
                     logger.warning("history 异步写入失败: %s", exc)
                 else:
-                    if receipt is not None:
-                        receipt.set_result(None)
+                    _settle_history_receipt(receipt)
                 finally:
                     _WRITE_QUEUE.task_done()
 
         t = threading.Thread(target=_worker, name="session-history-writer", daemon=True)
         t.start()
         _WORKER_STARTED = True
+
+
+def _settle_history_receipt(
+    receipt: Future[None] | None,
+    *,
+    error: BaseException | None = None,
+) -> None:
+    """Complete a writer receipt without letting caller cancellation kill the worker."""
+
+    if receipt is None or receipt.done():
+        return
+    try:
+        if error is None:
+            receipt.set_result(None)
+        else:
+            receipt.set_exception(error)
+    except InvalidStateError:
+        # A concurrent caller may cancel or complete the receipt after the
+        # ``done`` check.  Receipt state must never terminate the global writer.
+        logger.debug("history receipt was already completed", exc_info=True)
+
+
+async def wait_for_history_receipt(
+    receipt: Future[None],
+    *,
+    timeout: float = 5.0,
+) -> None:
+    """Wait for a history barrier without cancelling the writer-owned receipt."""
+
+    wrapped = asyncio.wrap_future(receipt)
+    await asyncio.wait_for(asyncio.shield(wrapped), timeout=timeout)
 
 
 def _enqueue_history_item(
@@ -795,6 +826,12 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
 
+    is_cross_session_user = bool(
+        role_norm == "user"
+        and isinstance(extra, dict)
+        and extra.get("message_origin") == SESSION_MESSAGE_ORIGIN
+    )
+
     _enqueue_history_item(sid, item, subagent_id=subagent_id)
 
     # 更新会话元数据
@@ -809,7 +846,11 @@ def append_history_record(
             channel_id=cid,
             increment_message_count=True,
             # 传入用户消息内容,用于自动生成标题
-            user_content=content_text if role_norm == "user" else None,
+            user_content=(
+                content_text
+                if role_norm == "user" and not is_cross_session_user
+                else None
+            ),
             # 传入渠道元数据,首次写入时持久化
             channel_metadata=channel_metadata,
             # A subagent record carries its own history mode, but it belongs
@@ -818,13 +859,17 @@ def append_history_record(
             mode=None if subagent_id else mode,
             # 用户消息时刷新 last_user_message_at(用消息时间戳,比请求到达时刻更精确;
             # 与 AgentServer 的 _sync_chat_request_metadata 互补,覆盖所有记录用户消息的路径)
-            last_user_message_at=float(timestamp) if role_norm == "user" else None,
+            last_user_message_at=(
+                float(timestamp)
+                if role_norm == "user" and not is_cross_session_user
+                else None
+            ),
         )
         # Child transcript entries are stored under the parent Session only as
         # an ownership relationship.  Their internal ``subagent`` channel is
         # not an external return route and must not replace the parent's
         # delivery context.
-        if role_norm == "user" and not subagent_id:
+        if role_norm == "user" and not subagent_id and not is_cross_session_user:
             set_session_delivery_context(
                 session_id=sid,
                 channel_id=cid,
