@@ -299,7 +299,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
               data-testid="chat-panel-extension-picker-item"
               data-variant={marketplaceId}
             >
-              <div className={`chat-skill-select__avatar ${avatar.color}`}>
+              <div className="chat-skill-select__avatar" style={avatar.style}>
                 {avatar.firstChar}
               </div>
               <ItemDescCell text={desc} handlers={tooltipHandlers}>

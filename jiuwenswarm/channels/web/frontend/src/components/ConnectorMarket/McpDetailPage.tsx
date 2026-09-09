@@ -217,12 +217,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-mcp-detail">
-      <button
-        type="button"
-        onClick={onBack}
-        className="detail-back mb-[35px]"
-        data-testid="connector-market-mcp-detail-back"
-      >
+      <button type="button" onClick={onBack} className="detail-back" data-testid="connector-market-mcp-detail-back">
         <BackIcon aria-hidden="true" />
         {t('connectorMarket.common.back')}
       </button>
@@ -233,7 +228,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             <EntityAvatar
               iconUrl={connector.icon ?? undefined}
               avatar={avatar}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-semibold"
             />
             <h1 className="text-[20px] font-semibold leading-8 text-text">{connector.displayName}</h1>
             <span

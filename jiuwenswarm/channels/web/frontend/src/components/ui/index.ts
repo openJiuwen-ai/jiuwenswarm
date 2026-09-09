@@ -13,3 +13,5 @@ export { Tag, type TagProps, type TagVariant } from './Tag/Tag';
 export { PageHeader, type PageHeaderProps } from './PageHeader/PageHeader';
 export { CategoryTabs, type CategoryTabsOption, type CategoryTabsProps } from './CategoryTabs/CategoryTabs';
 export { PageToolbarSearch, type PageToolbarSearchProps } from './PageToolbarSearch/PageToolbarSearch';
+export { FilePreviewPanel, type FilePreviewPanelProps } from './FilePreviewPanel/FilePreviewPanel';
+export { PageCard, type PageCardProps, type PageCardActionProps } from './PageCard/PageCard';

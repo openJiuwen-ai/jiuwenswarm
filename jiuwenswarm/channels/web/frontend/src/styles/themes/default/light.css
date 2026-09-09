@@ -20,6 +20,8 @@
   --color-surface-panel-strong-rgb: 255, 255, 255;
   --color-surface-panel-hover: #ffffff;
   --color-surface-panel-hover-rgb: 255, 255, 255;
+  --color-skill-card-action-surface: #f4f4f5;
+  --color-skill-card-action-hover-surface: #e4e4e7;
   --color-surface-chrome: rgba(255, 255, 255, 0.95);
   --color-surface-shell: #f3f3f3;
   --color-surface-transparent: transparent;
@@ -47,6 +49,7 @@
   /* Borders */
   --color-border-default: #e4e4e7;
   --color-border-default-rgb: 228, 228, 231;
+  --color-border-card: #e6e6e6;
   --color-border-strong: #d4d4d8;
   --color-border-hover: #a1a1aa;
   --color-border-accent: rgba(37, 99, 235, 0.5);

@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
-import { Search } from 'lucide-react';
-import { Input, type InputProps } from '../Input/Input';
-import './PageToolbarSearch.css';
+import { useEffect, useRef, useState, type InputHTMLAttributes } from 'react';
 
-export type PageToolbarSearchProps = Omit<InputProps, 'size' | 'prefix'> & {
+export interface PageToolbarSearchProps extends InputHTMLAttributes<HTMLInputElement> {
   wrapperTestId?: string;
   inputTestId?: string;
-};
+  clearTestId?: string;
+  onClear?: () => void;
+}
 
 const WIDTH_STEPS: Array<[number, number]> = [
   [1528, 404],
@@ -22,13 +21,7 @@ function resolveWrapperWidth(containerWidth: number): number {
   return 200;
 }
 
-export function PageToolbarSearch({
-  wrapperTestId,
-  inputTestId,
-  className,
-  rootClassName,
-  ...inputProps
-}: PageToolbarSearchProps) {
+export function PageToolbarSearch({ wrapperTestId, inputTestId, clearTestId, onClear, className, ...rest }: PageToolbarSearchProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(200);
 
@@ -43,16 +36,33 @@ export function PageToolbarSearch({
     return () => observer.disconnect();
   }, []);
 
+  const hasValue = String(rest.value ?? '').length > 0;
+  const showClear = !!onClear && hasValue;
+  const derivedClearTestId = clearTestId ?? (inputTestId ? `${inputTestId.replace(/-input$/, '')}-clear` : undefined);
+
   return (
     <div ref={wrapperRef} data-testid={wrapperTestId} className="relative flex-shrink-0" style={{ width }}>
-      <Input
-        {...inputProps}
-        size="small"
+      <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
+      </svg>
+      <input
         data-testid={inputTestId}
-        className={className}
-        rootClassName={`page-toolbar-search__input${rootClassName ? ` ${rootClassName}` : ''}`}
-        prefix={<Search size={16} strokeWidth={1.5} aria-hidden="true" />}
+        {...rest}
+        className={`w-full pl-8 ${showClear ? 'pr-7' : 'pr-3'} py-1.5 rounded-[6px] border border-border text-[12px] text-text placeholder:text-[color:var(--color-text-placeholder)] focus-visible:outline-none focus-visible:shadow-none${className ? ` ${className}` : ''}`}
       />
+      {showClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          data-testid={derivedClearTestId}
+          aria-label="clear"
+          className="absolute right-2 top-1/2 -translate-y-1/2 flex h-4 w-4 items-center justify-center text-text-muted hover:text-text"
+        >
+          <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
