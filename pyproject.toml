@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+ssh://git@gitcode.com/lin-xiaoyu/agent-core.git@245d1ade1018182fe1e49d9242fbc7ac6a0e2ce9",
+    "openjiuwen @ git+ssh://git@gitcode.com/lin-xiaoyu/agent-core.git@03ad2ad75c551a15ad460a010b18d253ea888a32",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -70,7 +70,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+ssh://git@gitcode.com/lin-xiaoyu/agent-core.git@245d1ade1018182fe1e49d9242fbc7ac6a0e2ce9",
+    "openjiuwen @ git+ssh://git@gitcode.com/lin-xiaoyu/agent-core.git@03ad2ad75c551a15ad460a010b18d253ea888a32",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "aiosqlite>=0.22.1",
@@ -187,7 +187,7 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-openjiuwen = { git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git", rev = "245d1ade1018182fe1e49d9242fbc7ac6a0e2ce9" }
+openjiuwen = { git = "ssh://git@gitcode.com/lin-xiaoyu/agent-core.git", rev = "03ad2ad75c551a15ad460a010b18d253ea888a32" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
