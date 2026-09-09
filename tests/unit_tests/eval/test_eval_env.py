@@ -28,8 +28,8 @@ def reset_eval_env(monkeypatch):
 
 def test_project_dotenv_overrides_shell_api_key(tmp_path: Path, reset_eval_env, monkeypatch):
     monkeypatch.setenv("API_KEY", "sk-proj-from-zshrc")
-    monkeypatch.setenv("API_BASE", "https://api.openai.com/v1")
-    monkeypatch.setenv("MODEL_NAME", "gpt-4.1")
+    monkeypatch.setenv("API_BASE", "https://stale.example/v1")
+    monkeypatch.setenv("MODEL_NAME", "stale-model")
     env_file = tmp_path / ".env"
     env_file.write_text(
         'API_KEY="sk-or-from-project"\n'
@@ -48,6 +48,22 @@ def test_project_dotenv_overrides_shell_api_key(tmp_path: Path, reset_eval_env, 
     assert "sk-or-from-project" not in masked
 
 
+def test_repo_root_dotenv_is_preferred_over_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jiuwen = tmp_path / "jiuwenswarm"
+    resources = jiuwen / "jiuwenswarm" / "resources"
+    resources.mkdir(parents=True)
+    root_env = jiuwen / ".env"
+    product_env = resources / ".env"
+    root_env.write_text("API_KEY=from-repo-root\n", encoding="utf-8")
+    product_env.write_text("API_KEY=from-product-resources\n", encoding="utf-8")
+    monkeypatch.setattr(eval_env, "JIUWEN_ROOT", jiuwen)
+    monkeypatch.delenv("EVAL_DOTENV", raising=False)
+    monkeypatch.setattr(sys, "argv", ["eval"])
+    assert eval_env.resolve_dotenv_path() == root_env.resolve()
+
+
 def _fake_checkout(root: Path) -> Path:
     (root / "contextbench").mkdir(parents=True)
     (root / "contextbench" / "evaluate.py").write_text("# evaluate\n", encoding="utf-8")
@@ -56,7 +72,7 @@ def _fake_checkout(root: Path) -> Path:
     return root
 
 
-def test_explicit_root_does_not_need_reconstruct_tmp(
+def test_explicit_root_wins_without_sibling_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _fake_checkout(tmp_path / "cb")
@@ -109,7 +125,16 @@ def test_missing_checkout_tells_testers_how_to_set_it(
     assert "../ContextBench" in message
 
 
-def test_reconstruct_tmp_is_last_resort_not_required(
+def test_default_output_is_not_the_local_knowledge_base() -> None:
+    out = str(eval_env.DEFAULT_OUTPUT).replace("\\", "/")
+    swe = str(eval_env.DEFAULT_SWE_OUTPUT).replace("\\", "/")
+    assert out.endswith("eval-runs/contextbench")
+    assert swe.endswith("eval-runs/swe")
+    assert "docs/ai" not in out
+    assert "docs/ai" not in swe
+
+
+def test_machine_local_layouts_are_not_search_candidates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     jiuwen = tmp_path / "jiuwenswarm"
@@ -117,5 +142,10 @@ def test_reconstruct_tmp_is_last_resort_not_required(
     monkeypatch.setattr(eval_env, "JIUWEN_ROOT", jiuwen)
     monkeypatch.delenv("CONTEXTBENCH_ROOT", raising=False)
     monkeypatch.delenv("CONTEXTBENCH_PARQUET", raising=False)
-    looked = contextbench_root_candidates()
-    assert str(looked[-1]).replace("\\", "/").endswith("reconstruct_tmp/ContextBench")
+    monkeypatch.delenv("SWE_BENCH_ROOT", raising=False)
+    looked = " ".join(str(path) for path in contextbench_root_candidates())
+    swe = " ".join(str(path) for path in eval_env.swe_root_candidates())
+    assert "reconstruct_tmp" not in looked
+    assert "reconstruct_tmp" not in swe
+    assert "docs/ai" not in looked
+    assert "docs/ai" not in swe

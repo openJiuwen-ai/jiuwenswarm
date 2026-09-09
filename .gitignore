@@ -70,6 +70,7 @@ workspace/agent-data.json
 reference/
 openspec/
 docs/ai/
+eval-runs/
 
 # logs
 logs/

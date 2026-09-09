@@ -186,16 +186,32 @@ def model_env_snapshot() -> dict[str, str]:
 def build_model_from_env() -> Model:
     load_eval_dotenv()
     api_key = os.getenv("API_KEY", "").strip()
-    if not api_key:
+    api_base = os.getenv("API_BASE", "").strip()
+    model_name = os.getenv("MODEL_NAME", "").strip()
+    provider = os.getenv("MODEL_PROVIDER", "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("API_KEY", api_key),
+            ("API_BASE", api_base),
+            ("MODEL_NAME", model_name),
+            ("MODEL_PROVIDER", provider),
+        )
+        if not value
+    ]
+    if missing:
         raise SystemExit(
-            "API_KEY is required. Also set API_BASE, MODEL_NAME, MODEL_PROVIDER "
-            "(same variables as jiuwenswarm/resources/config.yaml)."
+            "Missing "
+            + ", ".join(missing)
+            + ". Copy jiuwenswarm/resources/.env.template to .env "
+            "(or jiuwenswarm/resources/.env) or pass --dotenv / EVAL_DOTENV. "
+            "Do not rely on openai.com / gpt-4.1 defaults."
         )
     return init_model(
-        provider=os.getenv("MODEL_PROVIDER", "OpenAI"),
-        model_name=os.getenv("MODEL_NAME", "gpt-4.1"),
+        provider=provider,
+        model_name=model_name,
         api_key=api_key,
-        api_base=os.getenv("API_BASE", "https://api.openai.com/v1"),
+        api_base=api_base,
         timeout=float(os.getenv("MODEL_TIMEOUT", "180")),
         temperature=float(os.getenv("MODEL_TEMPERATURE", "0.2")),
         top_p=float(os.getenv("MODEL_TOP_P", "0.9")),
