@@ -4710,7 +4710,9 @@ class SkillManager:
     def _cleanup_omni_work_slug(self, skill_name: str) -> None:
         """清理 skill-omni-creation 流水线残留的 scripts/work/<slug>."""
         name = str(skill_name or "").strip()
-        if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        if not name or name in {".", ".."}:
+            return
+        if "/" in name or "\\" in name:
             return
         work_dir = (
             self._skills_dir / "skill-omni-creation" / "scripts" / "work" / name
