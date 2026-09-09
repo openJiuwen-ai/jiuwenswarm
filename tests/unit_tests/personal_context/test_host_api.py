@@ -303,6 +303,13 @@ class FakeCore:
     async def stop_fetch_run(self, service_id: str) -> None:
         self.calls.append(("stop_fetch_run", service_id))
 
+    def remove_fetch_run_history(self, service_id):
+        self.calls.append(("remove_fetch_run_history", service_id))
+        return [{"run_id": "retained"}]
+
+    def restore_fetch_run_history(self, service_id, records):
+        self.calls.append(("restore_fetch_run_history", (service_id, records)))
+
     def remove_fetch_cursor(self, service_id: str) -> bytes | None:
         self.calls.append(("remove_fetch_cursor", service_id))
         if self.remove_cursor_error is not None:
@@ -2250,6 +2257,7 @@ async def test_delete_fetch_service_removes_config_cursor_and_preserves_context(
     assert context_page.read_text(encoding="utf-8") == "# retained context\n"
     assert source_meta.read_text(encoding="utf-8") == "# retained source\n"
     assert [name for name, _value in core.calls].count("snapshot") == 1
+    assert [name for name, _value in core.calls].count("remove_fetch_run_history") == 1
     assert [name for name, _value in core.calls].count("remove_fetch_cursor") == 1
     assert [name for name, _value in core.calls].count("restore_fetch_cursor") == 0
 
@@ -2321,6 +2329,10 @@ async def test_delete_fetch_service_apply_failure_restores_cursor_and_config(
     with pytest.raises(PersonalContext.Error):
         await host.delete_fetch_service("local-notes")
 
+    assert (
+        "restore_fetch_run_history",
+        ("local-notes", [{"run_id": "retained"}]),
+    ) in core.calls
     assert core.cursor_payloads["local-notes"] == b"old-cursor"
     assert host._config is old_config
     assert host._stored_config == old_stored
@@ -2481,47 +2493,42 @@ async def test_patch_fetch_service_never_creates_missing_service(
 
 @pytest.mark.asyncio
 async def test_get_fetch_run_status_returns_all_or_one_service(
-    fake_host: tuple[PersonalContextHostAPI, FakeCore],
-    tmp_path: Path,
-) -> None:
+    fake_host, tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
     host, core = fake_host
     await host.configure(_config(enabled=False, root_dir=tmp_path))
-    core.snapshot_result = SimpleNamespace(
-        fetch_run_progress={
-            "local-notes": {
-                "service_id": "local-notes",
-                "run_state": "running",
-                "progress_percent": 15,
-                "total_items": 20,
-                "completed_items": 3,
-                "last_error": None,
-            }
-        },
-    )
-
-    all_status = await host.get_fetch_run_status()
-    one_status = await host.get_fetch_run_status("local-notes")
-
-    assert all_status == {
-        "services": [
-            {
-                "service_id": "local-notes",
-                "run_state": "running",
-                "progress_percent": 15,
-                "total_items": 20,
-                "completed_items": 3,
-                "last_error": None,
-            }
-        ]
-    }
-    assert one_status == {
+    expected = {
         "service_id": "local-notes",
-        "run_state": "running",
-        "progress_percent": 15,
-        "total_items": 20,
-        "completed_items": 3,
-        "last_error": None,
+        "runs": [{"run_id": "a" * 32, "run_state": "succeeded"}],
     }
+    query = AsyncMock(return_value=expected)
+    monkeypatch.setattr(core, "get_fetch_run_status", query, raising=False)
+    assert await host.get_fetch_run_status("local-notes") == expected
+    query.assert_awaited_with("local-notes", run_id=None)
+    await host.get_fetch_run_status("local-notes", run_id="a" * 32)
+    query.assert_awaited_with("local-notes", run_id="a" * 32)
+    await host.get_fetch_run_status()
+    query.assert_awaited_with(None, run_id=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"run_id": "a"},
+        {"service_id": "local-notes", "run_id": ""},
+        {"service_id": "local-notes", "run_id": 12},
+    ],
+)
+async def test_get_fetch_run_status_rejects_invalid_identity(
+    fake_host, tmp_path, params
+):
+    host, _core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    with pytest.raises(Exception):
+        await host.get_fetch_run_status(**params)
 
 
 @pytest.mark.asyncio

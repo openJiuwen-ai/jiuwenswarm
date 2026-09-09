@@ -284,7 +284,8 @@ async def _execute(
         return await host.stop_fetch_run(_text(params, "service_id"))
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS:
         return await host.get_fetch_run_status(
-            cast(str | None, params.get("service_id"))
+            cast(str | None, params.get("service_id")),
+            run_id=cast(str | None, params.get("run_id")),
         )
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS:
         return await host.get_authorization_status(_text(params, "provider"))

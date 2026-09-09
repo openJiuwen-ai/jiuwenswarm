@@ -310,3 +310,61 @@ class _FakeManagedAgent:
         self.refresh_count += 1
         if self.fail_refresh:
             raise RuntimeError("refresh failed")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("normal,plan", [("code.normal", "code.plan"), ("agent.code.normal", "agent.code.plan")])
+async def test_code_modes_use_shared_personal_context_switch_and_cleanup(monkeypatch, normal, plan):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    agent = _FakeAgent()
+    adapter = object.__new__(JiuwenSwarmCodeAdapter)
+    adapter.__dict__.update(_adapter(agent, runtime_enabled=False).__dict__)
+    adapter._is_code_agent = True
+    # Existing unrelated code rails are already registered for this lightweight instance.
+    for name in ("_task_planning_rail", "_skill_evolution_rail", "_evolution_interrupt_rail"):
+        setattr(adapter, name, None)
+    for name in ("_subagent_rail", "_project_memory_rail", "_coding_memory_rail"):
+        setattr(adapter, name, object())
+    monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
+    await adapter._update_rails_for_mode(normal)
+    assert agent.register_attempts == []
+    assert adapter._last_mode == normal
+    adapter.set_personal_context_runtime_enabled(True)
+    await adapter.refresh_personal_context_rail()
+    rail = adapter._personal_context_rail
+    assert rail is not None
+    await adapter._update_rails_for_mode(plan)
+    assert adapter._personal_context_rail is rail
+    assert agent.register_attempts == [rail]
+    adapter.set_personal_context_runtime_enabled(False)
+    await adapter.refresh_personal_context_rail()
+    assert adapter._personal_context_rail is None
+    assert agent.unregister_attempts == [rail]
+    adapter.set_personal_context_runtime_enabled(True)
+    await adapter.refresh_personal_context_rail()
+    assert adapter._personal_context_rail is not None
+    await adapter._sync_personal_context_rail("cleanup")
+    assert adapter._personal_context_rail is None
+
+
+@pytest.mark.asyncio
+async def test_code_session_adapters_receive_existing_switch_broadcast(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    root = object.__new__(JiuwenSwarmCodeAdapter)
+    child = object.__new__(JiuwenSwarmCodeAdapter)
+    for adapter in (root, child):
+        adapter.__dict__.update(_adapter(_FakeAgent(), runtime_enabled=False).__dict__)
+        adapter._is_code_agent = True
+        adapter._last_mode = "code.normal"
+    root._is_session_scoped_adapter = False
+    root._session_adapters = {"code-session": child}
+    monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
+    root.set_personal_context_runtime_enabled(True)
+    await root.refresh_personal_context_rail()
+    assert root._personal_context_rail is not None
+    assert child._personal_context_rail is not None
+    root.set_personal_context_runtime_enabled(False)
+    await root.refresh_personal_context_rail()
+    assert root._personal_context_rail is None
+    assert child._personal_context_rail is None

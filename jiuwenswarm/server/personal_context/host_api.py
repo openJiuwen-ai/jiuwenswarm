@@ -982,7 +982,11 @@ class PersonalContextHostAPI:
                     "PersonalContext fetch cursor could not be removed",
                     status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
                 ) from None
+            history_payload: list[dict[str, object]] | None = None
             try:
+                history_payload = self._personal_context.remove_fetch_run_history(
+                    normalized_id
+                )
                 stored["fetch_services"] = [
                     item for item in services if item["service_id"] != normalized_id
                 ]
@@ -1002,6 +1006,13 @@ class PersonalContextHostAPI:
                     )
                 except BaseException as restore_exc:
                     restore_error = restore_exc
+                if history_payload is not None:
+                    try:
+                        self._personal_context.restore_fetch_run_history(
+                            normalized_id, history_payload
+                        )
+                    except BaseException as restore_exc:
+                        restore_error = restore_exc
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 if restore_error is not None:
@@ -1071,43 +1082,24 @@ class PersonalContextHostAPI:
     async def get_fetch_run_status(
         self,
         service_id: str | None = None,
+        *,
+        run_id: str | None = None,
     ) -> dict[str, object]:
-        """Return current run state and last retained error for fetch services."""
-
+        """Return a selected round or retained runs grouped by service."""
         if service_id is not None and (
             not isinstance(service_id, str) or not service_id.strip()
         ):
             _raise_host_error("service_id must be a non-empty string")
+        if run_id is not None and (
+            service_id is None or not isinstance(run_id, str) or not run_id.strip()
+        ):
+            _raise_host_error("run_id requires service_id and a non-empty string")
         normalized_id = service_id.strip() if service_id is not None else None
         async with self._operation_lock:
-            configured_ids: list[str] = []
-            if self._stored_config is not None:
-                services = cast(
-                    list[dict[str, object]],
-                    self._stored_config["fetch_services"],
-                )
-                configured_ids = [cast(str, item["service_id"]) for item in services]
-            if normalized_id is not None and normalized_id not in configured_ids:
-                _raise_host_error("unknown PersonalContext fetch service")
-            status = await self._personal_context.snapshot()
-            progress_by_service = getattr(status, "fetch_run_progress", {})
-
-            def project(item_id: str) -> dict[str, object]:
-                progress = progress_by_service.get(item_id)
-                if isinstance(progress, dict):
-                    return deepcopy(progress)
-                return {
-                    "service_id": item_id,
-                    "run_state": "idle",
-                    "progress_percent": 0,
-                    "total_items": 0,
-                    "completed_items": 0,
-                    "last_error": None,
-                }
-
-            if normalized_id is not None:
-                return project(normalized_id)
-            return {"services": [project(item_id) for item_id in configured_ids]}
+            return await self._personal_context.get_fetch_run_status(
+                normalized_id,
+                run_id=run_id,
+            )
 
     async def set_fetch_service_enabled(
         self,

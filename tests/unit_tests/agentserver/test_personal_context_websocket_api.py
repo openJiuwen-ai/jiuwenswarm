@@ -153,10 +153,12 @@ class _FakeHost:
     async def get_fetch_run_status(
         self,
         service_id: str | None = None,
+        *,
+        run_id: str | None = None,
     ) -> dict[str, object]:
         return self._record(
             "get_fetch_run_status",
-            service_id,
+            (service_id, run_id) if run_id is not None else service_id,
             {"service_id": service_id, "state": "RUNNING"},
         )
 
@@ -1009,3 +1011,20 @@ async def test_handler_propagates_cancellation(capture_wire: None) -> None:
             _request(ReqMethod.PERSONAL_CONTEXT_RUNTIME_STATUS),
             asyncio.Lock(),
         )
+
+
+@pytest.mark.asyncio
+async def test_run_history_query_forwards_run_id(capture_wire):
+    _server_instance, host = _server()
+    ws = _FakeWebSocket()
+    await handle_personal_context_request(
+        host,
+        ws,
+        _request(
+            ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS,
+            {"service_id": "notes", "run_id": "a" * 32},
+        ),
+        asyncio.Lock(),
+    )
+    assert host.calls == [("get_fetch_run_status", ("notes", "a" * 32))]
+    assert ws.sent[0]["status"] == "succeeded"
