@@ -2217,6 +2217,7 @@ class JiuWenSwarmDeepAdapter:
         # Inherit the channel id so the child's MCP load strategy matches the
         # parent's (TUI loads the global set, web loads nothing on init).
         adapter._channel_id = getattr(self, "_channel_id", "")
+        adapter._is_cron_execution = self._is_cron_execution
         adapter.set_personal_context_runtime_enabled(
             self._personal_context_runtime_enabled
         )
@@ -3891,8 +3892,95 @@ class JiuWenSwarmDeepAdapter:
             return True  # no config → default enabled
         return subagent_cfg.get("enabled", True) is not False
 
+    def _build_subagents_with_general_purpose(
+        self,
+        model: Model,
+        config: dict[str, Any],
+        config_base: dict[str, Any],
+        *,
+        rails: list[Any] | None,
+        tools: list[Any],
+        workspace: Workspace,
+        sys_operation: SysOperation,
+        reload: bool,
+        allow_general: bool,
+    ) -> list[Any] | None:
+        """Use develop's Core injector while keeping root permission owners out of children."""
 
+        subagents, add_general = self._build_configured_subagents(
+            model, config, config_base
+        )
+        if reload and not self._general_purpose_rail_snapshot and not add_general:
+            return subagents
+        smart = self._auto_permission_enabled_for_config(
+            config_base.get("permissions"), composition_scope="single_agent",
+        )
+        candidates = list(rails or [])
+        if reload and smart:
+            if not self._general_purpose_rail_snapshot:
+                raise RuntimeError("general_purpose_rail_snapshot_unavailable")
+            replacements = {type(rail): rail for rail in candidates}
+            candidates = [
+                replacements.get(type(rail), rail)
+                for rail in self._general_purpose_rail_snapshot
+            ]
+        self._general_purpose_rail_snapshot = tuple(self._general_purpose_rails(candidates, smart=smart))
+        return _inject_general_purpose_subagent(
+            subagents,
+            add_general_purpose_agent=allow_general and add_general,
+            resolved_language=workspace.language,
+            rails=list(self._general_purpose_rail_snapshot),
+            system_prompt=build_agent_identity_prompt(
+                language=self._resolve_prompt_language(),
+            ),
+            tools=list(tools),
+            mcps=None,
+            model=model,
+            skills=None,
+            workspace=workspace,
+            sys_operation=sys_operation,
+        ) or None
 
+    def _general_purpose_rails(self, rails: list[Any], *, smart: bool) -> list[Any]:
+        """Select child rails without copying root permission ownership."""
+        excluded = (SubagentRail, RootPermissionQueueRail, RootContextRail, RootPermissionCompletionRail)
+        candidates = []
+        for rail in rails:
+            if isinstance(rail, excluded) or (smart and isinstance(rail, self._permission_rail_types())):
+                continue
+            if smart and isinstance(rail, JiuSwarmStreamEventRail):
+                rail = _GeneralPurposeStreamRail()
+            elif smart and isinstance(rail, StructuredAskUserRail):
+                rail = _GeneralPurposeAskUserRail(language=rail._language, strict_continuation_contract=False)
+            candidates.append(rail)
+        if not self._filesystem_rail_enabled_for_profile():
+            candidates = [rail for rail in candidates if not isinstance(rail, SysOperationRail)]
+        if not any(isinstance(rail, SysOperationRail) for rail in candidates):
+            candidates.insert(0, SysOperationRail())
+        return candidates
+
+    def _prepare_general_purpose_permission_update(self, expected: dict[str, Any], *, smart: bool):
+        """Copy the SDK's existing GP definition; do not reconfigure other owners."""
+        current = self._instance.deep_config.subagents
+        if not current or not any(
+            isinstance(spec, SubAgentConfig) and spec.agent_card.name == "general-purpose"
+            for spec in current
+        ):
+            return current, self._general_purpose_rail_snapshot
+        types = self._permission_group_types()
+        # Preserve only the GP's recorded ordinary rails. The SDK may mount
+        # additional root-only defaults that were never part of this child.
+        retained = [rail for rail in self._general_purpose_rail_snapshot if not isinstance(rail, types)]
+        rails = self._general_purpose_rails(
+            [*retained, *(rail for rail in expected.values() if rail is not None)], smart=smart,
+        )
+        prepared = [
+            replace(spec, rails=list(rails), workspace=self._instance.deep_config.workspace,
+                    sys_operation=self._sys_operation)
+            if isinstance(spec, SubAgentConfig) and spec.agent_card.name == "general-purpose" else spec
+            for spec in current
+        ]
+        return prepared, tuple(rails)
 
     def _build_configured_subagents(
         self,
@@ -7069,8 +7157,7 @@ class JiuWenSwarmDeepAdapter:
             rail = None
         return rail
 
-    @staticmethod
-    def _build_stream_event_rail() -> JiuSwarmStreamEventRail | None:
+    def _build_stream_event_rail(self) -> JiuSwarmStreamEventRail | None:
         """Build JiuSwarmStreamEventRail."""
         try:
             stream_event_rail = JiuSwarmStreamEventRail()
@@ -7136,7 +7223,9 @@ class JiuWenSwarmDeepAdapter:
     def _build_structured_ask_user_rail(self) -> StructuredAskUserRail | None:
         """Build StructuredAskUserRail for agent mode clarification."""
         try:
-            return StructuredAskUserRail(language=self._resolve_runtime_language())
+            return StructuredAskUserRail(
+                language=self._resolve_runtime_language(),
+            )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] StructuredAskUserRail create failed: %s", exc)
             return None
@@ -7576,7 +7665,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _instantiate_rails(
         self,
-        rail_infos: list["_RailBuildInfo"],
+        rail_infos: list[_RailBuildInfo],
         config_base: dict[str, Any],
     ) -> list[Any]:
         """Build each declared rail in order, then attach the two standing ones.
@@ -7599,12 +7688,14 @@ class JiuWenSwarmDeepAdapter:
         stage_timer = StageTimer()
         rails_list = []
         for info in rail_infos:
-            rail_instance = info.build_func(**info.params)
+            rail_instance = info.build_func(**(info.params or {}))
             stage_timer.mark(info.attr_name.lstrip("_"))
             if rail_instance is not None:
                 setattr(self, info.attr_name, rail_instance)
                 rails_list.append(rail_instance)
             else:
+                if info.attr_name in _REQUIRED_AGENT_RAIL_ATTR_NAMES:
+                    setattr(self, info.attr_name, None)
                 logger.warning("%s Rail %s build returned None", log_prefix, info.attr_name)
 
         # 用户配置的 hooks（UserHookRail）
@@ -7691,7 +7782,7 @@ class JiuWenSwarmDeepAdapter:
         """Keep profile eligibility separate from the router's execution ownership."""
         return (
             not self._is_code_agent
-            and not is_cron_execution_session(self._parent_session_id)
+            and not self._is_cron_execution
             and _resolve_agent_composition_scope(
                 self._session_instance_mode,
                 self._session_instance_sub_mode,
@@ -7713,6 +7804,58 @@ class JiuWenSwarmDeepAdapter:
             and self._auto_permission_capability_enabled()
         )
 
+    def _validate_required_agent_rails(
+        self,
+        rails: list[Any],
+        *,
+        queue_rail: RootPermissionQueueRail,
+        completion_rail: RootPermissionCompletionRail,
+        root_context_rail: RootContextRail,
+        stream_event_rail: JiuSwarmStreamEventRail,
+        permission_rail: Any,
+    ) -> None:
+        """Validate the exact objects required by an enabled Smart Approval group."""
+        required_rails = (
+            (
+                "_root_permission_queue_rail",
+                queue_rail,
+                RootPermissionQueueRail,
+            ),
+            (
+                "_root_context_rail",
+                root_context_rail,
+                RootContextRail,
+            ),
+            (
+                "_root_permission_completion_rail",
+                completion_rail,
+                RootPermissionCompletionRail,
+            ),
+            ("_stream_event_rail", stream_event_rail, JiuSwarmStreamEventRail),
+        )
+        for attr_name, expected_rail, rail_type in required_rails:
+            if sum(isinstance(rail, rail_type) for rail in rails) != 1:
+                raise RuntimeError(
+                    f"required_agent_rail_count_invalid:{rail_type.__name__}"
+                )
+            if sum(rail is expected_rail for rail in rails) != 1:
+                raise RuntimeError(f"required_agent_rail_graph_identity_mismatch:{attr_name}")
+            if getattr(self, attr_name, None) is not expected_rail:
+                raise RuntimeError(f"required_agent_rail_attr_identity_mismatch:{attr_name}")
+
+        permission_types = self._permission_rail_types()
+        permission_rails = [rail for rail in rails if isinstance(rail, permission_types)]
+        if len(permission_rails) != 1:
+            raise RuntimeError("required_permission_rail_count_invalid")
+        if (
+            sum(rail is permission_rail for rail in rails) != 1
+            or self._permission_rail is not permission_rail
+        ):
+            raise RuntimeError("required_permission_rail_identity_mismatch")
+        if not isinstance(permission_rail, permission_types[1]):
+            raise RuntimeError("required_permission_rail_type_invalid")
+        if permission_rail.sys_operation is not self._sys_operation:
+            raise RuntimeError("required_permission_rail_identity_mismatch")
 
     def _build_agent_rails(
         self,
@@ -7720,8 +7863,28 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any],
         *,
         mode: str = "agent",
+        composition_scope: str = "single_agent",
     ) -> list[Any]:
         """Build DeepAgent rails consistently for cold start and hot reload."""
+        permission_config = config_base.get("permissions", {})
+        self._enable_auto_permission = self._auto_permission_enabled_for_config(
+            permission_config, composition_scope=composition_scope,
+        )
+        group = None
+        if self._enable_auto_permission:
+            if self._sys_operation is None:
+                raise RuntimeError("required_agent_sys_operation_unavailable")
+            group = self._build_session_permission_group(
+                config_base, smart=True, installed_permissions=self._permission_state.pending_installed_permissions,
+                model_name=config_base.get("models", {}).get("default", {})
+                .get("model_client_config", {}).get("model_name", "gpt-4"),
+                workspace_root=self._permission_workspace_root,
+            )
+        else:
+            self._root_permission_queue_rail = None
+            self._root_context_rail = None
+            self._root_permission_completion_rail = None
+
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
@@ -7749,7 +7912,8 @@ class JiuWenSwarmDeepAdapter:
                 self._build_subagent_rail,
                 {"config_base": config_base},
             ),
-            *self._permission_interrupt_rail_infos(config_base),
+            *([_RailBuildInfo("_permission_rail", lambda: group["_permission_rail"])]
+              if group is not None else self._permission_interrupt_rail_infos(config_base)),
             _RailBuildInfo(
                 "_context_processor_rail",
                 _build_context_processor_rail,
@@ -7805,12 +7969,40 @@ class JiuWenSwarmDeepAdapter:
                 _RailBuildInfo("_work_plan_approval_rail", self._build_work_plan_approval_rail)
             )
 
-        return self._instantiate_rails(rail_infos, config_base)
+        if group is not None:
+            # Keep develop's non-permission order; substitute the shared recipe.
+            rail_infos = [
+                _RailBuildInfo(info.attr_name, lambda rail=group[info.attr_name]: rail)
+                if info.attr_name in group else info for info in rail_infos
+            ]
+            rail_infos[:0] = [
+                _RailBuildInfo("_root_permission_queue_rail", lambda: group["_root_permission_queue_rail"]),
+                _RailBuildInfo("_root_context_rail", lambda: group["_root_context_rail"]),
+            ]
+            permission_index = next(
+                index for index, info in enumerate(rail_infos)
+                if info.attr_name == "_permission_rail"
+            )
+            rail_infos.insert(permission_index + 1, _RailBuildInfo(
+                "_root_permission_completion_rail", lambda: group["_root_permission_completion_rail"],
+            ))
+
+        rails = self._instantiate_rails(rail_infos, config_base)
+        if group is not None:
+            if group["_stream_event_rail"] is None or group["_permission_rail"] is None:
+                raise RuntimeError("required_agent_rail_missing:smart_permission")
+            self._validate_required_agent_rails(
+                rails, queue_rail=group["_root_permission_queue_rail"],
+                completion_rail=group["_root_permission_completion_rail"],
+                root_context_rail=group["_root_context_rail"],
+                stream_event_rail=group["_stream_event_rail"], permission_rail=group["_permission_rail"],
+            )
+        return rails
 
     def _permission_interrupt_rail_infos(
-        self, config_base: dict[str, Any]
+        self, config_base: dict[str, Any],
     ) -> list[_RailBuildInfo]:
-        """PermissionInterruptRail recipe, omitted for unattended cron sessions."""
+        """Non-Smart/Code recipe; Smart uses the shared group, cron has no rail."""
         if self._is_cron_execution:
             logger.info(
                 "[JiuWenSwarmDeepAdapter] skip PermissionInterruptRail for cron session %s",
@@ -7829,6 +8021,14 @@ class JiuWenSwarmDeepAdapter:
                     .get("model_client_config", {})
                     .get("model_name", "gpt-4"),
                     "session_id": getattr(self, "_parent_session_id", None),
+                    "enable_auto_permission": False,
+                    "installed_permissions": None,
+                    "workspace_root": self._workspace_dir,
+                    "platform_trusted_root": None,
+                    "sys_operation": self._sys_operation,
+                    "permissions_changed_notifier": self._permissions_changed_notifier,
+                    "browser_runtime_security_profile": self._browser_runtime_security_profile,
+                    "trusted_search_urls": None,
                 },
             )
         ]
@@ -7890,21 +8090,20 @@ class JiuWenSwarmDeepAdapter:
         normalized_tool_cards = [
             tool.card if hasattr(tool, "card") else tool for tool in (tool_cards or [])
         ]
-        configured_subagents, should_add_general_agent = self._build_configured_subagents(model, config, config_base)
-        # Hot reload uses configure(); factory inject does not run again.
-        configured_subagents = _inject_general_purpose_subagent(
-            configured_subagents,
-            add_general_purpose_agent=should_add_general_agent,
-            resolved_language=resolved_language,
-            rails=rails,
-            system_prompt=build_agent_identity_prompt(
-                language=self._resolve_prompt_language(),
-            ),
-            tools=normalized_tool_cards,
-            mcps=None,
+        configured_subagents = self._build_subagents_with_general_purpose(
             model=model,
-            skills=None,
-        ) or None
+            config=config,
+            config_base=config_base,
+            rails=rails,
+            tools=normalized_tool_cards,
+            workspace=workspace_obj,
+            sys_operation=self._sys_operation,
+            reload=True,
+            allow_general=(
+                self._session_instance_sub_mode == "plan"
+                or self._session_instance_mode.startswith("agent")
+            ),
+        )
         context_model_state = _ContextEngineModelState(
             full_config=config_base,
             model_name=getattr(getattr(model, "model_config", None), "model_name", ""),
@@ -7928,7 +8127,7 @@ class JiuWenSwarmDeepAdapter:
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             max_iterations=config.get("max_iterations", 15),
             subagents=configured_subagents,
-            add_general_purpose_agent=should_add_general_agent,
+            add_general_purpose_agent=False,
             tools=normalized_tool_cards,
             workspace=workspace_obj,
             skills=None,
@@ -8020,6 +8219,26 @@ class JiuWenSwarmDeepAdapter:
             for _, adapter in self._iter_session_adapters_for_reload(target_sid)
         )
 
+    def _build_session_permission_group(
+        self, config: dict[str, Any], *, smart: bool,
+        installed_permissions: dict[str, Any] | None, model_name: str, workspace_root: Any,
+    ) -> dict[str, Any]:
+        return build_permission_group(
+            config, permission_builder=build_permission_rail,
+            permission_inputs={
+                "llm": self._model, "model_name": model_name, "session_id": self._parent_session_id,
+                "enable_auto_permission": smart, "installed_permissions": installed_permissions,
+                "workspace_root": workspace_root,
+                "platform_trusted_root": self._platform_trusted_root if smart else None,
+                "sys_operation": self._sys_operation,
+                "permissions_changed_notifier": self._permissions_changed_notifier,
+                "browser_runtime_security_profile": self._browser_runtime_security_profile,
+                "trusted_search_urls": self._trusted_search_urls if smart else None,
+            },
+            queue=self._root_permission_queue, answer_claimed=self._permission_dispatch.close_claimed,
+            sandboxed=getattr(self._sys_operation_card, "mode", None) == OperationMode.SANDBOX,
+            language=self._resolve_runtime_language(),
+        )
 
     def _permission_group_types(self) -> tuple[type, ...]:
         return (*self._permission_rail_types(), RootPermissionQueueRail, RootContextRail,
@@ -8400,11 +8619,11 @@ class JiuWenSwarmDeepAdapter:
         if not self._filesystem_rail_enabled_for_profile():
             self._filesystem_rail = None
 
-        self._update_permission_rail(config_base)
+        if not self._permission_state.permission_update_in_progress:
+            self._update_permission_rail(config_base)
 
         if self._heartbeat_rail is None:
             self._heartbeat_rail = self._build_heartbeat_rail()
-
         rails_list = []
         if self._skill_rail is not None:
             rails_list.append(self._skill_rail)
@@ -8418,7 +8637,7 @@ class JiuWenSwarmDeepAdapter:
             rails_list.append(self._avatar_rail)
         if self._memory_forbidden_rail is not None:
             rails_list.append(self._memory_forbidden_rail)
-        if self._permission_rail is not None:
+        if not self._permission_state.permission_update_in_progress and self._permission_rail is not None:
             rails_list.append(self._permission_rail)
         if self._heartbeat_rail is not None:
             rails_list.append(self._heartbeat_rail)
@@ -8466,8 +8685,7 @@ class JiuWenSwarmDeepAdapter:
         mark_stateless([tool])
         register_tool(tool, None)
 
-    @staticmethod
-    def _register_agent_owned_tool(tool: Any, owner_id: str) -> None:
+    def _register_agent_owned_tool(self, tool: Any, owner_id: str) -> None:
         """Register a tool instance owned exclusively by this adapter's agent.
 
         ``_get_tool_cards`` runs before ``create_deep_agent``, so there is no
@@ -8492,6 +8710,14 @@ class JiuWenSwarmDeepAdapter:
                 tool.card.name,
             )
         register_tool(tool, owner_id)
+        if (self._instance is None and not tool.card.stateless
+                and self._uses_smart_permission_lifecycle(self._config_base_cache or {})):
+            # Keep the existing card list usable by owner teardown even when
+            # discovery raises before returning its completed list.
+            if self._tool_cards is None:
+                self._tool_cards = []
+            if not any(card is tool.card for card in self._tool_cards):
+                self._tool_cards.append(tool.card)
 
     async def _get_tool_cards(self, agent_id: str):
         """Get tool cards."""
