@@ -2663,6 +2663,7 @@ def test_permission_interrupt_omitted_for_cron_session(
             mode="team",
             role="leader",
             session_id="cron_19abc_job1",
+            channel_id="__cron__",
         ),
     )
 
