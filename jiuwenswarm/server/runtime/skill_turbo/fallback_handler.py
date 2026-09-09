@@ -349,7 +349,16 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
             "[DeepAgentFallbackHandler] node fallback contract passed node=%s",
             node_name,
         )
-        return self._build_success_result(node_name, inputs, contract_result, error)
+        success_result = self._build_success_result(node_name, inputs, contract_result, error)
+        # 与流式兜底（_fallback_stream_impl）对齐：契约结果必须写回共享计划上下文。
+        # 嵌套场景父节点会丢弃 execute_subplan 返回值，不回写则下游节点读到旧值
+        # （如 P4.1 读到空 search_mode 连锁失败直至 fallback limit exceeded）。
+        inputs.update({
+            key: value
+            for key, value in success_result.items()
+            if key not in {"node", "status"}
+        })
+        return success_result
 
     def fallback_stream(
         self,
