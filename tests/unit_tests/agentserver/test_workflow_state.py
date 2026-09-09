@@ -1313,3 +1313,11 @@ def test_workflow_stopped_on_paused_run_finalizes_paused_phase_and_agents():
     assert state.phases[0].agents[0].status == "stopped"
     assert state.phases[0].completed_agent_count == 1
     assert delta is not None and delta["status"] == "stopped"
+
+
+def test_workflow_run_dict_carries_recovered_only_when_set():
+    """command.workflows serves the snapshot dict; the cold-start marker must
+    reach the frontend through it, not only through the started delta."""
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    assert state.to_workflow_run_dict()["recovered"] is True
+    assert "recovered" not in WorkflowRunState.model_validate({"id": "r2"}).to_workflow_run_dict()

@@ -1420,4 +1420,8 @@ class WorkflowRunState(BaseModel):
         result["workflow_budget"] = self.workflow_budget
         if self.budget_exhausted_scope is not None:
             result["budget_exhausted_scope"] = self.budget_exhausted_scope
+        # A disk-restored run with no live controller ticket: the frontend
+        # greys its control buttons until a relaunch clears it.
+        if self.recovered:
+            result["recovered"] = True
         return result

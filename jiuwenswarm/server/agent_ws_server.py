@@ -6332,17 +6332,21 @@ class AgentWebSocketServer:
         detail_raw_bytes: int | None = None
 
         if workflow_handler is None:
-            # No live handler (runtime not active / torn down by cancel-stop).
-            # The snapshot is a read-only pull and must not depend on runtime
-            # liveness — fall back to the persisted checkpoint so historical /
-            # terminal workflow runs remain queryable after the team session
-            # is cancelled or stopped.
+            # No live handler (runtime not active / torn down by cancel-stop /
+            # process restarted). Fall back to the persisted checkpoint so
+            # historical / terminal runs stay queryable — but serve the same
+            # cold-start view the runtime would build: a run the old process
+            # left ``running`` gets no more events and must read as ``paused``
+            # + ``recovered`` (buttons grey, advisory lists it), not as live.
             try:
                 from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                    _normalize_recovered_runs,
                     restore_workflow_runs,
                 )
 
-                restored = restore_workflow_runs(session_id)
+                restored = _normalize_recovered_runs(
+                    restore_workflow_runs(session_id), session_id,
+                )
                 workflows = (
                     [run.to_workflow_run_dict() for run in restored.values()]
                     if restored
