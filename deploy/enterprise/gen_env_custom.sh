@@ -57,8 +57,8 @@ fi
 
 cat <<EOF
 
-GATEWAY_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-gateway-${ARCH}:${VERSION}"
-AGENT_SERVER_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-agentserver-${ARCH}:${VERSION}"
+GATEWAY_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-core-${ARCH}:${VERSION}"
+AGENT_SERVER_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-core-${ARCH}:${VERSION}"
 WEB_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-web-${ARCH}:${VERSION}"
 EOF
 

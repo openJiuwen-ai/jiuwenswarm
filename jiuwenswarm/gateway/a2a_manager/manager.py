@@ -167,6 +167,11 @@ class A2AManager:
     async def outbound_get(self, agent_id: str) -> dict[str, Any]:
         return await self._require_outbound().get_agent(agent_id)
 
+    async def outbound_set_user_enabled(
+        self, agent_id: str, *, enabled: bool
+    ) -> dict[str, Any]:
+        return await self._require_outbound().set_user_enabled(agent_id, enabled)
+
     async def outbound_edit(self, agent_id: str) -> dict[str, Any]:
         return await self._require_outbound().edit_agent(agent_id)
 

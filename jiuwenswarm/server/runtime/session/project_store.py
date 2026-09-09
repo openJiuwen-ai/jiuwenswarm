@@ -762,7 +762,7 @@ def resolve_default_project_dir(
     """根据项目名 + work_mode 在默认工作区下生成工作目录绝对路径。
 
     创建项目未指定 ``project_dir`` 时,在
-    ``~/.jiuwenswarm/agent/workspace/{code|work}/{name}`` 下按项目名生成工作目录。
+    ``~/.jiuwenswarm/agent/jiuwenclaw_workspace/{code|work}/{name}`` 下按项目名生成工作目录。
     ``code`` 与 ``work`` 模式使用不同子目录,使默认创建路径与跨模式项目隔离
     目标一致,避免同名 code/work 项目默认创建落到同一路径。
 
@@ -781,7 +781,7 @@ def resolve_default_project_dir(
     """
     dir_name = validate_project_dir_name(name)
     mode = _normalize_work_mode_value(work_mode)
-    return str(get_agent_root_dir() / "workspace" / mode / dir_name)
+    return str(get_agent_root_dir() / "jiuwenclaw_workspace" / mode / dir_name)
 
 
 def create_project(

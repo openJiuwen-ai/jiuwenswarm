@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # ── Trusted-directory persistence (local, no server/harness changes) ───
 
-# 基于 get_agent_workspace_dir()（~/.jiuwenswarm/agent/workspace），
+# 基于 get_agent_workspace_dir()（~/.jiuwenswarm/agent/jiuwenclaw_workspace），
 # 跟随 JIUWENSWARM_DATA_DIR 做多实例隔离，与 config.yaml 保持同一基准。
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 

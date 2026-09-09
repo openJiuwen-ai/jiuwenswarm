@@ -127,17 +127,6 @@ run_web_mounted() {
     yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].args = ["cd '"${workdir}"' && npm run build && cd '"${root}"' && exec jiuwenswarm-start web"]' -i "${file}"
 }
 
-# Manager Web 的挂载验证走与产品镜像相同的 Python 统一入口，
-# 以覆盖鉴权、HTTP/SSE 和 WebSocket 反向代理。
-run_manager_web_mounted() {
-    local file="$1"
-    [ -z "${DEPLOY_VARS["RUNTIME_POD_CODE_PATH"]:-}" ] && return
-    local workdir="${DEPLOY_VARS["RUNTIME_POD_CODE_PATH"]}/applications/manager/manager_web"
-
-    yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].command = ["/bin/sh", "-c"]' -i "${file}"
-    yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].args = ["cd '"${workdir}"' && npm run build && exec manager-web"]' -i "${file}"
-}
-
 enable_dev_mode_if_needed() {
     [ "${DEPLOY_VARS["MODE"]}" != "dev" ] && return
 
@@ -155,19 +144,12 @@ enable_dev_mode_if_needed() {
             mount_core_pkg "${file}"
             run_web_mounted "${file}"
             ;;
-        manager-server)
-            mount_runtime_code "${file}"
-            ;;
-        runtime)
-            mount_runtime_code "${file}"
-            ;;
-        identity)
+        manager-server | runtime | identity)
             mount_runtime_code "${file}"
             ;;
         manager-web)
             [ "${DEPLOY_VARS["IS_MOUNT_MANAGER_WEB_CODE"]}" != "true" ] && return
             mount_runtime_code "${file}"
-            run_manager_web_mounted "${file}"
             ;;
         *)
             warning "enable_dev_mode_if_needed: unknown component '${comp}', skipping"

@@ -1,0 +1,58 @@
+FROM openeuler/openeuler:24.03
+
+ARG MIRRORS_URL
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+
+# 禁用 pip 进度条：避免构建容器线程受限导致下载失败
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_PROGRESS_BAR=off
+
+RUN echo "sslverify=false" >> /etc/yum.conf
+RUN echo "insecure" >> ~/.curlrc
+RUN sed -i 's/gpgcheck=1/gpgcheck=0/g' /etc/yum.conf /etc/yum.repos.d/openEuler.repo
+RUN sed -i '/^mirrorlist=/d' /etc/yum.repos.d/openEuler.repo && \
+    sed -i '/^metalink=/d' /etc/yum.repos.d/openEuler.repo && \
+    sed -i "/^\[OS\]/,/^\[/ s|^baseurl=.*|baseurl=${MIRRORS_URL}/openEuler-24.03-LTS-SP4/OS/\\\$basearch|g" /etc/yum.repos.d/openEuler.repo && \
+    sed -i "/^\[everything\]/,/^\[/ s|^baseurl=.*|baseurl=${MIRRORS_URL}/openEuler-24.03-LTS-SP4/everything/\\\$basearch|g" /etc/yum.repos.d/openEuler.repo && \
+    sed -i "/^\[EPOL\]/,/^\[/ s|^baseurl=.*|baseurl=${MIRRORS_URL}/openEuler-24.03-LTS-SP4/EPOL/main/\\\$basearch|g" /etc/yum.repos.d/openEuler.repo && \
+    sed -i "/^\[debuginfo\]/,/^\[/ s|^baseurl=.*|baseurl=${MIRRORS_URL}/openEuler-24.03-LTS-SP4/debuginfo/\\\$basearch|g" /etc/yum.repos.d/openEuler.repo && \
+    sed -i "/^\[source\]/,/^\[/ s|^baseurl=.*|baseurl=${MIRRORS_URL}/openEuler-24.03-LTS-SP4/source|g" /etc/yum.repos.d/openEuler.repo && \
+    sed -i "/^\[update\]/,/^\[/ s|^baseurl=.*|baseurl=${MIRRORS_URL}/openEuler-24.03-LTS-SP4/update/\\\$basearch|g" /etc/yum.repos.d/openEuler.repo && \
+    sed -i "/^\[update-source\]/,/^\[/ s|^baseurl=.*|baseurl=${MIRRORS_URL}/openEuler-24.03-LTS-SP4/update/source|g" /etc/yum.repos.d/openEuler.repo && \
+    sed -i 's/^gpgcheck=1/gpgcheck=0/' /etc/yum.repos.d/openEuler.repo && \
+    sed -i 's/^sslverify=1/sslverify=0/' /etc/yum.repos.d/openEuler.repo && \
+    cat /etc/yum.repos.d/openEuler.repo && \
+    yum clean all && yum makecache
+
+RUN yum makecache \
+    && yum install -y \
+        bubblewrap \
+        curl \
+        iproute \
+        iptables \
+        iptables-nft \
+        nftables \
+        ca-certificates \
+        python3-pip \
+        git \
+        vim \
+        unzip
+
+# 安装 musl 版 uv：musl pthread 不走 clone3，不受构建机 seccomp 限制。
+# 下载用 python3 单线程（curl/wget 的 DNS 线程会被拦），带 UA 防 CDN 拦截，
+# 双源兜底（astral CDN → GitHub），ssl 免校验与 yum/curl 配置一致
+RUN arch="$(uname -m)" \
+    && case "${arch}" in \
+        aarch64) uv_arch="aarch64-unknown-linux-musl" ;; \
+        x86_64) uv_arch="x86_64-unknown-linux-musl" ;; \
+        *) echo "unsupported arch: ${arch}" && exit 1 ;; \
+    esac \
+    && DL="import ssl, sys, urllib.request as u; r = u.Request(sys.argv[1], headers={'User-Agent': 'curl/8.4.0'}); d = u.build_opener(u.HTTPSHandler(context=ssl._create_unverified_context())).open(r, timeout=120).read(); open('/tmp/uv.tar.gz', 'wb').write(d)" \
+    && python3 -c "$DL" "https://releases.astral.sh/github/uv/releases/download/0.12.10/uv-${uv_arch}.tar.gz" \
+    || python3 -c "$DL" "https://github.com/astral-sh/uv/releases/download/0.12.10/uv-${uv_arch}.tar.gz" \
+    && python3 -c "import tarfile, glob, shutil; tarfile.open('/tmp/uv.tar.gz').extractall('/tmp/uve'); shutil.copy2(glob.glob('/tmp/uve/*/uv')[0], '/usr/local/bin/uv'); shutil.copy2(glob.glob('/tmp/uve/*/uvx')[0], '/usr/local/bin/uvx')" \
+    && chmod 0755 /usr/local/bin/uv /usr/local/bin/uvx \
+    && rm -rf /tmp/uv.tar.gz /tmp/uve \
+    && uv --version

@@ -66,6 +66,14 @@ class _OutboundRegistryProbe:
     async def update_agent(self, agent_id, params):
         return {"agent_id": agent_id, **params}
 
+    async def set_user_enabled(self, agent_id, user_enabled):
+        return {
+            "agent_id": agent_id,
+            "user_enabled": user_enabled,
+            "manager_enabled": True,
+            "effective_enabled": user_enabled,
+        }
+
     async def refresh_agent(self, agent_id):
         return {"agent_id": agent_id, "refreshed": True}
 
@@ -305,6 +313,12 @@ async def test_a2a_outbound_web_handlers_expose_management_facade():
     await channel.methods["a2a.outbound.dispatch.list"](
         object(), "dispatch-list", {"limit": 20}, "session"
     )
+    await channel.methods["a2a.outbound.enabled.update"](
+        object(),
+        "enabled-update",
+        {"agent_id": "agent-1", "user_enabled": False},
+        "session",
+    )
 
     assert channel.responses[0]["payload"]["discovery_id"] == "disc-1"
     assert channel.responses[1]["payload"]["agent_id"] == "agent-1"
@@ -318,6 +332,7 @@ async def test_a2a_outbound_web_handlers_expose_management_facade():
     assert channel.responses[9]["payload"] == {"allow_loopback_http": False}
     assert channel.responses[10]["payload"] == {"allow_loopback_http": True}
     assert channel.responses[11]["payload"] == {"items": [], "total": 0, "limit": 20}
+    assert channel.responses[12]["payload"]["user_enabled"] is False
     assert settings.enabled is True
     assert all(item["ok"] for item in channel.responses)
 
@@ -366,6 +381,30 @@ async def test_a2a_outbound_dispatch_list_clamps_limit_to_200():
 
 
 @pytest.mark.asyncio
+async def test_a2a_outbound_user_enabled_requires_boolean():
+    channel = _WebChannelProbe()
+    manager = A2AManager(
+        _ChannelManagerProbe(),
+        object(),
+        A2AIngressConfig(),
+        repository=_RepositoryProbe(),
+        channel_factory=lambda config, router: _ChannelProbe(),
+        outbound_registry=_OutboundRegistryProbe(),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
+
+    await channel.methods["a2a.outbound.enabled.update"](
+        object(),
+        "enabled-update",
+        {"agent_id": "agent-1", "user_enabled": "false"},
+        "session",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "A2A_OUTBOUND_STORE_INVALID"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "params", [{"agent_id": "agent-1"}, {"agent_id": "agent-1", "accept": "false"}]
 )
@@ -404,6 +443,9 @@ async def test_a2a_outbound_handlers_tolerate_missing_manager():
     await channel.methods["a2a.outbound.update"](
         object(), "update", {"agent_id": "agent-1"}, "session"
     )
+    await channel.methods["a2a.outbound.enabled.update"](
+        object(), "enabled-update", {"agent_id": "agent-1", "user_enabled": True}, "session"
+    )
     await channel.methods["a2a.outbound.refresh"](
         object(), "refresh", {"agent_id": "agent-1"}, "session"
     )
@@ -417,7 +459,7 @@ async def test_a2a_outbound_handlers_tolerate_missing_manager():
         object(), "dispatch_get", {"dispatch_id": "dispatch-1"}, "session"
     )
 
-    assert [item["ok"] for item in channel.responses] == [False] * 8
+    assert [item["ok"] for item in channel.responses] == [False] * 9
     assert {item["code"] for item in channel.responses} == {
         "A2A_OUTBOUND_STORE_INVALID"
     }
@@ -434,6 +476,10 @@ def test_a2a_outbound_http_routes_map_to_rpc_methods():
     assert routes[("POST", "/a2a/outbound/agents")] == "a2a.outbound.register"
     assert routes[("GET", "/a2a/outbound/agents")] == "a2a.outbound.list"
     assert routes[("GET", "/a2a/outbound/dispatches")] == "a2a.outbound.dispatch.list"
+    assert (
+        routes[("PATCH", "/a2a/outbound/agents/{agent_id}/enabled")]
+        == "a2a.outbound.enabled.update"
+    )
     assert routes[("PATCH", "/a2a/outbound/agents/{agent_id}")] == "a2a.outbound.update"
     assert (
         routes[("POST", "/a2a/outbound/agents/{agent_id}:refresh")]

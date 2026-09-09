@@ -264,6 +264,8 @@ def _build_layouts(
     for table in ENTERPRISE_RECORD_STORE_NAMES:
         if table == "cron_job":
             continue
+        if persistent_root is not None and table in _JSON_ONLY_STORES:
+            continue
         layouts[table] = _db_table(table)
 
     return layouts

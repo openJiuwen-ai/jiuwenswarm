@@ -4669,7 +4669,7 @@ class SkillManager:
 
     @staticmethod
     def _generate_agent_data_for_workspace(workspace_root: Path) -> None:
-        """Generate agent/workspace/agent-data.json from agent tree."""
+        """Generate agent/jiuwenclaw_workspace/agent-data.json from agent tree."""
         agent_root = workspace_root.resolve()
         output_path = (agent_root / "agent-data.json").resolve()
         root_folder_key = "__root__"

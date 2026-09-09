@@ -178,6 +178,9 @@ const ENTERPRISE_ASSEMBLE = [
   ['chat.user_answer', 'POST', '/api/v1/chat/sid/actions/answer', { session_id: 'sid', request_id: 'q', answers: {} }, 'unary'],
   ['config.get', 'GET', '/api/v1/config', {}, 'unary'],
   ['models.list', 'GET', '/api/v1/models', {}, 'unary'],
+  ['a2a.outbound.list', 'GET', '/api/v1/a2a/outbound/agents', {}, 'unary'],
+  ['a2a.outbound.enabled.update', 'PATCH', '/api/v1/a2a/outbound/agents/agent-1/enabled', { agent_id: 'agent-1', user_enabled: false }, 'unary'],
+  ['a2a.outbound.dispatch.list', 'GET', '/api/v1/a2a/outbound/dispatches', { limit: 200 }, 'unary'],
   ['locale.get_conf', 'GET', '/api/v1/locale', {}, 'unary'],
   ['locale.set_conf', 'PUT', '/api/v1/locale', { preferred_language: 'zh' }, 'unary'],
   ['cron.job.list', 'GET', '/api/v1/cron/jobs', {}, 'unary'],
@@ -207,7 +210,7 @@ const ENTERPRISE_ASSEMBLE = [
 ];
 
 test('every enterprise mapped method assembles verb+url+kind', () => {
-  assert.equal(ENTERPRISE_ASSEMBLE.length, 35);
+  assert.equal(ENTERPRISE_ASSEMBLE.length, 38);
   const seen = new Set();
   for (const [method, verb, url, params, kind] of ENTERPRISE_ASSEMBLE) {
     seen.add(method);

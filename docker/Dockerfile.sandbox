@@ -1,0 +1,20 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+
+RUN useradd --create-home --shell /bin/bash app
+WORKDIR /app/jiuwenswarm/jiuwenbox
+
+COPY jiuwenbox/pyproject.toml ./pyproject.toml
+COPY jiuwenbox/README.md ./README.md
+COPY jiuwenbox/src ./src
+
+RUN uv pip install --system --break-system-packages \
+    ${PIP_EXTRA_ARGS} \
+    -e .
+EXPOSE 8321
+EXPOSE 8322
+
+ENV JIUWENBOX_LISTEN=http://0.0.0.0:8321
+CMD ["python3", "-m", "jiuwenbox.server.launcher"]

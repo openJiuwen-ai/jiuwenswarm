@@ -24,14 +24,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── 停止提示：追加到工具返回值，引导 LLM 总结并结束 ──
-_SKILL_TURBO_STOP_HINT = (
-    "\n\n[SYSTEM] The skill_acceleration_exec task is complete and the artifact has already been "
-    "generated. The file(s) have ALREADY been sent to the user by the internal "
-    "delivery pipeline - do NOT call send_file_to_user again. You should now "
-    "summarize this result to the user and finish your turn. Do NOT call "
-    "skill_acceleration_exec, skill_tool, or send_file_to_user again for this task - the "
-    "work is already done; calling any of them again would duplicate the work."
+# 中立收尾
+_SKILL_TURBO_STOP_HINT_NEUTRAL = (
+    "\n\n[SYSTEM] The skill_acceleration_exec task has finished, but the internal "
+    "delivery pipeline did NOT confirm that the file(s) were generated and sent "
+    "to the user. You should now summarize this result to the user HONESTLY "
+    "based on the artifact summary above: clearly state which parts are "
+    "incomplete or failed and that the file has NOT been delivered. Do NOT "
+    "claim the file was sent. Do NOT call skill_acceleration_exec or skill_tool "
+    "again for this task unless the user asks for a retry. Do NOT call "
+    "send_file_to_user either; file delivery is handled by the internal pipeline."
 )
 
 _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = (
@@ -42,7 +44,11 @@ _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = (
 
 # HITL 续跑没有外层 tool_result / DeliverySummaryRail；可见终稿用骨架或安全短句，
 # 禁止把产物摘要账本发给用户。
-PPT_TURBO_SAFE_DELIVERY_SUMMARY = "PPT 已生成并交付。"
+# HITL 续跑无 P10 骨架（交付未确认）时的用户可见终稿。
+PPT_TURBO_UNCONFIRMED_FINISH_TEXT = (
+    "PPT 任务已结束，但未能确认文件已生成并发送，部分环节可能未完成。"
+    "请查看上方过程信息，或让我重试补齐。"
+)
 _SKILL_TURBO_ARTIFACT_SUMMARY_MARKER = "[SkillAccelerationExec 产物摘要]"
 
 # 工具返回值会先被 AbilityManager 收成 ToolMessage。after_tool_call 再用
@@ -102,6 +108,11 @@ _SKILL_TURBO_TASK_EVENT_TYPES: frozenset[str] = frozenset({
     "task.update",
 })
 
+# 仅 task.update 可带外推送：它是全量 taskProgress 快照，后到 FIFO 覆盖先到，幂等。
+# task.start/task.complete 驱动前端 taskStack，必须与 chat.* 保持 FIFO 顺序；
+# 带外抢先 complete 会导致迟到的思考/工具调用丢 segment（见外层 todo 注释）。
+_SKILL_TURBO_OOB_TASK_EVENT_TYPES: frozenset[str] = frozenset({"task.update"})
+
 
 def _without_inner_task_routing(payload: dict[str, Any]) -> dict[str, Any]:
     """Copy a parent-bound event without its SkillTurbo-only task id."""
@@ -123,6 +134,74 @@ def _prepare_parent_stream_output(
         cleaned.pop("task_id", None)
         return "content_chunk", cleaned
     return _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE.get(event_type, event_type), payload
+
+
+async def _push_task_event_out_of_band(
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    request_id: str,
+    channel_id: str,
+    session_id: str,
+) -> None:
+    """Bypass the parent stream FIFO for task.update snapshots only.
+
+    ``chat.file`` already uses PushRegistry, so PPT can appear while
+    ``write_stream`` is still draining thousands of page-gen deltas. The
+    right-hand task list is driven by ``task.update`` snapshots that used
+    only that FIFO, leaving Stage 11 in_progress after delivery. Later FIFO
+    ``task.update`` snapshots remain idempotent. ``task.start`` /
+    ``task.complete`` stay on the FIFO so they keep pace with ``chat.*``.
+    """
+    if event_type not in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
+        return
+    if not request_id or not channel_id or not session_id:
+        logger.debug(
+            "[SkillTurboTool] skip send_push %s: missing ids request_id=%s "
+            "channel_id=%s session_id=%s",
+            event_type,
+            bool(request_id),
+            bool(channel_id),
+            bool(session_id),
+        )
+        return
+    try:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.get_instance()
+    except Exception:
+        logger.debug(
+            "[SkillTurboTool] skip send_push %s: AgentWebSocketServer unavailable",
+            event_type,
+            exc_info=True,
+        )
+        return
+
+    push_payload = dict(payload)
+    push_payload.setdefault("event_type", event_type)
+    msg = {
+        "request_id": request_id,
+        "channel_id": channel_id,
+        "session_id": session_id,
+        "payload": push_payload,
+        "is_complete": False,
+    }
+    try:
+        delivered = await server.send_push(msg)
+        logger.info(
+            "[SkillTurboTool] send_push %s delivered=%s request_id=%s session_id=%s",
+            event_type,
+            delivered,
+            request_id,
+            session_id,
+        )
+    except Exception:
+        logger.warning(
+            "[SkillTurboTool] send_push %s failed request_id=%s",
+            event_type,
+            request_id,
+            exc_info=True,
+        )
 
 
 # ── ContextVar：在 before_tool_call 中注入，供工具函数读取 ──
@@ -439,7 +518,7 @@ def visible_ppt_turbo_finish_text(
 ) -> str:
     """HITL 续跑的用户可见终稿（无外层 skill_acceleration_exec 工具循环）。
 
-    成功时优先发 P10 已填好的交付骨架；没有骨架则用安全短句。
+    成功时优先发 P10 已填好的交付骨架；没有骨架则用交付未确认的中立短句。
     失败只回可读错误。产物账本不得出现在返回值里。
     """
     from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary import (
@@ -450,7 +529,7 @@ def visible_ppt_turbo_finish_text(
         skeleton = _ppt_delivery_summary(holder)
         if skeleton.startswith(DELIVERY_SUMMARY_START):
             return skeleton
-        return PPT_TURBO_SAFE_DELIVERY_SUMMARY
+        return PPT_TURBO_UNCONFIRMED_FINISH_TEXT
     text = str(detail or "").strip() or "任务未完成"
     if _SKILL_TURBO_ARTIFACT_SUMMARY_MARKER in text:
         return "任务未完成"
@@ -479,7 +558,8 @@ def _wrap_skill_turbo_result(
             parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT)
         else:
             clear_pending_ppt_delivery_summary()
-            parts.append(_SKILL_TURBO_STOP_HINT)
+            # 无 P10 骨架 = 交付未确认，不宣称文件已发送。
+            parts.append(_SKILL_TURBO_STOP_HINT_NEUTRAL)
         result_dict["result"] = "\n\n".join(p for p in parts if p)
     else:
         clear_pending_ppt_delivery_summary()
@@ -838,6 +918,17 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                         "[SkillTurboTool] write_stream failed for event_type=%s",
                         event_type,
                         exc_info=True,
+                    )
+                    continue
+                if event_type in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
+                    await _push_task_event_out_of_band(
+                        event_type,
+                        payload,
+                        request_id=str(request_id or ""),
+                        channel_id=str(channel_id or ""),
+                        session_id=_resolve_skill_turbo_resume_session_id(
+                            external_session_id, parent_session
+                        ),
                     )
             elif event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
                 logger.warning(

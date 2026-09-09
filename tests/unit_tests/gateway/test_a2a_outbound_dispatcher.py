@@ -895,7 +895,7 @@ def test_rail_registers_three_tools_and_cleans_up() -> None:
     assert agent.system_prompt_builder.sections == {}
 
 
-def test_rail_keeps_tools_visible_when_gateway_proxy_is_not_ready() -> None:
+def test_rail_hides_tools_and_prompt_when_gateway_proxy_is_not_ready() -> None:
     backend = _Backend()
     backend.ready = False
     agent = _Agent(_AbilityManager(), _PromptBuilder())
@@ -903,11 +903,8 @@ def test_rail_keeps_tools_visible_when_gateway_proxy_is_not_ready() -> None:
 
     rail.init(agent)
 
-    assert set(agent.ability_manager.tools) == {
-        "a2a_find_agents",
-        "a2a_dispatch_task",
-        "a2a_get_dispatch",
-    }
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
 
 
 @pytest.mark.asyncio
@@ -930,6 +927,67 @@ async def test_rail_registers_on_first_model_call_after_gateway_becomes_ready() 
     assert '"\n' not in prompt
     assert 'a2a_find_agents(query="", required_skills=[])' in prompt
     assert "query 只用于相关性排序" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["officeclaw", "web"])
+async def test_rail_tracks_real_owner_lifecycle_without_channel_assumptions(monkeypatch, channel):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.transports import push_registry
+
+    registry = push_registry.PushRegistry()
+    monkeypatch.setattr(push_registry, "_REGISTRY", registry)
+    monkeypatch.setattr(get_acp_output_manager(), "_send_push_callback", AsyncMock())
+    agent = _Agent(_AbilityManager(), _PromptBuilder())
+    rail = A2AOutboundToolkitRail(runtime_route=lambda: ("opaque-session", channel))
+    rail.init(agent)  # Startup/prewarm before any subscriber connects.
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
+
+    sink = SimpleNamespace(send_wire=AsyncMock(return_value=True))
+    registry.register("node", sink)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
+
+    for _ in range(2):  # Late Gateway connection, loss, and reconnection.
+        registry.register("gateway", sink, reverse_rpc_capable=True)
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+        assert len(agent.ability_manager.tools) == 3
+        assert "a2a_outbound_usage" in agent.system_prompt_builder.sections
+        registry.unregister("gateway")
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+        assert agent.ability_manager.tools == {}
+        assert agent.system_prompt_builder.sections == {}
+    rail.uninit(agent)
+
+
+@pytest.mark.parametrize("kind", ["deep", "code", "leader", "teammate"])
+@pytest.mark.parametrize("channel", ["officeclaw", "web"])
+def test_real_agent_builders_expose_no_a2a_tools_without_gateway(monkeypatch, kind, channel):
+    from jiuwenswarm.server.transports import push_registry
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "community")
+    monkeypatch.setattr(push_registry, "_REGISTRY", push_registry.PushRegistry())
+    if kind in {"deep", "code"}:
+        from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+        adapter = (JiuWenSwarmDeepAdapter if kind == "deep" else JiuwenSwarmCodeAdapter)()
+        # No request/config route, as with root/prewarm construction.
+        rail = adapter._build_a2a_outbound_toolkit_rail()
+    else:
+        from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+        from jiuwenswarm.agents.swarm.providers.member_rails import _build_a2a_outbound_toolkit_rail
+
+        rail = _build_a2a_outbound_toolkit_rail({}, SwarmBuildContext(
+            channel=channel, channel_id=channel, role=kind, mode="team",
+        ))
+    assert rail is not None  # Retain only the lifecycle hook for late connections.
+    agent = _Agent(_AbilityManager(), _PromptBuilder())
+    rail.init(agent)
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1064,32 @@ async def test_gateway_backend_leaves_operation_timeout_to_manager(
     assert result == {"ok": True}
     assert calls[0][2]["timeout"] is None
     assert calls[0][2]["cancel_method"] == A2A_TOOL_CANCEL_CALL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [
+    A2A_TOOL_FIND_AGENTS, A2A_TOOL_DISPATCH_TASK, A2A_TOOL_GET_DISPATCH,
+])
+@pytest.mark.parametrize("channel", ["officeclaw", "web"])
+async def test_node_stale_tool_fails_without_sending_reverse_rpc(monkeypatch, method, channel):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.transports import push_registry
+
+    send = AsyncMock()
+    monkeypatch.setattr(get_acp_output_manager(), "send_jsonrpc_request", send)
+    monkeypatch.setattr(get_acp_output_manager(), "_send_push_callback", AsyncMock())
+    registry = push_registry.PushRegistry()
+    registry.register("node", SimpleNamespace(send_wire=AsyncMock(return_value=True)))
+    monkeypatch.setattr(push_registry, "_REGISTRY", registry)
+    result = await asyncio.wait_for(
+        GatewayA2AOutboundToolBackend().call(
+            method, {}, session_id="opaque-session", channel_id=channel,
+        ),
+        timeout=0.5,
+    )
+    assert result["ok"] is False
+    assert result["error_code"] == A2AOutboundErrorCode.MANAGER_UNAVAILABLE.value
+    send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

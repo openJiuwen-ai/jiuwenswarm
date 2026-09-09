@@ -164,6 +164,25 @@ class A2AOutboundDispatcher:
     def set_allow_loopback_http(self, enabled: bool) -> None:
         self._discovery.set_allow_loopback_http(enabled)
 
+    async def _update_runtime_state(
+        self,
+        agent_id: str,
+        availability: A2AOutboundAvailability,
+        *,
+        error_code: A2AOutboundErrorCode | None = None,
+    ) -> None:
+        try:
+            await self._repository.update_runtime_state(
+                agent_id,
+                availability,
+                error_code=error_code.value if error_code is not None else None,
+            )
+        except Exception:
+            logger.exception(
+                "a2a.outbound runtime state update failed agent_id=%s",
+                agent_id,
+            )
+
     async def find_agents(
         self,
         query: str = "",
@@ -282,6 +301,7 @@ class A2AOutboundDispatcher:
             source_session_id=session_id,
             created_at=stamp,
             updated_at=stamp,
+            agent_name=agent.display_name,
             input_length=len(task_text),
             input_content_type="text/plain",
             input_digest=f"sha256:{hashlib.sha256(task_text.encode()).hexdigest()}",
@@ -434,6 +454,7 @@ class A2AOutboundDispatcher:
         )
         client: _ClientLike | None = None
         last_remote = _NormalizedRemote(A2AOutboundDispatchStatus.SUBMITTING)
+        observed_response = False
         try:
             client = await self._build_client(agent)
             request = SendMessageRequest(
@@ -451,7 +472,7 @@ class A2AOutboundDispatcher:
             )
 
             async def consume() -> _NormalizedRemote:
-                nonlocal last_remote
+                nonlocal last_remote, observed_response
                 # The outer sync_wait timeout owns the total synchronous task budget.
                 # Keeping the SDK call context unset prevents it from replacing the
                 # client's granular connect/write/pool limits with a short read limit.
@@ -465,6 +486,12 @@ class A2AOutboundDispatcher:
                     context=call_context,
                 ):
                     last_remote = self._normalize_stream_event(event, last_remote)
+                    if not observed_response:
+                        observed_response = True
+                        await self._update_runtime_state(
+                            agent.agent_id,
+                            A2AOutboundAvailability.AVAILABLE,
+                        )
                     applied = await self._apply_remote(
                         dispatch.dispatch_id, last_remote
                     )
@@ -515,6 +542,12 @@ class A2AOutboundDispatcher:
                                 dispatch.dispatch_id, last_remote, polled=True
                             )
                 except TimeoutError:
+                    if not observed_response:
+                        await self._update_runtime_state(
+                            agent.agent_id,
+                            A2AOutboundAvailability.UNREACHABLE,
+                            error_code=A2AOutboundErrorCode.DISPATCH_TIMEOUT,
+                        )
                     updated = await self._repository.transition_dispatch(
                         dispatch.dispatch_id,
                         A2AOutboundDispatchStatus.TIMED_OUT,
@@ -554,6 +587,12 @@ class A2AOutboundDispatcher:
             )
             raise
         except A2AOutboundError as exc:
+            if exc.code is A2AOutboundErrorCode.AGENT_UNAVAILABLE:
+                await self._update_runtime_state(
+                    agent.agent_id,
+                    A2AOutboundAvailability.INCOMPATIBLE,
+                    error_code=exc.code,
+                )
             status = (
                 A2AOutboundDispatchStatus.AUTH_REQUIRED
                 if exc.code is A2AOutboundErrorCode.AUTH_REQUIRED
@@ -568,6 +607,12 @@ class A2AOutboundDispatcher:
             )
             return self._public_dispatch(updated or current)
         except Exception:
+            if not observed_response:
+                await self._update_runtime_state(
+                    agent.agent_id,
+                    A2AOutboundAvailability.UNREACHABLE,
+                    error_code=A2AOutboundErrorCode.AGENT_UNAVAILABLE,
+                )
             target = (
                 A2AOutboundDispatchStatus.UNKNOWN
                 if last_remote.remote_task_id
@@ -996,6 +1041,7 @@ class A2AOutboundDispatcher:
             "ok": ok,
             "dispatch_id": dispatch.dispatch_id,
             "agent_id": dispatch.agent_id,
+            "agent_name": dispatch.agent_name,
             "mode": dispatch.mode.value,
             "status": dispatch.status.value,
             "created_at": dispatch.created_at,

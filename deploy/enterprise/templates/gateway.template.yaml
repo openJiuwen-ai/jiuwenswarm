@@ -67,7 +67,7 @@ spec:
                 name: <<GATEWAY_ENV_FILE_CM_NAME>>
           volumeMounts:
             - name: gateway-config
-              mountPath: /root/.jiuwenswarm/config/config.yaml
+              mountPath: <<CLAW_HOME>>/.jiuwenswarm/config/config.yaml
               subPath: config.yaml
               readOnly: true
       volumes:

@@ -76,7 +76,7 @@ daily-report/
 **脚本会自动采集以下数据**：
 - **Git 提交记录**：通过 `git log` 命令读取 `D:/Download/jiuwenswarm` 仓库的提交历史
 - **邮箱邮件统计**：通过 IMAP 协议连接 `.env` 中配置的邮箱账户读取邮件统计（需要邮箱授权码）
-- **记忆系统**：读取 `~/.jiuwenswarm/agent/workspace/memory/` 目录下的每日记忆文件
+- **记忆系统**：读取 `~/.jiuwenswarm/agent/jiuwenclaw_workspace/memory/` 目录下的每日记忆文件
 - **待办事项**：读取 `~/.jiuwenswarm/agent/sessions/` 下各会话的 `todo.md` 文件
 
 ### 手动触发
@@ -85,19 +85,19 @@ daily-report/
 
 ```bash
 # 生成今日日报（记忆/待办/Git 等；Git 在仓库根目录统计）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py daily --save
+python ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/daily-report/run_report.py daily --save
 
 # 生成指定日期日报
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py daily --date 2026-03-06 --save
+python ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/daily-report/run_report.py daily --date 2026-03-06 --save
 
 # 生成周报（聚合一周数据）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py weekly --save
+python ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/daily-report/run_report.py weekly --save
 
 # 生成月报（聚合一月数据，包含每日Git提交统计）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py monthly --save
+python ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/daily-report/run_report.py monthly --save
 
 # 生成月报（指定月份）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py monthly --year 2026 --month 3 --save
+python ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/daily-report/run_report.py monthly --year 2026 --month 3 --save
 ```
 
 ### 执行步骤
@@ -127,7 +127,7 @@ python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py monthly 
 |--------|----------|----------|
 | **Git 仓库** | `git log` 命令 | 仓库路径: `D:/Download/jiuwenswarm` |
 | **网易邮箱** | IMAP 协议 | `.env`: `EMAIL_ADDRESS`, `EMAIL_TOKEN` |
-| **记忆系统** | 读取 MD 文件 | `~/.jiuwenswarm/agent/workspace/memory/YYYY-MM-DD.md` |
+| **记忆系统** | 读取 MD 文件 | `~/.jiuwenswarm/agent/jiuwenclaw_workspace/memory/YYYY-MM-DD.md` |
 | **待办事项** | 解析 todo.md | `~/.jiuwenswarm/agent/sessions/*/todo.md` |
 
 ### 定时触发

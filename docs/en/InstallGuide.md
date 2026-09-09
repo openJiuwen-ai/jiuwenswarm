@@ -390,7 +390,7 @@ rsync -av ~/.jiuwenswarm ~/.jiuwenswarm_backup
 | `agent/memory/` | User memory data |
 | `agent/home/` | Identity and task data |
 | `agent/skills/` | Skills library (custom skills and config) |
-| `agent/workspace/` | Workspace files |
+| `agent/jiuwenclaw_workspace/` | Workspace files |
 
 #### 2. Perform the upgrade
 

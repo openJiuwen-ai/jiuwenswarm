@@ -146,9 +146,9 @@ def _normalize_lang_suffix(name: str) -> str:
 
 
 def generate_agent_data(project_root: Path) -> None:
-    """Generate agent/workspace/agent-data.json from agent tree."""
+    """Generate agent/jiuwenclaw_workspace/agent-data.json from agent tree."""
     agent_root = (project_root / "agent").resolve()
-    workspace_root = (agent_root / "workspace").resolve()
+    workspace_root = (agent_root / "jiuwenclaw_workspace").resolve()
     output_path = (workspace_root / "agent-data.json").resolve()
     root_folder_key = "__root__"
 
@@ -289,11 +289,22 @@ def read_file_text(
     if not is_path_under_allowed_root(roots, full_path):
         return 403, {"error": "forbidden_path"}, None, None
     if not full_path.exists():
-        if file_arg.replace("\\", "/") == "agent/workspace/agent-data.json":
+        normalized_arg = file_arg.replace("\\", "/")
+        if normalized_arg in (
+            "agent/jiuwenclaw_workspace/agent-data.json",
+            # legacy pre-rename path (old frontend caches / bookmarks)
+            "agent/workspace/agent-data.json",
+        ):
             try:
                 generate_agent_data(roots.project_root)
             except Exception as exc:  # noqa: BLE001
                 return 500, {"error": "generate_failed", "detail": str(exc)}, None, None
+            # generate_agent_data only writes to the new path; rewrite legacy
+            # requests to it so the caller actually receives the data.
+            if normalized_arg == "agent/workspace/agent-data.json":
+                full_path = (
+                    roots.project_root / "agent" / "jiuwenclaw_workspace" / "agent-data.json"
+                ).resolve()
         if not full_path.exists():
             return (
                 404,

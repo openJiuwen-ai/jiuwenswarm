@@ -18,7 +18,7 @@ import { classifyPrompt } from '../InteractionSlot/promptRouting';
 import { isValidSkillApprovalCard, SkillApprovalCard } from './SkillApprovalCard';
 
 interface InlineQuestionCardProps {
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<void>;
 }
 
 // 后端会给带选项的问题末尾追加一个「自定义输入」选项（interrupt_helpers._build_multi_questions）。
@@ -168,7 +168,7 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
   }
 
   if (skillApprovalCard) {
-    return <SkillApprovalCard onSubmit={onSubmit} card={skillApprovalCard} />;
+    return <SkillApprovalCard key={pendingQuestion.request_id} onSubmit={onSubmit} card={skillApprovalCard} />;
   }
 
   const borderColor = isEvolution

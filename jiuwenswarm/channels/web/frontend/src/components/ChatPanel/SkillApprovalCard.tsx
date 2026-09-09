@@ -17,15 +17,27 @@
  * （与后端 `_build_interactive_input_from_answers` 对齐）。
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores';
 import type { SkillApprovalAction, SkillApprovalCardPayload } from '../../types';
+import { shouldUnlockPendingApproval } from '../InteractionSlot/interactionSubmission';
+import {
+  buildSkillSourceDisplayNameMap,
+  resolveSkillSourceDisplayName,
+  shouldShowSkillTrustBadge,
+  type SkillSourceDisplayNames,
+} from './skillApprovalPresentation';
 
 interface SkillApprovalCardProps {
-  onSubmit: (requestId: string, answers: { selected_options: string[]; action?: SkillApprovalAction }[], source?: string) => void;
+  onSubmit: (
+    requestId: string,
+    answers: { selected_options: string[]; action?: SkillApprovalAction }[],
+    source?: string,
+  ) => Promise<void>;
   card: SkillApprovalCardPayload | null;
 }
 
@@ -35,6 +47,25 @@ const ACTION_WIRE_LABELS: Record<SkillApprovalAction, string> = {
   approve_session: '会话内允许',
   continue_without_overlay: '仅加载不授权',
 };
+
+const sourceDisplayNameRequests = new Map<string, Promise<SkillSourceDisplayNames>>();
+
+function fetchSkillSourceDisplayNames(sessionId: string): Promise<SkillSourceDisplayNames> {
+  const cached = sourceDisplayNameRequests.get(sessionId);
+  if (cached) return cached;
+
+  const request = webRequest<{
+    success?: boolean;
+    providers?: Array<{ source_id?: unknown; display_name?: unknown }>;
+  }>('skills.source.providers', { session_id: sessionId })
+    .then(response => buildSkillSourceDisplayNameMap(response.success === false ? [] : response.providers))
+    .catch(() => {
+      sourceDisplayNameRequests.delete(sessionId);
+      return new Map<string, string>();
+    });
+  sourceDisplayNameRequests.set(sessionId, request);
+  return request;
+}
 
 /** 来源路径截断：只保留末尾两段，完整路径交给 title 悬停。 */
 function truncateSource(source: string): string {
@@ -73,6 +104,21 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
   const activeSessionId = useChatStore(s => s.activeSessionId);
   const pendingQuestion = useChatStore(s => s.runtimes[activeSessionId ?? '']?.pendingQuestion ?? null);
   const [submitted, setSubmitted] = useState(false);
+  const [sourceDisplayName, setSourceDisplayName] = useState(card?.source ?? '');
+
+  useEffect(() => {
+    const sourceId = card?.source.trim() ?? '';
+    setSourceDisplayName(sourceId);
+    if (!sourceId || !activeSessionId || card?.trust === 'builtin') return undefined;
+
+    let active = true;
+    void fetchSkillSourceDisplayNames(activeSessionId).then(displayNames => {
+      if (active) setSourceDisplayName(resolveSkillSourceDisplayName(sourceId, displayNames));
+    });
+    return () => {
+      active = false;
+    };
+  }, [activeSessionId, card?.source, card?.trust]);
 
   const question = pendingQuestion?.questions[0];
   const availableActions = useMemo((): SkillApprovalAction[] => {
@@ -86,23 +132,32 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
   }, [card, question]);
 
   const handleAction = useCallback(
-    (action: SkillApprovalAction) => {
+    async (action: SkillApprovalAction) => {
       if (!pendingQuestion || submitted) return;
+      const requestId = pendingQuestion.request_id;
+      const sessionId = activeSessionId;
       setSubmitted(true);
-      onSubmit(pendingQuestion.request_id, [{ selected_options: [ACTION_WIRE_LABELS[action]], action }], pendingQuestion.source);
-      const sid = useChatStore.getState().activeSessionId;
-      if (sid) {
-        useChatStore.getState().setPendingQuestion(sid, null);
+      await onSubmit(
+        requestId,
+        [{ selected_options: [ACTION_WIRE_LABELS[action]], action }],
+        pendingQuestion.source,
+      );
+      const state = useChatStore.getState();
+      const currentRequestId = sessionId
+        ? state.getRuntime(sessionId)?.pendingQuestion?.request_id
+        : null;
+      if (shouldUnlockPendingApproval(currentRequestId, requestId)) {
+        setSubmitted(false);
       }
     },
-    [pendingQuestion, submitted, onSubmit],
+    [activeSessionId, pendingQuestion, submitted, onSubmit],
   );
 
   if (!pendingQuestion) {
     return null;
   }
 
-  const trustLabel = card?.trust === 'builtin' ? t('chatUi.skillApproval.trustBuiltin') : t('chatUi.skillApproval.trustOther');
+  const showTrustBadge = shouldShowSkillTrustBadge(card?.trust);
   const versionLabel = card?.version || t('chatUi.skillApproval.versionLocal');
   const cachedDecisionLabel = card?.cached_decision === 'session' ? t('chatUi.skillApproval.cachedSession') : t('chatUi.skillApproval.cachedLocal');
 
@@ -160,15 +215,15 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
             {t('chatUi.skillApproval.title')}
             {card ? `：${card.skill_name}` : ''}
           </span>
-          {card && (
+          {card && showTrustBadge && (
             <span
               className="text-[10px] px-1.5 py-0.5 rounded"
               style={{
-                color: card.trust === 'builtin' ? 'var(--color-feedback-success)' : 'var(--color-brand-secondary)',
-                border: `1px solid ${card.trust === 'builtin' ? 'var(--color-feedback-success)' : 'var(--color-brand-secondary)'}`,
+                color: 'var(--color-feedback-success)',
+                border: '1px solid var(--color-feedback-success)',
               }}
             >
-              {trustLabel}
+              {t('chatUi.skillApproval.trustBuiltin')}
             </span>
           )}
         </div>
@@ -178,8 +233,8 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
             <>
               {/* 身份信息 */}
               <div className="text-xs leading-relaxed" style={{ color: 'var(--color-text-secondary)' }}>
-                <div title={card.source}>
-                  {t('chatUi.skillApproval.source')}：<code>{truncateSource(card.source)}</code>（{trustLabel}） 　{t('chatUi.skillApproval.version')}：
+                <div title={sourceDisplayName === card.source ? card.source : `${sourceDisplayName} (${card.source})`}>
+                  {t('chatUi.skillApproval.source')}：<code>{truncateSource(sourceDisplayName || card.source)}</code>　{t('chatUi.skillApproval.version')}：
                   {versionLabel}
                 </div>
                 <div className="text-[10px]" style={{ color: 'var(--color-text-secondary)', opacity: 0.75 }}>

@@ -142,7 +142,7 @@ cd {skill_directory}/scripts && python3 save_images.py <slug> '["raw_images/dom_
 ```
 [save_images] img_00.jpg <- raw_images/dom_002.jpg
 [save_images] img_01.png <- raw_images/dom_005.png
-[save_images] SKILL_MD_PATH: /Users/xxx/.jiuwenswarm/agent/workspace/skills/exposure_fusion_opencv/SKILL.md
+[save_images] SKILL_MD_PATH: /Users/xxx/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/exposure_fusion_opencv/SKILL.md
 ```
 **生成 SKILL.md 时，用 write_file 写入 `SKILL_MD_PATH` 打印出的绝对路径。图片路径为 `references/<文件名>`，例如 `references/img_00.jpg`。**
 

@@ -101,16 +101,16 @@ def _nonempty_str(value: Any) -> str | None:
 
 
 def _resolve_tenant_agent_workspace_dir(*, workspace_key: str | None = None) -> Path:
-    """``workspace_{key}/agent/workspace`` (jiuwenswarm layout)."""
+    """``workspace_{key}/agent/jiuwenclaw_workspace`` (jiuwenswarm layout)."""
     wk = workspace_key if workspace_key is not None else get_bound_workspace_key()
     wk = normalize_tenant_scope_id(wk)
-    return get_multi_tenant_user_workspace_dir(wk) / "agent" / "workspace"
+    return get_multi_tenant_user_workspace_dir(wk) / "agent" / "jiuwenclaw_workspace"
 
 
 def _resolve_ltm_dir(*, workspace_key: str | None = None) -> Path:
     """Default LTM dir under the tenant agent workspace.
 
-    Path: ``workspace_{key}/agent/workspace/memory/ltm``
+    Path: ``workspace_{key}/agent/jiuwenclaw_workspace/memory/ltm``
 
     When ``workspace_key`` is omitted, uses the key bound via
     :func:`~jiuwenswarm.server.runtime.tenant_context.bind_workspace_key`.

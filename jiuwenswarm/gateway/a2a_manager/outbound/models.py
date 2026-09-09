@@ -310,6 +310,8 @@ class A2AOutboundDispatch:
     source_session_id: str
     created_at: str
     updated_at: str
+    agent_name: str | None = None
+    source_resource_id: str | None = None
     remote_task_id: str | None = None
     remote_context_id: str | None = None
     accepted_at: str | None = None
@@ -367,6 +369,8 @@ class A2AOutboundDispatch:
                 source_session_id=str(record.get("source_session_id") or "").strip(),
                 created_at=str(record.get("created_at") or ""),
                 updated_at=str(record.get("updated_at") or ""),
+                agent_name=record.get("agent_name"),
+                source_resource_id=record.get("source_resource_id"),
                 remote_task_id=record.get("remote_task_id"),
                 remote_context_id=record.get("remote_context_id"),
                 accepted_at=record.get("accepted_at"),

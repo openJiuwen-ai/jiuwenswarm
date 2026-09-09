@@ -164,9 +164,10 @@ def test_extra_trusted_dirs_for_skill_md(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_generate_evolution_merge_version_seeds_skill_path_trusted_dirs(
+async def test_generate_evolution_merge_version_does_not_seed_trusted_dirs(
     tmp_path, monkeypatch
 ):
+    """Direct-LLM rebuild writes via Path.write_text; no permission trusted_dirs seed."""
     skills_dir = _write_skill(tmp_path, "demo-skill")
     skill_md = tmp_path / "skills" / "demo-skill" / "SKILL.md"
     captured: list[list[str]] = []
@@ -198,6 +199,7 @@ async def test_generate_evolution_merge_version_seeds_skill_path_trusted_dirs(
                 "rebuild_context": {
                     "skill_md_path": str(skill_md),
                     "archive_pair": True,
+                    "subject_kind": "skill",
                 },
             }
         ),
@@ -209,7 +211,7 @@ async def test_generate_evolution_merge_version_seeds_skill_path_trusted_dirs(
         ),
     )
 
-    async def _rewrite(_prompt: str, **_kwargs: Any) -> bool:
+    async def _rewrite(**_kwargs: Any) -> bool:
         skill_md.write_text("# rebuilt\n", encoding="utf-8")
         return True
 
@@ -219,10 +221,97 @@ async def test_generate_evolution_merge_version_seeds_skill_path_trusted_dirs(
         {"name": "demo-skill", "skill_path": str(skill_md)}
     )
     assert result["success"] is True
-    assert captured
-    merged = captured[-1]
-    assert str(skills_dir.resolve()) in merged
-    assert str(skill_md.parent.resolve()) in merged
+    assert captured == []
+
+
+@pytest.mark.anyio
+async def test_execute_merge_version_rewrite_direct_llm_writes_skill_md(
+    tmp_path, monkeypatch
+):
+    skills_dir = _write_skill(tmp_path, "demo-skill")
+    skill_md = skills_dir / "demo-skill" / "SKILL.md"
+    rebuilt = (
+        "---\nname: demo-skill\nversion: 1.0.0\n---\n# demo-skill\n\nrebuilt body\n"
+    )
+
+    class _FakeModel:
+        async def invoke(self, _messages, **_kwargs):
+            return SimpleNamespace(content=f"```markdown\n{rebuilt}\n```")
+
+    # CI openjiuwen may lack build_rebuild_llm_direct_prompt; stub the module
+    # attribute so the in-function ``from ... import`` succeeds.
+    import openjiuwen.harness.rails.evolution.commands as evolution_commands
+
+    def _stub_direct_prompt(
+        *,
+        subject: dict[str, Any],
+        current_skill_md: str,
+        user_intent: str | None = None,
+        rebuild_context: dict[str, Any] | None = None,
+        language: str = "cn",
+    ) -> tuple[str, str]:
+        _ = (subject, user_intent, rebuild_context, language)
+        return (
+            "You rebuild Skill definition files (SKILL.md).",
+            f"Current SKILL.md:\n{current_skill_md}\n",
+        )
+
+    monkeypatch.setattr(
+        evolution_commands,
+        "build_rebuild_llm_direct_prompt",
+        _stub_direct_prompt,
+        raising=False,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = _FakeModel()  # pylint: disable=protected-access
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+
+    ok = await adapter._execute_merge_version_rewrite(  # pylint: disable=protected-access
+        skill_md_path=str(skill_md),
+        rebuild_context={
+            "skill_md_path": str(skill_md),
+            "records": [
+                {
+                    "record_id": "ev_1",
+                    "summary": "add note",
+                    "target": "skill",
+                    "section": "Instructions",
+                    "score": 0.9,
+                    "content": "always mention UV",
+                }
+            ],
+        },
+        subject={"kind": "skill", "name": "demo-skill"},
+    )
+    assert ok is True
+    text = skill_md.read_text(encoding="utf-8")
+    assert "rebuilt body" in text
+    assert text.startswith("---")
+    assert "```" not in text
+
+
+def test_build_rebuild_llm_direct_prompt_has_no_write_file_tools():
+    import openjiuwen.harness.rails.evolution.commands as evolution_commands
+
+    build_rebuild_llm_direct_prompt = getattr(
+        evolution_commands, "build_rebuild_llm_direct_prompt", None
+    )
+    if build_rebuild_llm_direct_prompt is None:
+        pytest.skip(
+            "openjiuwen package lacks build_rebuild_llm_direct_prompt"
+        )
+
+    system, user = build_rebuild_llm_direct_prompt(
+        subject={"kind": "skill", "name": "demo"},
+        current_skill_md="---\nname: demo\n---\n# demo\n",
+        rebuild_context={"skill_md_path": "/tmp/demo/SKILL.md", "records": []},
+    )
+    blob = f"{system}\n{user}".lower()
+    assert "write_file" not in blob
+    assert "skill-creator" not in blob
+    assert "Current SKILL.md:" in user
+    assert "---\nname: demo\n---" in user
 
 
 def test_queue_auto_rebuild_respects_skill_evolution_action(monkeypatch):
@@ -465,7 +554,7 @@ async def test_generate_evolution_merge_version_accepts_office_claw_skill_path(
         AsyncMock(return_value={"ok": True, "new_version": "1.0.1", "cleared": True}),
     )
 
-    async def _rewrite(_prompt: str, **_kwargs: Any) -> bool:
+    async def _rewrite(**_kwargs: Any) -> bool:
         skill_md.write_text("# rebuilt\n", encoding="utf-8")
         return True
 

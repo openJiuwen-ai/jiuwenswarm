@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -26,13 +27,25 @@ from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
 )
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     _SKILL_TURBO_HITL_PLACEHOLDER,
-    _SKILL_TURBO_STOP_HINT,
+    _SKILL_TURBO_STOP_HINT_NEUTRAL,
     _resolve_skill_turbo_resume_session_id,
     _resume_user_input_from_raw,
     get_skill_turbo_resume_answers,
     reset_skill_turbo_resume_answers,
     set_skill_turbo_hitl_tic,
     set_skill_turbo_resume_answers,
+)
+
+# 旧版停止提示文案（宣称文件已发送），生产代码已删除常量；保留字符串仅用于
+# 验证存量会话历史（tool_result 嵌旧文案）重放时被 _fix_incomplete_tool_context
+# 原样保留——该修复逻辑按 tool_call_id 结构匹配，不依赖常量存在。
+_LEGACY_STOP_HINT_TEXT = (
+    "\n\n[SYSTEM] The skill_acceleration_exec task is complete and the artifact has already been "
+    "generated. The file(s) have ALREADY been sent to the user by the internal "
+    "delivery pipeline - do NOT call send_file_to_user again. You should now "
+    "summarize this result to the user and finish your turn. Do NOT call "
+    "skill_acceleration_exec, skill_tool, or send_file_to_user again for this task - the "
+    "work is already done; calling any of them again would duplicate the work."
 )
 
 
@@ -440,6 +453,145 @@ async def test_emit_skill_turbo_hitl_keeps_pending_tool_call_request_id(monkeypa
     assert ask.request_id == http_rid
 
 
+@pytest.mark.asyncio
+async def test_emit_skill_turbo_hitl_overwrites_request_id_with_outer_call_id(monkeypatch):
+    """resume 内二次中断的 ask_user 卡片 request_id 对齐外层 call id。
+
+    首个 ask_user 经 StreamEventRail TIE 重写后用外层 skill_acceleration_exec
+    call id 作卡片 request_id；resume 内的二次中断走 _emit_skill_turbo_hitl_chunks，
+    必须传入并使用同一 outer_call_id，否则前端/relay-claw 按 request_id 路由
+    作答时找不到第二张卡 → 答案丢失 → 会话卡死。
+    """
+    pending_tcid = "skill_turbo-tc-ask_user-9"
+    outer_call_id = "call_7780745b931647ae956a2125"
+    http_rid = "http-req-abc"
+    tool_call = SimpleNamespace(
+        id=pending_tcid,
+        name="ask_user",
+        arguments={"questions": [{"question": "风格"}]},
+    )
+    tic = SimpleNamespace(tool_call=tool_call, request=SimpleNamespace())
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._skill_turbo_extract_tool_interrupt",
+        lambda _exc: tic,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._skill_turbo_build_interaction_output",
+        lambda _exc: SimpleNamespace(payload={"id": pending_tcid}),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.convert_interactions_to_ask_user_question",
+        lambda _items: {
+            "event_type": "chat.ask_user_question",
+            "request_id": pending_tcid,
+            "questions": [{"question": "风格"}],
+            "source": "ask_user_interrupt",
+        },
+    )
+
+    request = AgentRequest(
+        request_id=http_rid,
+        channel_id="officeclaw",
+        session_id="sess-1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={},
+    )
+    chunks = [
+        chunk
+        async for chunk in JiuWenSwarmDeepAdapter._emit_skill_turbo_hitl_chunks(
+            request, RuntimeError("abort"), outer_call_id
+        )
+    ]
+    ask = next(
+        c
+        for c in chunks
+        if isinstance(c.payload, dict)
+        and c.payload.get("event_type") == "chat.ask_user_question"
+    )
+    # 卡片 request_id 被外层 call id 覆盖，与首个 ask_user 一致
+    assert ask.payload["request_id"] == outer_call_id
+    assert ask.request_id == http_rid
+
+
+@pytest.mark.asyncio
+async def test_resume_impl_second_ask_user_gets_suffix_when_outer_id_has_no_suffix(monkeypatch):
+    """无后缀 params.request_id 进入 _resume_impl 时 outer_call_id 不得为空。
+
+    复现检视问题 1：被作答卡片是"该外层 call id 的首张卡"（request_id 无
+    {id}#{n} 后缀）时，派生 outer_call_id 若回退空串则修复不生效。本测试
+    模拟该链路：第一张 ask_user 卡先消耗 seq，第二张卡经 _emit_skill_turbo_hitl_chunks
+    + _dedupe_ask_user_card 应得到 call_x#2。
+    """
+    outer_call_id = "call_7780745b931647ae956a2125"  # 无 #N 后缀（首张卡被作答）
+    pending_tcid = "skill_turbo-tc-ask_user-18cefd55-0"
+    http_rid = "http-resume-2"
+    tool_call = SimpleNamespace(
+        id=pending_tcid,
+        name="ask_user",
+        arguments={"questions": [{"question": "风格"}]},
+    )
+    tic = SimpleNamespace(tool_call=tool_call, request=SimpleNamespace())
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._skill_turbo_extract_tool_interrupt",
+        lambda _exc: tic,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._skill_turbo_build_interaction_output",
+        lambda _exc: SimpleNamespace(payload={"id": pending_tcid}),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.convert_interactions_to_ask_user_question",
+        lambda _items: {
+            "event_type": "chat.ask_user_question",
+            "request_id": pending_tcid,
+            "questions": [{"question": "风格"}],
+            "source": "ask_user_interrupt",
+        },
+    )
+
+    request = AgentRequest(
+        request_id=http_rid,
+        channel_id="officeclaw",
+        session_id="sess-1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"request_id": outer_call_id, "source": "ask_user_interrupt",
+                 "answers": [{"question": "受众", "selected_options": ["企业高管"]}]},
+    )
+
+    # 测实际的派生函数（_resume_impl 调的同一静态方法），不复制逻辑
+    derived = JiuWenSwarmDeepAdapter._derive_outer_call_id(
+        str(request.params.get("request_id") or "")
+    )
+    # 关键断言：无后缀时 outer_call_id 不得为空（问题 1 修复前为空串）
+    assert derived == outer_call_id, (
+        "无后缀 request_id 派生 outer_call_id 为空 → 第二张卡修复不生效"
+    )
+
+    # 模拟 _resume_impl 的去重链路：首张 ask_user 卡先消耗 seq 0→1（无后缀），
+    # 第二张卡经 _emit_skill_turbo_hitl_chunks 覆盖 outer_call_id 后走 _dedupe_ask_user_card
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._ask_user_card_seq = {}
+    emitted_ids: set[str] = set()
+    emitted_questions: dict[str, str] = {}
+
+    # 第一张卡（首张 ask_user，seq 0→1，无后缀）
+    first_card = {"event_type": "chat.ask_user_question",
+                  "request_id": outer_call_id,
+                  "questions": [{"question": "受众"}], "source": "ask_user_interrupt"}
+    assert adapter._dedupe_ask_user_card(first_card, emitted_ids, emitted_questions) is False
+    assert first_card["request_id"] == outer_call_id
+
+    # 第二张卡：经 _emit_skill_turbo_hitl_chunks 覆盖 outer_call_id 后走 _dedupe_ask_user_card
+    second_card = {"event_type": "chat.ask_user_question",
+                   "request_id": derived,  # _emit_skill_turbo_hitl_chunks 用 outer_call_id 覆盖
+                   "questions": [{"question": "风格"}], "source": "ask_user_interrupt"}
+    assert adapter._dedupe_ask_user_card(second_card, emitted_ids, emitted_questions) is False
+    # 第二张卡加 #2 后缀（首张已消耗 seq=1，第二张 seq=1→2）
+    assert second_card["request_id"] == f"{outer_call_id}#2"
+
+
 def test_resume_user_input_from_interactive_input():
     interactive = InteractiveInput()
     payload = {
@@ -617,7 +769,7 @@ async def test_fix_incomplete_tool_context_keeps_stop_hint_over_hitl_placeholder
     rail = JiuSwarmStreamEventRail()
     tool_call_id = "call_982c"
     stop_hint_msg = ToolMessage(
-        content="任务已完成" + _SKILL_TURBO_STOP_HINT,
+        content="任务已完成" + _LEGACY_STOP_HINT_TEXT,
         tool_call_id=tool_call_id,
     )
     ctx = SimpleNamespace(
@@ -659,3 +811,49 @@ async def test_fix_incomplete_tool_context_keeps_stop_hint_over_hitl_placeholder
     assert _SKILL_TURBO_HITL_PLACEHOLDER not in tool_msgs[0].content
     assert "The skill_acceleration_exec task is complete" in tool_msgs[0].content
     assert "skill_tool" in tool_msgs[0].content
+
+
+@pytest.mark.asyncio
+async def test_fix_incomplete_tool_context_keeps_neutral_stop_hint_over_hitl_placeholder():
+    # 新版中立收尾与旧版停止提示走同一保留路径：
+    # 中断 placeholder 被真实 tool_result（含中立收尾）原位替换。
+    rail = JiuSwarmStreamEventRail()
+    tool_call_id = "call_982d"
+    neutral_msg = ToolMessage(
+        content="任务已完成" + _SKILL_TURBO_STOP_HINT_NEUTRAL,
+        tool_call_id=tool_call_id,
+    )
+    ctx = SimpleNamespace(
+        context=_ModelContext([
+            UserMessage(content="生成一页PPT"),
+            AssistantMessage(
+                content="",
+                tool_calls=[{
+                    "type": "function",
+                    "id": tool_call_id,
+                    "function": {
+                        "name": "skill_acceleration_exec",
+                        "arguments": "{\"query\":\"生成PPT\"}",
+                    },
+                }],
+            ),
+            ToolMessage(
+                content=_SKILL_TURBO_HITL_PLACEHOLDER,
+                tool_call_id=tool_call_id,
+            ),
+            neutral_msg,
+        ]),
+        inputs=SimpleNamespace(tools=[]),
+        session=None,
+        extra={},
+    )
+
+    await rail._fix_incomplete_tool_context(ctx)
+
+    messages = ctx.context.get_messages()
+    tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == tool_call_id
+    assert _SKILL_TURBO_HITL_PLACEHOLDER not in tool_msgs[0].content
+    assert "did NOT confirm" in tool_msgs[0].content
+    assert "send_file_to_user" in tool_msgs[0].content

@@ -76,10 +76,10 @@ def tenant_ids_from_message(msg: Any) -> tuple[str, str]:
 
 
 def resolve_channel_agent_workspace(workspace_key: str | None = None) -> Path:
-    """``<tenant_root>/agent/workspace``（经 ``get_multi_tenant_user_workspace_dir``）。"""
+    """``<tenant_root>/agent/jiuwenclaw_workspace``（经 ``get_multi_tenant_user_workspace_dir``）。"""
     wk = normalize_tenant_scope_id(workspace_key)
     base = get_multi_tenant_user_workspace_dir(wk)
-    return base / "agent" / "workspace"
+    return base / "agent" / "jiuwenclaw_workspace"
 
 
 def resolve_channel_group_chat_memory_dir(workspace_key: str | None = None) -> Path:

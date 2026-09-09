@@ -28,10 +28,6 @@ spec:
               value: "0.0.0.0"
             - name: MANAGER_WEB_PORT
               value: "<<MANAGER_WEB_PORT>>"
-            - name: VITE_API_BASE
-              value: "/api"
-            - name: VITE_IDP_BASE
-              value: "/idp"
             - name: MANAGER_WEB_PROXY_TARGET
               value: "http://<<MANAGER_SERVER_NAME>>:<<MANAGER_REST_PORT>>"
             - name: MANAGER_WEB_IDP_TARGET

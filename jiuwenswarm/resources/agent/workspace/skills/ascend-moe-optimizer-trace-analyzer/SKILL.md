@@ -15,7 +15,7 @@ description: 在用户提供 Chrome/Perfetto trace.json、或排查 Ascend 上 M
 
 ## 脚本位置
 
-- 用户安装后的 skill 根目录：`<ASCEND_MOE_OPTIMIZER_SKILL>` = `~/.jiuwenswarm/agent/workspace/skills/ascend-moe-optimizer-trace-analyzer`
+- 用户安装后的 skill 根目录：`<ASCEND_MOE_OPTIMIZER_SKILL>` = `~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/ascend-moe-optimizer-trace-analyzer`
 - 入口：`<ASCEND_MOE_OPTIMIZER_SKILL>/app.py`
 - 从本仓库资源运行时，将上述路径换为 `jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-trace-analyzer`（相对仓库根目录）。
 

@@ -1170,7 +1170,9 @@ class JiuWenSwarm:
         user_ws = getattr(self, "_user_workspace_dir", None)
         if user_ws is not None:
             return str(
-                collapse_nested_agent_workspace_dir(Path(user_ws) / "agent" / "workspace")
+                collapse_nested_agent_workspace_dir(
+                    Path(user_ws) / "agent" / "jiuwenclaw_workspace"
+                )
             )
         return str(collapse_nested_agent_workspace_dir(get_agent_workspace_dir()))
 

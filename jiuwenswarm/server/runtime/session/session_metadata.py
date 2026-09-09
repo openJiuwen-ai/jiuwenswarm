@@ -170,6 +170,23 @@ def _apply_metadata_defaults_with_inference(
 
     changed = False  # 是否有需要写盘的确定性推断
 
+    # 惰性迁移:历史 .../agent/workspace 前缀重映射到 jiuwenclaw_workspace。
+    # 与 project_dir 的"首次锁定不可改"语义不冲突:重映射前后指向同一逻辑目录,
+    # 不重写会导致旧前缀命中 dir_to_projects 失败、且 mkdir 复活僵尸目录。
+    remapped_dir = _remap_legacy_workspace_prefix(
+        str(metadata.get("project_dir") or "")
+    )
+    if remapped_dir != metadata["project_dir"]:
+        metadata["project_dir"] = remapped_dir
+        changed = True
+    if isinstance(metadata.get("channel_metadata"), dict):
+        for key in ("cwd", "project_dir"):
+            legacy_val = str(metadata["channel_metadata"].get(key) or "")
+            remapped_val = _remap_legacy_workspace_prefix(legacy_val)
+            if remapped_val != legacy_val:
+                metadata["channel_metadata"][key] = remapped_val
+                changed = True
+
     # last_user_message_at: 多级回退
     # 优先用已有时间字段;不能用 ``or`` 短路——合法的 0.0 时间戳是 falsy。
     if "last_user_message_at" not in metadata:
@@ -445,10 +462,47 @@ def restore_session_team_binding_artifacts(
         _METADATA_CACHE.pop(_metadata_cache_key(session_id, root_s), None)
 
 
+def _remap_legacy_workspace_prefix(path: str) -> str:
+    """将历史的 ``.../agent/workspace`` 前缀重映射到 ``.../agent/jiuwenclaw_workspace``。
+
+    目录改名迁移（utils._migrate_workspace_to_jiuwenclaw_workspace）会重写
+    projects.json / metadata.json，但仍可能有遗漏记录（如迁移后手动恢复的
+    备份文件）。此处兜底重映射，避免在旧路径上 mkdir 重建"僵尸目录"，
+    导致下次重启再触发一轮合并迁移、两次重启间写入的文件对会话不可见。
+
+    仅当旧路径本身已不存在而新路径存在时才重映射（迁移未完成的场景保持原样）。
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return raw
+    # 逐级向上寻找 .../agent/workspace 锚点（basename/dirname 屏蔽分隔符差异，
+    # 兼容 ``\\`` 与 ``/`` 两种风格；取最深层命中，与迁移重写的前缀语义一致）
+    normalized = os.path.normpath(raw)
+    current = normalized
+    while current and current != os.path.dirname(current):
+        if (
+            os.path.basename(current).lower() == "workspace"
+            and os.path.basename(os.path.dirname(current)).lower() == "agent"
+        ):
+            old_dir = Path(current)
+            if old_dir.exists():
+                # 旧目录还在（迁移未执行/未完成），不干预
+                return raw
+            new_dir = old_dir.parent / "jiuwenclaw_workspace"
+            if not new_dir.is_dir():
+                return raw
+            tail = os.path.relpath(normalized, current)
+            if tail == ".":
+                return str(new_dir)
+            return os.path.join(str(new_dir), tail)
+        current = os.path.dirname(current)
+    return raw
+
+
 def validate_project_dir(path: str, *, default: Path | None = None) -> Path:
     """Normalize ``project_dir``; create missing dirs; fall back on failure."""
     fallback = default if default is not None else get_agent_workspace_dir().resolve()
-    raw = (path or "").strip()
+    raw = _remap_legacy_workspace_prefix((path or "").strip())
     if not raw:
         return fallback
     try:
@@ -521,7 +575,7 @@ def get_resolved_project_dir(
     Lookup order:
       1. ``{sessions_root}/{session_id}/metadata.json`` when ``sessions_root`` given
       2. Global ``get_agent_sessions_dir()`` (where dig-stable chat sync writes today)
-      3. ``default`` (typically tenant ``…/agent/workspace``), else ``get_agent_workspace_dir()``
+      3. ``default`` (typically tenant ``…/agent/jiuwenclaw_workspace``), else ``get_agent_workspace_dir()``
 
     Does not write defaults back into metadata (writers stay on chat sync path).
     """

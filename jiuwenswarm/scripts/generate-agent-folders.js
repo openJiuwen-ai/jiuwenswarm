@@ -15,7 +15,12 @@ if (!agentRoot) {
   process.exit(1);
 }
 
-const outputPath = path.join(agentRoot, 'workspace', 'agent-data.json');
+// Runtime installs use agent/jiuwenclaw_workspace; the in-package template keeps agent/workspace.
+const runtimeWorkspace = path.join(agentRoot, 'jiuwenclaw_workspace');
+const outputPath = path.join(
+  fs.existsSync(runtimeWorkspace) ? runtimeWorkspace : path.join(agentRoot, 'workspace'),
+  'agent-data.json'
+);
 
 console.log('扫描目录:', agentRoot);
 

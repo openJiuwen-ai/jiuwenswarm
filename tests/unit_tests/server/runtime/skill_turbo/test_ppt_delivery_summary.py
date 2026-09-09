@@ -14,7 +14,7 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary imp
 )
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import PPTGenRootNode
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
-    PPT_TURBO_SAFE_DELIVERY_SUMMARY,
+    PPT_TURBO_UNCONFIRMED_FINISH_TEXT,
     _SKILL_TURBO_ARTIFACT_SUMMARY_MARKER,
     _wrap_skill_turbo_result,
     clear_pending_ppt_delivery_summary,
@@ -328,6 +328,9 @@ def test_wrap_skill_turbo_result_keeps_generic_hint_without_ppt_summary() -> Non
     wrapped = _wrap_skill_turbo_result({"success": True, "result": "任务已完成"}, {})
     assert "任务已完成" in wrapped["result"]
     assert "You should now summarize" in wrapped["result"]
+    assert "did NOT confirm" in wrapped["result"]
+    assert "ALREADY been sent" not in wrapped["result"]
+    assert "send_file_to_user" in wrapped["result"]
     assert "逐字输出" not in wrapped["result"]
     assert take_pending_ppt_delivery_summary() == ""
 
@@ -542,12 +545,13 @@ def test_visible_finish_text_prefers_p10_skeleton() -> None:
     assert "任务已完成" not in text
 
 
-def test_visible_finish_text_uses_safe_sentence_without_skeleton() -> None:
+def test_visible_finish_text_uses_unconfirmed_text_without_skeleton() -> None:
     text = visible_ppt_turbo_finish_text(
         {"p8_ppt_page_gen": {"info": {"total_pages": 3}}},
         success=True,
     )
-    assert text == PPT_TURBO_SAFE_DELIVERY_SUMMARY
+    assert text == PPT_TURBO_UNCONFIRMED_FINISH_TEXT
+    assert "已生成并交付" not in text
     assert _SKILL_TURBO_ARTIFACT_SUMMARY_MARKER not in text
 
 

@@ -133,6 +133,15 @@ _A2A_OUTBOUND_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
     WebHttpMappedRoute(
         "PATCH",
+        "/a2a/outbound/agents/{agent_id}/enabled",
+        "a2a.outbound.enabled.update",
+        "a2a",
+        "更新 A2A Agent 的用户启用状态",
+        path_to_param={"agent_id": "agent_id"},
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "PATCH",
         "/a2a/outbound/agents/{agent_id}",
         "a2a.outbound.update",
         "a2a",

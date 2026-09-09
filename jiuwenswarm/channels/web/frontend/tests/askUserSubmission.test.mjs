@@ -5,6 +5,7 @@ import {
   buildEmptyAskUserAnswers,
   hasAskUserInput,
   resolveAskUserStatus,
+  shouldUnlockPendingApproval,
 } from '../node_modules/.cache/ask-user-submission/components/InteractionSlot/interactionSubmission.js';
 
 test('preserves explicit answered even when answers are empty', () => {
@@ -35,4 +36,10 @@ test('whole-interaction cancellation creates only empty answer shells', () => {
     { question: 'First?', selected_options: [], custom_input: '' },
     { question: 'Second?', selected_options: [], custom_input: '' },
   ]);
+});
+
+test('failed approval submission unlocks only the same pending request', () => {
+  assert.equal(shouldUnlockPendingApproval('approval-1', 'approval-1'), true);
+  assert.equal(shouldUnlockPendingApproval(null, 'approval-1'), false);
+  assert.equal(shouldUnlockPendingApproval('approval-2', 'approval-1'), false);
 });

@@ -1237,7 +1237,7 @@ async def test_runtime_rail_multi_tenant_workspace_dirs(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
 
     builder = SystemPromptBuilder(language="cn")
-    workspace_root = Path("/tmp/test_jiuwenswarm/workspace_abc/agent/workspace")
+    workspace_root = Path("/tmp/test_jiuwenswarm/workspace_abc/agent/jiuwenclaw_workspace")
     runtime_rail = RuntimePromptRail(
         language="cn",
         channel="web",
@@ -1290,7 +1290,7 @@ async def test_runtime_rail_single_tenant_workspace_dirs():
         ) as mock_agent_ws,
     ):
         mock_user_ws.return_value = Path("/home/user/.jiuwenswarm")
-        mock_agent_ws.return_value = Path("/home/user/.jiuwenswarm/agent/workspace")
+        mock_agent_ws.return_value = Path("/home/user/.jiuwenswarm/agent/jiuwenclaw_workspace")
 
         ctx = AgentCallbackContext(agent=None, inputs=None, session=None)
         await runtime_rail.before_model_call(ctx)
@@ -1304,7 +1304,7 @@ async def test_runtime_rail_single_tenant_workspace_dirs():
 
     # 验证完整绝对路径（兼容 Windows/Linux 分隔符）
     expected_config = "/home/user/.jiuwenswarm/config"
-    expected_workspace = "/home/user/.jiuwenswarm/agent/workspace"
+    expected_workspace = "/home/user/.jiuwenswarm/agent/jiuwenclaw_workspace"
     expected_config_win = expected_config.replace("/", "\\")
     expected_workspace_win = expected_workspace.replace("/", "\\")
     assert (

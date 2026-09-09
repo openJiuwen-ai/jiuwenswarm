@@ -569,6 +569,7 @@
     },
     "title": "A2A Control Center",
     "subtitle": "Manage the A2A service exposed by JiuwenSwarm.",
+    "enterpriseSubtitle": "View administrator-assigned A2A Agents and manage your enabled state and processing history.",
     "tabs": {
       "ariaLabel": "A2A Control Center pages",
       "config": "Ingress Configuration",
@@ -636,6 +637,8 @@
       "list": {
         "title": "Registered Agents",
         "description": "Manage availability, connection settings, and Agent Card updates.",
+        "enterpriseDescription": "Agent configuration is managed by administrators. You can choose which available Agents to enable.",
+        "enterpriseEmpty": "No A2A Agents have been assigned to this instance by an administrator",
         "empty": "No third-party Agents are registered"
       },
       "fields": {
@@ -658,6 +661,8 @@
       "registered": "The third-party Agent is registered and can now participate in outbound calls when enabled and available.",
       "enabled": "Enabled",
       "disabled": "Disabled",
+      "managerDisabled": "Disabled by administrator",
+      "userToggle": "Toggle personal enabled state",
       "enable": "Enable",
       "disable": "Disable",
       "refresh": "Refresh Card",
@@ -719,6 +724,7 @@
         "contextId": "Context ID",
         "mode": "Mode",
         "agentId": "Agent ID",
+        "agent": "Agent",
         "dispatchId": "Dispatch ID",
         "remoteTaskId": "Remote task ID",
         "startedAt": "Started",
@@ -2176,7 +2182,7 @@
     "markdownOnly": "Only Markdown/JSON (.md/.mdx/.json) preview is supported",
     "errors": {
       "refreshFailed": "Refresh failed: unable to rebuild the agent file index. Check the generator script logs.",
-      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated."
+      "loadFailed": "Unable to read the agent file list. Check whether agent/jiuwenclaw_workspace/agent-data.json has been generated."
     }
   },
   "fileViewer": {
@@ -2317,7 +2323,6 @@
     "skillApproval": {
       "title": "Skill load approval",
       "trustBuiltin": "builtin",
-      "trustOther": "unofficial",
       "versionLocal": "local (no version)",
       "source": "Source",
       "version": "Version",
@@ -2333,7 +2338,7 @@
       "approveSession": "Allow for session",
       "approveSessionDesc": "Approval cached for this session; revoked when the skill ends",
       "continueWithout": "Continue without extra permissions",
-      "continueWithoutDesc": "Load the skill under existing permissions"
+      "continueWithoutDesc": "Load the skill without granting additional permissions"
     }
   },
   "share": {
@@ -2500,7 +2505,7 @@
     "helpTitle": "Usage Guide",
     "help0": "Extension folder must contain rail.py as the entry file",
     "help1": "Rail extension files must inherit from DeepAgentRail or AgentRail base class",
-    "help2": "Extension files are saved to ~/.jiuwenswarm/agent/workspace/extensions/ directory",
+    "help2": "Extension files are saved to ~/.jiuwenswarm/agent/jiuwenclaw_workspace/extensions/ directory",
     "errors": {
       "missingFolderPath": "Missing folder_path parameter",
       "folderNotFound": "Folder does not exist or is not a directory: {{path}}",

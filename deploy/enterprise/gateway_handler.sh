@@ -38,23 +38,27 @@ gen_gateway_config_file() {
     # Clear configuration
     yq eval ".channels.${field_name} = {}" -i "${file}"
 
-    echo "${DEPLOY_VARS["FEISHU_BOTS"]}" | while read -r line; do
-        # Skip empty lines
-        [ -z "${line}" ] && continue
+    # 飞书机器人配置（可选）：未配置 FEISHU_BOTS 时跳过，channels.feishu 保持为空
+    local feishu_bots="${DEPLOY_VARS["FEISHU_BOTS"]:-}"
+    if [ -n "${feishu_bots}" ]; then
+        echo "${feishu_bots}" | while read -r line; do
+            # Skip empty lines
+            [ -z "${line}" ] && continue
 
-        # Split by colon
-        IFS=':' read -r bot_name app_id app_secret <<< "${line}"
+            # Split by colon
+            IFS=':' read -r bot_name app_id app_secret <<< "${line}"
 
-        # info "Adding bot: ${bot_name}"
-        yq eval ".channels.${field_name}.${bot_name}.app_id = \"${app_id}\"" -i "${file}"
-        yq eval ".channels.${field_name}.${bot_name}.app_secret = \"${app_secret}\"" -i "${file}"
-        yq eval ".channels.${field_name}.${bot_name}.encrypt_key = \"\"" -i "${file}"
-        yq eval ".channels.${field_name}.${bot_name}.verification_token = \"\"" -i "${file}"
-        yq eval ".channels.${field_name}.${bot_name}.allow_from = []" -i "${file}"
-        yq eval ".channels.${field_name}.${bot_name}.enable_streaming = true" -i "${file}"
-        yq eval ".channels.${field_name}.${bot_name}.chat_id = \"\"" -i "${file}"
-        yq eval ".channels.${field_name}.${bot_name}.enabled = true" -i "${file}"
-    done
+            # info "Adding bot: ${bot_name}"
+            yq eval ".channels.${field_name}.${bot_name}.app_id = \"${app_id}\"" -i "${file}"
+            yq eval ".channels.${field_name}.${bot_name}.app_secret = \"${app_secret}\"" -i "${file}"
+            yq eval ".channels.${field_name}.${bot_name}.encrypt_key = \"\"" -i "${file}"
+            yq eval ".channels.${field_name}.${bot_name}.verification_token = \"\"" -i "${file}"
+            yq eval ".channels.${field_name}.${bot_name}.allow_from = []" -i "${file}"
+            yq eval ".channels.${field_name}.${bot_name}.enable_streaming = true" -i "${file}"
+            yq eval ".channels.${field_name}.${bot_name}.chat_id = \"\"" -i "${file}"
+            yq eval ".channels.${field_name}.${bot_name}.enabled = true" -i "${file}"
+        done
+    fi
 
     success "Gateway config rendered: ${file}; ConfigMap yaml: ${yaml_file}"
     kubectl create configmap -n "${namespace}" "${conf_name}" \
@@ -97,9 +101,9 @@ render_gateway_files() {
     local mode="${DEPLOY_VARS["MODE"]}"
 
     if [ "${mode}" == "dev" ]; then
-        DEPLOY_VARS["AGENT_SERVER_HOME"]="/root"
+        DEPLOY_VARS["CLAW_HOME"]="/root"
     else
-        DEPLOY_VARS["AGENT_SERVER_HOME"]="/home/app"
+        DEPLOY_VARS["CLAW_HOME"]="/home/app"
     fi
 
     render_secret_configmap

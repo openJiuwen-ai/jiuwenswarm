@@ -45,7 +45,7 @@ def test_tenant_workspace_defaults_without_key() -> None:
 
     clear_tenant_bindings()
     path = get_tenant_agent_workspace_dir()
-    assert path.name == "workspace"
+    assert path.name == "jiuwenclaw_workspace"
     # 个人版固定 service_default/agent_default；未设 enterprise 时走该路径。
     assert "service_default" in str(path)
     assert "agent_default" in str(path)

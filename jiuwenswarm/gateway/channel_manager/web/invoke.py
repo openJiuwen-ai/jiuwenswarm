@@ -29,6 +29,12 @@ _ENTERPRISE_BLOCKED_EXACT = frozenset({
     "updater.upgrade", "updater.reset_source", "updater.set_conf",
 })
 _ENTERPRISE_BLOCKED_PREFIXES = ("agents.", "teams.", "extensions.", "plugins.")
+_ENTERPRISE_A2A_ALLOWED = frozenset({
+    "a2a.outbound.list",
+    "a2a.outbound.enabled.update",
+    "a2a.outbound.dispatch.list",
+    "a2a.outbound.dispatch.get",
+})
 _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.list",
     "skills.get",
@@ -51,6 +57,8 @@ def is_enterprise_write_forbidden(method: str) -> bool:
     if not is_enterprise():
         return False
     if method in _ENTERPRISE_BLOCKED_EXACT or method.startswith(_ENTERPRISE_BLOCKED_PREFIXES):
+        return True
+    if method.startswith("a2a.") and method not in _ENTERPRISE_A2A_ALLOWED:
         return True
     if method.startswith("channel.") and (method.endswith(".set_conf") or method.endswith(".unbind")):
         return True

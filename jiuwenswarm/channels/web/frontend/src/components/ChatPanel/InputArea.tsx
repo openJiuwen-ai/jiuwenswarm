@@ -3104,7 +3104,7 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
         plugins?: InputAreaInstalledPlugin[];
       }>(
         'skills.list',
-        { with_installed: true },
+        { session_id: activeSessionId, with_installed: true },
         { timeoutMs: 30_000 },
       );
       setSkills(data.skills || []);

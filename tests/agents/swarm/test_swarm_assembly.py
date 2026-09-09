@@ -338,7 +338,7 @@ async def test_team_skill_storage_policy_rail_resolves_and_injects_paths(tmp_pat
     its identity, so this rail must not carry it in any lane.
     """
     register_swarm_providers()
-    global_skills_dir = str(tmp_path / "agent" / "workspace" / "skills")
+    global_skills_dir = str(tmp_path / "agent" / "jiuwenclaw_workspace" / "skills")
     team_ws_root = str(tmp_path / ".agent_teams" / "unit" / "team-workspace")
     team_skills_dir = str(tmp_path / ".agent_teams" / "unit" / "team-workspace" / "skills")
     member_workspace_root = str(
@@ -385,7 +385,7 @@ async def test_team_shared_skill_link_refresh_rail_resolves_and_refreshes(
 ) -> None:
     """The shared skill link refresh rail should refresh after global skill writes."""
     register_swarm_providers()
-    global_skills_dir = tmp_path / "agent" / "workspace" / "skills"
+    global_skills_dir = tmp_path / "agent" / "jiuwenclaw_workspace" / "skills"
     skill_dir = global_skills_dir / "new-skill"
     skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"
