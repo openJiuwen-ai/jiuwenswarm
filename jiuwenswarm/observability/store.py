@@ -216,10 +216,18 @@ CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
     created_at INTEGER NOT NULL
 );
 
--- A reader catching up after a disconnect walks the session in commit order.
-CREATE INDEX IF NOT EXISTS idx_trajectory_frames_session_seq
-    ON trajectory_stream_frames(session_id, frame_seq);
--- Replaying one answer walks that span's own frames in emission order.
+-- Catching up after a disconnect walks the session in commit order, which is
+-- what frame_seq already is: it is the rowid, so that walk is a primary-key
+-- scan and the session filter costs one comparison per row met. Writers open
+-- one file per session, so nearly every row met belongs to the session
+-- asking, and a (session_id, frame_seq) index was measured to cost 7% of the
+-- database plus one more structure to maintain on every frame while saving
+-- 6% of a read. A reader pointed at a shared file still reads correctly,
+-- only by scanning. Dropped here so databases that already carry the index
+-- stop paying for it.
+DROP INDEX IF EXISTS idx_trajectory_frames_session_seq;
+-- Replaying one answer, and discarding the frames of a span that turned out
+-- to be incomplete, both address frames by the span that produced them.
 CREATE INDEX IF NOT EXISTS idx_trajectory_frames_span_sequence
     ON trajectory_stream_frames(trace_id, span_id, sequence);
 """

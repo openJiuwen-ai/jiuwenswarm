@@ -174,6 +174,56 @@ def _write_with_open_wal(database_path: str, ready: Any, release: Any) -> None:
         store.close()
 
 
+def _frame_indexes(database_path: Path) -> list[str]:
+    connection = sqlite3.connect(database_path)
+    try:
+        return sorted(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = 'trajectory_stream_frames'"
+            )
+        )
+    finally:
+        connection.close()
+
+
+def test_frames_are_not_indexed_by_a_session_that_owns_the_whole_file(
+    tmp_path: Path,
+) -> None:
+    """The session walk rides the primary key, so it needs no index of its own.
+
+    ``frame_seq`` is the rowid, so reading a session in commit order is
+    already a primary-key scan. Indexing (session_id, frame_seq) on top of it
+    cost a measurable share of the database and one more structure to update
+    on every frame, to save a filter that a per-session file almost never
+    rejects. A database written before that was understood must stop paying
+    for it when this code opens it.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    store.close()
+    assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_sequence"]
+
+    # Reopening a database that still carries the old index drops it, and
+    # leaves the frames themselves alone.
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "CREATE INDEX idx_trajectory_frames_session_seq "
+        "ON trajectory_stream_frames(session_id, frame_seq)"
+    )
+    connection.commit()
+    connection.close()
+    assert "idx_trajectory_frames_session_seq" in _frame_indexes(database_path)
+
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    store.close()
+    assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_sequence"]
+    test_logger.info("frame table keeps only the index a query actually uses")
+
+
 def test_store_preserves_exact_raw_and_records_hash_conflict(tmp_path: Path) -> None:
     database_path = tmp_path / "trajectory.sqlite3"
     store = TrajectoryStore(database_path)
