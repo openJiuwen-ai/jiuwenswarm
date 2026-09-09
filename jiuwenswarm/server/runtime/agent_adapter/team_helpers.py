@@ -3534,11 +3534,12 @@ async def _consume_monitor_events(
 _WF_PHASE_STATUS_TO_TASK: dict[str, tuple[str, str]] = {
     "planned": ("team.task.created", "pending"),
     "running": ("team.task.claimed", "in_progress"),
-    # paused must leave the running column: the board's visual progress eases
-    # in_progress tasks toward 85% on wall-clock alone, so a paused phase left
-    # in_progress shows a bar that keeps creeping while nothing executes.
-    # blocked = waiting column, zero progress; resume re-claims via "running".
-    "paused": ("team.task.blocked", "blocked"),
+    # paused stays in_progress (same column, same start time) but freezes the
+    # board's visual progress: the board eases in_progress tasks toward 85% on
+    # wall-clock alone, so an untouched paused phase keeps creeping, while a
+    # status change to blocked/pending snaps the bar to zero. progress_frozen
+    # (set below) stops the easing clock instead; "running" thaws it.
+    "paused": ("team.task.paused", "in_progress"),
     "completed": ("team.task.completed", "completed"),
     "failed": ("team.task.cancelled", "cancelled"),
     "stopped": ("team.task.cancelled", "cancelled"),
@@ -3624,6 +3625,8 @@ def _workflow_updated_to_team_events(
                     "status": task_status,
                     "workflow_run_id": run_id,
                 }
+                if status in ("paused", "running"):
+                    task_event["progress_frozen"] = status == "paused"
                 if terminal_planned:
                     task_event["content"] = _WF_TERMINAL_PLANNED_CONTENT
                 out.append(
