@@ -431,7 +431,13 @@ async def test_control_input_bypasses_running_session_work_lane() -> None:
         return "accepted"
 
     stream = coordinator.run_stream(
-        "session-a", "original", SessionWorkKind.CHAT_STREAM, original
+        "session-a",
+        "original",
+        SessionWorkKind.CHAT_STREAM,
+        original,
+        suspension_key=lambda item: (
+            "interaction" if item == "chat.ask_user_question" else None
+        ),
     )
     assert await anext(stream) == "chat.ask_user_question"
     assert await asyncio.wait_for(
@@ -473,7 +479,9 @@ async def test_control_input_resumes_work_after_output_stream_ends() -> None:
         "original",
         SessionWorkKind.CHAT_STREAM,
         original,
-        suspends=lambda item: item == "chat.ask_user_question",
+        suspension_key=lambda item: (
+            "answer" if item == "chat.ask_user_question" else None
+        ),
     )
     assert [item async for item in stream] == ["chat.ask_user_question"]
     waiting = coordinator.snapshot_session("session-a")
@@ -485,7 +493,9 @@ async def test_control_input_resumes_work_after_output_stream_ends() -> None:
         "session-a",
         "answer",
         lambda: asyncio.sleep(0, result="chat.ask_user_question"),
-        suspends=lambda item: item == "chat.ask_user_question",
+        suspension_key=lambda item: (
+            "second-answer" if item == "chat.ask_user_question" else None
+        ),
     ) == "chat.ask_user_question"
     suspended_again = coordinator.snapshot_session("session-a")
     assert suspended_again is not None
@@ -527,7 +537,9 @@ async def test_new_work_supersedes_waiting_control() -> None:
             "original",
             SessionWorkKind.CHAT_STREAM,
             original,
-            suspends=lambda item: item == "chat.ask_user_question",
+            suspension_key=lambda item: (
+                "answer" if item == "chat.ask_user_question" else None
+            ),
         )
     ] == ["chat.ask_user_question"]
     assert await coordinator.run_unary(
@@ -548,6 +560,118 @@ async def test_new_work_supersedes_waiting_control() -> None:
     assert original_execution.state is SessionExecutionState.CANCELLED
     assert original_execution.cancellation_requested is True
     assert replacement_execution.state is SessionExecutionState.SUCCEEDED
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_stream_runs_while_chat_lane_is_busy() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    chat_started = asyncio.Event()
+    finish_chat = asyncio.Event()
+
+    async def chat() -> None:
+        chat_started.set()
+        await finish_chat.wait()
+
+    chat_task = asyncio.create_task(
+        coordinator.run_unary(
+            "session-a", "chat", SessionWorkKind.CHAT_UNARY, chat
+        )
+    )
+    await chat_started.wait()
+
+    async def goal():
+        yield "goal.started"
+
+    assert [
+        item
+        async for item in coordinator.run_stream(
+            "session-a", "goal", SessionWorkKind.GOAL_STREAM, goal
+        )
+    ] == ["goal.started"]
+    assert not chat_task.done()
+
+    finish_chat.set()
+    await chat_task
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_close_session_cancels_goal_stream() -> None:
+    coordinator = RuntimeSessionCoordinator(cancel_timeout=0.1)
+    await _register(coordinator)
+    started = asyncio.Event()
+
+    async def goal():
+        started.set()
+        yield "goal.started"
+        await asyncio.Event().wait()
+
+    async def consume() -> list[str]:
+        return [
+            item
+            async for item in coordinator.run_stream(
+                "session-a", "goal", SessionWorkKind.GOAL_STREAM, goal
+            )
+        ]
+
+    consumer = asyncio.create_task(
+        consume()
+    )
+    await started.wait()
+
+    result = await coordinator.close_session("session-a")
+
+    assert result.existed is True
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    assert snapshot.executions[-1].state is SessionExecutionState.CANCELLED
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_control_input_matches_goal_interaction_id() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+
+    async def interaction():
+        yield "ask"
+
+    for request_id, work_kind, control_id in (
+        ("chat", SessionWorkKind.CHAT_STREAM, "chat-question"),
+        ("goal", SessionWorkKind.GOAL_STREAM, "goal-question"),
+    ):
+        assert [
+            item
+            async for item in coordinator.run_stream(
+                "session-a",
+                request_id,
+                work_kind,
+                interaction,
+                suspension_key=lambda _item, key=control_id: key,
+            )
+        ] == ["ask"]
+
+    assert await coordinator.deliver_control(
+        "session-a",
+        "goal-question",
+        lambda: asyncio.sleep(0, result="accepted"),
+    ) == "accepted"
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    goal = next(item for item in snapshot.executions if item.request_id == "goal")
+    chat = next(item for item in snapshot.executions if item.request_id == "chat")
+    control = next(
+        item
+        for item in snapshot.executions
+        if item.parent_execution_id is not None
+    )
+    assert control.parent_execution_id == goal.execution_id
+    assert goal.state is SessionExecutionState.SUCCEEDED
+    assert chat.state is SessionExecutionState.WAITING_FOR_CONTROL
     await coordinator.close()
 
 
@@ -579,7 +703,11 @@ async def test_control_input_cancellation_does_not_cancel_parent_work() -> None:
         await asyncio.Event().wait()
 
     stream = coordinator.run_stream(
-        "session-a", "original", SessionWorkKind.CHAT_STREAM, original
+        "session-a",
+        "original",
+        SessionWorkKind.CHAT_STREAM,
+        original,
+        suspension_key=lambda item: "answer" if item == "waiting" else None,
     )
     assert await anext(stream) == "waiting"
     control_task = asyncio.create_task(

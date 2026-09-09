@@ -102,6 +102,50 @@ async def test_single_agent_stream_skips_transport_task_registry_for_every_chann
 
 
 @pytest.mark.asyncio
+async def test_single_agent_goal_stream_skips_transport_task_registry() -> None:
+    manager = object()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=AsyncMock(),
+    )
+
+    async def stream(request, **_kwargs):
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"event_type": "goal.snapshot"},
+            is_complete=True,
+        )
+
+    runtime.stream = stream  # type: ignore[method-assign]
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = runtime
+    server._session_stream_tasks = {}
+    request = AgentRequest(
+        request_id="goal-request",
+        channel_id="web",
+        session_id="goal-session",
+        req_method=ReqMethod.COMMAND_GOAL,
+        params={
+            "action": "set",
+            "objective": "finish the task",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+        is_stream=True,
+    )
+
+    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+
+    assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_send_wire_payload_sends_small_wire_unchanged(monkeypatch):
     monkeypatch.setattr(ws_send, "AGENT_WS_SEND_BUDGET_BYTES", 1024)
     ws = FakeWebSocket()

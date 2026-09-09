@@ -23,7 +23,17 @@ class SessionPersistencePolicy(str, Enum):
 class SessionWorkKind(str, Enum):
     CHAT_UNARY = "chat_unary"
     CHAT_STREAM = "chat_stream"
+    GOAL_STREAM = "goal_stream"
+    GOAL_CONTROL = "goal_control"
+    GOAL_ATTACH = "goal_attach"
     CONTROL_INPUT = "control_input"
+
+    @property
+    def scheduled(self) -> bool:
+        return self in {
+            SessionWorkKind.CHAT_UNARY,
+            SessionWorkKind.CHAT_STREAM,
+        }
 
 
 class SessionExecutionState(str, Enum):
@@ -51,6 +61,7 @@ class SessionExecutionHandle:
     generation: int
     work_kind: SessionWorkKind
     parent_execution_id: str | None = None
+    waiting_control_id: str | None = None
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None
@@ -67,6 +78,7 @@ class SessionExecutionHandle:
             generation=self.generation,
             work_kind=self.work_kind,
             parent_execution_id=self.parent_execution_id,
+            waiting_control_id=self.waiting_control_id,
             state=self.state,
             created_at=self.created_at,
             started_at=self.started_at,
@@ -84,6 +96,7 @@ class SessionExecutionSnapshot:
     generation: int
     work_kind: SessionWorkKind
     parent_execution_id: str | None
+    waiting_control_id: str | None
     state: SessionExecutionState
     created_at: float
     started_at: float | None

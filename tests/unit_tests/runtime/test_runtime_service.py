@@ -164,6 +164,10 @@ class AskUserAgent(FakeAgent):
             is_complete=True,
         )
 
+    async def deliver_control_input(self, request: AgentRequest):
+        async for chunk in self.process_message_stream(request):
+            yield chunk
+
 
 class FakeAdmissionController:
     def __init__(self, *, user_active: bool) -> None:
@@ -1007,7 +1011,14 @@ async def test_answer_interaction_forwards_runtime_execution_options() -> None:
 @pytest.mark.asyncio
 async def test_pending_interaction_blocks_heartbeat_until_matching_answer() -> None:
     admission = SessionRunAdmission()
-    manager = FakeAgentManager()
+
+    class InteractionManager(FakeAgentManager):
+        def get_agent_for_session_nowait(
+            self, channel_id: str, session_id: str
+        ) -> object:
+            return self.agent
+
+    manager = InteractionManager()
     manager.agent = AskUserAgent()
     runtime = AgentRuntime(
         agent_manager=manager,
@@ -1194,7 +1205,31 @@ async def test_interrupt_resume_stream_does_not_wait_for_existing_user_admission
 
 
 @pytest.mark.asyncio
-async def test_interrupt_answer_resumes_session_after_ask_stream_ends() -> None:
+@pytest.mark.parametrize(
+    ("request_method", "request_params", "expected_work_kind"),
+    [
+        (
+            ReqMethod.CHAT_SEND,
+            {"query": "choose", "mode": "agent", "work_mode": "work"},
+            "chat_stream",
+        ),
+        (
+            ReqMethod.COMMAND_GOAL,
+            {
+                "action": "set",
+                "objective": "finish the task",
+                "mode": "agent",
+                "work_mode": "work",
+            },
+            "goal_stream",
+        ),
+    ],
+)
+async def test_interrupt_answer_resumes_session_execution_after_stream_ends(
+    request_method: ReqMethod,
+    request_params: dict[str, object],
+    expected_work_kind: str,
+) -> None:
     class InteractionAgent(FakeAgent):
         async def process_message_stream(self, request: AgentRequest):
             yield AgentResponseChunk(
@@ -1235,9 +1270,9 @@ async def test_interrupt_answer_resumes_session_after_ask_stream_ends() -> None:
         request_id="original",
         channel_id="web",
         session_id=session_id,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=request_method,
         is_stream=True,
-        params={"query": "choose", "mode": "agent", "work_mode": "work"},
+        params=request_params,
     )
     original_events = await _collect_events(runtime.stream(original, trigger_hook=False))
     assert [event.event_type for event in original_events] == [
@@ -1248,7 +1283,7 @@ async def test_interrupt_answer_resumes_session_after_ask_stream_ends() -> None:
     parent = next(
         item
         for item in waiting_snapshot.executions
-        if item.work_kind.value == "chat_stream"
+        if item.work_kind.value == expected_work_kind
     )
     assert parent.state.value == "waiting_for_control"
 

@@ -44,6 +44,13 @@ class SessionExecutionRegistry:
         handle.started_at = time.monotonic()
 
     @staticmethod
+    def mark_awaiting_control(
+        handle: SessionExecutionHandle, control_id: str
+    ) -> None:
+        if not handle.state.terminal:
+            handle.waiting_control_id = control_id
+
+    @staticmethod
     def mark_waiting(handle: SessionExecutionHandle) -> None:
         if handle.state.terminal:
             return
@@ -54,6 +61,7 @@ class SessionExecutionRegistry:
     def resume_waiting(handle: SessionExecutionHandle) -> None:
         if handle.state is SessionExecutionState.WAITING_FOR_CONTROL:
             handle.state = SessionExecutionState.RUNNING
+        handle.waiting_control_id = None
 
     def mark_terminal(
         self,

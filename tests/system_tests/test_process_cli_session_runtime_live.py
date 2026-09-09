@@ -17,7 +17,7 @@ from jiuwenswarm.channels.process_cli import app
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime.session import RuntimeSessionState
+from jiuwenswarm.runtime.session import RuntimeSessionState, SessionWorkKind
 from jiuwenswarm.runtime.session.model import SessionExecutionState
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
@@ -147,8 +147,18 @@ async def test_process_cli_two_turn_session_resume_live(
     not _LIVE_ENABLED,
     reason="requires a configured model and interactive ask_user support",
 )
+@pytest.mark.parametrize(
+    ("goal", "expected_work_kind", "expected_text"),
+    [
+        (False, SessionWorkKind.CHAT_STREAM, "ASK_USER_RESUME_OK"),
+        (True, SessionWorkKind.GOAL_STREAM, "GOAL_ASK_USER_RESUME_OK"),
+    ],
+)
 async def test_single_agent_ask_user_resume_after_stream_end_live(
     tmp_path: Path,
+    goal: bool,
+    expected_work_kind: SessionWorkKind,
+    expected_text: str,
 ) -> None:
     client = InProcessRuntimeClient()
     session_id = ""
@@ -158,39 +168,48 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             channel_id="web",
             session_id=None,
         )
+        instruction = (
+            "你必须先调用 ask_user，让我在 RED 和 BLUE 中选择一个；"
+            f"收到选择后只回复 {expected_text}。"
+        )
+        params = {
+            "mode": "agent.work.normal",
+            "work_mode": "work",
+            "project_dir": str(tmp_path),
+            "cwd": str(tmp_path),
+            "trusted_dirs": [str(tmp_path)],
+            "supports_user_interaction": True,
+        }
+        if goal:
+            params.update({"action": "set", "objective": instruction})
+        else:
+            params["query"] = instruction
         original = AgentRequest(
             request_id="live-ask-user-original",
             channel_id="web",
             session_id=session_id,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=ReqMethod.COMMAND_GOAL if goal else ReqMethod.CHAT_SEND,
             is_stream=True,
-            params={
-                "query": (
-                    "你必须先调用 ask_user，让我在 RED 和 BLUE 中选择一个；"
-                    "收到选择后只回复 ASK_USER_RESUME_OK。"
-                ),
-                "mode": "agent.work.normal",
-                "work_mode": "work",
-                "project_dir": str(tmp_path),
-                "cwd": str(tmp_path),
-                "trusted_dirs": [str(tmp_path)],
-                "supports_user_interaction": True,
-            },
+            params=params,
         )
         first_events = [
             event
             async for event in client.stream(original)
         ]
+        waiting = client.runtime.session_coordinator.snapshot_session(session_id)
+        assert waiting is not None
+        execution = next(
+            execution
+            for execution in waiting.executions
+            if execution.state is SessionExecutionState.WAITING_FOR_CONTROL
+            and execution.work_kind is expected_work_kind
+        )
         interaction = next(
             event
             for event in first_events
             if event.event_type == "chat.ask_user_question"
-        )
-        waiting = client.runtime.session_coordinator.snapshot_session(session_id)
-        assert waiting is not None
-        assert any(
-            execution.state is SessionExecutionState.WAITING_FOR_CONTROL
-            for execution in waiting.executions
+            and (event.payload or {}).get("request_id")
+            == execution.waiting_control_id
         )
 
         interaction_payload = interaction.payload or {}
@@ -226,7 +245,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             str((event.payload or {}).get("content") or "")
             for event in resumed_events
         )
-        assert "ASK_USER_RESUME_OK" in resumed_text
+        assert expected_text in resumed_text
         completed = client.runtime.session_coordinator.snapshot_session(session_id)
         assert completed is not None
         assert all(execution.state.terminal for execution in completed.executions)

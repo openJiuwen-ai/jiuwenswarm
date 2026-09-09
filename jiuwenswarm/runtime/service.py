@@ -713,25 +713,26 @@ class AgentRuntime:
 
         token = set_runtime_context(self, self._agent_manager)
         try:
-            if self.uses_session_runtime(request):
+            work_kind = self.session_work_kind(request)
+            if work_kind is not None:
                 await self._ensure_session_registered(request)
-                if self._is_interrupt_resume_request(request):
+                if self._has_control_target(request):
                     return await self._session_coordinator.deliver_control(
                         request.session_id or "default",
                         self._control_request_id(request),
                         lambda: self._deliver_control_started(request),
-                        suspends=self._waits_for_control,
+                        suspension_key=self._waiting_control_id,
                     )
                 return await self._session_coordinator.run_unary(
                     request.session_id or "default",
                     request.request_id,
-                    SessionWorkKind.CHAT_UNARY,
+                    work_kind,
                     lambda: self._invoke_started(
                         request,
                         trigger_hook=trigger_hook,
                         on_control_event=on_control_event,
                     ),
-                    suspends=self._waits_for_control,
+                    suspension_key=self._waiting_control_id,
                 )
             return await self._invoke_started(
                 request,
@@ -953,14 +954,15 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        if self.uses_session_runtime(request, background=background):
+        work_kind = self.session_work_kind(request, background=background)
+        if work_kind is not None:
             await self._ensure_session_registered(request)
-            if self._is_interrupt_resume_request(request):
+            if self._has_control_target(request):
                 events = await self._session_coordinator.deliver_control(
                     request.session_id or "default",
                     self._control_request_id(request),
                     lambda: self._deliver_control_started(request),
-                    suspends=self._waits_for_control,
+                    suspension_key=self._waiting_control_id,
                 )
                 for event in events:
                     yield event
@@ -968,7 +970,7 @@ class AgentRuntime:
             stream = self._session_coordinator.run_stream(
                 request.session_id or "default",
                 request.request_id,
-                SessionWorkKind.CHAT_STREAM,
+                work_kind,
                 lambda: self._stream_started(
                     request,
                     trigger_hook=trigger_hook,
@@ -976,7 +978,7 @@ class AgentRuntime:
                     background=background,
                     on_agent_ready=on_agent_ready,
                 ),
-                suspends=self._waits_for_control,
+                suspension_key=self._waiting_control_id,
             )
         else:
             stream = self._stream_started(
@@ -1224,6 +1226,10 @@ class AgentRuntime:
         from jiuwenswarm.runtime.events import RuntimeEvent
 
         channel_id = request.channel_id or "default"
+        await self._clear_pending_interaction(
+            request.session_id or "default",
+            self._control_request_id(request),
+        )
         lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
         agent = (
             lookup(channel_id, request.session_id or "")
@@ -1468,16 +1474,46 @@ class AgentRuntime:
         background: bool = False,
     ) -> bool:
         """Return whether the Session Runtime owns this execution."""
-        if (
-            background
-            or not request.session_id
-            or request.req_method not in cls._chat_turn_methods()
-        ):
-            return False
+        return cls.session_work_kind(request, background=background) is not None
+
+    @classmethod
+    def session_work_kind(
+        cls,
+        request: AgentRequest,
+        *,
+        background: bool = False,
+    ) -> SessionWorkKind | None:
+        """Classify product Session work at the Runtime boundary."""
+        if background or not request.session_id:
+            return None
         params = request.params if isinstance(request.params, dict) else {}
-        return cls.is_single_agent_session_mode(
+        if not cls.is_single_agent_session_mode(
             params.get("mode"),
             work_mode=params.get("work_mode"),
+        ):
+            return None
+        if cls._is_interrupt_resume_request(request):
+            return SessionWorkKind.CONTROL_INPUT
+        if request.req_method is ReqMethod.COMMAND_GOAL:
+            action = str(params.get("action") or "get").strip().lower()
+            return (
+                SessionWorkKind.GOAL_STREAM
+                if action in {"set", "resume"}
+                else SessionWorkKind.GOAL_CONTROL
+            )
+        if request.req_method not in cls._chat_turn_methods():
+            return None
+        if params.get("attach_goal") is True:
+            return SessionWorkKind.GOAL_ATTACH
+        input_mode = str(
+            params.get("input_mode") or params.get("runtime_mode") or ""
+        ).strip().lower()
+        if input_mode in {"follow_up", "steer"}:
+            return SessionWorkKind.CONTROL_INPUT
+        return (
+            SessionWorkKind.CHAT_STREAM
+            if request.is_stream
+            else SessionWorkKind.CHAT_UNARY
         )
 
     async def _ensure_session_registered(self, request: AgentRequest) -> None:
@@ -1495,14 +1531,34 @@ class AgentRuntime:
         params = request.params if isinstance(request.params, dict) else {}
         return str(params.get("request_id") or request.request_id or "")
 
-    @staticmethod
-    def _waits_for_control(value: object) -> bool:
-        events = value if isinstance(value, (list, tuple)) else (value,)
-        return any(
-            getattr(event, "event_type", "")
-            in {"chat.ask_user_question", "harness.activate_interaction"}
-            for event in events
+    def _has_control_target(self, request: AgentRequest) -> bool:
+        return self._is_interrupt_resume_request(
+            request
+        ) and self._session_coordinator.has_control_target(
+            request.session_id or "default",
+            self._control_request_id(request),
         )
+
+    @staticmethod
+    def _waiting_control_id(value: object) -> str | None:
+        events = value if isinstance(value, (list, tuple)) else (value,)
+        for event in events:
+            payload = getattr(event, "payload", None)
+            if not isinstance(payload, dict):
+                continue
+            event_type = getattr(event, "event_type", "")
+            key = (
+                "request_id"
+                if event_type == "chat.ask_user_question"
+                else "interaction_id"
+                if event_type == "harness.activate_interaction"
+                else None
+            )
+            if key is not None:
+                control_id = str(payload.get(key) or "").strip()
+                if control_id:
+                    return control_id
+        return None
 
     async def _record_kvc_chat_started(self, request: AgentRequest) -> None:
         """Record a best-effort KVC task fact without changing chat success."""

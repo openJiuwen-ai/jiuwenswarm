@@ -120,6 +120,55 @@ async def test_work_and_code_normal_stream_use_session_registry(
     await runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        ("set", SessionWorkKind.GOAL_STREAM),
+        ("resume", SessionWorkKind.GOAL_STREAM),
+        ("get", SessionWorkKind.GOAL_CONTROL),
+        ("pause", SessionWorkKind.GOAL_CONTROL),
+        ("clear", SessionWorkKind.GOAL_CONTROL),
+    ],
+)
+def test_goal_commands_are_native_session_runtime_work(
+    action: str, expected: SessionWorkKind
+) -> None:
+    request = AgentRequest(
+        request_id=f"goal-{action}",
+        channel_id="web",
+        session_id="goal-session",
+        req_method=ReqMethod.COMMAND_GOAL,
+        is_stream=True,
+        params={"action": action, "mode": "agent", "work_mode": "work"},
+    )
+
+    assert AgentRuntime.session_work_kind(request) is expected
+    assert AgentRuntime.uses_session_runtime(request)
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ({"attach_goal": True}, SessionWorkKind.GOAL_ATTACH),
+        ({"input_mode": "steer"}, SessionWorkKind.CONTROL_INPUT),
+        ({"runtime_mode": "follow_up"}, SessionWorkKind.CONTROL_INPUT),
+    ],
+)
+def test_goal_delivery_is_runtime_control_work(
+    params: dict[str, object], expected: SessionWorkKind
+) -> None:
+    request = AgentRequest(
+        request_id="goal-control",
+        channel_id="web",
+        session_id="goal-session",
+        req_method=ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={"mode": "agent", "work_mode": "work", **params},
+    )
+
+    assert AgentRuntime.session_work_kind(request) is expected
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["agent.work.plan", "team.work.normal"])
 async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
