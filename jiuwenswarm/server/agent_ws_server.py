@@ -8916,6 +8916,10 @@ class AgentWebSocketServer:
             prewarm_eligible = (
                 not is_swarm
                 and canonical_mode in {"agent", "code", "code.normal"}
+                # 通用预热实例在 session metadata 创建前已完成装配，无法重放
+                # 本次 session.create 携带的单专家。专家会话先绕过通用预热，
+                # 让实例在 expert_id 落盘后创建，保证首轮 prompt 即挂载专家。
+                and not expert_id_param
             )
             create_token = str(params.get("create_token") or "").strip()
             if external_session:
