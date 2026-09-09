@@ -109,11 +109,11 @@ def _otlp_span(name: str, span_id: int, *, skill: str | None = None) -> dict:
     if skill is not None:
         attributes = {
             semconv.GEN_AI_TOOL_NAME: "skill_tool",
-            semconv.GEN_AI_TOOL_INPUT: {
+            semconv.GEN_AI_TOOL_CALL_ARGUMENTS: {
                 "skill_name": skill,
                 "relative_file_path": "SKILL.md",
             },
-            semconv.GEN_AI_TOOL_OUTPUT: {"success": True},
+            semconv.GEN_AI_TOOL_CALL_RESULT: {"success": True},
         }
     return {
         "traceId": f"{1:032x}",
