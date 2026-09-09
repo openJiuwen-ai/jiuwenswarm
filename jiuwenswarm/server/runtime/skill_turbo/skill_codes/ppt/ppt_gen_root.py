@@ -415,10 +415,16 @@ class PPTGenRootNode(PlanNode):
         #    RelayClaw 的 pptTurboSummary 收集窗口（tool_result 时还会被清空）。
         # 骨架由 P10 写入 artifact → skill_turbo_tools 挂 ContextVar →
         # SkillTurboDeliverySummaryRail 在外层 tool_result 之后再发 llm_output。
+        delivery_status = str(inputs.get("delivery_status") or "")
+        failed = delivery_status == "failed"
         yield {
             "node": self.plan_name,
-            "status": "ok",
-            "message": "PPT生成任务流执行完成",
+            "status": "error" if failed else "ok",
+            "message": (
+                str(inputs.get("summary") or "PPT生成任务流执行失败")
+                if failed
+                else "PPT生成任务流执行完成"
+            ),
             "result": inputs,
             "steps": results,
         }

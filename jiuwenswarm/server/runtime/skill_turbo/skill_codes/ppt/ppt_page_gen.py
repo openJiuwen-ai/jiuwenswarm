@@ -4802,8 +4802,15 @@ class PrepareNode(PlanNode):
         output_dir = str(inputs.get("output_dir") or "").strip()
         style_file_path = str(inputs.get("style_file_path") or "").strip()
 
-        outline_text = await self._read_file(f"{output_dir}/outline.md")
-        style_text = await self._read_file(style_file_path)
+        outline_text = await PptCommon.read_file(
+            self,
+            f"{output_dir}/outline.md" if output_dir else "",
+            required=False,
+            label="outline.md",
+        )
+        style_text = await PptCommon.read_file(
+            self, style_file_path, required=False, label="style.md"
+        )
 
         outline_pages = _split_md_pages(outline_text)
         total_pages = PptCommon.resolve_total_pages(
@@ -4890,20 +4897,7 @@ class PrepareNode(PlanNode):
         }
 
     async def _read_file(self, path: str) -> str:
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P8.0] read_file 工具不可用 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            content = PptCommon.parse_tool_file_content(result)
-            return content
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P8.0] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file(self, path, required=False, label="file")
 
     async def _execute_stream(self, inputs: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         result = await self._execute(inputs)
@@ -5415,19 +5409,7 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         }
 
     async def _read_file(self, path: str) -> str:
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P8.1] read_file 工具不可用 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            return PptCommon.parse_tool_file_content(result)
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P8.1] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file(self, path, required=False, label="file")
 
     async def _generate_structural_template_fill(
         self,
@@ -6511,20 +6493,7 @@ class PPTPageGenNode(PlanNode):
 
     async def _read_file(self, path: str) -> str:
         """读取文件内容（PPTPageGenNode 自身用，模板分支）。"""
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P8-TP] read_file 工具不可用 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            content = PptCommon.parse_tool_file_content(result)
-            return content
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P8-TP] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file(self, path, required=False, label="file")
 
     async def _write_file(self, path: str, content: str) -> bool:
         """写入文件内容（PPTPageGenNode 自身用，模板分支）。"""

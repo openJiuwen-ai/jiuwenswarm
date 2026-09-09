@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 
+logger = logging.getLogger(__name__)
+
 _JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _CAT_N_PREFIX_RE = re.compile(r"^[ \t]*\d+[ \t]", re.MULTILINE)
 _OUTLINE_PAGE_HEADING_RE = re.compile(r"^### P(\d+):", re.MULTILINE)
+_EMPTY_FILE_WARNING_PREFIX = "Warning: the file exists but the contents are empty."
 
 # ──────────────────────── 节点显示名映射 ────────────────────────
 # 将内部 plan_name（如 p0_pipeline_init）映射为界面上展示的中文名称。
@@ -124,33 +128,74 @@ class PptCommon:
                 return None
 
     @classmethod
+    def is_tool_failure_envelope(cls, result: Any) -> bool:
+        """read_file / write_file 工具级失败：success=False，不抛异常。"""
+        if result is None:
+            return False
+        if hasattr(result, "success") and result.success is False:
+            return True
+        if isinstance(result, dict) and result.get("success") is False:
+            return True
+        if isinstance(result, str):
+            stripped = result.strip()
+            return stripped.startswith("success=False") or stripped.startswith(
+                "success= False"
+            )
+        return False
+
+    @classmethod
+    def tool_result_error(cls, result: Any) -> str | None:
+        if not cls.is_tool_failure_envelope(result):
+            return None
+        if hasattr(result, "error") and result.error:
+            return str(result.error)
+        if isinstance(result, dict):
+            err = result.get("error")
+            if err:
+                return str(err)
+            return str(result)
+        return str(result).strip() or "success=False"
+
+    @classmethod
+    def _is_empty_file_warning(cls, text: str) -> bool:
+        return text.strip().startswith(_EMPTY_FILE_WARNING_PREFIX)
+
+    @classmethod
     def parse_tool_file_content(cls, result: Any) -> str:
-        """从 read_file / write_file 工具返回值中提取文本内容，并去掉 cat -n 行号前缀。"""
+        """从 read_file / write_file 工具返回值中提取文本内容，并去掉 cat -n 行号前缀。
+
+        失败信封与「文件存在但内容为空」的 warning 一律视为无正文，避免当大纲用。
+        """
         if result is None:
             return ""
-        # 增加兜底防止异常值(str(result)) 被当作文件内容返回。      
-        if hasattr(result, "success") and result.success is False:
+        if cls.is_tool_failure_envelope(result):
             return ""
+        text = ""
         if isinstance(result, str):
-            text = result.strip()
-            if text.startswith("success=False") or text.startswith("success= False"):
-                return ""
-            return _strip_line_numbers(text)
-        if isinstance(result, dict):
+            text = _strip_line_numbers(result.strip())
+        elif isinstance(result, dict):
             content = result.get("content", "")
             if isinstance(content, str):
-                return _strip_line_numbers(content.strip())
-            return _strip_line_numbers(str(content or "").strip())
-        if hasattr(result, "data"):
+                text = _strip_line_numbers(content.strip())
+            else:
+                text = _strip_line_numbers(str(content or "").strip())
+        elif hasattr(result, "data"):
             data = result.data
             if isinstance(data, dict):
                 content = data.get("content", "")
                 if isinstance(content, str):
-                    return _strip_line_numbers(content.strip())
-                return _strip_line_numbers(str(content or "").strip())
-            if isinstance(data, str):
-                return _strip_line_numbers(data.strip())
-        return _strip_line_numbers(str(result).strip())
+                    text = _strip_line_numbers(content.strip())
+                else:
+                    text = _strip_line_numbers(str(content or "").strip())
+            elif isinstance(data, str):
+                text = _strip_line_numbers(data.strip())
+            else:
+                text = _strip_line_numbers(str(result).strip())
+        else:
+            text = _strip_line_numbers(str(result).strip())
+        if cls._is_empty_file_warning(text):
+            return ""
+        return text
 
     @classmethod
     async def read_file(
@@ -168,21 +213,71 @@ class PptCommon:
                 raise error_type(f"缺少 {label} 路径")
             return ""
         path = Path(str(file_path)).expanduser().resolve()
-        if not node.has_tool("read_file"):
-            if required:
-                raise error_type(f"read_file 工具不可用，无法读取 {label}")
-            return ""
-        try:
-            result = await node.call_tool("read_file", file_path=str(path))
-        except Exception as exc:
-            if isinstance(exc, AbortError):
-                raise
-            if required:
-                raise error_type(f"读取 {label} 失败: {path}: {exc}") from exc
-            return ""
-        text = cls.parse_tool_file_content(result)
+
+        text = ""
+        tool_error: str | None = None
+        if node.has_tool("read_file"):
+            try:
+                result = await node.call_tool("read_file", file_path=str(path))
+                tool_error = cls.tool_result_error(result)
+                text = cls.parse_tool_file_content(result)
+                if tool_error:
+                    logger.warning(
+                        "[PptCommon] read_file failed path=%s error=%s",
+                        path,
+                        tool_error,
+                    )
+                elif not text.strip():
+                    logger.warning("[PptCommon] read_file returned empty path=%s", path)
+            except Exception as exc:
+                if isinstance(exc, AbortError):
+                    raise
+                tool_error = str(exc)
+                logger.warning(
+                    "[PptCommon] read_file raised path=%s error=%s",
+                    path,
+                    tool_error,
+                )
+                if required and not node.has_tool("bash"):
+                    raise error_type(f"读取 {label} 失败: {path}: {exc}") from exc
+        elif required:
+            raise error_type(f"read_file 工具不可用，无法读取 {label}")
+
+        # skill_code 禁止 Path.read_text/open：工具读空/失败时用 bash cat 回退。
+        if not text.strip() and node.has_tool("bash"):
+            from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils import (
+                quote_path,
+                run_bash,
+            )
+
+            try:
+                bash_res = await run_bash(
+                    node,
+                    f"cat {quote_path(str(path))}",
+                    required=False,
+                    timeout_seconds=30,
+                )
+            except Exception as exc:
+                if isinstance(exc, AbortError):
+                    raise
+                bash_res = None
+            if (
+                bash_res is not None
+                and bash_res.exit_code == 0
+                and bash_res.stdout.strip()
+                and not cls._is_empty_file_warning(bash_res.stdout)
+            ):
+                logger.warning(
+                    "[PptCommon] read_file tool returned empty, bash cat fallback path=%s bytes=%d reason=%s",
+                    path,
+                    len(bash_res.stdout.encode("utf-8", errors="ignore")),
+                    tool_error or "empty",
+                )
+                text = _strip_line_numbers(bash_res.stdout.strip())
         if not text:
             if required:
+                if tool_error:
+                    raise error_type(f"读取 {label} 失败: {path}: {tool_error}")
                 raise error_type(f"{label} 为空或不存在: {path}")
             return ""
         if max_chars is not None and len(text) > max_chars:
@@ -204,7 +299,7 @@ class PptCommon:
         if not node.has_tool("write_file"):
             raise error_type(f"write_file 工具不可用，无法写入 {label}")
         try:
-            await node.call_tool(
+            result = await node.call_tool(
                 "write_file",
                 file_path=str(path),
                 content=normalized,
@@ -213,6 +308,9 @@ class PptCommon:
             if isinstance(exc, AbortError):
                 raise
             raise error_type(f"写入 {label} 失败: {path}: {exc}") from exc
+        write_error = cls.tool_result_error(result)
+        if write_error:
+            raise error_type(f"写入 {label} 失败: {path}: {write_error}")
         return path
 
     @staticmethod
