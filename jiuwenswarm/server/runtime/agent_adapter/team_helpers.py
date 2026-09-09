@@ -997,6 +997,28 @@ async def _broadcast_team_state_snapshot(
         if snapshot is None:
             return
         team_id = snapshot.get("team_id", "")
+        # D13.1: 取内核依赖边,每个 task 快照 event 带 depends_on(下游 task_id → 上游列表),
+        # 与 tasks 一体 push 给 relay(transform relayclaw-event-transform.ts:895 读 depends_on
+        # → onTask 设 dependsOn → build() tasks[].dependsOn + edges)。让续跑/历史轮 panorama
+        # 稳定显示 DAG 箭头,不依赖 D4 异步 fetchTeamTaskDependencies。team_name 用
+        # get_active_team_name(:2562 team.runtime_ready 时 team 必 active);None/异常→空 edges。
+        team_name = team_manager.get_active_team_name(session_id) or ""
+        deps_by_task: dict[str, list[str]] = {}
+        if team_name:
+            try:
+                dep_edges = await monitor_handler.get_team_dependencies_from_db(
+                    session_id, team_name
+                ) or []
+                for e in dep_edges:
+                    deps_by_task.setdefault(str(e.get("task_id", "")), []).append(
+                        str(e.get("depends_on_task_id", ""))
+                    )
+            except Exception:
+                logger.debug(
+                    "[TeamHelpers] get_team_dependencies_from_db failed in snapshot: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
         # Broadcast member status snapshot
         for m in snapshot.get("members", []):
@@ -1030,6 +1052,7 @@ async def _broadcast_team_state_snapshot(
                     "title_original_size": t.get("title_original_size"),
                     "content_truncated": t.get("content_truncated"),
                     "content_original_size": t.get("content_original_size"),
+                    "depends_on": deps_by_task.get(t["task_id"], []),
                 },
             }
             _persist_team_history_event(channel_id, session_id, event)
@@ -1971,6 +1994,13 @@ async def process_team_message_stream(
                     session_id,
                     rid,
                 )
+                # 续跑(interact 路径,非 _consume_stream_with_query 重启)时:waiter 已注册
+                # (:1966 add_waiter)、monitor_handler 从上一轮续存(同 session;结尾快照对续跑
+                # 有效=它续存),此处广播当前任务板→relay 累加器续跑起点即展示历史任务,后续 live
+                # team.task 事件继续覆盖,结尾快照定稿。monitor_handler None 时 no-op(:994)。
+                # 与结尾快照同机制(_broadcast_team_state_snapshot→_broadcast_event→waiter→relay),
+                # onTask 按 taskId 去重,幂等。
+                await _broadcast_team_state_snapshot(channel_id, session_id)
 
             # Control continuations reuse the waiter that was active before
             # delivery. Other follow-ups already own the current request queue.
@@ -2503,6 +2533,12 @@ async def _consume_stream_with_query(
                         session_id,
                         source="runtime_ready",
                     )
+                    # D12: team.runtime_ready 时 monitor_handler 刚 ensure,广播当前任务板——
+                    # 续跑重启 _consume_stream_with_query(round N)时,Run A 中断清理已 pop 旧
+                    # monitor_handler,此处重新 ensure;内核板仍含 Run A 的 tasks(persisted)
+                    # → 广播给 relay 累加器,panorama 在 team.runtime_ready 即展示历史任务。
+                    # monitor_handler None 时 no-op;与结尾/续跑路径快照 onTask 按 taskId 去重幂等。
+                    await _broadcast_team_state_snapshot(channel_id, session_id)
                 elif parsed.get("event_type") == "team.interact.failed":
                     reason = str(parsed.get("reason") or "").strip()
                     error_msg = _INTERACT_REASON_ERROR_MAP.get(

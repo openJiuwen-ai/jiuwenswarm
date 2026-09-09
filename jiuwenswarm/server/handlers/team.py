@@ -1136,6 +1136,71 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
     await ctx.sink.send_wire(wire)
 
 
+async def handle_team_tasks_dependencies(ctx: RequestContext) -> None:
+    """team.tasks.dependencies — 取专家团任务依赖边（relay-claw finalize best-effort 调用）。
+
+    镜像 ``handle_team_snapshot`` 的装配：单参 ctx、响应经 ``ctx.sink.send_wire``；
+    team_name 三段式解析（``get_active_team_name`` OR
+    ``resolve_session_runtime_team_name(metadata)`` OR ``params.team_name``）。
+    monitor 不在时由 ``TeamMonitorHandler.get_team_dependencies_from_db`` 直查 per-session
+    动态依赖表。best-effort：任何失败 → 空 edges 列表，不抛（relay-claw 侧 edges 缺省）。
+    """
+    request = ctx.request
+    from jiuwenswarm.agents.harness.team import get_team_manager
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_metadata,
+        resolve_session_runtime_team_name,
+    )
+
+    params = request.params if isinstance(request.params, dict) else {}
+    session_id = str(params.get("session_id") or request.session_id or "").strip()
+    channel_id = request.channel_id or "web"
+
+    team_manager = get_team_manager(channel_id)
+    metadata = (
+        get_session_metadata(session_id, sessions_root=_sessions_dir_for_request(request))
+        if session_id
+        else None
+    )
+    team_name = str(
+        (team_manager.get_active_team_name(session_id) if session_id else "")
+        or resolve_session_runtime_team_name(metadata)
+        or params.get("team_name")
+        or ""
+    ).strip()
+
+    edges: list[dict[str, Any]] | None = None
+    if session_id and team_name:
+        try:
+            edges = await TeamMonitorHandler.get_team_dependencies_from_db(session_id, team_name)
+        except Exception as e:
+            logger.warning(
+                "[AgentWebSocketServer] team.tasks.dependencies failed: "
+                "session_id=%s team_name=%s error=%s",
+                session_id,
+                team_name,
+                e,
+            )
+            edges = None
+
+    payload: dict[str, Any] = {"edges": edges or []}
+    logger.info(
+        "[AgentWebSocketServer] team.tasks.dependencies session_id=%s team_name=%s edges_count=%s",
+        session_id or "-",
+        team_name or "-",
+        len(payload["edges"]),
+    )
+    resp = AgentResponse(
+        request_id=request.request_id,
+        channel_id=channel_id,
+        ok=True,
+        payload=payload,
+    )
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
+
+
 def _snapshot_tasks(payload: dict[str, Any] | None) -> list[Any]:
     if not isinstance(payload, dict):
         return []
