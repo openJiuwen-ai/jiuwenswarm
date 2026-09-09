@@ -1126,12 +1126,24 @@ def _migrate_legacy_workspace(
                 )
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Failed to migrate cron_jobs.json: {e}")
+        else:
+            # Delete only the source store after migration/backup succeeds.
+            # Heartbeat data and other home files must remain in place.
+            try:
+                old_cron_jobs.unlink()
+            except OSError as e:
+                # The migration itself succeeded; only the source removal
+                # failed (e.g. the file is held open on Windows). It will be
+                # retried on the next start.
+                logger.warning(
+                    f"Cron jobs migrated to {new_cron_jobs} but failed to "
+                    f"remove legacy source {old_cron_jobs}: {e}"
+                )
 
     # 6. Clean up old directories after successful migration
     try:
-        if old_home.exists():
-            shutil.rmtree(old_home)
-            logger.info(f"Removed old home: {old_home}")
+        # agent/home also holds heartbeat and other live runtime data.
+        # The migrated cron source was removed individually above.
         if old_skills.exists():
             shutil.rmtree(old_skills)
             logger.info(f"Removed old skills: {old_skills}")
@@ -1321,9 +1333,8 @@ def prepare_workspace(
     # If overwrite (init command), clean up old legacy directories first
     elif overwrite:
         try:
-            if old_home.exists():
-                shutil.rmtree(old_home)
-                logger.info(f"Removed old home: {old_home}")
+            # Keep home runtime data during init too. Cron path resolution
+            # continues to support an existing home store without migration.
             if old_skills.exists():
                 shutil.rmtree(old_skills)
                 logger.info(f"Removed old skills: {old_skills}")
@@ -2505,8 +2516,8 @@ def get_cron_jobs_path() -> Path:
     1. ``gateway/`` if present -- the migration ran.
     2. ``agent/home/`` if present -- it has not; repointing unconditionally
        would empty the schedules of every deployment that never migrated.
-    3. ``gateway/`` otherwise, so a fresh workspace never creates
-       ``agent/home``, whose existence alone marks a workspace legacy.
+    3. ``gateway/`` otherwise, so cron itself does not create ``agent/home``.
+       Home may still exist for heartbeat; workspace migration preserves it.
     """
     workspace = get_user_workspace_dir()
     gateway_path = workspace / "gateway" / "cron_jobs.json"
@@ -2521,7 +2532,7 @@ def get_cron_jobs_path() -> Path:
 def get_heartbeat_jobs_path() -> Path:
     """Canonical path for heartbeat_jobs.json (new thread-automation heartbeat jobs).
 
-    与 ``get_cron_jobs_path`` 同目录(``agent/home``),禁止在业务代码中硬编码该路径。
+    保留在 ``agent/home``，不随 cron 迁移到 gateway；禁止在业务代码中硬编码该路径。
     """
     return get_agent_home_dir() / "heartbeat_jobs.json"
 

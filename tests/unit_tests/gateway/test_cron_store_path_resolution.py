@@ -107,8 +107,9 @@ async def test_the_real_migration_no_longer_orphans_the_store(workspace):
 
     _migrate_legacy_workspace(workspace)
 
-    # The migration did what it always did: moved the file and removed the dir.
-    assert not (workspace / "agent" / "home").exists()
+    # Only the migrated cron source is removed; home remains for heartbeat.
+    assert not legacy.exists()
+    assert (workspace / "agent" / "home").exists()
     assert (workspace / "gateway" / "cron_jobs.json").exists()
 
     # ...and the job is still reachable, which is the part that used to fail.
