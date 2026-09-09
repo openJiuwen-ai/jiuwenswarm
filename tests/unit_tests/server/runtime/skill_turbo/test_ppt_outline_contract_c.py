@@ -58,13 +58,29 @@ def _minimal_outline(*, with_agenda: bool = False, topic: str = "AI 助手") -> 
 
 
 def test_intent_and_requirement_prompts_deduct_structural_pages():
-    assert "结构页扣减" in ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
-    assert "max(N - 2 - 结构页扣减, 1)" in ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
-    assert "共7页" in ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
+    # 意见 9：未指定结构数量时禁止 LLM 自扣/试算 ceil；只扣封面结束，余下由系统反推。
+    assert "max(N - 2, 1)" in ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
+    assert "禁止自行扣减结构页" in ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
+    assert "outline-planner" in ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
+    assert "max(N - 2 - 结构页扣减, 1)" not in ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
 
-    assert "结构页扣减" in rc._P21_SLOT_SYSTEM_PROMPT
-    assert "max(N - 2 - 结构页扣减, 1)" in rc._P21_SLOT_SYSTEM_PROMPT
+    assert "page_count_basis" in rc._P21_SLOT_SYSTEM_PROMPT
+    assert "max(N - 2, 1)" in rc._P21_SLOT_SYSTEM_PROMPT
+    assert "ceil" in rc._P21_SLOT_SYSTEM_PROMPT
+    assert "outline-planner" in rc._P21_SLOT_SYSTEM_PROMPT
     assert "中间结构页数" in rc._P21_SLOT_SYSTEM_PROMPT
+    assert "max(N - 2 - 结构页扣减, 1)" not in rc._P21_SLOT_SYSTEM_PROMPT
+
+
+def test_resolve_mid_structural_matches_outline_planner_default():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
+
+    assert PptCommon.resolve_mid_structural_page_count(7, "section", None) == 2
+    assert PptCommon.resolve_mid_structural_page_count(4, "section", None) == 1
+    assert PptCommon.resolve_mid_structural_page_count(8, "agenda", None) == 1
+    assert PptCommon.content_pages_from_total_pages(
+        10, structural_page_request="section",
+    ) == 6
 
 
 def test_validate_outline_total_pages_with_agenda():

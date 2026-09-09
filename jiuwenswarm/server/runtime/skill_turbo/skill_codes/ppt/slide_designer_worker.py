@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -37,6 +38,21 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+# 仅限制同时 in-flight 的 check-layout（node+Chromium）进程数，防止 gather 全页
+# 同时起浏览器打满宿主。不限制：页级 LLM 填槽/修补、asyncio.gather 本身。
+# 信号量只包住 run_bash(check-layout)；释放后本页可立刻并行做 layout-patch LLM。
+_CHECK_LAYOUT_CLI_CONCURRENCY = 3
+_check_layout_sem: asyncio.Semaphore | None = None
+
+
+def _get_check_layout_sem() -> asyncio.Semaphore:
+    """懒初始化，避免 import 时绑定错误 event loop。"""
+    global _check_layout_sem
+    if _check_layout_sem is None:
+        _check_layout_sem = asyncio.Semaphore(_CHECK_LAYOUT_CLI_CONCURRENCY)
+    return _check_layout_sem
+
 
 _STRUCTURAL_TYPES = frozenset(
     {"cover", "intro", "agenda", "section", "chapter", "ending", "conclusion", "transition"}
@@ -386,19 +402,21 @@ class SlideDesignerWorker:
             return True, []
         if not self._host.has_tool("bash") or not ctx.pptx_root or not ctx.pages_dir:
             return True, []
+        # 契约不变：逐页 --pages {N} + 按页 density；仅限流 Chromium 进程峰值。
         density = resolve_layout_density(ctx.research_page or None)
         cmd = (
             f"{cli_path('check-layout', ctx.pptx_root)} "
             f"{quote_path(ctx.pages_dir)} --pages {ctx.page_num} --density {density}"
         )
         try:
-            result = await run_bash(
-                self._host,
-                cmd,
-                timeout_seconds=120,
-                required=False,
-                workdir=ctx.pptx_root,
-            )
+            async with _get_check_layout_sem():
+                result = await run_bash(
+                    self._host,
+                    cmd,
+                    timeout_seconds=120,
+                    required=False,
+                    workdir=ctx.pptx_root,
+                )
             if result.exit_code == 0:
                 return True, []
             return False, [combined_output(result)[:2000]]

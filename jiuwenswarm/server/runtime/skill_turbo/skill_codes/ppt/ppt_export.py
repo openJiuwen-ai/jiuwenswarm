@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -17,6 +18,9 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils imp
 )
 
 logger = logging.getLogger(__name__)
+
+# 与 CLI convert native composer 同一判据（pptx-template-canvas-plan-v2）。
+_NATIVE_PLAN_SCHEMA_VERSION = "pptx-template-canvas-plan-v2"
 
 
 _ILLEGAL_FILENAME_RE = re.compile(r'[<>:"/\\|?*]')
@@ -278,38 +282,39 @@ class PPTExportNode(PlanNode):
             return ""
 
     async def _resolve_native_plan_arg(self, plan_path: str, output_dir: str) -> str:
-        """v2 + 原生母版绑定时返回 plan 路径，否则空串。"""
+        """v2 且 nativeTemplate.available=true 时返回 plan 路径，否则空串。
+
+        判据对齐 CLI convert：schema_version == pptx-template-canvas-plan-v2
+        且 nativeTemplate.available is True。禁止文本 token 猜测。
+        """
         candidates = [
             Path(plan_path),
             Path(output_dir) / "template-canvas-plan.json",
         ]
+        seen: set[str] = set()
         for path in candidates:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
             if not path.is_file():
                 continue
             text = await self._read_file(str(path))
             if not text:
                 continue
-            lowered = text.lower()
-            compact = lowered.replace(" ", "")
-            is_v2 = (
-                "pptx-template-canvas-plan-v2" in lowered
-                or '"schemaversion":2' in compact
-                or '"schema_version":2' in compact
-                or '"version":"v2"' in compact
-            )
-            native_tokens = (
-                "nativebinding",
-                "native_binding",
-                "nativemasters",
-                "native_masters",
-                "masterbindings",
-            )
-            has_native = False
-            for token in native_tokens:
-                if token in lowered:
-                    has_native = True
-                    break
-            if is_v2 and has_native:
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                logger.warning("[P9-T] native-plan 候选非 JSON，跳过 path=%s", path)
+                continue
+            if not isinstance(data, dict):
+                continue
+            native = data.get("nativeTemplate")
+            if (
+                data.get("schema_version") == _NATIVE_PLAN_SCHEMA_VERSION
+                and isinstance(native, dict)
+                and native.get("available") is True
+            ):
                 return str(path)
         return ""
 

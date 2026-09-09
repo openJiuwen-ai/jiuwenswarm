@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -43,69 +42,48 @@ def test_normalize_tool_text_preserves_object_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_degraded_parse_returns_failure_when_all_reads_fail(
+async def test_parse_with_retry_fails_without_read_file_degrade(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """content-material.md #7：CLI 两轮失败不得 read_file 降级。"""
     source = tmp_path / "source.pdf"
     source.write_bytes(b"%PDF-placeholder")
     node = DocumentParseNode()
     paths = node._artifact_paths(tmp_path)
-    inputs: dict[str, Any] = {}
+    inputs: dict[str, Any] = {
+        "pptx_root": str(tmp_path),
+        "output_dir": str(tmp_path),
+    }
+    read_file_calls: list[str] = []
 
-    monkeypatch.setattr(node, "has_tool", lambda _name: True)
+    async def _no_vision(_inputs: dict[str, Any]) -> bool:
+        return False
 
-    async def call_tool(_name: str, **_kwargs: Any) -> Any:
-        return {"success": False, "data": None, "error": "read failed"}
+    async def _fail_parse_docs(*_args: Any, **_kwargs: Any) -> None:
+        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils import (
+            BashExecError,
+        )
 
-    monkeypatch.setattr(node, "call_tool", call_tool)
-
-    ok, error = await node._degraded_parse(
-        inputs, [str(source)], paths, "parse-docs unavailable"
-    )
-
-    assert ok is False
-    assert error == "降级解析失败: parse-docs unavailable"
-
-
-@pytest.mark.asyncio
-async def test_degraded_parse_writes_summary_and_manifest_on_success(
-    tmp_path: Path, monkeypatch
-) -> None:
-    source = tmp_path / "source.docx"
-    source.write_bytes(b"placeholder")
-    node = DocumentParseNode()
-    paths = node._artifact_paths(tmp_path)
-    inputs: dict[str, Any] = {}
-
-    monkeypatch.setattr(node, "has_tool", lambda _name: True)
+        raise BashExecError("parse-docs unavailable")
 
     async def call_tool(name: str, **kwargs: Any) -> Any:
         if name == "read_file":
-            return {"success": True, "data": {"content": "Document body"}}
-        if name == "write_file":
-            Path(kwargs["file_path"]).write_text(kwargs["content"], encoding="utf-8")
-            return {"success": True}
-        raise AssertionError(f"unexpected tool: {name}")
+            read_file_calls.append(str(kwargs.get("file_path") or ""))
+        raise AssertionError(f"unexpected tool during failed parse: {name}")
 
+    monkeypatch.setattr(node, "_probe_vision", _no_vision)
+    monkeypatch.setattr(node, "_run_parse_docs", _fail_parse_docs)
     monkeypatch.setattr(node, "call_tool", call_tool)
 
-    ok, error = await node._degraded_parse(
-        inputs, [str(source)], paths, "parse-docs unavailable"
-    )
+    ok, error = await node._parse_with_retry(inputs, [str(source)], paths)
 
-    assert ok is True
-    assert error is None
-    assert inputs["parse_degraded"] is True
-    assert inputs["images_extracted"] is False
-    assert paths["raw"].is_file()
-    assert paths["summary"].is_file()
-    assert paths["manifest"].is_file()
-    assert "Document body" in paths["raw"].read_text(encoding="utf-8")
-    summary_text = paths["summary"].read_text(encoding="utf-8")
-    assert "# 文档摘要（降级）" in summary_text
-    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
-    assert manifest["degraded"] is True
-    assert manifest["documents"][0]["status"] == "degraded_text"
+    assert ok is False
+    assert error == "parse-docs unavailable"
+    assert inputs.get("parse_degraded") is False
+    assert read_file_calls == []
+    assert not paths["raw"].is_file()
+    assert not paths["summary"].is_file()
+    assert not hasattr(node, "_degraded_parse")
 
 
 def test_filter_parseable_paths_excludes_presentations() -> None:

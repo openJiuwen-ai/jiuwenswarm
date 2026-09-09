@@ -249,7 +249,7 @@ class StylePrepareNode(PlanNode):
             "  - Noto Sans SC\n"
             "  - sans-serif\n"
             "---\n"
-            f"# 风格规范：{style_id}\n"
+            f"# 风格规范：{request.style_id}\n"
             "\n"
             "## 整体风格描述\n"
             "{一句话风格定调，例如：现代简约科技风、温暖人文风、专业商务风}\n"
@@ -318,12 +318,16 @@ class StylePrepareNode(PlanNode):
                     lines = lines[:-1]
                 content = "\n".join(lines).strip()
             if content:
-                logger.info("[P7] 自定义风格生成成功 style_id=%s", style_id)
+                logger.info("[P7] 自定义风格生成成功 style_id=%s", request.style_id)
             return content
         except Exception as e:
             if isinstance(e, AbortError):
                 raise
-            logger.warning("[P7] 自定义风格 LLM 生成失败 style_id=%s: %s", style_id, e)
+            logger.warning(
+                "[P7] 自定义风格 LLM 生成失败 style_id=%s: %s",
+                request.style_id,
+                e,
+            )
             return ""
 
     async def _write_style_file(self, path: str, content: str) -> None:

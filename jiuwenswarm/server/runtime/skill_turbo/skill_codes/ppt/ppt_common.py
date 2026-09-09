@@ -661,6 +661,66 @@ class PptCommon:
             candidates.append(page_count + default_structural_pages)
         return max(candidates) if candidates else 0
 
+    @staticmethod
+    def default_mid_structural_pages(page_count: int) -> int:
+        """outline-planner：用户要中间结构页但未给数量时的默认页数。
+
+        ``page_count <= 5`` → 1；否则 ``ceil(page_count / 4)``。
+        """
+        if not isinstance(page_count, int) or page_count <= 0:
+            return 1
+        if page_count <= 5:
+            return 1
+        return -(-page_count // 4)
+
+    @staticmethod
+    def resolve_mid_structural_page_count(
+        page_count: Any = None,
+        structural_page_request: Any = "none",
+        structural_page_count: Any = None,
+    ) -> int:
+        """解析中间结构页数量（不含 cover/ending），对齐 outline-planner。"""
+        spr = str(structural_page_request or "none").strip().lower()
+        if spr in ("", "none"):
+            return 0
+        if isinstance(structural_page_count, int) and structural_page_count > 0:
+            return int(structural_page_count)
+        if spr == "agenda":
+            return 1
+        try:
+            pc = int(page_count) if page_count is not None else 0
+        except (TypeError, ValueError):
+            pc = 0
+        return PptCommon.default_mid_structural_pages(pc)
+
+    @staticmethod
+    def content_pages_from_total_pages(
+        total_pages: int,
+        *,
+        structural_page_request: Any = "none",
+        structural_page_count: Any = None,
+        exclude_cover_ending: bool = False,
+    ) -> int:
+        """§1.2B：用户总页数 N → 内容页 page_count（代码求解，不经 LLM 试算）。
+
+        满足 ``N = page_count + cover_ending + mid_structural``。
+        """
+        if not isinstance(total_pages, int) or total_pages <= 0:
+            return 1
+        cover_ending = 0 if exclude_cover_ending else 2
+        spr = str(structural_page_request or "none").strip().lower()
+        if spr in ("", "none"):
+            return max(total_pages - cover_ending, 1)
+        if isinstance(structural_page_count, int) and structural_page_count > 0:
+            return max(total_pages - cover_ending - int(structural_page_count), 1)
+        for content in range(max(total_pages - cover_ending, 1), 0, -1):
+            mid = PptCommon.resolve_mid_structural_page_count(
+                content, spr, None,
+            )
+            if content + cover_ending + mid == total_pages:
+                return content
+        return max(total_pages - cover_ending - 1, 1)
+
 
 # 与 pptx-craft CLI resolveDensity / EVIDENCE_LIMITED_ANNOTATION 对齐
 _EVIDENCE_LIMITED_TERMS = (

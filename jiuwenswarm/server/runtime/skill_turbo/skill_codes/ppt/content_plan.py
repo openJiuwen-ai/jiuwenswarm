@@ -881,7 +881,9 @@ def _build_structural_page_directive(inputs: dict[str, Any]) -> str:
         )
 
     if spr == "agenda":
-        total_structural = spc if isinstance(spc, int) and spc > 0 else 1
+        total_structural = PptCommon.resolve_mid_structural_page_count(
+            page_count, spr, spc,
+        )
         return (
             "- 中间结构页：用户要求目录页（agenda），固定生成 1 页 agenda。\n"
             "  规则：\n"
@@ -901,20 +903,18 @@ def _build_structural_page_directive(inputs: dict[str, Any]) -> str:
         "auto": "section 或 chapter（根据用户语境自动选择：用户说'PART/章首页'用 chapter，其余用 section）",
     }.get(spr, "section")
 
-    # 数量计算
+    total_structural = PptCommon.resolve_mid_structural_page_count(
+        page_count, spr, spc,
+    )
     if isinstance(spc, int) and spc > 0:
         count_str = f"{spc} 页（用户指定数量）"
-        total_structural = spc
     elif isinstance(page_count, int) and page_count > 0:
-        if page_count <= 5:
-            default_count = 1
-        else:
-            default_count = -(-page_count // 4)  # ceil(page_count / 4)
-        count_str = f"{default_count} 页（用户未指定数量，按默认规则：page_count={page_count} -> {default_count} 页）"
-        total_structural = default_count
+        count_str = (
+            f"{total_structural} 页（用户未指定数量，按 outline-planner 默认："
+            f"page_count={page_count} → {total_structural} 页）"
+        )
     else:
-        count_str = "1 页（无法确定 page_count，默认 1 页）"
-        total_structural = 1
+        count_str = f"{total_structural} 页（无法确定 page_count，默认）"
 
     return (
         f"- 中间结构页：用户已明确要求中间结构页，类型={type_hint}，数量={count_str}。\n"
@@ -1143,13 +1143,11 @@ def _validate_outline_markdown_basic(
     # 总页数校验：max(page_numbers) 应等于 page_count + 2(封面/结束) + 结构页数
     # 防止 intent 阶段 page_count 算错导致总页数与用户要求不一致
     if expected_content_pages is not None:
-        spr = str(structural_page_request or "none").strip().lower()
-        if isinstance(structural_page_count, int) and structural_page_count > 0:
-            structural_num = structural_page_count
-        elif spr != "none":
-            structural_num = 1
-        else:
-            structural_num = 0
+        structural_num = PptCommon.resolve_mid_structural_page_count(
+            expected_content_pages,
+            structural_page_request,
+            structural_page_count,
+        )
         expected_total = expected_content_pages + 2 + structural_num
         actual_total = max(page_numbers) if page_numbers else 0
         if expand_page_mode:

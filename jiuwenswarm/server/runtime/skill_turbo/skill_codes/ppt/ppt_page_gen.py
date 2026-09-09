@@ -495,6 +495,7 @@ def _build_structural_template_fill_prompt(
     outline_page: str,
     outline_full: str,
     seed_html: str,
+    image_map_page: str = "",
     user_query: str = "",
     style_constraints: str = "",
     rewrite_hint: str = "",
@@ -622,6 +623,37 @@ def _build_structural_template_fill_prompt(
             f"{rewrite_hint}\n"
             "⚠️ 仅修复上述不通过项，不要改动其他正常部分。\n"
         )
+    # 有映射才注入：custom 填 STRUCTURAL_IMAGE_*；preset 按 head 注释插全幅背景。
+    # 对齐 build-standard：有映射图时必须使用，避免 cover 图未进 PPT。
+    structural_image_section = ""
+    if image_map_page:
+        if style_id == "custom":
+            structural_image_section = (
+                "\n### 背景图素材（必须使用）\n"
+                f"{image_map_page}\n"
+                "- 本页存在映射图片：`STRUCTURAL_IMAGE_PRESENT` 必须为 `true`，"
+                "`STRUCTURAL_IMAGE_PATH` 必须原样使用上方 `path` 字段值，"
+                "`STRUCTURAL_IMAGE_ALT` 填图片描述\n"
+                "- 禁止把映射图片降级为卡片、角落点缀或低透明度小图；"
+                "背景图必须走模板 `data-pptx-role=\"structural-background\"` 全幅槽\n"
+            )
+        else:
+            structural_image_section = (
+                "\n### 背景图素材（必须使用）\n"
+                f"{image_map_page}\n"
+                "- 本页存在映射图片：**必须启用背景图**（模板 head 注释中的"
+                "「可选」对本任务不适用）：按下方模板 `<head>` 注释中的背景图"
+                "插入方式，在 `.ppt-slide` 内首位插入全幅背景 "
+                '`<img class="absolute inset-0 w-full h-full object-cover" '
+                'src="path值">` 与模板指定的遮罩层，并给内容 stage 加 '
+                "`relative z-10`\n"
+                "- `src` 必须原样使用上方 `path` 字段值（相对路径，禁止改写、"
+                "禁止 background-image:url()）\n"
+                "- `usage=cover` 的图片优先用作全幅背景，不得改用模板默认"
+                "纯色底/装饰底\n"
+                "- 除背景图必要的插入、以及 stage 加 `relative z-10` 外，"
+                "骨架/CSS/装饰结构一律禁止改动\n"
+            )
     return (
         f"{user_query_section}"
         f"## 任务：填充第 {page_number} 页 {page_type_label} 官方模板占位符\n"
@@ -636,6 +668,7 @@ def _build_structural_template_fill_prompt(
         f"{outline_page}\n\n"
         f"{outline_full_section}"
         f"{rewrite_section}"
+        f"{structural_image_section}"
         "### 预铺模板 HTML（只填槽，勿重写）\n"
         f"{seed_html}\n"
     )
@@ -4678,6 +4711,7 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             outline_page=ctx.outline_page,
             outline_full=ctx.outline_full,
             seed_html=seed_html,
+            image_map_page=ctx.image_map_page,
             user_query=ctx.user_query,
             style_constraints=ctx.style_constraints,
             rewrite_hint=rewrite_hint,
@@ -5162,7 +5196,8 @@ class QAFixNode(PlanNode):
                 "\n"
                 "### 失败兜底\n"
                 "- bash 不可用：跳过 fix，仅做完整性检查\n"
-                "- cli.js fix 报错：qa_status = failed，page_files 仍返回\n"
+                "- cli.js fix 非零退出或环境异常（超时/缺 CLI）：qa_status=partial"
+                "（与 fix_ok=False 同口径；未填占位符等硬失败仍为 failed），page_files 仍返回\n"
                 "- list_dir 不可用：completeness_ok = unknown，不阻塞\n"
             ),
         )
@@ -5196,29 +5231,27 @@ class QAFixNode(PlanNode):
         fix_report_parts: list[str] = []
         if unfilled_pages:
             fix_report_parts.append(f"unfilled_placeholders={unfilled_pages}")
-        try:
-            pptx_root = str(inputs.get("pptx_root") or "").strip()
-            style_file_path = str(inputs.get("style_file_path") or "").strip()
-            if page_files and pptx_root:
-                fix_ok, fix_output = await self._fix_directory(
-                    pages_dir=pages_dir,
-                    pptx_root=pptx_root,
-                    style_file_path=style_file_path,
-                )
-                if fix_ok:
-                    logger.info("[P8.2] cli.js fix 完成 (目录级 --fix --style)")
-                else:
-                    logger.warning("[P8.2] cli.js fix 失败: %s", fix_output[:500])
-                    qa_status = "partial"
-                fix_report_parts.append(f"fix={'ok' if fix_ok else 'fail'}")
-                if fix_output:
-                    fix_report_parts.append(fix_output[:500])
+        pptx_root = str(inputs.get("pptx_root") or "").strip()
+        style_file_path = str(inputs.get("style_file_path") or "").strip()
+        if page_files and pptx_root:
+            fix_ok, fix_output = await self._fix_directory(
+                pages_dir=pages_dir,
+                pptx_root=pptx_root,
+                style_file_path=style_file_path,
+                page_count=len(page_files) or total_pages,
+            )
+            if fix_ok:
+                logger.info("[P8.2] cli.js fix 完成 (目录级 --fix --style)")
             else:
-                fix_report_parts.append("fix=skipped")
-        except BashExecError as e:
-            logger.error("[P8.2] cli.js fix 异常: %s", e)
-            qa_status = "failed"
-            fix_report_parts.append(f"bash_error: {e}")
+                logger.warning("[P8.2] cli.js fix 失败: %s", fix_output[:500])
+                # 环境性/规模性失败与 exit!=0 同口径；不覆盖未填占位符等硬 failed
+                if qa_status != "failed":
+                    qa_status = "partial"
+            fix_report_parts.append(f"fix={'ok' if fix_ok else 'fail'}")
+            if fix_output:
+                fix_report_parts.append(fix_output[:500])
+        else:
+            fix_report_parts.append("fix=skipped")
 
         return {
             "qa_status": qa_status,
@@ -5290,8 +5323,13 @@ class QAFixNode(PlanNode):
         pages_dir: str,
         pptx_root: str,
         style_file_path: str,
+        page_count: int = 0,
     ) -> tuple[bool, str]:
-        """目录级 fix（skill §6）：tags/fonts/charts 安全网，不用于 layout 修复。"""
+        """目录级 fix（build-standard §6）：tags/fonts/charts 安全网，不用于 layout 修复。
+
+        BashExecError（缺 CLI / 超时抛错 / bash 不可用）与非零退出统一为
+        ``(False, detail)``，由调用方降 partial，避免环境故障整书拒导。
+        """
         if not self.has_tool("bash") or not pptx_root or not pages_dir:
             return False, "bash_or_paths_unavailable"
         style_arg = (
@@ -5299,17 +5337,23 @@ class QAFixNode(PlanNode):
             if style_file_path
             else ""
         )
-        cmd = (
-            f"{cli_path('fix', pptx_root)} {quote_path(pages_dir + '/')} "
-            f"--fix{style_arg}"
-        )
-        result = await run_bash(
-            self,
-            cmd,
-            timeout_seconds=600,
-            required=False,
-            workdir=pptx_root,
-        )
+        # 小 deck 不低于 600s（不劣化）；大 deck 按页放大，降低整目录超时误杀。
+        timeout_seconds = max(600, int(page_count or 0) * 30)
+        try:
+            cmd = (
+                f"{cli_path('fix', pptx_root)} {quote_path(pages_dir + '/')} "
+                f"--fix{style_arg}"
+            )
+            result = await run_bash(
+                self,
+                cmd,
+                timeout_seconds=timeout_seconds,
+                required=False,
+                workdir=pptx_root,
+            )
+        except BashExecError as exc:
+            logger.error("[P8.2] cli.js fix 异常: %s", exc)
+            return False, f"bash_error: {exc}"
         output = combined_output(result)[:2000]
         return result.exit_code == 0, output
 

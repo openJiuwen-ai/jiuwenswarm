@@ -76,7 +76,9 @@ _LLM_PATH_AND_SLOTS_SYSTEM_PROMPT = """你是 PPT 任务分析助手。从用户
 - 只提取用户**明确提到**的信息，不要推断或补充
 - 未提及的字段留空字符串或 null
 - page_count 必须是正整数（内容页数，不含封面/结束页，也不含目录页/章节页等中间结构页；总页数 = page_count + 2 + 中间结构页数）。
-  判断规则：①用户说"生成N页PPT"/"做N页汇报"/"PPT共N页"/"总页数N页"/"总共N页"/"一共N页"/"N页"/"做N页PPT"/"N页以内"/"不超过N页"/"最多N页"等未特指内容页的表达 → N 表示总页数 → page_count = max(N - 2 - 结构页扣减, 1)；结构页扣减 = 用户明确要求的中间结构页数量（取本请求提取的 structural_page_request / structural_page_count）：structural_page_request != "none" 且用户指定数量时按 structural_page_count 扣减；未指定数量时按 1 页扣减（如目录页）；structural_page_request == "none" 时扣减 0；
+  判断规则：①用户说"生成N页PPT"/"做N页汇报"/"PPT共N页"/"总页数N页"/"总共N页"/"一共N页"/"N页"/"做N页PPT"/"N页以内"/"不超过N页"/"最多N页"等未特指内容页的表达 → N 表示总页数：
+    无中间结构或未指定结构数量 → page_count = max(N - 2, 1)；指定结构数量 K → page_count = max(N - 2 - K, 1)；
+    未指定结构数量时禁止自行扣减结构页或试算 ceil（下游系统按 outline-planner 反推）。
   ②用户明确说"N个内容页"/"N页正文"，或正在回答"需要多少页内容页"时 → page_count = N（中间结构页另行添加，不占此配额）。
   示例："10页以内"→8, "总页数8页"→6, "8页"→6, "做8页PPT"→6, "共7页"+要求目录页→4, "8页PPT"+3个章节页→3
 - style_id 可选值：business-classic / tech-minimal / elegant-narrative / industrial-tech / custom / 其他风格名

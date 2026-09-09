@@ -87,8 +87,11 @@ class SpeakerNotesNode(PlanNode):
         # 1. 取语调规则
         tone_rules = await self._get_tone_rules(inputs)
 
-        # 2. cli notes extract-text 抽取每页可见纯文本
-        page_texts = await self._extract_page_texts(pptx_path, pptx_root)
+        # 2. cli notes extract-text 抽取每页可见纯文本（0908 强制 --out）
+        page_texts = await self._extract_page_texts(
+            pptx_path, pptx_root, output_dir=output_dir,
+        )
+        extract_ok = bool(page_texts)
         notes_context = _SpeakerNotesContext(
             pages_dir=pages_dir,
             page_texts=page_texts,
@@ -109,9 +112,26 @@ class SpeakerNotesNode(PlanNode):
         # 5. 单进程注入
         inject_ok = await self._inject_notes(pptx_path, pages_dir, pptx_root)
 
-        status = "ok" if inject_ok else "partial"
-        msg = "演讲备注已注入" if inject_ok else "演讲备注注入失败（不阻塞交付）"
-        logger.info("[P11] 演讲备注完成 status=%s notes_requirements=%s", status, bool(notes_requirements))
+        # notes.md §6：best-effort 不阻塞交付，但状态须如实（禁止 extract 失败仍报干净成功）
+        if inject_ok and extract_ok:
+            status = "ok"
+            msg = "演讲备注已注入"
+        elif inject_ok and not extract_ok:
+            status = "partial"
+            msg = (
+                "演讲备注已注入，但页面文本抽取失败或为空，"
+                "备注可能与页内容无关（不阻塞交付）"
+            )
+        else:
+            status = "partial"
+            msg = "演讲备注注入失败（不阻塞交付）"
+        logger.info(
+            "[P11] 演讲备注完成 status=%s extract_ok=%s inject_ok=%s notes_requirements=%s",
+            status,
+            extract_ok,
+            inject_ok,
+            bool(notes_requirements),
+        )
         return {
             "speaker_notes_status": status,
             "speaker_notes_message": msg,
@@ -167,25 +187,51 @@ class SpeakerNotesNode(PlanNode):
         logger.info("[P11] 使用降级语调规则: %s", rule)
         return rule
 
-    async def _extract_page_texts(self, pptx_path: str, pptx_root: str) -> dict[int, str]:
-        """cli notes extract-text 抽取每页可见纯文本。"""
+    async def _extract_page_texts(
+        self,
+        pptx_path: str,
+        pptx_root: str,
+        *,
+        output_dir: str,
+    ) -> dict[int, str]:
+        """cli notes extract-text 抽取每页可见纯文本。
+
+        0908 CLI 强制 ``--out <path>``，结果写入 JSON 后再读；不得依赖 stdout 当正文。
+        """
+        if not output_dir:
+            logger.warning("[P11] notes extract-text 缺少 output_dir，跳过抽取")
+            return {}
+        out_json = str(Path(output_dir) / "notes-text.json")
         try:
-            cmd = f"{cli_path('notes', pptx_root)} extract-text --pptx {quote_path(pptx_path)}"
-            result = await run_bash(self, cmd, timeout_seconds=60, required=False, workdir=pptx_root)
+            cmd = (
+                f"{cli_path('notes', pptx_root)} extract-text "
+                f"--pptx {quote_path(pptx_path)} --out {quote_path(out_json)}"
+            )
+            result = await run_bash(
+                self, cmd, timeout_seconds=60, required=False, workdir=pptx_root,
+            )
             if result.exit_code != 0:
-                logger.warning("[P11] notes extract-text 失败 exit=%d: %s",
-                               result.exit_code, (result.stderr or "")[:300])
+                logger.warning(
+                    "[P11] notes extract-text 失败 exit=%d: %s",
+                    result.exit_code,
+                    (result.stderr or result.stdout or "")[:300],
+                )
                 return {}
-            raw = result.stdout or ""
-            # 尝试解析 JSON {page: text}
+            raw = await PptCommon.read_file(
+                self, out_json, label="notes-text.json",
+            )
+            if not raw or not str(raw).strip():
+                logger.warning("[P11] notes-text.json 为空 path=%s", out_json)
+                return {}
             try:
                 data = json.loads(raw)
-                if isinstance(data, dict):
-                    return {int(k): str(v) for k, v in data.items()}
             except json.JSONDecodeError:
-                pass
-            logger.warning("[P11] notes extract-text 返回非 JSON，跳过")
-            return {}
+                logger.warning("[P11] notes-text.json 非 JSON path=%s", out_json)
+                return {}
+            if not isinstance(data, dict):
+                logger.warning("[P11] notes-text.json 根类型非 object")
+                return {}
+            return {int(k): str(v) for k, v in data.items()}
         except Exception as e:
             if isinstance(e, AbortError):
                 raise

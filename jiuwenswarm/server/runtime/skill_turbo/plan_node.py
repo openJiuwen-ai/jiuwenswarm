@@ -34,9 +34,23 @@ from typing import Any, Union
 # ─────────────────────────────────────────────────────────────────────────────
 from openjiuwen.core.runner.callback import AbortError
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FallbackContractError 唯一触点（对 skill_code）：终止性降级信号。
+# skill_code 白名单不放行 fallback_handler，须经本模块 re-export 引用。
+# 定义仍在 fallback_handler；此处为同一类对象，except / isinstance 行为不变。
+# ─────────────────────────────────────────────────────────────────────────────
+from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import (
+    FallbackContractError,
+)
+
 logger = logging.getLogger(__name__)
 
-__all__ = ["AbortError", "DisableThinkingMixin", "PlanNode"]
+__all__ = [
+    "AbortError",
+    "DisableThinkingMixin",
+    "FallbackContractError",
+    "PlanNode",
+]
 
 
 class PlanNode(ABC):
@@ -340,10 +354,14 @@ class PlanNode(ABC):
 
         重要：``AbortError``（PermissionInterruptRail HITL 中断）不进入 fallback，
         必须直接向上抛给 SkillTurbo / DeepAdapter，由其转 HITL 三件套。
+        ``FallbackContractError`` 为终止性降级信号（如 P2 早拒未支持能力），
+        同样不进入节点 LLM fallback，交由 executor 包成 SkillTurboNotHandled。
         """
         try:
             return await self._execute(inputs)
         except AbortError:
+            raise
+        except FallbackContractError:
             raise
         except Exception as e:
             logger.warning(
@@ -368,6 +386,9 @@ class PlanNode(ABC):
                 yield chunk
         except AbortError:
             # HITL 中断不走 fallback
+            raise
+        except FallbackContractError:
+            # 终止性降级：不走节点 LLM fallback
             raise
         except Exception as e:
             if self._fallback_stream_callback is None:

@@ -135,7 +135,8 @@ class CodeValidationPolicy:
                 "pathlib",
                 "re",
                 "typing",
-                # AbortError 经 plan_node 统一 re-export，skill_code 不直连 openjiuwen
+                # AbortError / FallbackContractError 经 plan_node 统一 re-export；
+                # skill_code 禁止直连 openjiuwen / fallback_handler
                 "jiuwenswarm.server.runtime.skill_turbo.plan_node",
             ),
             allowed_import_prefixes=tuple(allowed_import_prefixes or ()),

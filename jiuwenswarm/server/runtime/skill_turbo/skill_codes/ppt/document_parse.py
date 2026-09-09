@@ -132,7 +132,7 @@ class DocumentParseNode(PlanNode):
 
     主路径：``node …/cli.js parse-docs --output-dir {output_dir} [--extract-images] <docs>``
     仅当 VQA 探针成功时加 ``--extract-images``。
-    CLI 不可用时文本降级为 read_file，manifest 标记 ``degraded: true``，禁止抠文档内嵌图。
+    对齐 content-material.md 门禁 #7：CLI 两轮失败后不得 read_file 降级，素材通道直接失败。
     """
 
     def __init__(self) -> None:
@@ -148,7 +148,8 @@ class DocumentParseNode(PlanNode):
                 "4. 用户未指定 topic 时，基于 doc_summary 推断主题\n"
                 "\n"
                 "### 铁律\n"
-                "- 禁止在 parse-docs 前用 read_file 打开用户文档冒充主解析\n"
+                "- 禁止用 read_file 打开用户文档冒充主解析（含 CLI 失败后的降级直读）\n"
+                "- parse-docs 重试 1 次仍失败：doc_parse_ok=False 并报告，不得手写 manifest\n"
                 "- 不得把完整 doc_raw 写进下游 prompt 变量；默认只消费 summary\n"
                 "\n"
                 "### 输出\n"
@@ -285,100 +286,6 @@ class DocumentParseNode(PlanNode):
 
         return True, None, manifest
 
-    async def _degraded_parse(
-        self,
-        inputs: dict[str, Any],
-        doc_paths: list[str],
-        paths: dict[str, Path],
-        reason: str,
-    ) -> tuple[bool, str | None]:
-        """CLI 失败时的文本降级：read_file 拼 raw/summary，manifest degraded=true。"""
-        logger.warning("[P3] parse-docs 降级为 read_file: %s", reason)
-        if not self.has_tool("read_file"):
-            return False, f"parse-docs 失败且 read_file 不可用: {reason}"
-
-        sections: list[str] = []
-        records: list[dict[str, Any]] = []
-        success = 0
-        for raw_path in doc_paths:
-            path = Path(raw_path).expanduser()
-            try:
-                result = await self.call_tool("read_file", file_path=str(path))
-                text = _normalize_tool_text(result).strip()
-                if not text or text.startswith("[ERROR]"):
-                    records.append(
-                        {
-                            "path": str(path),
-                            "status": "error",
-                            "reason": text or "empty",
-                        }
-                    )
-                    sections.append(f"## {path.name}\n\n[读取失败]\n")
-                    continue
-                success += 1
-                records.append(
-                    {
-                        "path": str(path),
-                        "status": "degraded_text",
-                        "reason": "parse-docs unavailable; read_file fallback",
-                        "engine": "read_file",
-                    }
-                )
-                sections.append(f"## {path.name}\n\n{text}\n")
-            except Exception as exc:
-                if isinstance(exc, AbortError):
-                    raise
-                records.append(
-                    {
-                        "path": str(path),
-                        "status": "error",
-                        "reason": f"{type(exc).__name__}: {exc}",
-                    }
-                )
-                sections.append(f"## {path.name}\n\n[读取失败: {exc}]\n")
-
-        if success == 0:
-            return False, f"降级解析失败: {reason}"
-
-        merged = "\n".join(sections)
-        await PptCommon.write_file(
-            self, paths["raw"], merged, label=_DOC_RAW_NAME, error_type=DocumentParseError
-        )
-        # 摘要：截断原文前若干字符，避免下游误以为是完整 CLI summary
-        summary = (
-            "# 文档摘要（降级）\n\n"
-            "> 由 read_file 降级生成，非 parse-docs 权威摘要。\n\n"
-            + merged[:_DOC_SUMMARY_MAX_CHARS]
-        )
-        await PptCommon.write_file(
-            self,
-            paths["summary"],
-            summary,
-            label=_DOC_SUMMARY_NAME,
-            error_type=DocumentParseError,
-        )
-        manifest = {
-            "degraded": True,
-            "reason": reason,
-            "documents": records,
-            "imagesExtracted": False,
-            "imageStats": None,
-            "parserRuntime": {"engine": "read_file", "degraded": True},
-        }
-        await PptCommon.write_file(
-            self,
-            paths["manifest"],
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-            label=_DOC_MANIFEST_NAME,
-            error_type=DocumentParseError,
-        )
-        inputs["parse_degraded"] = True
-        inputs["vision_verified"] = False
-        inputs["images_extracted"] = False
-        inputs["material_map_path"] = ""
-        inputs["source_assets_dir"] = ""
-        return True, None
-
     def _apply_paths_to_inputs(
         self,
         inputs: dict[str, Any],
@@ -469,10 +376,13 @@ class DocumentParseNode(PlanNode):
                     raise
                 last_error = f"{type(exc).__name__}: {exc}"
 
-        # CLI 路径失败 → 文本降级（禁止抠图）
-        return await self._degraded_parse(
-            inputs, doc_paths, paths, last_error or "parse-docs 失败"
+        # content-material.md 门禁 #7：不得降级为 read_file 直读；素材通道直接失败。
+        inputs["parse_degraded"] = False
+        logger.error(
+            "[P3] parse-docs 两轮失败，按契约停止素材通道（不 read_file 降级）: %s",
+            last_error or "parse-docs 失败",
         )
+        return False, last_error or "parse-docs 失败"
 
     async def _execute(self, inputs: dict[str, Any]) -> dict[str, Any]:
         PptCommon.ensure_phase1_defaults(inputs)
@@ -584,10 +494,7 @@ class DocumentParseNode(PlanNode):
         result = await self._execute(inputs)
         status = "ok" if result.get("doc_parse_ok") else "warning"
         if result.get("doc_parse_ok"):
-            if result.get("parse_degraded"):
-                message = "文档解析完成（降级 read_file）"
-            else:
-                message = "文档解析完成（parse-docs）"
+            message = "文档解析完成（parse-docs）"
         else:
             message = f"文档解析未完成：{result.get('doc_parse_error') or '未知原因'}"
         yield {

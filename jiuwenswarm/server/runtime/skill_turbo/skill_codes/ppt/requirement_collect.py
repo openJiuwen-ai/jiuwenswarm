@@ -3,13 +3,23 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any, AsyncIterator
 
-from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNode
+from jiuwenswarm.server.runtime.skill_turbo.plan_node import (
+    AbortError,
+    FallbackContractError,
+    PlanNode,
+)
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
 
 logger = logging.getLogger(__name__)
+
+# 加速通道尚未对齐 build-template.md；带模板包时 P2 早拒并引导 skill_tool。
+_TEMPLATE_CANVAS_UNSUPPORTED_REASON = (
+    "加速通道暂不支持模板画布（template_canvas）。"
+    "请改用 skill_tool 走 pptx-craft 标准流程处理此请求"
+    "（直接执行，无需再调用 skill_acceleration_exec）。"
+)
 
 _TEXT_SOURCE_KEYS = PptCommon.TEXT_SOURCE_KEYS
 _collect_user_text = PptCommon.collect_user_text
@@ -66,9 +76,14 @@ _P21_SLOT_SYSTEM_PROMPT = ("""你是 PPT 需求槽位分析助手。从用户消
 提取字段：
 - topic: 演示主题（字符串；未知则 ""）
 - page_count: 内容页数（整数；不含封面/结束页，也不含目录/章节等中间结构页；总页数 = page_count + 2 + 中间结构页数；未知则 null）。
-  判断规则：①用户说"生成N页PPT"/"做N页汇报"/"PPT共N页"/"总页数N页"/"总共N页"/"一共N页"/"N页"/"做N页PPT"/"N页以内"/"不超过N页"/"最多N页"/"不大于N页"等未特指内容页的表达 → N 表示总页数 → page_count = max(N - 2 - 结构页扣减, 1)；结构页扣减 = 用户明确要求的中间结构页数量（取本请求提取的 structural_page_request / structural_page_count）：structural_page_request != "none" 且用户指定数量时按 structural_page_count 扣减；未指定数量时按 1 页扣减（如目录页）；structural_page_request == "none" 时扣减 0；
-  ②用户明确说"N个内容页"/"N页正文"，或正在回答"需要多少页内容页"时 → page_count = N（中间结构页另行添加，不占此配额）。
-  示例："10页以内"→8, "总页数严格为8页"→6, "8页"→6, "做8页PPT"→6, "共7页"+要求目录页→4, "8页PPT"+3个章节页→3
+  判断规则：①用户说"生成N页PPT"/"做N页汇报"/"PPT共N页"/"总页数N页"/"总共N页"/"一共N页"/"N页"/"做N页PPT"/"N页以内"/"不超过N页"/"最多N页"/"不大于N页"等未特指内容页的表达 → N 表示总页数：
+    - page_count_basis 填 "total"；
+    - 无中间结构页要求：page_count = max(N - 2, 1)；
+    - 用户指定了中间结构页数量 K：page_count = max(N - 2 - K, 1)；
+    - 要求中间结构页但未指定数量：page_count = max(N - 2, 1)，structural_page_count=null；**禁止**自行猜测结构页扣减或试算 ceil（由系统按 outline-planner 反推）。
+  ②用户明确说"N个内容页"/"N页正文"，或正在回答"需要多少页内容页"时 → page_count = N，page_count_basis 填 "content"（中间结构页另行添加，不占此配额）。
+  示例："10页以内"→8/total；"总页数严格为8页"→6/total；"8页"→6/total；"做8页PPT"→6/total；"共7页"+要求目录页→5/total（只扣封面结束）；"8页PPT"+3个章节页→3/total；"8个内容页"+章节页→8/content
+- page_count_basis: "total"（规则①）/ "content"（规则②）/ ""（未知）
 - page_count_user_specified: 用户原文是否明确给出页数（含总页数/内容页表达）；有则为 true，否则 false
 - audience: 目标受众（字符串；未知则 ""）
 - presentation_purpose: 汇报目的，如「工作汇报」「产品展示」「教学分享」「auto」；未知则 ""
@@ -95,6 +110,7 @@ _P21_SLOT_SYSTEM_PROMPT = ("""你是 PPT 需求槽位分析助手。从用户消
   普通章节结构、素材中的标题层级、模型自己觉得需要分节，都不构成触发条件 -> "none"。
   用户指定数量时（如"加 2 页章节页"），数量信息保留在 structural_page_count 中。
 - structural_page_count: 用户指定的中间结构页数量（整数；未指定或"每章一个"等需自动计算时为 null）。
+  未指定时必须为 null，禁止自行填写 ceil 等猜测值。
 - missing_fields: 仍缺失且需用户补充的字段名数组，取值限于 topic / page_count / audience / presentation_purpose / style_id
 - need_ask_style: 用户未明确风格时为 true，否则 false
 
@@ -106,12 +122,13 @@ _P21_SLOT_SYSTEM_PROMPT = ("""你是 PPT 需求槽位分析助手。从用户消
 5. topic 缺失时由下游 LLM 生成 4 个主题候选并 ask 用户选择，不要生成询问文案。
 6. pack_dir 存在时 style_id 填 "custom"（模板包优先于预设风格），need_ask_style 设 false。
 7. page_count 为内容页数（不含封面/结束页，也不含目录/章节等中间结构页），总页数 = page_count + 2 + 中间结构页数。
-   用户说"生成N页PPT"/"做N页汇报"/"PPT共N页"/"总页数N页"/"总共N页"/"一共N页"/"N页"/"做N页PPT"/"N页以内"/"不超过N页"/"最多N页"等未特指内容页的表达 → N 表示总页数，page_count = max(N - 2 - 结构页扣减, 1)；结构页扣减规则同提取字段说明；
-   用户明确说"N个内容页"/"N页正文"或正在回答"需要多少页内容页"时，page_count = N（中间结构页另行添加）。
+   用户说"生成N页PPT"等未特指内容页的表达 → N 为总页数：page_count_basis="total"；无结构页或未指定结构数量时 page_count=max(N-2,1)；指定结构数量 K 时 page_count=max(N-2-K,1)；未指定结构数量时禁止自行扣减结构页（系统反推）。
+   用户明确说"N个内容页"/"N页正文"或正在回答"需要多少页内容页"时，page_count=N，page_count_basis="content"。
 8. style_constraints / user_dimensions / user_structure 不进 outline.md，只供下游透传。
 
 必须只输出 JSON："""
-    + '{"topic":"","page_count":null,"page_count_user_specified":false,'
+    + '{"topic":"","page_count":null,"page_count_basis":"",'
+    + '"page_count_user_specified":false,'
     + '"audience":"","presentation_purpose":"",'
     + '"style_id":"","style_description":"","style_constraints":"",'
     + '"user_dimensions":[],"user_structure":"","notes_requirements":"",'
@@ -563,6 +580,8 @@ def _merge_slot_payload(
     else:
         inputs.setdefault("structural_page_count", None)
 
+    _normalize_total_derived_page_count(inputs, payload)
+
     need_ask_style = payload.get("need_ask_style")
     if isinstance(need_ask_style, bool) and not inputs.get("pack_dir"):
         if style_resolved:
@@ -573,6 +592,47 @@ def _merge_slot_payload(
         inputs["need_ask_style"] = not bool(inputs.get("style_id"))
 
     _reconcile_missing_fields(inputs)
+
+
+def _normalize_total_derived_page_count(
+    inputs: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    """总页数表达 + 未指定结构数量：由代码按 outline-planner 反推 page_count。
+
+    LLM 只填 max(N-2,1)，禁止在 prompt 里试算 ceil，避免鸡生蛋。
+    """
+    basis = str(payload.get("page_count_basis") or "").strip().lower()
+    if basis != "total":
+        return
+    page_count = inputs.get("page_count")
+    if not isinstance(page_count, int) or page_count <= 0:
+        return
+    spr = str(inputs.get("structural_page_request") or "none").strip().lower()
+    spc = inputs.get("structural_page_count")
+    if isinstance(spc, int) and spc > 0:
+        # 指定 K 时 LLM 已按 max(N-2-K,1) 填好
+        return
+    if spr in ("", "none"):
+        return
+    exclude = bool(inputs.get("exclude_cover_ending"))
+    cover_ending = 0 if exclude else 2
+    declared_total = page_count + cover_ending
+    normalized = PptCommon.content_pages_from_total_pages(
+        declared_total,
+        structural_page_request=spr,
+        structural_page_count=None,
+        exclude_cover_ending=exclude,
+    )
+    if normalized != page_count:
+        logger.info(
+            "[P2.1] 总页数口径归一 page_count %s → %s (total=%s spr=%s)",
+            page_count,
+            normalized,
+            declared_total,
+            spr,
+        )
+        inputs["page_count"] = normalized
 
 
 def _build_p21_slot_prompt(
@@ -1741,28 +1801,29 @@ class RequirementCollectNode(PlanNode):
         ctx.setdefault("image_sources", ["local"])
 
     def _set_style_mode(self, ctx: dict[str, Any]) -> None:
-        """根据 style_id / pack_dir 设置 style_mode（供下游 P3.5/P7/P8/P9 分支判断）。"""
+        """根据 style_id / pack_dir 设置 style_mode（供下游 P3.5/P7/P8/P9 分支判断）。
+
+        模板包（pack_dir / 已锁定 template_canvas）在加速通道尚未对齐
+        build-template.md 前一律早拒，禁止静默回退普通分支，也不进入旧
+        preflight/seed 死路径；由 FallbackContractError 触发 turbo→skill_tool。
+        """
         existing_mode = str(ctx.get("style_mode") or "").strip()
+        pack_dir = str(ctx.get("pack_dir") or "").strip()
+        if pack_dir or existing_mode == "template_canvas":
+            logger.warning(
+                "[P2] 拒绝模板画布加速路径 pack_dir=%s style_mode=%s",
+                pack_dir or "(empty)",
+                existing_mode or "(empty)",
+            )
+            raise FallbackContractError(
+                node_name="p2_requirement_collect",
+                reason=_TEMPLATE_CANVAS_UNSUPPORTED_REASON,
+            )
         if existing_mode:
             if existing_mode == "free":
                 ctx["style_id"] = "custom"
                 ctx["style_mode"] = "custom"
             return  # 已显式设置，不覆盖；仅归一化历史 free 状态
-        pack_dir = str(ctx.get("pack_dir") or "").strip()
-        if pack_dir:
-            # prod 版模板包用 template-spec.json，不再依赖 template-manifest.json
-            spec_path = Path(pack_dir) / "template-spec.json"
-            if not spec_path.is_file():
-                logger.warning(
-                    "[P2] 模板包不完整（缺少 template-spec.json），降级为 custom 模式: %s",
-                    pack_dir,
-                )
-                ctx["style_mode"] = "custom"
-                ctx["style_id"] = "custom"
-                ctx["template_pack_degraded"] = True
-                return
-            ctx["style_mode"] = "template_canvas"
-            return
         style_id = str(ctx.get("style_id") or "").strip()
         if style_id in _VALID_STYLE_IDS - {"custom"}:
             ctx["style_mode"] = "preset"
