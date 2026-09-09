@@ -1924,7 +1924,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         base_dir = Path(self.directory or os.getcwd()).resolve()
         target = (base_dir / rel_path).resolve()
-        in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        try:
+            in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        except ValueError:
+            # Windows: paths on different drives cannot be compared with commonpath.
+            in_base = False
 
         if in_base and target.exists():
             return super().send_head()

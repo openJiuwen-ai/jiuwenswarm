@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -440,3 +441,25 @@ def test_download_url_classifies_http_status(
                 switching_source=False,
             ),
         )
+
+def test_safe_extract_wheel_cross_drive_commonpath_is_unsafe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows cross-drive commonpath ValueError must become unsafe-wheel RuntimeError."""
+    import os
+
+    wheel = tmp_path / "pkg.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("pkg/__init__.py", "")
+
+    destination = tmp_path / "site-packages"
+    destination.mkdir()
+
+    def boom(_paths):
+        raise ValueError("Paths don't have the same drive")
+
+    monkeypatch.setattr(os.path, "commonpath", boom)
+
+    with pytest.raises(RuntimeError, match="unsafe wheel entry"):
+        runtime._safe_extract_wheel(wheel, destination)
+
