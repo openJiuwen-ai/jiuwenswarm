@@ -20,11 +20,13 @@ EffectiveEnterpriseConfig = schemas.EffectiveEnterpriseConfig
 DEFAULT_AGENT_LOAD_SLOTS = schemas.DEFAULT_AGENT_LOAD_SLOTS
 TemplateRefSlot = schemas.TemplateRefSlot
 load_effective_enterprise_config = loader.load_effective_enterprise_config
+invalidate_policy_snapshot = loader.invalidate_policy_snapshot
 
 
 __all__ = (
     "DEFAULT_AGENT_LOAD_SLOTS",
     "EffectiveEnterpriseConfig",
     "TemplateRefSlot",
+    "invalidate_policy_snapshot",
     "load_effective_enterprise_config",
 )

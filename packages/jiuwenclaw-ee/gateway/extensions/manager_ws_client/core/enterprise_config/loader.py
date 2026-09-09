@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
@@ -55,19 +57,111 @@ class _PolicyMatchResult:
     matched_global: dict[str, Any] | None
 
 
+@dataclass
+class PolicySnapshot:
+    """全局策略快照(跨租户共享): 三张 policy 表的进程级缓存内容.
+
+    policy 表为全局数据, 与路由上下文无关(match_expr 在内存评估);
+    快照前后的匹配语义完全一致, 仅把"每请求全量拉表"变为"每 TTL 一次"。
+    """
+
+    service_rules: list[dict[str, Any]]
+    agent_rules_by_sp: dict[str, list[dict[str, Any]]]
+    matched_global: dict[str, Any] | None
+    global_refs: dict[str, list[str]]
+    fetched_at: float = 0.0
+
+
+class PolicySnapshotCache:
+    """进程级 policy 快照缓存: 单飞刷新 + TTL(默认 60 分钟) + invalidate.
+
+    直接改 policy 表 DB 的变更最迟 TTL 后可见; 走 reload/技能变更钩子的
+    配置变更会精确失效(invalidate), 不受 TTL 影响。
+    """
+
+    def __init__(self, ttl_seconds: float = 3600.0) -> None:
+        self._ttl = ttl_seconds
+        self._snapshot: PolicySnapshot | None = None
+        self._lock: asyncio.Lock | None = None
+
+    def invalidate(self) -> None:
+        self._snapshot = None
+        logger.info("[AgentPerf] policy snapshot invalidated")
+
+    async def _get_lock(self) -> asyncio.Lock:
+        # 惰性创建: 避免模块级单例在导入期绑定 event loop
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    def _fresh(self) -> PolicySnapshot | None:
+        snap = self._snapshot
+        if snap is not None and time.monotonic() - snap.fetched_at <= self._ttl:
+            return snap
+        return None
+
+    async def get(self) -> PolicySnapshot:
+        snap = self._fresh()
+        if snap is not None:
+            return snap
+        lock = await self._get_lock()
+        async with lock:
+            snap = self._fresh()
+            if snap is not None:
+                return snap
+            self._snapshot = await self._fetch()
+            logger.info(
+                "[AgentPerf] policy snapshot refreshed: service_rules=%d agent_rules=%d has_global=%s",
+                len(self._snapshot.service_rules),
+                sum(len(rules) for rules in self._snapshot.agent_rules_by_sp.values()),
+                self._snapshot.matched_global is not None,
+            )
+            return self._snapshot
+
+    @staticmethod
+    async def _fetch() -> PolicySnapshot:
+        db = GatewayDb.current()
+        service_rules = await db.list_records(
+            "config_effective_service_policy",
+            filters={"enabled": True},
+            order_by=POLICY_MATCH_ORDER_BY,
+        )
+        matched_global, global_refs = await _fetch_global_policy_refs()
+        # agent 规则全表拉取后按 service_policy_id 分组(组内保持排序);
+        # 与原按 sp 过滤查询的行集与顺序等价。
+        agent_rows = await db.list_records(
+            "config_effective_agent_policy",
+            filters={"enabled": True},
+            order_by=POLICY_MATCH_ORDER_BY,
+        )
+        agent_rules_by_sp: dict[str, list[dict[str, Any]]] = {}
+        for row in agent_rows:
+            agent_rules_by_sp.setdefault(str(row.get("service_policy_id")), []).append(row)
+        return PolicySnapshot(
+            service_rules=service_rules,
+            agent_rules_by_sp=agent_rules_by_sp,
+            matched_global=matched_global,
+            global_refs=global_refs,
+            fetched_at=time.monotonic(),
+        )
+
+
+_policy_snapshot_cache = PolicySnapshotCache()
+
+
+def invalidate_policy_snapshot() -> None:
+    """配置 reload / 技能账本变更时清空进程级 policy 快照."""
+    _policy_snapshot_cache.invalidate()
+
+
 async def _resolve_policy_match(ctx: RoutingContext) -> _PolicyMatchResult:
-    service_rules = await GatewayDb.current().list_records(
-        "config_effective_service_policy",
-        filters={"enabled": True},
-        order_by=POLICY_MATCH_ORDER_BY,
-    )
+    snap = await _policy_snapshot_cache.get()
 
     matched_service: dict[str, Any] | None = None
     matched_agent: dict[str, Any] | None = None
-    matched_global, global_refs = await _fetch_global_policy_refs()
     merged_refs: dict[str, list[str]] = {}
 
-    for rule in service_rules:
+    for rule in snap.service_rules:
         if expressions.evaluate_match_expr(rule.get("match_expr"), ctx):
             matched_service = rule
             merged_refs = normalize_template_ref(rule.get("template_ref"))
@@ -75,11 +169,7 @@ async def _resolve_policy_match(ctx: RoutingContext) -> _PolicyMatchResult:
 
     if matched_service is not None:
         sp_policy_id = str(matched_service["policy_id"])
-        agent_rules = await GatewayDb.current().list_records(
-            "config_effective_agent_policy",
-            filters={"enabled": True, "service_policy_id": sp_policy_id},
-            order_by=POLICY_MATCH_ORDER_BY,
-        )
+        agent_rules = snap.agent_rules_by_sp.get(sp_policy_id, [])
         for rule in agent_rules:
             if expressions.evaluate_match_expr(rule.get("match_expr"), ctx):
                 matched_agent = rule
@@ -88,15 +178,15 @@ async def _resolve_policy_match(ctx: RoutingContext) -> _PolicyMatchResult:
                     normalize_template_ref(rule.get("template_ref")),
                 )
                 break
-        merged_refs = fill_missing_template_ref_slots(merged_refs, global_refs)
+        merged_refs = fill_missing_template_ref_slots(merged_refs, snap.global_refs)
     else:
-        merged_refs = global_refs
+        merged_refs = snap.global_refs
 
     return _PolicyMatchResult(
         merged_refs=merged_refs,
         matched_service=matched_service,
         matched_agent=matched_agent,
-        matched_global=matched_global,
+        matched_global=snap.matched_global,
     )
 
 
@@ -367,6 +457,7 @@ async def load_effective_enterprise_config(
 
 __all__ = (
     "POLICY_MATCH_ORDER_BY",
+    "invalidate_policy_snapshot",
     "load_effective_enterprise_config",
     "routing_context_from_request",
 )

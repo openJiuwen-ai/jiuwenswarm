@@ -8,6 +8,7 @@ from jiuwenclaw.agentserver.enterprise_config.apply_models import (
 )
 from jiuwenclaw.agentserver.enterprise_config.loader import (
     DEFAULT_AGENT_LOAD_SLOTS,
+    invalidate_policy_snapshot,
     load_effective_enterprise_config,
 )
 
@@ -16,6 +17,7 @@ __all__ = [
     "MODEL_SOURCE_CONFIG",
     "MODEL_SOURCE_ENTERPRISE",
     "build_routing_agent_request",
+    "invalidate_policy_snapshot",
     "load_effective_enterprise_config",
     "resolve_effective_models_config",
 ]
