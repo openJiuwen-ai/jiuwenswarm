@@ -3486,29 +3486,6 @@ class JiuWenSwarmDeepAdapter:
         return ""
 
     @staticmethod
-    def _resolve_managed_browser_type_from_config(
-        config_base: dict[str, Any] | None = None,
-    ) -> str:
-        """Resolve browser type: auto | chrome | msedge."""
-        if config_base is None:
-            config_base = get_config()
-        if not isinstance(config_base, dict):
-            return "auto"
-        config = resolve_env_vars(config_base)
-        browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
-        if not isinstance(browser_cfg, dict):
-            return "auto"
-        raw = browser_cfg.get("browser_type", "auto")
-        if not isinstance(raw, str):
-            return "auto"
-        normalized = raw.strip().lower()
-        if normalized in {"chrome", "google-chrome", "google_chrome"}:
-            return "chrome"
-        if normalized in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-            return "msedge"
-        return "auto"
-
-    @staticmethod
     def _resolve_headless_from_config(
         config_base: dict[str, Any] | None = None,
     ) -> bool:
@@ -3650,35 +3627,14 @@ class JiuWenSwarmDeepAdapter:
         else:
             os.environ.pop("BROWSER_MANAGED_BINARY", None)
 
-        browser_type = self._resolve_managed_browser_type_from_config(config_base)
-        if browser_type and browser_type != "auto":
-            os.environ["BROWSER_MANAGED_TYPE"] = browser_type
-        else:
-            os.environ.pop("BROWSER_MANAGED_TYPE", None)
-
-        # Hint MCP/CDP which Chromium flavor to expect (auto → leave unset / chrome default).
-        path_l = chrome_path.replace("\\", "/").lower() if chrome_path else ""
-        path_looks_edge = bool(
-            path_l
-            and (
-                "msedge" in path_l
-                or "/microsoft/edge/" in path_l
-                or "microsoft edge" in path_l
-            )
-        )
-        if browser_type == "msedge" or path_looks_edge:
-            os.environ["PLAYWRIGHT_MCP_BROWSER"] = "msedge"
-        elif browser_type == "chrome" or chrome_path:
-            os.environ["PLAYWRIGHT_MCP_BROWSER"] = "chrome"
-        else:
-            # auto without explicit path: ManagedBrowserDriver chooses Chrome then Edge.
-            os.environ.pop("PLAYWRIGHT_MCP_BROWSER", None)
+        # Chrome-only managed runtime: clear temporary Edge-selection env leftovers.
+        os.environ.pop("BROWSER_MANAGED_TYPE", None)
+        os.environ.pop("PLAYWRIGHT_MCP_BROWSER", None)
 
         logger.info(
-            "[%s] browser runtime config: headless=%s, browser_type=%s, chrome_path=%s",
+            "[%s] browser runtime config: headless=%s, chrome_path=%s",
             type(self).__name__,
             headless,
-            browser_type or "auto",
             chrome_path or "<auto>",
         )
 
