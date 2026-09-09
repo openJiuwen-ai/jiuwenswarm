@@ -1814,10 +1814,10 @@ async def _build_postgresql_async_engine():
             result = await conn.execute(
                 text(
                     "SELECT data_type FROM information_schema.columns "
-                    "WHERE table_catalog = :db AND table_name = 'kv_store' "
-                    "AND column_name = 'value'"
+                    "WHERE table_catalog = :db AND table_schema = :schema "
+                    "AND table_name = 'kv_store' AND column_name = 'value'"
                 ),
-                {"db": db_name},
+                {"db": db_name, "schema": pg_schema},
             )
             row = result.fetchone()
             if row is None:

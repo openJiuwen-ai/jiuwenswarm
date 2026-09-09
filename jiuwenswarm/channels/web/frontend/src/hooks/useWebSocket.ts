@@ -411,7 +411,6 @@ function getConnectSignature(options: WebConnectOptions): string {
     userId: scope.userId || '',
     groupId: scope.groupId || '',
     botId: scope.botId || '',
-    gatewayId: scope.gatewayId || '',
   });
 }
 

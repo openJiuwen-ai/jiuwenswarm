@@ -1,78 +1,46 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { isLoginAuthSimulateEnabled } from './auth/config';
 import { resolveEnterpriseAuthProvider } from './auth/providerRegistry';
-import { EnterpriseAuthError, type EnterpriseAuthProvider } from './auth/types';
+import { EnterpriseAuthError } from './auth/types';
 import { isEnterprise } from './edition';
 import {
+  agentContextKey,
   EnterpriseContext,
-  type EnterpriseAgent,
+  type EnterpriseAgentContext,
   type EnterpriseContextSnapshot,
   type EnterpriseContextValue,
-  type EnterpriseGateway,
-  type EnterpriseOrg,
 } from './services/enterpriseContext';
 import { parseRuntimeScope, setRuntimeScope } from './services/runtimeScope';
 
 type EntryPhase = 'loading' | 'ready' | 'empty' | 'error' | 'redirecting' | 'login-required';
 
-interface ContextCandidate {
-  gateway: EnterpriseGateway;
-  org: EnterpriseOrg;
-}
-
-interface ResolvedContext extends ContextCandidate {
-  agents: EnterpriseAgent[];
-  selectedBot: string;
-}
-
-function agentRuntimeId(agent: EnterpriseAgent): string {
-  return agent.resource_id || agent.template_id;
-}
-
-function movePreferredFirst<T>(items: T[], matches: (item: T) => boolean): T[] {
-  const preferredIndex = items.findIndex(matches);
+function movePreferredFirst(items: EnterpriseAgentContext[], preferredKey?: string): EnterpriseAgentContext[] {
+  if (!preferredKey) return items;
+  const preferredIndex = items.findIndex(item => agentContextKey(item) === preferredKey);
   if (preferredIndex <= 0) return items;
   return [items[preferredIndex], ...items.slice(0, preferredIndex), ...items.slice(preferredIndex + 1)];
 }
 
-/**
- * Build a deterministic list of authorized gateway/organization combinations.
- * URL values only affect ordering; every selected combination is still checked
- * against the server before it becomes active.
- */
-export function orderedContextCandidates(
-  gateways: EnterpriseGateway[],
-  orgs: EnterpriseOrg[],
-  preferredGatewayId?: string,
-  preferredOrgId?: string,
-): ContextCandidate[] {
-  const orderedGateways = movePreferredFirst([...gateways], item => item.jiuwenclaw_id === preferredGatewayId);
-  const orderedOrgs = movePreferredFirst([...orgs], item => item.group_id === preferredOrgId);
-  return orderedGateways.flatMap(gateway => orderedOrgs.map(org => ({ gateway, org })));
-}
-
-export function chooseAgent(agents: EnterpriseAgent[], preferredBotId?: string): EnterpriseAgent | null {
-  return agents.find(agent => agentRuntimeId(agent) === preferredBotId) ?? agents[0] ?? null;
-}
-
-async function resolveFirstContext(
-  provider: EnterpriseAuthProvider,
-  candidates: ContextCandidate[],
-  preferredBotId?: string,
-): Promise<ResolvedContext | null> {
-  let firstError: unknown = null;
-  for (const candidate of candidates) {
-    try {
-      const agents = await provider.listAgents(candidate.org.group_id, candidate.gateway.jiuwenclaw_id);
-      const selected = chooseAgent(agents, preferredBotId);
-      if (selected) return { ...candidate, agents, selectedBot: agentRuntimeId(selected) };
-    } catch (error) {
-      if (error instanceof EnterpriseAuthError && error.status === 401) throw error;
-      firstError ??= error;
-    }
+export function chooseAgentContext(
+  contexts: EnterpriseAgentContext[],
+  preferred?: { botId?: string; groupId?: string; userId?: string },
+): EnterpriseAgentContext | null {
+  if (!contexts.length) return null;
+  if (preferred?.botId && preferred.groupId && preferred.userId) {
+    const exact = contexts.find(
+      item =>
+        item.bot_id === preferred.botId &&
+        item.group_id === preferred.groupId &&
+        item.user_id === preferred.userId,
+    );
+    if (exact) return exact;
   }
-  if (firstError) throw firstError;
-  return null;
+  if (preferred?.botId) {
+    const byBot = contexts.find(item => item.bot_id === preferred.botId);
+    if (byBot) return byBot;
+  }
+  return contexts[0] ?? null;
 }
 
 function entryPath(): string {
@@ -84,25 +52,23 @@ function entryPath(): string {
   return pathname.startsWith('/chat') ? '/chat/' : '/';
 }
 
-function contextUrl(userId: string, resolved: ResolvedContext, debugContext = false): string {
+function contextUrl(selected: EnterpriseAgentContext, debugContext = false): string {
   const query = new URLSearchParams({
-    user_id: userId,
-    group_id: resolved.org.group_id,
-    bot_id: resolved.selectedBot,
-    gateway_id: resolved.gateway.jiuwenclaw_id,
+    user_id: selected.user_id,
+    group_id: selected.group_id,
+    bot_id: selected.bot_id,
   });
   if (debugContext) query.set('debug_context', '1');
   return `${entryPath()}?${query.toString()}`;
 }
 
-function activateContext(userId: string, resolved: ResolvedContext, navigate: boolean, debugContext = false): void {
+function activateContext(selected: EnterpriseAgentContext, navigate: boolean, debugContext = false): void {
   setRuntimeScope({
-    userId,
-    groupId: resolved.org.group_id,
-    botId: resolved.selectedBot,
-    gatewayId: resolved.gateway.jiuwenclaw_id,
+    userId: selected.user_id,
+    groupId: selected.group_id,
+    botId: selected.bot_id,
   });
-  const nextUrl = contextUrl(userId, resolved, debugContext);
+  const nextUrl = contextUrl(selected, debugContext);
   if (navigate) window.location.replace(nextUrl);
   else window.history.replaceState({}, '', nextUrl);
 }
@@ -111,40 +77,19 @@ export function isDebugContext(search: string): boolean {
   return new URLSearchParams(search).get('debug_context') === '1';
 }
 
-export function buildRequestedDebugContext(
-  orgs: EnterpriseOrg[],
-  gateways: EnterpriseGateway[],
-  agents: EnterpriseAgent[],
+export function buildCustomContext(
   preferred: ReturnType<typeof parseRuntimeScope>,
-): ResolvedContext | null {
-  if (!preferred.groupId || !preferred.gatewayId || !preferred.botId) return null;
-  const org = orgs.find(item => item.group_id === preferred.groupId) ?? {
+  fallbackGatewayId = '',
+): EnterpriseAgentContext | null {
+  if (!preferred.groupId || !preferred.botId || !preferred.userId) return null;
+  return {
+    bot_id: preferred.botId,
     group_id: preferred.groupId,
-    name: preferred.groupId,
+    user_id: preferred.userId,
+    jiuwenclaw_id: fallbackGatewayId,
+    agent_name: preferred.botId,
+    group_name: preferred.groupId,
   };
-  const gateway = gateways.find(item => item.jiuwenclaw_id === preferred.gatewayId) ?? {
-    jiuwenclaw_id: preferred.gatewayId,
-    jiuwenclaw_name: preferred.gatewayId,
-    gateway_endpoint: null,
-  };
-  return { org, gateway, agents, selectedBot: preferred.botId };
-}
-
-async function resolveRequestedDebugContext(
-  provider: EnterpriseAuthProvider,
-  orgs: EnterpriseOrg[],
-  gateways: EnterpriseGateway[],
-  preferred: ReturnType<typeof parseRuntimeScope>,
-): Promise<ResolvedContext | null> {
-  if (!preferred.groupId || !preferred.gatewayId || !preferred.botId) return null;
-  let agents: EnterpriseAgent[] = [];
-  try {
-    agents = await provider.listAgents(preferred.groupId, preferred.gatewayId);
-  } catch (error) {
-    if (error instanceof EnterpriseAuthError && error.status === 401) throw error;
-    // 自定义 ID 用于联调错误路由；列表查询失败不能覆盖手工输入的上下文。
-  }
-  return buildRequestedDebugContext(orgs, gateways, agents, preferred);
 }
 
 function errorText(error: unknown): string {
@@ -176,7 +121,7 @@ function EntryStatus({ phase, error, onLogout }: { phase: EntryPhase; error: str
         </h1>
         <p>
           {empty
-            ? '当前账号没有可用的组织、组网和 Agent 组合，请联系管理员完成授权。'
+            ? '当前账号没有可用的 Agent 上下文组合，请联系管理员完成授权。'
             : failed
               ? error
               : loginRequired
@@ -194,6 +139,7 @@ function EntryStatus({ phase, error, onLogout }: { phase: EntryPhase; error: str
 }
 
 export function EnterpriseEntry({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const enterprise = isEnterprise();
   const simulateLogin = enterprise && isLoginAuthSimulateEnabled();
   const provider = useMemo(
@@ -222,33 +168,48 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
     const bootstrap = async () => {
       try {
         const preferred = parseRuntimeScope(window.location.search);
-        const [user, orgs, gateways] = await Promise.all([
-          provider.getCurrentUser(),
-          provider.listOrganizations(),
-          provider.listGateways(),
-        ]);
-        const resolved = isDebugContext(window.location.search)
-          ? await resolveRequestedDebugContext(provider, orgs, gateways, preferred)
-          : await resolveFirstContext(
-              provider,
-              orderedContextCandidates(gateways, orgs, preferred.gatewayId, preferred.groupId),
-              preferred.botId,
-            );
+        const [user, contexts] = await Promise.all([provider.getCurrentUser(), provider.listAgentContexts()]);
         if (cancelled) return;
-        if (!resolved) {
+
+        let selected: EnterpriseAgentContext | null = null;
+        if (isDebugContext(window.location.search)) {
+          const matched = preferred.botId
+            ? contexts.find(item => item.bot_id === preferred.botId)
+            : undefined;
+          // 旧版 debug URL 可省略 user_id（默认取登录用户），与 chooseAgentContext 对齐。
+          selected = buildCustomContext(
+            {
+              ...preferred,
+              userId: preferred.userId || user.user_id,
+            },
+            matched?.jiuwenclaw_id || contexts[0]?.jiuwenclaw_id || '',
+          );
+        }
+        if (!selected) {
+          selected = chooseAgentContext(
+            movePreferredFirst(
+              contexts,
+              preferred.botId && preferred.groupId && preferred.userId
+                ? agentContextKey({
+                    bot_id: preferred.botId,
+                    group_id: preferred.groupId,
+                    user_id: preferred.userId,
+                  })
+                : undefined,
+            ),
+            {
+              botId: preferred.botId,
+              groupId: preferred.groupId,
+              userId: preferred.userId || user.user_id,
+            },
+          );
+        }
+        if (!selected) {
           setPhase('empty');
           return;
         }
-        activateContext(user.user_id, resolved, false);
-        setContext({
-          user,
-          org: resolved.org,
-          orgs,
-          gateway: resolved.gateway,
-          gateways,
-          agents: resolved.agents,
-          selectedBot: resolved.selectedBot,
-        });
+        activateContext(selected, false, isDebugContext(window.location.search));
+        setContext({ user, contexts, selected });
         setPhase('ready');
       } catch (bootstrapError) {
         if (cancelled) return;
@@ -266,117 +227,50 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
     };
   }, [enterprise, provider]);
 
-  const switchContext = useCallback(
-    async (candidates: ContextCandidate[], preferredBotId?: string, missingMessage = '所选范围内暂无可用 Agent') => {
-      if (!context || contextSwitching || !provider) return;
-      setContextSwitching(true);
-      setContextError('');
-      try {
-        const resolved = await resolveFirstContext(provider, candidates, preferredBotId);
-        if (!resolved) {
-          setContextError(missingMessage);
-          return;
-        }
-        activateContext(context.user.user_id, resolved, true);
-      } catch (switchError) {
-        if (switchError instanceof EnterpriseAuthError && switchError.status === 401) {
-          if (!provider.redirectToLogin()) setPhase('login-required');
-          return;
-        }
-        setContextError(errorText(switchError));
-      } finally {
-        setContextSwitching(false);
-      }
-    },
-    [context, contextSwitching, provider],
-  );
-
   const contextValue = useMemo<EnterpriseContextValue | null>(() => {
     if (!context) return null;
     return {
       ...context,
       contextError,
       contextSwitching,
-      onOrgChange: orgId => {
-        const org = context.orgs.find(item => item.group_id === orgId);
-        if (!org) {
-          const normalized = orgId.trim();
-          if (!normalized) return;
-          activateContext(
-            context.user.user_id,
-            { ...context, org: { group_id: normalized, name: normalized } },
-            true,
-            true,
-          );
-          return;
-        }
-        const gateways = movePreferredFirst([...context.gateways], item => item.jiuwenclaw_id === context.gateway.jiuwenclaw_id);
-        void switchContext(
-          gateways.map(gateway => ({ gateway, org })),
-          undefined,
-          '该组织暂无可用 Agent',
-        );
+      onContextChange: key => {
+        if (contextSwitching) return;
+        const selected = context.contexts.find(item => agentContextKey(item) === key);
+        if (!selected) return;
+        // 自定义（debug_context）下即使三元组碰巧与某授权项相同，点选列表项也要退出自定义。
+        const sameIdentity = agentContextKey(selected) === agentContextKey(context.selected);
+        if (sameIdentity && !isDebugContext(window.location.search)) return;
+        setContextSwitching(true);
+        setContextError('');
+        activateContext(selected, true, false);
       },
-      onGatewayChange: gatewayId => {
-        const gateway = context.gateways.find(item => item.jiuwenclaw_id === gatewayId);
-        if (!gateway) {
-          const normalized = gatewayId.trim();
-          if (!normalized) return;
-          activateContext(
-            context.user.user_id,
-            {
-              ...context,
-              gateway: {
-                jiuwenclaw_id: normalized,
-                jiuwenclaw_name: normalized,
-                gateway_endpoint: null,
-              },
-            },
-            true,
-            true,
-          );
+      onCustomContextApply: input => {
+        if (contextSwitching) return;
+        const botId = input.botId.trim();
+        const groupId = input.groupId.trim();
+        const userId = input.userId.trim();
+        if (!botId || !groupId || !userId) {
+          setContextError(t('sessionSidebar.enterpriseContext.customRequired'));
           return;
         }
-        const orgs = movePreferredFirst([...context.orgs], item => item.group_id === context.org.group_id);
-        void switchContext(
-          orgs.map(org => ({ gateway, org })),
-          undefined,
-          '该组网暂无可用 Agent',
-        );
-      },
-      onBotChange: botId => {
-        const selected = context.agents.find(agent => agentRuntimeId(agent) === botId);
-        if (botId === context.selectedBot) return;
-        if (!selected) {
-          const normalized = botId.trim();
-          if (!normalized) return;
-          activateContext(
-            context.user.user_id,
-            {
-              gateway: context.gateway,
-              org: context.org,
-              agents: context.agents,
-              selectedBot: normalized,
-            },
-            true,
-            true,
-          );
-          return;
-        }
+        setContextSwitching(true);
+        setContextError('');
         activateContext(
-          context.user.user_id,
           {
-            gateway: context.gateway,
-            org: context.org,
-            agents: context.agents,
-            selectedBot: botId,
+            bot_id: botId,
+            group_id: groupId,
+            user_id: userId,
+            jiuwenclaw_id: context.selected.jiuwenclaw_id,
+            agent_name: botId,
+            group_name: groupId,
           },
+          true,
           true,
         );
       },
       onLogout: logout,
     };
-  }, [context, contextError, contextSwitching, logout, switchContext]);
+  }, [context, contextError, contextSwitching, logout, t]);
 
   if (!enterprise) return <>{children}</>;
   if (phase !== 'ready' || !contextValue) return <EntryStatus phase={phase} error={error} onLogout={logout} />;

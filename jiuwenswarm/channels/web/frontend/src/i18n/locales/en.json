@@ -544,7 +544,24 @@
     "connectionStatus": "Connection Status",
     "version": "Version",
     "language": "Language",
-    "moreSettings": "More Settings"
+    "moreSettings": "More Settings",
+    "enterpriseContext": {
+      "user": "User",
+      "userContext": "User context",
+      "modeAria": "Context setup mode",
+      "selectAgent": "Select Agent",
+      "custom": "Custom",
+      "agentOrgLabel": "Agent name - Organization name",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "apply": "Apply",
+      "switching": "Switching...",
+      "logout": "Sign out",
+      "customRequired": "Please fill in bot_id, group_id, and user_id",
+      "noMatch": "No matches",
+      "pleaseSelect": "Please select"
+    }
   },
   "a2aIngress": {
     "security": {
