@@ -2984,10 +2984,39 @@ def test_enrich_sets_serializable_build_context_seed() -> None:
     assert spec.build_context_seed is not None
     assert spec.build_context_seed["mode"] == "code.team"
     assert spec.build_context_seed["project_dir"] == "/tmp/proj"
-    assert spec.build_context_seed["disable_teammate_worktree"] is True
+    assert spec.build_context_seed["disable_teammate_worktree"] is False
     assert spec.build_context_seed["team_id"] == spec.team_name
     # The seed equals what the live context exports.
     assert spec.build_context_seed == spec.build_context.to_seed()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_disabled"),
+    [
+        ("team.work.normal", True),
+        ("team.work.plan", True),
+        ("agent.code.normal", True),
+        ("code.team", False),
+        ("team.plan.code", False),
+        ("team.code.normal", False),
+        ("team.code.plan", False),
+    ],
+)
+def test_enrich_enables_teammate_worktree_only_for_web_code_team(
+    mode: str,
+    expected_disabled: bool,
+) -> None:
+    spec = _make_team_spec()
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode=mode,
+        channel_id="web",
+    )
+
+    assert spec.build_context.disable_teammate_worktree is expected_disabled
+    assert spec.build_context_seed["disable_teammate_worktree"] is expected_disabled
 
 
 def test_distributed_member_rebuild_reconstructs_build_context() -> None:
