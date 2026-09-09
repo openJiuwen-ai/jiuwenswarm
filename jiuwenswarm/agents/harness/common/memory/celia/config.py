@@ -119,6 +119,9 @@ class CeliaConfig:
     flush_timeout: float = 120.0
     fail_open: bool = True
     runtime_state_path: str = ""
+    preflight_enabled: bool = False
+    request_scope: dict[str, str] = field(default_factory=dict)
+    advanced_tools: tuple[str, ...] = ()
 
     @property
     def normalized_binary_path(self) -> str:
@@ -432,7 +435,7 @@ def build_celia_config(
     if missing_model_fields:
         logger.warning(
             "[CeliaMemoryConfig] chat/embed endpoint incomplete; missing=%s; "
-            "memory_store remains available, but extraction or vector retrieval may be disabled",
+            "direct memory_store extraction or vector retrieval may fail",
             ", ".join(missing_model_fields),
         )
 
@@ -461,6 +464,10 @@ def build_celia_config(
         request_timeout=_number(section.get("request_timeout"), 10.0),
         flush_timeout=_number(section.get("flush_timeout"), 120.0),
         fail_open=_bool(section.get("fail_open"), True),
+        preflight_enabled=_bool(section.get("preflight_enabled"), False),
+        request_scope=_mapping(section.get("request_scope")),
+        advanced_tools=tuple(section.get("advanced_tools") or ())
+        if isinstance(section.get("advanced_tools"), (list, tuple)) else (),
         runtime_state_path=_first(
             section.get("runtime_state_path"),
             os.getenv("CELIA_XIAOYI_RUNTIME_PATH"),

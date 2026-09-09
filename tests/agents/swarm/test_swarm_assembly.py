@@ -106,6 +106,7 @@ def test_member_runtime_prompt_rail_binds_request_identity(mode: str) -> None:
 _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
     {
         registry.RUNTIME_PROMPT,
+        registry.EXTERNAL_MEMORY,
         registry.TEAM_SKILL_STORAGE_POLICY,
         registry.TEAM_SHARED_SKILL_LINK_REFRESH,
         registry.RESPONSE_PROMPT,
@@ -446,7 +447,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 19
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 20
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -1446,6 +1447,7 @@ def test_team_skill_create_rail_registers_full_workspace(
 _EXPECTED_CODE_RAIL_NAMES_LEADER: frozenset[str] = frozenset(
     {
         registry.CODE_RUNTIME_PROMPT,
+        registry.EXTERNAL_MEMORY,
         registry.RESPONSE_PROMPT,
         registry.STREAM_EVENT,
         registry.SECURITY,

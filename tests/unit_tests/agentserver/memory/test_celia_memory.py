@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -14,6 +15,7 @@ from jiuwenswarm.agents.harness.common.memory.celia import rail as celia_rail_mo
 from jiuwenswarm.agents.harness.common.memory.celia.config import (
     CeliaConfig,
     CeliaEndpointConfig,
+    build_celia_config,
 )
 from jiuwenswarm.agents.harness.common.memory.celia.provider import (
     CeliaMemoryProvider,
@@ -26,7 +28,6 @@ from jiuwenswarm.agents.harness.common.memory.celia.runtime_store import (
     get_runtime_store,
 )
 from jiuwenswarm.agents.harness.common.memory.celia.sanitizer import clean_turn_events
-from jiuwenswarm.agents.harness.common.memory.celia.session import CeliaSessionManager
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import get_external_memory_config
 from jiuwenswarm.agents.harness.common.memory.external_memory_builder import build_external_memory_rail
 
@@ -70,9 +71,38 @@ def test_external_builder_dispatches_celia_provider(monkeypatch):
     assert get_external_memory_config(config)["provider"] == "celia"
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.memory.external_memory_builder._build_celia_rail",
-        lambda config, ext_cfg, *, session_id: "celia-rail",
+        lambda config, ext_cfg, *, session_id, request_metadata: "celia-rail",
     )
     assert build_external_memory_rail(config, session_id="conversation-a") == "celia-rail"
+
+
+@pytest.mark.parametrize("value, expected", [(None, False), (False, False), ("false", False), (True, True), ("true", True)])
+def test_celia_preflight_config_is_opt_in(tmp_path, value, expected):
+    section = {} if value is None else {"preflight_enabled": value}
+    config = build_celia_config({}, {"celia": section}, workspace_dir=str(tmp_path))
+    assert config.preflight_enabled is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_provider_preflight_can_be_disabled(monkeypatch, enabled):
+    preflight = Mock(return_value=["Celia requires Linux"])
+    manager = SimpleNamespace(acquire=AsyncMock(side_effect=RuntimeError("backend unavailable")))
+    monkeypatch.setattr(CeliaConfig, "preflight_issues", preflight)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.memory.celia.provider.get_celia_client_manager",
+        lambda: manager,
+    )
+    provider = CeliaMemoryProvider(replace(_config(), preflight_enabled=enabled))
+    with pytest.raises(Exception, match="Celia requires Linux" if enabled else "backend unavailable"):
+        await provider.initialize()
+    assert provider.is_initialized is False
+    if enabled:
+        preflight.assert_called_once()
+        manager.acquire.assert_not_awaited()
+    else:
+        preflight.assert_not_called()
+        manager.acquire.assert_awaited_once()
 
 
 def test_runtime_state_is_fail_closed(tmp_path, monkeypatch):
@@ -125,7 +155,7 @@ class _FakeClient:
     async def call_tool(self, name, args, **kwargs):
         self.calls.append((name, args))
         await asyncio.sleep(0)
-        if name == "memory_search_l2":
+        if name == "memory_record_search":
             return {"results": [{"id": "m-1", "score": 0.95, "content": "remembered"}]}
         if name == "memory_add":
             return {"status": 0}
@@ -149,15 +179,16 @@ class _FailingSessions:
 
 
 @pytest.mark.asyncio
-async def test_provider_initialization_does_not_require_hidden_memory_add(monkeypatch):
+async def test_provider_initialization_uses_new_tool_discovery(monkeypatch):
     class Client:
         def __init__(self):
             self.calls = []
 
         async def list_tools(self):
-            # memory_add and memory_open are internal hook tools and are not
-            # required to appear in the public tools/list response.
-            return {"memory_store", "memory_flush"}
+            return {
+                "memory_add", "memory_store", "memory_record_search",
+                "memory_global_load", "memory_scene_load", "memory_scene_search",
+            }
 
         async def call_tool(self, name, args, **kwargs):
             self.calls.append((name, args))
@@ -187,7 +218,8 @@ async def test_provider_initialization_does_not_require_hidden_memory_add(monkey
     await provider.initialize()
 
     assert provider.is_initialized is True
-    assert provider._supported_mcp_tools == {"memory_store", "memory_flush"}
+    assert provider._supported_mcp_tools == await client.list_tools()
+    assert client.calls == []
 
     await provider.sync_turn("user question", "assistant answer")
     assert client.calls[0][0] == "memory_add"
@@ -196,30 +228,7 @@ async def test_provider_initialization_does_not_require_hidden_memory_add(monkey
 
 
 @pytest.mark.asyncio
-async def test_session_manager_deduplicates_concurrent_memory_open():
-    client = _FakeClient()
-    manager = CeliaSessionManager(client)
-    original = client.call_tool
-    open_count = 0
-
-    async def counted(name, args, **kwargs):
-        nonlocal open_count
-        if name == "memory_open":
-            open_count += 1
-            await asyncio.sleep(0.01)
-        return await original(name, args, **kwargs)
-
-    client.call_tool = counted
-    values = await asyncio.gather(
-        manager.ensure_tool_session("alice"),
-        manager.ensure_tool_session("alice"),
-    )
-    assert values == ["tools-alice", "tools-alice"]
-    assert open_count == 1
-
-
-@pytest.mark.asyncio
-async def test_provider_maps_l2_and_urgent_memory_add(tmp_path):
+async def test_provider_calls_record_search_and_direct_memory_store(tmp_path):
     runtime = tmp_path / ".xiaoyiruntime"
     runtime.write_text("MEMORYSTATE=true\n", encoding="utf-8")
     provider = CeliaMemoryProvider(
@@ -230,23 +239,25 @@ async def test_provider_maps_l2_and_urgent_memory_add(tmp_path):
     provider._lease = SimpleNamespace(client=client, sessions=_FakeSessions())
     provider._initialized = True
 
-    result = json.loads(await provider.handle_tool_call("memory_record_search", {"query": "where"}))
-    assert result["result"][0]["id"] == "m-1"
-    assert client.calls[0][0] == "memory_search_l2"
-    assert client.calls[0][1]["sessionId"] == "tools-alice"
+    result = json.loads(await provider.handle_tool_call("memory_record_search", {"query": "where", "searchType": "atomic_fact"}))
+    assert result["result"]["results"][0]["id"] == "m-1"
+    assert client.calls[0][0] == "memory_record_search"
+    assert client.calls[0][1]["userId"] == "alice"
 
-    await provider.handle_tool_call("memory_store", {"text": "keep this"})
+    stored = json.loads(await provider.handle_tool_call("memory_store", {"content": "keep this"}))
+    assert stored["ok"] is True
+    assert client.calls[1][0] == "memory_store"
     await provider.sync_turn("user question", "assistant answer")
     add_call = next(args for name, args in client.calls if name == "memory_add")
-    assert add_call["ingestMode"] == "deferred-urgent"
+    assert add_call["skipExtraction"] == 0
     assert add_call["userId"] == "alice"
 
 
 @pytest.mark.asyncio
-async def test_memory_store_is_local_and_does_not_require_mcp_session(tmp_path):
+async def test_memory_store_requires_backend_persistence(tmp_path):
     get_runtime_store().clear_all()
     runtime = tmp_path / ".xiaoyiruntime"
-    runtime.write_text("MEMORYSTATE=false\n", encoding="utf-8")
+    runtime.write_text("MEMORYSTATE=true\n", encoding="utf-8")
     provider = CeliaMemoryProvider(
         replace(_config(), runtime_state_path=str(runtime)),
         user_id="alice", scope_id="user", session_id="conversation-a",
@@ -254,20 +265,13 @@ async def test_memory_store_is_local_and_does_not_require_mcp_session(tmp_path):
     provider._lease = SimpleNamespace(sessions=_FailingSessions())
     result = json.loads(
         await provider.handle_tool_call(
-            "memory_store", {"text": "I like traveling to the seaside"}
+            "memory_store", {"content": "I like traveling to the seaside"}
         )
     )
 
-    assert result == {
-        "ok": True,
-        "result": "Noted",
-        "status": "deferred-urgent",
-    }
+    assert result["ok"] is False
     context = provider._context({})
-    assert get_runtime_store().prompt_values(context.store_key) == [
-        "I like traveling to the seaside"
-    ]
-    assert get_runtime_store().consume_urgent(context.store_key) is True
+    assert get_runtime_store().prompt_values(context.store_key) == []
 
 
 def test_provider_error_diagnostic_redacts_credentials():
@@ -290,14 +294,14 @@ async def test_provider_preserves_openclaw_memory_state_zero_write(tmp_path):
     provider._lease = SimpleNamespace(client=client, sessions=_FakeSessions())
     provider._initialized = True
 
-    disabled = await provider.handle_tool_call("memory_record_search", {"query": "where"})
+    disabled = await provider.handle_tool_call("memory_record_search", {"query": "where", "searchType": "atomic_fact"})
     assert "memory_disabled" in disabled
-    noted = json.loads(await provider.handle_tool_call("memory_store", {"text": "keep this"}))
-    assert noted["result"] == "Noted"
+    stored = json.loads(await provider.handle_tool_call("memory_store", {"content": "keep this"}))
+    assert stored["reason"] == "memory_disabled"
     await provider.sync_turn("user question", "assistant answer")
     add_call = next(args for name, args in client.calls if name == "memory_add")
-    assert add_call["memoryState"] == 0
-    assert add_call["ingestMode"] == "deferred-urgent"
+    assert add_call["skipExtraction"] == 1
+    assert len([call for call in client.calls if call[0] == "memory_add"]) == 2
 
 
 @pytest.mark.asyncio
@@ -313,7 +317,7 @@ async def test_client_decodes_double_encoded_tool_payload(monkeypatch):
 
     monkeypatch.setattr(client, "start", fake_start)
     monkeypatch.setattr(client, "_request", fake_request)
-    assert await client.call_tool("memory_flush", {}) == {"status": 0}
+    assert await client.call_tool("memory_global_load", {"userId": "alice"}) == {"status": 0}
 
 
 @pytest.mark.asyncio

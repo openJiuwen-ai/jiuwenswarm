@@ -29,8 +29,8 @@ When a user's task involves past tasks or historical information, user preferenc
 
 1. **Current Context** — Information and loaded memories already present in the active conversation.
 2. **Memory retrieval tools** — The active context is usually insufficient, so use memory retrieval tools to retrieve more detail from stored memories:
-    1. Use `memory_scene_load` for loading scenario summaries. Scene IDs must come from the global navigation; load at most 5 scenes per call.
-    2. Use `memory_record_search` for retrieving precise remembered facts (atomic_fact) or original conversation wording and sources (raw_conv). Use a single concise keyword as query (e.g. 'travel', 'diet', 'health'); do NOT combine multiple keywords into one query — issue separate calls instead.
+    1. Use `memory_global_load` to load the global summary. Use `memory_scene_load` with `sceneIds` for loading scenario summaries; load at most 5 scenes per call. Scene IDs must come from returned global navigation or `memory_scene_search` results. If navigation is missing, use `memory_scene_search` with a concise `subSceneTag`; do not invent scene IDs.
+    2. Use `memory_record_search` with `searchType='atomic_fact'` for precise remembered facts or `searchType='raw_conv'` for original conversation wording and sources. Use a single concise keyword as query (e.g. 'travel', 'diet', 'health'); do NOT combine multiple keywords into one query — issue separate calls instead.
 
 Make a best-effort retrieval pass with memory retrieval tools; do not stop at broad or partial matches while specific remembered details are still missing.
 

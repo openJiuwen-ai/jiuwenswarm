@@ -106,7 +106,10 @@ def test_get_memory_engine_valid_values(value, expected):
     {},
     None,
 ])
-def test_get_memory_engine_falls_back_to_builtin(cfg):
+def test_get_memory_engine_falls_back_to_builtin(cfg, monkeypatch):
+    # None loads runtime config; keep this missing-engine case independent of
+    # the shipped default (which now explicitly enables external memory).
+    monkeypatch.setattr(emc, "_load_config", lambda: {})
     assert emc.get_memory_engine(cfg) == "builtin"
 
 

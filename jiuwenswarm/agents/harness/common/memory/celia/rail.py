@@ -24,6 +24,12 @@ from .provider import CeliaMemoryProvider, _redact_diagnostic
 
 logger = logging.getLogger(__name__)
 
+# Safety is priority 13 and the runtime-built Tool Usage Rules section is 14.
+# Keep Celia's static memory contract immediately after those shared sections.
+# Per-request recalled memory remains an attachment at priority 55 because its
+# content is dynamic and must not be placed in the cacheable static prefix.
+_EXTERNAL_MEMORY_SECTION_PRIORITY = 15
+
 
 class CeliaMemoryRail(DeepAgentRail):
     priority = 75
@@ -65,13 +71,7 @@ class CeliaMemoryRail(DeepAgentRail):
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self._attachment_manager = getattr(agent, "prompt_attachment_manager", None)
         self._register_provider_tools(agent)
-        if self._system_prompt_builder is not None:
-            block = load_celia_agent_prompt()
-            if block:
-                language = getattr(self._system_prompt_builder, "language", "cn")
-                section = build_external_memory_section(block, language=language)
-                if section:
-                    self._system_prompt_builder.add_section(section)
+        self._inject_system_prompt()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -80,6 +80,20 @@ class CeliaMemoryRail(DeepAgentRail):
             self._prewarm_task = loop.create_task(
                 self._prewarm(agent), name="celia-memory-prewarm"
             )
+
+    def _inject_system_prompt(self) -> None:
+        # Hot reconfiguration replaces the builder while retaining this rail.
+        # Re-add by section name so the prompt survives without duplicating it.
+        if self._agent is not None:
+            self._system_prompt_builder = getattr(self._agent, "system_prompt_builder", None)
+        if self._system_prompt_builder is not None:
+            block = load_celia_agent_prompt()
+            if block:
+                language = getattr(self._system_prompt_builder, "language", "cn")
+                section = build_external_memory_section(block, language=language)
+                if section:
+                    section.priority = _EXTERNAL_MEMORY_SECTION_PRIORITY
+                    self._system_prompt_builder.add_section(section)
 
     async def _prewarm(self, agent) -> None:
         try:
@@ -160,6 +174,7 @@ class CeliaMemoryRail(DeepAgentRail):
             self._register_provider_tools(self._agent)
 
     async def before_model_call(self, ctx) -> None:
+        self._inject_system_prompt()
         if not self._initialized:
             await self._clear_attachment(ctx)
             return
@@ -169,8 +184,8 @@ class CeliaMemoryRail(DeepAgentRail):
             await self._clear_attachment(ctx)
             return
         try:
-            # PromptBuffer is intentionally fetched on every model call so a
-            # memory_store tool call is visible in the same tool loop.
+            # A successful memory_store invalidates the cached global summary,
+            # so the next model call can see the newly persisted memory.
             raw_context = await asyncio.wait_for(
                 self._provider.prefetch(
                     query,
@@ -346,7 +361,12 @@ class CeliaMemoryRail(DeepAgentRail):
         manager = getattr(agent, "ability_manager", None)
         if manager is None:
             return
-        for schema in self._provider.get_tool_schemas():
+        schemas = self._provider.get_tool_schemas()
+        desired_names = {schema["name"] for schema in schemas}
+        for name in self._owned_tool_names - desired_names:
+            manager.remove_ability(name)
+        self._owned_tool_names.intersection_update(desired_names)
+        for schema in schemas:
             name = schema.get("name")
             if not name or name in self._owned_tool_names:
                 continue
@@ -358,7 +378,10 @@ class CeliaMemoryRail(DeepAgentRail):
             )
 
             async def _tool_func(_name=name, **kwargs):
-                value = await self._provider.handle_tool_call(_name, kwargs)
+                # Core fills absent optional schema fields with None. The MCP
+                # contract expects those fields to be omitted, not JSON null.
+                arguments = {key: value for key, value in kwargs.items() if value is not None}
+                value = await self._provider.handle_tool_call(_name, arguments)
                 try:
                     return json.loads(value)
                 except json.JSONDecodeError:

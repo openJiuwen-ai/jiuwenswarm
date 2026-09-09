@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from .runtime_state import read_memory_state
@@ -17,6 +17,7 @@ class CeliaRuntimeContext:
     session_id: str
     memory_state: bool
     trace_id: str
+    request_scope: dict[str, str] = field(default_factory=dict)
 
     @property
     def tool_session_id(self) -> str:
@@ -47,6 +48,8 @@ def resolve_runtime_context(
     default_user_id: str,
     default_scope_id: str,
     default_session_id: str = "__default__",
+    default_request_scope: Mapping[str, str] | None = None,
+    default_metadata: Mapping[str, Any] | None = None,
     explicit: Mapping[str, Any] | None = None,
 ) -> CeliaRuntimeContext:
     explicit = explicit or {}
@@ -58,7 +61,7 @@ def resolve_runtime_context(
     except Exception:
         request = None
 
-    metadata = dict(getattr(request, "metadata", None) or {})
+    metadata = {**dict(default_metadata or {}), **dict(getattr(request, "metadata", None) or {})}
     permission = getattr(request, "permission_context", None)
     request_session = _first_text(getattr(request, "session_id", None))
     request_chat = _first_text(getattr(request, "chat_id", None))
@@ -98,6 +101,12 @@ def resolve_runtime_context(
     # OpenClaw compatibility: .xiaoyiruntime is the only MEMORYSTATE source.
     # Request parameters and process environment must never override it.
     state = read_memory_state(str(explicit.get("runtime_state_path") or ""))
+    request_scope = dict(default_request_scope or {})
+    incoming_scope = metadata.get("celia_request_scope")
+    if isinstance(incoming_scope, Mapping):
+        request_scope.update(incoming_scope)
+    # Preserve tenant isolation when replacing the removed tenant_id wire field.
+    request_scope["tenantId"] = tenant_id
     return CeliaRuntimeContext(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -106,4 +115,5 @@ def resolve_runtime_context(
         session_id=session_id,
         memory_state=state,
         trace_id=_first_text(metadata.get("trace_id"), metadata.get("_trace_id"), request_id) or "jiuwen-celia",
+        request_scope=request_scope,
     )

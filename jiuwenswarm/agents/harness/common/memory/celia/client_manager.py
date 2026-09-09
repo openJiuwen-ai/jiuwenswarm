@@ -8,14 +8,12 @@ from dataclasses import dataclass
 from .client import CeliaMcpClient
 from .config import CeliaConfig
 from .errors import CeliaConfigError
-from .session import CeliaSessionManager
 
 
 @dataclass
 class CeliaClientLease:
     key: tuple[str, ...]
     client: CeliaMcpClient
-    sessions: CeliaSessionManager
     released: bool = False
 
 
@@ -23,7 +21,6 @@ class CeliaClientLease:
 class _Entry:
     config: CeliaConfig
     client: CeliaMcpClient
-    sessions: CeliaSessionManager
     ref_count: int = 0
 
 
@@ -41,7 +38,7 @@ class CeliaClientManager:
             entry = self._entries.get(key)
             if entry is None:
                 client = CeliaMcpClient(config)
-                entry = _Entry(config=config, client=client, sessions=CeliaSessionManager(client))
+                entry = _Entry(config=config, client=client)
                 async def _clear_runtime_state() -> None:
                     from .fixed_context import get_fixed_context_cache
                     from .runtime_store import get_runtime_store
@@ -61,7 +58,7 @@ class CeliaClientManager:
                 if entry.ref_count <= 0:
                     self._entries.pop(key, None)
             raise
-        return CeliaClientLease(key=key, client=entry.client, sessions=entry.sessions)
+        return CeliaClientLease(key=key, client=entry.client)
 
     async def release(self, lease: CeliaClientLease) -> None:
         if lease.released:

@@ -92,6 +92,7 @@ def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
+    registry.EXTERNAL_MEMORY,
     registry.TEAM_SKILL_STORAGE_POLICY,
     registry.TEAM_SHARED_SKILL_LINK_REFRESH,
     registry.RESPONSE_PROMPT,
@@ -161,6 +162,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
 
 # Rails shared with the team profile, appended to the code profile.
 _CODE_SHARED_RAIL_NAMES: tuple[str, ...] = (
+    registry.EXTERNAL_MEMORY,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.TEAM_DELIVERABLE_LOCATION,
     registry.PLUGIN_RAILS,
