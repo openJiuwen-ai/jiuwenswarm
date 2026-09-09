@@ -11662,7 +11662,7 @@ class JiuWenSwarmDeepAdapter:
         had_assistant_output: bool,
         run_failure: tuple[str, str] | None,
         stream_consumer_cancelled: bool,
-        emitted_ask_user_request_ids: set[str],
+        emitted_ask_user_events: set[tuple[Any, ...]],
     ) -> bool:
         """Whether a chat round ended without the LLM ever being called.
 
@@ -11677,7 +11677,7 @@ class JiuWenSwarmDeepAdapter:
             return False
         if run_failure is not None or stream_consumer_cancelled:
             return False
-        if emitted_ask_user_request_ids:
+        if emitted_ask_user_events:
             # A HITL interrupt is waiting for the user's answer; the round
             # legitimately ends without a model final.
             return False
@@ -13013,6 +13013,29 @@ class JiuWenSwarmDeepAdapter:
             return None
         return parsed
 
+    @staticmethod
+    def _ask_user_event_identity(payload: dict[str, Any]) -> tuple[Any, ...] | None:
+        """Return a presentation-only identity without collapsing permission batches."""
+        if payload.get("event_type") != "chat.ask_user_question":
+            return None
+        source = str(payload.get("source") or "")
+        request_id = str(payload.get("request_id") or "").strip()
+        if source == "permission_interrupt":
+            card_ids: list[str] = []
+            for question in payload.get("questions") or []:
+                if not isinstance(question, dict):
+                    return None
+                card_id = str(question.get("card_id") or "").strip()
+                card_ids.append(card_id)
+            if card_ids and all(card_ids):
+                return ("permission", tuple(sorted(card_ids)))
+            if any(card_ids):
+                return None
+            # Ordinary permission questions have no Smart card. Keep their
+            # request identity so a pending approval is not an empty LLM run.
+        if not request_id:
+            return None
+        return ("interaction", source, request_id)
 
     @staticmethod
     def _format_approval_summary(
@@ -13704,6 +13727,45 @@ class JiuWenSwarmDeepAdapter:
     async def process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
+        """Bind trusted host identity and command execution for one request."""
+        async with self._permission_request_admission(request, inputs):
+            self.validate_auto_permission_workspace_request(request)
+            request_params = request.params if isinstance(request.params, dict) else {}
+            runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
+            root_invocation_token = bind_root_permission_request(
+                root_session_id=self._resolve_interrupt_session_id(request.session_id),
+                request_id=str(request.request_id or "").strip(),
+                enabled=self._enable_auto_permission and not is_team_params(request_params)
+                and runtime_mode != "auto_harness",
+                queue=self._root_permission_queue,
+            )
+            channel_token = TOOL_PERMISSION_CHANNEL_ID.set(
+                (request.channel_id or "").strip()
+            )
+            request_token = TOOL_PERMISSION_REQUEST_ID.set(
+                (request.request_id or "").strip()
+            )
+            command_token = None
+            if self._is_session_scoped_adapter and self._sys_operation is not None:
+                command_token = bind_command_execution(
+                    self._sys_operation,
+                    sandboxed=(
+                        getattr(self._sys_operation_card, "mode", None)
+                        == OperationMode.SANDBOX
+                    ),
+                )
+            try:
+                return await self._process_message_impl(request, inputs)
+            finally:
+                reset_root_permission_request(root_invocation_token)
+                if command_token is not None:
+                    reset_command_execution(command_token)
+                TOOL_PERMISSION_REQUEST_ID.reset(request_token)
+                TOOL_PERMISSION_CHANNEL_ID.reset(channel_token)
+
+    async def _process_message_impl(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> AgentResponse:
         """Execute a single non-streaming request and return the response.
 
         Args:
@@ -13714,13 +13776,17 @@ class JiuWenSwarmDeepAdapter:
             AgentResponse 包含执行结果
         """
         if not self._is_session_scoped_adapter:
-            session_adapter = await self._get_or_create_session_adapter(
-                request.session_id,
-                history_before_request_id=request.request_id,
+            session_id = self._session_adapter_key(request.session_id)
+            session_adapter = await self._get_session_adapter_for_request(
+                request,
+                reserve_activity=True,
             )
             try:
                 return await session_adapter.process_message_impl(request, inputs)
             finally:
+                session_adapter._unregister_session_agent_task(  # pylint: disable=protected-access
+                    session_id
+                )
                 await self._evict_idle_session_adapters()
 
         if self._instance is None:
@@ -13836,7 +13902,6 @@ class JiuWenSwarmDeepAdapter:
             user_id=getattr(request, "user_id", None),
         )
         self._runtime_cron_tool_context.remember_current_binding()
-        token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
         token_perm = setup_permission_context(request)
         resolved_model = self._resolve_model_for_request(request)
         self._apply_model_to_react_agent(
@@ -13929,14 +13994,15 @@ class JiuWenSwarmDeepAdapter:
                 run_id=request.request_id,
                 turn_id=request.request_id,
             )
+            inputs = await self._prepare_root_input_dispatch(request, inputs)
             attach_goal = self._wants_attach_goal(request.params)
-            dispatch_mode = self._resolve_input_dispatch_mode(request.params)
             if attach_goal:
                 gm = self._get_goal_manager()
                 peek = getattr(gm, "peek", None) if gm is not None else None
                 record = peek() if callable(peek) else None
                 status = getattr(getattr(record, "status", None), "value", getattr(record, "status", None))
                 if status != "active":
+                    self._permission_dispatch.release(inputs)
                     return AgentResponse(
                         request_id=request.request_id,
                         channel_id=request.channel_id,
@@ -13945,26 +14011,26 @@ class JiuWenSwarmDeepAdapter:
                         metadata=request.metadata,
                     )
                 interaction_stream = await self._instance.attach_output()
+                self._permission_dispatch.release(inputs)
             elif self._should_inject_into_existing_interaction(request.params):
                 # Idle → become the reader; busy → inject into the existing stream.
-                interaction_stream = await self._instance.attach_output()
-                await self._instance.send_input(
-                    SendInputRequest(
-                        request_id=request.request_id,
-                        inputs=inputs,
-                        mode=dispatch_mode,
+                interaction_stream, _permission_dispatched = (
+                    await self._attach_and_send_inputs(
+                        request,
+                        inputs,
+                        send_without_output=True,
                     )
                 )
             else:
-                interaction_stream = await self._instance.attach_output()
-                if interaction_stream is not None:
-                    await self._instance.send_input(
-                        SendInputRequest(
-                            request_id=request.request_id,
-                            inputs=inputs,
-                            mode=dispatch_mode,
-                        )
+                interaction_stream, permission_dispatched = (
+                    await self._attach_and_send_inputs(
+                        request,
+                        inputs,
+                        send_without_output=False,
                     )
+                )
+                if interaction_stream is None and not permission_dispatched:
+                    self._permission_dispatch.release(inputs)
             if interaction_stream is None:
                 return AgentResponse(
                     request_id=request.request_id,
@@ -14061,8 +14127,8 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 reset_current_multimodal_image_files(image_files_token)
+            self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
-            TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
             self._reset_runtime_cron_context(cron_context_tokens)
             self._unmark_session_active(session_id)
@@ -14091,8 +14157,49 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
         )
 
-
     async def process_message_stream_impl(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """Bind trusted host identity and command execution for one stream."""
+        async with self._permission_request_admission(request, inputs):
+            self.validate_auto_permission_workspace_request(request)
+            request_params = request.params if isinstance(request.params, dict) else {}
+            runtime_mode = str(request_params.get("mode") or "agent").strip().lower()
+            root_invocation_token = bind_root_permission_request(
+                root_session_id=self._resolve_interrupt_session_id(request.session_id),
+                request_id=str(request.request_id or "").strip(),
+                enabled=self._enable_auto_permission and not is_team_params(request_params)
+                and runtime_mode != "auto_harness",
+                queue=self._root_permission_queue,
+            )
+            channel_token = TOOL_PERMISSION_CHANNEL_ID.set(
+                (request.channel_id or "").strip()
+            )
+            request_token = TOOL_PERMISSION_REQUEST_ID.set(
+                (request.request_id or "").strip()
+            )
+            command_token = None
+            if self._is_session_scoped_adapter and self._sys_operation is not None:
+                command_token = bind_command_execution(
+                    self._sys_operation,
+                    sandboxed=(
+                        getattr(self._sys_operation_card, "mode", None)
+                        == OperationMode.SANDBOX
+                    ),
+                )
+            private_stream = self._process_message_stream_impl(request, inputs)
+            try:
+                async with aclosing(private_stream):
+                    async for chunk in private_stream:
+                        yield chunk
+            finally:
+                reset_root_permission_request(root_invocation_token)
+                if command_token is not None:
+                    reset_command_execution(command_token)
+                TOOL_PERMISSION_REQUEST_ID.reset(request_token)
+                TOOL_PERMISSION_CHANNEL_ID.reset(channel_token)
+
+    async def _process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AsyncIterator[AgentResponseChunk]:
         """Execute a streaming request; yield response chunks.
@@ -14108,15 +14215,21 @@ class JiuWenSwarmDeepAdapter:
         # "entering runner streaming" line so the pre-dispatch work is visible.
         stream_impl_started_at = time.monotonic()
         if not self._is_session_scoped_adapter:
-            session_adapter = await self._get_or_create_session_adapter(
-                request.session_id,
-                history_before_request_id=request.request_id,
+            session_id = self._session_adapter_key(request.session_id)
+            session_adapter = await self._get_session_adapter_for_request(
+                request,
+                reserve_activity=True,
             )
             try:
-                async for chunk in session_adapter.process_message_stream_impl(request, inputs):
-                    yield chunk
+                child_stream = session_adapter.process_message_stream_impl(request, inputs)
+                async with aclosing(child_stream):
+                    async for chunk in child_stream:
+                        yield chunk
                 return
             finally:
+                session_adapter._unregister_session_agent_task(  # pylint: disable=protected-access
+                    session_id
+                )
                 await self._evict_idle_session_adapters()
 
         if self._instance is None:
@@ -14204,11 +14317,9 @@ class JiuWenSwarmDeepAdapter:
             image_files_token = set_current_multimodal_image_files(
                 inputs.pop("_multimodal_image_files", []) or []
             )
-            # Same permission bindings the single agent installs. Both are
-            # ContextVars, and ``asyncio.create_task`` snapshots the context, so
-            # the long-lived team stream task keeps the values this request set
-            # even after the resets below run at request end.
-            token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
+            # The public stream wrapper owns channel/request identity. Team keeps
+            # only its owner-scoped permission context here; background tasks
+            # inherit both bindings through the asyncio context snapshot.
             token_perm = setup_permission_context(request)
             resolved_language = self._resolve_runtime_language()
             resolved_channel = str(cid or self._resolve_prompt_channel(session_id) or "web").strip() or "web"
@@ -14231,12 +14342,10 @@ class JiuWenSwarmDeepAdapter:
                 getattr(self, "_heartbeat_service", None)
             )
             try:
-                async for chunk in process_team_message_stream(
-                    request,
-                    inputs,
-                    self._instance,
-                ):
-                    yield chunk
+                team_stream = process_team_message_stream(request, inputs, self._instance)
+                async with aclosing(team_stream):
+                    async for chunk in team_stream:
+                        yield chunk
             finally:
                 from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
                     reset_current_multimodal_image_files,
@@ -14244,7 +14353,6 @@ class JiuWenSwarmDeepAdapter:
 
                 reset_current_multimodal_image_files(image_files_token)
                 reset_team_heartbeat_service(token_heartbeat_service)
-                TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
                 cleanup_permission_context(token_perm)
             return
 
@@ -14278,30 +14386,38 @@ class JiuWenSwarmDeepAdapter:
 
             activate_response = request.params.get("activate_response")
             if isinstance(activate_response, dict):
-                async for chunk in self._auto_harness_service.resume_activate(
+                resume_stream = self._auto_harness_service.resume_activate(
                     session_id, rid, cid, activate_response
-                ):
-                    yield chunk
+                )
+                async with aclosing(resume_stream):
+                    async for chunk in resume_stream:
+                        yield chunk
                 return
 
             resolved_model = self._resolve_model_for_request(request)
             if self._auto_harness_service.is_activate_only_request(request, query):
-                async for chunk in self._auto_harness_service.run_activate_only(
+                activate_stream = self._auto_harness_service.run_activate_only(
                     request, session_id, rid, query, model=resolved_model
-                ):
-                    yield chunk
+                )
+                async with aclosing(activate_stream):
+                    async for chunk in activate_stream:
+                        yield chunk
                 return
             if self._auto_harness_service.is_implement_only_request(request, query):
-                async for chunk in self._auto_harness_service.run_implement_only(
+                implement_stream = self._auto_harness_service.run_implement_only(
                     request, session_id, rid, query, model=resolved_model
-                ):
-                    yield chunk
+                )
+                async with aclosing(implement_stream):
+                    async for chunk in implement_stream:
+                        yield chunk
                 return
 
-            async for chunk in self._auto_harness_service.run(
+            harness_stream = self._auto_harness_service.run(
                 request, session_id, rid, query=query, model=resolved_model
-            ):
-                yield chunk
+            )
+            async with aclosing(harness_stream):
+                async for chunk in harness_stream:
+                    yield chunk
             return
 
         # 拦截斜杠命令 / 结构化 command.goal
@@ -14434,7 +14550,7 @@ class JiuWenSwarmDeepAdapter:
             "output_cost": 0.0,
             "total_cost": 0.0,
         }
-        emitted_ask_user_request_ids: set[str] = set()
+        emitted_ask_user_events: set[tuple[Any, ...]] = set()
         # The run's final answer for the OTel trace output, kept as the streamed
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
         run_answer_deltas: list[str] = []
@@ -14445,12 +14561,12 @@ class JiuWenSwarmDeepAdapter:
                 return False
             if parsed.get("event_type") != "chat.ask_user_question":
                 return False
-            request_id = str(parsed.get("request_id") or "").strip()
-            if not request_id:
+            identity = self._ask_user_event_identity(parsed)
+            if identity is None:
                 return False
-            if request_id in emitted_ask_user_request_ids:
+            if identity in emitted_ask_user_events:
                 return True
-            emitted_ask_user_request_ids.add(request_id)
+            emitted_ask_user_events.add(identity)
             return False
 
         def note_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -14517,7 +14633,6 @@ class JiuWenSwarmDeepAdapter:
             user_id=getattr(request, "user_id", None),
         )
         self._runtime_cron_tool_context.remember_current_binding()
-        token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
         token_perm = setup_permission_context(request)
         # 按请求选择模型
         resolved_model = self._resolve_model_for_request(request)
@@ -14717,7 +14832,10 @@ class JiuWenSwarmDeepAdapter:
                     is_complete=True,
                 )
 
+            inputs = await self._prepare_root_input_dispatch(request, inputs)
+
             if pending_goal_op is not None:
+                self._permission_dispatch.release(inputs)
                 # dispatch 前采样：之后 active_round 可能已切到 goal
                 defer_goal_history = self._should_defer_goal_objective_history(session_id)
                 interaction_stream = await self._instance.attach_output()
@@ -14816,6 +14934,7 @@ class JiuWenSwarmDeepAdapter:
                     interaction_stream_abort = False
                     return
             elif goal_stream_request or attach_goal_request:
+                self._permission_dispatch.release(inputs)
                 defer_goal_history = self._should_defer_goal_objective_history(session_id)
                 if goal_snapshot is not None:
                     yield AgentResponseChunk(
@@ -14853,25 +14972,40 @@ class JiuWenSwarmDeepAdapter:
                     return
             elif self._should_inject_into_existing_interaction(request.params):
                 # Idle → become the reader; busy → inject and accept.
-                # Interrupt resumes (permission/confirm/ask-user) must send_input
-                # even when Goal already holds the output lease.
-                interaction_stream = await self._instance.attach_output()
-                # Last stop before the message is injected into the running
-                # single-agent interaction (interrupt / HITL resume).
+                interaction_stream, permission_dispatched = (
+                    await self._attach_and_send_inputs(
+                        request,
+                        inputs,
+                        send_without_output=True,
+                    )
+                )
                 server_logger.info(
-                    "[AgentServer] message entering runner interaction inject: session_id=%s"
-                    " request_id=%s channel_id=%s mode=%s query=%s",
+                    "[AgentServer] message dispatched to runner interaction inject: "
+                    "session_id=%s request_id=%s channel_id=%s mode=%s query=%s",
                     session_id,
                     rid,
                     cid,
                     mode,
                     preview_text(inputs.get("query", "")),
                 )
-                await self._instance.send_input(
-                    SendInputRequest(
+                if permission_dispatched:
+                    yield AgentResponseChunk(
                         request_id=rid,
-                        inputs=inputs,
-                        mode=self._resolve_input_dispatch_mode(request.params),
+                        channel_id=cid,
+                        payload={"event_type": "runtime.accepted", "request_id": rid},
+                        is_complete=False,
+                    )
+                if interaction_stream is None:
+                    async for chunk in _yield_runtime_accepted():
+                        yield chunk
+                    interaction_stream_abort = False
+                    return
+            else:
+                interaction_stream, permission_dispatched = (
+                    await self._attach_and_send_inputs(
+                        request,
+                        inputs,
+                        send_without_output=False,
                     )
                 )
                 if interaction_stream is None:
@@ -14879,19 +15013,9 @@ class JiuWenSwarmDeepAdapter:
                         yield chunk
                     interaction_stream_abort = False
                     return
-            else:
-                interaction_stream = await self._instance.attach_output()
-                if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
-                        yield chunk
-                    interaction_stream_abort = False
-                    return
-                # Last stop before the message enters the single-agent runner
-                # streaming path. ``prepare_ms`` covers everything this adapter
-                # did with the turn before handing it over.
                 server_logger.info(
-                    "[AgentServer] message entering runner streaming: session_id=%s request_id=%s"
-                    " channel_id=%s mode=%s prepare_ms=%.1f query=%s",
+                    "[AgentServer] message dispatched to runner streaming: session_id=%s "
+                    "request_id=%s channel_id=%s mode=%s dispatch_ms=%.1f query=%s",
                     session_id,
                     rid,
                     cid,
@@ -14899,13 +15023,46 @@ class JiuWenSwarmDeepAdapter:
                     (time.monotonic() - stream_impl_started_at) * 1000,
                     preview_text(inputs.get("query", "")),
                 )
-                await self._instance.send_input(
-                    SendInputRequest(
+                if permission_dispatched:
+                    yield AgentResponseChunk(
                         request_id=rid,
-                        inputs=inputs,
-                        mode=self._resolve_input_dispatch_mode(request.params),
+                        channel_id=cid,
+                        payload={
+                            "event_type": "runtime.accepted",
+                            "request_id": rid,
+                        },
+                        is_complete=False,
                     )
-                )
+
+            def observe_runner_stream_chunk(
+                chunk: Any,
+                *,
+                stream_started_at: float,
+                first_seen: bool,
+                failure: tuple[str, str] | None,
+            ) -> tuple[bool, tuple[str, str] | None]:
+                """Apply the shared, side-effect-only runner stream observations."""
+
+                self._track_round_output_boundary(chunk)
+                if not first_seen:
+                    first_seen = True
+                    server_logger.info(
+                        "[AgentServer] runner streaming first chunk: session_id=%s "
+                        "request_id=%s channel_id=%s mode=%s elapsed_ms=%.1f "
+                        "chunk_type=%s",
+                        session_id,
+                        rid,
+                        cid,
+                        mode,
+                        (time.monotonic() - stream_started_at) * 1000,
+                        getattr(chunk, "type", None) or type(chunk).__name__,
+                    )
+                if _debug_logger is not None:
+                    _debug_logger.feed(chunk)
+                if failure is None:
+                    failure = self._run_failure(chunk)
+                return first_seen, failure
+
             # Start of the wait for the runner's first chunk; every branch above
             # has either handed the message over or attached to a running round.
             runner_stream_started_at = time.monotonic()
@@ -14924,27 +15081,12 @@ class JiuWenSwarmDeepAdapter:
             # sample the run kind again on its own first chunk.
             self._reset_round_kind_latch()
             async for chunk in interaction_stream:
-                self._track_round_output_boundary(chunk)
-                # First chunk handed back by the runner: records the time to
-                # first token for this round.
-                if not first_chunk_seen:
-                    first_chunk_seen = True
-                    server_logger.info(
-                        "[AgentServer] runner streaming first chunk: session_id=%s request_id=%s"
-                        " channel_id=%s mode=%s elapsed_ms=%.1f chunk_type=%s",
-                        session_id,
-                        rid,
-                        cid,
-                        mode,
-                        (time.monotonic() - runner_stream_started_at) * 1000,
-                        getattr(chunk, "type", None) or type(chunk).__name__,
-                    )
-                if _debug_logger is not None:
-                    _debug_logger.feed(chunk)
-                # Failure detection also controls whether closing the output
-                # lease aborts the active round; it must not depend on /debug.
-                if run_failure is None:
-                    run_failure = self._run_failure(chunk)
+                first_chunk_seen, run_failure = observe_runner_stream_chunk(
+                    chunk,
+                    stream_started_at=runner_stream_started_at,
+                    first_seen=first_chunk_seen,
+                    failure=run_failure,
+                )
                 if not (hasattr(chunk, "type") and hasattr(chunk, "payload")):
                     parsed = self._parse_stream_chunk(chunk, _parent_session_id=self._parent_session_id)
                     # Only stamp provenance / inject split on new visible deltas.
@@ -15220,7 +15362,7 @@ class JiuWenSwarmDeepAdapter:
                 had_assistant_output=had_assistant_output,
                 run_failure=run_failure,
                 stream_consumer_cancelled=stream_consumer_cancelled,
-                emitted_ask_user_request_ids=emitted_ask_user_request_ids,
+                emitted_ask_user_events=emitted_ask_user_events,
             )
             if empty_llm_run:
                 self._empty_run_guard_armed = True
@@ -15311,6 +15453,7 @@ class JiuWenSwarmDeepAdapter:
                 channel_id=cid,
                 payload={
                     "event_type": "chat.error",
+                    "request_id": rid,
                     "error": str(exc),
                     "error_type": type(exc).__name__,
                 },
@@ -15351,8 +15494,8 @@ class JiuWenSwarmDeepAdapter:
                 error_type=run_failure[0] if run_failure is not None else "",
                 error_message=run_failure[1] if run_failure is not None else "",
             )
+            self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
-            TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
@@ -15447,7 +15590,6 @@ class JiuWenSwarmDeepAdapter:
             payload=None,
             is_complete=True,
         )
-
 
     @staticmethod
     def _stream_text_payload(
@@ -15795,6 +15937,11 @@ class JiuWenSwarmDeepAdapter:
                 chunk_type = chunk.type
                 payload = chunk.payload
 
+                if chunk_type == "__interaction__" and contains_permission_interaction(
+                    chunk
+                ):
+                    return None
+
                 if chunk_type == GOAL_UPDATED_EVENT_TYPE:
                     return JiuWenSwarmDeepAdapter._interaction_goal_updated_payload(payload)
 
@@ -15808,6 +15955,16 @@ class JiuWenSwarmDeepAdapter:
                     }
 
                 if chunk_type == "controller_output" and payload is not None:
+                    if contains_permission_interaction(payload):
+                        return None
+                    parsed_controller = parse_common_stream_chunk(chunk)
+                    if isinstance(parsed_controller, dict) and parsed_controller.get(
+                        "event_type"
+                    ) in {
+                        "chat.ask_user_question",
+                        "harness.activate_interaction",
+                    }:
+                        return parsed_controller
                     inner_t = getattr(payload, "type", None)
                     inner_val = getattr(inner_t, "value", inner_t) if inner_t is not None else None
                     if inner_val == "task_completion":
@@ -15921,6 +16078,7 @@ class JiuWenSwarmDeepAdapter:
                                 "is_error",
                                 "error",
                                 "summary",
+                                "reviewer_metadata",
                                 "graph_status",
                                 "graph_build",
                                 "direct_display",
@@ -16048,7 +16206,12 @@ class JiuWenSwarmDeepAdapter:
                             ),
                             "options": payload.get("options", ["accept", "reject"]),
                         }
-                    return convert_interactions_to_ask_user_question([payload])
+                    return convert_interactions_to_ask_user_question(
+                        [payload],
+                        root_permission_queue=(
+                            current_root_permission_queue()
+                        ),
+                    )
 
                 # Auto-harness specific: harness.message event
                 if chunk_type == "message":
