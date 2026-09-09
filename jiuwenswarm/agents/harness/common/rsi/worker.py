@@ -32,12 +32,6 @@ logger = logging.getLogger(__name__)
 _QUEUE_MAXSIZE = 128
 _DEFAULT_POLL_TIMEOUT = object()
 _PROVIDER_IN_PROGRESS = frozenset({"CREATED", "QUEUED", "RUNNING"})
-# The generic Provider watchdog remains bounded, but PAPER is deliberately
-# excluded from it below.  A paper iteration contains several model-backed
-# modules and network retrieval; there is no reliable per-iteration wall-clock
-# bound that can be multiplied by ``max_iterations`` without killing a healthy
-# run.  PAPER is stopped by its Provider's explicit terminate path instead.
-_PROVIDER_POLL_TIMEOUT_SECONDS = 30 * 60
 _PROVIDER_POLL_INTERVAL_SECONDS = 0.1
 _PROVIDER_HANDOFF_RETRY_SECONDS = 0.05
 _PROVIDER_TERMINATE_TIMEOUT_SECONDS = 5.0
@@ -62,7 +56,7 @@ class RsiWorker:
         projector: Any,
         artifact_service: Any,
         push_callbacks: dict[str, Any] | None = None,
-        provider_poll_timeout: float = _PROVIDER_POLL_TIMEOUT_SECONDS,
+        provider_poll_timeout: float | None = None,
     ) -> None:
         self.store = store
         self.adapters = adapters
@@ -81,10 +75,15 @@ class RsiWorker:
         self._slot_released: dict[str, asyncio.Future[None]] = {}
         self._winding_down: set[asyncio.Task[Any]] = set()
         # Providers that return before their durable snapshot reaches a
-        # terminal state are polled here.  Keep the bound configurable for
-        # deployments and tests, while protecting the queue from a Provider
-        # that is stuck in CREATED/QUEUED/RUNNING forever.
-        self.provider_poll_timeout = max(0.1, float(provider_poll_timeout))
+        # terminal state are polled here.  There is no implicit wall-clock
+        # deadline: long-running paper/retrieval workflows must be allowed to
+        # finish, while tests or deployments may still opt into a finite
+        # watchdog by passing ``provider_poll_timeout`` explicitly.
+        self.provider_poll_timeout = (
+            None
+            if provider_poll_timeout is None
+            else max(0.1, float(provider_poll_timeout))
+        )
 
     # -- 队列 --
 
@@ -408,18 +407,12 @@ class RsiWorker:
         return None
 
     def _provider_poll_timeout_for(self, task_view: Any) -> float | None:
-        """Return the polling budget for a task.
+        """Return the optional explicitly configured polling budget.
 
-        Harness and program Providers retain the generic watchdog.  Paper
-        runs are intentionally unbounded here: their six model-backed modules
-        include web retrieval and compilation, so deriving a total deadline
-        from the number of tree iterations is only a guess and can terminate
-        a healthy run.  The paper Provider exposes ``terminate`` for explicit
-        user cancellation, and a terminal Provider snapshot still ends the
-        polling loop immediately.
+        The default is unbounded for every Provider.  The task argument is
+        kept in the signature for adapter-specific policies and compatibility.
         """
-        if str(getattr(task_view, "artifact_type", "")).upper() == "PAPER":
-            return None
+        del task_view
         return self.provider_poll_timeout
 
     def _apply_result_status(self, task_id: str, result: Any) -> None:

@@ -37,6 +37,8 @@ from openjiuwen.rsi.schema import (
 class MockArtifactProvider:
     """Deterministic Provider used to close the AgentServer service loop."""
 
+    supports_pause = True
+
     def __init__(
         self,
         tasks_root: str | Path,
@@ -93,8 +95,6 @@ class MockArtifactProvider:
         return await self._run(request, on_event=on_event, start_iteration=1, create_root=True)
 
     async def pause(self, task_id: str, on_event: OnEvent | None = None) -> EngineResult:
-        if self.artifact_type == "paper":
-            return self._unsupported(task_id, "paper artifact optimization does not support pause")
         state = self._load_state(task_id)
         if state is None:
             return self._result(task_id, "failed", error_code="TASK_NOT_FOUND", error_message="task snapshot missing")
@@ -207,7 +207,10 @@ class MockArtifactProvider:
     async def terminate(self, task_id: str, on_event: OnEvent | None = None) -> EngineResult:
         state = self._load_state(task_id)
         if state is None:
-            return self._result(task_id, "failed", error_code="TASK_NOT_FOUND", error_message="task snapshot missing")
+            # A queued task may be paused before the Provider has created its
+            # own durable snapshot; the worker still owns the public task and
+            # can safely commit this terminal control result.
+            return self._result(task_id, "terminated")
         if state.get("status") in {"completed", "failed", "terminated"}:
             return self._result(task_id, str(state["status"]), final_node_id=state.get("best_node_id"))
         state["status"] = "terminated"

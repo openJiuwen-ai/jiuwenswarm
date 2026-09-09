@@ -158,9 +158,13 @@ async def test_paper_instruction_only_and_control_boundary(artifact_context):
     started = handlers.handle(FakeRequest(ReqMethod.RSI_TRAINING_START, {"task_id": task_id}))
     assert started["payload"]["status"] == "QUEUED"
     paused = handlers.handle(FakeRequest(ReqMethod.RSI_TRAINING_PAUSE, {"task_id": task_id}))
-    assert paused["ok"] is False
-    assert paused["code"] == "SCENARIO_NOT_SUPPORTED"
-    assert context.store.get(task_id).status == "QUEUED"
+    assert paused["ok"] is True
+    assert paused["payload"]["status"] == "PAUSED"
+    assert context.store.get(task_id).status == "PAUSED"
+
+    terminated = handlers.handle(FakeRequest(ReqMethod.RSI_TRAINING_TERMINATE, {"task_id": task_id}))
+    assert terminated["ok"] is True
+    await _wait_for_status(context, task_id, "TERMINATED")
 
 
 @pytest.mark.asyncio

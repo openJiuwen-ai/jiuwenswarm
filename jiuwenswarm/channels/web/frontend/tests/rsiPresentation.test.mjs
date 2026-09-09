@@ -9,6 +9,7 @@ import {
   nodeStageSpec,
   presentRsiNode,
   scoreScale,
+  actionsForStatus,
 } from '../node_modules/.cache/rsi-presentation/rsiPresentation.mjs';
 
 const context = (scenario, artifactType, nodes, taskRunning = false) => ({
@@ -146,6 +147,24 @@ test('paper score_overall is rendered and rejected reason is human-readable', ()
   assert.deepEqual(nodeScoreLines(rejected)[0], { value: '0.8', label: '分数' });
 });
 
+test('paper tasks can pause but do not expose an unsupported resume action', () => {
+  assert.deepEqual(actionsForStatus('RUNNING', 'ARTIFACT', false, null, 'PAPER'), [
+    'config',
+    'delete',
+    'pause',
+  ]);
+  assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PAPER'), [
+    'config',
+    'delete',
+    'stop',
+  ]);
+  assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PROGRAM'), [
+    'config',
+    'delete',
+    'resume',
+  ]);
+});
+
 test('parallel program candidates get attempt numbering without exposing provider ids', () => {
   const nodes = [
     {
@@ -214,6 +233,27 @@ test('runtime failures are separated from score-based rejection', () => {
   assert.equal(presentation.title, '第 3 轮 · 论文尝试');
   assert.equal(presentation.lifecycle, 'failed');
   assert.equal(presentation.reasonLabel, '管理器决策失败');
+});
+
+test('pruned paper nodes expose a concise user-facing reason', () => {
+  const pruned = {
+    node_id: 'paper-pruned',
+    iteration: 4,
+    parent_id: 'ROOT',
+    type: 'PRUNED',
+    adopted: false,
+    score: null,
+    description: null,
+    failure_reason: '资料获取质量不佳，已剪枝。',
+    failure_class: 'pipeline_failed',
+    changes: [],
+    extra: { paper: { round_index: 4, attempt: 1, outcome: 'failed' } },
+  };
+
+  const presentation = presentRsiNode(pruned, context('ARTIFACT', 'PAPER', [pruned], false));
+  assert.equal(presentation.lifecycle, 'pruned');
+  assert.equal(presentation.reasonLabel, '资料获取质量不佳，已剪枝。');
+  assert.equal(presentation.reasonDetail, null);
 });
 
 test('structured harness stage payloads localize by status instead of using the provider name', () => {
