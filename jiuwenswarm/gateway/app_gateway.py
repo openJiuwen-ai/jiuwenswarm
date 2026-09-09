@@ -89,6 +89,17 @@ logger = logging.getLogger("jiuwenswarm.gateway")
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _AGENT_PREWARM_EXCLUDED_CHANNELS = frozenset({"acp", "a2a"})
 
+
+def _agent_prewarm_enabled() -> bool:
+    """Return whether background session prewarming is switched on.
+
+    Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
+    must not emit agent.prewarm.sync requests or related log noise.
+    """
+    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+    return prewarm_enabled_by_env()
+
 # IM 平台官方 API 域名（仅作为 config.yaml 缺字段时的加载兜底，不在 Config 类里硬编码）
 _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
 _DINGTALK_DEFAULT_API_BASE = "https://api.dingtalk.com"    # 新版 v1.0 接口域名
@@ -1711,6 +1722,8 @@ async def _run(
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
+        if not _agent_prewarm_enabled():
+            return
         try:
             prewarm_channels = {
                 channel
@@ -1743,6 +1756,8 @@ async def _run(
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
         nonlocal prewarm_sync_debounce_task
+        if not _agent_prewarm_enabled():
+            return
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
             previous.cancel()
@@ -2758,9 +2773,13 @@ async def _run(
         "agent-prewarm-sync-after-startup",
         delay_seconds=3.0,
     )
-    prewarm_sync_task = asyncio.create_task(
-        _periodic_agent_prewarm_sync(),
-        name="agent-prewarm-periodic-sync",
+    prewarm_sync_task = (
+        asyncio.create_task(
+            _periodic_agent_prewarm_sync(),
+            name="agent-prewarm-periodic-sync",
+        )
+        if _agent_prewarm_enabled()
+        else None
     )
 
     await channel_manager.start_dispatch()
@@ -2812,11 +2831,12 @@ async def _run(
                 await prewarm_sync_debounce_task
             except asyncio.CancelledError:
                 pass
-        prewarm_sync_task.cancel()
-        try:
-            await prewarm_sync_task
-        except asyncio.CancelledError:
-            pass
+        if prewarm_sync_task is not None:
+            prewarm_sync_task.cancel()
+            try:
+                await prewarm_sync_task
+            except asyncio.CancelledError:
+                pass
         if a2a_task is not None:
             a2a_task.cancel()
             try:
