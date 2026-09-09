@@ -332,11 +332,17 @@ class AgentManager:
         return None
 
     def invalidate_assembly_cache(self) -> None:
-        """清空租户装配缓存(企业配置/白名单同步结果).
+        """清空租户装配缓存(企业配置/白名单同步结果) 与进程级 policy 快照.
 
         配置 reload / 技能账本变更时调用, 下次 create_instance 重新装配。
         """
         self._assembly_cache.invalidate()
+        try:
+            from jiuwenclaw.agentserver.enterprise_config import invalidate_policy_snapshot
+
+            invalidate_policy_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentManager] invalidate policy snapshot failed: %s", exc)
 
     async def reload_agents_config(self, config, env) -> None:
         """reload agent config"""
