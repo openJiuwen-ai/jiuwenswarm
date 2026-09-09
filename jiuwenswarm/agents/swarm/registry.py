@@ -72,6 +72,7 @@ SYMPHONY_TOOLKIT = _tools.SYMPHONY_TOOLKIT
 CRON_TOOLS = _runtime_tools.CRON_TOOLS
 SEND_FILE = _runtime_tools.SEND_FILE
 SEND_HTML_CARD = _runtime_tools.SEND_HTML_CARD
+APPEND_REFERENCE = _runtime_tools.APPEND_REFERENCE
 MEMBER_SKILL_TOOLKIT = _skills.MEMBER_SKILL_TOOLKIT
 TEAM_SKILL_USE = _skills.TEAM_SKILL_USE
 # Generic tools provided + registered by openjiuwen (referenced by bare name).
@@ -209,6 +210,7 @@ __all__ = [
     "CRON_TOOLS",
     "SEND_FILE",
     "SEND_HTML_CARD",
+    "APPEND_REFERENCE",
     "MEMBER_SKILL_TOOLKIT",
     "TEAM_SKILL_USE",
     "RUNTIME_PROMPT",

@@ -258,6 +258,7 @@ from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
     SendHtmlCardToolkit,
+    XiaoyiAppendReferenceToolkit,
     SkillRetrievalToolkit,
     SkillToolkit,
     is_skill_retrieval_enabled,
@@ -1299,6 +1300,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._runtime_state_write_task: asyncio.Task[None] | None = None
         self._housekeeping_tasks: set[asyncio.Task[None]] = set()
         self._send_html_card_toolkit: SendHtmlCardToolkit | None = None
+        self._append_reference_toolkit: XiaoyiAppendReferenceToolkit | None = None
 
     def _schedule_runtime_state_write(
         self,
@@ -6568,7 +6570,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         request_id: str | None,
         channel_id: str | None = None,
     ) -> None:
-        """刷新每请求相关的 cron / send_file / send_html_card 工具运行时状态。
+        """刷新每请求相关的 cron / send_file / send_html_card / append_reference 工具运行时状态。
 
         两者的工具实例都只建一次：cron 见 ``_ensure_cron_tools_registered``，
         send_file 首次注册后改走 ``update_runtime_context``。这里每次请求只做
@@ -6648,6 +6650,37 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     self._instance.ability_manager.add(html_tool.card)
             elif self._send_html_card_toolkit is not None:
                 self._send_html_card_toolkit.update_runtime_context(
+                    request_id=request_id,
+                    session_id=session_id,
+                    channel_id=channel_for_tool,
+                    metadata=metadata_for_tool,
+                )
+
+        # xiaoyi_append_reference：未配置时仅 xiaoyi 默认开启（手机参考来源卡片）
+        append_reference_enabled = (
+            config_base.get("channels", {}).get(channel, {}).get("append_reference_allowed")
+        )
+        if append_reference_enabled is None:
+            append_reference_enabled = (channel == "xiaoyi")
+        if append_reference_enabled and request_id and session_id:
+            channel_for_tool = _CRON_TOOL_CHANNEL_ID.get()
+            metadata_for_tool = _CRON_TOOL_METADATA.get()
+            already_registered_ref = any(
+                getattr(existing, "name", "").startswith("xiaoyi_append_reference")
+                for existing in (self._instance.ability_manager.list() or [])
+            )
+            if not already_registered_ref:
+                self._append_reference_toolkit = XiaoyiAppendReferenceToolkit(
+                    request_id=request_id,
+                    session_id=session_id,
+                    channel_id=channel_for_tool,
+                    metadata=metadata_for_tool,
+                )
+                for ref_tool in self._append_reference_toolkit.get_tools():
+                    Runner.resource_mgr.add_tool(ref_tool)
+                    self._instance.ability_manager.add(ref_tool.card)
+            elif self._append_reference_toolkit is not None:
+                self._append_reference_toolkit.update_runtime_context(
                     request_id=request_id,
                     session_id=session_id,
                     channel_id=channel_for_tool,

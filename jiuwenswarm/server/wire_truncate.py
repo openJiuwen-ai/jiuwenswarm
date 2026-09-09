@@ -59,6 +59,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.usage_summary",
         "chat.file",
         "chat.html_card",
+        "chat.reference",
         "team.message",
         "context.compact_boundary",
         "context.compact_summary",
