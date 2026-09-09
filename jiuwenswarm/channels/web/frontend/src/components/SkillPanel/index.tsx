@@ -1929,13 +1929,14 @@ export function SkillPanel({
         }
         showMessage('error', errorMessage || t('skills.errors.importFailedHint'));
       } finally {
+        let remaining = 0;
         setKnowledgeTaskCount((prev) => {
-          const remaining = Math.max(0, prev - 1);
-          if (remaining <= 0) {
-            setActionTarget(null);
-          }
+          remaining = Math.max(0, prev - 1);
           return remaining;
         });
+        if (remaining <= 0) {
+          setActionTarget(null);
+        }
       }
     },
     [createUploadError, fetchSkills, t, withSession],

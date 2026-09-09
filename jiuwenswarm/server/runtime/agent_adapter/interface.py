@@ -1874,12 +1874,6 @@ class JiuWenSwarm:
                     if payload.get("success"):
                         await self.create_instance()
                         await self._reload_team_skill_rails(request.session_id)
-                elif payload.get("success") and str(
-                    (request.params or {}).get("pending_id") or ""
-                ).strip():
-                    # pending 覆盖安装：跳过 Agent，仅刷新 rail
-                    await self.create_instance()
-                    await self._reload_team_skill_rails(request.session_id)
         except Exception as exc:
             logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
             err_payload: dict = {"error": str(exc), "message": str(exc)}
@@ -2093,12 +2087,8 @@ class JiuWenSwarm:
         skills = self._coerce_optional_str_list(payload.get("skills"))
         trusted_dirs = self._coerce_optional_str_list(payload.get("trusted_dirs"))
         input_file = str(payload.get("input_file") or "").strip()
-        skills_root = Path(self._skill_manager._skills_dir)
-        before_names = {
-            p.name
-            for p in skills_root.iterdir()
-            if p.is_dir() and not p.name.startswith(("_", "."))
-        } if skills_root.is_dir() else set()
+        skills_root = Path(self._skill_manager.skills_dir)
+        before_names = set(self._skill_manager.list_installed_skill_dir_names())
 
         try:
             chat_request = self._build_skills_knowledge_followup_request(
@@ -2113,11 +2103,7 @@ class JiuWenSwarm:
             async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
                 pass
 
-            after_names = {
-                p.name
-                for p in skills_root.iterdir()
-                if p.is_dir() and not p.name.startswith(("_", "."))
-            } if skills_root.is_dir() else set()
+            after_names = set(self._skill_manager.list_installed_skill_dir_names())
             skip_names = {
                 "_marketplace",
                 "_pending_knowledge",
@@ -2138,7 +2124,6 @@ class JiuWenSwarm:
                 output_dir,
                 workspace_candidates=workspace_candidates,
                 existing_skill_names=before_names,
-                overwrite=False,
             )
             if result.get("success"):
                 await self._refresh_skill_rails_after_change()

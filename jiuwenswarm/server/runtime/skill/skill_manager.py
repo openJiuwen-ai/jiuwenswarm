@@ -4336,7 +4336,7 @@ class SkillManager:
         """
         params = params or {}
         path_str = str(params.get("path") or "").strip()
-        overwrite = bool(params.get("overwrite", False))
+        overwrite = self._parse_overwrite(params.get("overwrite", False))
         if not path_str:
             raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少上传文件 path")
 
@@ -4383,25 +4383,9 @@ class SkillManager:
         """知识转 Skill：校验输入并准备隔离临时目录与 Agent follow-up.
 
         由上层静默跑主 Agent 后，再调用 ``finalize_create_from_knowledge`` 安装。
-
-        若带 ``pending_id`` + ``overwrite``，跳过 Agent，仅对暂存产物做覆盖安装。
+        历史同名时仅提示已存在，不提供覆盖安装路径。
         """
         params = params or {}
-        pending_id = str(params.get("pending_id") or "").strip()
-        overwrite = bool(params.get("overwrite", False))
-        if pending_id:
-            if not overwrite:
-                raise SkillRpcError(
-                    ERROR_SKILL_ALREADY_EXISTS,
-                    "覆盖安装需确认：请传 overwrite=true",
-                )
-            return self.finalize_create_from_knowledge(
-                "",
-                overwrite=True,
-                pending_id=pending_id,
-                existing_skill_names=None,
-            )
-
         link = str(params.get("link") or "").strip()
         file_path = str(params.get("file_path") or "").strip()
         skill_description = str(params.get("skill_description") or "").strip()
@@ -4434,7 +4418,7 @@ class SkillManager:
                 )
             file_path = str(src)
 
-        occupied = self._list_installed_skill_dir_names()
+        occupied = self.list_installed_skill_dir_names()
         early_name = self._match_existing_knowledge_skill_name(
             preferred_name=preferred_name,
             link=link,
@@ -4495,7 +4479,20 @@ class SkillManager:
             + ([str(Path(file_path).parent)] if has_file else []),
         }
 
-    def _list_installed_skill_dir_names(self) -> set[str]:
+    @property
+    def skills_dir(self) -> Path:
+        """已安装 skills 的 workspace 根目录（公开只读访问）。"""
+        return self._skills_dir
+
+    @staticmethod
+    def _parse_overwrite(raw: Any) -> bool:
+        """与 HTTP multipart 入口一致：仅显式真值才视为覆盖。"""
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw or "").strip().lower()
+        return text in {"1", "true", "yes", "on"}
+
+    def list_installed_skill_dir_names(self) -> set[str]:
         if not self._skills_dir.is_dir():
             return set()
         return {
@@ -4553,7 +4550,7 @@ class SkillManager:
         occupied: set[str] | None = None,
     ) -> str:
         occupied_names = (
-            occupied if occupied is not None else self._list_installed_skill_dir_names()
+            occupied if occupied is not None else self.list_installed_skill_dir_names()
         )
         for name in self._knowledge_skill_name_candidates(
             preferred_name=preferred_name,
@@ -4570,36 +4567,29 @@ class SkillManager:
         *,
         workspace_candidates: list[str | Path] | None = None,
         existing_skill_names: set[str] | None = None,
-        overwrite: bool = False,
-        pending_id: str | None = None,
     ) -> dict[str, Any]:
         """校验生成结果并安装到 workspace.
 
         - 运行前不存在同名：直接安装/登记成功。
-        - 运行前已存在同名且 overwrite=False：不覆盖，仅提示已存在（不暂存 pending）。
-        - overwrite=True：覆盖安装（可配合 pending_id 跳过 Agent，兼容旧路径）。
+        - 运行前已存在同名：不覆盖，仅返回已存在提示。
         """
         skill_dir: Path | None = None
-        pending_key = str(pending_id or "").strip()
-        if pending_key:
-            skill_dir = self._resolve_knowledge_pending_dir(pending_key)
-        else:
-            root = Path(output_dir) if str(output_dir or "").strip() else None
-            if root is not None and root.is_dir():
-                skill_dir = self._locate_skill_dir(root)
-            if skill_dir is None:
-                for raw in workspace_candidates or []:
-                    candidate = Path(raw)
-                    if not candidate.is_dir():
-                        continue
-                    try:
-                        candidate.resolve().relative_to(self._skills_dir.resolve())
-                    except ValueError:
-                        continue
-                    located = self._locate_skill_dir(candidate)
-                    if located is not None:
-                        skill_dir = located
-                        break
+        root = Path(output_dir) if str(output_dir or "").strip() else None
+        if root is not None and root.is_dir():
+            skill_dir = self._locate_skill_dir(root)
+        if skill_dir is None:
+            for raw in workspace_candidates or []:
+                candidate = Path(raw)
+                if not candidate.is_dir():
+                    continue
+                try:
+                    candidate.resolve().relative_to(self._skills_dir.resolve())
+                except ValueError:
+                    continue
+                located = self._locate_skill_dir(candidate)
+                if located is not None:
+                    skill_dir = located
+                    break
         if skill_dir is None:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
@@ -4618,14 +4608,8 @@ class SkillManager:
 
         if existing_skill_names is not None:
             occupied = {str(n).strip() for n in existing_skill_names if str(n).strip()}
-        elif self._skills_dir.is_dir():
-            occupied = {
-                p.name
-                for p in self._skills_dir.iterdir()
-                if p.is_dir() and not p.name.startswith(("_", "."))
-            }
         else:
-            occupied = set()
+            occupied = self.list_installed_skill_dir_names()
 
         dest = _safe_child_path(self._skills_dir, skill_name, "skill")
         try:
@@ -4636,7 +4620,7 @@ class SkillManager:
             same_workspace_target = False
 
         historically_exists = skill_name in occupied
-        if historically_exists and not overwrite:
+        if historically_exists:
             return {
                 "success": False,
                 "code": ERROR_SKILL_ALREADY_EXISTS,
@@ -4644,7 +4628,7 @@ class SkillManager:
                 "skill_name": skill_name,
             }
 
-        if same_workspace_target and not historically_exists:
+        if same_workspace_target:
             if self._is_builtin_skill(skill_name, self._get_installed_plugins(), dest):
                 raise SkillRpcError(
                     ERROR_SKILL_BUILTIN_READ_ONLY,
@@ -4658,7 +4642,7 @@ class SkillManager:
         else:
             installed = self._install_imported_skill_dir(
                 skill_dir,
-                force=bool(overwrite and (historically_exists or dest.exists())),
+                force=False,
                 origin="file-api:create-from-knowledge",
                 conflict_code=ERROR_SKILL_ALREADY_EXISTS,
             )
@@ -4675,51 +4659,7 @@ class SkillManager:
         skill["version"] = None
         skill["source"] = "local"
         self._cleanup_omni_work_slug(skill_name)
-        if pending_key:
-            self._clear_knowledge_pending(pending_key)
         return {"success": True, "skill": skill}
-
-    def _knowledge_pending_root(self) -> Path:
-        root = self._skills_dir / "_pending_knowledge"
-        root.mkdir(parents=True, exist_ok=True)
-        return root
-
-    def _stash_knowledge_pending(self, skill_dir: Path) -> str:
-        pending_id = uuid.uuid4().hex
-        dest = self._knowledge_pending_root() / pending_id
-        if dest.exists():
-            _safe_rmtree(dest)
-        shutil.copytree(
-            skill_dir,
-            dest,
-            ignore=shutil.ignore_patterns(ARCHIVE_DIRNAME),
-        )
-        return pending_id
-
-    def _resolve_knowledge_pending_dir(self, pending_id: str) -> Path:
-        try:
-            safe_id = _safe_path_name(pending_id, "pending_id")
-        except ValueError as exc:
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                f"无效 pending_id: {pending_id}",
-            ) from exc
-        path = self._knowledge_pending_root() / safe_id
-        if not path.is_dir():
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                "覆盖安装暂存已失效，请重新生成",
-            )
-        return path
-
-    def _clear_knowledge_pending(self, pending_id: str) -> None:
-        try:
-            safe_id = _safe_path_name(pending_id, "pending_id")
-        except ValueError:
-            return
-        path = self._knowledge_pending_root() / safe_id
-        if path.is_dir():
-            _safe_rmtree(path)
 
     def _register_existing_workspace_skill(
         self,
