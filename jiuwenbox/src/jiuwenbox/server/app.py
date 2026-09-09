@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,6 +23,7 @@ from jiuwenbox.server.audit_logger import AuditLogger
 from jiuwenbox.models.sandbox import InvalidJobIdError, InvalidSandboxIdError
 from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError
 from jiuwenbox.server.sandbox_manager import (
+    CodePolicyDenialError,
     SandboxConflictError,
     SandboxManager,
     SandboxNotFoundError,
@@ -52,6 +54,10 @@ _proxy_manager: ProxyManager | None = None
 # flag to surface a clean 503 instead of lazily constructing one on
 # the first sandbox-API call.
 _proxy_only_mode: bool = False
+# Windows 出站代理 asyncio task (仅 win32). 沙箱所有出网流量经此代理做
+# 域名/IP 白名单过滤 (docs/window沙箱.md 6.6). None = 非 win32 或未启动.
+_win_proxy_task: asyncio.Task | None = None
+_win_proxy_stop: asyncio.Event | None = None
 
 # Every sandbox API call that talks to the in-sandbox daemon (exec, write_file,
 # read_file, list_dir) is dispatched via ``loop.run_in_executor(None, ...)``
@@ -243,6 +249,7 @@ def _chmod_uds_socket_if_any() -> None:
 @asynccontextmanager
 async def lifespan(_application: FastAPI):
     global _sandbox_manager, _proxy_manager, _proxy_only_mode
+    global _win_proxy_task, _win_proxy_stop
     # Both of these have to run after uvicorn has spun up its event loop -
     # ``set_default_executor`` requires a running loop, and raising NOFILE is
     # only effective within the live process. They are also independent of
@@ -268,6 +275,87 @@ async def lifespan(_application: FastAPI):
             "sandbox subsystem startup",
         )
     else:
+        # Windows 平台: 先做一次性环境准备 (用户创建 + WFP filter + 读 ACL
+        # 预装), 并启动出站代理 asyncio task. 仅 win32 走此分支, Linux 完全
+        # 不动 (docs/window沙箱.md 6.9 lifespan 改动).
+        if sys.platform == "win32":
+            from jiuwenbox.supervisor import win_proxy, win_setup
+            # 根 policy 的 read_acl_preinstall + proxy 端口范围 作为首次安装参数
+            # (review MAJOR #7: WFP Permit 端口必须与 win_proxy 监听端口一致).
+            try:
+                _root_policy = policy_reader.load_policy()
+                # preinstall = read_acl_preinstall + tool_paths 展开, 用
+                # collect_preinstall_paths 与 _create_windows (process.py) 算同一
+                # 集合, 保证 lifespan install 记录的 REG_VALUE_PREINSTALLED_PATHS
+                # 和后续创建沙箱时比对的集合一致 → 不因 tool_paths "新增" 而每次
+                # 创建沙箱都弹 UAC (实测问题).
+                _preinstall = win_setup.collect_preinstall_paths(_root_policy)
+                _proxy_start = _root_policy.windows.proxy.port_range_start
+                _proxy_end = _root_policy.windows.proxy.port_range_end
+                # 传 policy 磁盘路径给 install 子进程, install 时读 deny/allow 路径
+                # 给当前用户预授 WRITE_DAC, 运行时 box-server 才能改这些目录 DACL.
+                _policy_path = str(getattr(policy_reader, "policy_path", "") or "")
+            except Exception:  # noqa: BLE001
+                _preinstall = None
+                _proxy_start = None
+                _proxy_end = None
+                _policy_path = ""
+                _root_policy = None  # 置空守卫, 防止下方 stale ACL 清理引用未定义名
+            import jiuwenbox.supervisor.win_constants as _wconst
+            try:
+                win_setup.ensure_windows_setup(
+                    preinstall_paths=_preinstall or None,
+                    proxy_port_start=(
+                        _proxy_start
+                        if _proxy_start is not None
+                        else _wconst.DEFAULT_PROXY_PORT_RANGE_START
+                    ),
+                    proxy_port_end=(
+                        _proxy_end
+                        if _proxy_end is not None
+                        else _wconst.DEFAULT_PROXY_PORT_RANGE_END
+                    ),
+                    policy_path=_policy_path or None,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "ensure_windows_setup 失败; Windows 沙箱可能不可用",
+                )
+            # 启动时差集清理: 清掉历史 apply 过但当前 policy 不再包含的路径上的残留 ACE,
+            # 避免配置变更 (路径从 allow_read 移除) 后旧 ACE 残留导致配置不生效
+            try:
+                if _root_policy is None:
+                    raise RuntimeError("根 policy 加载失败, 跳过 stale ACL 差集清理")
+                _stale_sid = win_setup.get_sandbox_user_sid()
+                _stale_policy_paths: list[str] = []
+                _stale_policy_paths += list(_root_policy.windows.filesystem.allow_read or [])
+                _stale_policy_paths += list(_root_policy.windows.filesystem.deny_read or [])
+                _stale_policy_paths += list(_root_policy.windows.filesystem.allow_write or [])
+                _stale_policy_paths += list(_root_policy.windows.filesystem.deny_write or [])
+                win_setup.revoke_stale_acl(_stale_policy_paths, workspace="", sandbox_user_sid=_stale_sid)
+            except Exception:  # noqa: BLE001
+                logger.warning("启动差集清理失败 (非致命)", exc_info=True)
+            # 启动出站代理 (egress 规则取根 policy 的 windows.network; 基底+副本已合并).
+            try:
+                root_policy = policy_reader.load_policy()
+                egress = root_policy.windows.network.egress
+                ingress = root_policy.windows.network.ingress
+                # disable_all 总开关 (officeAce sandbox.network.set): True 时 EgressFilter
+                # 短路拒绝所有出站, 用户 allow/blocked_domains 原样保留 (关掉即恢复).
+                net_disable_all = bool(root_policy.windows.network.disable_all)
+                _win_proxy_stop = asyncio.Event()
+                _win_proxy_task, _win_proxy_stop = await win_proxy.serve_windows_proxy(
+                    egress=egress,
+                    ingress=ingress,
+                    port_range_start=root_policy.windows.proxy.port_range_start,
+                    port_range_end=root_policy.windows.proxy.port_range_end,
+                    stop_event=_win_proxy_stop,
+                    disable_all=net_disable_all,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Windows 出站代理启动失败; 沙箱网络隔离将不可用",
+                )
         # Become the subreaper for our descendant tree *before* any sandbox
         # spawns bwrap. PR_SET_CHILD_SUBREAPER only affects *future*
         # children, so doing it here (after the loop is up but before
@@ -321,6 +409,18 @@ async def lifespan(_application: FastAPI):
             logger.info("MCP session manager stopped")
         except Exception:
             logger.exception("MCP session manager shutdown failed")
+
+        # Windows 出站代理: 通知 stop event + 等待 task 退出 (仅 win32).
+        if _win_proxy_task is not None:
+            try:
+                if _win_proxy_stop is not None:
+                    _win_proxy_stop.set()
+                await asyncio.wait_for(_win_proxy_task, timeout=5.0)
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                logger.debug("Windows proxy task shutdown", exc_info=True)
+            finally:
+                _win_proxy_task = None
+                _win_proxy_stop = None
 
         # Stop proxies first so any in-flight clients are torn down before we
         # wipe sandbox descriptors. All steps below are best-effort: a failure
@@ -410,6 +510,14 @@ def create_app() -> FastAPI:
     async def state_error_handler(request: Request, exc: SandboxStateError):
         return JSONResponse(status_code=409, content={"error": str(exc)})
 
+    @application.exception_handler(CodePolicyDenialError)
+    async def code_policy_denial_handler(request: Request, exc: CodePolicyDenialError):
+        # 403 = code-level policy enforcement blocked the file operation.
+        # Distinct from 409 (SandboxStateError) so callers can differentiate
+        # ACL/Landlock-style denials (which this fallback mirrors) from
+        # sandbox lifecycle / state issues.
+        return JSONResponse(status_code=403, content={"error": str(exc)})
+
     @application.exception_handler(SandboxConflictError)
     async def conflict_error_handler(request: Request, exc: SandboxConflictError):
         return JSONResponse(status_code=409, content={"error": str(exc)})
@@ -487,10 +595,22 @@ def create_app() -> FastAPI:
             sandboxes = await _sandbox_manager.list_sandboxes()
             active = sum(1 for s in sandboxes if s.phase.value == "ready")
 
+        # Windows 沙箱可用性: 仅 win32 且 setup 已完成 (注册表 installed 标记).
+        windows_supported = False
+        if sys.platform == "win32":
+            try:
+                from jiuwenbox.supervisor import win_constants as _wconst
+                from jiuwenbox.supervisor import win_setup
+                installed = win_setup.reg_get_str(_wconst.REG_VALUE_INSTALLED)
+                windows_supported = installed == "1"
+            except Exception:  # noqa: BLE001
+                windows_supported = False
+
         return HealthResponse(
             version=__version__,
             landlock_supported=detect_landlock_abi() > 0,
             sandboxes_active=active,
+            windows_supported=windows_supported,
         )
 
     from jiuwenbox.server.routes.mcp import mcp_server

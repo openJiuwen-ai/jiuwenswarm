@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
@@ -15,6 +16,26 @@ from jiuwenbox.server.workspace import SANDBOX_WORKSPACE, JIUWENBOX_HOME
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+def read_policy_text(path: str | Path) -> str:
+    """读 policy YAML: UTF-8, 失败再试系统中文编码."""
+    raw = Path(path).read_bytes()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    for enc in ("utf-8-sig", "gb18030", "mbcs"):
+        try:
+            text = raw.decode(enc)
+            logger.warning(
+                "policy 文件 %s 不是 UTF-8, 已按 %s 解码; 下次写入将改为 UTF-8",
+                path, enc,
+            )
+            return text
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 class PolicyValidationError(Exception):
@@ -102,7 +123,15 @@ class PolicyEngine:
 
     @staticmethod
     def _is_absolute_sandbox_path(path: str) -> bool:
-        return PurePosixPath(path).is_absolute()
+        # 接受 Windows 绝对路径 (C:\\... / \\server\\share / C:/...) 与 POSIX 绝对
+        # 路径 (/...), 不依赖 box-server 自身运行平台. 原实现硬编码 PurePosixPath
+        # 会把 Windows 的 C:\\... 判成非绝对, 导致 HTTP 400 "must be absolute".
+        if not path:
+            return False
+        return (
+            PureWindowsPath(path).is_absolute()
+            or PurePosixPath(path).is_absolute()
+        )
 
     @staticmethod
     def _directory_path(directory: object) -> str:
@@ -287,7 +316,7 @@ class PolicyEngine:
         resolved = self.resolve_policy(policy)
         policy_path = self.policies_dir / f"{sandbox_id}_sandbox_policy.yaml"
 
-        with open(policy_path, "w") as f:
+        with open(policy_path, "w", encoding="utf-8", newline="\n") as f:
             yaml.safe_dump(resolved, f, default_flow_style=False, allow_unicode=True)
 
         logger.info("Wrote sandbox policy to %s", policy_path)
@@ -296,8 +325,7 @@ class PolicyEngine:
     @staticmethod
     def load_policy_from_file(path: str | Path) -> SecurityPolicy:
         """Load a SecurityPolicy from a YAML file."""
-        with open(path) as f:
-            data = yaml.safe_load(f)
+        data = yaml.safe_load(read_policy_text(path))
         return SecurityPolicy.model_validate(data)
 
     def get_sandbox_policy_path(self, sandbox_id: str) -> Path | None:

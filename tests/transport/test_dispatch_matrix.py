@@ -171,6 +171,10 @@ def test_ctx_dispatch_invokes_with_context(method: ReqMethod) -> None:
 NON_DISPATCH_HANDLERS = frozenset(
     {
         "_handle_message",          # 分发入口本身：字节 -> AgentRequest，属传输层
+        # sandbox.* 配置 E2A 的二级分发分支：_handle_message 尾部按
+        # get_sandbox_config_req_methods() 命中后直接调用，不登记主表（无 session、
+        # 非聊天语义）；set 后需触发 reload_agents_config，故留在 server 上。
+        "_handle_sandbox_config",
     }
 )
 
