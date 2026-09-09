@@ -2239,11 +2239,88 @@ class JiuWenSwarmDeepAdapter:
         self._is_session_scoped_adapter = True
         self._parent_session_id = session_id
 
+    def _resolve_permission_workspace_root(self) -> Path:
+        """Return the session-stable primary root used by Auto Permission."""
 
+        if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
+            return self._require_permission_workspace_binding().runtime_workspace_root
+        if self._project_dir:
+            return Path(self._project_dir).expanduser().resolve(strict=False)
+        if self._is_session_scoped_adapter:
+            return get_default_project_session_workspace_dir(
+                self._parent_session_id
+            ).resolve(strict=False)
+        return Path(self._workspace_dir).expanduser().resolve(strict=False)
 
+    def _prepare_permission_workspace_binding(self) -> None:
+        """Prepare once inside session admission, before constructing Smart E."""
+        if not self._is_session_scoped_adapter:
+            raise RuntimeError("smart_workspace_session_missing")
+        if self._permission_runtime_paths is None:
+            self._permission_runtime_paths = bind_session_runtime_workspace(
+                internal_workspace_dir=self._workspace_dir,
+                project_dir=self._project_dir,
+                session_id=self._parent_session_id,
+            )
 
+    def _require_permission_workspace_binding(self) -> RuntimeWorkspacePaths:
+        """Read prepared state; consumers must never allocate a workspace."""
+        paths = self._permission_runtime_paths
+        if paths is None:
+            raise RuntimeError("permission_workspace_binding_unprepared")
+        return paths
 
+    def _validate_auto_permission_workspace_request(
+        self,
+        request: AgentRequest,
+        *,
+        activating: bool = False,
+    ) -> None:
+        params = request.params if isinstance(request.params, dict) else {}
+        if not supports_phase_auto_root(params):
+            return
+        if not self._enable_auto_permission and not activating:
+            return
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        try:
+            declared = resolve_declared_auto_workspace(params, metadata)
+        except ValueError as exc:
+            raise RootPermissionQueueError(str(exc)) from exc
+        if declared is None:
+            return
+        if self._permission_workspace_root is None or (
+            declared != self._permission_workspace_root
+        ):
+            raise RootPermissionQueueError(
+                "auto_permission_workspace_changed:new_session_required"
+            )
 
+    def validate_auto_permission_workspace_request(
+        self,
+        request: AgentRequest,
+    ) -> None:
+        """Fail closed before a request can switch its session permission owner."""
+
+        target = (
+            self
+            if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(request.session_id)
+        )
+        if target is not None:
+            target._validate_auto_permission_workspace_request(  # pylint: disable=protected-access
+                request
+            )
+
+    def has_auto_permission_session(self, session_id: str | None) -> bool:
+        target = (
+            self
+            if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(session_id)
+        )
+        return bool(
+            target is not None
+            and target._enable_auto_permission  # pylint: disable=protected-access
+        )
 
     # chat.send equipment: apply package load/unload at the fresh-turn boundary.
     # 团队会话（新旧 canonical：team / team.plan / code.team / team.work.* /
@@ -9085,6 +9162,16 @@ class JiuWenSwarmDeepAdapter:
     async def create_instance(
         self, config: dict[str, Any] | None = None, *, mode: str = "agent", sub_mode: str = None
     ) -> None:
+        try:
+            await self._create_instance(config, mode=mode, sub_mode=sub_mode)
+        except BaseException:
+            if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
+                await self._isolate_permission_instance()
+            raise
+
+    async def _create_instance(
+        self, config: dict[str, Any] | None = None, *, mode: str = "agent", sub_mode: str = None
+    ) -> None:
         """初始化 DeepAgent 实例.
 
         Args:
@@ -9108,6 +9195,7 @@ class JiuWenSwarmDeepAdapter:
             or ""
         ).strip() or getattr(self, "_channel_id", "")
         self._is_cron_execution = self._channel_id == "__cron__"
+        composition_scope = _resolve_agent_composition_scope(mode, sub_mode)
 
         await self.set_checkpoint()
         await asyncio.sleep(0)
@@ -9146,6 +9234,12 @@ class JiuWenSwarmDeepAdapter:
             "project_dir", config.get("project_dir")
         )
         self._workspace_dir = config.get("workspace_dir", str(get_agent_workspace_dir()))
+        if self._uses_smart_permission_lifecycle(config_base):
+            self._prepare_permission_workspace_binding()
+        self._permission_workspace_root = self._resolve_permission_workspace_root()
+        self._platform_trusted_root = Path(get_agent_workspace_dir()).resolve(
+            strict=False
+        )
         if self._skip_own_instance_build():
             # Root adapter 只做 router/template holder，不建 DeepAgent instance。
             # web channel 在此后台预热 connected MCP 的进程级连接缓存——首轮对话
@@ -9175,16 +9269,40 @@ class JiuWenSwarmDeepAdapter:
         # 权限护栏由 openjiuwen PermissionInterruptRail + ToolPermissionHost 接管；
         # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
 
-        rails_list = self._build_agent_rails(config, config_base, mode=mode)
-
         sys_operation = self._create_sys_operation()
         if sys_operation is None:
             raise RuntimeError("sys_operation is not available, maybe task is not running")
 
         self._sys_operation = sys_operation
-        configured_subagents, should_add_general_agent = self._build_configured_subagents(model, config, config_base)
-        should_enable_general_agent = should_add_general_agent and (
-            sub_mode == "plan" or (isinstance(mode, str) and mode.startswith("agent"))
+        if self._uses_smart_permission_lifecycle(config_base):
+            epoch, global_layer, effective = self._capture_permission_version()
+            config_base = {**config_base, "permissions": global_layer}
+            self._config_base_cache = config_base.copy()
+            self._permission_state.stage_pending_permission_capture(epoch, effective)
+        rails_list = self._build_agent_rails(
+            config,
+            config_base,
+            mode=mode,
+            composition_scope=composition_scope,
+        )
+        resolved_language = self._resolve_runtime_language()
+        workspace_obj = Workspace(
+            root_path=self._workspace_dir or "./",
+            language=resolved_language,
+        )
+        configured_subagents = self._build_subagents_with_general_purpose(
+            model=model,
+            config=config,
+            config_base=config_base,
+            rails=rails_list,
+            tools=tool_cards if tool_cards else [],
+            workspace=workspace_obj,
+            sys_operation=sys_operation,
+            reload=False,
+            allow_general=(
+                sub_mode == "plan"
+                or (isinstance(mode, str) and mode.startswith("agent"))
+            ),
         )
         common_kwargs = dict(
             model=model,
@@ -9201,14 +9319,11 @@ class JiuWenSwarmDeepAdapter:
             progressive_tool_enabled=get_progressive_tool_enabled(config_base),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
-            add_general_purpose_agent=should_enable_general_agent,
+            add_general_purpose_agent=False,
             max_iterations=config.get("max_iterations", 15),
-            workspace=Workspace(
-                root_path=self._workspace_dir or "./",
-                language=self._resolve_runtime_language(),
-            ),
+            workspace=workspace_obj,
             sys_operation=sys_operation,
-            language=self._resolve_runtime_language(),
+            language=resolved_language,
             auto_create_workspace=False
         )
 
@@ -9235,7 +9350,9 @@ class JiuWenSwarmDeepAdapter:
             completion_timeout=resolve_task_loop_completion_timeout(config),
         )
 
-        if self._is_projectless_agent_mode(mode):
+        if self._enable_auto_permission:
+            initial_runtime_workspace = str(self._permission_workspace_root)
+        elif self._is_projectless_agent_mode(mode):
             initial_runtime_workspace = self._project_dir or self._workspace_dir or str(
                 get_agent_workspace_dir()
             )
@@ -9243,7 +9360,12 @@ class JiuWenSwarmDeepAdapter:
             initial_runtime_workspace = self._project_dir or str(
                 get_default_project_session_workspace_dir()
             )
-        self._seed_runtime_cwd(initial_runtime_workspace, workspace=initial_runtime_workspace)
+        initial_cwd = initial_runtime_workspace
+        if self._enable_auto_permission:
+            initial_cwd = str(self._require_permission_workspace_binding().cwd)
+            self._instance.deep_config.cwd = initial_cwd
+            self._instance.deep_config.project_root = initial_runtime_workspace
+        self._seed_runtime_cwd(initial_cwd, workspace=initial_runtime_workspace)
         setattr(self._instance, "_jiuwenswarm_project_dir", initial_runtime_workspace)
 
         self._sync_a2x_runtime_state()
@@ -9276,7 +9398,22 @@ class JiuWenSwarmDeepAdapter:
         # Initialize the DeepAgent only after that point; its normal startup
         # path builds the initial BM25 snapshot after all pending rails.
         await self._instance.ensure_initialized()
-
+        if self._enable_auto_permission:
+            expected = {
+                name: getattr(self, name)
+                for name in (
+                    "_permission_rail", "_root_permission_queue_rail",
+                    "_root_context_rail", "_root_permission_completion_rail",
+                    "_stream_event_rail", "_ask_user_rail",
+                )
+            }
+            self._verify_permission_group(expected, smart=True)
+            self._permission_state.permission_epoch = (
+                self._permission_state.pending_permission_epoch
+            )
+            if self._capture_permission_version()[0] != self._permission_state.permission_epoch:
+                await self.reload_agent_config(config_base, reload_scopes={"permissions"})
+        self._permission_state.clear_pending_permission()
 
     async def load_user_rails(self) -> None:
         """动态加载用户自定义的 Rail 扩展."""
@@ -10078,6 +10215,7 @@ class JiuWenSwarmDeepAdapter:
                 channel = cron_channel
         send_file_enabled = is_send_file_enabled(config_base, channel)
         if send_file_enabled and request_id and session_id:
+            require_send_authorization = self._enable_auto_permission
             channel_for_tool = _CRON_TOOL_CHANNEL_ID.get()
             metadata_for_tool = _CRON_TOOL_METADATA.get()
             already_registered = any(
@@ -10092,6 +10230,7 @@ class JiuWenSwarmDeepAdapter:
                     metadata=metadata_for_tool,
                     user_id=_CRON_TOOL_USER_ID.get(),
                     project_dir=self._project_dir,
+                    require_execution_authorization=require_send_authorization,
                 )
                 for sf_tool in self._send_file_toolkit.get_tools():
                     self._register_agent_owned_tool(sf_tool, self._tool_owner_id())
@@ -10104,6 +10243,7 @@ class JiuWenSwarmDeepAdapter:
                     metadata=metadata_for_tool,
                     user_id=_CRON_TOOL_USER_ID.get(),
                     project_dir=self._project_dir,
+                    require_execution_authorization=require_send_authorization,
                 )
 
     def _refresh_acp_runtime_tools(
@@ -10392,17 +10532,30 @@ class JiuWenSwarmDeepAdapter:
             )
             task_cwd = runtime_config.cwd or task_workspace
         else:
-            runtime_paths = resolve_runtime_workspace_paths(
-                internal_workspace_dir=(
-                    self._workspace_dir or str(get_agent_workspace_dir())
-                ),
-                project_dir=runtime_config.project_dir or self._project_dir,
-                workspace_dir=runtime_config.workspace,
-                cwd=runtime_config.cwd,
-                session_id=runtime_config.session_id,
-                task_name=runtime_config.task_name,
-                bind_request=bind_request,
-            )
+            if self._enable_auto_permission:
+                try:
+                    runtime_paths = resolve_bound_runtime_workspace_paths(
+                        self._require_permission_workspace_binding(),
+                        project_dir=runtime_config.project_dir,
+                        workspace_dir=runtime_config.workspace,
+                        cwd=runtime_config.cwd,
+                    )
+                except ValueError as exc:
+                    raise RootPermissionQueueError(
+                        "auto_permission_workspace_changed:new_session_required"
+                    ) from exc
+            else:
+                runtime_paths = resolve_runtime_workspace_paths(
+                    internal_workspace_dir=(
+                        self._workspace_dir or str(get_agent_workspace_dir())
+                    ),
+                    project_dir=runtime_config.project_dir or self._project_dir,
+                    workspace_dir=runtime_config.workspace,
+                    cwd=runtime_config.cwd,
+                    session_id=runtime_config.session_id,
+                    task_name=runtime_config.task_name,
+                    bind_request=bind_request,
+                )
             task_workspace = str(runtime_paths.runtime_workspace_root)
             task_cwd = str(runtime_paths.cwd)
 

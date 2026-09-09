@@ -1964,6 +1964,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
     with (
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),
         patch.object(adapter, "_browser_runtime_enabled", return_value=True),
+        patch.object(adapter, "_prepare_browser_runtime_security"),
         patch(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_research_agent_config",
             return_value="research_spec",
@@ -2006,6 +2007,7 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
     with (
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),
         patch.object(adapter, "_browser_runtime_enabled", return_value=True),
+        patch.object(adapter, "_prepare_browser_runtime_security"),
         patch(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_research_agent_config",
             return_value="research_spec",
