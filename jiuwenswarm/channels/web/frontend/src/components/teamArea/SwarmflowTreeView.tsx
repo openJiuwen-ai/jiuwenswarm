@@ -793,17 +793,32 @@ function RunNode({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const [runDetail, setRunDetail] = useState<AgentModalState | null>(null);
-  // 暂停请求在途标记：点 pause 后按钮立即转圈并禁用，直到 run 状态真正翻成
-  // paused（进度事件到达）才恢复。后端 abort 可能耗时数秒，控制通道被阻塞时
-  // 更久（09-08 实测 80s 后 res 才回、但事件与 res 一并到达），期间禁用可
-  // 避免用户重复点击（14:36 转圈回落后被连点两次 resume 的先例）。不设超时
-  // 兜底：按钮只认 run.status 翻转，事件不来就一直转——状态以事件为准。
-  const [pausing, setPausing] = useState(false);
+  // Control request in-flight flag: clicking pause/resume/stop immediately
+  // spins and disables all three buttons until run.status flips to the target
+  // state (progress event arrives). Backend abort can take seconds; a blocked
+  // control channel longer (09-08 measured 80s before res returned, but the
+  // event arrived with it). Disabling prevents repeat clicks (19:18:16: pause
+  // then resume 4ms later, then 6 more resume clicks all ok=False). No timeout
+  // fallback: buttons honor run.status only — if the event never arrives the
+  // spinner stays. State follows events.
+  const [pendingControl, setPendingControl] = useState<
+    'pause' | 'resume' | 'stop' | null
+  >(null);
   useEffect(() => {
-    if (pausing && run.status !== 'running') {
-      setPausing(false);
+    if (!pendingControl) return;
+    if (pendingControl === 'pause' && run.status !== 'running') {
+      setPendingControl(null);
+    } else if (pendingControl === 'resume' && run.status === 'running') {
+      setPendingControl(null);
+    } else if (
+      pendingControl === 'stop' &&
+      (run.status === 'stopped' ||
+        run.status === 'completed' ||
+        run.status === 'failed')
+    ) {
+      setPendingControl(null);
     }
-  }, [pausing, run.status]);
+  }, [pendingControl, run.status]);
   const [controlError, setControlError] = useState<string | null>(null);
   // 控制 RPC 失败统一处理：服务端在 controller miss 时把权威 status 附在
   // 失败 payload 里带回，据此纠正停在 running/paused 的陈旧卡片并用 Toast
@@ -954,32 +969,35 @@ function RunNode({
             <button
               type="button"
               title={t('swarmflow.pauseResumeHint')}
-              disabled={pausing}
+              disabled={pendingControl !== null}
               className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors disabled:opacity-70 disabled:cursor-wait"
               data-testid="team-area-swarmflow-run-pause-btn"
               data-variant={run.status === 'running' ? 'pause' : 'resume'}
               onClick={() => {
                 if (run.status !== 'running') {
+                  setPendingControl('resume');
                   void webRequest('swarmflow.resume', {
                     session_id: sessionId,
                     run_id: run.id,
-                  }).catch(applyControlFailure);
+                  }).catch((err) => {
+                    if (applyControlFailure(err)) {
+                      setPendingControl(null);
+                    }
+                  });
                   return;
                 }
-                setPausing(true);
+                setPendingControl('pause');
                 void webRequest('swarmflow.pause', {
                   session_id: sessionId,
                   run_id: run.id,
                 }).catch((err) => {
-                  // 传输层错误（超时/断连）无权威结论：转圈保持到事件到达；
-                  // 只有服务端权威失败才复位，避免又回到"转圈回落+连点"。
                   if (applyControlFailure(err)) {
-                    setPausing(false);
+                    setPendingControl(null);
                   }
                 });
               }}
             >
-              {pausing ? (
+              {pendingControl === 'pause' || pendingControl === 'resume' ? (
                 <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
               ) : run.status === 'running' ? (
                 <Pause className="w-4 h-4" />
@@ -990,15 +1008,25 @@ function RunNode({
             <button
               type="button"
               title={t('swarmflow.stopHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors"
+              disabled={pendingControl !== null}
+              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors disabled:opacity-70 disabled:cursor-wait"
               data-testid="team-area-swarmflow-run-stop-btn"
               onClick={() => {
+                setPendingControl('stop');
                 void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
-                  applyControlFailure,
+                  (err) => {
+                    if (applyControlFailure(err)) {
+                      setPendingControl(null);
+                    }
+                  },
                 );
               }}
             >
-              <Square className="w-3.5 h-3.5" />
+              {pendingControl === 'stop' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
+              ) : (
+                <Square className="w-3.5 h-3.5" />
+              )}
             </button>
           </div>
         )}
