@@ -3553,6 +3553,13 @@ class JiuWenSwarmDeepAdapter:
         )
         return True
 
+    async def _discard_frozen_permission_continuation(
+        self, session_id: str | None, frozen_keys: tuple[ToolInvocationKeyV1, ...],
+    ) -> bool:
+        return await discard_permission_continuation(
+            self._instance, self._resolve_interrupt_session_id(session_id),
+            self._deep_agent_loop_session_id(), frozen_keys,
+        )
 
     def _is_deep_agent_executing_for_session(self, session_id: str) -> bool:
         """True when the shared DeepAgent still runs stream/task-loop work for *session_id*."""
@@ -3609,10 +3616,11 @@ class JiuWenSwarmDeepAdapter:
                 total += max(self._active_session_ids.get(sid, 0), 1)
         return total
 
-    async def _halt_deep_agent_execution(self, reason: str) -> None:
+    async def _halt_deep_agent_execution(self, reason: str) -> bool:
         """Cooperatively abort DeepAgent and cancel in-flight scheduler tasks."""
         if self._instance is None:
-            return
+            return True
+        completed = False
         # Cancel scheduler tasks FIRST so in-flight LLM HTTP requests raise
         # CancelledError promptly.  This allows the _stream_process background
         # task (which instance.abort() waits on via _cancel_stream_process_task)
@@ -3632,6 +3640,7 @@ class JiuWenSwarmDeepAdapter:
                 # DeepAgent in a partially-aborted state.  shield() ensures abort()
                 # runs to completion even if the outer task is re-cancelled.
                 await asyncio.shield(self._instance.abort())
+                completed = True
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] interrupt(%s): 已终止 DeepAgent 任务循环",
                     reason,
@@ -3653,6 +3662,7 @@ class JiuWenSwarmDeepAdapter:
             # Safety net: cancel again in case new scheduler tasks were spawned
             # between the first cancel and abort().
             self._cancel_scheduler_running_tasks()
+        return completed
 
     def _register_session_agent_task(self, session_id: str) -> None:
         task = asyncio.current_task()
@@ -11302,7 +11312,7 @@ class JiuWenSwarmDeepAdapter:
         *,
         intent: str,
         reset_for_new_task: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Per-session teardown: rail abort, shell kill, cancelled tool collection."""
         sid = self._resolve_interrupt_session_id(session_id)
         cancelled_tasks = await self._cancel_session_agent_tasks(sid)
@@ -11336,7 +11346,7 @@ class JiuWenSwarmDeepAdapter:
                 cancelled_tasks,
                 sid,
             )
-        return cancelled_tool_results
+        return cancelled_tool_results, bool(cancelled_tasks)
 
     def _collect_cancelled_tools_for_session(
         self,
@@ -11783,16 +11793,276 @@ class JiuWenSwarmDeepAdapter:
             params
         )
 
+    def _with_root_context(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, Any],
+        *,
+        dispatch_mode: InputDispatchMode | None = None,
+    ) -> dict[str, Any]:
+        """Install one compact root context from Host-authenticated inputs."""
+        params = request.params if isinstance(request.params, dict) else {}
+        runtime_mode = str(params.get("mode") or "agent").strip().lower()
+        if not self._supports_root_context(params, runtime_mode):
+            return inputs
+        request_id = str(request.request_id or "").strip()
+        root_session_id = self._resolve_interrupt_session_id(request.session_id)
+        local_text = _permission_user_text_for_request(request)
+        from jiuwenswarm.server.runtime.agent_adapter.interface import (
+            is_external_user_authored_dispatch,
+        )
+
+        is_interrupt_resume = self._is_interrupt_resume_dispatch(params)
+        external_user_dispatch = not is_interrupt_resume and (
+            is_external_user_authored_dispatch(
+                params,
+                channel_id=request.channel_id,
+                request_method=request.req_method,
+                metadata=request.metadata,
+            )
+        )
+        answer = inputs.get(_ROOT_PERMISSION_ANSWER_KEY)
+        retained_context = (
+            answer.card.root_context
+            if is_interrupt_resume and isinstance(answer, RootPermissionAnswer)
+            else None
+        )
+        if isinstance(retained_context, RootDecisionContext):
+            prepared = put_root_decision_context_in_inputs(inputs, retained_context)
+            return put_permission_owner_in_inputs(
+                prepared,
+                TOOL_PERMISSION_CONTEXT.get(),
+            )
+        if external_user_dispatch:
+            context_messages, context_available = self._permission_context_messages(
+                root_session_id
+            )
+            intent_projection = build_root_intent_projection(
+                context_messages,
+                context_available=context_available,
+                current_text=local_text,
+                current_request_id=request_id,
+                current_kind=(
+                    RootIntentTurnKind.STEER
+                    if dispatch_mode == InputDispatchMode.STEER
+                    else RootIntentTurnKind.FRESH
+                ),
+            )
+            trusted_turns = intent_projection.turns
+            auto_review_block_reason = intent_projection.auto_review_block_reason
+        else:
+            trusted_turns = ()
+            auto_review_block_reason = ""
+        context = RootDecisionContext(
+            session_id=root_session_id,
+            request_id=request_id,
+            channel_id=str(request.channel_id or "").strip(),
+            trusted_turns=trusted_turns,
+            auto_review_block_reason=auto_review_block_reason,
+        )
+        prepared = put_root_decision_context_in_inputs(inputs, context)
+        return put_permission_owner_in_inputs(prepared, TOOL_PERMISSION_CONTEXT.get())
+
+    def _permission_inputs_for_dispatch(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, Any],
+        dispatch_mode: InputDispatchMode | None,
+    ) -> dict[str, Any]:
+        """Stamp the root context at the Host dispatch boundary."""
+
+        if not self._enable_auto_permission:
+            return inputs
+        params = request.params if isinstance(request.params, dict) else {}
+        runtime_mode = str(params.get("mode") or "agent").strip().lower()
+        if not self._supports_root_context(params, runtime_mode):
+            return inputs
+        return self._with_root_context(
+            request,
+            inputs,
+            dispatch_mode=dispatch_mode,
+        )
 
 
+    async def _discard_superseded_permission_before_fresh_input(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, Any],
+        handoff: RootPermissionDispatchHandoff,
+    ) -> None:
+        """Dispose the exact old permission continuation before a fresh root turn."""
+        if isinstance(inputs.get("query"), InteractiveInput) or self._wants_attach_goal(
+            request.params
+        ):
+            return
+        if self._should_inject_into_existing_interaction(
+            request.params
+        ) or not self._is_host_permission_update_input(request):
+            return
+        if not self._permission_dispatch.publish_cutover(handoff):
+            return
+        cancel_error: BaseException | None = None
+        try:
+            await self._instance.cancel_round(reason="fresh_user_input")
+        except Exception as exc:
+            cancel_error = exc
+        if not await self._permission_dispatch.complete_cutover(
+            handoff,
+            discard=lambda keys: self._discard_frozen_permission_continuation(request.session_id, keys),
+            discard_confirmed=cancel_error is None,
+            keep_lock=True,
+        ):
+            raise RootPermissionQueueError(
+                "permission_continuation_discard_failed"
+            ) from cancel_error
+
+    async def _prepare_root_input_dispatch(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._enable_auto_permission:
+            return inputs
+        root_session_id = self._resolve_interrupt_session_id(request.session_id)
+        handoff = await self._permission_dispatch.acquire(root_session_id)
+        try:
+            await self._discard_superseded_permission_before_fresh_input(
+                request,
+                inputs,
+                handoff,
+            )
+            prepared = self._prepare_permission_resume_dispatch(request, inputs)
+            return self._permission_dispatch.prepare(prepared, handoff)
+        except BaseException:
+            self._permission_dispatch.abort_preparation(handoff)
+            raise
+
+    def _prepare_permission_resume_dispatch(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Reserve one exact permission head or validate one ordinary ask answer."""
+
+        instance = self._instance
+        loop_session = getattr(instance, "loop_session", None)
+        if loop_session is None:
+            loop_session = getattr(instance, "_loop_session", None)
+        root_session_id = self._resolve_interrupt_session_id(request.session_id)
+        self._root_permission_queue.raise_if_quarantined(root_session_id)
+        query = inputs.get("query")
+        if not isinstance(query, InteractiveInput):
+            return put_root_nonpermission_resume_in_inputs(inputs, None)
+        if loop_session is not None:
+            get_session_id = getattr(loop_session, "get_session_id", None)
+            loop_session_id = (
+                str(get_session_id() or "") if callable(get_session_id) else ""
+            )
+            if self._resolve_interrupt_session_id(loop_session_id) != root_session_id:
+                raise RootPermissionQueueError("permission_queue_session_mismatch")
+        try:
+            answer = self._root_permission_queue.reserve_answer(
+                root_session_id,
+                query,
+            )
+        except RootPermissionQueueError as exc:
+            if str(exc) != "permission_queue_empty":
+                raise
+            if self._root_permission_queue.has_live(root_session_id=root_session_id):
+                raise RootPermissionQueueError(
+                    "nonpermission_resume_permission_conflict"
+                ) from exc
+            return prepare_nonpermission_resume(
+                loop_session,
+                inputs,
+                query,
+                root_session_id=root_session_id,
+            )
+        prepared = put_root_nonpermission_resume_in_inputs(inputs, None)
+        prepared["query"] = answer.interactive_input
+        prepared[_ROOT_PERMISSION_ANSWER_KEY] = answer
+        return prepared
 
 
+    async def _attach_and_send_inputs(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, Any],
+        *,
+        send_without_output: bool,
+    ) -> tuple[Any | None, bool]:
+        answer = inputs.get(_ROOT_PERMISSION_ANSWER_KEY)
+        if answer is not None and not isinstance(answer, RootPermissionAnswer):
+            raise RootPermissionQueueError("permission_queue_answer_invalid")
+        handoff = inputs.get(_ROOT_PERMISSION_HANDOFF_KEY)
+        if self._enable_auto_permission and not isinstance(handoff, RootPermissionDispatchHandoff):
+            raise RootPermissionQueueError("permission_dispatch_handoff_missing")
+        stream = None
+        try:
+            stream = await self._instance.attach_output()
+            if stream is None and (answer is not None or not send_without_output):
+                if answer is not None:
+                    raise RootPermissionQueueError("permission_queue_output_unavailable")
+                return None, False
+            mode = self._resolve_input_dispatch_mode(request.params)
+            dispatched = await self._send_input_with_permission_resume_guard(
+                SendInputRequest(
+                    request_id=request.request_id,
+                    inputs=self._permission_inputs_for_dispatch(request, inputs, mode),
+                    mode=mode,
+                )
+            )
+            return stream, dispatched
+        except BaseException:
+            self._permission_dispatch.release(inputs)
+            if stream is not None:
+                try:
+                    await stream.close(abort_active_round=False)
+                except BaseException:
+                    logger.exception(
+                        "[JiuWenSwarmDeepAdapter] output lease close failed"
+                    )
+            raise
+
+    async def _send_input_with_permission_resume_guard(self, request: SendInputRequest) -> bool:
+        if not self._enable_auto_permission:
+            await self._instance.send_input(request)
+            return False
+        return await self._permission_dispatch.send(request, self._instance.send_input)
 
 
+    def _permission_context_messages(
+        self,
+        session_id: str,
+    ) -> tuple[list[Any] | None, bool]:
+        """Read only live context-engine messages for permission intent."""
 
-
-
-
+        adapters = [self]
+        if not getattr(self, "_is_session_scoped_adapter", False):
+            session_adapter = self._get_cached_session_adapter(session_id)
+            if session_adapter is not None:
+                adapters.append(session_adapter)
+        for adapter in adapters:
+            instance = getattr(adapter, "_instance", None)
+            react_agent = getattr(instance, "react_agent", None)
+            context_engine = getattr(react_agent, "context_engine", None)
+            if context_engine is None:
+                continue
+            try:
+                context = context_engine.get_context(session_id=session_id)
+                if context is None:
+                    continue
+                raw_messages = context.get_messages()
+                if raw_messages is None:
+                    return None, False
+                return list(raw_messages), True
+            except Exception as exc:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] permission context_engine read failed: %s",
+                    exc,
+                )
+                return None, False
+        return None, False
 
     @staticmethod
     def _supports_root_context(
@@ -11831,10 +12101,10 @@ class JiuWenSwarmDeepAdapter:
                     op[key] = int(value.strip())
         return op
 
-    async def _abort_shared_agent_if_safe(self, normalized_sid: str, intent: str) -> None:
+    async def _abort_shared_agent_if_safe(self, normalized_sid: str, intent: str) -> bool:
         """Global DeepAgent/scheduler abort when safe for unrelated sessions."""
         if self._instance is None:
-            return
+            return True
         # Never abort while a goal round is in flight.  The goal supervisor owns
         # its lifecycle; aborting the shared DeepAgent here (e.g. from a
         # stream_cancel triggered by the frontend's cancel-before-send) would
@@ -11846,7 +12116,7 @@ class JiuWenSwarmDeepAdapter:
                 intent,
                 normalized_sid,
             )
-            return
+            return False
         other_count = self._other_active_sessions(normalized_sid)
         if other_count > 0:
             # instance.abort() is a global operation on the shared DeepAgent —
@@ -11861,8 +12131,8 @@ class JiuWenSwarmDeepAdapter:
                 other_count,
                 dict(self._active_session_ids),
             )
-            return
-        await self._halt_deep_agent_execution(intent)
+            return False
+        return await self._halt_deep_agent_execution(intent)
 
     async def process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
@@ -11963,6 +12233,8 @@ class JiuWenSwarmDeepAdapter:
         success = True
         updated_todos = None
         cancelled_tool_results = []
+        cutover_handoff: RootPermissionDispatchHandoff | None = None
+        continuation_discarded = True
 
         if intent == "pause":
             # 暂停：通过 StreamEventRail 在下一个 model_call/tool_call checkpoint 阻塞
@@ -11986,7 +12258,11 @@ class JiuWenSwarmDeepAdapter:
 
         elif intent == "supplement":
             # supplement: 停止当前执行，但保留 todo（新任务会根据 todo 待办继续执行）
-            cancelled_tool_results = await self._stop_session_interrupt_work(
+            cutover_handoff = await self._permission_dispatch.start_cutover(_normalized_sid)
+            (
+                cancelled_tool_results,
+                continuation_discarded,
+            ) = await self._stop_session_interrupt_work(
                 request.session_id,
                 intent="supplement",
             )
@@ -11994,7 +12270,12 @@ class JiuWenSwarmDeepAdapter:
                 # Global abort is safe only when this session has work in flight.
                 # When inactive, another session may have just started — aborting
                 # the shared DeepAgent would kill it as collateral damage.
-                await self._abort_shared_agent_if_safe(_normalized_sid, "supplement")
+                continuation_discarded = (
+                    await self._abort_shared_agent_if_safe(
+                        _normalized_sid, "supplement"
+                    )
+                    or continuation_discarded
+                )
             # 不清理 todo — 保留给新任务继续
             logger.info(
                 "[JiuWenSwarmDeepAdapter] interrupt(supplement): 已停止执行 request_id=%s",
@@ -12008,7 +12289,11 @@ class JiuWenSwarmDeepAdapter:
             # DeepAgent 的 _run_task_loop_stream 后台 Task 不会停止
             # （stream_task.cancel() 只取消了 chunk 转发 Task，不影响 _stream_process）。
             # SessionManager.cancel_session_task 仅管理非流式队列 Task，对流式后台 Task 无效。
-            cancelled_tool_results = await self._stop_session_interrupt_work(
+            cutover_handoff = await self._permission_dispatch.start_cutover(_normalized_sid)
+            (
+                cancelled_tool_results,
+                continuation_discarded,
+            ) = await self._stop_session_interrupt_work(
                 request.session_id,
                 intent="cancel",
                 reset_for_new_task=True,
@@ -12017,7 +12302,10 @@ class JiuWenSwarmDeepAdapter:
                 # Global abort is safe only when this session has work in flight.
                 # When inactive, another session may have just started — aborting
                 # the shared DeepAgent would kill it as collateral damage.
-                await self._abort_shared_agent_if_safe(_normalized_sid, "cancel")
+                continuation_discarded = (
+                    await self._abort_shared_agent_if_safe(_normalized_sid, "cancel")
+                    or continuation_discarded
+                )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] interrupt(cancel): 已设置 abort 并解除 pause 阻塞"
             )
@@ -12072,6 +12360,19 @@ class JiuWenSwarmDeepAdapter:
             payload["cancelled_tools"] = cancelled_tool_results
             # 写入历史记录，确保刷新网页后工具状态正确显示
             self._append_cancelled_tools_to_history(request, cancelled_tool_results)
+        if cutover_handoff is not None:
+            try:
+                continuation_discarded = await self._permission_dispatch.complete_cutover(
+                    cutover_handoff,
+                    discard=lambda keys: self._discard_frozen_permission_continuation(request.session_id, keys),
+                    discard_confirmed=continuation_discarded,
+                    keep_lock=False,
+                )
+            except RootPermissionQueueError:
+                continuation_discarded = False
+            if not continuation_discarded:
+                payload["success"] = False
+                payload["error"] = "permission_continuation_discard_failed"
 
         return AgentResponse(
             request_id=request.request_id,
@@ -12095,6 +12396,7 @@ class JiuWenSwarmDeepAdapter:
         without clearing GoalRecord.  For user cancel, pause an ACTIVE goal
         first so the GoalBar stops continuing after the round is aborted.
         """
+        root_session_id = self._resolve_interrupt_session_id(request.session_id)
         paused_goal_payload: dict[str, Any] | None = None
         if intent == "cancel":
             try:
@@ -12117,7 +12419,10 @@ class JiuWenSwarmDeepAdapter:
                     request.session_id,
                 )
 
+        cutover_handoff = await self._permission_dispatch.start_cutover(root_session_id)
+
         cancelled = False
+        cancel_call_completed = False
         # Stop the scheduler execution before asking the interaction owner to
         # cancel the round.  In particular, task_tool awaits its subagent in
         # the scheduler's exec task; cancelling only the interaction round can
@@ -12135,6 +12440,7 @@ class JiuWenSwarmDeepAdapter:
             cancelled = await self._instance.cancel_round(
                 reason="user_cancel",
             )
+            cancel_call_completed = True
             logger.info(
                 "[JiuWenSwarmDeepAdapter] interrupt(%s): interaction round cancel "
                 "cancelled=%s session=%s",
@@ -12151,6 +12457,17 @@ class JiuWenSwarmDeepAdapter:
             # A scheduler task may be installed while cancel_round is
             # unwinding; repeat the targeted cancellation as a safety net.
             self._cancel_scheduler_running_tasks()
+        continuation_discarded = True
+        if cutover_handoff is not None:
+            try:
+                continuation_discarded = await self._permission_dispatch.complete_cutover(
+                    cutover_handoff,
+                    discard=lambda keys: self._discard_frozen_permission_continuation(request.session_id, keys),
+                    discard_confirmed=cancel_call_completed,
+                    keep_lock=False,
+                )
+            except RootPermissionQueueError:
+                continuation_discarded = False
         if intent == "supplement" and isinstance(new_input, str) and new_input.strip():
             await self._clear_pending_ask_user_interrupt_for_supplement(request.session_id)
         message = "任务已切换" if intent == "supplement" else "任务已取消"
@@ -12158,9 +12475,11 @@ class JiuWenSwarmDeepAdapter:
         payload: dict[str, Any] = {
             "event_type": "chat.interrupt_result",
             "intent": intent,
-            "success": True,
+            "success": continuation_discarded,
             "message": message,
         }
+        if not continuation_discarded:
+            payload["error"] = "permission_continuation_discard_failed"
         if new_input:
             payload["new_input"] = new_input
         if paused_goal_payload is not None:
@@ -12171,7 +12490,6 @@ class JiuWenSwarmDeepAdapter:
         if cancelled_tool_results:
             payload["cancelled_tools"] = cancelled_tool_results
             self._append_cancelled_tools_to_history(request, cancelled_tool_results)
-
         # Best-effort todo cancellation for user cancel (does not touch runtime).
         if cancelled and intent == "cancel" and request.session_id:
             try:
@@ -12186,7 +12504,7 @@ class JiuWenSwarmDeepAdapter:
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
-            ok=True,
+            ok=continuation_discarded,
             payload=payload,
             metadata=request.metadata,
         )
@@ -12289,6 +12607,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def handle_user_answer(self, request: AgentRequest) -> AgentResponse:
         """Handle chat.user_answer request."""
+        self.validate_auto_permission_workspace_request(request)
         if not self._is_session_scoped_adapter:
             session_adapter = await self._get_or_create_session_adapter(request.session_id)
             try:
