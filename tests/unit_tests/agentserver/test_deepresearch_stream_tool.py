@@ -347,6 +347,54 @@ async def test_stream_sends_versioned_config_over_stdin_only():
     assert parsed_outcome["skill_execution_ms"] >= 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report_type", ["professional", "brief"])
+async def test_stream_sends_explicit_report_type_in_config_frame_only(report_type: str):
+    proc = _Proc(
+        [
+            json.dumps(
+                {
+                    "__deepsearch_status__": "error",
+                    "error_code": "workflow_error",
+                    "error": "done",
+                }
+            )
+        ]
+    )
+    patches = _stream_patches(proc)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as spawn:
+        await dt.deepresearch_stream._func(
+            action="start",
+            query="q",
+            report_type=report_type,
+        )
+
+    frame = json.loads(bytes(proc.stdin.data))
+    assert frame["config"]["REPORT_TYPE"] == report_type
+    assert "REPORT_TYPE" not in spawn.await_args.kwargs["env"]
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_invalid_report_type_before_child_spawn():
+    proc = _Proc()
+    patches = _stream_patches(proc)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as spawn:
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(
+                action="start",
+                query="q",
+                report_type="Brief",
+            )
+        )
+
+    assert outcome == {
+        "status": "error",
+        "error_code": "report_type_invalid",
+        "error": "report_type must be one of: professional, brief",
+    }
+    spawn.assert_not_awaited()
+
+
 def test_only_six_standard_proxy_names_are_forwarded(tmp_path: Path, monkeypatch):
     venv = tmp_path / "runtime"
     python = venv / "bin" / "python"
@@ -471,6 +519,40 @@ async def test_track_and_untrack_cover_terminal_error_exit():
     manager.track_process.assert_called_once_with("", proc)
     manager.untrack_process.assert_called_once_with("", proc)
     assert proc.waited >= 1
+
+
+@pytest.mark.asyncio
+async def test_numeric_deepsearch_error_code_is_preserved():
+    proc = _Proc(
+        [
+            json.dumps(
+                {
+                    "__deepsearch_status__": "error",
+                    "error_code": "212001",
+                    "error": "HTML report generation failed",
+                }
+            )
+        ]
+    )
+    patches = _stream_patches(proc)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(action="start", query="q")
+        )
+
+    assert outcome["error_code"] == "212001"
+
+
+@pytest.mark.parametrize("error_code", ["12345", "1234567", "１２３４５６"])
+def test_non_six_ascii_digit_error_codes_are_rejected(error_code: str):
+    outcome = dt._sanitize_terminal_outcome(
+        {"status": "error", "error_code": error_code, "error": "failed"},
+        _valid_config(),
+    )
+
+    assert outcome["error_code"] == "workflow_error"
 
 
 @pytest.mark.asyncio
@@ -1179,7 +1261,8 @@ async def test_completed_marker_accepts_p_numbered_sections_beneath_wrapper_head
                     "agent": "sub_reporter",
                     "section_idx": str(index),
                     "section_total": 5,
-                    "event": "done",
+                    "event": "summary_response",
+                    "content": "SUCCESS",
                 }
             )
             for index in range(1, 6)
@@ -1534,7 +1617,8 @@ async def test_completed_report_delivers_markdown_html_and_hidden_bundle(tmp_pat
                     "agent": "sub_reporter",
                     "section_idx": "1",
                     "section_total": 1,
-                    "event": "done",
+                    "event": "summary_response",
+                    "content": "SUCCESS",
                 }
             ),
             json.dumps(
@@ -1592,6 +1676,10 @@ async def test_completed_report_delivers_markdown_html_and_hidden_bundle(tmp_pat
         if call.args[0]["payload"].get("event_type") == "chat.file"
     )
     assert [item["name"] for item in file_payload["files"]] == ["r.md", "r.html"]
+    assert [item["mime_type"] for item in file_payload["files"]] == [
+        "text/markdown",
+        "text/html",
+    ]
     assert file_payload["metadata"]["htmlStyleStatus"] == "fallback"
     assert file_payload["metadata"]["htmlStylePhase"] == "invoke_llm"
     assert file_payload["metadata"]["htmlStyleReasonCode"] == "llm_call_failed"
@@ -1602,24 +1690,166 @@ async def test_completed_report_delivers_markdown_html_and_hidden_bundle(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_final_report_idle_stream_emits_processing_heartbeat_without_cancelling_reader(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+async def test_completed_native_html_delivers_exactly_one_brief_file(tmp_path: Path):
+    native_html = "<!doctype html><html><body>Brief</body></html>"
+    final_result = {
+        "response_content": native_html,
+        "response_content_type": "text/html",
+    }
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
+            json.dumps(
+                {
+                    "agent": "brief_reporter",
+                    "section_idx": "1",
+                    "section_total": 1,
+                    "event": "done",
+                }
+            ),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "completed",
+                    "conversation_id": "C1",
+                    "final_result": final_result,
+                    "raw_report_path": "/must/not/expose.md",
+                }
+            ),
+        ]
+    )
+    route = {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    html_path = tmp_path / "brief-v1.html"
+    write_html = AsyncMock(return_value=str(html_path))
+    patches = _stream_patches(proc, route=route)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        stack.enter_context(patch.object(dt, "_write_report_html", new=write_html))
+        markdown_writer = stack.enter_context(
+            patch.object(dt, "_write_report_artifacts_stream", new=AsyncMock())
+        )
+        generic_html = stack.enter_context(
+            patch.object(dt, "_generate_report_html", new=AsyncMock())
+        )
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(
+                action="start",
+                query="q",
+                file_name="brief.md",
+            )
+        )
+
+    assert outcome == {
+        "status": "completed",
+        "conversation_id": "C1",
+        "report_delivered": True,
+        "report_chars": len(native_html),
+    }
+    write_html.assert_awaited_once_with(native_html, "brief.md")
+    markdown_writer.assert_not_awaited()
+    generic_html.assert_not_awaited()
+    file_payload = next(
+        call.args[0]["payload"]
+        for call in push.send_push.await_args_list
+        if call.args[0]["payload"].get("event_type") == "chat.file"
+    )
+    assert file_payload == {
+        "event_type": "chat.file",
+        "files": [
+            {
+                "path": str(html_path),
+                "name": "brief-v1.html",
+                "mime_type": "text/html",
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_completed_unknown_response_mime_fails_without_report_file(tmp_path: Path):
+    final_result = {
+        "response_content": "opaque",
+        "response_content_type": "application/octet-stream",
+    }
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
+            json.dumps(
+                {
+                    "agent": "brief_html_reporter",
+                    "section_idx": "1",
+                    "section_total": 1,
+                    "event": "done",
+                }
+            ),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "completed",
+                    "conversation_id": "C1",
+                    "final_result": final_result,
+                }
+            ),
+        ]
+    )
+    route = {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    patches = _stream_patches(proc, route=route)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        markdown_writer = stack.enter_context(
+            patch.object(dt, "_write_report_artifacts_stream", new=AsyncMock())
+        )
+        html_writer = stack.enter_context(
+            patch.object(dt, "_write_report_html", new=AsyncMock())
+        )
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(action="start", query="q")
+        )
+
+    assert outcome["error_code"] == "stream_protocol_invalid"
+    markdown_writer.assert_not_awaited()
+    html_writer.assert_not_awaited()
+    assert not any(
+        call.args[0]["payload"].get("event_type") == "chat.file"
+        for call in push.send_push.await_args_list
+    )
+
+
+async def _run_delayed_final_report_heartbeat_case(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    node_chunk: dict[str, Any],
+    final_result: dict[str, Any],
+    writer_name: str,
+    writer_result: object,
+) -> tuple[dict[str, Any], _DelayedFinalReportReader, list[tuple[str, int]]]:
     initial = b"".join(
         (
             json.dumps(
                 {"__deepsearch_status__": "started", "conversation_id": "C1"}
             ).encode("utf-8")
             + b"\n",
-            json.dumps(
-                {
-                    "agent": "sub_reporter",
-                    "section_idx": "1",
-                    "section_total": 1,
-                    "event": "done",
-                }
-            ).encode("utf-8")
-            + b"\n",
+            json.dumps(node_chunk).encode("utf-8") + b"\n",
         )
     )
     terminal = (
@@ -1627,7 +1857,7 @@ async def test_final_report_idle_stream_emits_processing_heartbeat_without_cance
             {
                 "__deepsearch_status__": "completed",
                 "conversation_id": "C1",
-                "final_result": {"response_content": "# Final"},
+                "final_result": final_result,
             }
         ).encode("utf-8")
         + b"\n"
@@ -1661,11 +1891,11 @@ async def test_final_report_idle_stream_emits_processing_heartbeat_without_cance
 
     push.send_push.side_effect = record_push
 
-    async def delayed_write(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+    async def delayed_write(*_args: Any, **_kwargs: Any) -> object:
         nonlocal phase
         phase = "artifact"
         await asyncio.sleep(0.08)
-        return {"md": str(tmp_path / "r.md")}
+        return writer_result
 
     monkeypatch.setattr(
         dt,
@@ -1683,7 +1913,7 @@ async def test_final_report_idle_stream_emits_processing_heartbeat_without_cance
         stack.enter_context(
             patch.object(
                 dt,
-                "_write_report_artifacts_stream",
+                writer_name,
                 new=delayed_write,
             )
         )
@@ -1691,13 +1921,30 @@ async def test_final_report_idle_stream_emits_processing_heartbeat_without_cance
             await dt.deepresearch_stream._func(action="start", query="q")
         )
 
-    heartbeats = [
-        call.args[0]["payload"]
-        for call in push.send_push.await_args_list
-        if call.args[0]["payload"].get("event_type") == "chat.processing_status"
-        and call.args[0]["payload"].get("current_task") == "in_progress"
-    ]
-    assert len(heartbeats) >= 4
+    return outcome, reader, heartbeat_observations
+
+
+@pytest.mark.asyncio
+async def test_final_report_idle_stream_emits_processing_heartbeat_without_cancelling_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outcome, reader, heartbeat_observations = (
+        await _run_delayed_final_report_heartbeat_case(
+            monkeypatch,
+            node_chunk={
+                "agent": "sub_reporter",
+                "section_idx": "1",
+                "section_total": 1,
+                "event": "summary_response",
+                "content": "SUCCESS",
+            },
+            final_result={"response_content": "# Final"},
+            writer_name="_write_report_artifacts_stream",
+            writer_result={"md": str(tmp_path / "r.md")},
+        )
+    )
+
+    assert len(heartbeat_observations) >= 4
     stream_heartbeat_reads = {
         read_number
         for observed_phase, read_number in heartbeat_observations
@@ -1707,6 +1954,73 @@ async def test_final_report_idle_stream_emits_processing_heartbeat_without_cance
     assert any(
         observed_phase == "artifact"
         for observed_phase, _read_number in heartbeat_observations
+    )
+    assert reader.cancelled is False
+    assert outcome["status"] == "completed"
+    assert outcome["report_delivered"] is True
+
+
+@pytest.mark.asyncio
+async def test_brief_final_report_idle_stream_emits_processing_heartbeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    native_html = "<!doctype html><html><body>Brief</body></html>"
+    outcome, reader, heartbeat_observations = (
+        await _run_delayed_final_report_heartbeat_case(
+            monkeypatch,
+            node_chunk={
+                "agent": "brief_reporter",
+                "section_idx": "0",
+                "event": "done",
+            },
+            final_result={
+                "response_content": native_html,
+                "response_content_type": "text/html",
+            },
+            writer_name="_write_report_html",
+            writer_result=str(tmp_path / "brief-v1.html"),
+        )
+    )
+
+    assert any(
+        observed_phase == "stream" and read_number == 2
+        for observed_phase, read_number in heartbeat_observations
+    )
+    assert any(
+        observed_phase == "artifact"
+        for observed_phase, _read_number in heartbeat_observations
+    )
+    assert reader.cancelled is False
+    assert outcome["status"] == "completed"
+    assert outcome["report_delivered"] is True
+
+
+@pytest.mark.asyncio
+async def test_brief_sub_reporter_completion_keeps_silent_final_pipeline_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    native_html = "<!doctype html><html><body>Brief</body></html>"
+    outcome, reader, heartbeat_observations = (
+        await _run_delayed_final_report_heartbeat_case(
+            monkeypatch,
+            node_chunk={
+                "agent": "brief_sub_reporter",
+                "section_idx": "0",
+                "event": "done",
+                "content": "章节写作完成",
+            },
+            final_result={
+                "response_content": native_html,
+                "response_content_type": "text/html",
+            },
+            writer_name="_write_report_html",
+            writer_result=str(tmp_path / "brief-v1.html"),
+        )
+    )
+
+    assert any(
+        observed_phase == "stream" and read_number == 2
+        for observed_phase, read_number in heartbeat_observations
     )
     assert reader.cancelled is False
     assert outcome["status"] == "completed"
@@ -1893,6 +2207,28 @@ async def test_report_publication_writes_markdown_html_snapshot_and_provenance(
     assert provenance["citation_artifacts"] == citation_artifacts
     assert provenance["content_sha256"]
     assert snapshot["response_content"] == final_result["response_content"]
+
+
+@pytest.mark.asyncio
+async def test_native_html_publication_is_exclusive_and_creates_no_markdown_sidecars(
+    tmp_path: Path,
+):
+    native_html = "<!doctype html><html><body>native</body></html>"
+    with patch.object(dt, "get_cwd", return_value=str(tmp_path)):
+        first, second = await asyncio.gather(
+            dt._write_report_html(native_html, "Research.md"),
+            dt._write_report_html(native_html, "Research.html"),
+        )
+
+    assert {Path(first).name, Path(second).name} == {
+        "Research-v1.html",
+        "Research-2-v1.html",
+    }
+    assert Path(first).read_text(encoding="utf-8") == native_html
+    assert Path(second).read_text(encoding="utf-8") == native_html
+    assert list(tmp_path.glob("*.md")) == []
+    assert list(tmp_path.glob("*.json")) == []
+    assert dt._REPORT_OUTPUT_LOCKS == {}
 
 
 @pytest.mark.asyncio
@@ -2269,7 +2605,13 @@ async def test_file_delivery_failure_never_falls_back_to_report_chat(tmp_path: P
         [
             json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
             json.dumps(
-                {"agent": "sub_reporter", "section_idx": "1", "section_total": 1, "event": "done"}
+                {
+                    "agent": "sub_reporter",
+                    "section_idx": "1",
+                    "section_total": 1,
+                    "event": "summary_response",
+                    "content": "SUCCESS",
+                }
             ),
             json.dumps(
                 {
@@ -2414,7 +2756,13 @@ async def test_large_completed_marker_above_streamreader_limit_is_supported(tmp_
     proc = _Proc(
         [
             json.dumps(
-                {"agent": "sub_reporter", "section_idx": "1", "section_total": 1, "event": "done"}
+                {
+                    "agent": "sub_reporter",
+                    "section_idx": "1",
+                    "section_total": 1,
+                    "event": "summary_response",
+                    "content": "SUCCESS",
+                }
             ),
             json.dumps(
                 {
@@ -3005,7 +3353,13 @@ async def test_ordered_stage_gateway_updates_reach_completed_todo_snapshot(tmp_p
             json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
             json.dumps({"agent": "outline", "content": "# 1. Scope"}),
             json.dumps(
-                {"agent": "sub_reporter", "section_idx": "1", "section_total": 1, "event": "done"}
+                {
+                    "agent": "sub_reporter",
+                    "section_idx": "1",
+                    "section_total": 1,
+                    "event": "summary_response",
+                    "content": "SUCCESS",
+                }
             ),
             json.dumps(
                 {
@@ -3798,8 +4152,8 @@ async def test_protocol_control_keys_and_values_survive_secret_redaction(
                     "agent": "sub_reporter",
                     "section_idx": "1",
                     "section_total": 1,
-                    "event": "done",
-                    "content": free_text,
+                    "event": "summary_response",
+                    "content": "SUCCESS",
                 }
             ),
             json.dumps(
