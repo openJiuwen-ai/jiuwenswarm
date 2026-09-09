@@ -86,7 +86,7 @@ class TeamDeliverableLocationRail(DeepAgentRail):
         """Build the Chinese prompt section."""
         return (
             "# 交付物落盘位置\n\n"
-            "面向用户的交付物（报告、文档、表格、图片、导出文件、代码成果等）必须写入**当前工作目录**——"
+            "面向用户的交付物（报告、文档、表格、图片、导出文件、代码成果等）必须写入当前工作目录——"
             "即本任务的工作区：\n\n"
             f"- 任务工作区（当前工作目录 cwd）：`{self._project_dir}`\n"
             "- 写交付物时直接使用相对路径（如 `报告.md`），文件工具会解析到当前工作目录；"
@@ -105,7 +105,7 @@ class TeamDeliverableLocationRail(DeepAgentRail):
         return (
             "# Deliverable Location\n\n"
             "User-facing deliverables (reports, documents, spreadsheets, images, exports, code results, "
-            "etc.) must be written into the **current working directory** — the workspace of this task:\n\n"
+            "etc.) must be written into the current working directory — the workspace of this task:\n\n"
             f"- Task workspace (current working directory, cwd): `{self._project_dir}`\n"
             "- Use relative paths (e.g. `report.md`) when writing deliverables; file tools resolve them "
             "against the current working directory. All team members share the same working directory and "

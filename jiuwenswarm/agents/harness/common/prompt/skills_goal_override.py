@@ -60,16 +60,16 @@ _SKILLS_SECTION_PRIORITY = 56
 # entry is sourced from the rail's currently loaded user skills.
 _SKILLS_PREAMBLE_EN = """# Skills
 
-Prefer the skills and tools below; call `skill_tool` to retrieve the full `SKILL.md` for a skill.
+Prefer the skills below; call `skill_tool` to retrieve the full `SKILL.md` for a skill.
 
-**Tool Selection Principle (xiaoyi First):** In all cases, unless the user explicitly specifies a different tool, you must prioritize using `小艺` related tools or skills whenever they are capable of completing the task.
+Skill Usage Principle (xiaoyi First): In all cases, unless the user explicitly specifies a different skill, prioritize using xiaoyi related skills whenever they are capable of completing the task.
 """
 
 _SKILLS_PREAMBLE_CN = """# 技能
 
-优先使用以下技能与工具；使用技能前调用 `skill_tool` 获取该技能的完整 `SKILL.md`。
+优先使用以下技能；使用技能前调用 `skill_tool` 获取该技能的完整 `SKILL.md`。
 
-**工具选择原则（小艺优先）：** 除非用户明确指定其他工具，否则在所有情况下，只要小艺相关工具或技能能够完成任务，就必须优先使用。
+技能选择原则（小艺优先）： 除非用户明确指定其他技能，否则在所有情况下，只要小艺相关技能能够完成任务，就必须优先使用。
 """
 
 _SKILLS_PREAMBLE: Dict[str, str] = {
@@ -82,20 +82,10 @@ _STATIC_BLOCK = {"cn": _STATIC_BLOCK_CN, "en": _STATIC_BLOCK_EN}
 
 _AVAILABLE_SKILLS_CLOSE_TAG = "</available_skills>"
 
-_FIND_SKILLS_TOOL_RULES = {
-    "cn": """## 技能发现与安装（`find-skills-win`）
-
-- **默认工具：** `find-skills-win` 技能。
-- **使用规则：** 所有技能发现、检索和安装任务默认必须通过该技能完成；仅当用户明确要求其他发现或安装方式时，才可使用其他方法。""",
-    "en": """## Skill Discovery and Installation (`find-skills-win`)
-
-- **Default tool:** the `find-skills-win` skill.
-- **Usage rule:** Complete all skill discovery, retrieval, and installation tasks through this skill by default. Use another discovery or installation method only when the user explicitly requests it.""",
-}
-
-# Keep product wording stable across agent-core releases.  Calling the upstream
-# builder below still determines whether the current request has any tools;
-# only the displayed policy text is owned here.
+# Merged Tool Usage Rules: basic principles + dedicated-tool mapping +
+# task planning + parallel calls + bash/git safety + find-skills policy
+# (inlined as plain bullets — no subsection). Shared by all three modes
+# (office / code / design) via the runtime Tool Usage Rules section (P14).
 _TOOL_USAGE_RULES = {
     "cn": """# 工具使用规则
 
@@ -103,14 +93,102 @@ _TOOL_USAGE_RULES = {
 - 相同工具和相同参数已有结果时，不要重复调用。
 - 上一次结果为空或没有新增信息时，调整参数、改用其他工具或说明结果不足。
 - 文件搜索、读取、编辑和写入优先使用专用工具，不要用 Shell 重复实现。
-- Shell 命令只有存在依赖关系时才串联；长时间运行的命令应根据需要增大 `timeout`，不要用 `sleep` 轮询。""",
+- Shell 命令只有存在依赖关系时才串联；长时间运行的命令应根据需要增大 `timeout`，不要用 `sleep` 轮询。
+- 技能发现与安装默认工具：`find-skills-win` 技能。所有技能发现、检索和安装任务默认必须通过该技能完成；仅当用户明确要求其他发现或安装方式时，才可使用其他方法。
+
+当有相关专用工具时，不要用 bash 运行命令。使用专用工具能让用户更好地理解和审查你的工作。这对协助用户至关重要：
+- 读取文件用 read_file，不要用 cat、head、tail 或 sed
+- 编辑文件用 edit_file，不要用 sed 或 awk
+- 创建文件用 write_file，不要用 cat heredoc 或 echo 重定向
+- 搜索文件用 glob 或 list_files，不要用 find 或 ls
+- 搜索文件内容用 grep，不要用 bash 的 grep 命令
+- bash 用于普通 POSIX 系统命令和 Bash 脚本。powershell 用于 Windows 原生 cmdlet 和路径。mcp_exec_command 仅在需要显式 Shell 参数化、后台执行或专用 Shell 工具时使用；每次 mcp_exec_command 调用必须包含 shell_type=\"bash\"、\"powershell\"、\"cmd\" 或 \"sh\"，不能使用 auto。如果不确定且有相关专用文件工具，默认使用该专用工具。
+
+## 任务规划（todos）
+
+使用 todo 工具分解和管理任何涉及工具调用或任务分解的任务。仅纯简单对话（一次性问题或闲聊，无工具调用）可跳过 todos。
+- 仅对无需工具调用的简单对话任务跳过 todos。
+- 中等工作量（例如全新后端 + 前端 + 验证）：2–3 个基于结果的里程碑，不是每个文件或规范章节一个条目。
+- 复杂工作量（多个交付物、大型重构、顺序不明）：最多 4–6 个里程碑。
+- 在实质性工作前调用一次 todo_create；优先与第一次 write/bash 并行，不要单独一轮 todo。
+- 尽可能在下一工作工具的同一响应中通过 todo_modify 标记里程碑完成；批量状态更新；避免单独一轮 todo。
+- 不要例行调用 todo_list。将验证保留在最终里程碑中，不要每个检查单独建 todo。
+
+## 并行工具调用
+
+你可以在单个响应中调用多个工具。如果你打算调用多个工具且它们之间没有依赖关系，将所有独立的工具调用一起发出。尽可能使用并行工具调用以提高效率。但当某些调用依赖前面调用产生的值时，不要并行运行；而是一个接一个地顺序运行。例如，如果一个操作必须在另一个开始之前完成，则顺序执行这些操作。
+
+## Bash 使用规则
+
+- 工作目录在命令之间持久存在，但 shell 状态不会。
+- 当命令共享上下文或顺序重要时，优先一次 bash 调用完成一个工作步骤。在单次 bash 调用中用 && 串联依赖命令；仅当早期失败不应阻止后续步骤时才用 ;。
+- 不要将依赖验证分散到多轮。启动服务器、等待并 HTTP 测试在一次调用中完成，例如 `python app.py & sleep 3 && curl http://localhost:5000/`。
+- 当一个响应中需要多次 bash 调用时，仅并行化真正独立的操作（例如 `git status` 和 `git diff`）。不要并行化属于同一检查的设置、验证或清理。
+- 仅当上一条命令失败且需要不同诊断或修复时，才使用单独一轮 bash。
+- 不要在单次 bash 调用中用换行符分隔命令（引号字符串内换行可以）。
+- 启动后台进程后的短暂 sleep 在同一串联命令中可以接受；不要用 sleep 重试循环掩盖失败。
+
+### Git 安全协议
+
+- 永远不要更新 git config
+- 永远不要运行破坏性 git 命令（push --force、reset --hard、checkout .、restore .、clean -f、branch -D），除非用户明确要求这些操作。
+- 永远不要跳过 hooks（--no-verify、--no-gpg-sign 等），除非用户明确要求
+- 永远不要 force push 到 main/master，如果用户要求则警告
+- 关键：始终创建新提交而不是修正（amend），除非用户明确要求 git amend。
+- 暂存文件时，优先按名称添加特定文件，而不是使用 \"git add -A\" 或 \"git add .\"
+- 永远不要提交更改，除非用户明确要求。
+- 永远不要运行交互式 git 命令（例如 git rebase -i、git add -i）。""",
     "en": """# Tool Usage Rules
 
 - Only call tools that are actually available in the current request.
 - Do not repeat the same tool with the same parameters when a result already exists.
 - If the previous result is empty or has no new information, adjust parameters, switch to another tool, or state that the result is insufficient.
 - Prefer dedicated tools for file search, read, edit, and write — do not reimplement them with Shell.
-- Chain Shell commands only when there are dependencies; for long-running commands, increase `timeout` as needed — do not poll with `sleep`.""",
+- Chain Shell commands only when there are dependencies; for long-running commands, increase `timeout` as needed — do not poll with `sleep`.
+- Default tool for skill discovery and installation: the `find-skills-win` skill. Complete all skill discovery, retrieval, and installation tasks through this skill by default; use another method only when the user explicitly requests it.
+
+Do NOT use bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
+- To read files use read_file instead of cat, head, tail, or sed
+- To edit files use edit_file instead of sed or awk
+- To create files use write_file instead of cat with heredoc or echo redirection
+- To search for files use glob or list_files instead of find or ls
+- To search the content of files, use grep instead of the bash grep command
+- Use bash for ordinary POSIX system commands and Bash scripts. Use powershell for Windows-native cmdlets and paths. Use mcp_exec_command only when explicit Shell parameterization, background execution, or a dedicated Shell tool is needed; every mcp_exec_command call must include shell_type=\"bash\", \"powershell\", \"cmd\", or \"sh\" and must not use auto. If you are unsure and there is a relevant dedicated file tool, default to using that dedicated tool.
+
+## Task planning (todos)
+
+Use the todo tools to break down and manage any task that involves tool calls or task decomposition. Only pure simple conversation (one-off questions or small talk with no tool calls) may skip todos.
+- Skip todos ONLY for simple conversational tasks that need no tool calls.
+- Medium work (e.g. greenfield backend + frontend + verify): 2–3 outcome-based milestones, not one item per file or spec section.
+- Complex work (many deliverables, large refactor, unclear order): 4–6 milestones max.
+- Call todo_create once before substantive work; prefer parallel with the first write/bash, not a todo-only round.
+- Mark milestones completed via todo_modify in the same response as the next work tool when possible; batch status updates; avoid todo-only rounds.
+- Do not call todo_list routinely. Keep verification in the final milestone, not separate todos per check.
+
+## Parallel tool calls
+
+You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, issue all of the independent tool calls together. Use parallel tool calls wherever you can to work more efficiently. But when some calls rely on values produced by earlier calls, do NOT run them in parallel; run them one after another instead. For example, if one operation must finish before another begins, execute those operations sequentially.
+
+## Bash usage rules
+
+- Working directory persists between commands, but shell state does not.
+- Prefer one bash call per workflow step when commands share context or order matters. Chain dependent commands with && in a single bash call; use ; only when earlier failures should not block later steps.
+- Do NOT split dependent verification across multiple rounds. Start server, wait, and HTTP-test in one call, e.g. `python app.py & sleep 3 && curl http://localhost:5000/`.
+- When multiple bash calls are needed in one response, parallelize only truly independent operations (e.g. `git status` and `git diff`). Do not parallelize setup, verification, or cleanup that belong to the same check.
+- Use a separate bash round only when the previous command failed and you need a different diagnostic or fix.
+- Do not use newlines to separate commands in a single bash call (newlines are ok in quoted strings).
+- A short sleep after starting a background process is fine within the same chained command; do not use sleep-retry loops to mask failures.
+
+### Git Safety Protocol
+
+- NEVER update the git config
+- NEVER run destructive git commands (push --force, reset --hard, checkout ., restore ., clean -f, branch -D) unless the user explicitly requests these actions.
+- NEVER skip hooks (--no-verify, --no-gpg-sign, etc) unless the user explicitly requests it
+- NEVER run force push to main/master, warn the user if they request it
+- CRITICAL: Always create NEW commits rather than amending, unless the user explicitly requests a git amend.
+- When staging files, prefer adding specific files by name rather than using \"git add -A\" or \"git add .\"
+- NEVER commit changes unless the user explicitly asks you to.
+- Never run interactive git commands (e.g. git rebase -i, git add -i).""",
 }
 
 def _skills_prompt_max_chars() -> int:
@@ -301,15 +379,13 @@ def _build_auto_list_mode_skill_prompt(language: str = "en") -> str:
 _TOOL_USAGE_SECTION_PRIORITY = 14
 
 def _build_tools_content_with_find_skills(ability_manager, language: str = "cn") -> str | None:
-    """Build product tool rules plus skill-discovery policy when tools exist."""
+    """Build merged tool rules (incl. find-skills policy) when tools exist."""
     # Preserve upstream's availability check, but keep the product rule wording
     # independent from agent-core prompt-text changes.
     if not _ORIGINAL_BUILD_TOOLS_CONTENT(ability_manager, language):
         return None
     lang = language or "cn"
-    content = _TOOL_USAGE_RULES.get(lang, _TOOL_USAGE_RULES["cn"])
-    rule = _FIND_SKILLS_TOOL_RULES.get(lang, _FIND_SKILLS_TOOL_RULES["en"])
-    return f"{content.rstrip()}\n\n{rule}\n"
+    return _TOOL_USAGE_RULES.get(lang, _TOOL_USAGE_RULES["cn"])
 
 
 _ORIGINAL_BUILD_TOOLS_CONTENT = _context.build_tools_content

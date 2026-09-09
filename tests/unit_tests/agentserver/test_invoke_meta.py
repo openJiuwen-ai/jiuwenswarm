@@ -1423,8 +1423,6 @@ def test_design_system_prompt_points_at_skills_not_catalog():
 
     prompt = build_design_system_prompt()
     assert "skill_tool" in prompt
-    assert "ppt-creation" in prompt
-    assert "分镜" in prompt
     assert "then call `invoke`" not in prompt
     assert "to call `invoke`" not in prompt
     assert "`image-generation`" not in prompt
@@ -1440,7 +1438,7 @@ def test_design_system_prompt_points_at_skills_not_catalog():
     assert "query step" not in prompt
     assert "Confirm before generating" not in prompt
     assert "vocal/instrumental" not in prompt
-    assert "lyrics markdown" in prompt
+    assert "lyrics markdown" not in prompt
 
 
 _PROD_MCP = "wss://hag-drcn.op.dbankcloud.com/agent-runtime-service-ws/v1/mcp/run"

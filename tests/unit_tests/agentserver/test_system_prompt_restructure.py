@@ -239,9 +239,6 @@ def test_code_and_design_tone_follow_tool_usage_rules_priority():
         assert priority.INTRO == 32
 
     assert CodePromptPriority.DOING_TASKS == 33
-    assert CodePromptPriority.USING_YOUR_TOOLS == 34
-    assert CodePromptPriority.SESSION_GUIDANCE == 35
-    assert CodePromptPriority.ACTIONS_WITH_CARE == 36
     assert DesignPromptPriority.CORE_CAPABILITIES == 33
 
 
@@ -302,17 +299,6 @@ def test_runtime_builder_keeps_tools_between_safety_and_profile_guidance(
         assert prompt.index("# Tool Usage Rules") < prompt.index(heading)
 
 
-def test_code_session_guidance_precedes_executing_actions_with_care():
-    from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
-        build_code_system_prompt,
-    )
-
-    prompt = build_code_system_prompt()
-    assert prompt.index("# Session-specific guidance") < prompt.index(
-        "# Executing actions with care"
-    )
-
-
 def test_find_skills_policy_lives_in_tool_usage_rules_not_skills_preamble():
     from openjiuwen.core.foundation.tool.base import ToolCard
     from openjiuwen.harness.prompts.sections import context
@@ -325,7 +311,8 @@ def test_find_skills_policy_lives_in_tool_usage_rules_not_skills_preamble():
     assert "# Tool Usage Rules" in tools_content
     assert "Only call tools that are actually available in the current request." in tools_content
     assert "Tool results are the source of truth" not in tools_content
-    assert "## Skill Discovery and Installation (`find-skills-win`)" in tools_content
+    assert "find-skills-win" in tools_content
+    assert "skill discovery and installation" in tools_content.lower()
     assert "Skill Discovery and Installation" not in skills_goal_override._SKILLS_PREAMBLE_EN
     assert skills_goal_override._SKILLS_PREAMBLE_EN.startswith("# Skills")
 
@@ -465,7 +452,8 @@ async def test_code_tool_usage_rail_injects_rules_after_safety():
     prompt = builder.build()
     assert prompt.index("# Safety") < prompt.index("# Tool Usage Rules")
     assert prompt.index("# Tool Usage Rules") < prompt.index("# Intro")
-    assert "## Skill Discovery and Installation (`find-skills-win`)" in prompt
+    assert "find-skills-win" in prompt
+    assert "## Skill Discovery and Installation" not in prompt
 
 
 @pytest.mark.asyncio
@@ -501,10 +489,10 @@ async def test_response_prompt_rail_no_longer_injects_input_or_output_sections()
 
 @pytest.mark.asyncio
 async def test_runtime_env_section_includes_message_rules_subsections():
-    """RuntimePromptRail's ``env`` section now hosts the Input Instructions /
-    Output Rules / Subagent Usage Rules subsections (headings demoted one level)
-    so they read as subsections of ``# Runtime Environment`` and are shared
-    across office / code / design / team profiles.
+    """RuntimePromptRail's ``env`` section hosts the Output Rules /
+    Subagent Usage Rules subsections (headings demoted one level) so they
+    read as subsections of ``# Runtime Environment`` and are shared across
+    office / code / design / team profiles.
     """
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -519,9 +507,6 @@ async def test_runtime_env_section_includes_message_rules_subsections():
     await runtime_rail.before_model_call(ctx)
 
     prompt = builder.build()
-    assert "## Input Instructions" in prompt
-    assert "### User Messages" in prompt
-    assert "### System Messages" in prompt
     assert "## Output Rules" in prompt
     assert "### Final Response Rules" in prompt
     assert "### Artifact and Deliverable Rules" in prompt

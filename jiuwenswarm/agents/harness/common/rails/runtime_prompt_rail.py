@@ -48,7 +48,7 @@ End-of-turn summary: one or two sentences. What changed and what's next. Nothing
 
 Match responses to the task: a simple question gets a direct answer, not headers and sections.
 
-**IMPORTANT**: The following applies to text output only — it does NOT limit your tool call count or codebase exploration depth:
+IMPORTANT: The following applies to text output only — it does NOT limit your tool call count or codebase exploration depth:
 
 Go straight to the point. Try the simplest approach first without going in circles. Do not overdo it. Be extra concise.
 
@@ -407,22 +407,22 @@ class RuntimePromptRail(DeepAgentRail):
         if sandbox_enabled:
             sandbox_perm_cn = (
                 "\n\n## 命令执行环境与权限\n\n"
-                "- 你的命令在一个**受限沙箱**中执行，只能读写你自己的工作区目录，"
-                "工作区之外的路径（例如 `C:\\` 系统盘、其他用户目录、桌面）很可能**没有访问权限**。\n"
-                "- 一旦命令返回**权限拒绝**类错误（如 `拒绝访问` / `PermissionError` / `WinError 5` / "
-                "`Access is denied`），**立即停止**对该路径的进一步尝试。"
-                "**不要**换一种命令（改 `dir`/`powershell`/`wsl`/换路径写法）反复重试同一目标——"
+                 "- 你的命令在一个受限沙箱中执行，只能读写你自己的工作区目录，"
+                 "工作区之外的路径（例如 `C:\\` 系统盘、其他用户目录、桌面）很可能没有访问权限。\n"
+                 "- 一旦命令返回权限拒绝类错误（如 `拒绝访问` / `PermissionError` / `WinError 5` / "
+                 "`Access is denied`），立即停止对该路径的进一步尝试。"
+                 "不要换一种命令（改 `dir`/`powershell`/`wsl`/换路径写法）反复重试同一目标——"
                 "权限是按路径授予的，换命令语法不会改变结果，只会浪费轮次。\n"
                 "- 正确做法：将该路径视为不可达，向用户说明权限受限并给出替代方案"
                 "（例如请用户把文件放进工作区，或在工作区内完成等效任务）。\n"
             )
             sandbox_perm_en = (
                 "\n\n## Command Execution Environment and Permissions\n\n"
-                "- Your commands run inside a **restricted sandbox**. You can read/write your own "
-                "workspace directory, but paths outside it (e.g. `C:\\` system drive, other user "
-                "directories, the Desktop) very likely have **no access**.\n"
-                "- As soon as a command returns a **permission-denied** error "
-                "(`PermissionError` / `WinError 5` / `Access is denied`), **stop immediately**. "
+                 "- Your commands run inside a restricted sandbox. You can read/write your own "
+                 "workspace directory, but paths outside it (e.g. `C:\\` system drive, other user "
+                 "directories, the Desktop) very likely have no access.\n"
+                 "- As soon as a command returns a permission-denied error "
+                 "(`PermissionError` / `WinError 5` / `Access is denied`), stop immediately. "
                 "Do NOT retry the same target with a different command (switching "
                 "`dir`/`powershell`/`wsl`/path syntax) — permissions are granted per-path, so "
                 "changing command syntax will not change the result; it only wastes turns.\n"
@@ -452,7 +452,7 @@ class RuntimePromptRail(DeepAgentRail):
                 "| 查找文件 | `dir /s pattern` 或 PowerShell "
                 "`Get-ChildItem -Recurse -Filter pattern` "
                 "| `find . -name pattern` |\n\n"
-                "**特别注意**：Windows 的 cmd/PowerShell `mkdir` 不支持 `-p` 参数；"
+                "特别注意：Windows 的 cmd/PowerShell `mkdir` 不支持 `-p` 参数；"
                 "只有在 Shell 能力显示 Git Bash/PATH bash 可用且实际使用 bash/Git Bash 时，"
                 "`mkdir -p` 才是合适的。"
                 "如需在 cmd/PowerShell 中创建嵌套目录，请使用 PowerShell "
@@ -486,7 +486,7 @@ class RuntimePromptRail(DeepAgentRail):
                 "| Find file | `dir /s pattern` or PowerShell "
                 "`Get-ChildItem -Recurse -Filter pattern` "
                 "| `find . -name pattern` |\n\n"
-                "**WARNING**: Windows cmd/PowerShell `mkdir` does NOT support the `-p` flag; "
+                "WARNING: Windows cmd/PowerShell `mkdir` does NOT support the `-p` flag; "
                 "`mkdir -p` is appropriate only when Shell capabilities show Git Bash/PATH bash "
                 "is available and you are actually using bash/Git Bash. "
                 "To create nested directories in cmd/PowerShell, use either PowerShell "
