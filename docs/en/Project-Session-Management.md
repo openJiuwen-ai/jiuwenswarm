@@ -435,8 +435,8 @@ Fetches current worktree Diff and, when `session_id` is provided, the last agent
 | `project_id` | string | Project ID |
 | `session_id` | string \| null | Requested session |
 | `work_mode` | string | Always `code` |
-| `repo` | object | `is_git`, `repo_root`, `branch`, `head`, `transient` |
-| `current` | DiffSummary \| null | Current worktree Diff; may be null when no Git, Git missing, or transient |
+| `repo` | object | `is_git`, `repo_root`, `branch`, `head`, `transient`, `repo_is_parent_of_project` (true when the repo root is a parent of the project directory) |
+| `current` | DiffSummary \| null | Current worktree Diff; may be null when no Git, Git missing, or transient. Includes `files_truncated` (true when actual changed files exceed the preview cap) and `files_limit` (preview cap of 50 files, project-directory files first) |
 | `last_turn` | DiffSummary \| null | Last turn Diff; null when no session or no history |
 | `generated_at` | number | Generation timestamp |
 
