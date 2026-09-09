@@ -416,8 +416,11 @@ def _build_video_tools(ctx: SwarmBuildContext) -> list[Any]:
 
 
 def _build_image_gen_tools(ctx: SwarmBuildContext) -> list[Any]:
-    """Build the image-generation tool when ``models.image_gen`` is configured."""
-    apply_image_gen_model_config_from_yaml(ctx.config or {})
+    """Build the image-generation tool when ``models.image_gen`` is enabled and configured."""
+    config = ctx.config or {}
+    if not multimodal_model_enabled(config, "image_gen"):
+        return []
+    apply_image_gen_model_config_from_yaml(config)
     if not os.getenv("IMAGE_GEN_API_KEY"):
         return []
     return _mark_stateless([generate_image])

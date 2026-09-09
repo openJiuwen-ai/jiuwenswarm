@@ -102,6 +102,14 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('video_vendor_key', 'agent', 'text', 'VIDEO_VENDOR_KEY'),
   envField('video_plan', 'agent', 'text', 'VIDEO_PLAN'),
   envField('video_enabled', 'agent', 'boolean', 'VIDEO_ENABLED'),
+  envField('image_gen_api_base', 'agent', 'text', 'IMAGE_GEN_API_BASE'),
+  envField('image_gen_api_key', 'agent', 'text', 'IMAGE_GEN_API_KEY'),
+  envField('image_gen_model', 'agent', 'text', 'IMAGE_GEN_MODEL_NAME'),
+  envField('image_gen_provider', 'agent', 'text', 'IMAGE_GEN_PROVIDER'),
+  envField('image_gen_endpoint_profile', 'agent', 'text', 'IMAGE_GEN_ENDPOINT_PROFILE'),
+  envField('image_gen_vendor_key', 'agent', 'text', 'IMAGE_GEN_VENDOR_KEY'),
+  envField('image_gen_plan', 'agent', 'text', 'IMAGE_GEN_PLAN'),
+  envField('image_gen_enabled', 'agent', 'boolean', 'IMAGE_GEN_ENABLED'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
 

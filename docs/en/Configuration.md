@@ -38,7 +38,7 @@ JiuwenSwarm supports multiple model types to meet diverse scenario requirements:
 | **Vision Model**  | Image understanding and analysis; supports image Q&A, OCR, captioning    | Must support **image understanding** and process image input                              | ⭕ No     |
 | **Image Generation Model** | Generate images from text descriptions; supports AI painting, image creation | Must support **image generation** and create images from text | ⭕ No     |
 
-> 💡 **Tip**: The default model is essential for system operation and must be configured correctly. Video, audio, vision, and image generation models are optional; configure them only when multimodal capabilities are needed. The image generation model is not shown in the frontend configuration panel yet; configure it via the main config (`models.image_gen`) or environment variables (`IMAGE_GEN_API_BASE`, etc.).
+> 💡 **Tip**: The default model is essential for system operation and must be configured correctly. Video, audio, vision, and image generation models are optional; configure them only when multimodal capabilities are needed.
 
 ### 2.2 Configuration Fields
 
@@ -49,7 +49,7 @@ Each model type supports the following parameters:
 | `api_base`       | `api_base`                  | Base URL for model API        | Use the provider's API endpoint; **do not include `/chat/completions`**; appended automatically |
 | `api_key`        | `api_key`                   | Model API key                | Obtained from the model provider; keep confidential                                           |
 | `model`          | `model_name`                | Model identifier             | Use exact model ID such as `gpt-4o`, `claude-3-opus`, `deepseek-chat`                                         |
-| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `AscendAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
+| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `AscendAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only; the image generation model uses `OpenAI` with `endpoint_profile: dashscope` (DashScope-hosted image models only) |
 
 > 💡 **Field Mapping**: The frontend panel uses `model` / `model_provider` as display field names; when saved to `config.yaml` they are mapped to backend fields `model_name` / `client_provider`. Both refer to the same thing, only the naming in the config file differs.
 
