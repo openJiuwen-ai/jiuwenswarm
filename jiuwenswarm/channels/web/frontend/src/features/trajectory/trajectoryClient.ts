@@ -6,36 +6,28 @@ import { getApiBase } from '../../utils/env';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
 import type { TrajectoryUsage } from './trajectory/model';
 
-export interface TrajectoryTraceSummary {
-  trace_id: string;
+/** One execution subject's chain, summarized without loading any payload. */
+export interface TrajectorySubjectSummary {
+  subject_id: string;
+  display_name: string | null;
+  kind: string | null;
+  parent_id: string | null;
+  record_count: number;
+  trace_count: number;
+  first_start_time_unix_nano: string;
+  last_observed_time_unix_nano: string;
+  first_revision: number;
   revision: number;
-  start_time_unix_nano: string;
-  end_time_unix_nano: string;
-  span_count: number;
-  request_id: string | null;
-  run_id: string | null;
-  agent_mode: string | null;
   has_error: boolean;
+  running: boolean;
 }
 
-export interface TrajectoryTraceListResponse {
+export interface TrajectorySubjectListResponse {
   schema_version: 1;
   session_id: string;
   store_epoch: string;
-  items: TrajectoryTraceSummary[];
-  next_cursor: string | null;
-  revision_cursor: string;
-}
-
-export interface TrajectoryRevisionListResponse {
-  schema_version: 1;
-  session_id: string;
-  store_epoch: string;
-  reset: boolean;
-  items: TrajectoryTraceSummary[];
-  next_cursor: string;
-  watermark: string;
-  has_more: boolean;
+  items: TrajectorySubjectSummary[];
+  watermark: number;
 }
 
 export interface TrajectorySessionUsageItem {
@@ -71,10 +63,10 @@ export interface TrajectoryDetailRecord {
   projection_omitted?: 'record_too_large';
 }
 
-export interface TrajectoryTraceDetailResponse {
+export interface TrajectorySubjectRecordsResponse {
   schema_version: 1;
   session_id: string;
-  trace_id: string;
+  subject_id: string;
   revision: number;
   reset: boolean;
   records: TrajectoryDetailRecord[];
@@ -139,25 +131,24 @@ async function readResponse(response: Response): Promise<unknown> {
   );
 }
 
-function validTraceSummary(value: unknown): value is TrajectoryTraceSummary {
+function validSubjectSummary(value: unknown): value is TrajectorySubjectSummary {
   if (!object(value)) return false;
-  return typeof value.trace_id === 'string'
-    && /^[0-9a-f]{32}$/.test(value.trace_id)
+  return typeof value.subject_id === 'string'
+    && value.subject_id.length > 0
     && Number.isSafeInteger(value.revision)
-    && typeof value.start_time_unix_nano === 'string'
-    && /^\d+$/.test(value.start_time_unix_nano)
-    && typeof value.end_time_unix_nano === 'string'
-    && /^\d+$/.test(value.end_time_unix_nano)
-    && Number.isSafeInteger(value.span_count)
-    && typeof value.has_error === 'boolean';
+    && Number.isSafeInteger(value.first_revision)
+    && Number.isSafeInteger(value.record_count)
+    && Number.isSafeInteger(value.trace_count)
+    && typeof value.first_start_time_unix_nano === 'string'
+    && /^\d+$/.test(value.first_start_time_unix_nano)
+    && typeof value.last_observed_time_unix_nano === 'string'
+    && /^\d+$/.test(value.last_observed_time_unix_nano)
+    && typeof value.has_error === 'boolean'
+    && typeof value.running === 'boolean';
 }
 
 function validOtlp(value: unknown): value is OtlpExportTraceServiceRequest {
   return object(value) && Array.isArray(value.resourceSpans);
-}
-
-function validOpaqueCursor(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= 512;
 }
 
 function validStoreEpoch(value: unknown): value is string {
@@ -215,50 +206,25 @@ export async function getTrajectorySessionUsage(
   return payload as unknown as TrajectorySessionUsageResponse;
 }
 
-export async function listTrajectoryTraces(
+/**
+ * List the execution subjects that own a chain in one session.
+ *
+ * Passing `afterRevision` returns only the chains that advanced past it, which
+ * is how the panel polls. The store epoch tells a caller its revisions are
+ * stale and it must restart from zero.
+ */
+export async function listTrajectorySubjects(
   sessionId: string,
   options: {
     signal?: AbortSignal;
-    cursor?: string | null;
-    limit?: number;
+    afterRevision?: number;
   } = {},
-): Promise<TrajectoryTraceListResponse> {
-  const query = new URLSearchParams({ limit: String(options.limit ?? 30) });
-  if (options.cursor) query.set('cursor', options.cursor);
-  const response = await fetch(trajectoryUrl(
-    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/traces?${query.toString()}`,
-  ), {
-    cache: 'no-store',
-    signal: options.signal,
-  });
-  const payload = await readResponse(response);
-  if (!object(payload)
-    || payload.schema_version !== 1
-    || payload.session_id !== sessionId
-    || !validStoreEpoch(payload.store_epoch)
-    || !Array.isArray(payload.items)
-    || !payload.items.every(validTraceSummary)
-    || (payload.next_cursor !== null && !validOpaqueCursor(payload.next_cursor))
-    || !validOpaqueCursor(payload.revision_cursor)) {
-    throw new TrajectoryApiError('Trajectory list response is invalid', 502, 'INVALID_RESPONSE');
-  }
-  return payload as unknown as TrajectoryTraceListResponse;
-}
-
-export async function listTrajectoryTraceRevisions(
-  sessionId: string,
-  options: {
-    signal?: AbortSignal;
-    afterRevision: string;
-    limit?: number;
-  },
-): Promise<TrajectoryRevisionListResponse> {
+): Promise<TrajectorySubjectListResponse> {
   const query = new URLSearchParams({
-    after_revision: options.afterRevision,
-    limit: String(options.limit ?? 100),
+    after_revision: String(options.afterRevision ?? 0),
   });
   const response = await fetch(trajectoryUrl(
-    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/revisions?${query.toString()}`,
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/subjects?${query.toString()}`,
   ), {
     cache: 'no-store',
     signal: options.signal,
@@ -268,40 +234,36 @@ export async function listTrajectoryTraceRevisions(
     || payload.schema_version !== 1
     || payload.session_id !== sessionId
     || !validStoreEpoch(payload.store_epoch)
-    || typeof payload.reset !== 'boolean'
     || !Array.isArray(payload.items)
-    || !payload.items.every(validTraceSummary)
-    || !validOpaqueCursor(payload.next_cursor)
-    || !validOpaqueCursor(payload.watermark)
-    || typeof payload.has_more !== 'boolean'
-    || (payload.reset === true
-      && (payload.items.length !== 0
-        || payload.has_more !== false
-        || payload.next_cursor !== payload.watermark))) {
-    throw new TrajectoryApiError(
-      'Trajectory revision response is invalid',
-      502,
-      'INVALID_RESPONSE',
-    );
+    || !payload.items.every(validSubjectSummary)
+    || !Number.isSafeInteger(payload.watermark)) {
+    throw new TrajectoryApiError('Trajectory subject list is invalid', 502, 'INVALID_RESPONSE');
   }
-  return payload as unknown as TrajectoryRevisionListResponse;
+  return payload as unknown as TrajectorySubjectListResponse;
 }
 
-export async function getTrajectoryTrace(
+/**
+ * Read one page of an execution subject's chain, in commit order.
+ *
+ * Paging advances along the chain, so the window a page ends on is the base
+ * the next page's first delta applies to.
+ */
+export async function getTrajectorySubjectRecords(
   sessionId: string,
-  traceId: string,
+  subjectId: string,
   options: {
     signal?: AbortSignal;
     sinceRevision?: number;
     limit?: number;
   } = {},
-): Promise<TrajectoryTraceDetailResponse> {
+): Promise<TrajectorySubjectRecordsResponse> {
   const query = new URLSearchParams({
     since_revision: String(options.sinceRevision ?? 0),
     limit: String(options.limit ?? 1000),
   });
   const response = await fetch(trajectoryUrl(
-    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/traces/${encodeURIComponent(traceId)}?${query.toString()}`,
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}`
+    + `/subjects/${encodeURIComponent(subjectId)}/records?${query.toString()}`,
   ), {
     cache: 'no-store',
     signal: options.signal,
@@ -310,7 +272,7 @@ export async function getTrajectoryTrace(
   if (!object(payload)
     || payload.schema_version !== 1
     || payload.session_id !== sessionId
-    || payload.trace_id !== traceId
+    || payload.subject_id !== subjectId
     || !Number.isSafeInteger(payload.revision)
     || typeof payload.reset !== 'boolean'
     || !Array.isArray(payload.records)
