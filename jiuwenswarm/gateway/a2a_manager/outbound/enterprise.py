@@ -124,13 +124,16 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
     ) -> frozenset[str]:
         """Resolve the current policy/manager/user intersection for one resource."""
         allowed, projected = await self._resolve_policy_scope(resource_id)
-        return frozenset(
-            item.agent.agent_id
-            for item in projected
-            if item.agent.agent_id in allowed
-            and item.manager_enabled
-            and item.user_enabled
-        )
+        effective_ids = []
+        for item in projected:
+            if item.agent.agent_id not in allowed:
+                continue
+            if not item.manager_enabled:
+                continue
+            if not item.user_enabled:
+                continue
+            effective_ids.append(item.agent.agent_id)
+        return frozenset(effective_ids)
 
     async def resolve_authorized_a2a_agent_ids(
         self, resource_id: str
@@ -206,11 +209,17 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
         )
         runtime = runtime_state or {}
         network_policy = (template.get("data") or {}).get("network_policy")
+        invalid_policy = False
         if network_policy is None:
             network_policy = {}
-        elif not isinstance(network_policy, dict) or any(
-            type(value) is not bool for value in network_policy.values()
-        ):
+        elif not isinstance(network_policy, dict):
+            invalid_policy = True
+        else:
+            for value in network_policy.values():
+                if not isinstance(value, bool):
+                    invalid_policy = True
+                    break
+        if invalid_policy:
             logger.warning(
                 "Invalid A2A network_policy template_id=%s; using strict defaults",
                 template.get("template_id"),

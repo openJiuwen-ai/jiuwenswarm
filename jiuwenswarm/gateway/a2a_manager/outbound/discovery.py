@@ -177,6 +177,40 @@ def _is_public_address(address: str) -> bool:
     )
 
 
+_RFC1918_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+
+
+def _is_rfc1918_ipv4_only(addresses: list[str]) -> bool:
+    # Match Manager's RFC1918-only policy; IPv6 ULA/mapped addresses
+    # are not included in the private-network exception.
+    for item in addresses:
+        address = ipaddress.ip_address(item)
+        if address.version != 4:
+            return False
+        in_private = False
+        for network in _RFC1918_NETWORKS:
+            if address in network:
+                in_private = True
+                break
+        if not in_private:
+            return False
+    return True
+
+
+def _http_blocked_by_policy(
+    network_policy: dict[str, bool], *, public_only: bool
+) -> bool:
+    if network_policy.get("allow_http") is not True:
+        return True
+    if public_only and network_policy.get("allow_public_http") is not True:
+        return True
+    return False
+
+
 class A2AOutboundDiscoveryService:
     """Resolve a caller-supplied Card URL without granting invocation rights."""
 
@@ -391,25 +425,17 @@ class A2AOutboundDiscoveryService:
             if not public_only and not (self._allow_loopback_http and loopback_only):
                 raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
         else:
-            private_networks = tuple(ipaddress.ip_network(cidr) for cidr in (
-                "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"
-            ))
-            # Match Manager's RFC1918-only policy; IPv6 ULA/mapped addresses
-            # are not included in the private-network exception.
-            private_only = all(
-                address.version == 4
-                and any(address in network for network in private_networks)
-                for address in map(ipaddress.ip_address, addresses)
-            )
-            allowed_address = (
-                public_only
-                or (network_policy.get("allow_loopback") is True and loopback_only)
-                or (network_policy.get("allow_private_network") is True and private_only)
-            )
-            if not allowed_address or (scheme == "http" and (
-                network_policy.get("allow_http") is not True
-                or (public_only and network_policy.get("allow_public_http") is not True)
-            )):
+            private_only = _is_rfc1918_ipv4_only(addresses)
+            allowed_address = public_only
+            if network_policy.get("allow_loopback") is True and loopback_only:
+                allowed_address = True
+            if network_policy.get("allow_private_network") is True and private_only:
+                allowed_address = True
+            if not allowed_address:
+                raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
+            if scheme == "http" and _http_blocked_by_policy(
+                network_policy, public_only=public_only
+            ):
                 raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
         return _ValidatedTarget(
             host=parts.hostname.lower().rstrip("."),

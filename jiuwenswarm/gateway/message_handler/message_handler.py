@@ -3083,12 +3083,15 @@ class MessageHandler(FileTransferMixin, ABC):
             # Gateway's active conversation, never from tool-supplied metadata.
             source_identity = web_routing_identity(request_metadata)
             if request_metadata is None and trusted_session_id:
-                identities = [
-                    web_routing_identity(self._stream_metadata.get(active_rid))
-                    for active_rid, active_sid in getattr(self, "_stream_sessions", {}).items()
-                    if active_sid == trusted_session_id
-                    and self._stream_channels.get(active_rid) == chunk.channel_id
-                ]
+                identities = []
+                for active_rid, active_sid in getattr(self, "_stream_sessions", {}).items():
+                    if active_sid != trusted_session_id:
+                        continue
+                    if self._stream_channels.get(active_rid) != chunk.channel_id:
+                        continue
+                    identities.append(
+                        web_routing_identity(self._stream_metadata.get(active_rid))
+                    )
                 if identities and all(item == identities[0] for item in identities):
                     source_identity = identities[0]
             source_resource_id = str(source_identity.get("bot_id") or "").strip()

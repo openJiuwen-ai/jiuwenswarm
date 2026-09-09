@@ -109,6 +109,17 @@ def _required(value: Any, field_name: str) -> str:
     return text
 
 
+def _is_bool_network_policy(policy: Any) -> bool:
+    if policy is None:
+        return True
+    if not isinstance(policy, dict):
+        return False
+    for value in policy.values():
+        if not isinstance(value, bool):
+            return False
+    return True
+
+
 def _positive_seconds(value: Any) -> float:
     try:
         parsed = float(value)
@@ -215,10 +226,7 @@ class A2AOutboundAgent:
     network_policy: dict[str, bool] | None = None
 
     def validate(self) -> "A2AOutboundAgent":
-        if self.network_policy is not None and (
-            not isinstance(self.network_policy, dict)
-            or any(type(value) is not bool for value in self.network_policy.values())
-        ):
+        if not _is_bool_network_policy(self.network_policy):
             raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
         for name in (
             "agent_id",
