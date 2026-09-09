@@ -76,8 +76,9 @@ function isUsefulTranscript(text: string): boolean {
 }
 
 export interface VideoLivePanelHandle {
-  startScreenDuplex: () => Promise<boolean>;
+  startScreenDuplex: (searchSessionId?: string) => Promise<boolean>;
   stop: () => void;
+  deliverToolResult: (payload: SearchJobPayload) => void;
 }
 
 interface VideoLivePanelProps {
@@ -108,6 +109,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const pendingTranscriptionsRef = useRef(0);
   const deferredAssistantAnswersRef = useRef<string[]>([]);
   const searchSessionRef = useRef('');
+  const conversationSearchSessionRef = useRef('');
+  const mediaGenerationRef = useRef(0);
+  const mediaToolCallIdsRef = useRef(new Set<string>());
   const latestUserInstructionRef = useRef({ text: '', turnId: '' });
   const searchJobsRef = useRef<Map<string, SearchJobState>>(new Map());
   const pollingSearchJobsRef = useRef<Set<string>>(new Set());
@@ -153,9 +157,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   };
 
   const stopModelTransport = () => {
+    mediaGenerationRef.current += 1;
+    startingRealtimeRef.current = null;
+    mediaToolCallIdsRef.current.clear();
     duplexRef.current?.stop();
     duplexRef.current = null;
     joyaiProviderRef.current?.stop();
+    joyaiProviderRef.current = null;
   };
 
   const resetVisualContext = () => {
@@ -208,9 +216,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     deferred.forEach((text) => appendChat('assistant', text));
   };
 
-  const rememberSearchJob = (job: AgentAction['search_job'], fallbackTurnId = '') => {
+  const rememberSearchJob = (job: AgentAction['search_job'], fallbackTurnId = '', currentMedia = true) => {
     const id = job?.id?.trim();
     if (!id) return;
+    if (headless) {
+      onCoreAgentProgress?.('started', {
+        ...job,
+        job_id: id,
+        status: job?.status === 'queued' ? 'queued' : 'running',
+      });
+    }
+    if (!currentMedia || !searchSessionRef.current || job?.search_session_id !== searchSessionRef.current) return;
     const existing = searchJobsRef.current.get(id);
     if (existing?.status === 'queued' || existing?.status === 'failed') return;
     searchJobsRef.current.set(id, {
@@ -246,9 +262,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       commitAssistantAnswer: (text: string, toolJobId?: string) => {
         commitAssistantAnswer(text, toolJobId);
       },
-      rememberSearchJob,
-      updateSearchJob: (job: SearchJobState) => {
-        searchJobsRef.current.set(job.id, job);
+      rememberSearchJob: (job: AgentAction['search_job'], currentMedia = true) => {
+        rememberSearchJob(job, '', currentMedia);
       },
       setAwaitingVoiceTranscript: setIsAwaitingVoiceTranscript,
       setError,
@@ -305,7 +320,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       });
       return;
     }
-    if (joyaiProviderRef.current?.handleCompletedSearch(payload, existing)) return;
     const callId = payload.tool_call_id?.trim() || existing?.toolCallId;
     const turnId = payload.turn_id?.trim() || existing?.turnId;
     const realtimeBrief: RealtimeBrief = payload.realtime_brief?.summary?.trim()
@@ -318,15 +332,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           response_mode: 'brief',
           source: 'fallback',
         };
-    appendChat('assistant', result, 'tool_result');
+    if (!headless) appendChat('assistant', result, 'tool_result');
     const queued =
+      joyaiProviderRef.current?.handleCompletedSearch(payload, realtimeBrief, existing) ||
       duplexRef.current?.enqueueToolResult({
         jobId: payload.job_id,
         ...(turnId ? { turnId } : {}),
         question,
         brief: realtimeBrief,
         ...(callId ? { callId } : {}),
-      }) || false;
+      }) ||
+      false;
     searchJobsRef.current.set(payload.job_id, {
       id: payload.job_id,
       searchSessionId: payload.search_session_id || existing?.searchSessionId || '',
@@ -357,7 +373,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     const turnId = payload.turn_id?.trim() || existing?.turnId;
     const error = payload.error?.trim() || 'Jiuwen Core Agent failed';
     const failureText = `Jiuwen Core Agent 未能完成任务：${error}`;
-    appendChat('assistant', failureText, 'tool_result');
+    if (!headless) appendChat('assistant', failureText, 'tool_result');
     if (callId) {
       duplexRef.current?.enqueueToolResult({
         jobId: payload.job_id,
@@ -387,6 +403,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   };
 
   useEffect(() => {
+    // In task mode the conversation runtime owns subscriptions, polling and result display.
+    if (headless) return;
     const belongsToCurrentSession = (payload: SearchJobPayload) =>
       Boolean(searchSessionRef.current) && payload.search_session_id === searchSessionRef.current;
     const unsubscribeStarted = webClient.on<SearchJobPayload>('video.search.started', ({ payload }) => {
@@ -460,7 +478,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       unsubscribeFailed();
       window.clearInterval(pollTimer);
     };
-  }, [onCoreAgentProgress]);
+  }, [headless, onCoreAgentProgress]);
 
   useEffect(() => {
     const history = chatHistoryRef.current;
@@ -741,6 +759,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const startRealtime = async () => {
     if (duplexRef.current || joyaiProviderRef.current?.active) return;
     if (startingRealtimeRef.current) return startingRealtimeRef.current;
+    const mediaGeneration = mediaGenerationRef.current;
     const start = (async () => {
       setIsRealtimeStarting(true);
       reportRealtimeEvent('realtime_start_clicked', {
@@ -759,7 +778,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             screenStreams: screenStreamsRef.current,
             video: videoRef.current,
           });
-        if (!(await waitForFirstVideoFrame(sourceReady, () => framesRef.current.length > 0))) {
+        const firstFrameReady = await waitForFirstVideoFrame(sourceReady, () => framesRef.current.length > 0);
+        if (mediaGeneration !== mediaGenerationRef.current) return;
+        if (!firstFrameReady) {
           const message = '尚未读取到视频画面，请确认画面正在播放后重试。';
           setError(message);
           setRealtimeStatus('');
@@ -776,8 +797,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       setRealtimeStatus('正在读取视频模型配置…');
       reportRealtimeEvent('realtime_config_requested');
       try {
-        searchSessionRef.current = crypto.randomUUID();
+        searchSessionRef.current = conversationSearchSessionRef.current || crypto.randomUUID();
         const config = await webRequest<VideoSessionConfig>('video.realtime.config', {});
+        if (mediaGeneration !== mediaGenerationRef.current) return;
         if (config.provider === 'qwen_omni') {
           reportRealtimeEvent('qwen_local_asr_disabled', {
             reason: 'using_qwen_native_input_audio_transcription',
@@ -824,7 +846,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 setChatHistory((current) => {
                   const existing = current.find((item) => item.responseId === responseId);
                   return existing
-                    ? current.map((item) => item === existing ? { ...item, text: visibleText } : item)
+                    ? current.map((item) => (item === existing ? { ...item, text: visibleText } : item))
                     : [...current, { id, role: 'assistant', text: visibleText, responseId }];
                 });
                 return;
@@ -849,6 +871,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               }
             },
             onState: (state) => {
+              if (duplexRef.current !== session) return;
+              if (state === 'closed') {
+                duplexRef.current = null;
+                mediaGenerationRef.current += 1;
+                mediaToolCallIdsRef.current.clear();
+                searchSessionRef.current = '';
+                setIsRealtimeStarting(false);
+              }
               setIsRecording(state !== 'closed');
               setRealtimeStatus(
                 state === 'connecting'
@@ -866,6 +896,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               setSearchStatus('');
             },
             onFunctionCall: (call) => {
+              if (mediaGeneration !== mediaGenerationRef.current) return;
+              mediaToolCallIdsRef.current.add(call.callId);
+              const searchSessionId = searchSessionRef.current;
               const latestInstruction = latestUserInstructionRef.current;
               const originalInstruction = latestInstruction.text.trim() || call.task;
               reportRealtimeEvent('qwen_tool_call_forwarding', {
@@ -883,7 +916,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   arguments: call.arguments,
                   question: originalInstruction,
                   turn_id: latestInstruction.turnId,
-                  search_session_id: searchSessionRef.current,
+                  search_session_id: searchSessionId,
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
                 },
                 { timeoutMs: 10_000 },
@@ -891,12 +924,26 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 .then((action) => {
                   const jobId = action.search_job?.id?.trim() || '';
                   if (!jobId) throw new Error('Jiuwen Core Agent did not create a search job');
-                  const existing = searchJobsRef.current.get(jobId);
-                  if (existing?.status === 'queued' || existing?.status === 'failed') return;
-                  rememberSearchJob(action.search_job, latestInstruction.turnId);
+                  rememberSearchJob(
+                    action.search_job,
+                    latestInstruction.turnId,
+                    mediaGeneration === mediaGenerationRef.current,
+                  );
                 })
                 .catch((toolError) => {
                   const message = toolError instanceof Error ? toolError.message : 'Jiuwen Core Agent request failed';
+                  if (headless) {
+                    onCoreAgentProgress?.('failed', {
+                      job_id: `qwen-tool-error-${call.callId}`,
+                      search_session_id: searchSessionId,
+                      question: originalInstruction,
+                      error: message,
+                      status: 'failed',
+                      tool_call_id: call.callId,
+                    });
+                    return;
+                  }
+                  if (mediaGeneration !== mediaGenerationRef.current) return;
                   appendChat('assistant', `Jiuwen Core Agent 未能启动任务：${message}`, 'tool_result');
                   const queued = session.enqueueToolResult({
                     jobId: `qwen-tool-error-${call.callId}`,
@@ -925,6 +972,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         duplexRef.current = session;
         await session.start();
       } catch (realtimeError) {
+        if (mediaGeneration !== mediaGenerationRef.current) return;
         stopModelTransport();
         setIsRecording(false);
         setRealtimeStatus('');
@@ -938,7 +986,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     try {
       await start;
     } finally {
-      startingRealtimeRef.current = null;
+      if (startingRealtimeRef.current === start) startingRealtimeRef.current = null;
     }
   };
 
@@ -973,7 +1021,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   }, [error, onError]);
 
   useImperativeHandle(ref, () => ({
-    startScreenDuplex: async () => {
+    startScreenDuplex: async (searchSessionId) => {
+      conversationSearchSessionRef.current = searchSessionId || '';
       const started = await startScreen();
       pendingScreenAutostartRef.current = started;
       return started;
@@ -981,6 +1030,23 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     stop: () => {
       pendingScreenAutostartRef.current = false;
       resetSource();
+    },
+    deliverToolResult: (payload) => {
+      if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
+      // A function_call_output is valid only on the Qwen connection that created its call ID.
+      // JoyAI jobs likewise need to belong to this media run; old results stay visible without replay.
+      if (duplexRef.current) {
+        if (!payload.tool_call_id || !mediaToolCallIdsRef.current.has(payload.tool_call_id)) return;
+      } else if (!joyaiProviderRef.current?.active || !searchJobsRef.current.has(payload.job_id || '')) {
+        return;
+      }
+      if (payload.status === 'cancelled') {
+        if (payload.tool_call_id) duplexRef.current?.cancelToolTask(payload.job_id || '', payload.tool_call_id);
+        searchJobsRef.current.delete(payload.job_id || '');
+        return;
+      }
+      if (payload.status === 'failed') acceptFailedSearch(payload);
+      else acceptCompletedSearch(payload);
     },
   }));
 
@@ -1182,8 +1248,19 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             {chatHistory.length > 0 || streamingAnswer ? (
               <div className="video-live__chat-history" ref={chatHistoryRef}>
                 {chatHistory.map((item) => (
-                  <div className={`video-live__chat-item is-${item.role}${item.presentation === 'tool_result' ? ' is-core-result' : ''}`} key={item.id}>
-                    <strong>{item.presentation === 'tool_result' ? '工具结果 · Jiuwen Core Agent' : item.role === 'user' ? '你' : item.role === 'tool' ? '九问搜索' : '助手'}</strong>
+                  <div
+                    className={`video-live__chat-item is-${item.role}${item.presentation === 'tool_result' ? ' is-core-result' : ''}`}
+                    key={item.id}
+                  >
+                    <strong>
+                      {item.presentation === 'tool_result'
+                        ? '工具结果 · Jiuwen Core Agent'
+                        : item.role === 'user'
+                          ? '你'
+                          : item.role === 'tool'
+                            ? '九问搜索'
+                            : '助手'}
+                    </strong>
                     <p>{item.role === 'tool' ? '九问搜索 Agent 搜索完成' : item.text}</p>
                   </div>
                 ))}

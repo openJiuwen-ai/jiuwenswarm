@@ -731,6 +731,9 @@
     "extensionMore": "More",
     "recentTasks": "Progress",
     "applicationTasks": {
+      "cancelling": "Stopping",
+      "cancelled": "Cancelled",
+      "controls": { "drag": "Drag onto another task to reorder", "next": "Run next", "stop": "Stop this task", "more": "Task actions", "up": "Move up", "down": "Move down", "preempt": "Stop current task and run this", "close": "Close", "failed": "Task operation failed" },
       "queued": "Queued",
       "running": "Running",
       "completed": "Completed",

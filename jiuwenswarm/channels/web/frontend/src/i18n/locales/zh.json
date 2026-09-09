@@ -722,6 +722,9 @@
     "extensionMore": "更多",
     "recentTasks": "进度",
     "applicationTasks": {
+      "cancelling": "正在停止",
+      "cancelled": "已取消",
+      "controls": { "drag": "拖动到另一项以调整顺序", "next": "设为下一项", "stop": "停止此任务", "more": "任务操作", "up": "上移", "down": "下移", "preempt": "停止当前任务并执行此项", "close": "关闭", "failed": "任务操作失败" },
       "queued": "排队中",
       "running": "执行中",
       "completed": "已完成",

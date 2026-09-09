@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { ToolCall, ToolResult } from '../types';
+import type { FileDownloadItem, ToolCall, ToolResult } from '../types';
 
 export type ApplicationPluginNavKey = `app:${string}`;
 
@@ -43,10 +43,16 @@ export interface ApplicationPluginTaskInputActionProps {
 
 export interface ApplicationPluginTaskRuntimeProps {
   sessionId: string | null;
-  onConversationItem: (sessionId: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => void;
+  onConversationItem: (
+    sessionId: string,
+    role: 'user' | 'assistant',
+    text: string,
+    presentation?: 'tool_result',
+  ) => void;
   onAssistantStream: (sessionId: string, update: { streamId: string; content: string; final: boolean }) => void;
   onReasoning: (sessionId: string, content: string, atMs?: number) => void;
   onReasoningClose: (sessionId: string, atMs?: number) => void;
   onToolCall: (sessionId: string, toolCall: ToolCall, startedAt?: string) => void;
   onToolResult: (sessionId: string, toolResult: ToolResult, updatedAt?: string) => void;
+  onFileItems: (sessionId: string, files: FileDownloadItem[], timestampIso?: string) => void;
 }

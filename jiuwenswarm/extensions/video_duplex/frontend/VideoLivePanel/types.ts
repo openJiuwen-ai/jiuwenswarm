@@ -1,3 +1,5 @@
+import type { FileDownloadItem } from '../../../../channels/web/frontend/src/types';
+
 export interface ChatContextItem {
   id: number;
   role: 'user' | 'assistant' | 'tool';
@@ -16,6 +18,8 @@ export interface RealtimeBrief {
 }
 
 export interface SearchJobPayload {
+  queue_position?: number;
+  queue_version?: number;
   job_id?: string;
   search_session_id?: string;
   question?: string;
@@ -25,7 +29,7 @@ export interface SearchJobPayload {
   realtime_brief?: RealtimeBrief;
   error?: string;
   engine?: string;
-  status?: 'queued' | 'running' | 'completed' | 'failed';
+  status?: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
   latency_ms?: number;
   progress?: SearchProgressEntry;
   progress_history?: SearchProgressEntry[];
@@ -35,6 +39,7 @@ export interface SearchJobPayload {
 }
 
 export interface SearchProgressEntry {
+  files?: FileDownloadItem[];
   stage: string;
   title: string;
   detail?: string;

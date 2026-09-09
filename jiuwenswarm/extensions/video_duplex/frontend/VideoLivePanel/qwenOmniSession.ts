@@ -10,6 +10,7 @@ import {
 } from './qwenOmniProtocol.js';
 import { getWsBase } from '../../../../channels/web/frontend/src/utils/env.js';
 import type { RealtimeBrief } from './types.js';
+import { createQwenOmniToolOutputEvent } from './qwenOmniTools.js';
 import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
 
 export interface RealtimeDuplexConfig {
@@ -188,6 +189,7 @@ export class RealtimeDuplexSession {
     this.emitDiagnostic('qwen_vad_ready', { model: 'silero-v5' });
     this.playbackContext = new AudioContext({ sampleRate: OUTPUT_RATE });
     await this.playbackContext.audioWorklet.addModule(new URL('./duplex-playback.js', import.meta.url));
+    if (lifecycle !== this.lifecycle) return;
     this.playbackNode = new AudioWorkletNode(this.playbackContext, 'jiuwen-duplex-playback');
     this.playbackNode.port.onmessage = ({ data }) => {
       if (data.type === 'cleared') {
@@ -204,9 +206,10 @@ export class RealtimeDuplexSession {
     };
     this.playbackNode.connect(this.playbackContext.destination);
     await this.playbackContext.resume();
+    if (lifecycle !== this.lifecycle) return;
 
     this.emitDiagnostic('realtime_microphone_request_started', {});
-    this.microphone = await navigator.mediaDevices.getUserMedia({
+    const microphone = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         echoCancellation: true,
@@ -214,9 +217,15 @@ export class RealtimeDuplexSession {
         autoGainControl: true,
       },
     });
+    if (lifecycle !== this.lifecycle) {
+      microphone.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    this.microphone = microphone;
     this.emitDiagnostic('realtime_microphone_ready', {});
     this.captureContext = new AudioContext({ sampleRate: INPUT_RATE });
     await this.captureContext.audioWorklet.addModule(new URL('./duplex-capture.js', import.meta.url));
+    if (lifecycle !== this.lifecycle) return;
     const source = this.captureContext.createMediaStreamSource(this.microphone);
     this.captureNode = new AudioWorkletNode(this.captureContext, 'jiuwen-duplex-capture');
     this.captureNode.port.onmessage = ({ data }) => {
@@ -234,11 +243,13 @@ export class RealtimeDuplexSession {
     source.connect(this.captureNode);
     this.captureNode.connect(silent).connect(this.captureContext.destination);
     await this.captureContext.resume();
+    if (lifecycle !== this.lifecycle) return;
 
     this.emitDiagnostic('realtime_websocket_connecting', {
       url: this.config.url,
     });
     await this.openSocket();
+    if (lifecycle !== this.lifecycle) return;
     this.sendTimer = window.setInterval(() => this.flush(), SEND_INTERVAL_MS);
   }
 
@@ -287,6 +298,16 @@ export class RealtimeDuplexSession {
     createQwenOmniTextTurnEvents(normalized).forEach((event) => this.send(event));
     this.emitDiagnostic('qwen_text_input_dispatched', { text: normalized });
     return true;
+  }
+
+  cancelToolTask(jobId: string, callId: string): void {
+    this.pendingToolResults = this.pendingToolResults.filter((item) => item.jobId !== jobId);
+    if (this.acceptedToolResultIds.has(jobId)) return;
+    this.acceptedToolResultIds.add(jobId);
+    this.send(createQwenOmniToolOutputEvent(callId, JSON.stringify({
+      status: 'cancelled', job_id: jobId,
+      message: '用户手动停止了此任务。不要重试，不要宣称完成；取消记录已显示，无需播报。',
+    })));
   }
 
   enqueueToolResult(toolResult: RealtimeToolResult): boolean {
@@ -420,7 +441,8 @@ export class RealtimeDuplexSession {
         } else if (code !== 1000) {
           this.callbacks.onError(`Realtime 连接已断开（${code}），请确认远端模型服务仍可用。`);
         }
-        this.callbacks.onState('closed');
+        // Release media on remote disconnect as well. Conversation-owned work continues outside this session.
+        this.stop();
       };
     });
   }
@@ -497,11 +519,14 @@ export class RealtimeDuplexSession {
       this.toolResultWaitKey = '';
       return;
     }
-    const reason = this.socket?.readyState !== WebSocket.OPEN || !this.sessionReady
-      ? 'connection_not_ready'
-      : this.userActivityActive || this.turnHasUserActivity
-        ? 'user_speaking'
-        : this.responseActive ? 'response_generating' : '';
+    const reason =
+      this.socket?.readyState !== WebSocket.OPEN || !this.sessionReady
+        ? 'connection_not_ready'
+        : this.userActivityActive || this.turnHasUserActivity
+          ? 'user_speaking'
+          : this.responseActive
+            ? 'response_generating'
+            : '';
     if (reason) {
       const jobId = this.pendingToolResults[0].jobId;
       const waitKey = `${jobId}:${reason}`;
@@ -531,9 +556,7 @@ export class RealtimeDuplexSession {
         jobId: toolResult.jobId,
         turnId: toolResult.turnId,
         question: toolResult.question,
-      }).forEach((event) =>
-        this.send(event),
-      );
+      }).forEach((event) => this.send(event));
       this.emitDiagnostic('qwen_tool_result_returned', {
         job_id: toolResult.jobId,
         turn_id: toolResult.turnId,
@@ -658,9 +681,7 @@ export class RealtimeDuplexSession {
       if (this.assistantTranscript) this.finishAssistantText();
       const media = this.qwenMedia.snapshot();
       const error = event.error;
-      const errorRecord = error && typeof error === 'object'
-        ? error as Record<string, unknown>
-        : {};
+      const errorRecord = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
       this.emitDiagnostic('qwen_realtime_error', {
         raw_event: rawEvent || JSON.stringify(event),
         code: String(errorRecord.code || event.code || 'unknown'),

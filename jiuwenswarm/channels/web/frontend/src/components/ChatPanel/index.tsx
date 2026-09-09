@@ -1030,6 +1030,16 @@ export const ChatPanel = React.memo(function ChatPanel({
   const handlePluginReasoning = useCallback((sid: string, content: string, atMs?: number) => {
     useChatStore.getState().appendReasoning(sid, content, { atMs });
   }, []);
+  const handlePluginFileItems = useCallback(
+    (
+      sid: string,
+      files: Parameters<ReturnType<typeof useChatStore.getState>['addFileItems']>[1],
+      timestampIso?: string,
+    ) => {
+      useChatStore.getState().addFileItems(sid, files, { timestampIso });
+    },
+    [],
+  );
   const handlePluginReasoningClose = useCallback((sid: string, atMs?: number) => {
     useChatStore.getState().closeReasoning(sid, { atMs });
   }, []);
@@ -1461,6 +1471,7 @@ export const ChatPanel = React.memo(function ChatPanel({
         onReasoningClose={handlePluginReasoningClose}
         onToolCall={handlePluginToolCall}
         onToolResult={handlePluginToolResult}
+        onFileItems={handlePluginFileItems}
       />
       {turnChangeNotice ? (
         <div

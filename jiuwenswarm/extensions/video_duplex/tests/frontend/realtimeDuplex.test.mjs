@@ -6,6 +6,17 @@ import { runInNewContext } from 'node:vm';
 import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
 import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs';
 
+test('manual task cancellation closes its function call silently and rejects a late result', () => {
+  const { session, sent } = createSession();
+  session.cancelToolTask('stopped-job', 'stopped-call');
+  session.cancelToolTask('stopped-job', 'stopped-call');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].item.call_id, 'stopped-call');
+  assert.equal(JSON.parse(sent[0].item.output).status, 'cancelled');
+  assert.equal(sent.some(event => event.type === 'response.create'), false);
+  assert.equal(session.enqueueToolResult({ jobId: 'stopped-job', callId: 'stopped-call', question: '已取消任务', brief: { summary: '迟到的成功结果' } }), false);
+});
+
 test('confirmed speech interrupts each response once, including responses that start mid-utterance', () => {
   const { session, sent } = createSession();
   const gate = new SpeechGate();
@@ -181,7 +192,8 @@ test('Qwen error diagnostics preserve the original websocket event', () => {
   const { session, diagnostics } = createSession(null, {
     onError: (message) => errors.push(message),
   });
-  const rawEvent = '{"type":"error","error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"input is too long"}}';
+  const rawEvent =
+    '{"type":"error","error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"input is too long"}}';
 
   session.handleEvent(JSON.parse(rawEvent), rawEvent);
 
@@ -300,21 +312,33 @@ test('Qwen acknowledgement survives a new tool-call response without transcript.
   session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'ack', delta: '我来处理。' });
   session.handleEvent({ type: 'response.created', response: { id: 'delegate' } });
   assert.deepEqual(assistantTexts.at(-1), {
-    text: '我来处理。', final: true, toolJobId: undefined, responseId: 'ack',
+    text: '我来处理。',
+    final: true,
+    toolJobId: undefined,
+    responseId: 'ack',
   });
 });
 
 test('Qwen tool receipt remains visible and response.done finalizes it', () => {
   const { session, assistantTexts } = createSession();
   session.enqueueToolResult({
-    jobId: 'code-job', question: '请生成代码', callId: 'code-call',
+    jobId: 'code-job',
+    question: '请生成代码',
+    callId: 'code-call',
     brief: realtimeBrief('代码已显示在界面中。', 'code'),
   });
   session.handleEvent({ type: 'response.created', response: { id: 'receipt' } });
-  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'receipt', delta: '代码已显示在界面中。' });
+  session.handleEvent({
+    type: 'response.audio_transcript.delta',
+    response_id: 'receipt',
+    delta: '代码已显示在界面中。',
+  });
   session.handleEvent({ type: 'response.done', response: { id: 'receipt' } });
   assert.deepEqual(assistantTexts.at(-1), {
-    text: '代码已显示在界面中。', final: true, toolJobId: 'code-job', responseId: 'receipt',
+    text: '代码已显示在界面中。',
+    final: true,
+    toolJobId: 'code-job',
+    responseId: 'receipt',
   });
 });
 
@@ -324,7 +348,10 @@ test('Qwen provider error preserves the received partial answer', () => {
   session.handleEvent({ type: 'response.text.delta', response_id: 'partial', delta: '已经生成的部分' });
   session.handleEvent({ type: 'error', error: { code: 'COMMON_ERROR', message: 'model repeat output happened' } });
   assert.deepEqual(assistantTexts.at(-1), {
-    text: '已经生成的部分', final: true, toolJobId: undefined, responseId: 'partial',
+    text: '已经生成的部分',
+    final: true,
+    toolJobId: undefined,
+    responseId: 'partial',
   });
 });
 
@@ -424,7 +451,9 @@ test('an earlier task still gets a spoken follow-up after a newer question', () 
   const output = JSON.parse(sent[0].item.output);
   assert.equal(output.summary, '旧文件任务已完成。');
   assert.deepEqual(output.task_context, {
-    job_id: 'old-file-task', turn_id: 'turn-old', original_question: '打开旧文件',
+    job_id: 'old-file-task',
+    turn_id: 'turn-old',
+    original_question: '打开旧文件',
   });
   assert.match(sent[1].item.content[0].text, /even if the user has asked other questions/);
   assert.doesNotMatch(sent[0].item.output, /Do not answer it again/);
@@ -436,12 +465,18 @@ test('each task waits for user speech to finish and is sent exactly once in comp
   const { session, sent, diagnostics } = createSession();
   session.userActivityActive = true;
   const first = {
-    jobId: 'first-async-task', turnId: 'old-turn', question: '打开复习提纲',
-    brief: realtimeBrief('复习提纲已打开。'), callId: 'call-first-async',
+    jobId: 'first-async-task',
+    turnId: 'old-turn',
+    question: '打开复习提纲',
+    brief: realtimeBrief('复习提纲已打开。'),
+    callId: 'call-first-async',
   };
   const second = {
-    jobId: 'second-async-task', turnId: 'another-turn', question: '解释差分约束',
-    brief: realtimeBrief('差分约束的解题思路已整理。'), callId: 'call-second-async',
+    jobId: 'second-async-task',
+    turnId: 'another-turn',
+    question: '解释差分约束',
+    brief: realtimeBrief('差分约束的解题思路已整理。'),
+    callId: 'call-second-async',
   };
   assert.equal(session.enqueueToolResult(first), true);
   assert.equal(session.enqueueToolResult(second), true);
@@ -465,7 +500,10 @@ test('task deduplication lasts for the entire session rather than just the last 
   const { session } = createSession();
   session.responseActive = true;
   const task = (index) => ({
-    jobId: `job-${index}`, question: `任务${index}`, brief: realtimeBrief('完成'), callId: `call-${index}`,
+    jobId: `job-${index}`,
+    question: `任务${index}`,
+    brief: realtimeBrief('完成'),
+    callId: `call-${index}`,
   });
   for (let index = 0; index < 40; index++) assert.equal(session.enqueueToolResult(task(index)), true);
   assert.equal(session.enqueueToolResult(task(0)), false);
@@ -476,7 +514,10 @@ test('a disconnected socket does not consume a queued tool result', () => {
   const { session, sent, diagnostics } = createSession();
   session.socket.readyState = 3;
   session.enqueueToolResult({
-    jobId: 'waiting-for-connection', question: '查看文档', brief: realtimeBrief('已查看'), callId: 'call-wait',
+    jobId: 'waiting-for-connection',
+    question: '查看文档',
+    brief: realtimeBrief('已查看'),
+    callId: 'call-wait',
   });
   assert.equal(session.pendingToolResults.length, 1);
   assert.equal(diagnostics.at(-1).reason, 'connection_not_ready');
@@ -618,4 +659,52 @@ test('session.closed before session.created rejects startup with the backend rea
 
   await assert.rejects(opening, /Realtime 会话初始化失败：backend_error/);
   assert.equal(diagnostics.at(-1).event, 'realtime_websocket_error');
+});
+
+test('remote disconnect releases media resources and pending receipts without losing received text', async () => {
+  let socket;
+  class ClosingSocket {
+    static OPEN = 1;
+    readyState = 1;
+    constructor() {
+      socket = this;
+    }
+    close() {
+      this.readyState = 3;
+    }
+    send() {}
+  }
+  globalThis.window = globalThis;
+  globalThis.WebSocket = ClosingSocket;
+  const texts = [];
+  const states = [];
+  const released = [];
+  const session = new RealtimeDuplexSession(
+    { url: 'ws://example.test/realtime' },
+    {
+      getVideoFrame: () => null,
+      onAssistantText: (text) => texts.push(text),
+      onUserText() {},
+      onError() {},
+      onState: (state) => states.push(state),
+    },
+  );
+  const opening = session.openSocket();
+  socket.onopen();
+  await opening;
+  session.sessionReady = true;
+  session.assistantTranscript = '已经收到的回答';
+  session.microphone = { getTracks: () => [{ stop: () => released.push('microphone') }] };
+  session.captureContext = { close: () => released.push('capture') };
+  session.playbackContext = { close: () => released.push('playback') };
+  session.pendingToolResults = [{ jobId: 'old-job' }];
+  session.sendTimer = setInterval(() => {}, 60_000);
+  socket.readyState = 3;
+  socket.onclose({ code: 1006, reason: 'network interrupted' });
+  assert.deepEqual(released, ['microphone', 'capture', 'playback']);
+  assert.deepEqual(session.pendingToolResults, []);
+  assert.equal(session.sendTimer, null);
+  assert.equal(session.socket, null);
+  assert.equal(texts.at(-1), '已经收到的回答');
+  assert.equal(states.at(-1), 'closed');
 });

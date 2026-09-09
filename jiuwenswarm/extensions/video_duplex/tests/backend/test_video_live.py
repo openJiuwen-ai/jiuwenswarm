@@ -1148,6 +1148,7 @@ def test_registers_only_realtime_support_methods() -> None:
         "video.transcribe",
         "video.qwen.tool",
         "video.search.status",
+        "video.search.control",
         "tts.synthesize",
         "tts.stream.start",
         "tts.stream.cancel",

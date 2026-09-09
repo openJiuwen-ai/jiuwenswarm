@@ -280,6 +280,8 @@ export function ToolPanel({
       running: t('chat.applicationTasks.running'),
       completed: t('chat.applicationTasks.completed'),
       failed: t('chat.applicationTasks.failed'),
+      cancelling: t('chat.applicationTasks.cancelling'),
+      cancelled: t('chat.applicationTasks.cancelled'),
     }),
     [applicationTasks, t],
   );

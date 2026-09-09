@@ -22,6 +22,7 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
     QwenOmniRealtimeConfig,
 )
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import qwen_omni_tools
+from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
@@ -36,6 +37,7 @@ _CONVERSATION_EVENT_KINDS = {
     "reasoning",
     "tool_call",
     "tool_result",
+    "file",
 }
 
 
@@ -531,6 +533,17 @@ def register_video_live_handler(
             event_type = "chat.tool_result"
             extra = {"tool_result": tool_result}
             content = ""
+        elif kind == "file":
+            files = normalize_file_items(params.get("files"))
+            if not files:
+                await channel.send_response(
+                    ws, req_id, ok=False, code="INVALID_FILES",
+                    message="files must contain named file resources.",
+                )
+                return
+            event_type = "chat.file"
+            extra = {"files": files}
+            content = ""
 
         previous_title: str | None = None
         if role == "user" and content.strip():
@@ -583,6 +596,7 @@ def register_video_live_handler(
         **voice_handlers,
         "video.qwen.tool": search_manager.handle_qwen_tool,
         "video.search.status": search_manager.handle_status,
+        "video.search.control": search_manager.handle_control,
     }
     for method, handler in handlers.items():
         channel.register_method(
