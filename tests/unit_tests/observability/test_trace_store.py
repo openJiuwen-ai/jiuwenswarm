@@ -188,40 +188,88 @@ def _frame_indexes(database_path: Path) -> list[str]:
         connection.close()
 
 
-def test_frames_are_not_indexed_by_a_session_that_owns_the_whole_file(
+def _frame_columns(database_path: Path) -> set[str]:
+    connection = sqlite3.connect(database_path)
+    try:
+        return {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(trajectory_stream_frames)")
+        }
+    finally:
+        connection.close()
+
+
+def test_frames_do_not_repeat_the_session_that_owns_the_whole_file(
     tmp_path: Path,
 ) -> None:
-    """The session walk rides the primary key, so it needs no index of its own.
+    """A writer opens one file per session, so no frame restates the session.
 
-    ``frame_seq`` is the rowid, so reading a session in commit order is
-    already a primary-key scan. Indexing (session_id, frame_seq) on top of it
-    cost a measurable share of the database and one more structure to update
-    on every frame, to save a filter that a per-session file almost never
-    rejects. A database written before that was understood must stop paying
-    for it when this code opens it.
+    Naming the session on all 33,000 rows of a streaming turn cost more than
+    the frames' own content, and indexing (session_id, frame_seq) on top of
+    the rowid cost more again to save a filter that never rejects anything.
+    A database written before that was understood has to shed both when this
+    code opens it, or its NOT NULL column would reject every new frame.
     """
     database_path = tmp_path / "trajectory.sqlite3"
     store = TrajectoryStore(database_path)
     store.initialize()
     store.close()
+    assert "session_id" not in _frame_columns(database_path)
     assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_sequence"]
 
-    # Reopening a database that still carries the old index drops it, and
-    # leaves the frames themselves alone.
+    # Rebuild the older shape: a session column plus the index over it.
     connection = sqlite3.connect(database_path)
+    connection.execute("DROP TABLE trajectory_stream_frames")
+    connection.execute(
+        """
+        CREATE TABLE trajectory_stream_frames (
+            frame_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            execution_subject_id TEXT NOT NULL DEFAULT 'main',
+            trace_id TEXT NOT NULL,
+            span_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            text TEXT,
+            tool_call_id TEXT,
+            tool_name TEXT,
+            arguments_delta TEXT,
+            timestamp_unix_nano INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
     connection.execute(
         "CREATE INDEX idx_trajectory_frames_session_seq "
         "ON trajectory_stream_frames(session_id, frame_seq)"
     )
+    connection.execute(
+        "INSERT INTO trajectory_stream_frames ("
+        "  session_id, execution_subject_id, trace_id, span_id, sequence,"
+        "  kind, text, timestamp_unix_nano, created_at"
+        ") VALUES ('session-1', 'main', ?, ?, 0, 'text-delta', 'kept ', 1, 1)",
+        (_TRACE_ID, _ROOT_SPAN_ID),
+    )
     connection.commit()
     connection.close()
-    assert "idx_trajectory_frames_session_seq" in _frame_indexes(database_path)
+    assert "session_id" in _frame_columns(database_path)
 
     store = TrajectoryStore(database_path)
     store.initialize()
     store.close()
+
+    assert "session_id" not in _frame_columns(database_path)
     assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_sequence"]
-    test_logger.info("frame table keeps only the index a query actually uses")
+    # The frames themselves survive the migration.
+    connection = sqlite3.connect(database_path)
+    try:
+        kept = connection.execute(
+            "SELECT text FROM trajectory_stream_frames"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert [row[0] for row in kept] == ["kept "]
+    test_logger.info("frame table sheds the session column and its index")
 
 
 def test_store_preserves_exact_raw_and_records_hash_conflict(tmp_path: Path) -> None:

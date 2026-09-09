@@ -202,7 +202,6 @@ CREATE INDEX IF NOT EXISTS idx_trajectory_changes_trace_change
 -- costs what it actually produced instead of its length squared.
 CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
     frame_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
     execution_subject_id TEXT NOT NULL DEFAULT 'main',
     trace_id TEXT NOT NULL,
     span_id TEXT NOT NULL,
@@ -216,15 +215,11 @@ CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
     created_at INTEGER NOT NULL
 );
 
--- Catching up after a disconnect walks the session in commit order, which is
--- what frame_seq already is: it is the rowid, so that walk is a primary-key
--- scan and the session filter costs one comparison per row met. Writers open
--- one file per session, so nearly every row met belongs to the session
--- asking, and a (session_id, frame_seq) index was measured to cost 7% of the
--- database plus one more structure to maintain on every frame while saving
--- 6% of a read. A reader pointed at a shared file still reads correctly,
--- only by scanning. Dropped here so databases that already carry the index
--- stop paying for it.
+-- No session column and no session index: a writer opens one file per
+-- session, so the session is a property of the file, not of each of its
+-- 33,000 rows. Catching up walks the file in commit order, which frame_seq
+-- already is -- it is the rowid, so that walk is a primary-key scan.
+-- Databases written before this stop carrying either.
 DROP INDEX IF EXISTS idx_trajectory_frames_session_seq;
 -- Replaying one answer, and discarding the frames of a span that turned out
 -- to be incomplete, both address frames by the span that produced them.
@@ -307,6 +302,7 @@ class TrajectoryStore:
             connection.executescript(_SCHEMA_SQL)
             self._ensure_store_state_columns(connection)
             self._ensure_current_record_columns(connection)
+            self._drop_frame_session_column(connection)
             removed = self._remove_missing_final_current(connection)
             migrated = self._migrate_final_current(connection)
             self._abandon_running_current(connection)
@@ -525,13 +521,12 @@ class TrajectoryStore:
             cursor = connection.execute(
                 """
                 INSERT INTO trajectory_stream_frames (
-                    session_id, execution_subject_id, trace_id, span_id,
+                    execution_subject_id, trace_id, span_id,
                     sequence, kind, text, tool_call_id, tool_name,
                     arguments_delta, timestamp_unix_nano, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    frame.session_id,
                     frame.execution_subject_id,
                     frame.trace_id,
                     frame.span_id,
@@ -1065,6 +1060,26 @@ class TrajectoryStore:
             connection.execute(
                 "ALTER TABLE trajectory_current_records"
                 " ADD COLUMN raw_size_bytes INTEGER NOT NULL DEFAULT 0"
+            )
+
+    @staticmethod
+    def _drop_frame_session_column(connection: sqlite3.Connection) -> None:
+        """Remove the per-frame session column an older database still carries.
+
+        A writer opens one file per session, so the session is a property of
+        the file. Repeating it on every frame cost more than the frame's own
+        content. Without this, an older database keeps a NOT NULL column that
+        the current insert no longer fills.
+        """
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(trajectory_stream_frames)"
+            ).fetchall()
+        }
+        if "session_id" in columns:
+            connection.execute(
+                "ALTER TABLE trajectory_stream_frames DROP COLUMN session_id"
             )
 
     @staticmethod
@@ -1645,10 +1660,11 @@ class AsyncTrajectoryReader:
 
         Frames are filtered through the same trace eligibility as records: a
         frame belongs to a span, and a span the reader may not see must not
-        leak its content through this path.
+        leak its content through this path. The session needs no filter of its
+        own -- it selects the file, and every frame in that file is its own.
 
         Args:
-            session_id: Session to read frames for.
+            session_id: Session to read frames for; it resolves the database.
             since_frame_seq: Highest frame_seq the caller already holds.
             limit: Maximum frames in this page.
 
@@ -1669,9 +1685,8 @@ class AsyncTrajectoryReader:
                 FROM trajectory_stream_frames AS frames
                 INNER JOIN eligible_traces
                     ON eligible_traces.trace_id = frames.trace_id
-                WHERE frames.session_id = ?
                 """,
-                (*_trajectory_scope_params(), session_id),
+                _trajectory_scope_params(),
             )
             if aggregate is None or aggregate["current_frame_seq"] is None:
                 return {
@@ -1708,13 +1723,12 @@ class AsyncTrajectoryReader:
                 FROM trajectory_stream_frames AS frames
                 INNER JOIN eligible_traces
                     ON eligible_traces.trace_id = frames.trace_id
-                WHERE frames.session_id = ? AND frames.frame_seq > ?
+                WHERE frames.frame_seq > ?
                 ORDER BY frames.frame_seq ASC
                 LIMIT ?
                 """,
                 (
                     *_trajectory_scope_params(),
-                    session_id,
                     effective_since,
                     limit + 1,
                 ),

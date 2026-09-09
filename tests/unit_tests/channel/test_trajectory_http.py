@@ -337,25 +337,33 @@ async def test_http_stream_frames_let_a_late_reader_catch_up(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_http_stream_frames_reject_a_foreign_session(tmp_path: Path) -> None:
-    """One session's frames never surface under another session's id."""
-    database_path = tmp_path / "trajectory.sqlite3"
-    _seed(database_path)
-    _seed_frames(database_path, 5)
+    """A session reads only the file it owns, so no id reaches another's frames.
+
+    Frames no longer name their session on every row -- the file does, once.
+    That makes the file itself the boundary, so this exercises the resolver
+    the way production does rather than a filter inside the query.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    owned = session_database_path(root, "session-1")
+    owned.parent.mkdir(parents=True, exist_ok=True)
+    _seed(owned)
+    _seed_frames(owned, 5)
     service = TrajectoryHttpService(
-        _settings(database_path),
-        reader=AsyncTrajectoryReader(database_path),
+        _settings(root),
+        reader=AsyncTrajectoryReader(root, session_scoped=True),
         metadata_loader=_metadata_loader(),
     )
 
-    other = await service.get_stream_frames("session-2", since_frame_seq=0, limit=100)
-    # The read is scoped by session, so a foreign id sees an empty stream
-    # rather than someone else's answer.
-    assert other.status_code == 200
-    assert _response_json(other)["frames"] == []
     own = _response_json(
         await service.get_stream_frames("session-1", since_frame_seq=0, limit=100)
     )
     assert len(own["frames"]) == 5
+
+    # A session with no file of its own reaches nothing.
+    other = await service.get_stream_frames("session-2", since_frame_seq=0, limit=100)
+    assert other.status_code == 404
+
     bad_cursor = await service.get_stream_frames(
         "session-1",
         since_frame_seq=-1,
@@ -368,7 +376,7 @@ async def test_http_stream_frames_reject_a_foreign_session(tmp_path: Path) -> No
         limit=999_999,
     )
     assert oversized.status_code == 400
-    test_logger.info("stream frame reads stayed inside their own session")
+    test_logger.info("stream frame reads stayed inside their own session file")
 
 
 @pytest.mark.asyncio
