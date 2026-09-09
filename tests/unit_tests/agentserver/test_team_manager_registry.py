@@ -121,10 +121,11 @@ def _patch_background_task_controller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> _FakeBackgroundTaskController:
     controller = _FakeBackgroundTaskController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
         "get_background_task_controller",
-        lambda _session_id: controller,
+        lambda _self, _session_id: controller,
     )
     return controller
 
@@ -1417,10 +1418,11 @@ async def test_pause_session_runtime_pauses_controller_before_runner(
             return await super().pause(run_id)
 
     controller = _OrderedController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
         "get_background_task_controller",
-        lambda _session_id: controller,
+        lambda _self, _session_id: controller,
     )
 
     async def fake_pause_agent_team(*, team_name: str, session_id: str) -> bool:
@@ -2167,10 +2169,11 @@ async def test_stop_paused_session_runtime_stops_controller_before_runner(
             return await super().stop(run_id)
 
     controller = _OrderedController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
         "get_background_task_controller",
-        lambda _session_id: controller,
+        lambda _self, _session_id: controller,
     )
 
     async def fake_find_paused(sid: str) -> str | None:
@@ -2237,10 +2240,11 @@ async def test_cancel_session_runtime_stops_controller_before_runner(
             return await super().stop(run_id)
 
     controller = _OrderedController()
+    # The registry lives on TeamManager; team_helpers only delegates to it.
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.team_helpers."
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager."
         "get_background_task_controller",
-        lambda _session_id: controller,
+        lambda _self, _session_id: controller,
     )
 
     async def fake_stop_agent_team(*, team_name: str, session_id: str) -> bool:
@@ -2290,3 +2294,32 @@ async def test_cancel_session_runtime_forwards_pause_disposition(
         "cancel",
         workflow_disposition="pause",
     )
+
+
+# ---------------------------------------------------------------------------
+# BackgroundTaskController registry lives on TeamManager
+# ---------------------------------------------------------------------------
+
+
+def test_background_task_controller_is_session_scoped_and_lazy():
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    tm = TeamManager()
+    a = tm.get_background_task_controller("s1")
+    assert tm.get_background_task_controller("s1") is a
+    assert tm.get_background_task_controller("s2") is not a
+
+
+@pytest.mark.asyncio
+async def test_cleanup_drops_controller_on_stop_but_keeps_it_across_pause(monkeypatch):
+    """A paused team resumes in-process and must find its pause tickets again;
+    a cancelled/stopped team never will, so its controller goes with it."""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    tm = TeamManager()
+    monkeypatch.setattr(tm, "_cancel_team_evolution_watcher", AsyncMock())
+
+    ctl = tm.get_background_task_controller("s")
+    await tm._cleanup_runtime_locals("s", finalize_workflows=False)   # pause path
+    assert tm.get_background_task_controller("s") is ctl
+
+    await tm._cleanup_runtime_locals("s")                             # stop/cancel path
+    assert tm.get_background_task_controller("s") is not ctl

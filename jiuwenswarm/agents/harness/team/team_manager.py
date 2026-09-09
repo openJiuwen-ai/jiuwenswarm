@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
 from openjiuwen.agent_teams.agent.team_agent import TeamAgent
+from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
@@ -325,6 +326,7 @@ class TeamManager:
         self._team_monitors: dict[str, TeamMonitorHandler] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
         self._held_idle: dict[str, dict[str, Any]] = {}
+        self._background_task_controllers: dict[str, BackgroundTaskController] = {}
         self._bootstrap_lock = asyncio.Lock()
         self._distributed_switch_lock = asyncio.Lock()
         self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
@@ -709,6 +711,21 @@ class TeamManager:
 
     def pop_held_idle(self, session_id: str) -> dict[str, Any] | None:
         return self._held_idle.pop(session_id, None)
+
+    def get_background_task_controller(self, session_id: str) -> BackgroundTaskController:
+        """The session's pause/resume/stop surface for background work (swarmflow runs).
+
+        Session-scoped, not round-scoped: a pause in one round and a resume in
+        a later round must observe the same ticket registry, and the leader
+        NativeHarness that hosts the runs is rebuilt every round. Lazily
+        created; dropped by ``_cleanup_runtime_locals`` only when the team is
+        torn down for good (a paused team keeps its tickets).
+        """
+        controller = self._background_task_controllers.get(session_id)
+        if controller is None:
+            controller = BackgroundTaskController()
+            self._background_task_controllers[session_id] = controller
+        return controller
 
     def is_runtime_active(self, session_id: str) -> bool:
         """Return whether a Runner-owned runtime is active for the session."""
@@ -2158,11 +2175,7 @@ class TeamManager:
         progress event — so the workflow handler (still alive at this point)
         has it in its queue before anything tears the harness down.
         """
-        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-            get_background_task_controller,
-        )
-
-        controller = get_background_task_controller(session_id)
+        controller = self.get_background_task_controller(session_id)
         try:
             if action == "pause":
                 await controller.pause(None)
@@ -2192,6 +2205,11 @@ class TeamManager:
 
         stream_task = self._stream_tasks.pop(session_id, None)
         self._held_idle.pop(session_id, None)
+        # finalize_workflows=False is the pause path: the team comes back in
+        # this process and resumes against the same tickets, so the controller
+        # must survive. Every other teardown is final.
+        if finalize_workflows:
+            self._background_task_controllers.pop(session_id, None)
         if stream_task and not stream_task.done():
             stream_task.cancel()
             try:

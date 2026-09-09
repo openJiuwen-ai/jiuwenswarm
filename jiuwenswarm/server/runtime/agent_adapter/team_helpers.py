@@ -140,22 +140,11 @@ def _new_team_event_queue() -> asyncio.Queue:
     return asyncio.Queue(maxsize=TEAM_EVENT_QUEUE_MAXSIZE)
 
 
-# Session-scoped BackgroundTaskController instances (one per session_id). This
-# is the leader's external pause/resume/stop surface for background work
-# (today: swarmflow runs). It must be reused across streaming rounds of the
-# same session so a pause in one round and a resume in a later round observe
-# the same _paused registry, so it lives here keyed by session_id, mirroring
-# the per-session team state held on the singleton TeamManager.
-_BACKGROUND_TASK_CONTROLLERS: dict[str, BackgroundTaskController] = {}
-
-
 def get_background_task_controller(session_id: str) -> BackgroundTaskController:
-    """Return the session's BackgroundTaskController, lazily creating it once."""
-    controller = _BACKGROUND_TASK_CONTROLLERS.get(session_id)
-    if controller is None:
-        controller = BackgroundTaskController()
-        _BACKGROUND_TASK_CONTROLLERS[session_id] = controller
-    return controller
+    """Return the session's BackgroundTaskController (owned by TeamManager)."""
+    from jiuwenswarm.agents.harness.team import get_team_manager
+
+    return get_team_manager().get_background_task_controller(session_id)
 
 
 def _safe_team_path_segment(value: str, fallback: str = "_") -> str:
