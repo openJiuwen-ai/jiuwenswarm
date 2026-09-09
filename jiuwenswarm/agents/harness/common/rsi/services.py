@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from dataclasses import asdict, is_dataclass
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
 from jiuwenswarm.agents.harness.common.rsi.adapter import validate_scenario
@@ -46,6 +48,39 @@ from jiuwenswarm.agents.harness.common.rsi.models import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_web_proxy(value: object) -> str | None:
+    """Validate and normalize a task-scoped HTTP(S) web proxy URL.
+
+    The proxy is intentionally kept in the task's private config rather than
+    exposed by the public task projection.  SOCKS proxies are not accepted
+    here because the web transport is aiohttp-based and the service does not
+    bundle a SOCKS connector dependency.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise RsiBadRequest("web_proxy 必须是 http(s) 代理 URL")
+    raw = value.strip()
+    if not raw:
+        return None
+    if len(raw) > 512:
+        raise RsiBadRequest("web_proxy 至多 512 个字符")
+    try:
+        parsed = urlparse(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise RsiBadRequest("web_proxy URL 无效") from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
+        raise RsiBadRequest("web_proxy 仅支持带主机和端口的 http(s) URL")
+    if port is None or not 1 <= port <= 65535:
+        raise RsiBadRequest("web_proxy 必须包含 1–65535 的端口")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise RsiBadRequest("web_proxy 不应包含路径、查询参数或片段")
+    return raw.rstrip("/")
 
 
 def _remove_uncommitted_task_dir(tasks_root: Path, task_id: str) -> None:
@@ -107,9 +142,8 @@ class RsiTaskService:
             tester = str(model_refs.get("tester") or "").strip()
             if not tester:
                 raise RsiBadRequest("harness 优化必填 model_refs.tester")
-        max_iterations = _positive_int(params.get("max_iterations"), default=1, field="max_iterations")
-        # ``search_width`` is deprecated.  Do not read it from the public
-        # request; keep the engine/materializer defaults instead.
+        requested_max_iterations = params.get("max_iterations")
+        # search_width is deprecated; retain the engine default.
         search_width = 1
         harness_profile_options = (
             _harness_profile_options(params) if scenario is Scenario.HARNESS else {}
@@ -117,8 +151,10 @@ class RsiTaskService:
         optimization_instruction = params.get("optimization_instruction")
         if optimization_instruction is not None:
             optimization_instruction = str(optimization_instruction).strip() or None
-            if optimization_instruction is not None and len(optimization_instruction) > 1000:
-                raise RsiBadRequest("optimization_instruction 至多 1000 字符")
+
+        web_proxy = _normalize_web_proxy(params.get("web_proxy"))
+        if web_proxy and not (scenario is Scenario.ARTIFACT and artifact_type is ArtifactType.PAPER):
+            raise RsiBadRequest("web_proxy 仅支持论文优化")
 
         # 场景字段校验（web §6.1 规则②③）
         input_file: str | None = None
@@ -157,6 +193,22 @@ class RsiTaskService:
                     artifact_type=artifact_type.value if artifact_type else None,
                 )
             )
+
+        # Program task bundles own their search budget in ``task.json``.  The
+        # browser intentionally does not expose a second iteration control for
+        # this branch, so use the bundle value when the public request leaves
+        # it unspecified.  An explicit API value remains authoritative.
+        if (
+            requested_max_iterations is None
+            and scenario is Scenario.ARTIFACT
+            and artifact_type is ArtifactType.PROGRAM
+        ):
+            requested_max_iterations = _program_manifest_max_iterations(artifact_path)
+        max_iterations = _positive_int(
+            requested_max_iterations,
+            default=1,
+            field="max_iterations",
+        )
 
         task_id = generate_task_id()
         run_dir = str(self.store.tasks_root / task_id / "run")
@@ -221,6 +273,10 @@ class RsiTaskService:
             # boundary for all private model/config files).
             "active_ref_released": materialization is not None,
         }
+        if web_proxy:
+            # Keep the URL task-private.  The public ``task.get`` projection
+            # exposes only a boolean so credentials cannot leak to the UI.
+            config["web_proxy"] = web_proxy
         if materialization is not None:
             manifest = materialization.to_manifest()
             config.update(
@@ -727,6 +783,55 @@ def _positive_int(raw: Any, *, default: int, field: str) -> int:
     if value < 1:
         raise RsiBadRequest(f"{field} 必须是正整数")
     return value
+
+
+def _program_manifest_max_iterations(path: str | None) -> int | None:
+    """Read a program bundle's optional search budget from ``task.json``.
+
+    The bundle manifest is an input owned by the program Provider.  Reading
+    only this scalar here lets the service persist the same budget that the
+    Provider will execute, while leaving all seed/scorecard resolution to the
+    Provider.  A plain program directory/file, or a manifest without the
+    field, keeps the RSI default of one iteration.
+    """
+
+    if not path:
+        return None
+    candidate = Path(path).expanduser()
+    if not candidate.is_dir():
+        return None
+    manifest_path = candidate / "task.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RsiDatasetInvalid(
+            f"程序 case 的 task.json 无法读取: {exc}",
+            errors=[
+                {
+                    "reason": "程序 case 的 task.json 不是有效 JSON",
+                    "code": "ARTIFACT_MANIFEST_INVALID",
+                }
+            ],
+        ) from exc
+    if not isinstance(manifest, Mapping):
+        raise RsiDatasetInvalid(
+            "程序 case 的 task.json 顶层必须是对象",
+            errors=[
+                {
+                    "reason": "程序 case 的 task.json 顶层必须是对象",
+                    "code": "ARTIFACT_MANIFEST_INVALID",
+                }
+            ],
+        )
+    if "max_iterations" not in manifest or manifest["max_iterations"] is None:
+        return None
+    return _positive_int(
+        manifest["max_iterations"],
+        default=1,
+        field="task.json.max_iterations",
+    )
 
 
 def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:

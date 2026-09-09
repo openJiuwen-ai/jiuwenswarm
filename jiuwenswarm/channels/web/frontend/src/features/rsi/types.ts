@@ -41,6 +41,8 @@ interface RsiTaskCreateBase {
   name: string;
   max_iterations?: number;
   optimization_instruction?: string;
+  /** Task-scoped proxy used by paper literature search/fetch/download. */
+  web_proxy?: string;
 }
 
 export interface RsiHarnessTaskCreateParams extends RsiTaskCreateBase {
@@ -112,6 +114,7 @@ export interface RsiTaskGetResult {
     max_iterations: number;
     optimization_instruction: string | null;
     artifact_path: string | null;
+    web_proxy_configured: boolean;
   };
   progress: {
     iteration: number;

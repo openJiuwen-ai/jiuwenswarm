@@ -49,15 +49,17 @@ test('Agent selection reaches the actual task.create wire request as llm_as_judg
       open: true, onClose() {}, onCreated() {},
     })));
     const selection = document.querySelector('[aria-label="rsi.createDialog.evaluationMethodLabel"]');
-    assert.equal(selection.value, 'agent');
-    assert.equal(selection.querySelector('[value="script"]').disabled, true);
+    assert.equal(selection.textContent.trim(), 'rsi.createDialog.evaluationMethodAgent');
+    await act(async () => selection.click());
+    const options = selection.parentElement.querySelectorAll('[role="menuitemradio"]');
+    assert.equal(options[1].disabled, true);
+    await act(async () => options[0].click());
     await act(async () => {
-      selection.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
       const name = document.querySelector('[placeholder="rsi.createDialog.namePlaceholder"]');
       Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(name, 'Judge probe');
       name.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
     });
-    for (const trigger of document.querySelectorAll('.rsi-model-select__trigger')) {
+    for (const trigger of document.querySelectorAll('.rsi-model-select > .rsi-model-select__trigger')) {
       await act(async () => trigger.click());
       await act(async () => document.querySelector('[role="menuitemradio"]').click());
     }

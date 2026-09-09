@@ -98,10 +98,11 @@ interface FormState {
   tester: string;
   datasetFile: string;
   packageId: string;
-  evaluationMethod: 'agent' | 'script';
+  evaluationMethod: string;
   maxIterations: number;
   optimizationInstruction: string;
   artifactPath: string;
+  webProxy: string;
 }
 
 function defaultForm(): FormState {
@@ -117,6 +118,7 @@ function defaultForm(): FormState {
     maxIterations: 2,
     optimizationInstruction: '',
     artifactPath: '',
+    webProxy: '',
   };
 }
 
@@ -193,6 +195,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
           artifactType: 'PAPER',
           artifactPath: '',
           optimizationInstruction: '',
+          webProxy: '',
         };
       // 产物优化默认选论文
       return { ...f, scenario: 'ARTIFACT', artifactType: 'PAPER', tester: '' };
@@ -209,6 +212,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
         artifactType: 'PROGRAM',
         artifactPath: '',
         optimizationInstruction: '',
+        webProxy: '',
         maxIterations: 3,
       };
     });
@@ -294,6 +298,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
               ...(branch !== 'PROGRAM' ? { max_iterations: form.maxIterations } : {}),
               ...(form.optimizationInstruction ? { optimization_instruction: form.optimizationInstruction } : {}),
               ...(form.artifactPath ? { artifact_path: form.artifactPath } : {}),
+              ...(branch === 'PAPER' && form.webProxy.trim() ? { web_proxy: form.webProxy.trim() } : {}),
             };
       const res = await rsiTaskCreate(createParams);
       let nextStatus: RsiTaskStatus = res.status;
@@ -418,46 +423,51 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
         </Field>
 
         {branch === 'HARNESS' && (
+          <Field label={t('rsi.createDialog.testerModelLabel')}>
+            <ModelSelect value={form.tester} onChange={(v) => update('tester', v)} />
+            {errors.tester && <Err text={errors.tester} />}
+          </Field>
+        )}
+
+        {branch === 'HARNESS' && (
           <Field label={t('rsi.createDialog.pluginLabel')}>
-            <select
-              className="rsi-input"
-              aria-label={t('rsi.createDialog.pluginLabel')}
+            <RsiSelect
               value={form.packageId}
-              onChange={(event) => update('packageId', event.target.value)}
+              onChange={(v) => update('packageId', v)}
+              options={[
+                { value: '', label: t('rsi.createDialog.pluginDefault') },
+                ...plugins.map((plugin) => ({
+                  value: plugin.id,
+                  label: localizedText(plugin.displayName, i18n.language),
+                  disabled: plugin.connectionState !== 'connected',
+                })),
+              ]}
+              placeholder={t('rsi.createDialog.pluginDefault')}
+              ariaLabel={t('rsi.createDialog.pluginLabel')}
               disabled={submitting}
-            >
-              <option value="">{t('rsi.createDialog.pluginDefault')}</option>
-              {plugins.map((plugin) => (
-                <option key={plugin.id} value={plugin.id} disabled={plugin.connectionState !== 'connected'}>
-                  {localizedText(plugin.displayName, i18n.language)}
-                </option>
-              ))}
-            </select>
+            />
             {pluginError && <Err text={pluginError} />}
           </Field>
         )}
 
         {branch === 'HARNESS' && (
           <Field label={t('rsi.createDialog.evaluationMethodLabel')}>
-            <select
-              className="rsi-input"
-              aria-label={t('rsi.createDialog.evaluationMethodLabel')}
+            <RsiSelect
               value={form.evaluationMethod}
-              onChange={(event) => update('evaluationMethod', event.target.value === 'agent' ? 'agent' : 'script')}
+              onChange={(v) => update('evaluationMethod', v)}
+              options={[
+                { value: 'agent', label: t('rsi.createDialog.evaluationMethodAgent') },
+                {
+                  value: 'script',
+                  label: t('rsi.createDialog.evaluationMethodScript'),
+                  disabled: true,
+                  badge: t('rsi.createDialog.evaluationMethodComingSoon'),
+                },
+              ]}
+              placeholder={t('rsi.createDialog.evaluationMethodAgent')}
+              ariaLabel={t('rsi.createDialog.evaluationMethodLabel')}
               disabled={submitting}
-            >
-              <option value="agent">{t('rsi.createDialog.evaluationMethodAgent')}</option>
-              <option value="script" disabled>
-                {t('rsi.createDialog.evaluationMethodScript')} ({t('rsi.createDialog.evaluationMethodComingSoon')})
-              </option>
-            </select>
-          </Field>
-        )}
-
-        {branch === 'HARNESS' && (
-          <Field label={t('rsi.createDialog.testerModelLabel')}>
-            <ModelSelect value={form.tester} onChange={(v) => update('tester', v)} />
-            {errors.tester && <Err text={errors.tester} />}
+            />
           </Field>
         )}
 
@@ -498,7 +508,6 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
               <textarea
                 className="rsi-input"
                 rows={4}
-                maxLength={1000}
                 value={form.optimizationInstruction}
                 onChange={(e) => update('optimizationInstruction', e.target.value)}
                 placeholder={t('rsi.createDialog.optimizationInstructionPlaceholder')}
@@ -511,6 +520,22 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                 onPick={() => pickPath('artifact')}
               />
               {errors.paper && <Err text={errors.paper} />}
+            </Field>
+            <Field
+              label={t('rsi.createDialog.webProxyLabel')}
+              tip={t('rsi.createDialog.webProxyTip')}
+            >
+              <input
+                className="rsi-input"
+                value={form.webProxy}
+                onChange={(e) => update('webProxy', e.target.value)}
+                placeholder={t('rsi.createDialog.webProxyPlaceholder')}
+                inputMode="url"
+                autoComplete="off"
+              />
+              <div style={{ fontSize: 12, lineHeight: 1.5, marginTop: 5, color: 'var(--color-text-secondary)' }}>
+                {t('rsi.createDialog.webProxyHint')}
+              </div>
             </Field>
           </>
         )}
@@ -870,6 +895,113 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
               {renderGroup(t('chat.modelSelector.free'), freeModels)}
             </>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface RsiSelectOption {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  badge?: string;
+}
+
+function RsiSelect({
+  value,
+  onChange,
+  options,
+  placeholder,
+  ariaLabel,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: RsiSelectOption[];
+  placeholder?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [open]);
+
+  const selected = options.find((option) => option.value === value) ?? null;
+
+  return (
+    <div ref={rootRef} className="rsi-select">
+      <button
+        type="button"
+        className="rsi-model-select__trigger rsi-create-dialog__select--rounded"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        disabled={disabled}
+      >
+        {selected ? (
+          <span className="rsi-model-select__label">{selected.label}</span>
+        ) : (
+          <span className="rsi-model-select__label rsi-model-select__placeholder">{placeholder}</span>
+        )}
+        <svg
+          className="rsi-model-select__chevron"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          aria-hidden="true"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="chat-mode-select__menu model-select__menu rsi-model-select__menu" role="listbox">
+          {options.map((option) => {
+            const active = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onChange(option.value);
+                }}
+                className={clsx('chat-mode-select__option', active && 'chat-mode-select__option--active')}
+                role="menuitemradio"
+                aria-checked={active}
+                disabled={option.disabled}
+              >
+                <span className="chat-mode-select__option-main">
+                  <span className="chat-mode-select__label">{option.label}</span>
+                </span>
+                {option.badge ? (
+                  <span className="rsi-select__badge">{option.badge}</span>
+                ) : active ? (
+                  <svg
+                    className="chat-mode-select__check"
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
+                  </svg>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

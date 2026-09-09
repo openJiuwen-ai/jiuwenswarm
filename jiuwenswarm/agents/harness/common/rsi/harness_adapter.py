@@ -51,6 +51,7 @@ class HarnessProviderContract(Protocol):
 
     supports_pause: bool
     supports_resume: bool
+    supports_terminate: bool
 
     def validate_input(self, path: str | None) -> Any: ...
 
@@ -80,6 +81,7 @@ class HarnessEngineAdapter:
         self.provider = provider
         self.supports_pause = bool(getattr(provider, "supports_pause", True))
         self.supports_resume = bool(getattr(provider, "supports_resume", True))
+        self.supports_terminate = bool(getattr(provider, "supports_terminate", True))
 
     def build_request(self, task: RsiTaskView, *, resume: bool = False) -> HarnessEngineRequest:
         if str(task.scenario or "").upper() != "HARNESS":

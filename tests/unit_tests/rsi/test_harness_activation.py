@@ -21,6 +21,8 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
 from jiuwenswarm.agents.harness.common.rsi.models import RsiTask, TaskStatus, utcnow_iso
 from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 
+pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
+
 
 def _write_package(root: Path, name: str = "policy_harness") -> Path:
     package = root / "member_optimizations" / "current_harnesses" / name

@@ -308,6 +308,9 @@ class ArtifactEngineAdapter:
                 else None
             ),
         }
+        web_proxy = str(task.config.get("web_proxy") or "").strip() or None
+        if web_proxy and self.artifact_type == "PAPER":
+            kwargs["web_proxy"] = web_proxy
         if "resume" in request_fields:
             kwargs["resume"] = resume
 

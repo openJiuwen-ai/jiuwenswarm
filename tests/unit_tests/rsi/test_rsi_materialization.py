@@ -71,6 +71,26 @@ def _tree_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ({}, 3),
+        ({"max_repair_rounds": 1}, 1),
+        ({"max_repair_rounds": 5}, 5),
+        ({"training_options": {"max_repair_rounds": 1}}, 1),
+        ({"max_repair_rounds": 2, "training_options": {"max_repair_rounds": 5}}, 2),
+    ],
+)
+def test_repair_round_defaults_preserve_explicit_options(params: dict, expected: int) -> None:
+    from jiuwenswarm.agents.harness.common.rsi.materializer import _profile_options
+    from jiuwenswarm.agents.harness.common.rsi.services import _harness_profile_options
+
+    options = _harness_profile_options(params)
+    assert options["max_repair_rounds"] == expected
+    assert _profile_options(options)["max_repair_rounds"] == expected
+    assert _profile_options({})["max_repair_rounds"] == 3
+
+
 def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path) -> None:
     entries = [
         _entry("same", alias="first", is_default=True, api_base="https://one.test/v1"),

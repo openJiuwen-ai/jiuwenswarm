@@ -11,7 +11,7 @@ import evaluatingIcon from '../../../assets/rsi/rsi-evaluating.svg';
 import expandIcon from '../../../assets/rsi/rsi-expand.svg';
 import pauseIcon from '../../../assets/rsi/rsi-pause.svg';
 import waitingIcon from '../../../assets/rsi/rsi-waiting.svg';
-import type { RsiTaskGetResult, RsiTreeGetResult } from '../types';
+import type { RsiArtifactType, RsiTaskGetResult, RsiTreeGetResult } from '../types';
 import {
   legendDotClass,
   formatCost,
@@ -168,13 +168,17 @@ function RsiCanvasStatusBar({
             {candidate && <span className="rsi-canvas-statusbar__weak">{candidate}</span>}
           </span>
           <span className="rsi-canvas-statusbar__divider" />
-          <span className="rsi-canvas-statusbar__item">
-            <CostIcon title={costTitle} />
-            <span className="rsi-canvas-statusbar__weak">
-              {t('rsi.detail.estimatedCost', { cost: formatCost(cost) })}
-            </span>
-          </span>
-          <span className="rsi-canvas-statusbar__divider" />
+          {false && (
+            <>
+              <span className="rsi-canvas-statusbar__item">
+                <CostIcon title={costTitle} />
+                <span className="rsi-canvas-statusbar__weak">
+                  {t('rsi.detail.estimatedCost', { cost: formatCost(cost) })}
+                </span>
+              </span>
+              <span className="rsi-canvas-statusbar__divider" />
+            </>
+          )}
           <span className="rsi-canvas-statusbar__item">
             <span className="rsi-canvas-statusbar__weak">{t('rsi.detail.progress', { defaultValue: '进度' })}</span>
             <span className="rsi-canvas-statusbar__strong">{progressPct}%</span>
@@ -350,6 +354,7 @@ function TreeEdges({ layout, onHoverChange }: { layout: TreeLayout; onHoverChang
 // 单个树节点卡片：上层(状态色 + 黑色徽章图标 + 名称 + 状态标签) + 下层(分数行/状态文本 + 展开/收起)
 interface RsiNodeCardProps {
   presentation: RsiNodePresentation;
+  artifactType: RsiArtifactType | null;
   ln: LayoutNode;
   selected: boolean;
   edgeHover: boolean;
@@ -361,6 +366,7 @@ interface RsiNodeCardProps {
 }
 function RsiNodeCard({
   presentation,
+  artifactType,
   ln,
   selected,
   edgeHover,
@@ -378,7 +384,7 @@ function RsiNodeCard({
   const rootStageRunning = presentation.lifecycle === 'baseline' && nodeStageSpec(ln.node)?.status === 'running';
   const rootStageHint = rootStageRunning && stageLabel ? <div className="rsi-node__stage">{stageLabel}</div> : null;
 
-  const scoreLines = nodeScoreLines(ln.node);
+  const scoreLines = nodeScoreLines(ln.node, artifactType);
   // 折叠态最多 3 行，展开最多 5 行（超出滚动）
   const COLLAPSE_LIMIT = 3;
   const EXPAND_LIMIT = 5;
@@ -768,6 +774,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                     <RsiNodeCard
                       key={ln.node.node_id}
                       presentation={presentRsiNode(ln.node, presentationContext)}
+                      artifactType={task.artifact_type}
                       ln={ln}
                       selected={selected}
                       edgeHover={hoveredEdgeParentId === ln.node.node_id}
@@ -869,6 +876,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                         <RsiNodeCard
                           key={ln.node.node_id}
                           presentation={presentRsiNode(ln.node, presentationContext)}
+                          artifactType={task.artifact_type}
                           ln={ln}
                           selected={selected}
                           edgeHover={hoveredEdgeParentId === ln.node.node_id}

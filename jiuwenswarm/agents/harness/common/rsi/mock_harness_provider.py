@@ -61,6 +61,7 @@ class MockHarnessProvider:
 
     supports_pause = True
     supports_resume = True
+    supports_terminate = True
 
     def __init__(
         self,

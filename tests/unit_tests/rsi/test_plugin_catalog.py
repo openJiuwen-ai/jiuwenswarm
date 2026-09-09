@@ -13,6 +13,7 @@ from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harnes
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
 from tests.unit_tests.rsi.test_plugin_roundtrip import _agent, _PRESETS
 
+pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
 
 def _package(tmp_path, *, legacy=False):
     source = tmp_path / "published"

@@ -20,6 +20,8 @@ from jiuwenswarm.agents.harness.common.rsi.models import RsiTask, utcnow_iso
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
+pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
+
 _PRESETS = Path(__file__).resolve().parents[3] / "jiuwenswarm/resources/agent/workspace/plugins/plugin_packages"
 
 

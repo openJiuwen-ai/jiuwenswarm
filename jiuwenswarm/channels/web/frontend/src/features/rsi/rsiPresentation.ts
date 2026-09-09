@@ -663,10 +663,28 @@ export function actionsForStatus(
   return actions;
 }
 
-// 分数格式化：保留 1 位小数，null 显示 —
+// 分数格式化：默认保留 1 位小数，null 显示 —
 export function formatScore(score: number | null, digits = 1): string {
   if (score == null || Number.isNaN(score)) return '--';
   return score.toFixed(digits);
+}
+
+// 程序演进的分数按百分制显示：×100 后保留 1 位小数（0.5524531 → 55.2）。
+// 引擎给的是归一化到 [0,1] 的分数，常在 0.5 附近以千分位变化
+// （relative_to_baseline 下 2x 的改进也只到 0.667），百分制正好把那一档变化摆到小数点前。
+// 其余场景（论文 / Harness）保持原值。位数两边都是 1 位。
+export function scoreDigits(_artifactType?: RsiArtifactType | null): number {
+  return 1;
+}
+
+export function scoreScale(artifactType?: RsiArtifactType | null): number {
+  return artifactType === 'PROGRAM' ? 100 : 1;
+}
+
+// 展示用：按产物类型换算并格式化。两件事绑在一起，避免某个展示位只做了其中一件。
+export function formatArtifactScore(score: number | null, artifactType?: RsiArtifactType | null): string {
+  if (score == null || Number.isNaN(score)) return '--';
+  return formatScore(score * scoreScale(artifactType), scoreDigits(artifactType));
 }
 
 // 提升百分比：↑ 5.2% / ↓ 2.1%，null 显示空串
@@ -863,20 +881,20 @@ export interface NodeScoreLine {
   label: string;
 }
 
-export function nodeScoreLines(node: RsiTreeNode): NodeScoreLine[] {
+export function nodeScoreLines(node: RsiTreeNode, artifactType?: RsiArtifactType | null): NodeScoreLine[] {
   const lines: NodeScoreLine[] = [];
   const score = scoreForNode(node);
-  if (score != null) lines.push({ value: formatScore(score), label: '分数' });
+  if (score != null) lines.push({ value: formatArtifactScore(score, artifactType), label: '分数' });
   const extra = node.extra;
   if (extra && typeof extra === 'object') {
     const potential = extra['potential_score'];
-    if (typeof potential === 'number') lines.push({ value: formatScore(potential), label: '潜力分' });
+    if (typeof potential === 'number') lines.push({ value: formatArtifactScore(potential, artifactType), label: '潜力分' });
     const other = extra['other_score'];
-    if (typeof other === 'number') lines.push({ value: formatScore(other), label: '其他分' });
+    if (typeof other === 'number') lines.push({ value: formatArtifactScore(other, artifactType), label: '其他分' });
     for (const [k, v] of Object.entries(extra)) {
       if (k === 'potential_score' || k === 'other_score') continue;
       if (k.endsWith('_score') && typeof v === 'number') {
-        lines.push({ value: formatScore(v), label: scoreLabel(k.replace(/_score$/, '')) });
+        lines.push({ value: formatArtifactScore(v, artifactType), label: scoreLabel(k.replace(/_score$/, '')) });
       }
     }
   }

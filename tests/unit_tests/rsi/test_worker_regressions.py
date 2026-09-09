@@ -154,20 +154,61 @@ class TestWorkerRunLoop:
         """A Provider stuck in RUNNING must release the worker with a failure result."""
 
         class StuckAdapter:
+            def __init__(self) -> None:
+                self.terminate_calls: list[str] = []
+
             def read_state(self, task_id: str):
                 del task_id
                 return SimpleNamespace(status="running")
 
+            async def terminate(self, task_id: str):
+                self.terminate_calls.append(task_id)
+                return SimpleNamespace(status="TERMINATED")
+
+        adapter = StuckAdapter()
         ctx.worker.provider_poll_timeout = 0.02
         result = await ctx.worker._wait_for_provider_terminal(  # noqa: SLF001
             "rsi-stuck",
-            StuckAdapter(),
+            adapter,
             SimpleNamespace(status="running"),
         )
 
         assert result.status == "failed"
         assert result.error_code == "PROVIDER_TIMEOUT"
         assert result.error_message == "Provider 超时未进入终态"
+        assert adapter.terminate_calls == ["rsi-stuck"]
+
+    def test_paper_provider_polling_has_no_iteration_wall_clock_cap(self, ctx):
+        """Paper runs must not be killed by a guessed per-iteration budget."""
+        paper = SimpleNamespace(artifact_type="PAPER", max_iterations=3)
+        program = SimpleNamespace(artifact_type="PROGRAM", max_iterations=3)
+
+        assert ctx.worker._provider_poll_timeout_for(paper) is None  # noqa: SLF001
+        assert ctx.worker._provider_poll_timeout_for(program) == ctx.worker.provider_poll_timeout  # noqa: SLF001
+
+    async def test_paper_provider_waits_for_terminal_state_without_total_timeout(self, ctx):
+        """A long-running paper Provider is allowed to finish normally."""
+
+        class EventuallyCompleteAdapter:
+            def __init__(self) -> None:
+                self.reads = 0
+
+            def read_state(self, task_id: str):
+                del task_id
+                self.reads += 1
+                status = "completed" if self.reads >= 2 else "running"
+                return SimpleNamespace(status=status, best_node_id="node-1")
+
+        adapter = EventuallyCompleteAdapter()
+        result = await ctx.worker._wait_for_provider_terminal(  # noqa: SLF001
+            "rsi-paper-long-run",
+            adapter,
+            SimpleNamespace(status="running"),
+            timeout=None,
+        )
+
+        assert result.status == "completed"
+        assert adapter.reads == 2
 
     async def test_provider_timeout_does_not_block_next_queued_task(self, ctx):
         """Timeout terminalization lets the following queued task start."""
@@ -224,6 +265,71 @@ class TestProviderControl:
         await control
 
         assert ctx.store.get(task_id).status == TaskStatus.PAUSED.value
+
+    async def test_pause_frees_the_queue_before_the_provider_confirms(self, ctx):
+        """暂停一提出，排在后面的任务就该开始，而不是等收尾做完。
+
+        pause 不会让引擎就地停下：Provider 先把在飞的那次扩展做完（一次模型调用
+        加一次评测）。实测一次真实运行里这段花了 2 分 34 秒，期间执行位一直被占，
+        第二个任务在队列里干等——等的是一件谁都不再要其结果的工作。
+        """
+
+        class BlockingAdapter:
+            supports_pause = True
+            supports_resume = True
+
+            def __init__(self) -> None:
+                self.started: list[str] = []
+                self.release = asyncio.Event()
+
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del on_event
+                self.started.append(request.task_id)
+                await self.release.wait()
+                return SimpleNamespace(status="completed")
+
+            def read_state(self, task_id: str):
+                del task_id
+                return SimpleNamespace(status="completed")
+
+            async def pause(self, task_id: str):
+                del task_id
+                return SimpleNamespace(status="PAUSED")
+
+        adapter = BlockingAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        first = _create(ctx, "pausing")
+        second = _create(ctx, "waiting")
+
+        ctx.worker.enqueue(first)
+        ctx.worker.enqueue(second)
+        for _ in range(100):                      # 第一个进入 run 并停住
+            await asyncio.sleep(0)
+            if adapter.started:
+                break
+        assert adapter.started == [first]
+
+        assert ctx.worker.cancel(first, "pause") == TaskStatus.RUNNING.value
+        for _ in range(100):                      # 收尾还没结束，第二个已经开跑
+            await asyncio.sleep(0)
+            if len(adapter.started) > 1:
+                break
+
+        assert adapter.started == [first, second], "暂停中的任务仍占着执行位"
+        assert not adapter.release.is_set(), "第一个任务其实还没跑完"
+        assert ctx.store.get(second).status == TaskStatus.RUNNING.value
+
+        adapter.release.set()
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+        runner = ctx.worker._run_task                                # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
 
     async def test_failed_provider_control_keeps_public_state(self, ctx):
         class FailingAdapter(_ControlAdapter):

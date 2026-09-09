@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  formatArtifactScore,
   nodeChangeDisplayLabel,
+  nodeScoreLines,
   nodeStageLabel,
   nodeStageLocalizedLabel,
   nodeStageSpec,
-  nodeScoreLines,
   presentRsiNode,
+  scoreScale,
 } from '../node_modules/.cache/rsi-presentation/rsiPresentation.mjs';
 
 const context = (scenario, artifactType, nodes, taskRunning = false) => ({
@@ -333,4 +335,32 @@ test('reused source results are not displayed as newly evaluated cases or comple
   };
   assert.equal(nodeStageLocalizedLabel(node, t), '复用已有结果 3/4，补评 1 题');
   assert.equal(node.score, null);
+});
+
+test('program scores are shown out of 100; other scenarios are unchanged', () => {
+  // 引擎给的是 [0,1] 的归一化分数，在 0.5 附近以千分位变化：论文那套 1 位原值
+  // 会把相邻两代抹成同一个数，所以程序演进按百分制显示。
+  const node = {
+    node_id: 'N1',
+    iteration: 3,
+    parent_id: 'ROOT',
+    type: 'ADOPTED',
+    score: 0.5524531,
+    extra: { potential_score: 0.5001 },
+  };
+
+  assert.deepEqual(nodeScoreLines(node, 'PROGRAM'), [
+    { value: '55.2', label: '分数' },
+    { value: '50.0', label: '潜力分' },
+  ]);
+  assert.deepEqual(nodeScoreLines(node, 'PAPER')[0], { value: '0.6', label: '分数' });
+  assert.deepEqual(nodeScoreLines(node)[0], { value: '0.6', label: '分数' });
+
+  assert.equal(formatArtifactScore(0.5524531, 'PROGRAM'), '55.2');
+  assert.equal(formatArtifactScore(0.5, 'PROGRAM'), '50.0');
+  assert.equal(formatArtifactScore(0.79, 'PAPER'), '0.8');
+  assert.equal(formatArtifactScore(0.79, undefined), '0.8');
+  assert.equal(formatArtifactScore(null, 'PROGRAM'), '--');
+  assert.equal(scoreScale('PROGRAM'), 100);
+  assert.equal(scoreScale('PAPER'), 1);
 });

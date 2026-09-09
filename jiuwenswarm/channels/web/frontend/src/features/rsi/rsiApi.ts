@@ -7,6 +7,7 @@
  */
 
 import { webRequest } from '../../services/webClient';
+import { rsiMock } from './mockData';
 import type {
   RsiArtifactDownloadResult,
   RsiArtifactFileGetResult,
@@ -33,7 +34,6 @@ import type {
   RsiUsage,
   RsiUsageGetResult,
 } from './types';
-import { rsiMock } from './mockData';
 
 export const RSI_EVENTS = {
   statusChanged: 'rsi.training.status.changed',
@@ -318,6 +318,7 @@ function normalizeTask(value: unknown): RsiTaskGetResult {
       max_iterations: asNumber(config.max_iterations, 1),
       optimization_instruction: asNullableString(config.optimization_instruction),
       artifact_path: asNullableString(config.artifact_path),
+      web_proxy_configured: config.web_proxy_configured === true,
     },
     progress,
     best_artifact: normalizeBestArtifact(raw.best_artifact),
@@ -604,6 +605,7 @@ export function rsiTaskCreate(params: RsiTaskCreateParams): Promise<RsiTaskCreat
   if (params.artifact_path?.trim()) wire.artifact_path = params.artifact_path;
   if (params.max_iterations != null) wire.max_iterations = params.max_iterations;
   if (params.optimization_instruction?.trim()) wire.optimization_instruction = params.optimization_instruction;
+  if (params.web_proxy?.trim()) wire.web_proxy = params.web_proxy.trim();
   return webRequest<unknown>(METHOD.taskCreate, withRsiSession(wire)).then((value) => {
     const raw = asRecord(value) ?? {};
     return {

@@ -10,7 +10,7 @@
 import { useTranslation } from 'react-i18next';
 import optimizeImage from '../../../assets/rsi/rsi-optimize.svg';
 import type { RsiTaskGetResult, RsiReportGetResult, RsiUsageGetResult } from '../types';
-import { formatScore, formatGain, formatTokensK, presentRsiNode, typeDisplayLabel } from '../rsiPresentation';
+import { formatArtifactScore, formatGain, formatTokensK, presentRsiNode, typeDisplayLabel } from '../rsiPresentation';
 import { useRsiStore } from '../rsiStore';
 
 interface RsiResultSummaryProps {
@@ -58,19 +58,24 @@ export function RsiResultSummary({ task, report, usage }: RsiResultSummaryProps)
     : (liveProgress?.iteration ?? report?.metrics.iterations ?? task.progress?.iteration ?? null);
   const tokenUsage = usage?.usage ?? task.usage ?? null;
 
-  // 指标列顺序：基线分数 → 用量 → 迭代次数 → 组合评测 →（剪枝，仅 harness）
+  // 指标列顺序：基线分数 → 用量 → 迭代次数 →（组合评测、剪枝，均不含程序优化）
+  const isProgram = task.artifact_type === 'PROGRAM';
   const metrics: Array<{ key: string; value: string; label: string }> = [
-    { key: 'baseline', value: formatScore(baseline), label: t('rsi.detail.baselineScore') },
+    { key: 'baseline', value: formatArtifactScore(baseline, task.artifact_type), label: t('rsi.detail.baselineScore') },
     { key: 'usage', value: tokenUsage ? formatTokensK(tokenUsage.tokens) : '--', label: t('rsi.detail.usage') },
     { key: 'iterations', value: iterations != null ? String(iterations) : '--', label: t('rsi.detail.iterations') },
-    {
+  ];
+  // 组合评测是 harness 优化的概念（一次评测跑的是若干组合）；程序优化每个候选
+  // 只有一次评测，那两个数永远是 0/0，占着位置却什么都不说。
+  if (!isProgram) {
+    metrics.push({
       key: 'eval',
       value: evalPassed != null && evalTotal != null ? `${evalPassed}/${evalTotal}` : '--',
       label: t('rsi.detail.evalCount'),
-    },
-  ];
-  // 剪枝仅 harness 优化展示（产物优化 pruned_count 为 null，§14）
-  if (prunedCount != null) {
+    });
+  }
+  // 剪枝同理：程序优化不剪枝，这一列恒为 0。
+  if (!isProgram && prunedCount != null) {
     metrics.push({
       key: 'pruned',
       value: prunedCount != null ? String(prunedCount) : '--',
@@ -87,7 +92,7 @@ export function RsiResultSummary({ task, report, usage }: RsiResultSummaryProps)
         {/* 优化分数 + 当前最优产物（沿用 rsi-score / rsi-best 组合） */}
         <div className="rsi-result__score-best">
           <div className="rsi-score" data-testid="rsi-score">
-            {formatScore(score)}
+            {formatArtifactScore(score, task.artifact_type)}
             {gainFmt.kind !== 'none' && (
               <span
                 className={

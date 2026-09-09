@@ -3,6 +3,7 @@
 """Unit tests for utils module."""
 
 import importlib
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -299,6 +300,64 @@ def test_prepare_workspace_does_not_copy_legacy_heartbeat_template(
     )
 
     assert not (workspace_dir / "agent" / "workspace" / "HEARTBEAT.md").exists()
+
+
+def test_prepare_workspace_copies_program_evolution_design(
+    tmp_path: Path,
+) -> None:
+    """Initial workspace preparation includes the new built-in skill."""
+    workspace_dir = tmp_path / ".jiuwenswarm"
+
+    utils.prepare_workspace(
+        overwrite=False,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    assert (
+        workspace_dir
+        / "agent"
+        / "workspace"
+        / "skills"
+        / "program-evolution-design"
+        / "SKILL.md"
+    ).is_file()
+
+
+def test_ensure_default_builtin_skills_installs_program_evolution_design(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """New built-in skills are copied into an existing workspace on startup."""
+    builtin_dir = tmp_path / "builtin-skills"
+    user_skills_dir = tmp_path / "user-skills"
+    source_skill = builtin_dir / "program-evolution-design"
+    source_skill.mkdir(parents=True)
+    (source_skill / "SKILL.md").write_text(
+        "---\nname: program-evolution-design\ndescription: test\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
+    monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: user_skills_dir)
+
+    utils.ensure_default_builtin_skills()
+
+    installed_skill = user_skills_dir / "program-evolution-design"
+    assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == (
+        source_skill / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    state = json.loads(
+        (user_skills_dir / "skills_state.json").read_text(encoding="utf-8")
+    )
+    assert any(
+        item.get("name") == "program-evolution-design"
+        and item.get("source") == "builtin"
+        for item in state["installed_plugins"]
+    )
+
+    installed_skill.joinpath("SKILL.md").write_text("user edit\n", encoding="utf-8")
+    utils.ensure_default_builtin_skills()
+    assert installed_skill.joinpath("SKILL.md").read_text(encoding="utf-8") == "user edit\n"
 
 
 class TestConstants:

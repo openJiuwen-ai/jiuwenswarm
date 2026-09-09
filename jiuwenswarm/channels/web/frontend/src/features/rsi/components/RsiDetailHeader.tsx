@@ -16,11 +16,11 @@ import {
   statusBadgeInfo,
   formatDateTime,
   type StatusBadgeKind,
-  formatCost,
   type RsiActionKind,
 } from '../rsiPresentation';
 import { useRsiStore } from '../rsiStore';
 import { usePluginPackageStore } from '../../../stores/pluginPackageStore';
+import { pluginPackagesApi } from '../../../services/pluginPackagesApi';
 import {
   rsiTaskDelete,
   rsiTrainingPause,
@@ -28,7 +28,6 @@ import {
   rsiTrainingTerminate,
   rsiArtifactDownload,
   rsiArtifactDownloadUrl,
-  rsiHarnessInstall,
 } from '../rsiApi';
 
 type DownloadCapableWindow = Window & {
@@ -43,7 +42,6 @@ interface RsiDetailHeaderProps {
   task: RsiTaskGetResult;
   report: RsiReportGetResult | null;
   tree: RsiTreeGetResult | null;
-  liveCost: number | null;
   createdAt: string | null;
   onOpenConfig: () => void;
   onOpenArtifact: (path: string, title: string) => void;
@@ -53,7 +51,6 @@ export function RsiDetailHeader({
   task,
   report,
   tree,
-  liveCost,
   createdAt,
   onOpenConfig,
   onOpenArtifact,
@@ -67,6 +64,7 @@ export function RsiDetailHeader({
   const [busy, setBusy] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'delete' | 'pause' | 'stop' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   const runAction = useCallback(
     async (action: RsiActionKind) => {
@@ -76,6 +74,7 @@ export function RsiDetailHeader({
       }
       setBusy(true);
       setActionError(null);
+      setActionSuccess(null);
       try {
         if (action === 'pause') {
           const res = await rsiTrainingPause(task.task_id);
@@ -110,9 +109,24 @@ export function RsiDetailHeader({
             window.open(downloadUrl, '_blank', 'noopener,noreferrer');
           }
         } else if (action === 'install') {
-          await rsiHarnessInstall(task.task_id);
+          const artifactId =
+            report?.metrics.best_artifact_id
+            ?? report?.best_artifact?.artifact_id
+            ?? task.best_artifact?.artifact_id
+            ?? undefined;
+          const artifact = await rsiArtifactDownload(task.task_id, artifactId);
+          const { id } = await pluginPackagesApi.importLocal({ path: artifact.path });
+          await pluginPackagesApi.install(id);
           markTaskInstalled(task.task_id);
           await usePluginPackageStore.getState().loadList('local', { silent: true });
+          const snapshotName =
+            report?.best_artifact?.name || task.best_artifact?.name;
+          setActionSuccess(
+            t('rsi.detail.actionInstallSuccess', {
+              taskName: task.name,
+              snapshotName,
+            }),
+          );
         }
       } catch (e) {
         const message = e instanceof Error && e.message ? e.message : t('rsi.detail.actionUnknownError');
@@ -200,25 +214,23 @@ export function RsiDetailHeader({
         </div>
       </div>
       <div className="rsi-detail__header-actions">
-        <div className="rsi-detail__actions">
-          {liveCost != null && (
-            <span className="rsi-canvas-area__cost" style={{ marginRight: 4 }}>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.5}
-                aria-hidden
-              >
-                <text x="12" y="18" textAnchor="middle" fontSize="16" fill="currentColor" stroke="none">
-                  ¥
-                </text>
+        {actionSuccess && (
+          <div className="rsi-detail__action-success" role="status">
+            <img className="rsi-detail__action-success-icon" src={completeIcon} alt="" aria-hidden />
+            <span className="rsi-detail__action-success-text">{actionSuccess}</span>
+            <button
+              type="button"
+              className="rsi-detail__action-success-close"
+              onClick={() => setActionSuccess(null)}
+              aria-label={t('rsi.detail.actionClose')}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+                <path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
               </svg>
-              {t('rsi.detail.estimatedCost', { cost: formatCost(liveCost) })}
-            </span>
-          )}
+            </button>
+          </div>
+        )}
+        <div className="rsi-detail__actions">
           {orderedActions.map((action) => {
             const className =
               action === 'delete'

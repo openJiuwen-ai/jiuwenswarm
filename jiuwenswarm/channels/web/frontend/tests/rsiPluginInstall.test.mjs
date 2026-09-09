@@ -9,10 +9,14 @@ const mocks = {
   '../rsiStore': 'export const useRsiStore = selector => selector(globalThis.rsiInstallProbe.store);',
   '../../../stores/pluginPackageStore': 'export const usePluginPackageStore = { getState: () => globalThis.rsiInstallProbe.plugins };',
   'react-i18next': 'export const useTranslation = () => ({ t: key => key });',
+  '../../../services/pluginPackagesApi': `export const pluginPackagesApi = {
+    importLocal: async () => ({ id: 'plugin-1' }),
+    install: id => globalThis.rsiInstallProbe.install(id),
+  };`,
   '../rsiApi': `
     export const rsiHarnessInstall = id => globalThis.rsiInstallProbe.install(id);
     export const rsiTaskDelete = () => {}, rsiTrainingPause = () => {}, rsiTrainingResume = () => {},
-      rsiTrainingTerminate = () => {}, rsiArtifactDownload = () => {}, rsiArtifactDownloadUrl = () => {};
+      rsiTrainingTerminate = () => {}, rsiArtifactDownload = async () => ({ path: '/artifacts/plugin' }), rsiArtifactDownloadUrl = () => {};
   `,
 };
 await build({
@@ -49,7 +53,7 @@ test('RSI install refreshes the shared extension list only after backend success
     await act(async () => root.render(React.createElement(RsiDetailHeader, props)));
     await act(async () => document.querySelector('[data-testid="rsi-action-install"]').click());
     assert.deepEqual(calls, [
-      ['install', 'task-1'], ['installed', 'task-1'], ['refresh', 'local', { silent: true }],
+      ['install', 'plugin-1'], ['installed', 'task-1'], ['refresh', 'local', { silent: true }],
     ]);
     calls.length = 0;
     globalThis.rsiInstallProbe.install = async () => { throw new Error('activation failed'); };

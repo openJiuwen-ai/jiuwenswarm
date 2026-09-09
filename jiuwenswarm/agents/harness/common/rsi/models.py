@@ -169,6 +169,9 @@ class RsiTask:
             "max_iterations": self.max_iterations,
             "optimization_instruction": self.optimization_instruction,
             "artifact_path": self.artifact_path,
+            # The URL may contain proxy credentials.  Return only whether a
+            # task-scoped proxy was configured.
+            "web_proxy_configured": bool((self.config or {}).get("web_proxy")),
         }
         payload: dict[str, Any] = {
             "task_id": self.task_id,

@@ -8,7 +8,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import selectedInfoIcon from '../../../assets/rsi/rsi-icon.svg';
 import { useRsiStore } from '../rsiStore';
-import { formatGain, formatScore, nodeChangeDisplayLabel, nodeChangeGroup, nodeStageLocalizedLabel, presentRsiNode } from '../rsiPresentation';
+import { formatArtifactScore, formatGain, nodeChangeDisplayLabel, nodeChangeGroup, nodeStageLocalizedLabel, presentRsiNode } from '../rsiPresentation';
 import { resolveRsiArtifactSource } from '../rsiArtifactFiles';
 import { RsiArtifactDetailDialog } from './RsiArtifactDetailDialog';
 
@@ -154,11 +154,11 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
             <div className="rsi-selected-info__metrics">
               <div>
                 <span>{t('rsi.detail.score', { defaultValue: '分数' })}</span>
-                <strong>{formatScore(presentation.score)}</strong>
+                <strong>{formatArtifactScore(presentation.score, task?.artifact_type)}</strong>
               </div>
               <div>
                 <span>{t('rsi.detail.parentScore', { defaultValue: '父节点' })}</span>
-                <strong>{formatScore(presentation.parentScore)}</strong>
+                <strong>{formatArtifactScore(presentation.parentScore, task?.artifact_type)}</strong>
               </div>
               <div>
                 <span>{t('rsi.detail.scoreDelta', { defaultValue: '差值' })}</span>

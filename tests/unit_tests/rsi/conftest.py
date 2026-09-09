@@ -5,7 +5,7 @@ import pytest
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def rsi_catalog_workspace(monkeypatch, tmp_path):
     workspace = tmp_path / "agent-workspace"
     monkeypatch.setattr(catalog, "get_agent_workspace_dir", lambda: workspace)

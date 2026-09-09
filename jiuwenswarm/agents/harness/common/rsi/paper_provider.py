@@ -408,6 +408,7 @@ class PaperProvider:
     ) -> _ExecutionOutcome:
         run_dir = self._resolve_run_dir(request.run_dir, request.task_id)
         staged_paths = self._stage_input_file(request.artifact_path, run_dir)
+        staged_artifact_path = str(staged_paths[0]) if staged_paths else None
         base_research_paths = [self._relative_to(run_dir, path) for path in staged_paths]
         topic = (request.optimization_instruction or "").strip()
         if not topic:
@@ -437,6 +438,7 @@ class PaperProvider:
                 topic=topic,
                 initial_prompt=initial_prompt,
                 research_paths=research_paths,
+                artifact_path=staged_artifact_path,
             )
             summary = str(getattr(terminal, "summary", "") or "")
             self._make_iteration_package(run_dir, manager_run_id, iteration)
@@ -462,6 +464,7 @@ class PaperProvider:
         topic: str,
         initial_prompt: str,
         research_paths: list[str],
+        artifact_path: str | None = None,
     ) -> Any:
         from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.config.settings import (
             load_config,
@@ -490,6 +493,12 @@ class PaperProvider:
 
         config = self._load_config(load_config)
         config = self._configure_for_model(config, request.model)
+        topic_config = dict(config.get("topic_survey") or {})
+        topic_config["web_proxy"] = str(request.web_proxy or "").strip() or None
+        configured_scope = str(topic_config.get("search_scope") or "").strip().lower()
+        if configured_scope not in {"domestic", "global"}:
+            topic_config["search_scope"] = "global"
+        config["topic_survey"] = topic_config
         set_project_root(run_dir)
         manager = ManagerAgent(
             config,
@@ -507,6 +516,7 @@ class PaperProvider:
             ),
             reflection=ReflectionAgent(config),
             reporting=_ReportingAgentBoundaryAdapter(ReportingAgent(config)),
+            artifact_path=artifact_path if artifact_path is not None else request.artifact_path,
         )
         with self._temporary_model_environment(request.model, task_id=request.task_id):
             set_project_root(run_dir)

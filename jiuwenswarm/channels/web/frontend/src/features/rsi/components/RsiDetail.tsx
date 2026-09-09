@@ -42,7 +42,6 @@ export function RsiDetail() {
     return <div className="rsi-loading">{t('rsi.list.loading', { defaultValue: '加载中…' })}</div>;
   }
 
-  const liveCost = detail.liveProgress?.usageCost ?? null;
   const createdAt = list.find((item) => item.task_id === selectedTaskId)?.created_at ?? null;
 
   return (
@@ -51,7 +50,6 @@ export function RsiDetail() {
         task={detail.task}
         report={detail.report}
         tree={detail.tree}
-        liveCost={liveCost}
         createdAt={createdAt}
         onOpenConfig={() => setConfigOpen(true)}
         onOpenArtifact={(path, title) => {

@@ -73,6 +73,7 @@ def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
         model=model,
         max_iterations=1,
         optimization_instruction="improve the paper",
+        web_proxy="http://proxy.example.test:7890",
     )
 
     provider = PaperProvider(tasks_root)
@@ -87,15 +88,21 @@ def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
             topic="improve the paper",
             initial_prompt="task prompt",
             research_paths=[],
+            artifact_path="/staged/paper",
         )
 
     assert terminal.status == "complete"
+    assert captured["components"]["artifact_path"] == "/staged/paper"  # type: ignore[index]
     assert captured["config"]["openjiuwen"] == {  # type: ignore[index]
         "base_url": "http://127.0.0.1/v1",
         "model": "test-model",
         "provider": "OpenAI",
         "timeout": 17.0,
     }
+    assert captured["config"]["topic_survey"]["web_proxy"] == (  # type: ignore[index]
+        "http://proxy.example.test:7890"
+    )
+    assert captured["config"]["topic_survey"]["search_scope"] == "global"  # type: ignore[index]
     assert captured["request"] == {  # type: ignore[index]
         "topic": "improve the paper",
         "research_paths": [],
@@ -139,6 +146,38 @@ def test_paper_provider_accepts_and_stages_a_paper_directory(tmp_path: Path):
     assert staged == [run_dir / "input" / "paper" / "paper"]
     assert (staged[0] / "main.tex").is_file()
     assert (staged[0] / "sections" / "method.tex").is_file()
+
+
+def test_paper_provider_passes_the_staged_artifact_to_manager(tmp_path: Path):
+    source = tmp_path / "paper"
+    source.mkdir()
+    (source / "paper_facts.json").write_text("{}", encoding="utf-8")
+    (source / "task_spec.json").write_text("{}", encoding="utf-8")
+    tasks_root = tmp_path / "tasks"
+    run_dir = tasks_root / "rsi-paper" / "run"
+    request = ArtifactEngineRequest(
+        task_id="rsi-paper",
+        run_dir=str(run_dir),
+        artifact_path=str(source),
+        model=object(),
+        max_iterations=1,
+        optimization_instruction="improve the paper",
+    )
+    provider = PaperProvider(tasks_root)
+    captured: dict[str, object] = {}
+
+    def fake_manager(*args, **kwargs):
+        del args
+        captured.update(kwargs)
+        return SimpleNamespace(status="complete", summary="dry run")
+
+    with patch.object(provider, "_run_manager", side_effect=fake_manager):
+        outcome = provider._execute_request(request, threading.Event())
+
+    assert outcome.status == "completed"
+    staged = run_dir / "input" / "paper" / "paper"
+    assert captured["artifact_path"] == str(staged)
+    assert (staged / "paper_facts.json").is_file()
 
 
 def test_reporting_resource_order_keeps_binary_paper_from_utf8_reader():
