@@ -273,9 +273,7 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
         from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
             build_permission_rail,
         )
-        from jiuwenswarm.common.cron_session import is_cron_execution_session
-
-        if is_cron_execution_session(getattr(ctx, "session_id", None)):
+        if getattr(ctx, "channel_id", None) == "__cron__":
             return None
 
         inp = PermissionInterruptInput.resolve(params, ctx)

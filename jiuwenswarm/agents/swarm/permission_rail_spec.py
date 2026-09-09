@@ -120,6 +120,13 @@ def _build_permission_rail_bundle(
         project_dir = getattr(context, "project_dir", None)
         trusted_dirs = getattr(context, "trusted_dirs", None)
 
+    if bool((getattr(context, "extras", None) or {}).get("is_cron")):
+        logger.info(
+            "[PermissionRail] skip permission rail bundle for cron session %s",
+            session_id,
+        )
+        return []
+
     model_name = _resolve_model_name()
 
     try:
