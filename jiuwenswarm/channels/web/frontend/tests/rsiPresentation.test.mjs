@@ -293,6 +293,21 @@ test('an unchanged epoch can score above H0 without being rejected by score', ()
   assert.equal(presentation.lifecycle, 'rejected');
 });
 
+test('parallel evaluation displays completed count rather than last finished case index', () => {
+  const node = {
+    node_id: 'epoch-001', iteration: 1, parent_id: 'ROOT', type: 'PROVISIONAL', adopted: false,
+    score: null, changes: [], extra: { stage: {
+      id: 'evaluate.parallel', name: 'Cases 1/5 completed', status: 'running',
+      case_index: 4, case_id: 'fourth', total_cases: 5, completed_cases: 1, score: 1,
+    } },
+  };
+  const presentation = presentRsiNode(node, context('HARNESS', null, [node], true));
+  assert.equal(presentation.lifecycle, 'evaluating');
+  assert.equal(presentation.stageLabel, 'Cases 1/5 completed');
+  const label = nodeStageLocalizedLabel(node, () => 'wrong case index') ?? presentation.stageLabel;
+  assert.equal(label, 'Cases 1/5 completed');
+});
+
 test('score rejection labels require both a score rejection reason and a non-improving score', () => {
   const parent = {
     node_id: 'ROOT', iteration: 0, parent_id: null, type: 'ROOT', adopted: true,
