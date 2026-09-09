@@ -29,6 +29,7 @@ from jiuwenswarm.observability.config import (
 )
 from jiuwenswarm.observability.models import (
     CommittedTraceUpdate,
+    StreamFrameData,
     TraceRecordData,
     WriteBatchResult,
 )
@@ -195,6 +196,32 @@ CREATE INDEX IF NOT EXISTS idx_trajectory_changes_session_change
     ON trajectory_changes(session_id, change_seq);
 CREATE INDEX IF NOT EXISTS idx_trajectory_changes_trace_change
     ON trajectory_changes(trace_id, change_seq);
+
+-- One model-stream frame. Frames are append-only and small: a frame states
+-- one increment of an answer, never the whole of it, so a streaming turn
+-- costs what it actually produced instead of its length squared.
+CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
+    frame_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    execution_subject_id TEXT NOT NULL DEFAULT 'main',
+    trace_id TEXT NOT NULL,
+    span_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT,
+    tool_call_id TEXT,
+    tool_name TEXT,
+    arguments_delta TEXT,
+    timestamp_unix_nano INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- A reader catching up after a disconnect walks the session in commit order.
+CREATE INDEX IF NOT EXISTS idx_trajectory_frames_session_seq
+    ON trajectory_stream_frames(session_id, frame_seq);
+-- Replaying one answer walks that span's own frames in emission order.
+CREATE INDEX IF NOT EXISTS idx_trajectory_frames_span_sequence
+    ON trajectory_stream_frames(trace_id, span_id, sequence);
 """
 
 # A final span's payload already lives in otlp_span_records, so
@@ -297,16 +324,26 @@ class TrajectoryStore:
             connection.close()
             self._connection = None
 
-    def write_records(self, records: Sequence[TraceRecordData]) -> WriteBatchResult:
+    def write_records(
+        self,
+        records: Sequence[TraceRecordData],
+        frames: Sequence[StreamFrameData] = (),
+    ) -> WriteBatchResult:
         """Commit one batch and return coalesced session/trace revisions.
+
+        Records and frames share one transaction on purpose: they carry two
+        independent watermarks, and committing them separately would let a
+        reader observe one advance without the other and read a state that
+        never existed.
 
         Args:
             records: Immutable records copied from Core before queueing.
+            frames: Model-stream frames to append in the same transaction.
 
         Returns:
             Counts and highest committed revision for each visible trace.
         """
-        if not records:
+        if not records and not frames:
             return WriteBatchResult(inserted=0, conflicts=0, updates=())
         connection = self._require_connection()
         inserted = 0
@@ -425,6 +462,11 @@ class TrajectoryStore:
                     record.span_id,
                 )
 
+            frame_watermarks = self._append_stream_frames(connection, frames)
+            # A span whose record did not change in this batch can still have
+            # produced frames, and a reader learns about those only if that
+            # trace is reported as changed.
+            changed_trace_ids.update(trace_id for _session, trace_id in frame_watermarks)
             changed_trace_ids.update(self._reconcile_orphans(connection, records))
             eligibility_after = self._trace_eligibility(connection, incoming_trace_ids)
             visible_trace_removed = any(
@@ -437,7 +479,11 @@ class TrajectoryStore:
                 self._rotate_store_epoch(connection)
             else:
                 self._sync_max_ingest_seq(connection)
-            updates = self._committed_updates(connection, changed_trace_ids)
+            updates = self._committed_updates(
+                connection,
+                changed_trace_ids,
+                frame_watermarks,
+            )
             connection.commit()
         except Exception:
             connection.rollback()
@@ -447,6 +493,52 @@ class TrajectoryStore:
             conflicts=conflicts,
             updates=updates,
         )
+
+    @staticmethod
+    def _append_stream_frames(
+        connection: sqlite3.Connection,
+        frames: Sequence[StreamFrameData],
+    ) -> dict[tuple[str, str], int]:
+        """Append every frame and report the highest seq per session and trace.
+
+        Frames are inserted, never merged: each states an increment that no
+        later frame repeats. The rowid of the last insert for a trace is its
+        watermark, because the sequence is monotonic within a transaction.
+
+        Args:
+            connection: The open write transaction.
+            frames: Frames to append, in the order they were produced.
+
+        Returns:
+            Highest committed ``frame_seq`` keyed by session and trace.
+        """
+        watermarks: dict[tuple[str, str], int] = {}
+        for frame in frames:
+            cursor = connection.execute(
+                """
+                INSERT INTO trajectory_stream_frames (
+                    session_id, execution_subject_id, trace_id, span_id,
+                    sequence, kind, text, tool_call_id, tool_name,
+                    arguments_delta, timestamp_unix_nano, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    frame.session_id,
+                    frame.execution_subject_id,
+                    frame.trace_id,
+                    frame.span_id,
+                    frame.sequence,
+                    frame.kind,
+                    frame.text,
+                    frame.tool_call_id,
+                    frame.tool_name,
+                    frame.arguments_delta,
+                    frame.timestamp_unix_nano,
+                    frame.created_at,
+                ),
+            )
+            watermarks[(frame.session_id, frame.trace_id)] = int(cursor.lastrowid)
+        return watermarks
 
     @staticmethod
     def _upsert_current_record(
@@ -658,6 +750,12 @@ class TrajectoryStore:
                 "DELETE FROM trajectory_changes WHERE trace_id = ? AND span_id = ?",
                 identity,
             )
+            # The span this frame stream described is gone, so its frames
+            # describe nothing any reader can reach.
+            connection.execute(
+                "DELETE FROM trajectory_stream_frames WHERE trace_id = ? AND span_id = ?",
+                identity,
+            )
         return len(rows)
 
     @staticmethod
@@ -814,6 +912,13 @@ class TrajectoryStore:
             )
             connection.execute(
                 "DELETE FROM otlp_record_conflicts WHERE created_at < ?",
+                (cutoff,),
+            )
+            # Frames are kept past their span's completion so an answer can be
+            # replayed, which makes them the one append-only table that grows
+            # with how much the models say. Retention has to reach them.
+            connection.execute(
+                "DELETE FROM trajectory_stream_frames WHERE created_at < ?",
                 (cutoff,),
             )
             if cursor.rowcount > 0 or current_cursor.rowcount > 0:
@@ -1121,7 +1226,9 @@ class TrajectoryStore:
     def _committed_updates(
         connection: sqlite3.Connection,
         changed_trace_ids: set[str],
+        frame_watermarks: dict[tuple[str, str], int] | None = None,
     ) -> tuple[CommittedTraceUpdate, ...]:
+        frame_seqs = frame_watermarks or {}
         updates: list[CommittedTraceUpdate] = []
         epoch_row = connection.execute(
             "SELECT store_epoch FROM trajectory_store_state WHERE singleton = 1"
@@ -1151,9 +1258,10 @@ class TrajectoryStore:
                     """,
                     (trace_id, str(row["session_id"])),
                 ).fetchone()
+                session_id = str(row["session_id"])
                 updates.append(
                     CommittedTraceUpdate(
-                        session_id=str(row["session_id"]),
+                        session_id=session_id,
                         trace_id=trace_id,
                         revision=int(row["revision"]),
                         store_epoch=store_epoch,
@@ -1162,6 +1270,7 @@ class TrajectoryStore:
                             if lifecycle_row is not None
                             else "final"
                         ),
+                        frame_seq=frame_seqs.get((session_id, trace_id), 0),
                     )
                 )
         return tuple(updates)
@@ -1511,6 +1620,112 @@ class AsyncTrajectoryReader:
             "next_since_revision": next_since_revision,
             "projected_raw_bytes": projected_raw_bytes,
             "max_projected_raw_bytes": byte_budget,
+        }
+
+    async def get_stream_frames(
+        self,
+        session_id: str,
+        *,
+        since_frame_seq: int,
+        limit: int,
+    ) -> dict[str, Any] | None:
+        """Read one page of a session's stream frames, in commit order.
+
+        This is how a reader that fell behind catches up. Frames are additive,
+        so a reader resumes from the last one it holds and replays forward
+        rather than waiting for the answer to finish.
+
+        Frames are filtered through the same trace eligibility as records: a
+        frame belongs to a span, and a span the reader may not see must not
+        leak its content through this path.
+
+        Args:
+            session_id: Session to read frames for.
+            since_frame_seq: Highest frame_seq the caller already holds.
+            limit: Maximum frames in this page.
+
+        Returns:
+            One page of frames, or None when the session has no database.
+        """
+        connection = await self._connect(session_id)
+        if connection is None:
+            return None
+        try:
+            await connection.execute("BEGIN")
+            aggregate = await _fetch_one(
+                connection,
+                f"""
+                WITH {_ELIGIBLE_TRACES_CTE}
+                SELECT MIN(frames.frame_seq) AS first_frame_seq,
+                       MAX(frames.frame_seq) AS current_frame_seq
+                FROM trajectory_stream_frames AS frames
+                INNER JOIN eligible_traces
+                    ON eligible_traces.trace_id = frames.trace_id
+                WHERE frames.session_id = ?
+                """,
+                (*_trajectory_scope_params(), session_id),
+            )
+            if aggregate is None or aggregate["current_frame_seq"] is None:
+                return {
+                    "frame_seq": 0,
+                    "reset": False,
+                    "frames": [],
+                    "has_more": False,
+                    "next_since_frame_seq": since_frame_seq,
+                }
+            first_frame_seq = int(aggregate["first_frame_seq"])
+            current_frame_seq = int(aggregate["current_frame_seq"])
+            # Ahead of the store means the database was rebuilt; behind its
+            # first frame means retention removed what the reader wanted next.
+            # Either way the reader has to start over rather than resume into
+            # a gap it cannot see.
+            reset = since_frame_seq > current_frame_seq or (
+                since_frame_seq > 0 and since_frame_seq < first_frame_seq - 1
+            )
+            effective_since = 0 if reset else since_frame_seq
+            async with connection.execute(
+                f"""
+                WITH {_ELIGIBLE_TRACES_CTE}
+                SELECT frames.frame_seq AS frame_seq,
+                       frames.trace_id AS trace_id,
+                       frames.span_id AS span_id,
+                       frames.execution_subject_id AS execution_subject_id,
+                       frames.sequence AS sequence,
+                       frames.kind AS kind,
+                       frames.text AS text,
+                       frames.tool_call_id AS tool_call_id,
+                       frames.tool_name AS tool_name,
+                       frames.arguments_delta AS arguments_delta,
+                       frames.timestamp_unix_nano AS timestamp_unix_nano
+                FROM trajectory_stream_frames AS frames
+                INNER JOIN eligible_traces
+                    ON eligible_traces.trace_id = frames.trace_id
+                WHERE frames.session_id = ? AND frames.frame_seq > ?
+                ORDER BY frames.frame_seq ASC
+                LIMIT ?
+                """,
+                (
+                    *_trajectory_scope_params(),
+                    session_id,
+                    effective_since,
+                    limit + 1,
+                ),
+            ) as statement:
+                rows = await statement.fetchall()
+        finally:
+            await connection.rollback()
+            await connection.close()
+        has_more = len(rows) > limit
+        selected = rows[:limit]
+        next_since_frame_seq = effective_since
+        if selected:
+            next_since_frame_seq = int(selected[-1]["frame_seq"])
+        return {
+            "frame_seq": current_frame_seq,
+            "reset": reset,
+            "frames": [_stream_frame_from_row(row) for row in selected],
+            "has_more": has_more,
+            "next_since_frame_seq": next_since_frame_seq,
         }
 
     async def get_raw_record(
@@ -1936,6 +2151,28 @@ def _omitted_detail_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         "raw_valid": None,
         "projection_omitted": "record_too_large",
     }
+
+
+def _stream_frame_from_row(row: aiosqlite.Row) -> dict[str, Any]:
+    """Shape one stream frame row for the wire.
+
+    Text fields are passed through untouched: a frame's text is an increment
+    of an answer, and its spaces are content rather than formatting.
+    """
+    frame: dict[str, Any] = {
+        "frame_seq": int(row["frame_seq"]),
+        "trace_id": str(row["trace_id"]),
+        "span_id": str(row["span_id"]),
+        "subject_id": str(row["execution_subject_id"]),
+        "sequence": int(row["sequence"]),
+        "kind": str(row["kind"]),
+        "timestamp_unix_nano": int(row["timestamp_unix_nano"]),
+    }
+    for column in ("text", "tool_call_id", "tool_name", "arguments_delta"):
+        value = row[column]
+        if value is not None:
+            frame[column] = str(value)
+    return frame
 
 
 def _subject_summary_from_row(row: aiosqlite.Row) -> dict[str, Any]:

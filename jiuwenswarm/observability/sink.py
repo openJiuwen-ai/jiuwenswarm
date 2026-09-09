@@ -21,6 +21,8 @@ from jiuwenswarm.observability.models import (
     CommittedTraceUpdate,
     OtlpSpanRecordLike,
     OtlpSpanSnapshotRecordLike,
+    StreamFrameData,
+    StreamFrameRecordLike,
     TraceRecordData,
     TraceSinkStats,
 )
@@ -35,8 +37,20 @@ _RETENTION_INTERVAL_SECONDS = 3600
 # fifteen-second shutdown deadline, including the retry delay.
 _WRITE_RETRY_DELAYS_SECONDS = (0.05,)
 _SESSION_WRITER_IDLE_SECONDS = 300.0
+# A flush window of a fast stream holds far more frames than it holds spans,
+# and each is small, so frames are drained well past the record batch size
+# rather than left to accumulate a growing lag.
+_MAX_FRAMES_PER_BATCH = 512
 
-_QueuedRecord = tuple[OtlpSpanRecordLike | OtlpSpanSnapshotRecordLike, bool]
+# What a queued item is, so the router can hand it to the right sink entry
+# point. Three kinds share one queue because they share one routing decision:
+# which session owns the record.
+_RECORD_FINAL = "final"
+_RECORD_SNAPSHOT = "snapshot"
+_RECORD_FRAME = "frame"
+
+_QueuedPayload = OtlpSpanRecordLike | OtlpSpanSnapshotRecordLike | StreamFrameRecordLike
+_QueuedRecord = tuple[_QueuedPayload, str]
 
 
 def _record_owner_is_consistent(record: OtlpSpanRecordLike) -> bool:
@@ -72,6 +86,13 @@ class TrajectoryRecordSink:
         self._snapshot_pending: OrderedDict[
             tuple[str, str], OtlpSpanSnapshotRecordLike
         ] = OrderedDict()
+        # Frames get their own queue rather than sharing the record queue. A
+        # fast stream produces them far faster than spans end, and sharing
+        # would let a burst of frames push a final record out -- trading a
+        # replaceable increment for the one record that is authoritative.
+        self._frame_queue: queue.Queue[StreamFrameRecordLike] = queue.Queue(
+            maxsize=settings.queue_size,
+        )
         self._work_available = threading.Event()
         self._state_lock = threading.Lock()
         self._stats_lock = threading.Lock()
@@ -90,6 +111,7 @@ class TrajectoryRecordSink:
         self._evicted_provisional = 0
         self._dropped_final = 0
         self._stale_ignored = 0
+        self._dropped_frames = 0
 
     def start(self, *, timeout: float = 10.0) -> None:
         """Initialize SQLite on the writer thread and enable fast consumption.
@@ -229,6 +251,36 @@ class TrajectoryRecordSink:
             self._work_available.set()
         self._increment("accepted")
 
+    def consume_stream_frame(self, record: StreamFrameRecordLike) -> None:
+        """Accept one model-stream frame; frames are appended, never merged.
+
+        Nothing coalesces here, unlike ``consume_snapshot``: a frame states an
+        increment no later frame restates, so dropping one leaves a hole a
+        reader cannot fill until the span ends and its complete output
+        arrives.
+        """
+        if not _record_owner_is_consistent(record):
+            self._increment("failed")
+            return
+        with self._state_lock:
+            if not self._accepting:
+                self._increment("dropped")
+                return
+            try:
+                self._frame_queue.put_nowait(record)
+            except queue.Full:
+                self._increment("dropped")
+                self._increment("dropped_frames")
+                logger.warning(
+                    "Trajectory frame queue is full; the live stream will show a gap "
+                    "until the span's complete output arrives: trace_id=%s span_id=%s",
+                    getattr(record, "trace_id", None),
+                    getattr(record, "span_id", None),
+                )
+                return
+            self._work_available.set()
+        self._increment("accepted")
+
     def request_stop(self) -> None:
         """Stop accepting and ask the writer to drain, without waiting for it.
 
@@ -275,7 +327,11 @@ class TrajectoryRecordSink:
                 dropped=self._dropped,
                 failed=self._failed,
                 conflicts=self._conflicts,
-                queued=self._queue.qsize() + len(self._snapshot_pending),
+                queued=(
+                    self._queue.qsize()
+                    + len(self._snapshot_pending)
+                    + self._frame_queue.qsize()
+                ),
                 coalesced=self._coalesced,
                 evicted_provisional=self._evicted_provisional,
                 dropped_final=self._dropped_final,
@@ -293,6 +349,7 @@ class TrajectoryRecordSink:
             return (
                 self._queue.empty()
                 and not self._snapshot_pending
+                and self._frame_queue.empty()
                 and not self._writing.is_set()
             )
 
@@ -316,12 +373,14 @@ class TrajectoryRecordSink:
                 not self._stop_requested.is_set()
                 or not self._queue.empty()
                 or bool(self._snapshot_pending)
+                or not self._frame_queue.empty()
             ):
                 self._writing.set()
                 try:
                     batch = self._take_batch(flush_timeout)
-                    if batch:
-                        self._write_batch(batch)
+                    frames = self._take_frame_batch()
+                    if batch or frames:
+                        self._write_batch(batch, frames)
                 finally:
                     self._writing.clear()
                 if time.monotonic() >= next_retention_at:
@@ -354,13 +413,38 @@ class TrajectoryRecordSink:
                 self._work_available.set()
         return batch
 
+    def _take_frame_batch(self) -> list[StreamFrameRecordLike]:
+        """Drain the frames that arrived, keeping their emission order.
+
+        The batch is capped well above ``batch_size`` because frames are
+        small and must not be left behind: a stream produces many per flush
+        window, and deferring them would show the reader an answer that lags
+        further behind the longer the model talks.
+        """
+        frames: list[StreamFrameRecordLike] = []
+        limit = max(self.settings.batch_size, _MAX_FRAMES_PER_BATCH)
+        while len(frames) < limit:
+            try:
+                frames.append(self._frame_queue.get_nowait())
+            except queue.Empty:
+                break
+        if not self._frame_queue.empty():
+            self._work_available.set()
+        return frames
+
     def _wait_for_snapshot_coalescing(self, timeout: float) -> None:
-        """Debounce provisional snapshots while letting final records preempt."""
+        """Debounce provisional snapshots, letting finals and frames preempt.
+
+        Frames preempt the wait because they are what a reader is watching in
+        real time: holding them for a snapshot debounce would make a live
+        answer arrive a whole flush window late.
+        """
         with self._state_lock:
             has_snapshots = bool(self._snapshot_pending)
         if (
             not has_snapshots
             or not self._queue.empty()
+            or not self._frame_queue.empty()
             or self._stop_requested.is_set()
         ):
             return
@@ -368,7 +452,7 @@ class TrajectoryRecordSink:
         deadline = time.monotonic() + max(0.001, timeout)
         while not self._stop_requested.is_set():
             self._work_available.clear()
-            if not self._queue.empty():
+            if not self._queue.empty() or not self._frame_queue.empty():
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -378,6 +462,7 @@ class TrajectoryRecordSink:
     def _write_batch(
         self,
         batch: list[tuple[OtlpSpanRecordLike | OtlpSpanSnapshotRecordLike, bool]],
+        frame_batch: list[StreamFrameRecordLike] | None = None,
     ) -> None:
         try:
             records: list[TraceRecordData] = []
@@ -390,9 +475,16 @@ class TrajectoryRecordSink:
                 except (AttributeError, TypeError, ValueError, OverflowError) as exc:
                     self._increment("failed")
                     logger.warning("Trajectory record rejected by writer: %s", exc)
-            if not records:
+            frames: list[StreamFrameData] = []
+            for frame in frame_batch or ():
+                try:
+                    frames.append(StreamFrameData.from_core_frame(frame))
+                except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+                    self._increment("failed")
+                    logger.warning("Trajectory frame rejected by writer: %s", exc)
+            if not records and not frames:
                 return
-            result = self._write_records_with_retry(records)
+            result = self._write_records_with_retry(records, frames)
         except Exception:
             self._increment("failed", len(records))
             logger.exception(
@@ -416,11 +508,12 @@ class TrajectoryRecordSink:
     def _write_records_with_retry(
         self,
         records: list[TraceRecordData],
+        frames: list[StreamFrameData] | None = None,
     ):
         """Retry transient SQLite contention without creating an infinite drain."""
         for attempt, delay in enumerate((*_WRITE_RETRY_DELAYS_SECONDS, None)):
             try:
-                return self._store.write_records(records)
+                return self._store.write_records(records, frames or ())
             except sqlite3.OperationalError as exc:
                 message = str(exc).lower()
                 retryable = "locked" in message or "busy" in message
@@ -453,6 +546,8 @@ class TrajectoryRecordSink:
                 self._dropped_final += amount
             elif counter == "stale_ignored":
                 self._stale_ignored += amount
+            elif counter == "dropped_frames":
+                self._dropped_frames += amount
             else:
                 raise ValueError(f"unknown trajectory counter: {counter}")
 
@@ -531,11 +626,15 @@ class TrajectorySessionSinkRouter:
 
     def consume(self, record: OtlpSpanRecordLike) -> None:
         """Accept a final Core record using one constant-cost enqueue."""
-        self._consume(record, snapshot=False)
+        self._consume(record, kind=_RECORD_FINAL)
 
     def consume_snapshot(self, record: OtlpSpanSnapshotRecordLike) -> None:
         """Accept a provisional Core snapshot using one constant-cost enqueue."""
-        self._consume(record, snapshot=True)
+        self._consume(record, kind=_RECORD_SNAPSHOT)
+
+    def consume_stream_frame(self, record: StreamFrameRecordLike) -> None:
+        """Accept one model-stream frame using one constant-cost enqueue."""
+        self._consume(record, kind=_RECORD_FRAME)
 
     def close(self, *, timeout: float = 15.0) -> bool:
         """Stop accepting and drain the router and every session writer."""
@@ -650,10 +749,11 @@ class TrajectorySessionSinkRouter:
 
     def _consume(
         self,
-        record: OtlpSpanRecordLike | OtlpSpanSnapshotRecordLike,
+        record: _QueuedPayload,
         *,
-        snapshot: bool,
+        kind: str,
     ) -> None:
+        is_final = kind == _RECORD_FINAL
         raw_session_id = str(getattr(record, "session_id", "") or "")
         session_id = raw_session_id.strip()
         trace_id = str(getattr(record, "trace_id", "") or "").strip().lower()
@@ -675,13 +775,13 @@ class TrajectorySessionSinkRouter:
             return
         if session_id and not trajectory_session_accepts_records(session_id):
             self._increment("dropped")
-            if not snapshot:
+            if is_final:
                 self._increment("dropped_final")
             return
         with self._state_lock:
             if session_id and not trajectory_session_accepts_records(session_id):
                 self._increment("dropped")
-                if not snapshot:
+                if is_final:
                     self._increment("dropped_final")
                 return
             if not self._accepting:
@@ -689,10 +789,10 @@ class TrajectorySessionSinkRouter:
                 return
             with self._ingress_condition:
                 try:
-                    self._queue.put_nowait((session_id, (record, snapshot)))
+                    self._queue.put_nowait((session_id, (record, kind)))
                 except queue.Full:
                     self._increment("dropped")
-                    if not snapshot:
+                    if is_final:
                         self._increment("dropped_final")
                     return
                 self._ingress_pending[session_id] = (
@@ -724,9 +824,11 @@ class TrajectorySessionSinkRouter:
                     sink = writer.sink
                 # Hand off outside the routes lock: each consume is a bounded
                 # non-blocking enqueue that counts its own drops.
-                for routed_record, routed_snapshot in routed_items:
-                    if routed_snapshot:
+                for routed_record, routed_kind in routed_items:
+                    if routed_kind == _RECORD_SNAPSHOT:
                         sink.consume_snapshot(routed_record)
+                    elif routed_kind == _RECORD_FRAME:
+                        sink.consume_stream_frame(routed_record)
                     else:
                         sink.consume(routed_record)
             finally:
@@ -776,17 +878,22 @@ class TrajectorySessionSinkRouter:
 
     def _buffer_orphan(self, item: _QueuedRecord) -> None:
         """Hold a sessionless child until a session-owned span reveals its route."""
-        record, _snapshot = item
-        identity = (
+        record, kind = item
+        identity: tuple[str, ...] = (
             str(getattr(record, "trace_id", "") or "").strip().lower(),
             str(getattr(record, "span_id", "") or "").strip().lower(),
         )
+        if kind == _RECORD_FRAME:
+            # A span identifies a record, but not a frame: frames are additive,
+            # so keying them by span alone would make each new one evict its
+            # predecessor and leave a hole in the stream.
+            identity = (*identity, str(getattr(record, "sequence", 0)))
         with self._routes_lock:
             previous = self._orphan_pending.pop(identity, None)
             if previous is None and len(self._orphan_pending) >= self.settings.queue_size:
                 _evicted_identity, evicted = self._orphan_pending.popitem(last=False)
                 self._increment("dropped")
-                if not evicted[1]:
+                if evicted[1] == _RECORD_FINAL:
                     self._increment("dropped_final")
             self._orphan_pending[identity] = item
 
@@ -803,7 +910,7 @@ class TrajectorySessionSinkRouter:
         if not orphans:
             return
         self._increment("dropped", len(orphans))
-        final_count = sum(1 for _record, snapshot in orphans if not snapshot)
+        final_count = sum(1 for _record, kind in orphans if kind == _RECORD_FINAL)
         if final_count:
             self._increment("dropped_final", final_count)
 

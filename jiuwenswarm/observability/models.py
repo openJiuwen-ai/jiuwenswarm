@@ -53,6 +53,104 @@ class OtlpSpanSnapshotRecordLike(Protocol):
     execution_subject_parent_id: str | None
 
 
+class StreamFrameRecordLike(Protocol):
+    """Structural contract implemented by the Agent Core stream frame record."""
+
+    event_name: str
+    timestamp_unix_nano: int
+    observed_timestamp_unix_nano: int
+    trace_id: str
+    span_id: str
+    sequence: int
+    kind: str
+    session_id: str | None
+    execution_subject_id: str | None
+    execution_subject_session_id: str | None
+    text: str | None
+    tool_call_id: str | None
+    tool_name: str | None
+    arguments_delta: str | None
+    request_id: str | None
+    run_id: str | None
+    agent_mode: str | None
+    schema_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class StreamFrameData:
+    """Immutable copy of one model-stream frame queued for the writer.
+
+    A frame is additive rather than a snapshot of anything: it states one
+    increment of a model's answer and is meaningful only next to its
+    neighbours. Nothing may coalesce frames, because a dropped one is an
+    increment no later frame restates.
+    """
+
+    session_id: str
+    execution_subject_id: str
+    trace_id: str
+    span_id: str
+    sequence: int
+    kind: str
+    timestamp_unix_nano: int
+    created_at: int
+    text: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    arguments_delta: str | None = None
+
+    @classmethod
+    def from_core_frame(
+        cls,
+        record: StreamFrameRecordLike,
+        *,
+        created_at: int | None = None,
+    ) -> StreamFrameData:
+        """Copy one stream frame emitted by Agent Core.
+
+        Args:
+            record: The frame as Agent Core published it.
+            created_at: Unix seconds to stamp; defaults to now.
+
+        Returns:
+            The immutable copy the writer thread persists.
+
+        Raises:
+            ValueError: If the frame carries no owning span, no session, or a
+                negative sequence.
+        """
+        trace_id = str(record.trace_id or "").strip().lower()
+        span_id = str(record.span_id or "").strip().lower()
+        if not trace_id or not span_id:
+            raise ValueError("trace_id and span_id are required")
+        session_id = _normalize_text(record.session_id)
+        if session_id is None:
+            raise ValueError("session_id is required")
+        sequence = int(record.sequence)
+        if sequence < 0:
+            raise ValueError("sequence must be non-negative")
+        kind = _normalize_text(record.kind)
+        if kind is None:
+            raise ValueError("kind is required")
+        timestamp = int(record.timestamp_unix_nano)
+        if timestamp < 0:
+            raise ValueError("frame timestamp must be non-negative")
+        return cls(
+            session_id=session_id,
+            execution_subject_id=_subject_id(record),
+            trace_id=trace_id,
+            span_id=span_id,
+            sequence=sequence,
+            kind=kind,
+            timestamp_unix_nano=timestamp,
+            created_at=int(created_at if created_at is not None else time.time()),
+            text=_frame_text(record.text),
+            tool_call_id=_normalize_text(getattr(record, "tool_call_id", None)),
+            tool_name=_normalize_text(getattr(record, "tool_name", None)),
+            arguments_delta=_frame_text(getattr(record, "arguments_delta", None)),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class TraceRecordData:
     """Immutable copy queued by Swarm without parsing or rewriting raw JSON."""
@@ -225,13 +323,20 @@ class TraceRecordData:
 
 @dataclass(frozen=True, slots=True)
 class CommittedTraceUpdate:
-    """Highest committed revision for one session and trace in a writer batch."""
+    """Highest committed revision for one session and trace in a writer batch.
+
+    ``frame_seq`` is a second, independent watermark. Records and stream
+    frames advance on their own sequences, so a reader that only ever saw
+    ``revision`` would never learn that new frames had landed for a span
+    whose record did not change.
+    """
 
     session_id: str
     trace_id: str
     revision: int
     store_epoch: str | None = None
     lifecycle: str = "final"
+    frame_seq: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +371,20 @@ def _normalize_text(value: str | None, *, lowercase: bool = False) -> str | None
     if not normalized:
         return None
     return normalized.lower() if lowercase else normalized
+
+
+def _frame_text(value: str | None) -> str | None:
+    """Return one frame's text verbatim, or None when it carries none.
+
+    A frame's text is an increment of the model's answer, so its leading and
+    trailing spaces are content. Trimming them the way record metadata is
+    trimmed would glue words together as soon as a reader concatenates the
+    stream, and would drop a frame whose whole content is one space.
+    """
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
 
 
 def _subject_id(record: object) -> str:

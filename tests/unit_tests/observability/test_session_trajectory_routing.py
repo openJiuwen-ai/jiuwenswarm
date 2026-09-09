@@ -18,7 +18,11 @@ from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
     session_database_path,
 )
-from jiuwenswarm.observability.models import TraceRecordData, WriteBatchResult
+from jiuwenswarm.observability.models import (
+    StreamFrameData,
+    TraceRecordData,
+    WriteBatchResult,
+)
 from jiuwenswarm.observability.sink import (
     _SESSION_WRITER_IDLE_SECONDS,
     CommitCallback,
@@ -192,7 +196,11 @@ class _ControlledStore:
     def delete_expired(self, *, now: int | None = None) -> int:
         return 0
 
-    def write_records(self, records: Sequence[TraceRecordData]) -> WriteBatchResult:
+    def write_records(
+        self,
+        records: Sequence[TraceRecordData],
+        frames: Sequence[StreamFrameData] = (),
+    ) -> WriteBatchResult:
         self.write_started.set()
         if self.blocked:
             self.release_write.wait(timeout=10)
