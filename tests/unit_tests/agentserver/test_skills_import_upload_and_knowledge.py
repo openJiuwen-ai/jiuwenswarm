@@ -16,7 +16,6 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_ALREADY_EXISTS,
@@ -234,7 +233,7 @@ def test_finalize_create_from_knowledge_new_this_run_no_conflict(
     assert result["skill"]["name"] == "matplotlib_line_plot"
 
 
-def test_finalize_create_from_knowledge_historical_rejects_without_overwrite(
+def test_finalize_create_from_knowledge_historical_rejects(
     manager: SkillManager, tmp_path: Path
 ) -> None:
     existing = manager._skills_dir / "matplotlib_line_plot"
@@ -251,7 +250,6 @@ def test_finalize_create_from_knowledge_historical_rejects_without_overwrite(
     result = manager.finalize_create_from_knowledge(
         out,
         existing_skill_names={"matplotlib_line_plot"},
-        overwrite=False,
     )
     assert result["success"] is False
     assert result["code"] == ERROR_SKILL_ALREADY_EXISTS
@@ -259,6 +257,33 @@ def test_finalize_create_from_knowledge_historical_rejects_without_overwrite(
     assert "pending_id" not in result
     old = (existing / "SKILL.md").read_text(encoding="utf-8")
     assert "old desc" in old
+
+
+def test_parse_overwrite_rejects_false_string() -> None:
+    assert SkillManager._parse_overwrite("false") is False
+    assert SkillManager._parse_overwrite("0") is False
+    assert SkillManager._parse_overwrite("true") is True
+    assert SkillManager._parse_overwrite(True) is True
+    assert SkillManager._parse_overwrite(False) is False
+
+
+@pytest.mark.asyncio
+async def test_import_upload_overwrite_false_string_does_not_force(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    existing = manager._skills_dir / "document-review"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text(
+        _skill_md("document-review", "old"), encoding="utf-8"
+    )
+    zip_path = tmp_path / "document-review.zip"
+    zip_path.write_bytes(_zip_bytes("document-review"))
+    with pytest.raises(SkillRpcError) as exc:
+        await manager.handle_skills_import_upload(
+            {"path": str(zip_path), "overwrite": "false"}
+        )
+    assert exc.value.code == ERROR_SKILL_ALREADY_EXISTS
+    assert "old" in (existing / "SKILL.md").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -294,25 +319,6 @@ async def test_create_from_knowledge_prompt_lists_occupied_names(
     assert "禁止复用" in payload["followup_prompt"]
 
 
-@pytest.mark.asyncio
-async def test_create_from_knowledge_pending_overwrite_skips_followup(
-    manager: SkillManager, tmp_path: Path
-) -> None:
-    existing = manager._skills_dir / "keep-me"
-    existing.mkdir(parents=True)
-    (existing / "SKILL.md").write_text(_skill_md("keep-me", "old"), encoding="utf-8")
-    staged = tmp_path / "staged"
-    staged.mkdir()
-    (staged / "SKILL.md").write_text(_skill_md("keep-me", "new"), encoding="utf-8")
-    pending_id = manager._stash_knowledge_pending(staged)
-
-    payload = await manager.handle_skills_create_from_knowledge(
-        {"pending_id": pending_id, "overwrite": True}
-    )
-    assert payload["success"] is True
-    assert "new" in (existing / "SKILL.md").read_text(encoding="utf-8")
-
-
 def test_multipart_import_http_local(manager: SkillManager, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.skill.skills_multipart_http.SkillManager",
@@ -345,6 +351,8 @@ def test_multipart_knowledge_conflict_http() -> None:
 async def test_create_from_knowledge_silent_runs_agent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
     impl_calls: list[dict[str, Any]] = []
 
     class FakeAdapter:
@@ -364,9 +372,13 @@ async def test_create_from_knowledge_silent_runs_agent(
     skill_root = out / "from-link"
     skill_root.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text(_skill_md("from-link"), encoding="utf-8")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
 
     swarm = interface_module.JiuWenSwarm()
     swarm._skill_manager = MagicMock()
+    swarm._skill_manager.skills_dir = skills_dir
+    swarm._skill_manager.list_installed_skill_dir_names = MagicMock(return_value=set())
     swarm._skill_manager.handle_skills_create_from_knowledge = AsyncMock(
         return_value={
             "success": True,
@@ -388,7 +400,7 @@ async def test_create_from_knowledge_silent_runs_agent(
                 "skill_type": "skill",
                 "version": None,
                 "source": "local",
-                "workspace_path": str(tmp_path / "skills" / "from-link"),
+                "workspace_path": str(skills_dir / "from-link"),
             },
         }
     )
@@ -422,10 +434,17 @@ async def test_create_from_knowledge_silent_runs_agent(
     assert ":" not in impl_calls[0]["session_id"]
     swarm.create_instance.assert_awaited_once()
     swarm._reload_team_skill_rails.assert_awaited_once_with("user-session")
+    swarm._skill_manager.finalize_create_from_knowledge.assert_called_once()
+    finalize_kwargs = swarm._skill_manager.finalize_create_from_knowledge.call_args.kwargs
+    assert "overwrite" not in finalize_kwargs
+    assert "pending_id" not in finalize_kwargs
+    assert finalize_kwargs.get("existing_skill_names") == set()
 
 
 def test_build_skills_knowledge_followup_session_id_is_windows_safe() -> None:
     """临时 session_id 不得含 ':'，否则 Windows 下 sessions 目录 mkdir 会 WinError 267."""
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
     request = AgentRequest(
         request_id="req_mttf7ps6_21",
         channel_id="web",
