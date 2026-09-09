@@ -357,7 +357,7 @@ export async function getTrajectorySubjectRecords(
   return {
     schema_version: 1,
     session_id: sessionId,
-    trace_id: traceId,
+    subject_id: subjectId,
     revision: Number(payload.revision),
     reset: payload.reset,
     records,
