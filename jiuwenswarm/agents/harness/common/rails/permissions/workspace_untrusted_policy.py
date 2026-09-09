@@ -2,8 +2,8 @@
 
 """关闭「信任工作空间」后，审批结果跟安全策略表走。
 
-RelayClaw 关闭信任空间时会把 ``file_guard.workspace`` 写成 ask，且不再注入
-``trusted_dirs``。openjiuwen 引擎再对路径做 ``strictest(tool_allow, file_guard_ask)``，
+关闭信任空间时，``file_guard.workspace`` 为 ask，且不再注入 ``trusted_dirs``。
+openjiuwen 引擎再对路径做 ``strictest(tool_allow, file_guard_ask)``，
 策略表全关仍会弹窗。
 
 产品预期（信任空间关闭时）：
