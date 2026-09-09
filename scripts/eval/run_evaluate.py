@@ -5,7 +5,7 @@
 Requires a ContextBench checkout (``CONTEXTBENCH_ROOT`` / ``--contextbench-root``).
 
     uv run --extra code-graph --with pyarrow python scripts/eval/run_evaluate.py \
-        --pred docs/ai/experiments/03-contextbench-before-productization/runs/run01-contextbench-verified/cfg_b__graph/raw
+        --pred eval-runs/contextbench/cfg_b__graph/raw
 """
 
 from __future__ import annotations

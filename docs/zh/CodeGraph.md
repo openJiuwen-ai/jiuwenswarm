@@ -62,7 +62,7 @@ code_graph:
 
 ## 和评测脚本的区别
 
-测试人员跑 ContextBench 用 `scripts/eval/`，会注入 locate 考试提示并挂上 `submit_code_context` 以产出 `<PATCH_CONTEXT>`。那不是产品用户路径，**不能直接套产品 yaml**。ContextBench 源码和 gold parquet **不在本仓库**；测试机设置 `CONTEXTBENCH_ROOT`（或把 ContextBench clone 成 `jiuwenswarm` 的兄弟目录 `../ContextBench`），不要依赖某台机器上的 `reconstruct_tmp`。
+测试人员跑 ContextBench 用 `scripts/eval/`，会注入 locate 考试提示并挂上 `submit_code_context` 以产出 `<PATCH_CONTEXT>`。那不是产品用户路径，**不能直接套产品 yaml**。ContextBench 源码和 gold parquet **不在本仓库**；测试机设置 `CONTEXTBENCH_ROOT`（或把 ContextBench clone 成 `jiuwenswarm` 的兄弟目录 `../ContextBench`）。
 
 - 任务不同：评测是 locate 考试（提交上下文），产品是定位后 `edit_file` / 跑测试。
 - 藏工具不同：评测还要藏 `bash` / `edit_file` / `write_file`（`--graph-agent root` 时再藏 `task_tool`），否则 Root 会不调图就交卷。产品只在图可用时藏 `grep` / `glob`；图 `UNAVAILABLE` 时加回来。评测失败不得回退 grep，否则污染 ablation。

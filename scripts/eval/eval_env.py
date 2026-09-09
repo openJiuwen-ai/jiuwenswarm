@@ -2,14 +2,17 @@
 """Eval support: ContextBench paths, project ``.env``, and the pinned engine.
 
 Path lookup: ``CONTEXTBENCH_ROOT`` / ``--contextbench-root`` / sibling
-``../ContextBench``. Do not assume ``reconstruct_tmp``.
+``../ContextBench``, then ``third_party/ContextBench``. Same idea for SWE
+(``SWE_BENCH_ROOT`` / ``../SWE-bench`` / ``third_party/SWE-bench``).
 
 ``.env``: eval is a plain ``python`` process. Keys already exported in the
 shell (often from ``~/.zshrc``) sit in ``os.environ`` before this file runs.
 ``python-dotenv`` defaults to *not* overwriting those, so a stale shell
-``API_KEY`` would beat ``jiuwenswarm/resources/.env``. ``load_eval_dotenv``
-uses ``override=True`` so the project file wins. Product ``jiuwenswarm-start``
-loads its own instance ``.env`` separately; this module is eval-only.
+``API_KEY`` would beat the file chosen below. ``load_eval_dotenv`` uses
+``override=True`` so that file wins. Search order: ``--dotenv``,
+``EVAL_DOTENV``, repo-root ``.env``, then ``jiuwenswarm/resources/.env``.
+Product ``jiuwenswarm-start`` still loads its own instance ``.env``.
+This module is eval-only.
 
 Engine: ``uv sync --extra code-graph`` installs
 ``openJiuwen/agent-core`` ``agent_os_code_search``. Eval does not prepend a
@@ -25,12 +28,9 @@ from pathlib import Path
 
 _EVAL_DIR = Path(__file__).resolve().parent
 JIUWEN_ROOT = _EVAL_DIR.parents[1]
-DEFAULT_OUTPUT = (
-    JIUWEN_ROOT / "docs" / "ai" / "experiments" / "03-contextbench-before-productization" / "runs" / "scratch-contextbench"
-)
-DEFAULT_SWE_OUTPUT = (
-    JIUWEN_ROOT / "docs" / "ai" / "experiments" / "06-swe-verified-current" / "runs" / "scratch-swe"
-)
+# Local scratch only. Do not default into gitignored ``docs/ai/``.
+DEFAULT_OUTPUT = JIUWEN_ROOT / "eval-runs" / "contextbench"
+DEFAULT_SWE_OUTPUT = JIUWEN_ROOT / "eval-runs" / "swe"
 GOLD_PARQUET_NAME = "contextbench_verified.parquet"
 
 
@@ -59,11 +59,7 @@ def contextbench_root_candidates(
     explicit: Path | str | None = None,
     parquet: Path | str | None = None,
 ) -> list[Path]:
-    """Places to look, first match wins.
-
-    ``reconstruct_tmp/ContextBench`` is a last-resort local layout, not a
-    required path for other testers.
-    """
+    """Places to look, first match wins."""
     parent = JIUWEN_ROOT.parent
     env = os.environ.get("CONTEXTBENCH_ROOT", "").strip()
     parquet_env = os.environ.get("CONTEXTBENCH_PARQUET", "").strip()
@@ -81,7 +77,6 @@ def contextbench_root_candidates(
         [
             parent / "ContextBench",
             JIUWEN_ROOT / "third_party" / "ContextBench",
-            parent / "reconstruct_tmp" / "ContextBench",
         ]
     )
     return _unique(found)
@@ -156,7 +151,6 @@ def swe_root_candidates(*, explicit: Path | str | None = None) -> list[Path]:
         [
             parent / "SWE-bench",
             JIUWEN_ROOT / "third_party" / "SWE-bench",
-            parent / "reconstruct_tmp" / "SWE-bench",
         ]
     )
     return _unique(found)
@@ -296,8 +290,8 @@ def resolve_dotenv_path() -> Path | None:
         path = Path(env).expanduser().resolve()
         return path if path.is_file() else None
     for candidate in (
-        JIUWEN_ROOT / "jiuwenswarm" / "resources" / ".env",
         JIUWEN_ROOT / ".env",
+        JIUWEN_ROOT / "jiuwenswarm" / "resources" / ".env",
     ):
         if candidate.is_file():
             return candidate.resolve()
