@@ -147,6 +147,13 @@ def _core_accesses(
     *,
     send_paths: Sequence[str],
 ) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
+    from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
+        current_native_path_access,
+    )
+
+    native = current_native_path_access(capability.tool_name, args)
+    if native is not None:
+        return ((native.path,), (), True) if native.action == "read" else ((), (native.path,), True)
     if capability.tool_name == "send_file_to_user":
         paths = tuple(dict.fromkeys(str(path) for path in send_paths if str(path)))
         return paths, (), bool(paths)

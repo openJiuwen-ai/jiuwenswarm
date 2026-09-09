@@ -12,13 +12,15 @@ import {
   AlertTriangle,
   CircleStop,
   Loader2,
+  Maximize2,
+  Minimize2,
   Minus,
   Plus,
   X,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
-import { useMaxWidth } from '../../hooks';
+import { useFullscreenPanel } from '../../hooks';
 import {
   COMPONENT_CENTER_ATTRACTION_STRENGTH,
   computeConnectedComponents,
@@ -726,7 +728,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   ref,
 ) {
   const { t } = useTranslation();
-  const panelRef = useRef<HTMLDivElement | null>(null);
+  const { ref: panelRef, isFullscreen: isGraphFullscreen, toggle: toggleGraphFullscreen } = useFullscreenPanel<HTMLDivElement>();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const graphRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
   const visibleRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
@@ -756,7 +758,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [detailDrawerBounds, setDetailDrawerBounds] = useState({ top: 0, right: 0, height: 0 });
-  const isCompactDetail = useMaxWidth('graph');
+  const isCompactDetail = !isGraphFullscreen;
   const [query, setQuery] = useState('');
   const [minConfidence, setMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE);
   const [loading, setLoading] = useState(false);
@@ -1643,7 +1645,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   }, [onReadingChange]);
 
   return (
-    <div ref={panelRef} data-testid="skill-graph-panel" className="skill-graph-panel">
+    <div ref={panelRef} data-testid="skill-graph-panel" className={`skill-graph-panel${isGraphFullscreen ? ' skill-graph-panel--fullscreen' : ''}`}>
       <aside data-testid="skill-graph-panel-sidebar" className="skill-graph-panel__sidebar">
         <div data-testid="skill-graph-panel-stats" className="skill-graph-panel__stats skill-graph-panel__stats--compact">
           <span data-testid="skill-graph-panel-stats-skill-count"><strong>{visibleSkillNodes.length}</strong>{t('skills.graph.stats.skillsSuffix')}</span>
@@ -1819,6 +1821,16 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
             data-testid="skill-graph-panel-zoom-in"
           >
             <Plus size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={toggleGraphFullscreen}
+            title={isGraphFullscreen ? t('skills.graph.exitFullscreen') : t('skills.graph.fullscreen')}
+            aria-label={isGraphFullscreen ? t('skills.graph.exitFullscreen') : t('skills.graph.fullscreen')}
+            data-testid="skill-graph-panel-fullscreen"
+            className="skill-graph-panel__zoom-fullscreen"
+          >
+            {isGraphFullscreen ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
           </button>
         </div>
         <canvas

@@ -3,12 +3,17 @@
   --skill-graph-font-size-base: 14px;
   --skill-graph-font-size-xs: 12px;
   display: grid;
-  grid-template-columns: 400px minmax(0, 1fr) 400px;
+  grid-template-columns: 400px minmax(0, 1fr);
   gap: 14px;
   height: 100%;
   min-height: 0;
   position: relative;
+  background: var(--color-surface-panel);
   color: var(--color-text-primary);
+}
+
+.skill-graph-panel--fullscreen {
+  grid-template-columns: 400px minmax(0, 1fr) 400px;
 }
 
 .skill-graph-panel__sidebar,
@@ -456,6 +461,10 @@
   text-align: center;
 }
 
+.skill-graph-panel__zoom-controls button.skill-graph-panel__zoom-fullscreen {
+  border-left: 1px solid var(--color-border-default);
+}
+
 .skill-graph-panel__canvas-empty {
   position: absolute;
   left: 50%;
@@ -495,6 +504,29 @@
 
 .skill-graph-panel__detail {
   overflow-y: auto;
+  position: fixed;
+  z-index: 3;
+  width: 400px;
+  box-shadow: 0 12px 30px var(--color-border-default);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(calc(100% + 14px));
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.skill-graph-panel--fullscreen .skill-graph-panel__detail {
+  position: static;
+  z-index: auto;
+  width: auto;
+  box-shadow: none;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition: none;
+}
+
+.skill-graph-panel--fullscreen .skill-graph-panel__detail-close {
+  display: none;
 }
 
 .skill-graph-panel__detail-head {
@@ -510,7 +542,7 @@
 }
 
 .skill-graph-panel__detail-close {
-  display: none;
+  display: grid;
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
@@ -673,31 +705,16 @@
   font-size: var(--skill-graph-font-size-xs);
 }
 
-@media (max-width: 1535px) {
-  .skill-graph-panel {
-    grid-template-columns: 400px minmax(0, 1fr);
-  }
+.skill-graph-panel__detail.is-drawer-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
 
-  .skill-graph-panel__detail {
-    position: fixed;
-    z-index: 3;
-    width: 400px;
-    box-shadow: 0 12px 30px var(--color-border-default);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateX(calc(100% + 14px));
-    transition: transform 180ms ease, opacity 180ms ease;
-  }
-
-  .skill-graph-panel__detail.is-drawer-open {
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateX(0);
-  }
-
-  .skill-graph-panel__detail-close {
-    display: grid;
-  }
+.skill-graph-panel--fullscreen .skill-graph-panel__detail.is-drawer-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
 }
 
 @keyframes skill-graph-spin {

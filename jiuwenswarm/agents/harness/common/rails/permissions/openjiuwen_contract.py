@@ -18,15 +18,17 @@ class OpenJiuwenPermissionContract:
     before_tool_call_is_async: bool
     supports_update_config: bool
     supports_manual_approval_response: bool
+    supports_permission_engine_factory: bool
 
 
 def load_openjiuwen_permission_contract() -> OpenJiuwenPermissionContract:
     """Load and validate the openjiuwen permission rail contract."""
     try:
-        from openjiuwen.harness.rails.security.tool_security_rail import (
-            PermissionInterruptRail,
+        from openjiuwen.harness.rails.security import PermissionInterruptRail
+        from openjiuwen.harness.security import (
+            PermissionConfirmResponse,
+            build_permission_interrupt_rail,
         )
-        from openjiuwen.harness.security.models import PermissionConfirmResponse
     except ImportError as exc:
         missing = exc.name or str(exc)
         raise RuntimeError(f"missing openjiuwen permission module: {missing}") from exc
@@ -42,13 +44,14 @@ def load_openjiuwen_permission_contract() -> OpenJiuwenPermissionContract:
         before_tool_call_is_async=before_tool_call_is_async,
         supports_update_config=hasattr(PermissionInterruptRail, "update_config"),
         supports_manual_approval_response=True,
+        supports_permission_engine_factory=callable(build_permission_interrupt_rail),
     )
 
 
 def build_denied_permission_response(reason: str) -> Any:
     """Build the canonical denied permission response for openjiuwen rails."""
     try:
-        from openjiuwen.harness.security.models import PermissionConfirmResponse
+        from openjiuwen.harness.security import PermissionConfirmResponse
     except ImportError as exc:
         missing = exc.name or str(exc)
         raise RuntimeError(f"missing openjiuwen permission module: {missing}") from exc
@@ -63,7 +66,7 @@ def build_denied_permission_response(reason: str) -> Any:
 def build_rejected_permission_response(reason: str) -> Any:
     """Build the canonical user-rejected permission response."""
     try:
-        from openjiuwen.harness.security.models import PermissionConfirmResponse
+        from openjiuwen.harness.security import PermissionConfirmResponse
     except ImportError as exc:
         missing = exc.name or str(exc)
         raise RuntimeError(f"missing openjiuwen permission module: {missing}") from exc

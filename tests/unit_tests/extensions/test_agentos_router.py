@@ -1186,6 +1186,156 @@ async def test_delayed_cleanup_cancelled_on_reconnect() -> None:
     await client.shutdown()
 
 
+def _channel_event(
+    user_id: str,
+    event_type: str,
+    channel_type: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        user_id=user_id,
+        event_type=event_type,
+        channel_type=channel_type,
+    )
+
+
+async def _await_warmup(client: AgentOSRouterClient, user_id: str) -> None:
+    task = client._warmup_tasks.get(user_id)
+    assert task is not None, f"warmup not scheduled for {user_id}"
+    await task
+
+
+@pytest.mark.asyncio
+async def test_web_connect_warms_builtin_sandbox_and_ws() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    await _await_warmup(client, "u1")
+
+    assert yuanrong.create_calls == 1
+    assert yuanrong.ws_connect_uris == [
+        "ws://yuanrong.test:8888/serverless/v1/ws"
+        "?instance=sbx-1&tenant_id=default&port=18092"
+    ]
+    runtime = await agent_manager.get_agent("u1", "jiuwenswarm")
+    assert runtime is not None
+    assert runtime.info.sandbox_id == "sbx-1"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tui_connect_warms_builtin_sandbox() -> None:
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "tui"))
+    await _await_warmup(client, "u1")
+
+    assert yuanrong.create_calls == 1
+    assert yuanrong.ws_connect_uris
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ssh_connect_does_not_warmup() -> None:
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "ssh"))
+
+    assert yuanrong.create_calls == 0
+    assert client._warmup_tasks == {}
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_connect_warmup_coalesces_inflight_for_same_user() -> None:
+    class SlowYuanRongClient(FakeYuanRongClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate = asyncio.Event()
+
+        async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
+            await self.gate.wait()
+            return await super().create_sandbox(**kwargs)
+
+    yuanrong = SlowYuanRongClient()
+    client = _router_client(yuanrong)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    first = client._warmup_tasks.get("u1")
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    second = client._warmup_tasks.get("u1")
+    assert first is not None and first is second
+
+    yuanrong.gate.set()
+    await first
+    assert yuanrong.create_calls == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_connect_warmup_disabled_skips_create() -> None:
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong, connect_warmup_enabled=False)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+
+    assert yuanrong.create_calls == 0
+    assert client._warmup_tasks == {}
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_connect_warmup_skips_when_session_id_in_key_fields() -> None:
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(
+        yuanrong,
+        agent_manager=AgentManager(
+            key_fields=("user_id", "agent_type", "session_id")
+        ),
+    )
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+
+    assert yuanrong.create_calls == 0
+    assert client._warmup_tasks == {}
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_connect_warmup_failure_does_not_raise() -> None:
+    class FailingYuanRongClient(FakeYuanRongClient):
+        async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
+            raise RuntimeError("create failed")
+
+    yuanrong = FailingYuanRongClient()
+    client = _router_client(yuanrong)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "tui"))
+    await _await_warmup(client, "u1")
+
+    assert yuanrong.create_calls == 0
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_chat_after_connect_warmup_reuses_sandbox() -> None:
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong)
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    await _await_warmup(client, "u1")
+    response = await client.send_request(_envelope())
+
+    assert response.ok
+    assert yuanrong.create_calls == 1
+    assert yuanrong.send_calls == 1
+    assert len(yuanrong.ws_connect_uris) == 1
+    await client.shutdown()
+
+
 def test_load_router_config_disconnect_cleanup_knobs(monkeypatch) -> None:
     base_agent_client = {
         "type": "agentos_router",
@@ -1229,6 +1379,37 @@ def test_load_router_config_disconnect_cleanup_knobs(monkeypatch) -> None:
         ).disconnect_cleanup_timeout_seconds
         == 0.0
     )
+
+
+def test_load_router_config_connect_warmup_knobs() -> None:
+    base_agent_client = {
+        "type": "agentos_router",
+        "frontend_endpoint": "http://yuanrong.test",
+        "function_version_urn": "urn:test",
+    }
+
+    defaults = load_router_config({"gateway": {"agent_client": base_agent_client}})
+    assert defaults.connect_warmup_enabled is True
+
+    disabled = load_router_config(
+        {
+            "gateway": {
+                "agent_client": base_agent_client,
+                "agentos": {"connect_warmup_enabled": False},
+            }
+        }
+    )
+    assert disabled.connect_warmup_enabled is False
+
+    disabled_str = load_router_config(
+        {
+            "gateway": {
+                "agent_client": base_agent_client,
+                "agentos": {"connect_warmup_enabled": "0"},
+            }
+        }
+    )
+    assert disabled_str.connect_warmup_enabled is False
 
 
 def test_agentos_selected_by_agent_client_type() -> None:

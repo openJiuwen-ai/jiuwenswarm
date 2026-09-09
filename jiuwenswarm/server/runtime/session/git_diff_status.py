@@ -149,6 +149,10 @@ class DiffSummary:
     stats: DiffStats = field(default_factory=DiffStats)
     files: dict[str, DiffFileEntry] = field(default_factory=dict)
     kind: str = "working_tree"
+    # 实际变更文件数超过预览上限时为 True;``files`` 仅包含前 ``files_limit`` 个
+    # 文件(项目目录内文件优先),``stats.files_changed`` 仍是实际总数。
+    files_truncated: bool = False
+    files_limit: int = 0
 
     def to_dict(self, *, include_hunks: bool = True) -> dict[str, Any]:
         return {
@@ -159,6 +163,8 @@ class DiffSummary:
                 k: v.to_dict(include_hunks=include_hunks)
                 for k, v in self.files.items()
             },
+            "files_truncated": self.files_truncated,
+            "files_limit": self.files_limit,
         }
 
 
@@ -209,6 +215,9 @@ class DiffRepoInfo:
     branch: str | None = None
     head: str | None = None
     transient: bool = False
+    # 仓库根是项目目录的严格祖先(项目目录位于外层仓库之内)时为 True,
+    # 前端据此提示"使用的 git 目录是当前项目目录的父目录"。
+    repo_is_parent_of_project: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -217,6 +226,7 @@ class DiffRepoInfo:
             "branch": self.branch,
             "head": self.head,
             "transient": self.transient,
+            "repo_is_parent_of_project": self.repo_is_parent_of_project,
         }
 
 
@@ -242,6 +252,22 @@ class ProjectGitDiffStatus:
             "last_turn": self.last_turn.to_dict(include_hunks=include_hunks) if self.last_turn else None,
             "generated_at": self.generated_at,
         }
+
+
+def _repo_is_parent_of_project(repo_root: str | None, project_dir: str | None) -> bool:
+    """仓库根是否为项目目录的严格祖先(项目目录位于外层仓库之内)。
+
+    探测用 ``git rev-parse --show-toplevel`` 从项目目录向上找最近的仓库,
+    项目目录是外层仓库(如家目录预置仓库)的子目录时会"继承"外层仓库根。
+    """
+    if not repo_root or not project_dir:
+        return False
+    try:
+        root = Path(repo_root).resolve()
+        project = Path(project_dir).resolve()
+    except OSError:
+        return False
+    return root != project and root in project.parents
 
 
 def _to_relative_path(file_path: str, repo_root: str | None) -> str:
@@ -519,6 +545,8 @@ def _convert_current_diff(
         is_dirty=stats.files_changed > 0 or has_untracked or repo_is_dirty,
         stats=stats,
         files=files,
+        files_truncated=bool(raw_diff.get("files_truncated", False)),
+        files_limit=int(raw_diff.get("files_limit", 0) or 0),
     )
 
 
@@ -742,6 +770,9 @@ class DiffStatusService:
                 False
                 if no_git_fallback
                 else bool(getattr(repo_status, "transient", False))
+            ),
+            repo_is_parent_of_project=_repo_is_parent_of_project(
+                repo_root, str(project_dir) or None
             ),
         )
 
@@ -1008,6 +1039,8 @@ def build_summary_entry(current: dict[str, Any] | None) -> dict[str, Any] | None
         "is_dirty": current.get("is_dirty", False),
         "stats": current.get("stats", {}),
         "files": {},
+        "files_truncated": bool(current.get("files_truncated", False)),
+        "files_limit": int(current.get("files_limit", 0) or 0),
     }
 
 

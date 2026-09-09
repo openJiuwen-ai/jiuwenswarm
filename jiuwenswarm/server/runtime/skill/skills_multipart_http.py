@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
-"""``/file-api/skills/import`` 与 ``/file-api/skills/create-from-knowledge`` multipart 处理."""
+"""``/file-api/skills/*`` multipart 上传处理."""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ import email.parser
 import email.policy
 import logging
 import os
+import shutil
 import tempfile
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -20,6 +21,7 @@ from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
+    ERROR_SKILL_UNSAFE_PATH,
     SkillManager,
     SkillRpcError,
 )
@@ -85,6 +87,43 @@ def parse_multipart_form(content_type: str, body: bytes) -> dict[str, Any]:
         else:
             fields[name] = payload.decode("utf-8", errors="replace")
     return fields
+
+
+def handle_skills_upload_temp_http(
+    *,
+    content_type: str,
+    body: bytes,
+) -> tuple[int, dict[str, Any]]:
+    """保存上传文件，返回后续 skills.* WebSocket RPC 使用的本地路径."""
+    try:
+        fields = parse_multipart_form(content_type, body)
+        file_field = fields.get("file")
+        if not isinstance(file_field, dict) or not isinstance(file_field.get("content"), (bytes, bytearray)):
+            raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少 file 字段")
+        filename = file_field.get("filename")
+        if not isinstance(filename, str):
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
+        if (
+            filename in {"", ".", ".."}
+            or any(char in filename for char in '/\\:\x00')
+            or PureWindowsPath(filename).is_reserved()
+        ):
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
+
+        upload_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_upload_"))
+        dest = upload_dir / filename
+        try:
+            dest.write_bytes(bytes(file_field["content"]))
+        except (OSError, ValueError, TypeError):
+            shutil.rmtree(upload_dir)
+            raise
+        # 文件须保留到后续 RPC，包括同名技能覆盖确认后的再次导入。
+        return 200, {"path": str(dest)}
+    except SkillRpcError as exc:
+        return skill_http_error_status(exc.code), skill_http_error_body(exc.code, exc.message)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        logger.exception("[skills_multipart_http] temporary upload failed: %s", exc)
+        return 500, skill_http_error_body(ERROR_SKILL_INVALID_PACKAGE, str(exc))
 
 
 def _parse_overwrite(raw: Any) -> bool:

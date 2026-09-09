@@ -430,7 +430,7 @@ body.workspace-resize-active iframe {
     align-items: flex-start;
     align-content: start;
     gap: 16px;
-    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   }
 
   /* 共享页面卡片（skill / agent / connector 各内容页卡片统一的宽度约束），
@@ -445,17 +445,78 @@ body.workspace-resize-active iframe {
     }
   }
 
+  /* 页面通栏容器：flex 列，自身不限宽也不加横向 padding——
+     滚动条由内层滚动列渲染，始终贴 viewport 最右缘 */
   .page-content {
     display: flex;
     flex: 1 1 0%;
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
-    max-width: 1400px;
-    margin-left: max(48px, calc((100% - 1400px) / 2));
-    margin-right: max(48px, calc((100% - 1400px) / 2));
     background: var(--color-surface-card);
     padding-top: 64px;
+    padding-bottom: 24px;
+  }
+
+  /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
+     与滚动列内层保持同一条 max 1400px 内容线（窄屏两侧至少留 48px） */
+  .page-shell {
+    width: min(1400px, calc(100% - 96px));
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  /* 滚动列（技能/专家/扩展的列表）：通栏，滚动条贴 viewport 最右缘。
+     scrollbar-gutter: stable 永久预留 8px 滚动条槽位（全局 ::-webkit-scrollbar 宽 8px），
+     both-edges 两侧对称预留，内容几何居中且滚动条出现/消失都不挤压布局 */
+  .page-scroll {
+    scrollbar-gutter: stable;
+    scrollbar-gutter: stable both-edges;
+  }
+
+  /* 滚动列/详情滚动体的内层限宽：滚动容器两侧已各让出 8px 滚动条槽，
+     故在 100% 基础上扣 96-16=80px，与 .page-shell（100%-96px）内容线严格对齐 */
+  .page-scroll > *,
+  .detail-body > * {
+    width: min(1400px, calc(100% - 80px));
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  /* 详情页统一滚动容器（agent/skill/connector detail）：同 .page-scroll 通栏滚动，
+     子元素通过 > * 规则限宽 1400px 并居中 */
+  .detail-body {
+    scrollbar-gutter: stable;
+    scrollbar-gutter: stable both-edges;
+  }
+
+  /* 统一返回按钮（agent/skill/connector detail）。
+     限宽 1400px 并居中，与详情页内容区域对齐；flex-shrink:0 保证不被压缩。 */
+  .detail-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-primary);
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 22px;
+    width: min(1400px, calc(100% - 96px));
+    margin-right: auto;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .detail-back:hover {
+    color: var(--color-text-strong);
+  }
+
+  .detail-back svg {
+    width: 12px;
+    height: 12px;
   }
 
   .page-content .chat-picker-panel__tabs {
@@ -701,15 +762,6 @@ body.workspace-resize-active iframe {
 
   .chat-bubble-wrapper--with-files {
     width: 100%;
-  }
-
-  .message-row [data-testid="chat-panel-message-meta"] {
-    opacity: 0;
-    transition: opacity 150ms ease;
-  }
-
-  .message-row:hover [data-testid="chat-panel-message-meta"] {
-    opacity: 1;
   }
 
   /* AI disclaimer — footer note pinned below the composer */
@@ -1135,21 +1187,21 @@ body.workspace-resize-active iframe {
     gap: 4px;
   }
 
-  /* ====== Team Timeline Messages（与单 agent assistant-row 同一套布局指标） ====== */
+  /* ====== Team Timeline Messages（头像+名字一行，正文另起一行） ====== */
   .team-member-message {
     width: min(100%, 920px);
     margin: 0 auto 12px;
     display: flex;
-    gap: 10px;
-    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+    align-items: stretch;
   }
 
   .team-member-message__header {
     display: flex;
     align-items: center;
+    gap: 8px;
     flex: 0 0 auto;
-    width: 32px;
-    margin-top: 2px;
   }
 
   .team-member-message__body {
@@ -1181,7 +1233,6 @@ body.workspace-resize-active iframe {
   }
 
   .team-member-message__plain {
-    max-width: min(100%, 720px);
     min-width: 0;
     overflow-x: auto;
     color: var(--color-text-primary);
@@ -1220,6 +1271,13 @@ body.workspace-resize-active iframe {
   .team-message-markdown--inline>p:first-child {
     display: inline;
     margin: 0;
+  }
+
+  /* ====== Member detail body (team-area / subagent shared) ====== */
+  .member-detail-body>* {
+    max-width: max(720px, calc(100% - 640px));
+    margin-left: auto;
+    margin-right: auto;
   }
 
   /* ====== Team Event Group Cards ====== */
@@ -1715,21 +1773,6 @@ body.workspace-resize-active iframe {
     transition: opacity 0.28s ease, transform 0.28s ease;
   }
 
-  .completed-work-chip__badge {
-    flex-shrink: 0;
-    padding: 0;
-    margin-left: 2px;
-    border-radius: 0;
-    font-size: var(--font-size-2xs, 11px);
-    font-weight: 500;
-    line-height: inherit;
-  }
-
-  .completed-work-chip__badge.is-partial {
-    background: transparent;
-    color: var(--color-feedback-warning);
-  }
-
   .completed-work-chip .tool-tree-item__disclosure {
     opacity: 0.7;
     transition: transform 0.22s ease, opacity 0.18s ease;
@@ -2049,8 +2092,9 @@ body.workspace-resize-active iframe {
     font-weight: 500;
   }
 
+  /* 失败态与「已完成思考」同色，不再用红色强调 */
   .tool-tree__header-line-text.is-failed {
-    color: rgba(185, 28, 28, 0.78);
+    color: var(--tool-muted, var(--color-text-secondary));
   }
 
   .tool-tree-item__detail-pre.is-failed {
@@ -2342,11 +2386,6 @@ body.workspace-resize-active iframe {
 
 @media (min-width: 1440px) {
   :root {
-    --font-size-base: 15px;
-    --font-size-lg: 17px;
-    --font-size-sm: 14px;
-    --font-size-xs: 13px;
-    --font-size-2xs: 12px;
     --shell-nav-width: 248px;
     --tool-panel-width: var(--shell-nav-width);
     --statusbar-right-space: var(--tool-panel-width);
@@ -2355,11 +2394,6 @@ body.workspace-resize-active iframe {
 
 @media (min-width: 1920px) {
   :root {
-    --font-size-base: 16px;
-    --font-size-lg: 18px;
-    --font-size-sm: 15px;
-    --font-size-xs: 14px;
-    --font-size-2xs: 13px;
     --shell-nav-width: 272px;
     --tool-panel-width: var(--shell-nav-width);
     --statusbar-right-space: var(--tool-panel-width);

@@ -91,6 +91,112 @@ def test_closed_internal_actions_are_terminal_allows(
 @pytest.mark.parametrize(
     ("tool_name", "tool_args"),
     [
+        (
+            "subagent_spawn",
+            {
+                "agent_name": "general-purpose",
+                "task_description": "summarize the current task",
+            },
+        ),
+        ("subagent_wait", {"subagent_ids": ["sub-a", "sub-b"]}),
+        ("subagent_list", {}),
+        ("subagent_send_input", {"subagent_id": "sub-a", "query": "continue"}),
+        ("subagent_close", {"subagent_id": "sub-a"}),
+        ("subagent_resume", {"subagent_id": "sub-a"}),
+    ],
+)
+def test_subagent_runtime_controls_are_terminal_internal_allows(
+    tmp_path: Path,
+    tool_name: str,
+    tool_args: dict[str, object],
+) -> None:
+    decision = terminal_internal_route(
+        _facts(tool_name, tool_args, tmp_path),
+        subagent_runtime_control_verified=True,
+    )
+
+    assert decision is not None
+    assert decision.level == "allow"
+    assert decision.reason == "canonical_internal_action_allow"
+    assert decision.source == "internal"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_args"),
+    [
+        (
+            "subagent_spawn",
+            {
+                "agent_name": "general-purpose",
+                "task_description": (
+                    "inspect https://example.invalid/a and /workspace/a; then run rm -rf /tmp/a"
+                ),
+            },
+        ),
+        (
+            "subagent_send_input",
+            {
+                "subagent_id": "sub-a",
+                "query": "open https://example.invalid/b and run curl https://example.invalid/c",
+            },
+        ),
+    ],
+)
+def test_subagent_runtime_opaque_message_fields_do_not_trigger_uri_guard(
+    tmp_path: Path,
+    tool_name: str,
+    tool_args: dict[str, object],
+) -> None:
+    assert terminal_internal_route(
+        _facts(tool_name, tool_args, tmp_path),
+        subagent_runtime_control_verified=True,
+    ) is not None
+
+
+def test_subagent_runtime_non_message_uri_is_not_terminal_allow(tmp_path: Path) -> None:
+    facts = _facts(
+        "subagent_spawn",
+        {
+            "agent_name": "general-purpose",
+            "task_description": "summarize the current task",
+            "display_name": "https://example.invalid/not-a-message",
+        },
+        tmp_path,
+    )
+
+    assert terminal_internal_route(
+        facts,
+        subagent_runtime_control_verified=True,
+    ) is None
+
+
+def test_subagent_runtime_invalid_argument_object_is_not_terminal_allow(
+    tmp_path: Path,
+) -> None:
+    facts = build_tool_decision_facts(
+        "subagent_list",
+        {},
+        workspace_root=tmp_path,
+        original_args_were_valid_object=False,
+    )
+
+    assert terminal_internal_route(
+        facts,
+        subagent_runtime_control_verified=True,
+    ) is None
+
+
+def test_subagent_runtime_without_binding_proof_is_not_terminal_allow(
+    tmp_path: Path,
+) -> None:
+    facts = _facts("subagent_list", {}, tmp_path)
+
+    assert terminal_internal_route(facts) is None
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_args"),
+    [
         ("session_list", {"unexpected": True}),
         ("todo_insert", {"idx": 1}),
         ("browser_probe_cards", {"target": "ftp://files.example.invalid/archive"}),

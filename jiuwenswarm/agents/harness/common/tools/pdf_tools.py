@@ -140,21 +140,37 @@ def _read_pdf_sync(req: ReadPdfRequest) -> str:
             selected = list(range(1, total_pages + 1))
             out_of_range = []
 
-        truncated_pages = selected[_MAX_PAGES_PER_CALL:]
         selected = selected[:_MAX_PAGES_PER_CALL]
 
         header = [f"PDF: {path.name} | total pages: {total_pages} | reading pages: "
                   + (_format_page_list(selected) if selected else "none")]
+        # The header line above states the subset, but a passive fact is easy to
+        # summarise past: say plainly what is missing and how to get it. Pages go
+        # unread whenever the selection misses them, whether because `pages` named
+        # a subset or because the per-call page cap truncated it, so the disclosure
+        # keys off the pages actually missing rather than off `pages` being passed.
+        chosen = set(selected)
+        skipped = [p for p in range(1, total_pages + 1) if p not in chosen]
+        if skipped:
+            if total_pages <= _MAX_PAGES_PER_CALL:
+                remedy = "Omit `pages` to read the whole document in one call."
+            else:
+                # Above the cap no single call can cover the document, so pointing
+                # at the default read would send the model back here short again.
+                remedy = (
+                    f"At most {_MAX_PAGES_PER_CALL} pages are read per call, so no single "
+                    "call covers this document — call read_pdf again with `pages` starting "
+                    f"at {skipped[0]}."
+                )
+            header.append(
+                f"[Partial read: {len(skipped)} of {total_pages} pages were NOT read "
+                f"(pages {_format_page_list(skipped)}). {remedy} Any answer based on "
+                "this call must state which pages it covers.]"
+            )
         if out_of_range:
             header.append(
                 f"[Note: requested page(s) {_format_page_list(out_of_range)} exceed "
                 f"total page count {total_pages} and were skipped]"
-            )
-        if truncated_pages:
-            header.append(
-                f"[Note: at most {_MAX_PAGES_PER_CALL} pages per call; "
-                f"pages {_format_page_list(truncated_pages)} were not read — "
-                "call read_pdf again with a narrower `pages` range]"
             )
         blocks.append("\n".join(header))
 
@@ -178,13 +194,19 @@ def _read_pdf_sync(req: ReadPdfRequest) -> str:
                 if not truncated_here:
                     continue
                 unread = selected[idx + 1:]
-            note = f"[Truncated at max_chars={req.max_chars}"
+            note = (
+                f"[Truncated at max_chars={req.max_chars}: the rest of the document "
+                "was NOT read"
+            )
             if unread:
                 note += (
                     f"; unread pages: {_format_page_list(unread)} — "
                     "call read_pdf again with `pages` starting there"
                 )
-            note += "]"
+            note += (
+                ". Raise `max_chars` to read more in one call. Any answer based on "
+                "this call must state that the document was read only in part.]"
+            )
             blocks.append(note)
             break
 
@@ -219,10 +241,16 @@ def _format_page_list(pages: list[int] | tuple[int, ...]) -> str:
     description=(
         "Read the text content of a PDF file, optionally limited to specific pages. "
         "Use this tool when a PDF file path is available and its content is needed. "
-        "For large documents, first read page 1 to learn the structure and total "
-        "page count, then read subsequent chunks with the `pages` parameter. "
+        # Interpolated, not spelled out: the description is the only place the
+        # model learns these bounds, so a changed constant must not leave it
+        # stating the old one.
+        f"Omitting `pages` reads the whole document, up to max_chars and {_MAX_PAGES_PER_CALL} pages, "
+        "which is the right default — most documents fit in one call. Only when the return "
+        "reports that pages were left unread, continue with `pages` from the first "
+        "unread page until the document is covered. Any answer based on part of a "
+        "document must state which pages it used. "
         "Input: pdf_path (local file path), optional pages (e.g. 3, '1-5' or '1,3,8-10'), "
-        "optional max_chars (default 50000). Pages without a text layer are reported "
+        f"optional max_chars (default {DEFAULT_MAX_CHARS}). Pages without a text layer are reported "
         "as likely scanned images."
     ),
 )

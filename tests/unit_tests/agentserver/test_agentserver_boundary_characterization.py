@@ -1,12 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""AgentServer external behavior captured before the Runtime extraction.
-
-This module intentionally avoids a module-level ``jiuwenswarm.runtime`` import.
-Portable doubles cover both server shapes, while the extracted-runtime error
-case imports the real Runtime lazily, so the same file can still run against
-the pre-merge develop tree.
-"""
+"""AgentServer external behavior around the shared Runtime boundary."""
 
 from __future__ import annotations
 
@@ -21,6 +15,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime import SessionProvisionState
 from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketServer
 from jiuwenswarm.server.runtime.agent_adapter import (
     interface_deep as interface_deep_module,
@@ -198,6 +193,8 @@ class PortableRuntime:
         self.agent_manager = manager
         self.trace = trace
         self.create_calls: list[tuple[str, str | None]] = []
+        self.fork_inputs: list[Any] = []
+        self.fork_error: ValueError | None = None
 
     async def start(self) -> None:
         self.trace.append("runtime.start")
@@ -210,6 +207,38 @@ class PortableRuntime:
     ) -> str:
         self.create_calls.append((channel_id, session_id))
         return session_id or "runtime-created-session"
+
+    async def prepare_session_fork(self, provision_input: Any) -> Any:
+        self.trace.append("fork.prepare")
+        self.fork_inputs.append(provision_input)
+        if self.fork_error is not None:
+            raise self.fork_error
+        target_session_id = (
+            provision_input.target_session_id or "runtime-created-session"
+        )
+        return SimpleNamespace(
+            state=SessionProvisionState.PREPARED,
+            result=SimpleNamespace(
+                session_id=target_session_id,
+                source_session_id=provision_input.source_session_id,
+                title=provision_input.title,
+            )
+        )
+
+    async def commit_session_provision(
+        self,
+        prepared: Any,
+        *,
+        timing: Any,
+    ) -> Any:
+        del timing
+        self.trace.append("fork.commit")
+        prepared.state = SessionProvisionState.COMMITTED
+        return prepared.result
+
+    async def abort_session_provision(self, prepared: Any) -> None:
+        self.trace.append("fork.abort")
+        prepared.state = SessionProvisionState.ABORTED
 
     async def invoke(
         self,
@@ -460,33 +489,10 @@ async def test_session_switch_missing_id_keeps_bad_request_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_fork_preserves_business_order_and_complete_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness.common import session_ops_service
-
+async def test_session_fork_preserves_business_order_and_complete_result() -> None:
     trace: list[str] = []
     server, _, runtime = make_server(trace, agent=None)
     ws = RecordingWebSocket(trace)
-
-    def fork_session(**_kwargs: Any) -> dict[str, Any]:
-        trace.append("fork.filesystem")
-        return {
-            "source_session_id": "fork-source",
-            "target_session_id": "fork-target",
-            "title": "Forked session",
-            "created": True,
-        }
-
-    async def copy_session_state(**_kwargs: Any) -> None:
-        trace.append("fork.state")
-
-    monkeypatch.setattr(session_ops_service, "fork_session", fork_session)
-    monkeypatch.setattr(
-        session_ops_service,
-        "copy_session_state",
-        copy_session_state,
-    )
     request = AgentRequest(
         request_id="fork-success",
         channel_id="tui",
@@ -501,7 +507,7 @@ async def test_session_fork_preserves_business_order_and_complete_result(
 
     await server.handle_session_fork_for_test(ws, request, asyncio.Lock())
 
-    expected = ["fork.filesystem", "fork.state", "response.send"]
+    expected = ["fork.prepare", "fork.commit", "response.send"]
     if hasattr(server, "_execution_runtime"):
         expected.insert(0, "runtime.start")
     assert trace == expected
@@ -511,10 +517,9 @@ async def test_session_fork_preserves_business_order_and_complete_result(
     assert response.channel_id == "tui"
     assert response.ok is True
     assert response.payload == {
+        "session_id": "fork-target",
         "source_session_id": "fork-source",
-        "target_session_id": "fork-target",
         "title": "Forked session",
-        "created": True,
     }
     # session.fork historically does not echo request metadata.
     assert response.metadata is None
@@ -546,32 +551,15 @@ async def test_session_fork_preserves_business_order_and_complete_result(
     ],
 )
 async def test_session_fork_preserves_value_error_mapping(
-    monkeypatch: pytest.MonkeyPatch,
     params: dict[str, Any],
     fork_error: str | None,
     expected_error: str,
     expected_code: str,
 ) -> None:
-    from jiuwenswarm.agents.harness.common import session_ops_service
-
     trace: list[str] = []
-    server, _, _ = make_server(trace, agent=None)
+    server, _, runtime = make_server(trace, agent=None)
     ws = RecordingWebSocket(trace)
-
-    def fork_session(**_kwargs: Any) -> dict[str, Any]:
-        if fork_error is None:  # pragma: no cover - source validation runs first
-            raise AssertionError("fork_session must not run without a source")
-        raise ValueError(fork_error)
-
-    async def unexpected_state_copy(**_kwargs: Any) -> None:
-        raise AssertionError("failed fork must not copy checkpoint state")
-
-    monkeypatch.setattr(session_ops_service, "fork_session", fork_session)
-    monkeypatch.setattr(
-        session_ops_service,
-        "copy_session_state",
-        unexpected_state_copy,
-    )
+    runtime.fork_error = ValueError(fork_error) if fork_error is not None else None
     request = AgentRequest(
         request_id=f"fork-error-{expected_code.lower()}",
         channel_id="tui",

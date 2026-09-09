@@ -202,11 +202,8 @@ def delete_env(
     async def evict_plan_session(
         *,
         session_id: str,
-        agent_manager: object,
-        channel_id: str,
     ) -> bool:
-        assert agent_manager is manager
-        state.hit("kvc.evict", session_id, channel_id)
+        state.hit("kvc.evict", session_id)
         return state.evict_result
 
     def restore_session_after_failed_delete(session_id: str) -> None:
@@ -427,7 +424,7 @@ async def test_non_team_delete_preserves_order_and_uses_metadata_channel(
             "session_deleted",
         ),
         ("cleanup", "metadata-channel", session_id, False),
-        ("kvc.evict", session_id, "metadata-channel"),
+        ("kvc.evict", session_id),
         ("runner.release", session_id),
         ("filesystem.remove", session_dir),
         ("trajectory.commit", session_id),

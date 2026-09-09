@@ -50,6 +50,7 @@ export default {
           DEFAULT: color('--color-text-primary'),
           strong: color('--color-text-strong'),
           muted: color('--color-text-secondary'),
+          meta: color('--color-text-meta'),
           inverse: color('--color-text-inverse'),
           link: color('--color-text-link'),
           divider: color('--color-text-divider'),

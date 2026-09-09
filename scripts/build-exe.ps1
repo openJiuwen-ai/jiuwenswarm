@@ -236,6 +236,17 @@ if ($VerifyProcess.ExitCode -ne 0) {
 if (Test-Truthy $BundleNode) {
     Write-Host "`n[3.5/4] Bundling Node.js runtime..." -ForegroundColor Yellow
     Copy-NodeRuntime -SourceDir $NodeSource -DistDir $FrozenDir
+
+    $PlaywrightVerifier = Join-Path $ProjectRoot "scripts\verify_playwright_mcp_bundle.py"
+    $PlaywrightVerifyProcess = Start-Process `
+        -FilePath $FrozenExe `
+        -ArgumentList @($PlaywrightVerifier) `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+    if ($PlaywrightVerifyProcess.ExitCode -ne 0) {
+        throw "Frozen Playwright MCP bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    }
 } else {
     Write-Host "`n[3.5/4] Skipping bundled Node.js runtime (BUNDLE_NODE=$BundleNode)" -ForegroundColor Yellow
 }

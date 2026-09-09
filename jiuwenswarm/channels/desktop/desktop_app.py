@@ -21,7 +21,7 @@ import uuid
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 from logging.handlers import RotatingFileHandler
 
@@ -44,7 +44,13 @@ from jiuwenswarm.common.startup_diagnostics import (
     select_blocking_doctor_check,
     select_startup_failure,
 )
-from jiuwenswarm.common.utils import get_user_workspace_dir, get_logs_dir, wait_for_pid_exit, wait_for_tcp_port
+from jiuwenswarm.common.utils import (
+    get_user_workspace_dir,
+    get_logs_dir,
+    prepare_runtime_workspace,
+    wait_for_pid_exit,
+    wait_for_tcp_port,
+)
 from jiuwenswarm.instance_manager.config import (
     BASE_PORTS,
     PORT_TYPES,
@@ -59,6 +65,8 @@ FRONTEND_PORT = int(BASE_PORTS["frontend"])
 DESKTOP_PORT_SCAN_RANGE = 10
 APP_CHILD_FLAG = "--desktop-run-app"
 WEB_CHILD_FLAG = "--desktop-run-web"
+AGENT_CHILD_FLAG = "--desktop-run-agent"
+GATEWAY_CHILD_FLAG = "--desktop-run-gateway"
 UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
 STARTUP_TIMEOUT_SECONDS = 45.0
@@ -359,13 +367,21 @@ def _creationflags() -> int:
 
 def _build_child_command(name: str, extra_args: list[str] | None = None) -> list[str]:
     if getattr(sys, "frozen", False):
-        if name == "app":
-            flag = APP_CHILD_FLAG
-        elif name == "web":
+        if name == "web":
             flag = WEB_CHILD_FLAG
+        elif name == "agent":
+            flag = AGENT_CHILD_FLAG
+        elif name == "gateway":
+            flag = GATEWAY_CHILD_FLAG
+        elif name == "app":
+            flag = APP_CHILD_FLAG
         else:
             flag = UPDATE_HELPER_FLAG
         base = [sys.executable, flag]
+    elif name == "agent":
+        base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
+    elif name == "gateway":
+        base = [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -384,6 +400,15 @@ def _build_child_env(
 ) -> dict[str, str]:
     env = os.environ.copy()
     env[DESKTOP_ENV_FLAG] = "1"
+    env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
+    # Desktop now starts Gateway directly, so preserve the original launcher
+    # command here instead of relying on jiuwenswarm.app to add it. The
+    # updater inherits this value from Gateway when it constructs a restart.
+    if "JIUWENSWARM_START_CMD" not in env:
+        try:
+            env["JIUWENSWARM_START_CMD"] = json.dumps(sys.argv[:])
+        except (TypeError, ValueError, OverflowError):
+            env["JIUWENSWARM_START_CMD"] = json.dumps([str(arg) for arg in sys.argv[:]])
     if startup_diagnostics_dir is not None:
         env[STARTUP_DIAGNOSTICS_DIR_ENV] = str(startup_diagnostics_dir)
     # Inject the full session port group so app → agent/gateway and web agree.
@@ -404,9 +429,10 @@ def _build_child_env(
             BACKEND_HOST,
             ports["web"],
         )
-    elif name == "app":
+    elif name in {"agent", "gateway", "app"}:
         logger.info(
-            "[desktop] app child ports: %s",
+            "[desktop] %s child ports: %s",
+            name,
             _format_ports_for_log(ports),
         )
     return env
@@ -436,11 +462,15 @@ def _start_process(
 # frozen exe 冷启动时, C 扩展 (.pyd) 与大量 .py 首次从 _MEIPASS 读盘很慢.
 # 桌面主进程在拉起 agent/gateway/web 子进程前, 起后台线程预读关键包入 OS page
 # cache, 子进程 import 时命中内存而非闪存/磁盘, 显著降低冷启动 import 耗时.
-# 只读首页 (4096B) 触发预读, 零执行零副作用; 非冻结模式 (dev) 无 _MEIPASS 直接跳过.
+# 只读文件头部预读以触发 OS 顺序预取, 零执行零副作用; 非冻结模式 (dev) 无
+# _MEIPASS 直接跳过.
+# web 子进程 import 的大头是 jiuwenswarm 自身, 放在最前优先预热; openjiuwen
+# 与 C 扩展库主要服务 app 子进程。预读块加大到 64KB 以覆盖归档多页。
 _WARMUP_PACKAGES = (
-    "openjiuwen", "faiss", "pymilvus", "google", "a2ui",
+    "jiuwenswarm", "openjiuwen", "faiss", "pymilvus", "google", "a2ui",
     "sqlite_vec", "tree_sitter", "tiktoken", "tiktoken_ext",
 )
+_WARMUP_READ_BYTES = 64 * 1024
 
 
 def _warmup_page_cache_background() -> None:
@@ -458,7 +488,7 @@ def _warmup_page_cache_background() -> None:
                     p = os.path.join(root, f)
                     try:
                         with open(p, "rb") as fh:
-                            _ = fh.read(4096)
+                            _ = fh.read(_WARMUP_READ_BYTES)
                     except OSError:
                         pass
         except Exception:  # noqa: BLE001
@@ -490,7 +520,7 @@ def _wait_for_tcp(
                 return
         except OSError as exc:
             last_error = exc
-            time.sleep(0.35)
+            time.sleep(0.1)
 
     raise RuntimeError(f"Timed out waiting for tcp://{host}:{port}: {last_error}")
 
@@ -526,7 +556,7 @@ def _wait_for_http(
             last_error = exc
         finally:
             conn.close()
-        time.sleep(0.35)
+        time.sleep(0.1)
 
     raise RuntimeError(
         f"Timed out waiting for http://{host}:{port}{path}: {last_error}"
@@ -757,6 +787,10 @@ class DesktopRuntime:
         self._is_shutting_down = False
         self._desktop_dnd_bound = False
         self._startup_cancelled = threading.Event()
+        # 先行导航(web 静态页就绪即跳转前端)后, 若后端随后启动失败, 需把
+        # 失败诊断页重新载入窗口; 此 Event 标记是否已先行导航。
+        self._startup_navigated = threading.Event()
+        self._startup_failure_surface_presented = False
         self._startup_status_lock = threading.Lock()
         self._startup_status: dict[str, str] = {
             "state": "starting",
@@ -819,6 +853,10 @@ class DesktopRuntime:
             return dict(self._startup_status)
 
     def _set_startup_status(self, state: str, **updates: str) -> None:
+        # 启动状态机: starting -> web_ready(静态页就绪、先行导航、非终态)
+        #   -> ready(全部就绪、终态); starting/web_ready/diagnosing -> failed(终态)。
+        # web_ready 非终态, 故 app 在先行导航后失败时, failed 仍可覆盖 web_ready,
+        # 诊断/doctor 页可达(不会被误置的终态幂等吞掉)。
         with self._startup_status_lock:
             current = self._startup_status["state"]
             if current in {"ready", "failed"}:
@@ -829,6 +867,24 @@ class DesktopRuntime:
     def _raise_if_startup_cancelled(self) -> None:
         if self._startup_cancelled.is_set():
             raise RuntimeError("desktop startup cancelled")
+
+    def _present_startup_failure_surface_if_navigated(self) -> None:
+        # 先行导航(web_ready)后, loading 页已被前端 SPA 替换, 失去 failed/
+        # diagnosing 的展示载体。已先行导航时重新载入 loading 页 HTML: 其轮询
+        # get_startup_status 会读到当前 diagnosing/failed 并渲染诊断页。幂等,
+        # 仅首次生效, 避免 doctor->failed 期间重复载入。
+        if self._startup_failure_surface_presented:
+            return
+        if not self._startup_navigated.is_set():
+            return
+        if self.window is None or not hasattr(self.window, "load_html"):
+            return
+        try:
+            self.window.load_html(self._build_loading_html())
+        except Exception:  # noqa: BLE001
+            logger.warning("[desktop] failed to present startup failure surface")
+            return
+        self._startup_failure_surface_presented = True
 
     def _start_managed_process(
         self, name: str, command: list[str]
@@ -849,7 +905,9 @@ class DesktopRuntime:
             raise RuntimeError("desktop startup cancelled")
         return process
 
-    def start_services(self) -> None:
+    def start_services(
+        self, on_web_ready: Callable[[], None] | None = None
+    ) -> None:
         # Per-workspace Gateway preflight: refuse to start a second full stack
         # over the same workspace (two CronSchedulerService instances over one
         # cron_jobs.json => duplicate cron executions). Briefly wait so an
@@ -858,18 +916,9 @@ class DesktopRuntime:
         self._preflight_gateway_singleton()
         # 先起后台预读, 与后续子进程拉起/端口等待并行, 不阻塞 start_services.
         _warmup_page_cache_background()
-        app_process = self._start_managed_process(
-            "app", _build_child_command("app")
-        )
-        _ensure_process_running("app", app_process)
-        _wait_for_tcp(
-            BACKEND_HOST,
-            self.backend_port,
-            STARTUP_TIMEOUT_SECONDS,
-            process=app_process,
-        )
-        self._raise_if_startup_cancelled()
-
+        # web 只需打包内的静态资源；先拉起它，使其冻结 EXE 导入与 Desktop
+        # 工作区准备重叠。Gateway 未就绪前 web 自身会保持代理重试，前端则按
+        # 既有逻辑重连，故无需等待后端再启动 web。
         web_command = _build_child_command(
             "web",
             [
@@ -883,14 +932,162 @@ class DesktopRuntime:
         )
         web_process = self._start_managed_process("web", web_command)
         _ensure_process_running("web", web_process)
-        _wait_for_http(
-            self.frontend_host,
-            self.frontend_port,
-            "/",
-            STARTUP_TIMEOUT_SECONDS,
-            process=web_process,
-        )
+
+        agent_process: subprocess.Popen[bytes] | None = None
+        gateway_process: subprocess.Popen[bytes] | None = None
+        try:
+            # 在 Desktop 进程中只做一次工作区迁移/补齐，随后直接拉起
+            # AgentServer 与 Gateway。跳过 app supervisor 可省去一个冻结 EXE。
+            prepare_runtime_workspace()
+            agent_process = self._start_managed_process(
+                "agent", _build_child_command("agent")
+            )
+            _ensure_process_running("agent", agent_process)
+            gateway_process = self._start_managed_process(
+                "gateway", _build_child_command("gateway")
+            )
+            _ensure_process_running("gateway", gateway_process)
+        except Exception:
+            _terminate_process_tree(web_process)
+            if agent_process is not None:
+                _terminate_process_tree(agent_process)
+            if gateway_process is not None:
+                _terminate_process_tree(gateway_process)
+            raise
+
+        # The guarded startup above either raises or assigns both processes.
+        # Keep this check explicit: ``assert`` statements are removed under
+        # optimized Python execution, while the readiness checks below require
+        # concrete process handles.
+        if agent_process is None or gateway_process is None:
+            raise RuntimeError("Managed agent and gateway processes failed to start")
+
+        # 两个就绪等待并行执行；任一侧失败则立即终止两个子进程，使另一
+        # 等待线程通过 process.poll() 尽快退出，不能再额外等待完整超时。
+        errors: list[Exception] = []
+        web_ready_ok = False
+        errors_lock = threading.Lock()
+
+        def _wait_agent_ready() -> None:
+            try:
+                _wait_for_tcp(
+                    BACKEND_HOST,
+                    self.ports["agent_server"],
+                    STARTUP_TIMEOUT_SECONDS,
+                    process=agent_process,
+                )
+            except Exception as exc:  # noqa: BLE001 收集到主线程统一处理
+                with errors_lock:
+                    errors.append(exc)
+
+        def _wait_gateway_ready() -> None:
+            try:
+                _wait_for_tcp(
+                    BACKEND_HOST,
+                    self.backend_port,
+                    STARTUP_TIMEOUT_SECONDS,
+                    process=gateway_process,
+                )
+            except Exception as exc:  # noqa: BLE001 收集到主线程统一处理
+                with errors_lock:
+                    errors.append(exc)
+
+        def _wait_web_ready() -> None:
+            nonlocal web_ready_ok
+            try:
+                _wait_for_http(
+                    self.frontend_host,
+                    self.frontend_port,
+                    "/",
+                    STARTUP_TIMEOUT_SECONDS,
+                    process=web_process,
+                )
+                # 静态服务已立即可用: 记下成功, 供主流程在 app 就绪前先行导航。
+                with errors_lock:
+                    web_ready_ok = True
+            except Exception as exc:  # noqa: BLE001 收集到主线程统一处理
+                with errors_lock:
+                    errors.append(exc)
+
+        waiters = [
+            threading.Thread(target=_wait_agent_ready, name="wait-agent-ready"),
+            threading.Thread(target=_wait_gateway_ready, name="wait-gateway-ready"),
+            threading.Thread(target=_wait_web_ready, name="wait-web-ready"),
+        ]
+        for waiter in waiters:
+            waiter.start()
+
+        web_ready_notified = False
+        terminated_after_error = False
+        while any(waiter.is_alive() for waiter in waiters):
+            for waiter in waiters:
+                waiter.join(timeout=0.1)
+            with errors_lock:
+                has_errors = bool(errors)
+                web_ok = web_ready_ok
+            # web HTTP ready 即触发导航(仅一次), 不必等 app(AgentServer+Gateway)
+            # 就绪; 界面骨架先行展示, API/WS 由前端重连逻辑在 gateway 就绪后补齐。
+            if web_ok and on_web_ready is not None and not web_ready_notified:
+                on_web_ready()
+                web_ready_notified = True
+            if has_errors and not terminated_after_error:
+                _terminate_process_tree(agent_process)
+                _terminate_process_tree(gateway_process)
+                _terminate_process_tree(web_process)
+                terminated_after_error = True
+
+        with errors_lock:
+            startup_errors = list(errors)
+
+        # 等待期间窗口可能已关闭 (shutdown 置位 _startup_cancelled 并终结子进程),
+        # 取消优先级高于等待错误, 与串行版的取消语义保持一致。
         self._raise_if_startup_cancelled()
+
+        if startup_errors:
+            if not terminated_after_error:
+                _terminate_process_tree(agent_process)
+                _terminate_process_tree(gateway_process)
+                _terminate_process_tree(web_process)
+            for exc in startup_errors[1:]:
+                logger.error("[desktop] startup waiter also failed: %r", exc)
+            raise startup_errors[0]
+
+        # Desktop now owns AgentServer and Gateway directly (rather than via
+        # jiuwenswarm.app). Preserve the supervisor's paired-lifecycle rule:
+        # if either backend exits after startup, promptly stop its peer so it
+        # cannot keep ports, cron jobs, or the gateway singleton lock alive.
+        def _watch_backend_pair() -> None:
+            while True:
+                with self._lock:
+                    if self._is_shutting_down:
+                        return
+                exited = (
+                    ("agent", agent_process)
+                    if agent_process.poll() is not None
+                    else (("gateway", gateway_process) if gateway_process.poll() is not None else None)
+                )
+                if exited is not None:
+                    exited_name, _ = exited
+                    peer_name, peer_process = (
+                        ("gateway", gateway_process)
+                        if exited_name == "agent"
+                        else ("agent", agent_process)
+                    )
+                    logger.error(
+                        "[desktop] %s exited after startup; terminating %s peer",
+                        exited_name,
+                        peer_name,
+                    )
+                    if peer_process.poll() is None:
+                        _terminate_process_tree(peer_process)
+                    return
+                time.sleep(0.25)
+
+        threading.Thread(
+            target=_watch_backend_pair,
+            name="desktop-backend-pair-watch",
+            daemon=True,
+        ).start()
         logger.info("[desktop] services ready: %s", self.frontend_url)
 
     def _run_doctor_after_failure(self) -> dict[str, object] | None:
@@ -1524,8 +1721,6 @@ class DesktopRuntime:
     };
   }
   window.dispatchEvent(new CustomEvent('jiuwen-desktop-ready'));
-  if (window.__JIUWEN_DESKTOP_DND__) return;
-  window.__JIUWEN_DESKTOP_DND__ = true;
   function hasFiles(dt) {
     if (!dt || !dt.types) return false;
     try {
@@ -1534,25 +1729,68 @@ class DesktopRuntime:
       return false;
     }
   }
-  function accept(e) {
-    if (!hasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
-    window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
+  // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
+  // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
+  // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
+  // that originated inside the renderer with 'chromium/x-drag-id'; OS file drags
+  // from Explorer never carry it. App drag sources also set an explicit marker.
+  function isInternalDrag(dt) {
+    if (!dt || !dt.types) return false;
+    try {
+      var t = Array.from(dt.types);
+      if (t.indexOf('application/x-jiuwen-internal-drag') !== -1) return true;
+      return t.indexOf('chromium/x-drag-id') !== -1;
+    } catch (err) {
+      return false;
+    }
   }
-  function endDrag() {
-    window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:false}}));
+  // NB: the frontend (localFilePicker.ts installDesktopFileDragAccept) uses the
+  // same __JIUWEN_DESKTOP_DND__ flag as its own guard and usually sets it before
+  // this script runs, so this block must stay skip-safe (the frontend installs
+  // equivalent window listeners) and must NOT gate the document blockers below.
+  if (!window.__JIUWEN_DESKTOP_DND__) {
+    window.__JIUWEN_DESKTOP_DND__ = true;
+    function accept(e) {
+      if (!hasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
+    }
+    function endDrag() {
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:false}}));
+    }
+    // Capture: ensure preventDefault early. Bubble on window: win over React dropEffect=none.
+    window.addEventListener('dragenter', accept, true);
+    window.addEventListener('dragover', accept, true);
+    window.addEventListener('dragenter', accept, false);
+    window.addEventListener('dragover', accept, false);
+    window.addEventListener('drop', function (e) {
+      if (!hasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      endDrag();
+    }, true);
   }
-  // Capture: ensure preventDefault early. Bubble on window: win over React dropEffect=none.
-  window.addEventListener('dragenter', accept, true);
-  window.addEventListener('dragover', accept, true);
-  window.addEventListener('dragenter', accept, false);
-  window.addEventListener('dragover', accept, false);
-  window.addEventListener('drop', function (e) {
-    if (!hasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    endDrag();
-  }, true);
+  // App-internal HTML5 drags (e.g. queue reorder) carry no OS files. pywebview's
+  // document bridge deep-serializes the page DOM per event and stalls WebView2;
+  // these document listeners run before the bridge's (mark precedes bind), so
+  // stopImmediatePropagation keeps non-file drags off the serialization path.
+  // Separate guard: must still be installed when the frontend already claimed
+  // __JIUWEN_DESKTOP_DND__.
+  if (!window.__JIUWEN_DESKTOP_DND_BLOCK__) {
+    window.__JIUWEN_DESKTOP_DND_BLOCK__ = true;
+    function blockInternalDrag(e) {
+      if (!isInternalDrag(e.dataTransfer)) return;
+      e.stopImmediatePropagation();
+    }
+    document.addEventListener('dragenter', blockInternalDrag, false);
+    document.addEventListener('dragover', blockInternalDrag, false);
+    document.addEventListener('drop', function (e) {
+      if (!isInternalDrag(e.dataTransfer)) return;
+      e.stopImmediatePropagation();
+      // Preserve the anti-navigation default prevention the bridge used to give.
+      e.preventDefault();
+    }, false);
+  }
 })();
 """
         )
@@ -2149,8 +2387,19 @@ nohup {q_executable} >/dev/null 2>&1 &
         self.window.events.closed += self._on_closed
 
         def _start_services_and_report() -> None:
+            def _navigate_on_web_ready() -> None:
+                # web 静态页就绪: 置 web_ready(非终态、可先行导航) 而非 ready。
+                # app(AgentServer+Gateway) 仍可能在随后失败, 届时 failed 可覆盖
+                # web_ready 使诊断/doctor 页可达; 全部就绪后由外层置终态 ready。
+                self._startup_navigated.set()
+                self._set_startup_status(
+                    "web_ready",
+                    message="服务已就绪",
+                    frontend_url=self.frontend_url,
+                )
+
             try:
-                self.start_services()
+                self.start_services(on_web_ready=_navigate_on_web_ready)
                 self._set_startup_status(
                     "ready",
                     message="服务已就绪",
@@ -2176,6 +2425,8 @@ nohup {q_executable} >/dev/null 2>&1 &
                             component="desktop-startup",
                             diagnostic_path=str(self._startup_diagnostics_dir),
                         )
+                        # 先行导航后 loading 页已离开, 重新载入以展示"正在诊断"。
+                        self._present_startup_failure_surface_if_navigated()
                         doctor_result = self._run_doctor_after_failure()
                     else:
                         logger.info(
@@ -2199,6 +2450,8 @@ nohup {q_executable} >/dev/null 2>&1 &
                         "diagnostic_path": str(self._startup_diagnostics_dir),
                     }
                 self._set_startup_status("failed", **failed_status)
+                # 先行导航后 loading 页已被前端 SPA 替换, 重新载入以展示失败诊断页。
+                self._present_startup_failure_surface_if_navigated()
                 self.shutdown()
 
         threading.Thread(
@@ -2365,7 +2618,7 @@ if(terminal) return;
 try{
     const status=await window.pywebview.api.get_startup_status();
     lastStatusAt=Date.now();
-    if(status.state==='ready'){
+    if(status.state==='web_ready'||status.state==='ready'){
         terminal=true;
         setTimeout(()=>showFailure({
             title:'__APP_DISPLAY_NAME__ 页面加载失败',

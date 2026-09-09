@@ -145,10 +145,49 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-datas += collect_resources_data_files(
+_playwright_mcp_resource_dir = os.path.join(
+    project_root,
+    "jiuwenswarm",
+    "resources",
+    "runtime",
+    "playwright-mcp",
+)
+_playwright_mcp_zip = os.path.join(
+    _playwright_mcp_resource_dir,
+    "playwright-mcp-0.0.78.zip",
+)
+_playwright_mcp_manifest = os.path.join(_playwright_mcp_resource_dir, "manifest.json")
+for _required_playwright_resource in (_playwright_mcp_zip, _playwright_mcp_manifest):
+    if not os.path.isfile(_required_playwright_resource):
+        raise SystemExit(
+            "ERROR: bundled Playwright MCP resource is missing: "
+            f"{_required_playwright_resource}. Run scripts/update_playwright_mcp_runtime.py."
+        )
+
+_resource_datas = collect_resources_data_files(
     os.path.join(project_root, "jiuwenswarm", "resources"),
     "jiuwenswarm/resources",
 )
+# Keep the ZIP explicit: generic PyInstaller resource patterns historically
+# covered only text data, while the browser runtime must remain a real file.
+datas += [
+    (
+        _playwright_mcp_zip,
+        "jiuwenswarm/resources/runtime/playwright-mcp",
+    )
+]
+datas += [
+    item
+    for item in _resource_datas
+    if os.path.normcase(os.path.abspath(item[0]))
+    != os.path.normcase(os.path.abspath(_playwright_mcp_zip))
+]
+datas += [
+    (
+        os.path.join(project_root, "OPEN_SOURCE_SOFTWARE_NOTICE.md"),
+        ".",
+    )
+]
 datas += collect_data_files(
     "certifi",
     include_py_files=False,
@@ -190,6 +229,12 @@ for package_root in DISPATCH_PACKAGE_ROOTS:
 # openjiuwen 使用动态导入，需要收集全部子模块
 openjiuwen_submodules = collect_submodules("openjiuwen")
 symphony_submodules = collect_submodules("jiuwenswarm.symphony")
+# TeamManager imports this lifecycle hook while its parent package is being
+# initialized.  Keep it explicit because PyInstaller cannot reliably infer
+# this package-attribute import from the frozen entry point.
+team_kv_cache_hiddenimports = [
+    "jiuwenswarm.agents.harness.team.kv_cache_team_delete_guard",
+]
 dispatch_submodules = collect_tree_python_modules(symphony_root, DISPATCH_PACKAGE_ROOTS)
 http2_submodules = [
     *collect_submodules("h2"),
@@ -229,7 +274,7 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [

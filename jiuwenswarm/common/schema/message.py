@@ -145,6 +145,9 @@ class ReqMethod(Enum):
     FILE_IMPORT_URL = "file.import_url"
     # 分块上传：用于 AgentOS 多用户场景的大文件，避免单个 E2A WebSocket 帧超过限制。
     FILE_UPLOAD_CHUNK = "file.upload_chunk"
+    # Smart Approval sealed assets: validate and read one bounded chunk in the
+    # routed AgentServer. Gateway must never authorize these from token paths.
+    FILE_DOWNLOAD_VERIFIED_CHUNK = "file.download_verified_chunk"
 
     # IM 平台附件落盘（Phase 3：Gateway 下载字节后经 base64 交给 AgentServer
     # 落盘至其注入目录的 <平台>_files/downloads/，Gateway 不直写用户目录）
@@ -176,6 +179,8 @@ class ReqMethod(Enum):
     # mcp management.
     MCP_LIST = "mcp.list"
     MCP_SHOW = "mcp.show"
+    MCP_INSTALL = "mcp.install"
+    MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
     MCP_DISCONNECT = "mcp.disconnect"
@@ -207,6 +212,7 @@ class ReqMethod(Enum):
     SKILLS_MARKETPLACE_TOGGLE = "skills.marketplace.toggle"
     SKILLS_UNINSTALL = "skills.uninstall"
     SKILLS_ONLINE_SEARCH = "skills.online_search.search"
+    SKILLS_ONLINE_SEARCH_INSTALL = "skills.online_search.install"
     SKILLS_SKILLNET_SEARCH = "skills.skillnet.search"
     SKILLS_SKILLNET_INSTALL = "skills.skillnet.install"
     SKILLS_SKILLNET_INSTALL_STATUS = "skills.skillnet.install_status"
@@ -263,6 +269,7 @@ class ReqMethod(Enum):
     PERSONAL_CONTEXT_FETCH_STOP_SERVICE = "personal_context.fetch.stop_service"
     PERSONAL_CONTEXT_FETCH_RUN_ALL = "personal_context.fetch.run_all"
     PERSONAL_CONTEXT_FETCH_RUN_ONE = "personal_context.fetch.run_one"
+    PERSONAL_CONTEXT_FETCH_STOP_RUN = "personal_context.fetch.stop_run"
     PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS = "personal_context.fetch.get_run_status"
     PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS = (
         "personal_context.fetch.get_authorization_status"

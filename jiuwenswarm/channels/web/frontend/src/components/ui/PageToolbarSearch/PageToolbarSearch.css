@@ -1,0 +1,8 @@
+.ui-input-affix-wrapper.page-toolbar-search__input:focus-within {
+  border-color: var(--color-border-default);
+  box-shadow: none;
+}
+
+.ui-input-affix-wrapper.page-toolbar-search__input.ui-input-affix-wrapper--invalid:focus-within {
+  border-color: var(--color-border-danger);
+}

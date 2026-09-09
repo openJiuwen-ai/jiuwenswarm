@@ -639,7 +639,7 @@ class WebChannel(BaseWsChannel):
         self._uvicorn_server = uvicorn.Server(uv_cfg)
         self._running = True
         logger.info(
-            "WebChannel 已启动(dual_protocol): ws://%s:%s%s (HTTP-ready same port)",
+            "WebChannel 正在启动(dual_protocol): ws://%s:%s%s",
             self.config.host,
             self.config.port,
             self.config.path,
@@ -828,6 +828,7 @@ class WebChannel(BaseWsChannel):
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
+            or event_name.startswith("personal_context.context.")
         )
 
     @staticmethod

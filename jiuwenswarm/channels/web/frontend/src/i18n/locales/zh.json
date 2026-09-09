@@ -4,6 +4,7 @@
     "confirm": "确认",
     "cancel": "取消",
     "close": "关闭",
+    "clear": "清空",
     "refresh": "刷新",
     "refreshing": "刷新中...",
     "loading": "加载中...",
@@ -41,7 +42,8 @@
     "more": "更多",
     "settings": "设置",
     "logs": "日志",
-    "update": "更新"
+    "update": "更新",
+    "personalContext": "我的\n上下文"
   },
   "applicationPlugins": {
     "title": "应用插件",
@@ -61,6 +63,7 @@
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
+      "personalContext": "我的上下文",
       "experimental": "实验功能"
     },
     "feedback": {
@@ -76,12 +79,15 @@
     },
     "dialog": {
       "discardTitle": "放弃未保存的修改",
-      "discardConfirm": "当前修改尚未保存，确定放弃吗？"
+      "discardConfirm": "当前修改尚未保存，确定放弃吗？",
+      "clearTitle": "清空{{name}}",
+      "clearConfirm": "已保存的{{name}}将被删除，确定要清空吗？"
     },
     "common": {
       "configured": "已配置",
       "notConfigured": "未配置",
       "configure": "配置",
+      "clear": "清空",
       "showValue": "显示明文",
       "hideValue": "隐藏明文"
     },
@@ -150,7 +156,9 @@
       "fetchReasons": {
         "noEndpoint": "当前为提供商预设列表：该提供商未提供模型列表接口",
         "apiKeyRequired": "当前为提供商预设列表：填写 API Key 后可拉取最新模型",
-        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空"
+        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空",
+        "remoteAuthFailed": "当前为提供商预设列表：API Key 无效或鉴权方式不符（HTTP 401/403）",
+        "remoteRateLimited": "当前为提供商预设列表：远端限流（HTTP 429），请稍后重试"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
@@ -205,6 +213,7 @@
       "savedRestartRequired": "已保存，重启后生效",
       "validationOk": "连接测试通过",
       "validationFailed": "连接测试失败",
+      "validationFailedWithDetail": "连接测试失败：{{detail}}",
       "testingConnection": "正在测试连接…",
       "savingModel": "正在保存…",
       "validationBeforeSaveTitle": "连接测试未通过",
@@ -239,9 +248,13 @@
       "video": "视频理解",
       "videoDescription": "启用后可理解视频内容；关闭后保留已有模型配置。",
       "videoConfigTitle": "配置视频理解模型",
+      "videoGenConfigTitle": "配置视频生成模型",
+      "visualGenConfigTitle": "配置图像生成模型",
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
+      "deleteModelTitle": "删除模型配置",
+      "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
     },
     "browser": {
@@ -249,7 +262,6 @@
       "runtimeDescription": "浏览器配置保存后会由现有后端逻辑重置运行时。",
       "path": "浏览器路径",
       "pathDescription": "指定浏览器可执行文件路径；留空时自动探测。",
-      "preferredBrowser": "优先浏览器",
       "runMode": "浏览器运行方式",
       "runModeDescription": "选择在前台显示浏览器窗口或以无头模式运行。",
       "headed": "前台显示",
@@ -265,6 +277,7 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "trajectoryUi": "轨迹界面",
+      "kvCacheAffinity": "算力亲和",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
@@ -279,10 +292,6 @@
         "title": "浏览器路径",
         "description": "指定浏览器可执行文件路径；留空时自动探测。",
         "placeholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-      },
-      "browser_type": {
-        "title": "优先浏览器",
-        "description": "指定类型时只查找该浏览器；填写路径时以路径为准。"
       },
       "headless": {
         "title": "浏览器运行方式",
@@ -317,10 +326,7 @@
         "description": "开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。免费模型来源于 Opencode Zen 网关（https://opencode.ai/zen），由 models.dev 目录（https://models.opencode.ai/api.json）与 Zen 实时模型列表取交集得到（判定标准：输入价格为 0）。"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
-      "skill_retrieval_enabled": {
-        "title": "技能自动检索",
-        "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
-      },
+      "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
       "skill_retrieval_index_enabled": {
         "title": "技能索引",
         "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
@@ -344,15 +350,28 @@
       "video_api_key": { "title": "API 密钥" },
       "video_model": { "title": "模型名称" },
       "video_provider": { "title": "模型提供商" },
+      "video_gen_provider": { "title": "模型提供商" },
+      "video_gen_protocol": { "title": "协议" },
+      "video_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
+      "video_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
+      "video_gen_model": { "title": "模型名称", "placeholder": "例如 bytedance/seedance-2.0-fast" },
+      "video_gen_enabled": { "title": "视频生成", "description": "启用视频生成工具（文生视频）；关闭后仍保留已保存的模型配置。" },
+      "visual_gen_provider": { "title": "模型提供商" },
+      "visual_gen_protocol": { "title": "协议" },
+      "visual_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
+      "visual_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
+      "visual_gen_model": { "title": "模型名称", "placeholder": "例如 google/gemini-3.1-flash-image" },
+      "visual_gen_enabled": { "title": "图像生成", "description": "启用图像生成工具（文生图）；关闭后仍保留已保存的模型配置。" },
       "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
       "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
-      "trajectory_ui_enabled": {
-        "title": "启用轨迹界面",
-        "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
-      },
+      "trajectory_ui_enabled": { "title": "启用轨迹界面", "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。" },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
         "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
+      },
+      "kv_cache_affinity_enabled": {
+        "title": "启用算力亲和",
+        "description": "仅支持使用 Ascend vLLM 推理服务部署的模型，不支持通过第三方 API Key 接入的模型。"
       },
       "external_cli_agent_claude_enabled": {
         "title": "启用 Claude",
@@ -362,7 +381,9 @@
         "title": "Claude 使用内置 CLI",
         "description": "不指定本机 CLI 路径，由 SDK 使用默认查找方式。"
       },
-      "external_cli_agent_claude_cli_path": { "title": "Claude CLI 路径" },
+      "external_cli_agent_claude_cli_path": {
+        "title": "Claude CLI 路径"
+      },
       "external_cli_agent_codex_enabled": {
         "title": "启用 Codex",
         "description": "允许 Team Leader 拉起 Codex Agent；首次启用可能需要安装依赖。"
@@ -371,7 +392,9 @@
         "title": "Codex 使用内置 CLI",
         "description": "不指定本机 CLI 路径，由 SDK 使用默认查找方式。"
       },
-      "external_cli_agent_codex_cli_path": { "title": "Codex CLI 路径" },
+      "external_cli_agent_codex_cli_path": {
+        "title": "Codex CLI 路径"
+      },
       "proactive_recommendation_enabled": {
         "title": "启用主动推荐",
         "description": "允许系统在满足条件时主动发送推荐。"
@@ -390,6 +413,7 @@
     "validation": {
       "required": "此字段为必填项",
       "integerRange": "请输入 {{min}}–{{max}} 之间的整数"
+
     }
   },
   "trajectory": {
@@ -616,7 +640,6 @@
     }
   },
   "chat": {
-    "toolResultLabel": "工具结果",
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "placeholderAwaitingApproval": "请先处理上方待确认项",
@@ -652,6 +675,7 @@
     "addImageDisabled": "处理中或录音中不可添加图片",
     "addFile": "上传文件",
     "addFileDisabled": "处理中或录音中不可上传文件",
+    "addFileTooltip": "可添加文件、专家、技能、连接器",
     "addAttachment": "添加附件",
     "removeImage": "移除图片",
     "sendTask": "发送消息，但不打断模型运行",
@@ -724,7 +748,17 @@
     "applicationTasks": {
       "cancelling": "正在停止",
       "cancelled": "已取消",
-      "controls": { "drag": "拖动到另一项以调整顺序", "next": "设为下一项", "stop": "停止此任务", "more": "任务操作", "up": "上移", "down": "下移", "preempt": "停止当前任务并执行此项", "close": "关闭", "failed": "任务操作失败" },
+      "controls": {
+        "drag": "拖动到另一项以调整顺序",
+        "next": "设为下一项",
+        "stop": "停止此任务",
+        "more": "任务操作",
+        "up": "上移",
+        "down": "下移",
+        "preempt": "停止当前任务并执行此项",
+        "close": "关闭",
+        "failed": "任务操作失败"
+      },
       "queued": "排队中",
       "running": "执行中",
       "completed": "已完成",
@@ -1197,9 +1231,12 @@
       "codexHint": "SDK 未安装时将自动安装；CLI 可使用内置版本、系统 PATH 或指定路径。",
       "useBuiltin": "使用内置 CLI",
       "detect": "检测",
+      "detectHint": "在系统 PATH 或指定路径中查找 CLI 并校验版本兼容性",
       "selectFile": "选择文件",
       "selectFileTitle": "选择 {{agent}} 命令",
       "selectFileFailed": "选择文件失败",
+      "copyPath": "复制检测到的路径",
+      "copied": "已复制",
       "cliPathPlaceholder": "自动检测 {{agent}} 路径，或手动填写可执行文件路径",
       "statusUnknown": "未检测",
       "statusOk": "可用",
@@ -1211,16 +1248,14 @@
       "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或勾选“使用内置 CLI”，改用默认启动方式。",
       "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或勾选“使用内置 CLI”，改用默认启动方式。",
       "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或勾选“使用内置 CLI”。",
-      "dependencyInstalling": "正在后台安装 {{agents}} 可选组件。安装期间不会启用；安装完成后，请重新启用并保存配置。",
-      "dependencyInstalled": "{{agent}} 可选组件已安装，请重新启用并保存配置。",
-      "dependencyInstallPhasePreparing": "准备安装 {{agent}} 依赖",
-      "dependencyInstallPhaseInstalling": "正在安装 {{agent}} 依赖",
-      "dependencyInstallPhaseVerifying": "正在校验 {{agent}} 依赖",
-      "dependencyInstallPhaseSucceeded": "{{agent}} 依赖已安装，请重新启用 {{agent}} 并保存配置",
-      "dependencyInstallPhaseFailed": "{{agent}} 依赖安装失败",
+      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或勾选“使用内置 CLI”。",
+      "missingPath": "路径不存在：{{path}}。请检查路径，或勾选“使用内置 CLI”。",
+      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或勾选“使用内置 CLI”。",
+      "autoSaved": "{{agents}} 依赖安装完成，已自动保存您的配置。",
       "installDialogTitle": "安装可选组件",
-      "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，请返回三方 Agent 配置，重新启用相应组件并保存配置。",
+      "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，您的配置将自动保存。",
       "installArtifact": "正在下载第 {{current}} 个文件，共 {{total}} 个：{{package}} {{version}}",
+      "installActivity": "最新安装活动",
       "installProgress": "下载进度",
       "installEta": "预计剩余 {{eta}}",
       "installRetry": "下载异常，正在重试（{{current}}/{{total}}）",
@@ -1235,7 +1270,7 @@
         "downloading": "正在下载",
         "installing": "正在安装",
         "verifying": "正在校验",
-        "succeeded": "安装完成，请重新启用",
+        "succeeded": "安装完成",
         "failed": "安装失败",
         "running": "正在安装"
       }
@@ -1533,9 +1568,6 @@
     }
   },
   "browser": {
-    "browserTypeAuto": "自动（Chrome > Edge）",
-    "browserTypeChrome": "Chrome",
-    "browserTypeEdge": "Microsoft Edge",
     "errors": {
       "loadPath": "加载浏览器配置失败"
     }
@@ -1558,6 +1590,252 @@
       "updateDebugConfig": "更新 WS 调试配置失败"
     }
   },
+  "personalContext": {
+    "intro": {
+      "title": "个人上下文，让知识自动交织成网",
+      "subtitle": "把零散的本地文档与网络来源，一键转化为清晰可视的结构化知识大脑。",
+      "stepsTitle": "操作步骤",
+      "step1Title": "第一步：授权渠道，添加多元内容",
+      "step1Desc": "一键授权知识来源渠道，导入本地文件、粘贴网页链接或整合多源文本。",
+      "step2Title": "第二步：自动构建图谱",
+      "step2Desc": "平台将自动完成实体抽取与关系关联，请静候图谱呈现。",
+      "start": "去完成",
+      "featuresTitle": "功能特点",
+      "feature1Title": "结构化提炼·Markdown呈现",
+      "feature1Desc": "自动抽取跨源内容中的核心实体与脉络，精简整理为标准的 Markdown 文档，便于阅读",
+      "feature2Title": "双向关联·一键无缝跳转",
+      "feature2Desc": "智能识别不同节点间的内容互引用，自动建立关联链条，点击即可在相关节点与原文间自由穿梭。",
+      "feature3Title": "任务联动·唤醒图谱上下文",
+      "feature3Desc": "在执行复杂的 AI 任务或对话时，支持直接挂载与调取图谱知识，让输出更精准、上下文更丰富。"
+    },
+    "settings": {
+      "subtitle": "选择个人上下文采用哪种方式采集、整理和生成。",
+      "enable": "采集个人上下文内容",
+      "enableHint": "支持添加个人上下文内容并自动构建图谱。",
+      "strategyProfile": "上下文采集模式",
+      "model": "上下文整理模型",
+      "modelPlaceholder": "请选择整理模型",
+      "modelRequiredFirst": "请先选择整理模型",
+      "title": "上下文",
+      "modelHint": "选择已在 JiuwenSwarm 中配置的模型。"
+    },
+    "authorization": {
+      "title": "内容采集授权",
+      "subtitle": "管理上下文采集服务所需的内容源。",
+      "provider": "名称",
+      "state": "状态",
+      "action": "操作",
+      "authorize": "授权",
+      "reauthorize": "重新授权",
+      "cancelAuth": "取消授权",
+      "authorizing": "授权中…",
+      "stateNotAuthorized": "未授权",
+      "stateAuthorizationRequired": "待授权",
+      "stateAuthorizing": "授权中",
+      "stateAuthorized": "已授权",
+      "stateAuthorizationFailed": "授权失败",
+      "githubHint": "GitHub 使用个人访问令牌（PAT）。授权后即可在「上下文内容」添加 GitHub 采集。",
+      "githubTokenLabel": "GitHub 令牌",
+      "githubTokenPlaceholder": "ghp_xxxxxxxxxxxx",
+      "githubTokenHint": "令牌仅保存在本地浏览器，创建采集服务时用于认证。",
+      "githubTokenRequired": "请输入 GitHub 令牌",
+      "feishuHint": "飞书使用 OAuth 设备授权流程。点击授权后按提示在浏览器完成登录。",
+      "feishuVerifyHint": "请在打开的页面完成飞书授权，授权完成后状态将自动更新。"
+    },
+    "info": {
+      "tabGraph": "上下文图谱",
+      "tabServices": "上下文内容",
+      "refresh": "刷新",
+      "updatedTime": "更新时间",
+      "searchPlaceholder": "搜索你的知识 挖掘其中的关联...",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "fitView": "适配视图",
+      "fetchProgress": "采集进度",
+      "fetchProgressTasks": "采集任务",
+      "noGraph": "暂无上下文图，请先开启并采集",
+      "collecting": "正在采集中，稍候将自动刷新…",
+      "fetchingDisabled": "未开启采集，请在设置页开启「启用个人上下文」",
+      "serviceDisabled": "采集服务已关闭，请在「上下文内容」页开启对应服务的自动采集",
+      "noServices": "暂无采集服务，请在「上下文内容」页添加采集来源",
+      "nodesCount": "节点",
+      "edgesCount": "连线",
+      "notReady": "上下文未就绪",
+      "ready": "上下文已就绪",
+      "publishFailed": "上下文发布失败",
+      "sourceBadge": "来源",
+      "sourceProvider": "采集来源",
+      "sourceType": "来源类型",
+      "sourceLocator": "原始链接",
+      "sourceFirstSeen": "采集时间",
+      "graphTitle": "知识大脑，让知识交织成网",
+      "graphSubtitle": "把零散的本地文档、网络来源、讨论的原文，一键转化为清晰可视的结构化知识大脑",
+      "tabNodes": "知识节点",
+      "tabEdges": "连线",
+      "addKnowledge": "添加知识",
+      "resultUnit": "项结果",
+      "guideDesc": "开启个人上下文，添加内容来源，系统将自动构建知识图谱。",
+      "guideAction": "去完成"
+    },
+    "services": {
+      "addContent": "添加内容",
+      "colName": "内容名称",
+      "colProvider": "内容来源",
+      "colState": "当前状态",
+      "colLastRun": "最近一次采集时间",
+      "colAuto": "自动采集",
+      "autoOn": "开",
+      "autoOff": "关",
+      "autoOnHint": "开启自动采集",
+      "autoOffHint": "关闭自动采集",
+      "colInterval": "采集频率",
+      "colActions": "操作",
+      "stateCollecting": "正在采集",
+      "stateCompleted": "采集完成",
+      "stateFailed": "采集失败",
+      "stateWaiting": "等待采集",
+      "stateStopped": "已停止",
+      "lastRunUnavailable": "后端未返回采集时间",
+      "intervalHour": "每 {{n}} 小时",
+      "intervalDay": "每 {{n}} 天",
+      "actionRunNow": "立即采集",
+      "actionEdit": "编辑",
+      "actionDelete": "删除",
+      "actionRetry": "重试",
+      "actionStop": "停止采集",
+      "deleteConfirm": "确认删除该采集服务？",
+      "intervalSeconds": "采集频率（秒）",
+      "intervalRangeError": "采集频率须大于 0 且不超过 31536000 秒（约 365 天）",
+      "sourceJsonObjectError": "source 必须是 JSON 对象",
+      "sourceJsonInvalidError": "JSON 格式无效",
+      "maxItems": "单次最大条数",
+      "save": "保存",
+      "cancel": "取消",
+      "empty": "暂无采集内容，点击右上角「添加内容」创建",
+      "noContentInCategory": "暂无内容",
+      "runSubmitted": "已提交采集请求",
+      "backToGraph": "返回图谱",
+      "addKnowledge": "添加知识",
+      "collectAll": "全部开始采集",
+      "statSources": "来源",
+      "statKnowledge": "知识数",
+      "statCollecting": "正在采集",
+      "knowledgeSource": "知识来源",
+      "lastRun": "上次采集"
+    },
+    "addContent": {
+      "title": "添加内容",
+      "nameLabel": "采集内容名称",
+      "namePlaceholder": "如 我的知乎收藏",
+      "providerLabel": "内容采集来源",
+      "autoCollectLabel": "自动采集",
+      "autoCollectHint": "开启后按频率自动采集",
+      "timeRangeLabel": "采集时间",
+    "timeRangeWeek": "最近一周",
+    "timeRangeMonth": "最近一个月",
+    "timeRangeQuarter": "最近三个月",
+    "timeRangeCustom": "自定义",
+    "dateRangeTitle": "选择日期范围",
+    "dateRangePlaceholder": "请选择日期范围",
+    "addUrl": "+ 添加",
+    "frequencyLabel": "自动采集频率",
+      "frequencyHour": "每 {{n}} 小时",
+      "frequencyDay": "每 {{n}} 天",
+      "frequencyEvery": "每",
+      "unitHour": "小时",
+      "unitDay": "天",
+      "maxItemsLabel": "单次最多采集条数",
+      "maxItemsPlaceholder": "留空使用默认",
+      "advancedConfig": "高级配置",
+      "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
+      "previousStep": "上一步",
+    "submit": "添加",
+      "notConfigured": "尚未配置个人上下文，请先在设置页开启",
+      "providerUnauthorized": "未授权，请先去设置页授权",
+      "goAuthorize": "去授权",
+      "feishuPlaceholder": "飞书采集下一步单独详细开发",
+      "localFiles": {
+        "rootDirLabel": "本地文件夹路径",
+        "rootDirPlaceholder": "D:/my-notes",
+        "rootDirHint": "须为绝对路径"
+      },
+      "zhihu": {
+        "columnUrlLabel": "知乎专栏地址",
+        "columnUrlPlaceholder": "https://www.zhihu.com/column/c_xxxxxxxxxx",
+        "columnUrlHint": "仅支持 https 知乎专栏地址，路径须为 /column/<专栏id>"
+      },
+      "toutiao": {
+        "profileUrlLabel": "头条主页地址",
+        "profileUrlPlaceholder": "https://www.toutiao.com/c/user/token/<id>",
+        "profileUrlHint": "仅支持 https 头条主页地址，路径须为 /c/user/token/<id>"
+      },
+      "edge": {
+        "profileLabel": "浏览器用户配置",
+        "profileDefault": "默认（Default）",
+        "profilePlaceholder": "Default",
+        "profileHint": "可选，默认 Default",
+        "bookmarksPathLabel": "书签文件路径",
+        "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
+        "foldersLabel": "需采集的书签文件夹",
+        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersHint": "可选，留空采集全部"
+      },
+      "github": {
+        "repoUrlLabel": "GitHub 仓库链接",
+        "repoUrlPlaceholder": "https://github.com/<owner>/<repo>",
+        "repoUrlHint": "或 git@github.com:<owner>/<repo>",
+        "resourcesLabel": "要采集的内容",
+        "readme": "README",
+        "issues": "议题（Issue）",
+        "pullRequests": "拉取请求（Pull Request）",
+        "commits": "提交（Commit）",
+        "code": "代码（Code）",
+        "resourcesRequired": "请至少选择一项采集内容",
+        "tokenFromAuth": "令牌已从设置页授权获取",
+        "tokenMissing": "未找到 GitHub 令牌，请先去设置页授权"
+      },
+      "feishu": {
+        "modeLabel": "飞书内容类型",
+        "mode_account": "账号内容",
+        "mode_wiki_space": "Wiki 空间",
+        "modeHint": "账号内容：采集云文档/任务/日程；知识空间：采集指定知识空间节点",
+        "resourcesLabel": "要采集的账号内容",
+        "resourcesHint": "账号模式下至少选择一项",
+        "resourcesRequired": "请至少选择一项采集内容",
+        "wikiSpaceIdLabel": "Wiki 空间名称",
+        "wikiSpaceIdPlaceholder": "选择要获取内容的飞书 Wiki 空间",
+        "wikiSpaceIdHint": "在飞书知识空间 URL 中获取",
+        "wikiSpaceIdRequired": "请选择飞书 Wiki 空间",
+        "docs": "文档",
+        "tasks": "任务",
+        "calendar": "日历",
+        "calendarTimeLabel": "日历时间段",
+        "calendarTimePlaceholder": "请选择",
+        "docPathLabel": "指定文档（可选）",
+        "docPathPlaceholder": "请输入路径或选择文件",
+        "wikiDirLabel": "Wiki 目录",
+        "wikiDirPlaceholder": "只获取该目录下的内容",
+        "authorizeAfterCreate": "创建后需在设置页授权飞书账号："
+      }
+    },
+    "provider": {
+      "localFiles": "本地文件夹",
+      "github": "GitHub",
+      "feishu": "飞书",
+      "browserBookmarks": "Edge 收藏夹",
+      "zhihuReader": "知乎专栏",
+      "toutiaoReader": "今日头条"
+    },
+    "state": {
+      "CREATED": "已创建",
+      "CONFIGURED": "已配置",
+      "STARTING": "启动中",
+      "RUNNING": "运行中",
+      "STOPPING": "停止中",
+      "STOPPED": "已停止",
+      "FAILED": "失败"
+    }
+  },
   "skills": {
     "title": "技能",
     "subtitle": "管理并安装智能体可用的技能。",
@@ -1570,7 +1848,12 @@
     "mySkillsTabs": {
       "all": "全部",
       "enabled": "启用",
-      "disabled": "禁用"
+      "disabled": "禁用",
+      "builtin": "内置"
+    },
+    "mySkillsGroups": {
+      "added": "已添加技能",
+      "builtin": "内置技能"
     },
     "publishFilter": {
       "all": "全部",
@@ -1597,6 +1880,7 @@
     "disable": "禁用",
     "noDisabledSkills": "暂无禁用的技能",
     "noEnabledSkills": "暂无启用的技能",
+    "noBuiltinSkills": "暂无内置技能",
     "setEnabledError": "设置技能启用状态失败",
     "setEnabledSuccess": "已启用技能 {name}",
     "setDisabledSuccess": "已禁用技能 {name}",
@@ -1709,8 +1993,8 @@
       "title": "上传技能",
       "pathLabel": "本地技能路径",
       "pathPlaceholder": "请输入技能文件/目录路径",
-      "notice": "文件夹或者.zip需要包含SKILL.md文件，.md 文件需包含 YAML 格式的技能名称和描述。",
-      "dropHint": "点击或拖动压缩包或文件到此处",
+      "notice": "仅支持上传 .zip 压缩包，且需包含 SKILL.md 文件，其中 YAML 头部需声明技能名称（name）和描述（description）。",
+      "dropHint": "点击或拖动 .zip 压缩包到此处",
       "confirm": "导入",
       "cancel": "取消"
     },
@@ -1901,6 +2185,8 @@
       "zoomIn": "放大",
       "zoomOut": "缩小",
       "zoomLevel": "当前缩放 {{percent}}%",
+      "fullscreen": "全屏",
+      "exitFullscreen": "退出全屏",
       "actions": {
         "read": "读取图谱",
         "incrementalBuild": "增量构建",
@@ -2167,6 +2453,9 @@
       "skillNetInstallFailedHint": "SkillNet 安装失败，请检查 skill URL 或依赖",
       "importFailed": "导入失败",
       "importFailedHint": "导入失败，请检查路径或权限",
+      "uploadFailed": "文件上传失败，请重试",
+      "uploadUnsafePath": "文件名包含不允许的字符或使用了系统保留名称，请重命名后上传",
+      "uploadInvalidRequest": "上传请求无效或缺少文件，请重新选择文件后上传",
       "uninstallFailed": "卸载失败",
       "uninstallFailedHint": "卸载失败，请稍后重试"
     }
@@ -2197,7 +2486,7 @@
     "subtitle": "创建并管理专家，快速复用专家资产",
     "tabsLabel": "专家管理分类",
     "tabs": { "catalog": "专家广场", "mine": "我的专家" },
-    "source": { "builtin": "官方", "local": "我的" },
+    "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
     "categoryLabel": "专家分类",
     "categoryAll": "全部",
     "categoryOther": "其他",
@@ -2261,6 +2550,9 @@
       "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
       "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
       "uploadError": "上传并导入专家失败，请检查文件后重试",
+      "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
+      "uploadMissingReadme": "专家包缺少 README.md 文件",
+      "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
       "newVersion": "该专家有新版本，可更新",
       "teamUnavailable": "团队专家管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
@@ -2317,9 +2609,12 @@
       "namePlaceholder": "输入展示名称",
       "descriptionLabel": "能力介绍",
       "descriptionPlaceholder": "说明这个专家擅长什么",
+      "charCount": "{{count}}/{{max}}",
       "tagLabel": "领域标签（可选）",
       "tagPlaceholder": "请选择领域标签",
       "toggleTags": "展开或收起领域标签",
+      "tagScrollPrev": "向左查看领域标签",
+      "tagScrollNext": "向右查看领域标签",
       "removeTag": "移除领域标签 {{name}}",
       "customTagPlaceholder": "输入自定义领域标签",
       "addCustomTag": "添加",
@@ -2654,6 +2949,7 @@
       "restart_pending": "等待重启",
       "restarting": "重启中...",
       "installing": "安装中",
+      "connect": "连接",
       "error": "检查失败",
       "unsupported": "当前平台不支持",
       "disabled": "更新已禁用"
@@ -2802,16 +3098,28 @@
       "cancel": "取消",
       "confirm": "确定"
     },
-    "runtime": { "processing": "处理中" },
-    "deleteDialog": { "title": "删除", "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。" },
-    "notFound": { "title": "对话不存在或已删除", "newConversation": "新建对话" },
-    "errors": { "delete": "删除对话失败", "create": "创建对话失败", "send": "发送消息失败" }
+    "runtime": {
+      "processing": "处理中"
+    },
+    "deleteDialog": {
+      "title": "删除",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+    },
+    "notFound": {
+      "title": "对话不存在或已删除",
+      "newConversation": "新建对话"
+    },
+    "errors": {
+      "delete": "删除对话失败",
+      "create": "创建对话失败",
+      "send": "发送消息失败"
+    }
   },
   "subagent": {
-    "title": "Subagents",
-    "compactTitle": "Subagents（{{count}}）",
+    "title": "子智能体",
+    "compactTitle": "子智能体（{{count}}）",
     "activeListTitle": "当前活跃 {{count}}",
-    "expand": "展开 Subagents",
+    "expand": "展开子智能体",
     "selectWithStatus": "选择 {{name}}，状态：{{status}}",
     "running": "运行中",
     "idle": "待机中",
@@ -2822,7 +3130,7 @@
     "activityTitle": "活动",
     "activityEmpty": "暂无活动",
     "historyLoading": "正在恢复历史…",
-    "empty": "暂无 Subagent",
+    "empty": "暂无子智能体",
     "activity": {
       "thinking": "思考",
       "toolCall": "工具调用",
@@ -2966,6 +3274,7 @@
       "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
     },
     "card": {
+      "connect": "连接",
       "use": "使用",
       "useNotWired": "该功能尚未接入，请在会话输入框的\"+\"面板里选用",
       "install": "安装",
@@ -2973,6 +3282,7 @@
       "connecting": "连接中",
       "disconnecting": "解绑中",
       "deleting": "删除中",
+      "uninstalling": "卸载中",
       "stateError": "连接失败",
       "retry": "重试",
       "uninstall": "卸载",
@@ -3046,6 +3356,9 @@
     },
     "toast": {
       "mcpConnected": "连接器已连接成功。",
+      "mcpInstalled": "连接器安装成功，请连接后使用。",
+      "mcpUninstalled": "连接器卸载成功。",
+      "mcpUninstallPendingReload": "连接器包已卸载，运行中的服务将在下次刷新时完成清理。",
       "mcpCreated": "连接器已创建成功。",
       "mcpCreatedAndConnected": "连接器已创建并连接成功。",
       "pluginInstalled": "插件安装成功。",
@@ -3095,14 +3408,17 @@
       "hint": "支持.zip和.tar文件，解压后的文件夹需要至少包含 manifest.json 文件和 README.md，.json 文件需包含 packageType 声明包类型。",
       "dropHint": "点击或拖动文件到此处",
       "invalidType": "仅支持 .zip / .tar 文件",
-      "importSuccess": "插件导入成功"
+      "importSuccess": "插件导入成功",
+      "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
+      "missingReadme": "插件包缺少 README.md 文件"
     },
     "common": {
       "back": "返回",
       "cancel": "取消",
       "confirm": "确定",
       "search": "搜索",
-      "noResult": "没有匹配结果"
+      "noResult": "没有匹配结果",
+      "loadFailed": "详情加载失败，请重试"
     }
   },
   "auth": {
@@ -3131,8 +3447,8 @@
     "schedule": {
       "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
       "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
-      "cron": { "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）" },
-      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成" },
+      "cron": { "hint": "支持 5 段（分 时 日 月 周）或与普通 Cron 任务相同的 7 段格式（秒 分 时 日 月 周 年）。" },
+      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成", "dateLabel": "日期", "timeLabel": "时间" },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
         "cron": "{{expr}}（{{timezone}}）回到当前会话",
@@ -3140,7 +3456,7 @@
       }
     },
     "errors": {
-      "cronFieldCount": "心跳的 Cron 表达式需要 5 段（分 时 日 月 周）"
+      "cronFieldCount": "心跳的 Cron 表达式需要 5 段（分 时 日 月 周）或 7 段（秒 分 时 日 月 周 年）"
     },
     "drawer": {
       "fieldName": "任务名称",
@@ -3150,13 +3466,15 @@
       "fieldPromptHint": "心跳触发时，会把这段文字作为一条新消息投递回当前会话，Agent 在原有上下文里继续处理，不会开新会话",
       "fieldSchedule": "调度计划",
       "fieldScheduleHint": "选择心跳回到这个会话的触发方式：按间隔轮询 / 按 Cron 表达式定时 / 只触发一次",
+      "scheduleExpired": "所选时间已过期，请重新选择",
       "fieldConcurrencyPolicy": "重叠运行策略",
       "fieldConcurrencyPolicyHint": "上一轮还没跑完时新触发怎么处理：跳过（skip，默认）/ 排队补跑一次（queue）/ 取消上一轮改跑新的（replace）",
       "fieldSessionDeletedPolicy": "会话删除后策略",
       "fieldSessionDeletedPolicyHint": "绑定的会话被删除后：停用任务并保留记录（disable，默认）/ 标记为已完成（completed）",
       "fieldMaxRuns": "最大触发次数",
       "fieldMaxRunsUnlimited": "不限制",
-      "fieldMaxRunsHint": "达到这个次数后任务自动标记为已完成；留空表示不限制",
+      "fieldMaxRunsUnlimitedOption": "不限次数",
+      "fieldMaxRunsHint": "仅对按间隔／Cron 生效；达到次数后任务自动标记为已完成，打开「不限次数」开关则一直运行",
       "missingFields": "还需要填写：{{fields}}",
       "submitCreate": "创建",
       "submitUpdate": "保存",
@@ -3164,8 +3482,15 @@
       "titleEdit": "编辑心跳任务",
       "back": "返回"
     },
-    "concurrencyPolicy": { "skip": "跳过（skip）", "queue": "排队（queue）", "replace": "替换（replace）" },
-    "sessionDeletedPolicy": { "disable": "停用任务", "completed": "标记为已完成" },
+    "concurrencyPolicy": {
+      "skip": "跳过（skip）",
+      "queue": "排队（queue）",
+      "replace": "替换（replace）"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "停用任务",
+      "completed": "标记为已完成"
+    },
     "panel": {
       "title": "心跳任务",
       "loading": "加载中…",

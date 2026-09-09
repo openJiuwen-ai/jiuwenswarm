@@ -1,4 +1,6 @@
+import json
 import re
+from pathlib import Path
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
@@ -35,24 +37,132 @@ def _as_text(value) -> str:
     return str(value).strip()
 
 
+def _normalize_table_row(row) -> list[str]:
+    if isinstance(row, list):
+        return ["" if cell is None else str(cell) for cell in row]
+    if row is None:
+        return []
+    return [str(row)]
+
+
 def _coerce_table(table) -> list:
+    raw_rows: list = []
     if isinstance(table, list):
-        return table
-    if not isinstance(table, dict):
+        raw_rows = table
+    elif isinstance(table, dict):
+        data = table.get("data")
+        if isinstance(data, list) and data:
+            raw_rows = data
+        else:
+            headers = table.get("headers") or table.get("columns") or []
+            rows = table.get("rows") or []
+            if headers:
+                raw_rows.append(headers)
+            if isinstance(rows, list):
+                raw_rows.extend(rows)
+    else:
         return []
-    data = table.get("data")
-    if isinstance(data, list) and data:
-        return data
-    headers = table.get("headers") or table.get("columns") or []
-    rows = table.get("rows") or []
-    if not headers and not rows:
+
+    grid = [_normalize_table_row(row) for row in raw_rows]
+    grid = [row for row in grid if row]
+    if not grid or max(len(row) for row in grid) == 0:
         return []
-    grid = []
-    if headers:
-        grid.append([str(cell) for cell in headers])
-    for row in rows:
-        grid.append([str(cell) for cell in row] if isinstance(row, list) else [str(row)])
     return grid
+
+
+def _table_column_count(data: list) -> int:
+    return max((len(row) for row in data), default=0)
+
+
+_FORMAT_ALIASES = {
+    "pdf": "pdf",
+    "word": "word",
+    "doc": "word",
+    "docx": "word",
+    "excel": "excel",
+    "xls": "excel",
+    "xlsx": "excel",
+    "ppt": "ppt",
+    "pptx": "ppt",
+}
+_PAYLOAD_KEYS = ("format", "filename", "output_dir")
+_CONTENT_BODY_KEYS = (
+    "slides",
+    "paragraphs",
+    "tables",
+    "sheets",
+    "rows",
+    "title",
+    "bullets",
+    "table",
+)
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_FILENAME_EXTENSIONS = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt")
+
+
+def _try_parse_json(value):
+    current = value
+    for _ in range(2):
+        if not isinstance(current, str):
+            return current
+        text = current.strip()
+        if not text or text[0] not in "{[":
+            return current
+        try:
+            current = json.loads(text)
+        except json.JSONDecodeError:
+            return current
+    return current
+
+
+def _sanitize_filename(name: str) -> str:
+    sanitized = Path(str(name)).name
+    lowered = sanitized.lower()
+    for ext in _FILENAME_EXTENSIONS:
+        if lowered.endswith(ext):
+            sanitized = sanitized[: -len(ext)]
+            break
+    sanitized = _INVALID_FILENAME_CHARS.sub("_", sanitized).strip(" .")
+    return sanitized or "document"
+
+
+def _normalize_format(fmt) -> str:
+    key = str(fmt or "").strip().lower().lstrip(".")
+    return _FORMAT_ALIASES.get(key, key)
+
+
+def coerce_generator_inputs(inputs: dict) -> dict:
+    parsed = dict(inputs or {})
+    content = _try_parse_json(parsed.get("content", {}))
+    if isinstance(content, dict) and any(key in content for key in _PAYLOAD_KEYS):
+        if "content" in content or any(key in content for key in _CONTENT_BODY_KEYS):
+            for key in _PAYLOAD_KEYS:
+                if not parsed.get(key) and content.get(key):
+                    parsed[key] = content[key]
+            inner = content.get("content")
+            if inner is not None:
+                content = _try_parse_json(inner)
+            else:
+                content = {
+                    key: value
+                    for key, value in content.items()
+                    if key not in _PAYLOAD_KEYS
+                }
+    if isinstance(content, str) and content.strip():
+        content = {"paragraphs": [content.strip()]}
+    elif isinstance(content, list):
+        slide_like = content and all(
+            isinstance(item, dict)
+            and any(key in item for key in ("title", "body", "bullets", "tables"))
+            for item in content
+        )
+        content = {"slides": content} if slide_like else {"paragraphs": content}
+    parsed["content"] = content
+    parsed["format"] = _normalize_format(parsed.get("format", ""))
+    filename = parsed.get("filename", "")
+    if filename:
+        parsed["filename"] = _sanitize_filename(str(filename))
+    return parsed
 
 
 def _coerce_tables(tables: list) -> list:
@@ -124,43 +234,50 @@ def validate_generator_content(content: dict, fmt: str) -> str | None:
     return None
 
 
+def _collect_table_cells(table) -> list[str]:
+    parts: list[str] = []
+    for row in _coerce_table(table):
+        for cell in row:
+            if cell:
+                parts.append(cell)
+    return parts
+
+
 def collect_structured_content_text(content: dict) -> str:
     parts: list[str] = []
     for key in ("title", "subtitle"):
-        value = content.get(key, "")
-        if value:
-            parts.append(str(value))
-    for para in content.get("paragraphs", []):
-        text = para if isinstance(para, str) else para.get("text", "")
+        text = _as_text(content.get(key))
         if text:
-            parts.append(str(text))
-    for table in content.get("tables", []):
-        data = table if isinstance(table, list) else table.get("data", [])
-        for row in data:
-            for cell in row:
-                parts.append(str(cell))
+            parts.append(text)
+    for para in content.get("paragraphs", []):
+        text = _item_text(para)
+        if text:
+            parts.append(text)
+    content_tables = list(content.get("tables") or [])
+    if not content_tables and content.get("table") is not None:
+        content_tables = [content.get("table")]
+    for table in content_tables:
+        parts.extend(_collect_table_cells(table))
     for slide in content.get("slides", []):
         if not isinstance(slide, dict):
             continue
-        for key in ("title", "body", "subtitle"):
-            value = slide.get(key, "")
-            if value:
-                parts.append(str(value))
-        for table in slide.get("tables", []):
-            data = table if isinstance(table, list) else table.get("data", [])
-            for row in data:
-                for cell in row:
-                    parts.append(str(cell))
+        for key in ("title", "body", "subtitle", "bullets", "paragraphs"):
+            text = _as_text(slide.get(key))
+            if text:
+                parts.append(text)
+        slide_tables = list(slide.get("tables") or [])
+        if not slide_tables and slide.get("table") is not None:
+            slide_tables = [slide.get("table")]
+        for table in slide_tables:
+            parts.extend(_collect_table_cells(table))
     for sheet in content.get("sheets", []):
-        sheet_name = sheet.get("sheet_name", "")
+        if not isinstance(sheet, dict):
+            continue
+        sheet_name = _as_text(sheet.get("sheet_name"))
         if sheet_name:
-            parts.append(str(sheet_name))
-        for row in sheet.get("rows", []):
-            for cell in row:
-                parts.append(str(cell))
-    for row in content.get("rows", []):
-        for cell in row:
-            parts.append(str(cell))
+            parts.append(sheet_name)
+        parts.extend(_collect_table_cells(sheet))
+    parts.extend(_collect_table_cells(content.get("rows") or []))
     return "\n".join(parts)
 
 

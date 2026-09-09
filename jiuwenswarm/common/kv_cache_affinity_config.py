@@ -8,14 +8,15 @@ import logging
 import os
 from typing import Any
 
-from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
+from openjiuwen.core.kv_cache import KVCacheAffinityConfig
 
 ASCEND_AFFINITY_PROVIDER = "AscendAffinity"
+APPLICATION_KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
+KV_CACHE_AFFINITY_ENABLED_KEY = "enable_kv_cache_affinity"
 logger = logging.getLogger(__name__)
 KVC_CONFIG_KEYS = frozenset(
     {
         "kv_cache_affinity_enabled",
-        "kv_cache_release_enabled",
         "model_provider",
     }
 )
@@ -25,8 +26,9 @@ def _kv_cache_mode(config_like: Any) -> str:
     """读 model_client_config 的 extensions.kv_cache.mode(归一小写)。
 
     兼容 dict 与对象：dict 取 ``extensions`` 子键；对象取属性链。
-    新声明下 KV 亲和/释放由 ``extensions.kv_cache.mode`` 表达
-    (release/affinity/none)，不再用 client_provider=AscendAffinity 判别。
+    KV 亲和的正式声明是 ``extensions.kv_cache.mode``
+    (affinity/none)；旧 ``client_provider=AscendAffinity`` 由统一能力
+    判定函数兼容，不在这里混入 provider 规则。
     """
     try:
         if isinstance(config_like, dict):
@@ -44,11 +46,6 @@ def is_kv_cache_affinity_config(config_like: Any) -> bool:
     return _kv_cache_mode(config_like) == "affinity"
 
 
-def is_kv_cache_release_config(config_like: Any) -> bool:
-    """新式判别：extensions.kv_cache.mode == 'release'。"""
-    return _kv_cache_mode(config_like) == "release"
-
-
 def normalize_provider(provider: Any) -> str:
     """Return one stable provider name from enums, strings or missing values."""
 
@@ -56,7 +53,7 @@ def normalize_provider(provider: Any) -> str:
     return str(value or "").strip()
 
 
-def _provider_from_client_config(config: Any) -> str:
+def _model_client_provider(config: Any) -> str:
     """Resolve the service identity before transport normalization.
 
     ``agent-core`` may normalize legacy providers such as DeepSeek or
@@ -65,21 +62,44 @@ def _provider_from_client_config(config: Any) -> str:
     the value callers need for policy and diagnostics.
     """
 
-    if config is None:
-        return ""
-    legacy_provider = getattr(config, "legacy_client_provider", None)
+    if isinstance(config, dict):
+        legacy_provider = config.get("legacy_client_provider")
+        provider = config.get("client_provider")
+    else:
+        legacy_provider = getattr(config, "legacy_client_provider", None)
+        provider = getattr(config, "client_provider", None)
     if legacy_provider is not None:
         normalized_legacy = normalize_provider(legacy_provider)
         if normalized_legacy:
             return normalized_legacy
-    return normalize_provider(getattr(config, "client_provider", None))
+    return normalize_provider(provider)
+
+
+def has_kv_cache_affinity_capability(
+    model_client_config: Any = None,
+    *,
+    provider: Any = None,
+) -> bool:
+    """Return whether one endpoint declares affinity capability.
+
+    ``extensions.kv_cache.mode=affinity`` is the canonical declaration.
+    ``AscendAffinity`` remains a presentation and legacy configuration alias.
+    """
+
+    effective_provider = normalize_provider(provider) or _model_client_provider(
+        model_client_config
+    )
+    return (
+        is_kv_cache_affinity_config(model_client_config)
+        or effective_provider == ASCEND_AFFINITY_PROVIDER
+    )
 
 
 def model_provider(model: Any | None) -> str:
     """Resolve the effective provider from an OpenJiuwen Model or its client."""
 
     for owner in (model, getattr(model, "_client", None)):
-        provider = _provider_from_client_config(
+        provider = _model_client_provider(
             getattr(owner, "model_client_config", None)
         )
         if provider:
@@ -88,29 +108,25 @@ def model_provider(model: Any | None) -> str:
 
 
 def build_kv_cache_affinity_config(
-    react_config: dict[str, Any] | None,
+    application_config: dict[str, Any] | None,
     *,
     provider: str,
     model_client_config: Any = None,
 ) -> KVCacheAffinityConfig:
     """Build the shared Agent/Team KVC policy and fail closed by mode.
 
-    新声明下 KV 亲和由 ``extensions.kv_cache.mode=affinity`` 表达，不再用
-    client_provider=AscendAffinity 判别。本函数优先认 mode，同时兼容旧
-    provider 名(AscendAffinity)配置。
+    新声明下 KV 亲和由 ``extensions.kv_cache.mode=affinity`` 表达。
+    本函数以 mode 为正式能力声明，同时兼容旧 provider 名
+    ``AscendAffinity``。
     """
 
-    react_config = react_config or {}
-    raw = react_config.get("kv_cache_affinity_config")
-    raw = raw if isinstance(raw, dict) else {}
-    affinity_enabled = bool(raw.get("enable_kv_cache_affinity", False))
+    affinity_enabled = is_affinity_enabled(application_config)
 
-    # 新式判别：mcc 带 extensions.kv_cache.mode=affinity 视为具备亲和能力。
-    mode_ok = is_kv_cache_affinity_config(model_client_config) if model_client_config is not None else False
-    # 兼容旧配置：client_provider 仍是 AscendAffinity 别名(core 内部归一)。
     normalized_provider = normalize_provider(provider)
-    legacy_ok = normalized_provider == ASCEND_AFFINITY_PROVIDER
-    if affinity_enabled and not (mode_ok or legacy_ok):
+    if affinity_enabled and not has_kv_cache_affinity_capability(
+        model_client_config,
+        provider=normalized_provider,
+    ):
         logger.warning(
             "KV cache affinity failed closed: model provider=%s mode=%s "
             "requires extensions.kv_cache.mode=affinity (or legacy AscendAffinity)",
@@ -119,9 +135,6 @@ def build_kv_cache_affinity_config(
         )
         affinity_enabled = False
     return KVCacheAffinityConfig(
-        enable_kv_cache_release=bool(
-            raw.get("enable_kv_cache_release", False)
-        ),
         enable_kv_cache_affinity=affinity_enabled,
     )
 
@@ -139,17 +152,14 @@ def select_default_model_entry(
     return next((entry for entry in models if isinstance(entry, dict)), None)
 
 
-def default_model_provider_from_entries(models: list[dict[str, Any]]) -> str:
+def default_model_client_config_from_entries(
+    models: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     entry = select_default_model_entry(models)
     if entry is None:
-        return ""
-    model_client_config = entry.get("model_client_config") or {}
-    if not isinstance(model_client_config, dict):
-        return ""
-    return normalize_provider(
-        model_client_config.get("legacy_client_provider")
-        or model_client_config.get("client_provider")
-    )
+        return None
+    model_client_config = entry.get("model_client_config")
+    return model_client_config if isinstance(model_client_config, dict) else None
 
 
 def set_default_model_provider_in_entries(
@@ -169,79 +179,81 @@ def set_default_model_provider_in_entries(
     return True
 
 
-def get_default_model_provider(config: dict[str, Any] | None) -> str:
-    """Return the effective default provider without constructing a Model."""
+def get_default_model_client_config(
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the effective default ModelClientConfig without creating a Model."""
+
     config = config if isinstance(config, dict) else {}
     models = config.get("models")
     models = models if isinstance(models, dict) else {}
     entries = models.get("defaults")
     if isinstance(entries, list) and entries:
-        return default_model_provider_from_entries(entries)
+        return default_model_client_config_from_entries(entries) or {}
     else:
         target = models.get("default")
         if isinstance(target, dict):
             model_client_config = target.get("model_client_config")
             if isinstance(model_client_config, dict):
-                return normalize_provider(
-                    model_client_config.get("legacy_client_provider")
-                    or model_client_config.get("client_provider")
-                )
+                return model_client_config
 
     react = config.get("react")
     react = react if isinstance(react, dict) else {}
     model_client_config = react.get("model_client_config")
     if isinstance(model_client_config, dict):
-        provider = normalize_provider(
-            model_client_config.get("legacy_client_provider")
-            or model_client_config.get("client_provider")
-        )
-        if provider:
-            return provider
-    return str(os.getenv("MODEL_PROVIDER", "")).strip()
+        return model_client_config
+    return {"client_provider": str(os.getenv("MODEL_PROVIDER", "")).strip()}
+
+
+def get_default_model_provider(config: dict[str, Any] | None) -> str:
+    """Return the effective default provider without constructing a Model."""
+
+    return _model_client_provider(get_default_model_client_config(config))
 
 
 def is_affinity_enabled(config: dict[str, Any] | None) -> bool:
+    kv_config = get_kv_cache_affinity_application_config(config)
+    return bool(kv_config.get(KV_CACHE_AFFINITY_ENABLED_KEY, False))
+
+
+def get_kv_cache_affinity_application_config(
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return Application KVC policy, with legacy ReAct fallback."""
     config = config if isinstance(config, dict) else {}
+    canonical = config.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+    if isinstance(canonical, dict) and KV_CACHE_AFFINITY_ENABLED_KEY in canonical:
+        return canonical
+
     react = config.get("react")
     react = react if isinstance(react, dict) else {}
-    kv_config = react.get("kv_cache_affinity_config")
-    kv_config = kv_config if isinstance(kv_config, dict) else {}
-    return bool(kv_config.get("enable_kv_cache_affinity", False))
+    legacy = react.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+    return legacy if isinstance(legacy, dict) else {}
 
 
 def validate_affinity_invariant(
     config: dict[str, Any] | None,
 ) -> tuple[bool, list[str]]:
     config = config if isinstance(config, dict) else {}
-    react = config.get("react")
-    react = react if isinstance(react, dict) else {}
-    kv_config = react.get("kv_cache_affinity_config")
-    kv_config = kv_config if isinstance(kv_config, dict) else {}
-    if not bool(kv_config.get("enable_kv_cache_affinity", False)):
+    if not is_affinity_enabled(config):
         return True, []
 
     failures: list[str] = []
-    if bool(kv_config.get("enable_kv_cache_release", False)):
-        failures.append("enable_kv_cache_release must be false")
-    provider = get_default_model_provider(config)
-    if provider != ASCEND_AFFINITY_PROVIDER:
+    model_client_config = get_default_model_client_config(config)
+    provider = _model_client_provider(model_client_config)
+    if not has_kv_cache_affinity_capability(model_client_config):
         failures.append(
-            f"default provider must be {ASCEND_AFFINITY_PROVIDER}, "
-            f"got {provider or '<empty>'}"
+            "default model must declare extensions.kv_cache.mode=affinity "
+            f"or use legacy provider {ASCEND_AFFINITY_PROVIDER}; "
+            f"got provider={provider or '<empty>'} "
+            f"mode={_kv_cache_mode(model_client_config) or '<empty>'}"
         )
     return not failures, failures
 
 
 def normalize_affinity_request(params: dict[str, Any]) -> None:
     """Enforce switch/provider consistency on one mutable request payload."""
-    release_enabled = parse_bool(params.get("kv_cache_release_enabled"))
     affinity_enabled = parse_bool(params.get("kv_cache_affinity_enabled"))
-    if release_enabled and affinity_enabled:
-        raise ValueError(
-            "kv_cache_release_enabled and kv_cache_affinity_enabled "
-            "cannot both be true"
-        )
-
     requested_provider = str(params.get("model_provider") or "").strip()
     if affinity_enabled:
         if requested_provider and requested_provider != ASCEND_AFFINITY_PROVIDER:

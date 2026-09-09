@@ -20,8 +20,21 @@ def test_dockerfile_installs_frontend_and_vcs_build_dependencies() -> None:
     )
 
     assert install_block is not None
-    for package in ("ca-certificates", "git", "nodejs", "npm"):
+    for package in ("ca-certificates", "git"):
         assert re.search(rf"\b{re.escape(package)}\b", install_block.group())
+    assert not re.search(r"\bnodejs\b", install_block.group())
+    assert not re.search(r"\bnpm\b", install_block.group())
+
+
+def test_dockerfile_pins_node_and_verifies_bundled_playwright_mcp() -> None:
+    content = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG NODE_VERSION=22.11.0" in content
+    assert "FROM node:${NODE_VERSION}-bookworm-slim AS node-runtime" in content
+    assert "materialize_bundled_runtime" in content
+    assert "resolve_node_executable" in content
+    assert "manifest['version'] == '0.0.78'" in content
+    assert "[node, str(cli), '--help']" in content
 
 
 def test_container_exposes_web_ui_without_changing_other_launch_modes() -> None:

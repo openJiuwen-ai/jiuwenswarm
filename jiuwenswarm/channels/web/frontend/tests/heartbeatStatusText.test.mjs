@@ -78,14 +78,24 @@ test('canHeartbeatRunNow: enabled=false always rejected even if status is schedu
 });
 
 test('canHeartbeatToggleEnable: completed resumes after max_runs is increased', () => {
-  assert.equal(canHeartbeatToggleEnable('completed', 1, 1), false);
-  assert.equal(canHeartbeatToggleEnable('completed', 2, 1), true);
-  assert.equal(canHeartbeatToggleEnable('completed', null, 1), false);
-  assert.equal(canHeartbeatToggleEnable('expired', 2, 1), false);
+  const schedule = { type: 'interval', interval_seconds: 120 };
+  assert.equal(canHeartbeatToggleEnable('completed', 1, 1, schedule), false);
+  assert.equal(canHeartbeatToggleEnable('completed', 2, 1, schedule), true);
+  assert.equal(canHeartbeatToggleEnable('completed', null, 1, schedule), false);
+});
+
+test('canHeartbeatToggleEnable: expired once resumes only after editing run_at into the future', () => {
+  const now = 2_000;
+  assert.equal(canHeartbeatToggleEnable('expired', null, 0, { type: 'once', run_at: now - 1 }, now), false);
+  assert.equal(canHeartbeatToggleEnable('expired', null, 0, { type: 'once', run_at: now }, now), false);
+  assert.equal(canHeartbeatToggleEnable('expired', null, 0, { type: 'once', run_at: now + 1 }, now), true);
+  assert.equal(canHeartbeatToggleEnable('expired', 1, 1, { type: 'once', run_at: now + 1 }, now), false);
+  assert.equal(canHeartbeatToggleEnable('expired', null, 0, { type: 'interval', interval_seconds: 120 }, now), false);
 });
 
 test('canHeartbeatToggleEnable: non-terminal statuses keep the toggle enabled', () => {
-  assert.equal(canHeartbeatToggleEnable('scheduled', null, 0), true);
-  assert.equal(canHeartbeatToggleEnable('running', null, 0), true);
-  assert.equal(canHeartbeatToggleEnable('disabled', null, 0), true);
+  const schedule = { type: 'interval', interval_seconds: 120 };
+  assert.equal(canHeartbeatToggleEnable('scheduled', null, 0, schedule), true);
+  assert.equal(canHeartbeatToggleEnable('running', null, 0, schedule), true);
+  assert.equal(canHeartbeatToggleEnable('disabled', null, 0, schedule), true);
 });

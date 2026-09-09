@@ -324,7 +324,7 @@ class TestSessionAdapter:
             lambda sid, cache_bust=False: {"mode": "team"},
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.evict_session_kv_cache",
+            "openjiuwen.core.session.agent.create_agent_session",
             lambda **kwargs: evict_calls.append(kwargs),
         )
         resp = await SessionAdapter().handle(
@@ -349,7 +349,7 @@ class TestSessionAdapter:
             lambda sid, sessions_root=None: (missing_dir, None),
         )
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.evict_session_kv_cache",
+            "openjiuwen.core.session.agent.create_agent_session",
             lambda **kwargs: evict_calls.append(kwargs),
         )
         resp = await SessionAdapter().handle(
@@ -375,12 +375,19 @@ class TestSessionAdapter:
             lambda sid, sessions_root=None: (session_root, None),
         )
 
-        async def fake_evict(**kwargs):
-            evict_calls.append(kwargs)
+        class _Session:
+            async def release_kvc(self):
+                evict_calls.append(
+                    {
+                        "session_id": "sess-del",
+                        "parent_session_id": "sess-del",
+                    }
+                )
+                return True
 
         monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle.evict_session_kv_cache",
-            fake_evict,
+            "openjiuwen.core.session.agent.create_agent_session",
+            lambda **_kwargs: _Session(),
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_DELETE, {"session_id": "sess-del"})

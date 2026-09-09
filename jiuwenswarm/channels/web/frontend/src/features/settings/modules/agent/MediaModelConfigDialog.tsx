@@ -433,11 +433,13 @@ export function MediaModelConfigDialog({
         confirmLabel={t(enableOnSave ? 'settingsPanel.agent.saveAndEnable' : 'common.save')}
         cancelLabel={t('common.cancel')}
         dialogClassName="settings-model-dialog"
+        testIdPrefix="settings-agent-media-config-dialog"
+        testVariant={modality}
         onConfirm={() => void confirm()}
         onCancel={requestClose}
       >
         {catalogLoading ? (
-          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite">
+          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite" data-testid="settings-agent-media-config-dialog-catalog-loading">
             {t('settingsPanel.models.catalogLoadingCustomAvailable')}
           </div>
         ) : null}
@@ -445,12 +447,13 @@ export function MediaModelConfigDialog({
           <div
             className="settings-model-dialog__catalog-status settings-model-dialog__catalog-status--error"
             role="alert"
+            data-testid="settings-agent-media-config-dialog-catalog-error"
           >
             <span>
               {t('settingsPanel.models.catalogLoadFailedCustomAvailable')}
               <small>{catalogError}</small>
             </span>
-            <Button size="sm" disabled={!isConnected || catalogLoading || submitting} onClick={() => void loadCatalog()}>
+            <Button size="sm" disabled={!isConnected || catalogLoading || submitting} onClick={() => void loadCatalog()} data-testid="settings-agent-media-config-dialog-catalog-retry-btn">
               {t('settingsPanel.feedback.retry')}
             </Button>
           </div>
@@ -460,6 +463,7 @@ export function MediaModelConfigDialog({
           disabled={submitting}
           optionalText={t('common.optional')}
           showOptional={false}
+          testIdPrefix="settings-agent-media-config-dialog"
           rules={{
             vendor_selection: [{ validator: () => errors.vendor_selection }],
             api_base: [{ validator: () => errors.api_base }],
@@ -469,7 +473,7 @@ export function MediaModelConfigDialog({
           items={formItems}
         />
         {saveError ? (
-          <div className="settings-page__error" role="alert">
+          <div className="settings-page__error" role="alert" data-testid="settings-agent-media-config-dialog-error">
             {saveError}
           </div>
         ) : null}

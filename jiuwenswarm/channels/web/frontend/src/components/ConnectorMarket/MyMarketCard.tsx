@@ -41,6 +41,7 @@ interface MyMarketCardProps {
   onUse?: () => void;
   /** 不可用态点击"+"——插件是安装，MCP 是打开联接弹窗。不传则不可用态不渲染"+"。 */
   onQuickInstall?: () => void;
+  quickAction?: 'install' | 'connect';
 }
 
 // "我的扩展"卡片。2026-08-15 简化：卡片列表层级不再区分插件/MCP 的按钮组合（都只有"会话使用"
@@ -57,6 +58,7 @@ export function MyMarketCard({
   canOpenDetail = true,
   onUse,
   onQuickInstall,
+  quickAction = 'install',
 }: MyMarketCardProps) {
   const { t } = useTranslation();
   const showUse = state === 'connected';
@@ -65,7 +67,7 @@ export function MyMarketCard({
 
   return (
     // h-full 让卡片撑满 grid 分给它的整行高度，同款处理见 MarketCard.tsx。
-    <div className="relative h-full">
+    <div className="relative h-full min-h-[160px]">
       <div
         role={canOpenDetail ? 'button' : undefined}
         tabIndex={canOpenDetail ? 0 : undefined}
@@ -77,7 +79,7 @@ export function MyMarketCard({
               }
             : undefined
         }
-        className={`page-card flex h-full w-full flex-col gap-2 rounded-xl border border-border bg-card p-4 text-left transition-shadow ${
+        className={`flex h-full min-h-[160px] w-full flex-col gap-2 rounded-xl border border-border bg-card p-6 text-left transition-shadow ${
           canOpenDetail ? 'cursor-pointer hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)]' : ''
         }`}
       >
@@ -86,9 +88,9 @@ export function MyMarketCard({
             <EntityAvatar
               iconUrl={iconUrl}
               avatar={avatar}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-semibold"
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-[16px] font-semibold"
             />
-            <span className="truncate text-[16px] font-semibold leading-6 text-text">{title}</span>
+            <span className="truncate text-[18px] font-semibold leading-7 text-text">{title}</span>
             {state === 'error' && (
               <span
                 data-tooltip={t('connectorMarket.card.stateError')}
@@ -120,7 +122,9 @@ export function MyMarketCard({
                 {showInstall && (
                   <button
                     type="button"
-                    data-tooltip={state === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
+                    data-tooltip={
+                      state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`)
+                    }
                     onClick={onQuickInstall}
                     className="connector-market-icon-btn flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-muted/75 text-[color:var(--color-text-placeholder)] transition-colors hover:bg-connector-add-hover-surface hover:text-[color:var(--color-chat-accent)]"
                   >
@@ -136,7 +140,7 @@ export function MyMarketCard({
             悬停会弹出完整文案，见 TruncatedText.tsx。 */}
         <TruncatedText
           text={description}
-          className="line-clamp-2 min-h-[44px] text-[14px] leading-[22px] text-[color:var(--color-text-placeholder)]"
+          className="mt-1 line-clamp-2 min-h-[44px] text-[14px] leading-[22px] text-text-muted"
         />
       </div>
     </div>

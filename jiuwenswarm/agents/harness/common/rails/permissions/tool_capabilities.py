@@ -38,6 +38,22 @@ def install_permission_file_semantics() -> None:
         raise RuntimeError("permission_file_semantics_conflict:read_pdf")
 
 
+def _is_exact_subagent_runtime_control(
+    tool_name: object,
+    resolution: PermissionToolNameResolution,
+) -> bool:
+    """Accept only an unaliased, exact SDK runtime-control name."""
+    if not isinstance(tool_name, str):
+        return False
+    if tool_name not in _SUBAGENT_RUNTIME_CONTROL_TOOLS:
+        return False
+    if resolution.registered_name != tool_name:
+        return False
+    if resolution.canonical_name != tool_name:
+        return False
+    return not resolution.aliases
+
+
 @dataclass(frozen=True)
 class ToolCapability:
     """Immutable Host facts; this value never grants a permission decision."""
@@ -80,6 +96,14 @@ _PATH_TOOLS = {
 _PUBLIC_SEARCH_TOOLS = {"mcp_free_search", "mcp_paid_search"}
 _PUBLIC_WEB_READ_TOOLS = {"mcp_fetch_webpage"}
 _SUBAGENT_TOOLS = {"task_tool", "spawn_sub_agent", "session_new"}
+_SUBAGENT_RUNTIME_CONTROL_TOOLS = {
+    "subagent_close",
+    "subagent_list",
+    "subagent_resume",
+    "subagent_send_input",
+    "subagent_spawn",
+    "subagent_wait",
+}
 _HOST_TODO_TOOLS = {
     "todo_create",
     "todo_list",
@@ -156,6 +180,7 @@ _STATIC_CANONICAL_TOOL_NAMES = frozenset(
     | _PUBLIC_SEARCH_TOOLS
     | _PUBLIC_WEB_READ_TOOLS
     | _SUBAGENT_TOOLS
+    | _SUBAGENT_RUNTIME_CONTROL_TOOLS
     | _HOST_TODO_TOOLS
     | _LEGACY_TODO_TOOLS
     | _SESSION_STATUS_TOOLS
@@ -327,6 +352,16 @@ def classify_tool(tool_name: str) -> ToolCapability:
             "high",
             True,
             authoritative=False,
+        )
+    if _is_exact_subagent_runtime_control(tool_name, resolution):
+        return _capability(
+            resolution,
+            "subagent",
+            "subagent_runtime_control",
+            "agent_runtime",
+            {"delegation"},
+            "low",
+            False,
         )
     if lowered in _SUBAGENT_TOOLS:
         return _capability(

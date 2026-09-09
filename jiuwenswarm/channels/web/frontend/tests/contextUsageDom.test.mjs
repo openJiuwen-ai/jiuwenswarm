@@ -97,10 +97,11 @@ for (const language of ['zh', 'en']) {
       await receive(payload);
       await click(document.querySelector('.context-usage-trigger'));
 
+      const toolsLabel = translations[language].translation.chat.contextUsage.tools;
       const rows = Array.from(document.querySelectorAll('.context-usage-category'));
       assert.deepEqual(
         rows.map((row) => row.querySelector('.context-usage-category__label').textContent),
-        [...(language === 'zh' ? ['工具及MCP', '对话消息'] : ['Tools & MCP', 'Conversation messages']), ...unknownKeys],
+        [toolsLabel, language === 'zh' ? '对话消息' : 'Conversation messages', ...unknownKeys],
       );
       assert.equal(
         rows[0].querySelector('.context-usage-category__dot').style.backgroundColor,
@@ -161,7 +162,7 @@ for (const language of ['zh', 'en']) {
       assert.match(document.querySelector('[role="dialog"]').textContent, language === 'zh' ? /技能24/ : /Skills24/);
       assert.equal(
         document.querySelectorAll('.context-usage-category')[1].textContent,
-        language === 'zh' ? '工具及MCP136' : 'Tools & MCP136',
+        translations[language].translation.chat.contextUsage.tools + '136',
       );
       assert.equal(document.querySelector('.context-usage-detail__kv strong').textContent, '88.3%');
       assert.equal(
@@ -196,7 +197,8 @@ for (const language of ['zh', 'en']) {
   test(language + ': null fields remain unknown and no old category or KV value survives', async () => {
     await mount(language, async ({ receive, click }) => {
       await receive(structuredClone(fixture));
-      await click(document.querySelector('.context-usage-trigger'));
+      const trigger = document.querySelector('.context-usage-trigger');
+      await click(trigger);
       const next = structuredClone(fixture);
       next.context_window = { input_tokens: null, limit_tokens: null, occupancy_rate: null };
       next.session_kv_cache_hit_rate = null;
@@ -208,10 +210,11 @@ for (const language of ['zh', 'en']) {
       const metric = document.querySelector('.context-usage-detail__metric').textContent;
       assert.match(metric, language === 'zh' ? /未报告/ : /Not reported/);
       assert.doesNotMatch(metric, /0%|1K|2.0K/);
-      assert.match(
-        document.querySelector('.context-usage-detail__kv').textContent,
-        language === 'zh' ? /未报告/ : /Not reported/,
-      );
+      assert.equal(document.querySelector('.context-usage-detail__kv'), null);
+      await click(document.querySelector('.context-usage-detail__close'));
+      const tooltip = document.querySelector('[role="tooltip"]');
+      assert.equal(tooltip.querySelectorAll('.context-usage-tooltip__row').length, 1);
+      assert.doesNotMatch(tooltip.textContent, language === 'zh' ? /KV命中率/ : /KV hit rate/);
       assert.equal(document.querySelector('[role="alert"]'), null);
     });
   });
@@ -290,6 +293,35 @@ test('popovers stay above the trigger without reading their height and retain ho
     assert.equal(detail.style.transform, 'translateY(-100%)');
     expectedStyle.maxHeight = 'calc(200px - 7px - 8px)';
     assert.equal(detail.style.maxHeight, expectedStyle.maxHeight);
+  });
+});
+
+test('team mode renders and updates only the leader snapshot while workers are running', async () => {
+  await mount('en', async ({ receive, click, sessionId }) => {
+    await act(async () => useSessionStore.getState().setMode(sessionId, 'team'));
+
+    const leader = structuredClone(fixture);
+    leader.role = 'leader';
+    leader.depth = 2;
+    leader.team_id = 'runtime-team';
+    leader.member_name = 'leader-name';
+    await receive(leader);
+    const trigger = document.querySelector('.context-usage-trigger');
+    assert.ok(trigger);
+    await click(trigger);
+    assert.match(document.querySelector('.context-usage-detail__metric').textContent, /50%/);
+
+    const worker = structuredClone(fixture);
+    worker.role = 'teammate';
+    worker.member_name = 'worker-1';
+    worker.context_window = { input_tokens: 1800, limit_tokens: 2000, occupancy_rate: 0.9 };
+    await receive(worker);
+    assert.match(document.querySelector('.context-usage-detail__metric').textContent, /50%/);
+
+    const nextLeader = structuredClone(leader);
+    nextLeader.context_window = { input_tokens: 1500, limit_tokens: 2000, occupancy_rate: 0.75 };
+    await receive(nextLeader);
+    assert.match(document.querySelector('.context-usage-detail__metric').textContent, /75%/);
   });
 });
 

@@ -47,6 +47,7 @@ class TestReqMethod:
             "personal_context.fetch.delete_service",
             "personal_context.fetch.patch_service",
             "personal_context.fetch.start_service",
+            "personal_context.fetch.stop_run",
             "personal_context.fetch.stop_service",
             "personal_context.fetch.run_all",
             "personal_context.fetch.run_one",
@@ -59,7 +60,7 @@ class TestReqMethod:
             "personal_context.context.get_node",
             "personal_context.context.get_source",
         }
-        assert len(methods) == 24
+        assert len(methods) == 25
 
     @staticmethod
     def test_session_methods():

@@ -231,6 +231,54 @@ test('session history restores the complete context usage payload without adding
   assert.deepEqual(preview.contextUsageSnapshot.measurement, contextUsage.measurement);
 });
 
+test('team history restores the latest leader before a newer teammate frame', () => {
+  const contextUsageRecord = ({ requestId, role, memberName, timestamp, inputTokens }) => ({
+    id: requestId,
+    role,
+    mode: 'team',
+    event_type: 'context.usage',
+    request_id: requestId,
+    product_session_id: sessionId,
+    depth: role === 'leader' ? 2 : 0,
+    team_id: 'runtime-team',
+    member_name: memberName,
+    timestamp,
+    content: '',
+    schema_version: 'context-usage.v1',
+    phase: 'post_call',
+    context_window: {
+      limit_tokens: 2000,
+      input_tokens: inputTokens,
+      occupancy_rate: inputTokens / 2000,
+    },
+    parts: {},
+    session_kv_cache_hit_rate: 0,
+  });
+  const leader = contextUsageRecord({
+    requestId: 'leader-context',
+    role: 'leader',
+    memberName: 'explicit-leader-name',
+    timestamp: '2026-09-03T03:00:00.000Z',
+    inputTokens: 700,
+  });
+  const worker = contextUsageRecord({
+    requestId: 'worker-context',
+    role: 'teammate',
+    memberName: 'worker-1',
+    timestamp: '2026-09-03T03:01:00.000Z',
+    inputTokens: 900,
+  });
+
+  const preview = parseHistoryJsonFileToTimelinePreview([leader, worker], sessionId);
+  assert.equal(preview.mode, 'team');
+  assert.equal(preview.contextUsageSnapshot.request_id, 'leader-context');
+  assert.equal(preview.contextUsageSnapshot.role, 'leader');
+  assert.equal(preview.contextUsageSnapshot.context_window.input_tokens, 700);
+
+  const workerOnly = parseHistoryJsonFileToTimelinePreview([worker], sessionId);
+  assert.equal(workerOnly.contextUsageSnapshot, null);
+});
+
 test('subagent history replays persisted roster status updates', () => {
   const replay = parseSubagentHistoryReplay({
     role: 'assistant',

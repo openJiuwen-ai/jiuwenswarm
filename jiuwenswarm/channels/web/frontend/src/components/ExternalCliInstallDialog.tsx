@@ -100,6 +100,10 @@ export function ExternalCliInstallDialog({
             const total = Number(status.total_bytes || 0);
             const percent = total > 0 ? Math.min(100, (downloaded / total) * 100) : 0;
             const percentLabel = downloaded > 0 && percent < 1 ? '<1%' : `${Math.floor(percent)}%`;
+            const installerActivity = status.progress_kind === 'installer_activity';
+            const showProgress = status.status === 'running' && (installerActivity || status.phase === 'downloading');
+            const determinateProgress = status.phase === 'downloading' && total > 0;
+            const latestLog = String(status.last_log || status.log_tail?.at(-1) || '').trim();
             const agentName = agent === 'claude' ? 'Claude' : 'Codex';
             const downloadAttempt = Number(status.download_attempt || 0);
             const downloadMaxAttempts = Number(status.download_max_attempts || 0);
@@ -137,30 +141,38 @@ export function ExternalCliInstallDialog({
                   </span>
                 </div>
                 {artifactLabel ? <div className="external-cli-install-dialog__artifact">{artifactLabel}</div> : null}
-                {status.phase === 'downloading' ? (
+                {showProgress ? (
                   <>
                     <div
-                      className={`external-cli-install-dialog__progress${total > 0 ? '' : ' external-cli-install-dialog__progress--indeterminate'}`}
+                      className={`external-cli-install-dialog__progress${determinateProgress ? '' : ' external-cli-install-dialog__progress--indeterminate'}`}
                       aria-label={t('config.externalCli.installProgress')}
                     >
-                      <span style={total > 0 ? { width: `${percent}%` } : undefined} />
+                      <span style={determinateProgress ? { width: `${percent}%` } : undefined} />
                     </div>
-                    <div className="external-cli-install-dialog__metrics">
-                      <span>
-                        {total > 0 ? `${formatBytes(downloaded)} / ${formatBytes(total)}` : formatBytes(downloaded)}
-                      </span>
-                      {total > 0 ? <strong>{percentLabel}</strong> : null}
-                      {Number(status.bytes_per_second) > 0 ? (
-                        <span>{formatBytes(Number(status.bytes_per_second))}/s</span>
-                      ) : null}
-                      {Number(status.eta_seconds) > 0 ? (
+                    {status.phase === 'downloading' ? (
+                      <div className="external-cli-install-dialog__metrics">
                         <span>
-                          {t('config.externalCli.installEta', { eta: formatEta(Number(status.eta_seconds)) })}
+                          {total > 0 ? `${formatBytes(downloaded)} / ${formatBytes(total)}` : formatBytes(downloaded)}
                         </span>
-                      ) : null}
-                    </div>
+                        {total > 0 ? <strong>{percentLabel}</strong> : null}
+                        {Number(status.bytes_per_second) > 0 ? (
+                          <span>{formatBytes(Number(status.bytes_per_second))}/s</span>
+                        ) : null}
+                        {Number(status.eta_seconds) > 0 ? (
+                          <span>
+                            {t('config.externalCli.installEta', { eta: formatEta(Number(status.eta_seconds)) })}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {retryMessage ? <div className="external-cli-install-dialog__retry">{retryMessage}</div> : null}
                   </>
+                ) : null}
+                {status.status === 'running' && installerActivity && latestLog ? (
+                  <div className="external-cli-install-dialog__activity" aria-live="polite">
+                    <span>{t('config.externalCli.installActivity')}</span>
+                    <code>{latestLog}</code>
+                  </div>
                 ) : null}
                 {status.error ? <div className="external-cli-install-dialog__error">{status.error}</div> : null}
               </section>

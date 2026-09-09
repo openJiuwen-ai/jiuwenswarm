@@ -80,6 +80,26 @@ def test_resolve_restores_delivery_context(monkeypatch) -> None:
     assert summary.route_metadata == {"app_id": "app-1", "chat_id": "chat-1"}
 
 
+def test_resolve_ignores_internal_subagent_delivery_channel(monkeypatch) -> None:
+    r = HeartbeatSessionResolver()
+    monkeypatch.setattr(
+        HeartbeatSessionResolver,
+        "_read_session_metadata",
+        lambda _self_or_sid, _sid=None: {
+            "title": "x",
+            "delivery_context": {
+                "channel_id": "subagent",
+                "route_metadata": {"connection_id": "web-connection-1"},
+            },
+        },
+    )
+
+    summary = r.resolve("web", "s1")
+
+    assert summary.channel_id == "web"
+    assert summary.route_metadata == {"connection_id": "web-connection-1"}
+
+
 def test_resolve_propagates_temporary_read_failure(monkeypatch) -> None:
     r = HeartbeatSessionResolver()
 

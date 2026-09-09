@@ -1,536 +1,250 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
-from types import MethodType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
-from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
 
 @pytest.fixture(autouse=True)
-def _clear_kvc_task_guard() -> Iterator[None]:
+def _clear_product_state() -> Iterator[None]:
     from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_task_guard import (
         get_session_kv_cache_task_guard,
     )
 
-    guard = get_session_kv_cache_task_guard()
-    guard.clear()
+    get_session_kv_cache_task_guard().clear()
+    kv_cache_product_hooks._PRODUCT_GUARD_TASKS.clear()
     yield
-    guard.clear()
+    get_session_kv_cache_task_guard().clear()
+    kv_cache_product_hooks._PRODUCT_GUARD_TASKS.clear()
 
 
-class _AgentManager:
-    def get_agent_nowait(self, _channel_id: str):
-        return None
-
-
-def _session_switch_lifecycle_owner(
-    agent_manager: _AgentManager | None = None,
-) -> SimpleNamespace:
-    """Stub owner with lifecycle helpers bound after prepare/dispatch split."""
-    owner = SimpleNamespace(_agent_manager=agent_manager or _AgentManager())
-    owner._prepare_session_switch_owner = MethodType(
-        AgentWebSocketServer._prepare_session_switch_owner, owner
-    )
-    owner._dispatch_session_switch_kvc = MethodType(
-        AgentWebSocketServer._dispatch_session_switch_kvc, owner
-    )
-    return owner
-
-
-class _TeamManager:
-    def __init__(self) -> None:
-        self.prepare_calls: list[dict[str, str]] = []
-        self.prefetch_calls: list[dict[str, str]] = []
-
-    async def prepare_session_switch(
-        self,
-        session_id: str,
-        reason: str = "",
-        previous_session_id: str | None = None,
-    ) -> None:
-        call = {"session_id": session_id, "reason": reason}
-        if previous_session_id is not None:
-            call["previous_session_id"] = previous_session_id
-        self.prepare_calls.append(call)
-
-    async def prefetch_session_kv_cache(
-        self,
-        session_id: str,
-        reason: str = "",
-    ) -> bool:
-        self.prefetch_calls.append({"session_id": session_id, "reason": reason})
-        return True
-
-
-def test_resolve_session_is_team_logs_metadata_failure_and_uses_params(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    warning_calls: list[tuple[str, tuple[str, ...]]] = []
-
-    def _raise_metadata_error(_session_id: str) -> dict:
-        raise OSError("metadata unavailable")
-
+def _set_gate(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
     monkeypatch.setattr(
-        kv_cache_product_hooks.session_metadata,
-        "get_session_metadata",
-        _raise_metadata_error,
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks.logger,
-        "warning",
-        lambda message, *args: warning_calls.append(
-            (message, tuple(str(arg) for arg in args))
-        ),
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider."
+        "is_kv_cache_affinity_enabled",
+        lambda: enabled,
     )
 
-    assert kv_cache_product_hooks._resolve_session_is_team(
-        "team_sess_001",
-        {"mode": "team"},
-    ) is True
-    assert warning_calls == [
-        (
-            "[ProductKVCacheHooks] failed to resolve session metadata: "
-            "session_id=%s error=%s",
-            ("team_sess_001", "metadata unavailable"),
+
+async def _drain_product_actions() -> None:
+    while kv_cache_product_hooks._PRODUCT_GUARD_TASKS:
+        await asyncio.gather(
+            *tuple(kv_cache_product_hooks._PRODUCT_GUARD_TASKS),
+            return_exceptions=True,
         )
-    ]
 
 
-@pytest.mark.asyncio
-async def test_cancel_pending_tasks_cleans_all_kvc_registries(
+def test_resolve_switch_context_keeps_product_facts_when_affinity_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cleanup_calls: list[str] = []
-
-    async def _record(owner: str) -> None:
-        cleanup_calls.append(owner)
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "cancel_pending_kv_cache_lifecycle_tasks",
-        lambda: _record("root"),
-    )
-    monkeypatch.setattr(
-        "openjiuwen.core.foundation.kv_cache."
-        "cancel_pending_session_kv_cache_signals",
-        lambda: _record("plan"),
-    )
-    monkeypatch.setattr(
-        "openjiuwen.agent_teams.kv_cache.kv_cache_lifecycle."
-        "cancel_pending_signal_tasks",
-        lambda: _record("team"),
-    )
-
-    await kv_cache_product_hooks.cancel_pending_tasks()
-
-    assert cleanup_calls == ["root", "plan", "team"]
-
-
-@pytest.mark.asyncio
-async def test_disabled_plan_delete_does_not_resolve_live_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _NoLookupAgentManager:
-        def get_agent_nowait(self, _channel_id: str):
-            raise AssertionError("disabled affinity must not resolve a Plan agent")
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "evict_session_kv_cache",
-        lambda **_kwargs: pytest.fail("disabled affinity dispatched evict"),
-    )
-
-    assert await kv_cache_product_hooks.evict_plan_session(
-        session_id="sess_agent_001",
-        agent_manager=_NoLookupAgentManager(),
-        channel_id="web",
-    ) is False
-
-
-def test_disabled_delete_does_not_mutate_kvc_guard(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: False,
-    )
-
-    guard = SimpleNamespace(
-        delete=lambda **_kwargs: pytest.fail("disabled affinity mutated delete state"),
-        restore_after_failed_delete=lambda _session_id: pytest.fail(
-            "disabled affinity mutated failed-delete state"
-        ),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_task_guard."
-        "get_session_kv_cache_task_guard",
-        lambda: guard,
-    )
-
-    kv_cache_product_hooks.mark_session_deleted(
-        session_id="sess_agent_001",
-        channel_id="web",
-        is_team=False,
-    )
-    kv_cache_product_hooks.restore_session_after_failed_delete(
-        "sess_agent_001"
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("affinity_enabled", [False, True])
-async def test_team_switch_records_foreground_without_navigation_prefetch(
-    monkeypatch: pytest.MonkeyPatch,
-    affinity_enabled: bool,
-) -> None:
-    team_manager = _TeamManager()
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.get_team_manager",
-        lambda _channel_id: team_manager,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: affinity_enabled,
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks.session_history,
-        "history_exists",
-        lambda _session_id: True,
-    )
-
-    context = kv_cache_product_hooks.resolve_session_switch_context(
-        target_session_id="team_sess_002",
-        previous_session_id="team_sess_001",
-        params={"mode": "team", "previous_mode": "team"},
-    )
-    await kv_cache_product_hooks.dispatch_session_switch_signals(
-        context=context,
-        agent_manager=_AgentManager(),
-        channel_id="web",
-        team_manager=team_manager,
-        target_session_id="team_sess_002",
-        previous_session_id="team_sess_001",
-        reason="session.switch: ",
-    )
-
-    assert context.target_is_team is True
-    assert context.previous_is_team is True
-    assert context.resolved_mode == "team"
-    assert team_manager.prepare_calls == []
-    assert team_manager.prefetch_calls == []
-
-
-@pytest.mark.asyncio
-async def test_plan_navigation_alone_dispatches_no_root_signals(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    offload_calls: list[dict] = []
-    prefetch_calls: list[dict] = []
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: True,
-    )
+    _set_gate(monkeypatch, False)
     monkeypatch.setattr(
         kv_cache_product_hooks.session_metadata,
         "get_session_metadata",
-        lambda _session_id: {"mode": "agent.plan"},
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks.session_history,
-        "history_exists",
-        lambda _session_id: True,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "dispatch_offload_session_kv_cache",
-        lambda **kwargs: offload_calls.append(kwargs),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "dispatch_prefetch_session_kv_cache",
-        lambda **kwargs: prefetch_calls.append(kwargs),
+        lambda session_id: {"mode": "team" if session_id == "old" else "code.normal"},
     )
 
     context = kv_cache_product_hooks.resolve_session_switch_context(
-        target_session_id="sess_agent_002",
-        previous_session_id="sess_agent_001",
-        params={"mode": "agent.plan"},
-    )
-    await kv_cache_product_hooks.dispatch_session_switch_signals(
-        context=context,
-        agent_manager=_AgentManager(),
-        channel_id="web",
-        team_manager=None,
-        target_session_id="sess_agent_002",
-        previous_session_id="sess_agent_001",
-        reason="session.switch: ",
+        target_session_id="new-session",
+        previous_session_id="old",
+        params={"mode": "code.normal"},
     )
 
-    assert (context.target_is_team, context.resolved_mode) == (
-        False,
-        "agent.plan",
+    assert context == kv_cache_product_hooks.SessionSwitchContext(
+        target_is_team=False,
+        previous_is_team=True,
+        resolved_mode="code.normal",
+        affinity_enabled=False,
     )
-    assert offload_calls == []
-    assert prefetch_calls == []
 
 
-@pytest.mark.asyncio
-async def test_disabled_plan_switch_skips_kvc_and_preserves_resolved_mode(
+def test_resolve_switch_context_contains_affinity_gate_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider."
+        "is_kv_cache_affinity_enabled",
+        lambda: (_ for _ in ()).throw(RuntimeError("broken config")),
+    )
     monkeypatch.setattr(
         kv_cache_product_hooks.session_metadata,
         "get_session_metadata",
         lambda _session_id: {},
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: False,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "dispatch_offload_session_kv_cache",
-        lambda **_kwargs: pytest.fail("disabled affinity dispatched offload"),
-    )
 
     context = kv_cache_product_hooks.resolve_session_switch_context(
-        target_session_id="sess_agent_002",
-        previous_session_id="sess_agent_001",
+        target_session_id="session-a",
+        previous_session_id="",
         params={"mode": "code.normal"},
     )
 
-    assert (context.target_is_team, context.resolved_mode) == (
-        False,
-        "code.normal",
-    )
     assert context.affinity_enabled is False
+    assert context.resolved_mode == "code.normal"
 
 
 @pytest.mark.asyncio
-async def test_disabled_affinity_keeps_previous_team_fact_for_lifecycle(
+async def test_navigation_records_visibility_without_prefetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        kv_cache_product_hooks.session_metadata,
-        "get_session_metadata",
-        lambda session_id: {
-            "mode": "team" if session_id == "team_sess_001" else "agent.plan"
-        },
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: False,
-    )
-
-    context = kv_cache_product_hooks.resolve_session_switch_context(
-        target_session_id="plan_sess_002",
-        previous_session_id="team_sess_001",
-        params={"mode": "agent.plan"},
-    )
-
-    assert context.affinity_enabled is False
-    assert context.target_is_team is False
-    assert context.previous_is_team is True
-    assert context.resolved_mode == "agent.plan"
-
-
-@pytest.mark.asyncio
-async def test_disabled_affinity_routes_previous_team_to_team_owner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    team_manager = _TeamManager()
-    owner = _session_switch_lifecycle_owner()
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.get_team_manager",
-        lambda _channel_id: team_manager,
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks.session_metadata,
-        "get_session_metadata",
-        lambda session_id: {
-            "mode": "team" if session_id == "team_sess_001" else "agent.plan"
-        },
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: False,
-    )
-
-    result = await AgentWebSocketServer._prepare_session_switch_owner(
-        owner,
-        channel_id="web",
-        target_session_id="plan_sess_002",
-        previous_session_id="team_sess_001",
-        params={"mode": "agent.plan"},
-        reason="session.switch: ",
-    )
-
-    assert result[:2] == (False, "agent.plan")
-    assert team_manager.prepare_calls == [
-        {
-            "session_id": "plan_sess_002",
-            "reason": "session.switch: ",
-            "previous_session_id": "team_sess_001",
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_team_navigation_does_not_resolve_plan_agent_or_prefetch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    team_manager = _TeamManager()
-
-    class _NoPlanAgentManager:
-        def get_agent_nowait(self, _channel_id: str):
-            raise AssertionError("Team-only switch must not resolve a Plan agent")
-
     monkeypatch.setattr(
         kv_cache_product_hooks.session_history,
         "history_exists",
         lambda _session_id: True,
     )
-
     context = kv_cache_product_hooks.SessionSwitchContext(
-        target_is_team=True,
-        previous_is_team=True,
-        resolved_mode="team",
+        target_is_team=False,
+        previous_is_team=False,
+        resolved_mode="code.normal",
         affinity_enabled=True,
     )
+
     await kv_cache_product_hooks.dispatch_session_switch_signals(
         context=context,
-        agent_manager=_NoPlanAgentManager(),
         channel_id="web",
-        team_manager=team_manager,
-        target_session_id="team_sess_002",
-        previous_session_id="team_sess_001",
-        reason="session.switch: ",
+        target_session_id="session-b",
+        previous_session_id="session-a",
     )
 
-    assert team_manager.prefetch_calls == []
+    assert kv_cache_product_hooks._PRODUCT_GUARD_TASKS == set()
 
 
 @pytest.mark.asyncio
-async def test_team_to_plan_routes_previous_session_to_team_owner(
+async def test_prepare_dispatches_only_session_prepare(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    team_manager = _TeamManager()
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.get_team_manager",
-        lambda _channel_id: team_manager,
-    )
+    _set_gate(monkeypatch, True)
     monkeypatch.setattr(
         kv_cache_product_hooks.session_metadata,
         "get_session_metadata",
-        lambda session_id: {
-            "mode": "team" if session_id == "team_sess_001" else "agent.plan"
-        },
+        lambda _session_id: {"mode": "code.normal"},
+    )
+    monkeypatch.setattr(
+        kv_cache_product_hooks.session_history,
+        "history_exists",
+        lambda _session_id: True,
+    )
+    calls: list[str] = []
+
+    class _Session:
+        async def prepare_kvc(self) -> bool:
+            calls.append("prepare")
+            return True
+
+        async def suspend_kvc(self) -> bool:
+            calls.append("suspend")
+            return True
+
+    monkeypatch.setattr(
+        "openjiuwen.core.session.agent.create_agent_session",
+        lambda **_kwargs: _Session(),
+    )
+
+    result = kv_cache_product_hooks.record_session_prepare(
+        session_id="session-a",
+        intent_id="intent-a",
+        channel_id="web",
+        params={"mode": "code.normal"},
+    )
+    await _drain_product_actions()
+
+    assert result == "scheduled"
+    assert calls == ["prepare"]
+
+
+@pytest.mark.asyncio
+async def test_background_completion_dispatches_session_suspend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_gate(monkeypatch, True)
+    monkeypatch.setattr(
+        kv_cache_product_hooks.session_metadata,
+        "get_session_metadata",
+        lambda _session_id: {"mode": "code.normal"},
     )
     monkeypatch.setattr(
         kv_cache_product_hooks.session_history,
         "history_exists",
         lambda _session_id: False,
     )
+    calls: list[str] = []
+
+    class _Session:
+        async def prepare_kvc(self) -> bool:
+            calls.append("prepare")
+            return True
+
+        async def suspend_kvc(self) -> bool:
+            calls.append("suspend")
+            return True
+
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "is_kv_cache_affinity_enabled",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_lifecycle."
-        "dispatch_offload_session_kv_cache",
-        lambda **_kwargs: pytest.fail("Team owner must handle previous session"),
+        "openjiuwen.core.session.agent.create_agent_session",
+        lambda **_kwargs: _Session(),
     )
 
-    context = kv_cache_product_hooks.resolve_session_switch_context(
-        target_session_id="plan_sess_002",
-        previous_session_id="team_sess_001",
-        params={"mode": "agent.plan", "previous_mode": "team"},
-    )
-    await kv_cache_product_hooks.dispatch_session_switch_signals(
-        context=context,
-        agent_manager=_AgentManager(),
-        channel_id="tui",
-        team_manager=team_manager,
-        target_session_id="plan_sess_002",
-        previous_session_id="team_sess_001",
-        reason="session.switch: ",
-    )
-
-    assert (context.target_is_team, context.resolved_mode) == (
-        False,
-        "agent.plan",
-    )
-    assert context.previous_is_team is True
-    assert team_manager.prepare_calls == []
-
-
-@pytest.mark.asyncio
-async def test_team_product_switch_survives_kvc_context_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    team_manager = _TeamManager()
-    owner = _session_switch_lifecycle_owner()
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.get_team_manager",
-        lambda _channel_id: team_manager,
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "resolve_session_switch_context",
-        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("kvc unavailable")),
-    )
-
-    result = await AgentWebSocketServer._prepare_session_switch_owner(
-        owner,
-        channel_id="web",
-        target_session_id="team_sess_002",
-        previous_session_id="team_sess_001",
-        params={"mode": "team"},
-        reason="session.switch: ",
-    )
-
-    assert result[:2] == (True, "team")
-    assert team_manager.prepare_calls == [
-        {
-            "session_id": "team_sess_002",
-            "reason": "session.switch: ",
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_plan_product_switch_preserves_canonical_mode_when_kvc_hook_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    owner = _session_switch_lifecycle_owner()
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "resolve_session_switch_context",
-        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("kvc unavailable")),
-    )
-
-    result = await AgentWebSocketServer._prepare_session_switch_owner(
-        owner,
-        channel_id="web",
-        target_session_id="plan_sess_002",
-        previous_session_id="plan_sess_001",
+    await kv_cache_product_hooks.record_chat_started(
+        session_id="session-a",
         params={"mode": "code.normal"},
-        reason="session.switch: ",
+        channel_id="web",
+    )
+    kv_cache_product_hooks.record_chat_finished(
+        session_id="session-a",
+        succeeded=True,
+    )
+    await _drain_product_actions()
+
+    assert calls == ["suspend"]
+
+
+@pytest.mark.asyncio
+async def test_team_action_uses_team_session_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _Session:
+        async def suspend_kvc(self) -> bool:
+            calls.append("team-suspend")
+            return True
+
+        async def prepare_kvc(self) -> bool:
+            calls.append("team-prepare")
+            return True
+
+    monkeypatch.setattr(
+        "openjiuwen.core.session.agent_team.create_agent_team_session",
+        lambda **_kwargs: _Session(),
+    )
+    action = SimpleNamespace(
+        action="offload",
+        session_id="team-a",
+        is_team=True,
     )
 
-    assert result[:2] == (False, "code.normal")
+    kv_cache_product_hooks._dispatch_guard_action(action)
+    await _drain_product_actions()
+
+    assert calls == ["team-suspend"]
+
+
+def test_successful_delete_forgets_product_facts() -> None:
+    from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_task_guard import (
+        get_session_kv_cache_task_guard,
+    )
+
+    guard = get_session_kv_cache_task_guard()
+    guard.set_foreground(
+        session_id="session-a",
+        view_id="view-a",
+        visible=True,
+        channel_id="web",
+        is_team=False,
+    )
+
+    kv_cache_product_hooks.forget_deleted_session("session-a")
+
+    assert guard.snapshot("session-a") is None

@@ -4,7 +4,7 @@
 
 This module deliberately owns no provider/model objects and writes no files.
 It only turns authoritative product events into deduplicated logical actions;
-the existing Plan/Team owners still execute and order provider requests.
+Session delegates execution and ordering to the shared KVC runtime.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ class KVCGuardActionRequest:
     session_id: str
     channel_id: str
     is_team: bool
-    reason: str
 
 
 @dataclass(slots=True)
@@ -34,7 +33,6 @@ class SessionKVCFacts:
     running_tasks: int = 0
     has_completed_inference: bool = False
     has_history: bool = False
-    expected_cache_state: Literal["unknown", "hot", "cold", "evicted"] = "unknown"
     last_prepare_intent_id: str | None = None
     deleted: bool = False
 
@@ -79,7 +77,7 @@ class SessionKVCacheTaskGuard:
             return None
 
         facts.foreground_view_ids.discard(normalized_view_id)
-        return self._maybe_offload(facts, reason="foreground-left")
+        return self._maybe_offload(facts)
 
     def prepare(
         self,
@@ -99,15 +97,15 @@ class SessionKVCacheTaskGuard:
         if facts is None or facts.deleted:
             return None
         normalized_intent_id = _normalize(intent_id)
-        if normalized_intent_id and facts.last_prepare_intent_id == normalized_intent_id:
+        if (
+            normalized_intent_id
+            and facts.last_prepare_intent_id == normalized_intent_id
+        ):
             return None
         facts.last_prepare_intent_id = normalized_intent_id or None
         if not (facts.has_completed_inference or facts.has_history):
             return None
-        if facts.expected_cache_state == "hot":
-            return None
-        facts.expected_cache_state = "hot"
-        return self._request(facts, "prefetch", reason="input-intent")
+        return self._request(facts, "prefetch")
 
     def task_started(
         self,
@@ -128,11 +126,8 @@ class SessionKVCacheTaskGuard:
         facts.running_tasks += 1
         # chat.send is a fallback for a lost typing-intent event.  It still
         # never waits for prefetch.
-        if facts.expected_cache_state != "hot" and (
-            facts.has_completed_inference or facts.has_history
-        ):
-            facts.expected_cache_state = "hot"
-            return self._request(facts, "prefetch", reason="chat-start-fallback")
+        if facts.has_completed_inference or facts.has_history:
+            return self._request(facts, "prefetch")
         return None
 
     def task_finished(
@@ -147,8 +142,7 @@ class SessionKVCacheTaskGuard:
         facts.running_tasks = max(0, facts.running_tasks - 1)
         if succeeded:
             facts.has_completed_inference = True
-            facts.expected_cache_state = "hot"
-        return self._maybe_offload(facts, reason="background-task-completed")
+        return self._maybe_offload(facts)
 
     def delete(
         self,
@@ -166,8 +160,7 @@ class SessionKVCacheTaskGuard:
             return None
         facts.deleted = True
         facts.foreground_view_ids.clear()
-        facts.expected_cache_state = "evicted"
-        return self._request(facts, "evict", reason="session-delete")
+        return self._request(facts, "evict")
 
     def restore_after_failed_delete(self, session_id: str) -> None:
         """Undo only the process-local tombstone when product deletion fails."""
@@ -175,9 +168,6 @@ class SessionKVCacheTaskGuard:
         if facts is None:
             return
         facts.deleted = False
-        # Provider state is no longer knowable after a partial delete attempt.
-        # Keep this conservative so a later input intent can prefetch again.
-        facts.expected_cache_state = "unknown"
 
     def _ensure(
         self,
@@ -202,31 +192,25 @@ class SessionKVCacheTaskGuard:
     def _maybe_offload(
         self,
         facts: SessionKVCFacts,
-        *,
-        reason: str,
     ) -> KVCGuardActionRequest | None:
-        if facts.deleted or facts.expected_cache_state == "cold":
+        if facts.deleted:
             return None
         if facts.running_tasks > 0 or facts.foreground_view_ids:
             return None
         if not facts.has_completed_inference:
             return None
-        facts.expected_cache_state = "cold"
-        return self._request(facts, "offload", reason=reason)
+        return self._request(facts, "offload")
 
     @staticmethod
     def _request(
         facts: SessionKVCFacts,
         action: KVCGuardAction,
-        *,
-        reason: str,
     ) -> KVCGuardActionRequest:
         return KVCGuardActionRequest(
             action=action,
             session_id=facts.session_id,
             channel_id=facts.channel_id,
             is_team=facts.is_team,
-            reason=reason,
         )
 
 

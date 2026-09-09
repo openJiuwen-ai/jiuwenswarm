@@ -10,24 +10,22 @@ copying + enable flipping is exercised for real.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from jiuwenswarm.server.runtime.mcp.cli_driver import (
-    AuthStepResult,
     CliDriver,
     CliManifest,
     CommandResult,
     ERR_BINARY_NOT_FOUND,
-    StatusResult,
     _extract_url,
     _is_binary_not_found,
     _parse_version,
     _version_ge,
 )
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _mkmanifest() -> CliManifest:
@@ -338,6 +336,9 @@ class TestSkillInstaller:
         )
         (pkg / "references").mkdir()
         (pkg / "references" / "ref.md").write_text("ref", encoding="utf-8")
+        package = pkg.parents[1]
+        (package / "cli.json").write_text("{}", encoding="utf-8")
+        write_manifest(package, "cli", credentials_type="cli-oauth", skills=True)
         return ws
 
     def test_install_copies_and_enables(self, tmp_path: Path) -> None:
@@ -465,6 +466,9 @@ class TestFlatSkillLayout:
         )
         (skills_dir / "references").mkdir()
         (skills_dir / "references" / "ui-locator.md").write_text("ref", encoding="utf-8")
+        package = skills_dir.parent
+        (package / "cli.json").write_text("{}", encoding="utf-8")
+        write_manifest(package, "cli", credentials_type="cli-oauth", skills=True)
         return ws
 
     def test_install_flat_skill_named_after_connector(self, tmp_path: Path) -> None:
@@ -584,7 +588,7 @@ class TestClassifyInstallFailure:
     carrying a structured code + runtime, so mcp.connect can surface an
     actionable i18n hint instead of raw WinError."""
 
-    def _mk(self, **kw) -> "InstallResult":
+    def _mk(self, **kw):
         from jiuwenswarm.server.runtime.mcp.cli_driver import InstallResult
         base = dict(
             name="dingtalk", installed=True, version=None,
@@ -657,4 +661,3 @@ class TestClassifyInstallFailure:
         exc = _classify_install_failure("dingtalk", self._mk())
         assert isinstance(exc, CliConnectError)
         assert isinstance(exc, ValueError)
-

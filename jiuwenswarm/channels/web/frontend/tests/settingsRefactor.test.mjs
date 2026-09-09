@@ -21,6 +21,7 @@ import {
   buildSettingsPageDefinition,
   restrictSettingsAccess,
 } from '../node_modules/.cache/settings-refactor/registry/buildSettingsPageDefinition.js';
+import { openSourceSettingsAccessPolicy } from '../node_modules/.cache/settings-refactor/registry/accessPolicy.js';
 import {
   isMediaCapabilityConfigured,
   mediaCapabilityModalities,
@@ -347,7 +348,6 @@ test('current Settings titles omit descriptions while the shared API retains opt
     'settingsPanel.agent.webSearchDescription',
     'settingsPanel.agent.mediaToolsDescription',
     'settingsPanel.agent.teamDescription',
-    'settingsPanel.experimental.externalCliAgentsDescription',
     'settingsPanel.experimental.a2uiDescription',
     'settingsPanel.experimental.proactiveDescription',
   ];
@@ -412,7 +412,7 @@ test('simple Settings definitions reject unknown sources and derive required i18
         titleKey: 'settings.browser',
         icon: Icon,
         source: 'browser',
-        sections: [{ id: 'browser', items: [{ id: 'type', component: 'select', key: 'browser_type', options: [] }] }],
+        sections: [{ id: 'browser', items: [{ id: 'type', component: 'select', key: 'headless', options: [] }] }],
       }),
     /has no options/,
   );
@@ -545,6 +545,24 @@ test('open-source Settings composition preserves the registered modules and edit
         overlays: [{ id: 'not-allowed' }],
       }),
     /require extended composition/,
+  );
+});
+
+test('KV Cache affinity remains registered but hidden until product release', () => {
+  const context = { compositionMode: 'base' };
+  assert.deepEqual(
+    openSourceSettingsAccessPolicy.evaluate(
+      { kind: 'section', moduleId: 'experimental', sectionId: 'kv-cache-affinity' },
+      context,
+    ),
+    { level: 'hidden' },
+  );
+  assert.deepEqual(
+    openSourceSettingsAccessPolicy.evaluate(
+      { kind: 'section', moduleId: 'experimental', sectionId: 'trajectory-ui' },
+      context,
+    ),
+    { level: 'editable' },
   );
 });
 
@@ -1077,6 +1095,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
+    'kv_cache_affinity_enabled',
     'proactive_recommendation_enabled',
   ]);
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
@@ -1090,6 +1109,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'external_cli_agent_codex_cli_path',
     'external_cli_agent_codex_enabled',
     'external_cli_agent_codex_use_builtin',
+    'kv_cache_affinity_enabled',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
@@ -1244,8 +1264,8 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 
 test('Agent configuration entry points are disabled while the backend is connecting', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
-  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected\}/g)?.length, 1);
-  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 2);
+  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected\}/g)?.length, 2);
+  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 3);
   assert.match(agentSettings, /<FormDialog[\s\S]*confirmDisabled=\{!isConnected\}/);
 });
 
@@ -1278,10 +1298,13 @@ test('media capability configuration and hot-apply state use exact fields', () =
   assert.equal(wasConfigAppliedWithoutRestart({ applied_without_restart: true }), true);
   assert.equal(wasConfigAppliedWithoutRestart({ applied_without_restart: false }), false);
   assert.equal(wasConfigAppliedWithoutRestart({}), false);
-  assert.doesNotMatch(agentSettings, /settingsActionIcons\.delete/);
+  assert.match(agentSettings, /settingsActionIcons\.delete/);
+  assert.match(agentSettings, /mediaCapabilityPersistenceFields\(deleteTarget\)/);
+  assert.match(agentSettings, /updates\[enabledField\] = toConfigBoolean\(false\)/);
+  assert.match(agentSettings, /settingsPanel\.agent\.deleteModelConfirm/);
 });
 
-test('search dialogs keep the shared required-field contract', () => {
+test('search credential fields are optional so keys can be cleared', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   const agentSettingsFile = parseTsx('src/features/settings/modules/agent/AgentSettings.tsx');
   assert.deepEqual(findVariableArrayStrings(agentSettingsFile, 'keyFields'), [
@@ -1290,11 +1313,10 @@ test('search dialogs keep the shared required-field contract', () => {
     'perplexity_api_key',
     'serper_api_key',
   ]);
-  assert.match(agentSettings, /const required = isRequiredAgentConfigField\(name\)/);
-  assert.match(agentSettings, /required[,}]/);
-  assert.match(agentSettings, /fields\.filter\(isRequiredAgentConfigField\)/);
-  assert.match(agentSettings, /String\(value \?\? ''\)\.trim\(\)/);
-  assert.match(agentSettings, /<Form form=\{form\} items=\{items\} rules=\{rules\}/);
+  assert.doesNotMatch(agentSettings, /isRequiredAgentConfigField/);
+  assert.doesNotMatch(agentSettings, /required[,}]/);
+  assert.match(agentSettings, /String\(result\.values\[name\] \?\? ''\)\.trim\(\)/);
+  assert.match(agentSettings, /<Form form=\{form\} items=\{items\}/);
 });
 
 test('multimodal dialogs reuse provider-first model configuration without model testing or account login', () => {
@@ -1307,10 +1329,7 @@ test('multimodal dialogs reuse provider-first model configuration without model 
   assert.match(dialog, /'vendors\.list'/);
   assert.match(dialog, /'vendors\.fetch_models'/);
   assert.match(dialog, /showOptional=\{false\}/);
-  assert.doesNotMatch(
-    dialog,
-    /config\.validate_model|OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/,
-  );
+  assert.doesNotMatch(dialog, /config\.validate_model|OpenAIAccountSettings|reasoning_level|settingsActionIcons\.delete/);
 });
 
 test('legacy multimodal configuration remains custom while provider selections persist exact catalog identity', () => {
@@ -1410,14 +1429,11 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.doesNotMatch(browserDefinition, /component: 'switch'|key: 'enabled'|subItems:/);
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
     'chrome_path',
-    'browser_type',
     'headless',
   ]);
   assert.match(browserDefinition, /\{ value: false, labelKey: 'settingsPanel\.browser\.headed' \}/);
   assert.match(browserDefinition, /\{ value: true, labelKey: 'settingsPanel\.browser\.headless' \}/);
-  assert.match(browserDefinition, /\{ value: 'auto', labelKey: 'browser\.browserTypeAuto' \}/);
-  assert.match(browserDefinition, /\{ value: 'chrome', labelKey: 'browser\.browserTypeChrome' \}/);
-  assert.match(browserDefinition, /\{ value: 'msedge', labelKey: 'browser\.browserTypeEdge' \}/);
+  assert.doesNotMatch(browserDefinition, /browser_type|browserType/);
   assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.get'\)/);
   assert.match(sourceProvider, /request<Record<string, unknown>>\('path\.set', next/);
   assert.doesNotMatch(sourceProvider, /enabled|onlyEnabled/);
@@ -1466,10 +1482,7 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
     tagCss,
     /\.ui-tag--danger\s*\{[^}]*var\(--color-feedback-danger\)[^}]*var\(--color-feedback-danger-subtle\)/s,
   );
-  assert.match(
-    tagCss,
-    /\.ui-tag--neutral\s*\{[^}]*var\(--color-tag-neutral-text\)[^}]*var\(--color-tag-neutral-surface\)/s,
-  );
+  assert.match(tagCss, /\.ui-tag--neutral\s*\{[^}]*var\(--color-tag-neutral-text\)[^}]*var\(--color-tag-neutral-surface\)/s);
   assert.match(modelsSettings, /className="settings-model-card__text-action"/);
   assert.match(
     settingsPageCss,
@@ -1588,7 +1601,10 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.equal((formDialog.match(/<Button\s+[\s\S]*?size="sm"/g) ?? []).length >= 2, true);
   assert.match(formDialogCss, /\.form-dialog__actions \.ui-button\s*\{[^}]*min-width:\s*84px/s);
   assert.equal((settingsConfirmDialog.match(/<Button[^>]*size="sm"/g) ?? []).length, 2);
-  assert.match(settingsConfirmDialogCss, /\.settings-confirm-dialog__footer \.ui-button\s*\{[^}]*min-width:\s*84px/s);
+  assert.match(
+    settingsConfirmDialogCss,
+    /\.settings-confirm-dialog__footer \.ui-button\s*\{[^}]*min-width:\s*84px/s,
+  );
   assert.match(lightTheme, /--color-settings-switch-checked:\s*#1476ff;/i);
   assert.match(
     settingsPageCss,
@@ -1845,7 +1861,9 @@ test('Settings channel implementation stays decomposed around shared form capabi
 
 test('Xiaoyi enable confirmation keeps continue, edit, and dismiss as distinct actions', () => {
   const controller = source('src/features/settings/modules/channels/useSettingsChannelsController.ts');
-  const xiaoyiConfirmation = source('src/features/settings/modules/channels/components/XiaoyiEnableConfirmDialog.tsx');
+  const xiaoyiConfirmation = source(
+    'src/features/settings/modules/channels/components/XiaoyiEnableConfirmDialog.tsx',
+  );
   const confirmDialog = source('src/features/settings/components/SettingsConfirmDialog.tsx');
 
   assert.match(controller, /shouldConfirmXiaoyiEnable\(enabled, xiaoyi\.form\.getValues\(\)\.api_id\)/);
@@ -1862,10 +1880,7 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   const settingsChannelsModule = source('src/features/settings/modules/channels/ChannelsModule.tsx');
   const settingsNavigation = source('src/features/settings/settingsNavigation.ts');
   const modelDialog = source('src/features/settings/modules/models/ModelDialog.tsx');
-  const mainNavItems = sidebar.slice(
-    sidebar.indexOf('const mainNavItems'),
-    sidebar.indexOf('export function SessionSidebar'),
-  );
+  const mainNavItems = sidebar.slice(sidebar.indexOf('const mainNavItems'), sidebar.indexOf('export function SessionSidebar'));
   assert.match(mainNavItems, /key: 'updatepanel'/);
   assert.match(mainNavItems, /key: 'settings'/);
   assert.doesNotMatch(mainNavItems, /key: 'channels'/);
@@ -1898,12 +1913,7 @@ test('legacy page translations and Harness package state are removed without del
   ];
 
   for (const locale of [zh, en]) {
-    assert.deepEqual(Object.keys(locale.browser).sort(), [
-      'browserTypeAuto',
-      'browserTypeChrome',
-      'browserTypeEdge',
-      'errors',
-    ]);
+    assert.deepEqual(Object.keys(locale.browser).sort(), ['errors']);
     assert.deepEqual(Object.keys(locale.channels.labels).sort(), supportedChannelIds);
     assert.deepEqual(Object.keys(locale.config).sort(), expectedConfigSections);
     assert.equal(locale.extensions, undefined);
@@ -1931,10 +1941,7 @@ test('legacy page translations and Harness package state are removed without del
   const utilityExports = source('src/utils/index.ts');
   assert.equal(existsSync(new URL('src/components/ToolPanel/HarnessExtensionTree.tsx', root)), false);
   assert.equal(existsSync(new URL('src/utils/harnessErrors.ts', root)), false);
-  assert.doesNotMatch(
-    types,
-    /interface (?:PackageInfo|NativeVersionInfo|PackagesPayload|ActivatePayload|DeactivatePayload)\b/,
-  );
+  assert.doesNotMatch(types, /interface (?:PackageInfo|NativeVersionInfo|PackagesPayload|ActivatePayload|DeactivatePayload)\b/);
   assert.doesNotMatch(harnessStore, /CachedFileTreeEntry/);
   assert.doesNotMatch(storeExports, /CachedFileTreeEntry/);
   assert.doesNotMatch(utilityExports, /harnessErrors/);

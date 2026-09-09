@@ -11,6 +11,8 @@ export interface ContextUsageSnapshot {
   phase: 'post_call';
   request_id: string;
   product_session_id: string;
+  /** Team streams identify the main conversation owner semantically with role="leader". */
+  role: 'leader' | 'teammate' | null;
   depth: number;
   team_id: string | null;
   member_name: string | null;

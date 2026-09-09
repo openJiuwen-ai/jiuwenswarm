@@ -36,6 +36,7 @@
   --color-text-weak-rgb: 89, 89, 89;
   --color-text-placeholder: #808080;
   --color-text-meta: #808080;
+  --color-text-meta-rgb: 128, 128, 128;
   --color-text-suggestion-label: #282828;
   --color-text-card: #18181b;
   --color-text-inverse: #ffffff;
@@ -73,7 +74,6 @@
   --color-button-hover: #fafafa;
   --color-brand-secondary: #0d9488;
   --color-tool-tab-active-bg: #e6e6e6;
-  --color-tool-tab-hover-bg: #fafafa;
   --color-artifact-toolbar-icon: #191919;
   --color-artifact-toolbar-icon-disabled: #c0c0c0;
   --color-artifact-toolbar-divider: #e5e5e5;
@@ -257,7 +257,7 @@
   --color-task-card-surface: #fafafa;
   --color-task-progress: #67c57e;
   --color-task-progress-track: #e0e0e0;
-  --color-task-column-label: #595959;
+  --color-task-column-label: #8c8c8c;
   --color-team-overflow-surface: #edf1ff;
   --color-member-card-badge-surface: #e1e8fd;
   --color-team-detail-surface: #f8fafc;

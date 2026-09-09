@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from jiuwenswarm.server.runtime.session import session_history
 
 
@@ -414,3 +416,92 @@ def test_append_history_tool_result_empty_payload_skipped(tmp_path, monkeypatch)
     _t.sleep(0.3)
     data = session_history.load_history_records("s-empty-tr")
     assert data == []
+
+
+def test_append_history_keeps_only_structurally_valid_tool_results(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    records = (
+        ("valid-flat", {"tool_call_id": "call-flat", "success": False}),
+        (
+            "valid-nested",
+            {"tool_result": {"tool_call_id": "call-nested", "status": "denied"}},
+        ),
+        ("missing-id", {"result": "orphan"}),
+        ("empty-shell", {"tool_call_id": "call-empty"}),
+        ("heuristic-only", {"tool_name": "bash", "status": "denied"}),
+    )
+    for request_id, extra in records:
+        session_history.append_history_record(
+            session_id="s-tool-results",
+            request_id=request_id,
+            channel_id="web",
+            role="assistant",
+            event_type="chat.tool_result",
+            content="",
+            timestamp=1.0,
+            extra=extra,
+        )
+
+    data = _wait_history("s-tool-results", min_count=2)
+    assert [item["request_id"] for item in data] == ["valid-flat", "valid-nested"]
+    assert data[0]["tool_call_id"] == "call-flat"
+    assert data[0]["success"] is False
+    assert data[1]["tool_result"]["tool_call_id"] == "call-nested"
+    assert data[1]["tool_result"]["status"] == "denied"
+
+
+def test_tool_result_content_does_not_bypass_structural_validation() -> None:
+    assert session_history._has_persistable_assistant_payload(
+        content_text="orphan result",
+        event_type="chat.tool_result",
+        extra={},
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        {"tool_call_id": "call-flat", "success": False},
+        {"tool_call_id": "call-flat", "result": ""},
+        {"tool_result": {"tool_call_id": "call-nested", "error": None}},
+        {
+            "tool_call_id": "call-shared",
+            "tool_result": {
+                "tool_call_id": "call-shared",
+                "status": "denied",
+            },
+        },
+    ),
+)
+def test_structurally_valid_tool_result_keeps_falsy_terminal_values(
+    extra: dict,
+) -> None:
+    assert session_history._is_structurally_valid_tool_result(extra) is True
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        {"tool_call_id": 123, "result": "done"},
+        {"tool_call_id": " ", "result": "done"},
+        {"tool_result": {"tool_call_id": None, "result": "done"}},
+        {
+            "tool_call_id": "call-a",
+            "tool_result": {"tool_call_id": "call-b", "result": "done"},
+        },
+        {"tool_call_id": "call-a", "tool_result": {"result": "done"}},
+        {"result": "done", "tool_result": {"tool_call_id": "call-b"}},
+        {"tool_call_id": "call-a", "tool_result": "done"},
+        {"tool_call_id": "call-a", "result": "done", "tool_result": {}},
+        {
+            "tool_call_id": "call-a",
+            "result": "done",
+            "tool_result": {"tool_call_id": "call-a"},
+        },
+    ),
+)
+def test_structurally_invalid_tool_result_is_rejected(extra: dict) -> None:
+    assert session_history._is_structurally_valid_tool_result(extra) is False

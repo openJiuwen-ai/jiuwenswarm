@@ -1,7 +1,9 @@
 .conversation-sidebar {
+  --conversation-sidebar-width: 240px;
+
   display: flex;
-  width: 240px;
-  min-width: 240px;
+  width: var(--conversation-sidebar-width);
+  min-width: var(--conversation-sidebar-width);
   height: 100%;
   min-height: 0;
   flex-direction: column;
@@ -10,6 +12,17 @@
   overflow: hidden;
   box-sizing: border-box;
   transition: transform 0.25s ease;
+}
+
+.conversation-sidebar__inner {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  min-width: var(--conversation-sidebar-width);
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
 }
 
 .conversation-sidebar.is-floating {
@@ -90,7 +103,7 @@
 }
 
 .conversation-sidebar__mode-collapse:hover {
-  background: var(--color-surface-hover);
+  background: var(--color-sidebar-nav-active);
   border-radius: 10.67px;
 }
 
@@ -139,7 +152,7 @@
   box-shadow: var(--effect-shadow-lg);
 }
 
-.conversation-sidebar__mode-menu > button {
+.conversation-sidebar__mode-menu>button {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 16px;
   align-items: start;
@@ -154,12 +167,12 @@
   cursor: pointer;
 }
 
-.conversation-sidebar__mode-menu > button:hover,
-.conversation-sidebar__mode-menu > button.is-active {
+.conversation-sidebar__mode-menu>button:hover,
+.conversation-sidebar__mode-menu>button.is-active {
   background: var(--color-surface-hover);
 }
 
-.conversation-sidebar__mode-menu > button > span {
+.conversation-sidebar__mode-menu>button>span {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -361,7 +374,7 @@
   flex-direction: column;
 }
 
-.conversation-sidebar__body > .conversation-sidebar__group + .conversation-sidebar__group {
+.conversation-sidebar__body>.conversation-sidebar__group+.conversation-sidebar__group {
   margin-top: 16px;
 }
 
@@ -662,13 +675,13 @@
   min-width: 0;
 }
 
-.conversation-list-item__status-read > span {
+.conversation-list-item__status-read>span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.conversation-list-item__status-waiting > span {
+.conversation-list-item__status-waiting>span {
   height: 20px;
   padding: 0 6px;
   border-radius: 4px;
@@ -706,13 +719,13 @@
 }
 
 /* 在 conversation-list-item 中改为 flex 流式布局，覆盖上方绝对定位默认值 */
-.conversation-list-item > .conversation-list-item__actions {
+.conversation-list-item>.conversation-list-item__actions {
   position: static;
   display: none;
   flex: 0 0 auto;
 }
 
-.conversation-list-item > .conversation-list-item__pin-action {
+.conversation-list-item>.conversation-list-item__pin-action {
   position: relative;
   top: auto;
   right: auto;
@@ -745,8 +758,8 @@
   color: var(--color-text-primary);
 }
 
-.conversation-entity-row > .conversation-list-item__actions:hover,
-.conversation-entity-row > .conversation-list-item__actions:focus-visible {
+.conversation-entity-row>.conversation-list-item__actions:hover,
+.conversation-entity-row>.conversation-list-item__actions:focus-visible {
   background: var(--color-icon-btn-hover-surface);
 }
 
@@ -771,14 +784,8 @@
   white-space: nowrap;
 }
 
-.conversation-sidebar__group--pinned
-  > .conversation-sidebar__group-list
-  > .conversation-list-item:first-child
-  .conversation-list-item__pin-action[data-tooltip]:hover::after,
-.conversation-sidebar__group--pinned
-  > .conversation-sidebar__group-list
-  > .conversation-list-item:first-child
-  .conversation-list-item__pin-action[data-tooltip]:focus-visible::after {
+.conversation-sidebar__group--pinned>.conversation-sidebar__group-list>.conversation-list-item:first-child .conversation-list-item__pin-action[data-tooltip]:hover::after,
+.conversation-sidebar__group--pinned>.conversation-sidebar__group-list>.conversation-list-item:first-child .conversation-list-item__pin-action[data-tooltip]:focus-visible::after {
   top: 30px;
   bottom: auto;
 }
@@ -990,7 +997,7 @@
 }
 
 /* 项目下的定时任务行 */
-.conversation-sidebar__session-wrapper--nested > .conversation-sidebar__cron-row {
+.conversation-sidebar__session-wrapper--nested>.conversation-sidebar__cron-row {
   padding: 0 6px 0 32px;
 }
 

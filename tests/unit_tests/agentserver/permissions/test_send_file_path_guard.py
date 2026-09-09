@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from openjiuwen.harness.security import PermissionEngine
-from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
+from openjiuwen.harness.security import PermissionEngine, PermissionLevel, PermissionResult
 
 from jiuwenswarm.agents.harness.common.rails.permissions import (
     send_file_path_guard as path_guard_module,

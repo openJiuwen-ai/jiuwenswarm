@@ -52,6 +52,7 @@ from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
+from jiuwenswarm.common.mode_matrix import is_code_profile_mode, is_team_mode
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -105,9 +106,9 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     """Point a member's cwd / project root at the request project directory.
 
     Only the working directory moves: the member keeps its own workspace for
-    artifacts (memory, Skill visibility metadata, ``.team`` mount). When
-    worktree isolation is on, ``AgentConfigurator`` overrides cwd again with
-    the member worktree, which is why this is unconditional here.
+    artifacts (memory, Skill visibility metadata). When worktree isolation is
+    on, ``AgentConfigurator`` overrides cwd again with the member worktree,
+    which is why this is unconditional here.
     """
     project_root = str(project_dir or "").strip()
     if not project_root:
@@ -299,6 +300,38 @@ def enrich_team_spec_for_swarm(
         if workspace and workspace.root_path
         else str(team_home(spec.team_name) / "team-workspace")
     )
+    # A projectless team member (no project_dir) still needs a shared, stable
+    # place for final deliverables. It lives under the team workspace's own
+    # ``artifacts/`` tree so it is inside the team-workspace git repository
+    # (auto-commit / history work) and so all members of one team share one
+    # dated ``chat-<n>`` directory, distinguished by filename. Members bound to a
+    # project keep deliverables in the project, so no task workspace is
+    # allocated and the runtime prompt rail stays on its else branch (matching
+    # single-agent behaviour). The per-member ``task_work_dir`` (the member's
+    # own workspace) is resolved in the rail per member, not here.
+    task_workspace_root: str | None = None
+    team_outputs_dir: str | None = None
+    if not str(project_dir or "").strip():
+        try:
+            from jiuwenswarm.common.team_artifacts import (
+                get_team_artifact_workspace,
+            )
+
+            artifact_ws = get_team_artifact_workspace(
+                team_ws_root,
+                session_id=session_id,
+            )
+            task_workspace_root = str(artifact_ws.root_dir)
+            team_outputs_dir = str(artifact_ws.outputs_dir)
+        except OSError as exc:
+            logger.warning(
+                "[swarm.assembly] team artifact workspace allocation "
+                "failed (team=%s, session=%s): %s — members will keep "
+                "deliverables in their own workspace",
+                spec.team_name,
+                session_id,
+                exc,
+            )
     # Derived from the actual team workspace root rather than from
     # ``paths.team_skill_visibility_path`` so a relocated team workspace keeps
     # its metadata next to the workspace it really uses. For the default layout
@@ -321,9 +354,14 @@ def enrich_team_spec_for_swarm(
         mode=mode,
         project_dir=project_dir,
         trusted_dirs=trusted_dirs,
-        disable_teammate_worktree=str(channel_id or "").strip().lower() == "web",
+        disable_teammate_worktree=(
+            str(channel_id or "").strip().lower() == "web"
+            and not (is_team_mode(mode) and is_code_profile_mode(mode))
+        ),
         team_id=spec.team_name,
         team_ws_root=team_ws_root,
+        task_workspace_root=task_workspace_root,
+        team_outputs_dir=team_outputs_dir,
         team_skill_visibility_path=team_visibility_path,
         global_skills_dir=global_skills_dir,
         trajectory_span_processor=get_trajectory_span_processor(),

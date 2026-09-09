@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, Trash2, Plus, Wrench, Link2, Plug, Loader2, X, ExternalLink, Pencil } from 'lucide-react';
+import { Trash2, Plus, Wrench, Link2, Plug, Loader2, X, ExternalLink, Pencil } from 'lucide-react';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText, type PluginCapabilityRef } from '../../types/pluginPackage';
 import { NewConversationIcon } from './icons';
@@ -9,6 +9,7 @@ import { EntityAvatar } from './EntityAvatar';
 import { PillButton, DetailLinkButton } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
+import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
 interface PluginDetailPageProps {
   id: string;
@@ -18,7 +19,7 @@ interface PluginDetailPageProps {
   /** "我的插件"卸载后 show() 探测发现条目已不存在时调用，退出到"我的插件"列表页。 */
   onDeleted?: () => void;
   /** "会话使用"点击——真正入口是 ChatPanel 输入框的"+"面板，这里没有真实目的地。 */
-  onUse?: () => void;
+  onUse?: (runtimePackageName: string) => void;
   /**
    * 点"试试这样用"下面的某个示例——跳新会话并把示例文案填进输入框，同时打开这个插件的会话内
    * 启用开关。跟 McpDetailPage.tsx 的 onUseExample 是同一条设计（App.tsx 那边对称接了
@@ -68,8 +69,21 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   const [installing, setInstalling] = useState(false);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(!detail);
+  const [detailLoadFailed, setDetailLoadFailed] = useState(false);
+
+  const requestDetail = () => {
+    setDetailLoading(true);
+    setDetailLoadFailed(false);
+    void loadDetail(id).then((loaded) => {
+      setDetailLoading(false);
+      setDetailLoadFailed(!loaded);
+    });
+  };
+
   useEffect(() => {
-    loadDetail(id);
+    requestDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, loadDetail]);
 
   // §1.6.3 首次安装：install() 半途失败会把 pending_connectors 记进 store（见
@@ -103,7 +117,30 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
     void loadDetail(id);
   });
 
-  if (!detail) return null;
+  if (!detail) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-plugin-detail-state">
+        <button type="button" onClick={onBack} className="detail-back mb-[35px]">
+          <BackIcon aria-hidden="true" />
+          {t('connectorMarket.common.back')}
+        </button>
+        <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-text-muted">
+          <p role={detailLoadFailed ? 'alert' : undefined}>
+            {detailLoading ? t('common.loading') : t('connectorMarket.common.loadFailed')}
+          </p>
+          {detailLoadFailed && (
+            <button
+              type="button"
+              onClick={requestDetail}
+              className="rounded-lg border border-border px-4 py-2 text-[14px] text-text hover:bg-hover"
+            >
+              {t('common.retry')}
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const title = localizedText(detail.displayName, i18n.language);
   const avatar = getSkillAvatar(title);
@@ -120,7 +157,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   // JSX），进来时必然已就绪，直接跳转。未就绪时的连接走断联 banner 的"连接MCP"，不再由
   // "使用"按钮承担触发连接续跑的职责（2026-08-29 用户要求：待连接状态使用按钮不可用）。
   function handleUse() {
-    if (linked) onUse?.();
+    if (linked) onUse?.(detail.runtimePackageName);
   }
 
   async function handleUninstall() {
@@ -141,189 +178,209 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   }
 
   return (
-    <div className="relative h-full overflow-y-auto bg-card px-8 py-6" data-testid="connector-market-plugin-detail">
-      {/* 用户明确要求：去掉路径说明（原来的"插件/插件详情"面包屑），返回挪到整个页面最顶行，
-          图标+文字（黑色），不再是原来那个跟扩展图标同排的圆形纯图标按钮。 */}
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-plugin-detail">
       <button
         type="button"
         onClick={onBack}
-        className="mb-4 flex items-center gap-1 text-[14px] leading-[22px] text-text hover:opacity-70"
+        className="detail-back mb-[35px]"
         data-testid="connector-market-plugin-detail-back"
       >
-        <ChevronLeft size={16} />
+        <BackIcon aria-hidden="true" />
         {t('connectorMarket.common.back')}
       </button>
 
-      <div className="mb-6 flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          <EntityAvatar
-            iconUrl={detail.avatar}
-            avatar={avatar}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
-          />
-          <div>
-            <h1 className="text-[18px] font-semibold leading-7 text-text">{title}</h1>
-            {detail.tags.length > 0 && (
-              <div className="mt-0.5 flex flex-wrap gap-1">
-                {detail.tags.map((tag) => (
-                  <span key={localizedText(tag, i18n.language)} data-testid="connector-market-plugin-detail-tag" data-variant={localizedText(tag, i18n.language)} className="inline-block rounded-[2px] bg-connector-tag-surface px-1.5 py-0.5 text-[12px] leading-[18px] text-text">
-                    {localizedText(tag, i18n.language)}
-                  </span>
-                ))}
-              </div>
-            )}
+      <div className="detail-body relative flex-1 min-h-0 overflow-y-auto pb-6">
+        <div className="mb-6 flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <EntityAvatar
+              iconUrl={detail.avatar}
+              avatar={avatar}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
+            />
+            <div>
+              <h1 className="text-[20px] font-semibold leading-8 text-text">{title}</h1>
+              {detail.tags.length > 0 && (
+                <div className="mt-0.5 flex flex-wrap gap-1">
+                  {detail.tags.map((tag) => (
+                    <span
+                      key={localizedText(tag, i18n.language)}
+                      data-testid="connector-market-plugin-detail-tag"
+                      data-variant={localizedText(tag, i18n.language)}
+                      className="inline-block rounded-[2px] bg-connector-tag-surface px-1.5 py-0.5 text-[12px] leading-[18px] text-text"
+                    >
+                      {localizedText(tag, i18n.language)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className="flex items-center gap-3" data-testid="connector-market-plugin-detail-actions">
-          {/* 自定义插件（source==='local'）的编辑——后端 plugin_packages.* 目前只有
+          <div className="flex items-center gap-3" data-testid="connector-market-plugin-detail-actions">
+            {/* 自定义插件（source==='local'）的编辑——后端 plugin_packages.* 目前只有
               list/show/create/install/uninstall，没有任何 update/编辑接口（create 对已存在 id
               会直接拒绝，不是隐式 upsert，见 backend-requests.md 需求13），先做降级占位：按钮
               可见，点击提示"等待后端支持"，不假装真的能保存。等后端补上编辑接口后再接成真实表单
               （参照 McpDetailPage.tsx 的 onEdit + RegisterMcpPage editName 回填这一套做法）。 */}
-          {/* 2026-08-29 用户要求：自定义插件的编辑按钮先全部隐藏（隐藏不删除），等后端编辑接口
+            {/* 2026-08-29 用户要求：自定义插件的编辑按钮先全部隐藏（隐藏不删除），等后端编辑接口
               就绪后去掉下面的 `&& false` 即可恢复原占位逻辑。 */}
-          {detail.source === 'local' && false && (
-            <DetailLinkButton
-              icon={<Pencil size={14} />}
-              label={t('connectorMarket.card.edit')}
-              onClick={() => window.alert(t('connectorMarket.card.editNotSupportedYet'))}
-            />
-          )}
-          {/* 2026-08-31 用户要求：自定义插件（source==='local'）无论安装/连接处于什么状态，
+            {detail.source === 'local' && false && (
+              <DetailLinkButton
+                icon={<Pencil size={14} />}
+                label={t('connectorMarket.card.edit')}
+                onClick={() => window.alert(t('connectorMarket.card.editNotSupportedYet'))}
+              />
+            )}
+            {/* 2026-08-31 用户要求：自定义插件（source==='local'）无论安装/连接处于什么状态，
               都要能卸载（刚 create 完还没安装时也不例外）——卸载走的就是后端
               uninstall_plugin_package（会把包目录整个删掉，见 pluginPackageStore.ts），对自定义
               插件语义上等同于"删除这个插件"。built-in 插件仍保持"装了才有卸载"。 */}
-          {(installed || detail.source === 'local') && (
-            <DetailLinkButton
-              icon={<Trash2 size={14} />}
-              label={t('connectorMarket.card.uninstall')}
-              onClick={() => setConfirmUninstall(true)}
-              danger
-              disabled={uninstalling}
-            />
-          )}
-          {installed && (
-            <button
-              type="button"
-              onClick={handleUse}
-              disabled={!linked || reconnectFlow.active}
-              className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60"
-              data-testid="connector-market-plugin-detail-use"
-            >
-              <NewConversationIcon size={14} />
-              {t('connectorMarket.card.use')}
-            </button>
-          )}
-          {!installed && !installBusy && <PillButton icon={<Plus size={14} />} label={t('connectorMarket.card.install')} onClick={handleInstall} />}
-          {!installed && installBusy && <PillButton icon={<Loader2 size={14} className="animate-spin" />} label={t('connectorMarket.card.installing')} disabled />}
+            {(installed || detail.source === 'local') && (
+              <DetailLinkButton
+                icon={<Trash2 size={14} />}
+                label={t('connectorMarket.card.uninstall')}
+                onClick={() => setConfirmUninstall(true)}
+                danger
+                disabled={uninstalling}
+              />
+            )}
+            {installed && (
+              <button
+                type="button"
+                onClick={handleUse}
+                disabled={!linked || reconnectFlow.active}
+                className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid="connector-market-plugin-detail-use"
+              >
+                <NewConversationIcon size={14} />
+                {t('connectorMarket.card.use')}
+              </button>
+            )}
+            {!installed && !installBusy && (
+              <PillButton icon={<Plus size={14} />} label={t('connectorMarket.card.install')} onClick={handleInstall} />
+            )}
+            {!installed && installBusy && (
+              <PillButton
+                icon={<Loader2 size={14} className="animate-spin" />}
+                label={t('connectorMarket.card.installing')}
+                disabled
+              />
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* "已安装+依赖 connector 未就绪"断联提示（§1.6.4 已装重连）——"连接MCP"直接用
+        {/* "已安装+依赖 connector 未就绪"断联提示（§1.6.4 已装重连）——"连接MCP"直接用
           detail.pendingConnectors 驱动真实连接续跑，不再是空目的地占位。
           2026-08-20 用户明确要求：文案不变，但图标/"连接MCP"文字颜色/整行底色直接抄
           McpDetailPage.tsx 断联 banner 那一版视觉（浅红底 #FCE3E1 + 红圆底白X图标 + accent蓝
           链接文字），不用这里原来的纯文字+danger红。 */}
-      {installed && !linked && (
-        <div className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted" data-testid="connector-market-plugin-detail-disconnect-banner">
-          <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-danger">
-            <X size={9} strokeWidth={3} className="text-text-inverse" />
-          </span>
-          <span>{t('connectorMarket.detail.mcpDisconnectedBanner')}</span>
-          <button
-            type="button"
-            disabled={reconnectFlow.active}
-            className="flex items-center gap-0.5 font-medium text-[color:var(--color-chat-accent)] hover:opacity-80 disabled:opacity-60"
-            onClick={() => reconnectFlow.start(detail.pendingConnectors ?? [])}
-            data-testid="connector-market-plugin-detail-connect-mcp"
+        {installed && !linked && (
+          <div
+            className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted"
+            data-testid="connector-market-plugin-detail-disconnect-banner"
           >
-            {t('connectorMarket.detail.connectMcp')}
-            <ExternalLink size={12} />
-          </button>
-        </div>
-      )}
+            <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-danger">
+              <X size={9} strokeWidth={3} className="text-text-inverse" />
+            </span>
+            <span>{t('connectorMarket.detail.mcpDisconnectedBanner')}</span>
+            <button
+              type="button"
+              disabled={reconnectFlow.active}
+              className="flex items-center gap-0.5 font-medium text-[color:var(--color-chat-accent)] hover:opacity-80 disabled:opacity-60"
+              onClick={() => reconnectFlow.start(detail.pendingConnectors ?? [])}
+              data-testid="connector-market-plugin-detail-connect-mcp"
+            >
+              {t('connectorMarket.detail.connectMcp')}
+              <ExternalLink size={12} />
+            </button>
+          </div>
+        )}
 
-      {confirmUninstall && (
-        <ConfirmDialog
-          title={t('connectorMarket.confirmUninstall.title', { name: title })}
-          message={t('connectorMarket.confirmUninstallPlugin.message')}
-          confirmLabel={t('connectorMarket.card.uninstall')}
-          onCancel={() => setConfirmUninstall(false)}
-          onConfirm={handleUninstall}
-        />
-      )}
+        {confirmUninstall && (
+          <ConfirmDialog
+            title={t('connectorMarket.confirmUninstall.title', { name: title })}
+            message={t('connectorMarket.confirmUninstallPlugin.message')}
+            confirmLabel={t('connectorMarket.card.uninstall')}
+            onCancel={() => setConfirmUninstall(false)}
+            onConfirm={handleUninstall}
+          />
+        )}
 
-      <Section title={t('connectorMarket.detail.sections.basicInfo')}>
-        <p className="text-[12px] leading-[18px] text-text">{localizedText(detail.displayDescription, i18n.language)}</p>
-      </Section>
+        <Section title={t('connectorMarket.detail.sections.basicInfo')}>
+          <p className="text-[12px] leading-[18px] text-text">
+            {localizedText(detail.displayDescription, i18n.language)}
+          </p>
+        </Section>
 
-      {/* "试试这样用"——照抄 McpDetailPage.tsx 同款示例区，2026-08-21 后端 show 接口新增
+        {/* "试试这样用"——照抄 McpDetailPage.tsx 同款示例区，2026-08-21 后端 show 接口新增
           quickInputs（双语对象数组，跟 MCP 的 examples: string[] 不同，要过 localizedText()）。
           未就绪（installed && !linked）时这个插件在会话里根本用不了，示例点了也没意义，跟 MCP
           那边"onUseExample && linked 才可点，否则渲染成不可点的纯展示 span"是同一个门控。 */}
-      {detail.quickInputs && detail.quickInputs.length > 0 && (
-        <div className="mb-6">
-          <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text">{t('connectorMarket.detail.sections.examples')}</h2>
-          <div className="flex flex-wrap gap-2" data-testid="connector-market-plugin-detail-examples">
-            {detail.quickInputs.map((quickInput) => {
-              const text = localizedText(quickInput, i18n.language);
-              return onUseExample && linked ? (
-                <button
-                  key={text}
-                  type="button"
-                  onClick={() => onUseExample(text, id)}
-                  data-testid="connector-market-plugin-detail-example"
-                  data-variant={text}
-                  className="flex items-center gap-1.5 rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted transition-colors hover:border-[color:var(--color-chat-accent)] hover:text-[color:var(--color-chat-accent)]"
-                >
-                  <NewConversationIcon size={12} />
-                  {text}
-                </button>
-              ) : (
-                <span
-                  key={text}
-                  data-testid="connector-market-plugin-detail-example"
-                  data-variant={text}
-                  className="rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted"
-                >
-                  {text}
-                </span>
-              );
-            })}
+        {detail.quickInputs && detail.quickInputs.length > 0 && (
+          <div className="mb-6">
+            <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text">
+              {t('connectorMarket.detail.sections.examples')}
+            </h2>
+            <div className="flex flex-wrap gap-2" data-testid="connector-market-plugin-detail-examples">
+              {detail.quickInputs.map((quickInput) => {
+                const text = localizedText(quickInput, i18n.language);
+                return onUseExample && linked ? (
+                  <button
+                    key={text}
+                    type="button"
+                    onClick={() => onUseExample(text, detail.runtimePackageName)}
+                    data-testid="connector-market-plugin-detail-example"
+                    data-variant={text}
+                    className="flex items-center gap-1.5 rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted transition-colors hover:border-[color:var(--color-chat-accent)] hover:text-[color:var(--color-chat-accent)]"
+                  >
+                    <NewConversationIcon size={12} />
+                    {text}
+                  </button>
+                ) : (
+                  <span
+                    key={text}
+                    data-testid="connector-market-plugin-detail-example"
+                    data-variant={text}
+                    className="rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted"
+                  >
+                    {text}
+                  </span>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {detail.skills.length > 0 && (
-        <Section title={t('connectorMarket.detail.sections.skills')}>
-          <CapabilityGrid items={detail.skills} language={i18n.language} icon={undefined} skillStyle />
-        </Section>
-      )}
+        {detail.skills.length > 0 && (
+          <Section title={t('connectorMarket.detail.sections.skills')}>
+            <CapabilityGrid items={detail.skills} language={i18n.language} icon={undefined} skillStyle />
+          </Section>
+        )}
 
-      {detail.tools.length > 0 && (
-        <Section title={t('connectorMarket.detail.sections.tools')}>
-          <CapabilityGrid items={detail.tools} language={i18n.language} icon={<Wrench size={16} />} />
-        </Section>
-      )}
+        {detail.tools.length > 0 && (
+          <Section title={t('connectorMarket.detail.sections.tools')}>
+            <CapabilityGrid items={detail.tools} language={i18n.language} icon={<Wrench size={16} />} />
+          </Section>
+        )}
 
-      {detail.rails.length > 0 && (
-        <Section title={t('connectorMarket.detail.sections.rails')}>
-          <CapabilityGrid items={detail.rails} language={i18n.language} icon={<Link2 size={16} />} />
-        </Section>
-      )}
+        {detail.rails.length > 0 && (
+          <Section title={t('connectorMarket.detail.sections.rails')}>
+            <CapabilityGrid items={detail.rails} language={i18n.language} icon={<Link2 size={16} />} />
+          </Section>
+        )}
 
-      {detail.mcps.length > 0 && (
-        <Section title={t('connectorMarket.detail.sections.mcps')}>
-          <CapabilityGrid items={detail.mcps} language={i18n.language} icon={<Plug size={16} />} />
-        </Section>
-      )}
+        {detail.mcps.length > 0 && (
+          <Section title={t('connectorMarket.detail.sections.mcps')}>
+            <CapabilityGrid items={detail.mcps} language={i18n.language} icon={<Plug size={16} />} />
+          </Section>
+        )}
 
-      {/* 首次安装（installFlow）和已装重连（reconnectFlow）互斥——一个插件同一时刻只会处于
+        {/* 首次安装（installFlow）和已装重连（reconnectFlow）互斥——一个插件同一时刻只会处于
           "未安装"或"已装但未就绪"其中一种状态，不会两个 flow 同时 active，但保险起见两套弹窗
           都按各自的 active 状态独立渲染，不额外加互斥判断。 */}
-      <PendingConnectorModals flow={installFlow} />
-      <PendingConnectorModals flow={reconnectFlow} />
+        <PendingConnectorModals flow={installFlow} />
+        <PendingConnectorModals flow={reconnectFlow} />
+      </div>
     </div>
   );
 }
@@ -340,7 +397,7 @@ function CapabilityGrid({
   skillStyle?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       {items.map((item) => {
         const title = localizedText(item.displayName, language);
         const desc = localizedText(item.displayDescription, language);
@@ -364,7 +421,10 @@ function CapabilityGrid({
             {/* min-h-5（=leading-5，20px）：desc 为空字符串时 <p> 没有任何行内内容，不会撑出
                 一个 line box，浏览器会把它渲染成 0 高度，导致这张卡片比旁边有描述的卡片矮一截
                 （2026-08-21 用户反馈，同款修法见 McpDetailPage.tsx 的技能/工具卡片）。 */}
-            <p className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]" title={desc}>
+            <p
+              className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]"
+              title={desc}
+            >
               {desc}
             </p>
           </div>
@@ -376,8 +436,8 @@ function CapabilityGrid({
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="mb-6">
-      <h2 className="mb-3 text-[14px] font-semibold leading-[22px] text-text">{title}</h2>
+    <div className="mb-8">
+      <h2 className="mb-4 text-[16px] font-semibold leading-6 text-text">{title}</h2>
       {children}
     </div>
   );

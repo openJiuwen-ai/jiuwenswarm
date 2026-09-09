@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from openjiuwen.harness.security.file_guard import build_file_guard_checker
+from openjiuwen.harness.security.permission_engine.fileguard.file_guard import (
+    build_file_guard_checker,
+)
 from openjiuwen.harness.security.permission_engine.fileguard.file_tool_specs import (
     FileToolSpec,
     lookup_file_tool_specs,

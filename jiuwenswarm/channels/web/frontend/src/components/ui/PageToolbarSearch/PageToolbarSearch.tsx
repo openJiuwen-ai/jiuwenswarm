@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState, type InputHTMLAttributes } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Search } from 'lucide-react';
+import { Input, type InputProps } from '../Input/Input';
+import './PageToolbarSearch.css';
 
-export interface PageToolbarSearchProps extends InputHTMLAttributes<HTMLInputElement> {
+export type PageToolbarSearchProps = Omit<InputProps, 'size' | 'prefix'> & {
   wrapperTestId?: string;
   inputTestId?: string;
-}
+};
 
 const WIDTH_STEPS: Array<[number, number]> = [
   [1528, 404],
@@ -19,14 +22,20 @@ function resolveWrapperWidth(containerWidth: number): number {
   return 200;
 }
 
-export function PageToolbarSearch({ wrapperTestId, inputTestId, className, ...rest }: PageToolbarSearchProps) {
+export function PageToolbarSearch({
+  wrapperTestId,
+  inputTestId,
+  className,
+  rootClassName,
+  ...inputProps
+}: PageToolbarSearchProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(200);
 
   useEffect(() => {
     const container = wrapperRef.current?.closest('.app-page-body');
     if (!container) return undefined;
-    const observer = new ResizeObserver(entries => {
+    const observer = new ResizeObserver((entries) => {
       const entry = entries[entries.length - 1];
       if (entry) setWidth(resolveWrapperWidth(entry.contentRect.width));
     });
@@ -36,13 +45,13 @@ export function PageToolbarSearch({ wrapperTestId, inputTestId, className, ...re
 
   return (
     <div ref={wrapperRef} data-testid={wrapperTestId} className="relative flex-shrink-0" style={{ width }}>
-      <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
-      </svg>
-      <input
+      <Input
+        {...inputProps}
+        size="small"
         data-testid={inputTestId}
-        {...rest}
-        className={`w-full pl-8 pr-3 py-1.5 rounded-[6px] border border-border text-sm text-text placeholder:text-text-muted focus-visible:outline-none focus-visible:shadow-none${className ? ` ${className}` : ''}`}
+        className={className}
+        rootClassName={`page-toolbar-search__input${rootClassName ? ` ${rootClassName}` : ''}`}
+        prefix={<Search size={16} strokeWidth={1.5} aria-hidden="true" />}
       />
     </div>
   );

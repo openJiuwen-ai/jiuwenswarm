@@ -792,6 +792,7 @@ def update_session_metadata(
     sync: bool = False,
     sync_write: bool = False,
     work_mode: str | None = None,
+    session_equipment: dict[str, Any] | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -869,6 +870,8 @@ def update_session_metadata(
         # 首次创建时写入 channel_metadata
         if channel_metadata:
             metadata["channel_metadata"] = channel_metadata
+        if session_equipment is not None:
+            metadata["session_equipment"] = copy.deepcopy(session_equipment)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -932,6 +935,8 @@ def update_session_metadata(
         # channel_metadata 仅在首次为空时补充写入（不覆盖）
         if channel_metadata and not metadata.get("channel_metadata"):
             metadata["channel_metadata"] = channel_metadata
+        if session_equipment is not None:
+            metadata["session_equipment"] = copy.deepcopy(session_equipment)
 
         # 更新最后消息时间(可由 touch_last_message_at=False 关闭,供置顶重编号等
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
@@ -1182,6 +1187,75 @@ def get_session_metadata(
         metadata.setdefault("team_template_id", "")
         metadata.setdefault("agent_group_name", "")
     return metadata
+
+
+def _normalize_session_equipment_names(value: Any) -> list[str]:
+    """Return stable, de-duplicated package names for a metadata snapshot."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def save_session_equipment(
+    session_id: str,
+    *,
+    agent_template_name: Any = "",
+    plugin_names: Any = None,
+    mcp: Any = None,
+) -> None:
+    """Persist the effective chat equipment after a successful mount."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        return
+    snapshot = {
+        "agent_template_name": (
+            agent_template_name.strip()
+            if isinstance(agent_template_name, str)
+            else ""
+        ),
+        "plugin_names": _normalize_session_equipment_names(plugin_names),
+        "mcp": _normalize_session_equipment_names(mcp),
+    }
+    if get_session_equipment(session_id, cache_bust=True) == snapshot:
+        return
+    update_session_metadata(
+        session_id=session_id,
+        session_equipment=snapshot,
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+
+def get_session_equipment(
+    session_id: str,
+    *,
+    cache_bust: bool = False,
+) -> dict[str, Any]:
+    """Read a normalized chat equipment snapshot, or an empty mapping."""
+    metadata = get_session_metadata(session_id, cache_bust=cache_bust)
+    raw = metadata.get("session_equipment") if isinstance(metadata, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    agent_template_name = raw.get("agent_template_name")
+    return {
+        "agent_template_name": (
+            agent_template_name.strip()
+            if isinstance(agent_template_name, str)
+            else ""
+        ),
+        "plugin_names": _normalize_session_equipment_names(raw.get("plugin_names")),
+        "mcp": _normalize_session_equipment_names(raw.get("mcp")),
+    }
 
 
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。

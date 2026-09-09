@@ -19,18 +19,37 @@ import logging
 import logging.handlers
 import os
 import sys
+import time
+
+
+# Include entry-module import/configuration work in later startup phase logs.
+# PyInstaller boot time is intentionally outside this boundary.
+_PROCESS_START_T0 = time.monotonic()
+_STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
+
+
+def _mark_startup_import_phase(stage: str) -> None:
+    _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
+_mark_startup_import_phase("dotenv_parsed")
 
-# Repair package-data leftovers before imports that may build OpenJiuwen's
-# recursive tool-description index.
-from jiuwenswarm.common.utils import cleanup_stale_openjiuwen_descs
+# Standalone entrypoints retain workspace preparation; Desktop/app already do
+# it before spawning us and pass the marker to avoid duplicate disk work.
+from jiuwenswarm.common.utils import (
+    cleanup_stale_openjiuwen_descs,
+    prepare_runtime_workspace,
+)
+
 cleanup_stale_openjiuwen_descs()
+if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+    prepare_runtime_workspace(cleanup_stale_descs=False)
+_mark_startup_import_phase("runtime_workspace_ready")
 
 from openjiuwen.core.common.logging import LogManager  # pylint: disable=wrong-import-order
-from openjiuwen.harness.observability import install_subagent_observability_hook  # pylint: disable=wrong-import-order
+_mark_startup_import_phase("openjiuwen_logging_imported")
 
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
@@ -39,38 +58,11 @@ from jiuwenswarm.common.media_capability_config import (
 )
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
-    ensure_config_migrated_from_template,
-    ensure_default_builtin_skills,
     get_env_file,
     get_root_dir,
-    get_user_workspace_dir,
     logger,
-    prepare_workspace,
 )
-
-# Ensure workspace initialized
-_workspace_dir = get_user_workspace_dir()
-_config_file = _workspace_dir / "config" / "config.yaml"
-_new_workspace = _workspace_dir / "agent" / "workspace"
-_old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
-
-# Initialize if config doesn't exist, or if legacy workspace exists but new doesn't (migration),
-# or if the preset MCP package dir isn't seated yet (an install predating the
-# mcp_builtins zip-seed feature would otherwise skip an already-initialized
-# workspace, leaving mcp_builtins absent and mcp.list empty).
-_mcp_builtins_dir = _new_workspace / "mcp" / "mcp_builtins"
-config_missing = not _config_file.exists()
-workspace_migration_needed = _old_workspace.exists() and not _new_workspace.exists()
-mcp_builtins_missing = not _mcp_builtins_dir.is_dir()
-
-if config_missing or workspace_migration_needed or mcp_builtins_missing:
-    prepare_workspace(overwrite=False)
-
-# 每次启动合并模板新增配置项（保留用户已有值）
-ensure_config_migrated_from_template()
-
-# 幂等地补齐默认内置技能（对已有工作区也生效，新增默认技能时自动安装）
-ensure_default_builtin_skills()
+_mark_startup_import_phase("core_runtime_imports_loaded")
 
 _logging_yaml = get_root_dir() / "config" / "logging.yaml"
 if _logging_yaml.exists():
@@ -164,12 +156,14 @@ else:
         _perm_ns_logger.addHandler(_perm_fh)
         _perm_ns_logger.addHandler(_perm_sh)
     _perm_ns_logger.propagate = False
+_mark_startup_import_phase("logging_configured")
 
 # Load env from user workspace config/.env
 _env_file = get_env_file()
 load_dotenv_runtime(dotenv_path=_env_file, override=True)
 migrate_media_capability_switches(_env_file)
 apply_free_search_runtime_defaults()
+_mark_startup_import_phase("runtime_environment_applied")
 
 from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
     install_shell_tool_safety_hooks,
@@ -205,25 +199,13 @@ def _should_apply_sse_invoke_patch() -> bool:
 
 if _should_apply_sse_invoke_patch():
     apply_openai_sse_invoke_patch()
+_mark_startup_import_phase("entry_module_ready")
 
-# /debug 模式下捕获 builtin TaskTool 分发的 subagent 流（reasoning/tool_call/usage），
-# 内联写入主 dump。非 debug 或 include_subagent_flow 关闭时走原始 invoke，零回归。
-from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
-    apply_task_tool_debug_patch,
-)
-
-apply_task_tool_debug_patch()
-
-# 让所有分发路径创建的 subagent 都带上 OTel 观测 rail（内置 task_tool、自定义
-# agent 工具、后台 subagent），这样子 agent 的 llm/tool span 归属自己的
-# agent.<type>.invoke span，而不是挂到派发它的 agent 身上。
-install_subagent_observability_hook()
-
+# ``TaskTool`` 的 /debug 跟踪补丁按首个开启 subagent trace 的请求再加载。
+# 普通启动无需导入 SDK 的 TaskTool 实现；实际补丁仍会在请求 dispatch 前完成。
 
 
 async def _run(host: str, port: int) -> None:
-    import time
-
     from openjiuwen.core.runner import Runner
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.agents.harness.team.remote_member_bootstrap import run_teammate_bootstrap_daemon
@@ -233,7 +215,23 @@ async def _run(host: str, port: int) -> None:
 
     # 阶段耗时基准:冻结 EXE 排查启动超时要用各阶段时间戳对齐 Desktop 日志。
     startup_t0 = time.monotonic()
+
+    def log_startup_stage(stage: str) -> None:
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs",
+            stage,
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
+        )
+
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+    for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
+        logger.info(
+            "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
+            import_stage,
+            marked_at - _PROCESS_START_T0,
+        )
+    log_startup_stage("run_entered")
 
     # ---------- 扩展系统初始化 ----------
     callback_framework = Runner.callback_framework
@@ -245,12 +243,14 @@ async def _run(host: str, port: int) -> None:
     extension_manager = ExtensionManager(
         registry=extension_registry,
     )
+    log_startup_stage("extension_manager_created")
     await extension_manager.load_all_extensions()
     logger.info(
         "[AgentServer] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
         len(extension_manager.list_extensions()),
         time.monotonic() - startup_t0,
     )
+    log_startup_stage("extensions_loaded")
 
     # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
     # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
@@ -267,6 +267,15 @@ async def _run(host: str, port: int) -> None:
         port,
         time.monotonic() - startup_t0,
     )
+    log_startup_stage("agent_ws_listening")
+
+    # 观测 hook 只会在后续创建子 Agent 时生效，不是首页 RPC 的前置条件。
+    # 延后其依赖导入可让冻结进程先开放 AgentServer 端口；在事件循环处理首个
+    # 请求前仍会同步安装完成，保持所有执行路径的 span 归属不变。
+    from openjiuwen.harness.observability import install_subagent_observability_hook
+
+    install_subagent_observability_hook()
+    log_startup_stage("observability_installed")
 
     # ---------- 图像模态探针预热 ----------
     # listen 之后后台 fire-and-forget:探针只往进程级缓存写 (api_base, model_name)
@@ -276,6 +285,7 @@ async def _run(host: str, port: int) -> None:
     # 经 server 统一任务槽位调度:模型配置变更会取消本轮预热、避免写回过期结论;
     # shutdown 时由 server.stop() -> _stop_main_services 统一 cancel 回收。
     server.schedule_image_modality_warmup(reason="startup")
+    log_startup_stage("nonblocking_warmups_scheduled")
 
     # ---------- Opencode Zen 免费模型注入 ----------
     # listen 之后后台 fire-and-forget:从 Zen 拉限时免费模型追加到可选池,失败自带
@@ -319,6 +329,7 @@ async def _run(host: str, port: int) -> None:
     full_cfg = get_config()
     proactive_config = full_cfg.get("proactive_recommendation", {}) if isinstance(full_cfg, dict) else {}
     await init_proactive_engine(server, proactive_config)
+    log_startup_stage("proactive_engine_initialized")
 
     logger.info(
         "[AgentServer] ready: ws://%s:%s  Ctrl+C to stop (elapsed %.2fs)",
@@ -326,6 +337,7 @@ async def _run(host: str, port: int) -> None:
         port,
         time.monotonic() - startup_t0,
     )
+    log_startup_stage("ready")
 
     stop_event = asyncio.Event()
     teammate_bootstrap_task: asyncio.Task | None = None
@@ -502,4 +514,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

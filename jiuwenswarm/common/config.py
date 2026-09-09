@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,7 +19,9 @@ import yaml
 import portalocker
 
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    ASCEND_AFFINITY_PROVIDER,
+    APPLICATION_KV_CACHE_CONFIG_KEY,
+    KV_CACHE_AFFINITY_ENABLED_KEY,
+    get_kv_cache_affinity_application_config,
     get_default_model_provider as resolve_default_model_provider,
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
@@ -143,18 +146,17 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
         mcc = react.get("model_client_config")
         if isinstance(mcc, dict) and "custom_headers" in mcc:
             mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
-        kv_cfg = react.get("kv_cache_affinity_config")
-        if isinstance(kv_cfg, dict) and kv_cfg.get("enable_kv_cache_affinity", False):
-            provider = get_default_model_provider(config)
-            if provider != ASCEND_AFFINITY_PROVIDER:
-                logger.warning(
-                    "KV cache affinity configuration failed closed: default provider=%s requires=%s",
-                    provider or "<empty>",
-                    ASCEND_AFFINITY_PROVIDER,
-                )
-                # Runtime-only normalization: preserve the user's file for
-                # diagnosis, but never activate an inconsistent configuration.
-                kv_cfg["enable_kv_cache_affinity"] = False
+    kv_cfg = get_kv_cache_affinity_application_config(config)
+    if kv_cfg.get(KV_CACHE_AFFINITY_ENABLED_KEY, False):
+        valid, failures = validate_affinity_invariant(config)
+        if not valid:
+            logger.warning(
+                "KV cache affinity configuration failed closed: %s",
+                "; ".join(failures),
+            )
+            # Runtime-only normalization: preserve the user's file for
+            # diagnosis, but never activate an inconsistent configuration.
+            kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
     channels = config.get("channels", {})
     for _ch in ("web", "feishu", "xiaoyi"):
@@ -446,6 +448,18 @@ def _config_lock_path(config_path: Path) -> Path:
     return config_path.with_name(f"{config_path.stem}.lock")
 
 
+@contextmanager
+def config_write_lock(*, lock_timeout: float = 10.0):
+    """Share the Global write boundary with layered permission transactions."""
+    if not _CONFIG_WRITE_LOCK.acquire(timeout=lock_timeout):
+        raise TimeoutError("config write lock timed out")
+    try:
+        with portalocker.Lock(str(_config_lock_path(CONFIG_YAML_PATH)), timeout=lock_timeout):
+            yield
+    finally:
+        _CONFIG_WRITE_LOCK.release()
+
+
 def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     """跨进程互斥地读-改-写 config.yaml。
 
@@ -457,19 +471,15 @@ def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     否则同进程二次获取锁将死锁。如需在写盘后读取展示数据，请在 update_config
     返回后另起一次独立调用（此时锁已释放，安全）。
     """
-    with _CONFIG_WRITE_LOCK:
-        with portalocker.Lock(
-            str(_config_lock_path(CONFIG_YAML_PATH)),
-            timeout=lock_timeout,
-        ):
-            data = load_yaml_round_trip(CONFIG_YAML_PATH)
-            if data is None:
-                data = {}
-            new_data = mutator(data)
-            if new_data is None:
-                return data
-            dump_yaml_round_trip(CONFIG_YAML_PATH, new_data)
-            return new_data
+    with config_write_lock(lock_timeout=lock_timeout):
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        if data is None:
+            data = {}
+        new_data = mutator(data)
+        if new_data is None:
+            return data
+        dump_yaml_round_trip(CONFIG_YAML_PATH, new_data)
+        return new_data
 
 
 # Backward-compat aliases — downstream modules import the underscore-prefixed names
@@ -734,31 +744,20 @@ def update_context_engine_enabled_in_config(value: bool) -> None:
 
 
 def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 react.kv_cache_affinity_config.enable_kv_cache_affinity 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "kv_cache_affinity_config" not in react:
-        react["kv_cache_affinity_config"] = {}
-    react["kv_cache_affinity_config"]["enable_kv_cache_affinity"] = value
-    if value:
-        react["kv_cache_affinity_config"]["enable_kv_cache_release"] = False
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+        if not isinstance(kv_config, dict):
+            kv_config = {}
+            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
+        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
 
+        react = data.get("react")
+        if isinstance(react, dict):
+            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+        return data
 
-def update_kv_cache_release_enabled_in_config(value: bool) -> None:
-    """更新 react.kv_cache_affinity_config.enable_kv_cache_release 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "kv_cache_affinity_config" not in react:
-        react["kv_cache_affinity_config"] = {}
-    react["kv_cache_affinity_config"]["enable_kv_cache_release"] = value
-    if value:
-        react["kv_cache_affinity_config"]["enable_kv_cache_affinity"] = False
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    update_config(_mutate)
 
 
 def _merge_config_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
@@ -797,12 +796,32 @@ def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
-    """更新 permissions.enabled（工具安全护栏开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """Persist the legacy permission switch as a canonical manual profile."""
+    update_permissions_profile_in_config("default" if value else "full_access")
+
+
+def update_permissions_profile_in_config(profile: str) -> None:
+    """Atomically persist the Web permission profile to runtime fields."""
+    runtime_values = {
+        "default": (True, "manual"),
+        "automatic": (True, "auto"),
+        "full_access": (False, "manual"),
+    }
+    try:
+        enabled, mode = runtime_values[profile]
+    except KeyError as exc:
+        raise ValueError(f"invalid permissions_profile: {profile}") from exc
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        permissions = data.get("permissions")
+        if not isinstance(permissions, dict):
+            permissions = {}
+            data["permissions"] = permissions
+        permissions["enabled"] = enabled
+        permissions["mode"] = mode
+        return data
+
+    update_config(_mutate)
 
 
 def update_auto_recap_enabled_in_config(value: bool) -> None:
@@ -920,13 +939,15 @@ def update_permissions_owner_scopes_in_config(
     deny_guidance_message: str | None = None,
 ) -> None:
     """更新 permissions.owner_scopes（及可选 deny_guidance_message）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["owner_scopes"] = owner_scopes
-    if deny_guidance_message is not None:
-        data["permissions"]["deny_guidance_message"] = deny_guidance_message
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["owner_scopes"] = owner_scopes
+        if deny_guidance_message is not None:
+            data["permissions"]["deny_guidance_message"] = deny_guidance_message
+        return data
+
+    update_config(_mutate)
 
 
 def get_permissions_deny_guidance() -> str:
@@ -937,11 +958,13 @@ def get_permissions_deny_guidance() -> str:
 
 def update_permissions_deny_guidance_in_config(msg: str) -> None:
     """更新 permissions.deny_guidance_message 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["deny_guidance_message"] = msg
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["deny_guidance_message"] = msg
+        return data
+
+    update_config(_mutate)
 
 
 # ---------- Web UI：permissions.tools / rules / approval_overrides ----------
@@ -963,11 +986,14 @@ def get_permissions_tools() -> dict[str, Any]:
 def replace_permissions_tools_in_config(tools: Any) -> None:
     """整表替换 ``permissions.tools``；值仅允许 ``allow|ask|deny``（或 legacy ``{\"*\": level}``）。"""
     normalized = _validate_tools_map(tools)
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["tools"] = normalized
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["tools"] = normalized
+        return data
+
+    update_config(_mutate)
 
 
 def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, Any]:
@@ -984,17 +1010,23 @@ def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, A
     if not name:
         raise ValueError("tool name must be non-empty")
     piece = _validate_tools_map({name: level})
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    existing = data["permissions"].get("tools")
-    if not isinstance(existing, dict):
-        existing = {}
-    merged = {str(k): v for k, v in existing.items()}
-    merged[name] = piece[name]
-    data["permissions"]["tools"] = merged
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return {"tools": dict(merged)}
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        existing = data["permissions"].get("tools")
+        if not isinstance(existing, dict):
+            existing = {}
+        merged = {str(k): v for k, v in existing.items()}
+        merged[name] = piece[name]
+        data["permissions"]["tools"] = merged
+        result = {"tools": dict(merged)}
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_tool_in_config(tool_name: str) -> bool:
@@ -1002,23 +1034,29 @@ def delete_permissions_tool_in_config(tool_name: str) -> bool:
     name = str(tool_name).strip()
     if not name:
         raise ValueError("tool name must be non-empty")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    tools = data["permissions"].get("tools")
-    if not isinstance(tools, dict):
-        return False
-    key_to_drop = None
-    for k in tools:
-        if str(k).strip() == name:
-            key_to_drop = k
-            break
-    if key_to_drop is None:
-        return False
-    new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
-    data["permissions"]["tools"] = new_tools
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        tools = data["permissions"].get("tools")
+        if not isinstance(tools, dict):
+            return None
+        key_to_drop = None
+        for k in tools:
+            if str(k).strip() == name:
+                key_to_drop = k
+                break
+        if key_to_drop is None:
+            return None
+        new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
+        data["permissions"]["tools"] = new_tools
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def _validate_tools_map(tools: Any) -> dict[str, str]:
@@ -1078,18 +1116,24 @@ def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("pattern must be non-empty")
     _normalize_rule_severity_action(stored)
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        rules = []
-    if any(isinstance(r, dict) and str(r.get("id") or "").strip() == rid for r in rules):
-        raise ValueError(f"rule id already exists: {rid}")
-    rules.append(stored)
-    data["permissions"]["rules"] = rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return stored
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            rules = []
+        if any(isinstance(r, dict) and str(r.get("id") or "").strip() == rid for r in rules):
+            raise ValueError(f"rule id already exists: {rid}")
+        rules.append(stored)
+        data["permissions"]["rules"] = rules
+        result = stored
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -1100,44 +1144,50 @@ def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> di
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        rules = []
-    idx: int | None = None
-    for i, r in enumerate(rules):
-        if isinstance(r, dict) and str(r.get("id") or "").strip() == rid:
-            idx = i
-            break
-    if idx is None:
-        raise ValueError(f"rule not found: {rid}")
+    result = False
 
-    merged: dict[str, Any] = dict(rules[idx])
-    for k, v in patch.items():
-        if k == "id":
-            continue
-        if k not in _RULE_MUTABLE_KEYS:
-            continue
-        if v is None:
-            merged.pop(k, None)
-        else:
-            merged[k] = v
-    merged["id"] = rid
-    if "tools" in merged:
-        merged["tools"] = _normalize_rule_tools(merged["tools"])
-    if "pattern" in merged:
-        merged["pattern"] = str(merged["pattern"]).strip()
-    if not merged.get("tools"):
-        raise ValueError("tools must be a non-empty list")
-    if not merged.get("pattern"):
-        raise ValueError("pattern must be non-empty")
-    _normalize_rule_severity_action(merged)
-    rules[idx] = merged
-    data["permissions"]["rules"] = rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return merged
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            rules = []
+        idx: int | None = None
+        for i, r in enumerate(rules):
+            if isinstance(r, dict) and str(r.get("id") or "").strip() == rid:
+                idx = i
+                break
+        if idx is None:
+            raise ValueError(f"rule not found: {rid}")
+
+        merged: dict[str, Any] = dict(rules[idx])
+        for k, v in patch.items():
+            if k == "id":
+                continue
+            if k not in _RULE_MUTABLE_KEYS:
+                continue
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        merged["id"] = rid
+        if "tools" in merged:
+            merged["tools"] = _normalize_rule_tools(merged["tools"])
+        if "pattern" in merged:
+            merged["pattern"] = str(merged["pattern"]).strip()
+        if not merged.get("tools"):
+            raise ValueError("tools must be a non-empty list")
+        if not merged.get("pattern"):
+            raise ValueError("pattern must be non-empty")
+        _normalize_rule_severity_action(merged)
+        rules[idx] = merged
+        data["permissions"]["rules"] = rules
+        result = merged
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_rule_in_config(rule_id: str) -> bool:
@@ -1145,18 +1195,24 @@ def delete_permissions_rule_in_config(rule_id: str) -> bool:
     rid = str(rule_id or "").strip()
     if not rid:
         raise ValueError("id is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        return False
-    new_rules = [r for r in rules if not (isinstance(r, dict) and str(r.get("id") or "").strip() == rid)]
-    if len(new_rules) == len(rules):
-        return False
-    data["permissions"]["rules"] = new_rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            return None
+        new_rules = [r for r in rules if not (isinstance(r, dict) and str(r.get("id") or "").strip() == rid)]
+        if len(new_rules) == len(rules):
+            return None
+        data["permissions"]["rules"] = new_rules
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_approval_override_in_config(override_id: str) -> bool:
@@ -1164,18 +1220,24 @@ def delete_permissions_approval_override_in_config(override_id: str) -> bool:
     oid = str(override_id or "").strip()
     if not oid:
         raise ValueError("id is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    ov = data["permissions"].get("approval_overrides")
-    if not isinstance(ov, list):
-        return False
-    new_ov = [x for x in ov if not (isinstance(x, dict) and str(x.get("id") or "").strip() == oid)]
-    if len(new_ov) == len(ov):
-        return False
-    data["permissions"]["approval_overrides"] = new_ov
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        ov = data["permissions"].get("approval_overrides")
+        if not isinstance(ov, list):
+            return None
+        new_ov = [x for x in ov if not (isinstance(x, dict) and str(x.get("id") or "").strip() == oid)]
+        if len(new_ov) == len(ov):
+            return None
+        data["permissions"]["approval_overrides"] = new_ov
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def _normalize_rule_tools(raw: Any) -> list[str]:
@@ -2365,6 +2427,26 @@ def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
         flat_memory["enabled"] = all(legacy_enabled_values)
 
 
+def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
+    """Move the former ReAct-local KVC switch to Application scope."""
+    react = user_data.get("react")
+    if not isinstance(react, dict):
+        return
+    legacy = react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+    canonical = user_data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+    if isinstance(canonical, dict):
+        if (
+            KV_CACHE_AFFINITY_ENABLED_KEY not in canonical
+            and isinstance(legacy, dict)
+            and KV_CACHE_AFFINITY_ENABLED_KEY in legacy
+        ):
+            canonical[KV_CACHE_AFFINITY_ENABLED_KEY] = legacy[
+                KV_CACHE_AFFINITY_ENABLED_KEY
+            ]
+    elif isinstance(legacy, dict):
+        user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
+
+
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -2406,6 +2488,7 @@ def migrate_config_from_template(
     # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
     # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
     _migrate_legacy_agent_submode_memory(user_data)
+    _migrate_legacy_kv_cache_affinity_config(user_data)
 
     # Deep merge: template provides defaults, user values preserved
     merged_data = _deep_merge(template_data, user_data)
@@ -2627,16 +2710,33 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
     return out
 
 
+def resolve_sandbox_enabled(sandbox: Any) -> bool:
+    """Resolve host-owned sandbox enablement without mutating configuration."""
+
+    if not isinstance(sandbox, dict):
+        return False
+    if "enabled" in sandbox:
+        return bool(sandbox["enabled"])
+    return (
+        str(sandbox.get("type") or "").strip().lower() == "jiuwenbox"
+        and bool(str(sandbox.get("url") or "").strip())
+        and bool(str(sandbox.get("control_token_path") or "").strip())
+    )
+
+
 def get_sandbox_runtime() -> dict[str, Any]:
     """返回 sandbox runtime 当前内容 (含缺省字段填充)。
 
-    直接从 ``sandbox.<key>`` 扁平字段读; 字段缺失时用 ``_SANDBOX_RUNTIME_DEFAULTS``。
+    直接从 ``sandbox.<key>`` 扁平字段读。``enabled`` 缺失时从已配置的
+    JiuwenBox 端点推导，其他字段缺失时用 ``_SANDBOX_RUNTIME_DEFAULTS``。
     """
     cfg = get_config() or {}
     sandbox = cfg.get("sandbox")
     if not isinstance(sandbox, dict):
         return _ensure_sandbox_runtime_shape(None)
     raw = {key: sandbox[key] for key in _SANDBOX_RUNTIME_KEYS if key in sandbox}
+    if "enabled" not in raw:
+        raw["enabled"] = resolve_sandbox_enabled(sandbox)
     return _ensure_sandbox_runtime_shape(raw)
 
 
@@ -3096,8 +3196,11 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
     if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
         data["sandbox"] = {}
     sandbox_block = data["sandbox"]
-    # 写入扁平 runtime 字段, 每次 update 都把全集刷一遍, 保证 yaml 形状稳定。
+    # 写入扁平 runtime 字段。enabled 只持久化调用方的显式更新，
+    # 避免将 get_sandbox_runtime() 的派生值反写为新配置。
     for key in _SANDBOX_RUNTIME_KEYS:
+        if key == "enabled" and "enabled" not in patch:
+            continue
         sandbox_block[key] = merged[key]
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
     return merged

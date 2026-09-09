@@ -37,6 +37,9 @@ const FETCH_REASON_KEYS: Record<string, string> = {
   'no remote models endpoint': 'noEndpoint',
   'api_key required for fetch': 'apiKeyRequired',
   'remote fetch failed or empty': 'remoteFailed',
+  'remote returned HTTP 401': 'remoteAuthFailed',
+  'remote returned HTTP 403': 'remoteAuthFailed',
+  'remote returned HTTP 429': 'remoteRateLimited',
 };
 
 function getPresetStatusKey(
@@ -259,8 +262,11 @@ export function ModelDialog({
       }
     } catch (error) {
       if (currentRequestId === validationRequestId.current) {
+        const detail = error instanceof Error ? error.message.trim() : '';
         setValidationFailure({
-          error: error instanceof Error ? error.message : t('settingsPanel.models.validationFailed'),
+          error: detail
+            ? t('settingsPanel.models.validationFailedWithDetail', { detail })
+            : t('settingsPanel.models.validationFailed'),
           snapshot,
         });
       }
@@ -302,9 +308,14 @@ export function ModelDialog({
         updateModelOptions(nextOptions);
         fetchedModelLists.current.add(getModelFetchKey(currentPreset, currentValues.api_key));
         setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
-      } else if (result.source === 'preset' && result.reason && FETCH_REASON_KEYS[result.reason]) {
+      } else if (result.source === 'preset' && result.reason) {
         updateModelOptions(nextOptions);
-        setFetchStatus(t(`settingsPanel.models.fetchReasons.${FETCH_REASON_KEYS[result.reason]}`));
+        const reasonKey = FETCH_REASON_KEYS[result.reason];
+        setFetchStatus(
+          reasonKey
+            ? t(`settingsPanel.models.fetchReasons.${reasonKey}`)
+            : result.reason,
+        );
       } else {
         throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
       }
@@ -515,11 +526,12 @@ export function ModelDialog({
         )}
         cancelLabel={t('common.cancel')}
         dialogClassName="settings-model-dialog"
+        testIdPrefix="settings-model-dialog"
         onConfirm={() => void validateAndSave()}
         onCancel={requestClose}
       >
         {catalogLoading ? (
-          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite">
+          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite" data-testid="settings-model-dialog-catalog-loading">
             {t('settingsPanel.models.catalogLoading')}
           </div>
         ) : null}
@@ -527,6 +539,7 @@ export function ModelDialog({
           <div
             className="settings-model-dialog__catalog-status settings-model-dialog__catalog-status--error"
             role="alert"
+            data-testid="settings-model-dialog-catalog-error"
           >
             <span>
               {t('settingsPanel.models.catalogLoadFailed')}
@@ -536,6 +549,7 @@ export function ModelDialog({
               size="sm"
               disabled={!isConnected || catalogLoading || testing || submitting || saving}
               onClick={onRetryCatalog}
+              data-testid="settings-model-dialog-catalog-retry-btn"
             >
               {t('settingsPanel.feedback.retry')}
             </Button>
@@ -546,6 +560,7 @@ export function ModelDialog({
           disabled={testing || submitting || saving || !catalog.reasoning}
           optionalText={t('common.optional')}
           showOptional={false}
+          testIdPrefix="settings-model-dialog"
           rules={{
             alias: [
               {
@@ -564,7 +579,7 @@ export function ModelDialog({
           items={formItems}
         />
         {saveError ? (
-          <div className="settings-page__error" role="alert">
+          <div className="settings-page__error" role="alert" data-testid="settings-model-dialog-error">
             {saveError}
           </div>
         ) : null}

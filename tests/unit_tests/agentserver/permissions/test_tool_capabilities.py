@@ -43,6 +43,79 @@ def test_domain_tools_remain_high_flex_by_default() -> None:
         assert capability.high_flex is True
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "subagent_spawn",
+        "subagent_wait",
+        "subagent_list",
+        "subagent_send_input",
+        "subagent_close",
+        "subagent_resume",
+    ],
+)
+def test_exact_subagent_runtime_tools_have_closed_internal_capability(
+    tool_name: str,
+) -> None:
+    capability = classify_tool(tool_name)
+
+    assert capability.registered_name == tool_name
+    assert capability.tool_name == tool_name
+    assert capability.aliases == ()
+    assert capability.category == "subagent"
+    assert capability.operation_family == "subagent_runtime_control"
+    assert capability.static_side_effects == frozenset({"delegation"})
+    assert capability.risk_tier == "low"
+    assert capability.high_flex is False
+    assert capability.facts_source == "host_static"
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "subagent_future_tool",
+        "Subagent_spawn",
+        "SUBAGENT_WAIT",
+        "subagent_list ",
+        " subagent_resume",
+    ],
+)
+def test_subagent_runtime_name_variants_are_not_host_static(tool_name: str) -> None:
+    capability = classify_tool(tool_name)
+
+    assert capability.operation_family != "subagent_runtime_control"
+    assert capability.facts_source != "host_static"
+
+
+def test_subagent_runtime_aliases_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jiuwenswarm.common.permission_tools as permission_tools
+
+    monkeypatch.setitem(
+        permission_tools.PERMISSION_TOOL_ALIASES,
+        "subagent_runtime_alias",
+        "subagent_spawn",
+    )
+
+    assert classify_tool("subagent_runtime_alias").facts_source != "host_static"
+    assert classify_tool("subagent_spawn").facts_source != "host_static"
+
+
+def test_subagent_runtime_alias_conflict_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jiuwenswarm.common.permission_tools as permission_tools
+
+    monkeypatch.setitem(
+        permission_tools.PERMISSION_TOOL_ALIASES,
+        "subagent_spawn",
+        "bash",
+    )
+
+    capability = classify_tool("subagent_spawn")
+    assert capability.alias_conflict is True
+    assert capability.facts_source == "unknown"
+
+
 def test_unknown_mcp_is_high_flex() -> None:
     info = classify_tool("mcp_unknown_server_tool")
     assert info.category == "mcp"

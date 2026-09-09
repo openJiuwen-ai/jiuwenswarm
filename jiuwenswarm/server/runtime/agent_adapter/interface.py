@@ -54,6 +54,15 @@ from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_SKIP_OPTION_VALUES,
     plan_skip_feedback,
 )
+from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
+    ALLOW_ONCE,
+    ALWAYS_ALLOW,
+    REJECT,
+    SESSION_ALLOW,
+    is_keep_planning_value,
+    normalize_option_value,
+    resolve_permission_action,
+)
 from jiuwenswarm.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
@@ -104,9 +113,30 @@ def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
     """
     p = params if isinstance(params, dict) else {}
     mcp = p.get("mcp")
+    agent_template_id = p.get("agent_template_name")
+    if isinstance(agent_template_id, str) and agent_template_id.strip():
+        try:
+            agent_template_id = package_manager.resolve_equipment_runtime_id(
+                "agent_templates", agent_template_id
+            )
+        except (TypeError, ValueError):
+            pass
+    plugin_ids = p.get("plugin_names")
+    if isinstance(plugin_ids, list):
+        resolved_plugin_ids: list[Any] = []
+        for item in plugin_ids:
+            if isinstance(item, str) and item.strip():
+                try:
+                    item = package_manager.resolve_equipment_runtime_id(
+                        "plugin_packages", item
+                    )
+                except (TypeError, ValueError):
+                    pass
+            resolved_plugin_ids.append(item)
+        plugin_ids = resolved_plugin_ids
     connectors = package_manager.collect_connectors_for_packages(
-        agent_template_id=p.get("agent_template_name"),
-        plugin_ids=p.get("plugin_names") if isinstance(p.get("plugin_names"), list) else None,
+        agent_template_id=agent_template_id,
+        plugin_ids=plugin_ids if isinstance(plugin_ids, list) else None,
         skip_missing=True,
     )
     out: list[str] = []
@@ -120,6 +150,32 @@ def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+def restore_chat_send_equipment_params(
+    session_id: str | None,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill omitted equipment fields from the session's persisted snapshot.
+
+    Explicit empty values are never overwritten: omission means "keep", while
+    ``""`` / ``[]`` mean "clear".
+    """
+    if not session_id:
+        return params
+    mode = str(params.get("mode") or "").strip().lower()
+    if mode == "auto_harness" or is_team_runtime_mode(mode):
+        return params
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_equipment,
+    )
+
+    saved = get_session_equipment(session_id)
+    for key in ("agent_template_name", "plugin_names", "mcp"):
+        if key not in params and key in saved:
+            value = saved[key]
+            params[key] = list(value) if isinstance(value, list) else value
+    return params
 
 
 def _schedule_symphony_session_feedback(
@@ -175,6 +231,38 @@ def _history_user_content(params: Any, query: Any) -> Any:
     if isinstance(content, str):
         return collapse_file_content_blocks(content)
     return content
+
+
+def _warn_unrecognised_approval_option(
+    branch: str,
+    source: Any,
+    request_id: Any,
+    value: Any,
+    outcome: str,
+) -> None:
+    """审批选项没认出来时留一条告警，然后才按拒绝兜底。
+
+    兜底成拒绝是对的：认不出来就不该放行。但在此之前它是静默的——用户点了同意，
+    工具被拒，现场只剩一句用户看不到的 feedback，排查时无从下手。选项文案是跨端
+    约定，任何一端改了字面量都会以"用户拒绝"的形式出现，因此这条告警要带上原始
+    取值和落到哪个分支。
+
+    取值为空是渲染端的"取消"（TUI 无拒绝项时按 Esc 即回传空串），属于正常路径，
+    不是解析失败，不告警。
+    """
+    if not normalize_option_value(value):
+        return
+    logger.warning(
+        "[JiuWenSwarm] %s unrecognised approval option: source=%s request_id=%s "
+        "value=%r outcome=%s. The answer is refused because it could not be decoded, "
+        "not because the user declined; check that the option vocabulary in "
+        "permission_options matches what the channel sends.",
+        branch,
+        source,
+        request_id,
+        value,
+        outcome,
+    )
 
 
 def _should_record_user_history(params: Any) -> bool:
@@ -711,6 +799,7 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_MARKETPLACE_REMOVE: "handle_skills_marketplace_remove",
     ReqMethod.SKILLS_MARKETPLACE_TOGGLE: "handle_skills_marketplace_toggle",
     ReqMethod.SKILLS_ONLINE_SEARCH: "handle_skills_online_search",
+    ReqMethod.SKILLS_ONLINE_SEARCH_INSTALL: "handle_skills_online_search_install",
     ReqMethod.SKILLS_SKILLNET_SEARCH: "handle_skills_skillnet_search",
     ReqMethod.SKILLS_SKILLNET_INSTALL: "handle_skills_skillnet_install",
     ReqMethod.SKILLS_SKILLNET_INSTALL_STATUS: "handle_skills_skillnet_install_status",
@@ -1558,6 +1647,9 @@ class JiuWenSwarm:
             }
             action = action_by_value.get(value)
             if action is None:
+                _warn_unrecognised_approval_option(
+                    "SkillEvolutionApproval", source, request_id, value, "rejected_as_unknown_option"
+                )
                 action = "reject"
             payload = {"action": action}
             if custom_input:
@@ -1581,22 +1673,20 @@ class JiuWenSwarm:
 
         value = selected_options[0] if selected_options else ""
 
-        if value in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
+        # 选项字符串来自各渲染端：web / CLI 回传 ``value``，TUI 回传 ``label``。
+        # 统一走 ``permission_options`` 的词表解析，别在这里再维护一份字面量元组。
+        action = resolve_permission_action(value)
+
+        if action == ALLOW_ONCE:
             confirm_payload = {"approved": True, "auto_confirm": False, "feedback": ""}
-        elif value in ("session_allow", "会话内记住", "Session Allow"):
+        elif action == SESSION_ALLOW:
             confirm_payload = {
                 "approved": True,
                 "auto_confirm": True,
                 "persist_allow": False,
                 "feedback": "",
             }
-        elif value in (
-            "always_allow",
-            "allow_always",
-            "永久记住",
-            "总是允许",
-            "Always Allow",
-        ):
+        elif action == ALWAYS_ALLOW:
             confirm_payload = {
                 "approved": True,
                 "auto_confirm": True,
@@ -1634,14 +1724,22 @@ class JiuWenSwarm:
                 "feedback": custom_input or "用户希望继续规划",
                 "plan_revise": True,
             }
-        elif value in ("reject", "拒绝", "Reject", "继续规划", "其他意见"):
+        elif action == REJECT:
             feedback = custom_input or (
-                "用户希望继续规划" if value in ("Keep planning", "继续规划", "其他意见") else "用户拒绝"
+                "用户希望继续规划" if is_keep_planning_value(value) else "用户拒绝"
             )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": feedback}
         elif custom_input:
+            # 选项没认出来，但用户填了自由文本，就用文本当反馈继续拒绝。取值仍然
+            # 是没解出来的，同样要告警。
+            _warn_unrecognised_approval_option(
+                "PermissionRail", source, request_id, value, "rejected_with_custom_input"
+            )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": custom_input}
         else:
+            _warn_unrecognised_approval_option(
+                "PermissionRail", source, request_id, value, "rejected_as_unknown_option"
+            )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
         interactive_input.update(request_id, confirm_payload)
@@ -1720,10 +1818,18 @@ class JiuWenSwarm:
                 "handle_skills_import_upload",
                 "handle_skills_toggle",
                 "handle_skills_skillnet_install",
+                "handle_skills_online_search_install",
                 "handle_skills_clawhub_download",
                 "handle_skills_team_skills_hub_install",
             ]
-            if handler_name == "handle_skills_skillnet_install" and payload.get("pending"):
+            if (
+                handler_name
+                in {
+                    "handle_skills_skillnet_install",
+                    "handle_skills_online_search_install",
+                }
+                and payload.get("pending")
+            ):
                 _reload_after_skills = False
             if _reload_after_skills:
                 await self.create_instance()
@@ -2073,10 +2179,14 @@ class JiuWenSwarm:
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
                 payload = {
-                    "templates": package_manager.list_agent_templates(params)
+                    "templates": await package_manager.list_agent_templates_with_hub(
+                        params
+                    )
                 }
             elif method == ReqMethod.AGENT_TEMPLATES_SHOW:
-                card = package_manager.show_agent_template(str(name or ""))
+                card = await package_manager.show_agent_template_with_hub(
+                    str(name or "")
+                )
                 if card is None:
                     raise ValueError(f"agent_template not found: {name!r}")
                 payload = {"template": card}
@@ -2089,14 +2199,20 @@ class JiuWenSwarm:
                     str(name or ""), str(params.get("path", ""))
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_LIST:
-                payload = {"packages": package_manager.list_plugin_packages(params)}
+                payload = {
+                    "packages": await package_manager.list_plugin_packages_with_hub(
+                        params
+                    )
+                }
             elif method == ReqMethod.PLUGIN_PACKAGES_SHOW:
-                card = package_manager.show_plugin_package(str(name or ""))
+                card = await package_manager.show_plugin_package_with_hub(
+                    str(name or "")
+                )
                 if card is None:
                     raise ValueError(f"plugin not found: {name!r}")
                 payload = {"package": card}
             elif method == ReqMethod.AGENT_TEMPLATES_INSTALL:
-                ok, payload = package_manager.install_equipment_gated(
+                ok, payload = await package_manager.install_equipment_from_hub_gated(
                     "agent_templates", params
                 )
                 if not ok:
@@ -2108,7 +2224,7 @@ class JiuWenSwarm:
                         metadata=request.metadata,
                     )
             elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
-                ok, payload = package_manager.install_equipment_gated(
+                ok, payload = await package_manager.install_equipment_from_hub_gated(
                     "plugin_packages", params
                 )
                 if not ok:
@@ -2122,14 +2238,20 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_TEMPLATES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    await unload_live("agent_templates", str(name or ""))
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "agent_templates", name
+                    )
+                    await unload_live("agent_templates", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "agent_templates", params
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    await unload_live("plugin_packages", str(name or ""))
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "plugin_packages", name
+                    )
+                    await unload_live("plugin_packages", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "plugin_packages", params
                 )
@@ -2479,6 +2601,8 @@ class JiuWenSwarm:
             return heartbeat_response
 
         session_id = self._session_manager.get_session_id(request.session_id)
+        if isinstance(request.params, dict):
+            restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
         feedback_scheduled = False
 
@@ -2766,6 +2890,8 @@ class JiuWenSwarm:
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
         session_id = self._session_manager.get_session_id(request.session_id)
+        if isinstance(request.params, dict):
+            restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
 
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
@@ -3114,7 +3240,7 @@ class JiuWenSwarm:
 
         # Team 模式: 后续请求直接执行，绕过 Session Manager 队列
         # 因为 Team 是长期运行的(persistent)，interact 调用不需要等待前一个任务完成
-        # 且 team_helpers 内部已有请求锁保证同一 session 的请求串行执行
+        # team_helpers 只串行化同一 session 的首次启动，已有流上的输入可并发提交
         if is_team_mode and not is_team_first_request:
             logger.info(
                 "[JiuWenSwarm] Team模式后续请求，直接执行: request_id=%s session_id=%s",

@@ -16,6 +16,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts imp
 )
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import (
     DEFAULT_MAX_CHARS,
+    _MAX_PAGES_PER_CALL,
     _format_page_list,
     _normalize_request,
     _parse_page_ranges,
@@ -106,6 +107,25 @@ def test_parse_page_ranges_rejects_invalid(bad):
         _parse_page_ranges(bad)
 
 
+def test_read_pdf_description_states_the_whole_document_default():
+    """`pages` has no typed schema, so the description carries every hint."""
+    description = read_pdf.card.description
+
+    # The cheap, complete option has to be named as the default.
+    assert "Omitting `pages` reads the whole document" in description
+    # ... but only within the limits that actually bound it, so the default is
+    # not promised for documents the per-call page cap cuts short. Built from
+    # the constants rather than their current values, so raising either one
+    # cannot leave the description quietly stating the old bound.
+    assert f"up to max_chars and {_MAX_PAGES_PER_CALL} pages" in description
+    assert f"max_chars (default {DEFAULT_MAX_CHARS})" in description
+    # Incremental reading is advice for large documents, not an opening move.
+    assert "first read page 1" not in description
+    assert "when the return reports that pages were left unread" in description.lower()
+    # An answer from a subset has to disclose the subset.
+    assert "must state which pages it used" in description
+
+
 def test_format_page_list_compresses_runs():
     assert _format_page_list([1, 2, 3, 7]) == "1-3,7"
     assert _format_page_list([5]) == "5"
@@ -163,6 +183,77 @@ async def test_read_pdf_respects_page_selection(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_read_pdf_subset_discloses_the_pages_it_skipped(tmp_path: Path):
+    pytest.importorskip("pdfplumber")
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(_build_minimal_pdf([f"Page {i} body" for i in range(1, 6)]))
+
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path), "pages": "1-2"})
+
+    # The page text a caller passing `pages` already got is unchanged.
+    assert "Page 1 body" in result
+    assert "Page 2 body" in result
+    assert "Page 3 body" not in result
+    # ... but the omission is now stated as an instruction, not a passive fact.
+    assert "Partial read: 3 of 5 pages were NOT read" in result
+    assert "pages 3-5" in result
+    assert "Omit `pages` to read the whole document" in result
+    assert "must state which pages it covers" in result
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_discloses_pages_lost_to_the_page_cap(tmp_path: Path):
+    """Omitting `pages` above the per-call page cap is still a partial read.
+
+    The cap truncates the selection whether or not `pages` was passed, so the
+    document's default read — the one the description recommends — is the call
+    most likely to under-report, not the one least likely to.
+    """
+    pytest.importorskip("pdfplumber")
+    pdf_path = tmp_path / "big.pdf"
+    pdf_path.write_bytes(_build_minimal_pdf([f"Page {i} body" for i in range(1, 102)]))
+
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path)})
+
+    assert "Partial read: 1 of 101 pages were NOT read" in result
+    assert "pages 101" in result
+    assert "must state which pages it covers" in result
+    # Above the cap the whole document does not fit in one call, so the note must
+    # not send the model back to the default read it has just made.
+    assert "Omit `pages` to read the whole document" not in result
+    assert "call read_pdf again with `pages` starting at 101" in result
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_page_cap_remedy_points_past_a_subset(tmp_path: Path):
+    """A subset of an over-cap document may not advise omitting `pages` either."""
+    pytest.importorskip("pdfplumber")
+    pdf_path = tmp_path / "big.pdf"
+    pdf_path.write_bytes(_build_minimal_pdf([f"Page {i} body" for i in range(1, 102)]))
+
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path), "pages": "1-2"})
+
+    assert "Partial read: 99 of 101 pages were NOT read" in result
+    assert "Omit `pages` to read the whole document" not in result
+    assert "call read_pdf again with `pages` starting at 3" in result
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_full_read_adds_no_partial_note(tmp_path: Path):
+    pytest.importorskip("pdfplumber")
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(_build_minimal_pdf(["Alpha", "Bravo", "Charlie"]))
+
+    # Default (no `pages`) reads everything, so there is nothing to disclose.
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path)})
+    assert "Partial read" not in result
+
+    # An explicit range that happens to cover the document is a full read too.
+    result = await read_pdf.invoke({"pdf_path": str(pdf_path), "pages": "1-3"})
+    assert "Partial read" not in result
+
+
+@pytest.mark.asyncio
 async def test_read_pdf_truncates_at_max_chars(tmp_path: Path):
     pytest.importorskip("pdfplumber")
     long_text = "word " * 500  # ~2500 chars on one page
@@ -176,6 +267,25 @@ async def test_read_pdf_truncates_at_max_chars(tmp_path: Path):
     assert "Tail page" not in result
     # Truncation must list the unread pages so the model can continue in chunks
     assert "unread pages: 2" in result
+    # ... and say the read was partial, the same blind spot as a page subset.
+    assert "the rest of the document was NOT read" in result
+    assert "Raise `max_chars` to read more in one call" in result
+    assert "read only in part" in result
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_discloses_truncation_of_a_single_page(tmp_path: Path):
+    pytest.importorskip("pdfplumber")
+    pdf_path = tmp_path / "one.pdf"
+    pdf_path.write_bytes(_build_minimal_pdf([("word " * 500).strip()]))
+
+    # No page is left unread here, so only the max_chars cut-off is disclosed.
+    result = await read_pdf.invoke(
+        {"pdf_path": str(pdf_path), "max_chars": 1000}
+    )
+    assert "the rest of the document was NOT read" in result
+    assert "unread pages" not in result
+    assert "read only in part" in result
 
 
 @pytest.mark.asyncio

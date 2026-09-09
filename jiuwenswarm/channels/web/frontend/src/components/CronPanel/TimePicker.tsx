@@ -42,7 +42,10 @@ export default function TimePicker({ value, onChange, placeholder, className = '
         data-testid="cron-time-picker-trigger"
         className="flex w-full flex-nowrap items-center justify-between gap-1 rounded-md border border-border bg-card px-3 py-1.5 text-sm outline-none hover:border-border-strong"
       >
-        <span className={`truncate ${value ? 'text-text' : 'text-text-muted'}`}>{value || placeholder}</span>
+        {/* 兜底  ：value 和 placeholder 都为空（"留白"用法）时，空 <span> 行盒会塌陷，
+            触发按钮高度就只剩图标的高度，比同排 DatePicker（内部是 <input>，空值也保留行高）矮一截。
+            填一个不可见空格占住一行行高，让两者等高（见 bug002 第 4 轮反馈）。 */}
+        <span className={`truncate ${value ? 'text-text' : 'text-text-muted'}`}>{value || placeholder || ' '}</span>
         <Clock size={15} className="shrink-0 text-text-muted" />
       </button>
       {open && (
@@ -73,7 +76,10 @@ export default function TimePicker({ value, onChange, placeholder, className = '
           <div className="flex-1 max-h-52 overflow-y-auto">
             <div className="sticky top-0 bg-card px-3 py-1.5 text-xs text-text-muted">{t('cron.timePicker.minute')}</div>
             {MINUTES.map((mm) => {
-              const disabled = minHour !== undefined && minMinute !== undefined && h === minHour && mm < minMinute;
+              // 选中的小时 = 最早可选小时时，当前分钟及更早的分钟都禁选（<=）：
+              // 提交处的「已过期」判断是按 "HH:MM" <= 当前墙钟，选到当前这一分钟提交时必被判过期，
+              // 所以选择器里也直接禁掉，保持一致。
+              const disabled = minHour !== undefined && minMinute !== undefined && h === minHour && mm <= minMinute;
               return (
                 <button
                   key={mm}

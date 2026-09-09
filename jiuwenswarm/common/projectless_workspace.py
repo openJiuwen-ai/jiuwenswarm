@@ -150,8 +150,59 @@ def get_projectless_task_workspace(
     back to the current local date.
     """
     tasks_dir = get_projectless_tasks_dir()
-    safe_session = _slugify(session_id, fallback="default")
-    registered_root = _read_registered_root(tasks_dir, safe_session)
+    root = allocate_task_workspace(
+        tasks_dir,
+        registry_dir=None,
+        session_id=session_id,
+        task_name=task_name,
+    )
+    work_dir = root / "work"
+    outputs_dir = root / "outputs"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    return ProjectlessTaskWorkspace(
+        root_dir=root,
+        work_dir=work_dir,
+        outputs_dir=outputs_dir,
+    )
+
+
+def allocate_task_workspace(
+    tasks_dir: Path,
+    *,
+    registry_dir: Path | None,
+    session_id: str | None,
+    task_name: str | None,
+) -> Path:
+    """Allocate or reuse a ``chat-<n>`` task root under ``tasks_dir``.
+
+    Shared by single-agent projectless runs (``tasks_dir`` = the Documents
+    task root, ``registry_dir`` left None so it falls back to the private
+    agent-workspace registry) and by team artifact allocation (``tasks_dir``
+    = ``<team-workspace>/artifacts``, ``registry_dir`` = the artifacts'
+    own ``.team_artifacts`` subdir so a relocated team workspace stays
+    self-contained). The layout — dated ``chat-<n>`` directories, the
+    ``.session_id`` collision marker and the ``metadata.json`` sidecar —
+    is identical in both cases, so a future unification can fold the
+    callers together without touching the on-disk shape.
+
+    Args:
+        tasks_dir: Root under which dated ``<YYYY-MM-DD>/chat-<n>`` task
+            directories are allocated.
+        registry_dir: Directory holding the ``<safe_session>.json`` ->
+            root binding registry. When ``None``, the single-agent
+            private registry (``_registry_root()``) is used so existing
+            behaviour is preserved exactly.
+        session_id: Session id driving reuse (same session -> same root).
+        task_name: Optional human-readable title persisted to
+            ``metadata.json``; never used in the path.
+
+    Returns:
+        The resolved task root directory (created or reused).
+    """
+    tasks_dir = tasks_dir.resolve()
+    safe_session = slugify(session_id, fallback="default")
+    registered_root = _read_registered_root(tasks_dir, safe_session, registry_dir)
     if registered_root is None:
         task_date = _get_session_task_date(session_id) or _local_today()
         registered_root = _allocate_task_root(
@@ -159,7 +210,7 @@ def get_projectless_task_workspace(
             task_date,
             safe_session,
         )
-        _write_registered_root(tasks_dir, safe_session, registered_root)
+        _write_registered_root(safe_session, registered_root, registry_dir)
         _write_task_metadata(
             registered_root,
             session_id=session_id,
@@ -172,16 +223,7 @@ def get_projectless_task_workspace(
             session_id=session_id,
             task_name=task_name,
         )
-
-    work_dir = registered_root / "work"
-    outputs_dir = registered_root / "outputs"
-    work_dir.mkdir(parents=True, exist_ok=True)
-    outputs_dir.mkdir(parents=True, exist_ok=True)
-    return ProjectlessTaskWorkspace(
-        root_dir=registered_root,
-        work_dir=work_dir,
-        outputs_dir=outputs_dir,
-    )
+    return registered_root
 
 
 def _local_today() -> str:
@@ -276,7 +318,19 @@ def _coerce_timestamp(value: object) -> float | None:
     return timestamp if timestamp > 0 and math.isfinite(timestamp) else None
 
 
-def _slugify(value: str | None, *, fallback: str) -> str:
+def slugify(
+    value: str | None, *, fallback: str, reserved_prefix: str = "task"
+) -> str:
+    """Reduce a free-form value to a stable, filesystem-safe name fragment.
+
+    Args:
+        value: The raw value (session id, member name, task title).
+        fallback: Returned when the value reduces to empty.
+        reserved_prefix: Prefix prepended when the result would collide
+            with a Windows reserved device name (``CON``, ``NUL`` ...).
+            Only a defensive collision-avoidance guard; the prefix is
+            never part of the normal path.
+    """
     text = unicodedata.normalize("NFKC", str(value or "")).strip()
     text = re.sub(r"[^\w.-]+", "-", text, flags=re.UNICODE)
     text = text.strip(" .-_")
@@ -284,7 +338,7 @@ def _slugify(value: str | None, *, fallback: str) -> str:
     if not text:
         return fallback
     if text.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
-        return f"task-{text}"
+        return f"{reserved_prefix}-{text}"
     return text
 
 
@@ -324,16 +378,27 @@ def _registry_root() -> Path:
     return (get_agent_workspace_dir() / _REGISTRY_SUBDIR).resolve()
 
 
-def _registry_path(safe_session: str) -> Path:
-    return _registry_root() / f"{safe_session}.json"
+def _resolve_registry_dir(registry_dir: Path | None) -> Path:
+    """Return the registry directory, falling back to the private default."""
+    if registry_dir is not None:
+        return registry_dir.resolve()
+    return _registry_root()
+
+
+def _registry_path(safe_session: str, registry_dir: Path | None = None) -> Path:
+    return _resolve_registry_dir(registry_dir) / f"{safe_session}.json"
 
 
 def _legacy_registry_path(tasks_dir: Path, safe_session: str) -> Path:
     return tasks_dir / _LEGACY_REGISTRY_DIR / f"{safe_session}.json"
 
 
-def _read_registered_root(tasks_dir: Path, safe_session: str) -> Path | None:
-    primary_path = _registry_path(safe_session)
+def _read_registered_root(
+    tasks_dir: Path,
+    safe_session: str,
+    registry_dir: Path | None = None,
+) -> Path | None:
+    primary_path = _registry_path(safe_session, registry_dir)
     for path in (primary_path, _legacy_registry_path(tasks_dir, safe_session)):
         if path == primary_path and not path.exists():
             continue
@@ -346,17 +411,21 @@ def _read_registered_root(tasks_dir: Path, safe_session: str) -> Path | None:
             if not root.is_relative_to(tasks_dir.resolve()) or not root.is_dir():
                 continue
             if path != primary_path:
-                _write_registered_root(tasks_dir, safe_session, root)
+                _write_registered_root(safe_session, root, registry_dir)
             return root
         except (OSError, ValueError, TypeError):
             continue
     return None
 
 
-def _write_registered_root(tasks_dir: Path, safe_session: str, root: Path) -> None:
-    registry_dir = _registry_root()
-    registry_dir.mkdir(parents=True, exist_ok=True)
-    path = _registry_path(safe_session)
+def _write_registered_root(
+    safe_session: str,
+    root: Path,
+    registry_dir: Path | None = None,
+) -> None:
+    resolved_dir = _resolve_registry_dir(registry_dir)
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    path = _registry_path(safe_session, registry_dir)
     # A unique sibling keeps concurrent turns for the same session from
     # clobbering one another's temporary registry file before os.replace().
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")

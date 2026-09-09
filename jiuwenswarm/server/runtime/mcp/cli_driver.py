@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
+from jiuwenswarm.server.runtime.mcp.package_manifest import resolve_mcp_package
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 def _packages_dir() -> Path:
     """Marketplace 包目录：<workspace>/mcp/mcp_builtins/."""
     return get_workspace_dir() / "mcp" / "mcp_builtins"
+
+
+def _hub_packages_dir() -> Path:
+    return get_workspace_dir() / "mcp" / "mcp_hub"
 
 
 # Auth processes started in non-blocking mode (authWaitForExit). Keyed by MCP
@@ -293,9 +298,10 @@ def load_cli_manifest(name: str) -> CliManifest | None:
     n = str(name or "").strip()
     if not n:
         return None
-    path = _packages_dir() / n / "cli.json"
-    if not path.is_file():
+    package = resolve_mcp_package(n, _packages_dir(), _hub_packages_dir())
+    if package is None or package.integration_type != "cli" or package.integration_file is None:
         return None
+    path = package.integration_file
     try:
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -399,7 +405,10 @@ class CliDriver:
             )
         except Exception:  # noqa: BLE001
             return None
-        keys = required_tokens_from_schema(self.name)
+        try:
+            keys = required_tokens_from_schema(self.name)
+        except Exception:  # noqa: BLE001
+            return None
         if not keys:
             return None
         try:

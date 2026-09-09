@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -47,6 +47,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
+from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -368,6 +369,76 @@ async def test_symphony_timeout_is_terminal_manual_build_result(
     assert ctx.extra["symphony_graph_build_timeout"] is True
     assert ctx.force_finished == [
         {"output": result["content"], "result_type": "answer"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_symphony_graph_preparing_is_terminal_for_current_round():
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = SymphonyOrchestrationRail(
+        config_base={"symphony": {"enabled": True}},
+    )
+    rail.init(agent)
+    invocation_extra: dict = {}
+    tool_ctx = _tool_call_ctx(
+        "symphony_compose_graph",
+        {"query": "compose"},
+        extra=invocation_extra,
+        result={
+            "success": False,
+            "reason": "graph_preparing",
+            "retryable": False,
+            "build_status": "running",
+            "operation": "plan",
+        },
+    )
+
+    await rail.after_tool_call(tool_ctx)
+
+    result = tool_ctx.inputs.tool_result
+    assert result["direct_display"] is True
+    assert result["continue_after_display"] is False
+    assert result["followup_action"] == "wait_graph_build"
+    assert "正在构建" in result["content"]
+    assert tool_ctx.force_finished == [
+        {"output": result["content"], "result_type": "answer"}
+    ]
+
+    model_ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(
+            tools=[
+                SimpleNamespace(name="symphony_compose_graph"),
+                SimpleNamespace(name="symphony_refresh_graph"),
+                SimpleNamespace(name="other_tool"),
+            ]
+        ),
+        session=_FakeSession(),
+        extra=invocation_extra,
+    )
+    await rail.before_model_call(model_ctx)
+
+    assert [rail._model_tool_name(tool) for tool in model_ctx.inputs.tools] == [
+        "other_tool"
+    ]
+
+    next_model_ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(
+            tools=[
+                SimpleNamespace(name="symphony_compose_graph"),
+                SimpleNamespace(name="symphony_refresh_graph"),
+            ]
+        ),
+        session=_FakeSession(),
+        extra={},
+    )
+    await rail.before_model_call(next_model_ctx)
+
+    assert [rail._model_tool_name(tool) for tool in next_model_ctx.inputs.tools] == [
+        "symphony_compose_graph",
+        "symphony_refresh_graph",
     ]
 
 
@@ -723,6 +794,19 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     ]
     assert fake_instance.ability_manager.added == fake_resource.added
 
+    # Re-applying the same enabled snapshot is idempotent. Code cold start and
+    # reload both use this path, so neither cards nor registrations may grow.
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
+
+    assert len(seen_configs) == 1
+    assert len(adapter._tool_cards) == 3
+    assert fake_resource.added == [
+        "symphony_read_graph",
+        "symphony_refresh_graph",
+        "symphony_compose_graph",
+    ]
+    assert fake_instance.ability_manager.added == fake_resource.added
+
     adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": False}})
 
     assert adapter._symphony_tools == []
@@ -737,6 +821,105 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
         "symphony_refresh_graph",
         "symphony_compose_graph",
     ]
+
+
+@pytest.mark.asyncio
+async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
+        lambda config=None: SimpleNamespace(enabled=True),
+    )
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+
+    def runtime_model(name: str, api_key: str):
+        return SimpleNamespace(
+            model_client_config={
+                "api_base": "https://selected.example/v1",
+                "api_key": api_key,
+                "client_provider": "OpenAI",
+                "model_name": name,
+            },
+            model_config={"model": name},
+        )
+
+    model_a = runtime_model("model-a", "key-a")
+    model_b = runtime_model("model-b", "key-b")
+    inputs_a = adapter._with_symphony_request_model({"query": "a"}, model_a)
+    inputs_b = adapter._with_symphony_request_model({"query": "b"}, model_b)
+
+    # Only opaque references cross the interaction queue; credentials stay in
+    # the process-local registry.
+    assert "key-a" not in repr(inputs_a)
+    assert "key-b" not in repr(inputs_b)
+
+    seen: dict[str, str] = {}
+
+    async def plan(query, *, llm_config, **kwargs):
+        del kwargs
+        seen[query] = llm_config.model
+        return {
+            "success": True,
+            "planned_graph": {
+                "graph": {
+                    "metadata": {"status": "no_plan"},
+                    "nodes": {},
+                    "edges": [],
+                }
+            },
+        }
+
+    toolkit = SymphonyToolkit(SimpleNamespace(plan=plan))
+    rail = SymphonyOrchestrationRail()
+    a_bound = asyncio.Event()
+    b_bound = asyncio.Event()
+
+    def tool_context(inputs):
+        reference = inputs["run"]["context"]["extra"][
+            SYMPHONY_LLM_CONFIG_REF_KEY
+        ]
+        return AgentCallbackContext(
+            agent=SimpleNamespace(),
+            inputs=ToolCallInputs(
+                tool_call=SimpleNamespace(
+                    id=f"call-{reference[:8]}",
+                    name="symphony_compose_graph",
+                    arguments={},
+                ),
+                tool_name="symphony_compose_graph",
+                tool_args={},
+            ),
+            extra={"run_context": SimpleNamespace(extra={
+                SYMPHONY_LLM_CONFIG_REF_KEY: reference,
+            })},
+        )
+
+    async def invoke_a():
+        ctx = tool_context(inputs_a)
+        await rail.before_tool_call(ctx)
+        a_bound.set()
+        await b_bound.wait()
+        adapter._active_request_model = model_b
+        try:
+            return await toolkit.plan("a")
+        finally:
+            await rail.after_tool_call(ctx)
+
+    async def invoke_b():
+        await a_bound.wait()
+        ctx = tool_context(inputs_b)
+        await rail.before_tool_call(ctx)
+        b_bound.set()
+        try:
+            return await toolkit.plan("b")
+        finally:
+            await rail.after_tool_call(ctx)
+
+    results = await asyncio.gather(invoke_a(), invoke_b())
+
+    assert all(result["success"] is True for result in results)
+    assert seen == {"a": "model-a", "b": "model-b"}
 
 
 @pytest.mark.asyncio
@@ -803,7 +986,7 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "# Language" not in prompt
     assert "# Model Name Answer Policy" not in prompt
     assert "# Browser Tool Policy" not in prompt
-    assert "## Browser Subagent Rules" not in prompt
+    assert "## Browser Capability Routing Rules" not in prompt
     assert "browser_preflight_submit" not in prompt
     assert "hotel_option_select" not in prompt
     assert "gmail_email_select" not in prompt
@@ -821,7 +1004,7 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "Current channel: web" in rendered
     assert "Always respond in English" not in prompt
     assert "# Browser Tool Policy" not in prompt
-    assert "## Browser Subagent Rules" not in prompt
+    assert "## Browser Capability Routing Rules" not in prompt
 
 
 @pytest.mark.asyncio
@@ -909,10 +1092,12 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
 
     task_section = rail.system_prompt_builder.get_section("task_tool")
     assert task_section is not None
-    assert "## Browser Subagent Rules" in task_section.content["en"]
+    assert "## Browser Capability Routing Rules" in task_section.content["en"]
     assert 'set `subagent_type` to `"browser_agent"`' in task_section.content["en"]
+    assert "do not preflight with paid_search" in task_section.content["en"]
+    assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
-    assert "浏览器子智能体规则" in build_browser_task_prompt("cn")
+    assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(
@@ -924,7 +1109,54 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     await rail.before_model_call(ctx)
     unloaded_task_section = rail.system_prompt_builder.get_section("task_tool")
     assert unloaded_task_section is not None
-    assert "## Browser Subagent Rules" not in unloaded_task_section.content["en"]
+    assert "## Browser Capability Routing Rules" not in unloaded_task_section.content["en"]
+
+
+@pytest.mark.asyncio
+async def test_browser_uses_sync_task_tool_while_other_subagents_use_runtime():
+    browser_agent = SubAgentConfig(
+        agent_card=AgentCard(name="browser_agent", description="browser"),
+        system_prompt="browser",
+    )
+    research_agent = SubAgentConfig(
+        agent_card=AgentCard(name="research_agent", description="research"),
+        system_prompt="research",
+    )
+    builder = SystemPromptBuilder(language="en")
+    agent = SimpleNamespace(
+        card=AgentCard(name="main", description="main"),
+        deep_config=SimpleNamespace(subagents=[browser_agent, research_agent]),
+        system_prompt_builder=builder,
+        ability_manager=Mock(),
+    )
+    rail = BrowserTaskPromptRail(enable_subagent_runtime=True)
+
+    rail.init(agent)
+    await rail.before_model_call(
+        AgentCallbackContext(
+            agent=agent,
+            inputs=None,
+            session=_FakeSession(),
+            extra={},
+        )
+    )
+
+    tools_by_name = {tool.card.name: tool for tool in rail.tools}
+    assert "task_tool" in tools_by_name
+    assert "subagent_spawn" in tools_by_name
+    assert tools_by_name["task_tool"]._allowed_subagent_types == frozenset(
+        {"browser_agent"}
+    )
+    assert tools_by_name["subagent_spawn"]._allowed_subagent_types == frozenset(
+        {"research_agent"}
+    )
+    task_section = builder.get_section("task_tool")
+    runtime_section = builder.get_section("subagent_tools")
+    assert task_section is not None
+    assert runtime_section is not None
+    assert "Browser Capability Routing Rules" in task_section.content["en"]
+    assert "Adding to a cart is reversible" in task_section.content["en"]
+    assert "Browser Capability Routing Rules" not in runtime_section.content["en"]
 
 
 def test_task_planning_tools_remain_enabled_without_todo_prompt_section():

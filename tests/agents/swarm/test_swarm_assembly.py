@@ -219,6 +219,8 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
+        registry.VIDEO_GEN,
+        registry.VISUAL_GEN,
         registry.XIAOYI_PHONE,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
@@ -1580,10 +1582,11 @@ async def test_team_workspace_policy_keeps_project_deliverables_in_project(
 
     content = builder.build()
     assert f"User project root: `{project_dir}`" in content
-    assert f"Team collaboration workspace: `{team_ws_root}`" in content
+    assert f"Team shared workspace (config / internal data): `{team_ws_root}`" in content
     assert "Source code, tests, configuration" in content
     assert "When worktree isolation is active" in content
-    assert "Do not place final project files in the team collaboration workspace" in content
+    assert "final deliverables stay in the project" in content
+    assert "Do not place final project files in the team shared workspace root" in content
     assert "Use the internal mount path only" not in content
 
 
@@ -1609,8 +1612,8 @@ async def test_team_workspace_policy_does_not_fallback_project_files_to_team_wor
     )
 
     content = builder.build()
-    assert "User project root: unavailable" in content
-    assert "Do not silently use the team collaboration workspace" in content
+    assert "No user project root is available" in content
+    assert "do not silently drop them in the team workspace" in content
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
@@ -2169,6 +2172,8 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
+        registry.VIDEO_GEN,
+        registry.VISUAL_GEN,
         registry.XIAOYI_PHONE,
         registry.SYMPHONY_TOOLKIT,
         registry.CODE_EXTRA_TOOLS,
@@ -2642,6 +2647,33 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
     assert calls == ["bash"]
 
 
+def test_permission_interrupt_omitted_for_cron_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
+
+    created: list[object] = []
+
+    def fake_build_permission_rail(**_kwargs: object) -> object:
+        rail = object()
+        created.append(rail)
+        return rail
+
+    monkeypatch.setattr(interrupt_helpers, "build_permission_rail", fake_build_permission_rail)
+
+    rail = code_rails.build_permission_interrupt(
+        {"permissions_config": {"enabled": True}, "model_name": "gpt-4"},
+        SwarmBuildContext(
+            mode="team",
+            role="leader",
+            session_id="cron_19abc_job1",
+        ),
+    )
+
+    assert rail is None
+    assert created == []
+
+
 def test_code_extra_tools_gated_by_config() -> None:
     """The code-exclusive tool provider only builds when ``acp_agents`` is configured."""
     register_swarm_providers()
@@ -2956,10 +2988,39 @@ def test_enrich_sets_serializable_build_context_seed() -> None:
     assert spec.build_context_seed is not None
     assert spec.build_context_seed["mode"] == "code.team"
     assert spec.build_context_seed["project_dir"] == "/tmp/proj"
-    assert spec.build_context_seed["disable_teammate_worktree"] is True
+    assert spec.build_context_seed["disable_teammate_worktree"] is False
     assert spec.build_context_seed["team_id"] == spec.team_name
     # The seed equals what the live context exports.
     assert spec.build_context_seed == spec.build_context.to_seed()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_disabled"),
+    [
+        ("team.work.normal", True),
+        ("team.work.plan", True),
+        ("agent.code.normal", True),
+        ("code.team", False),
+        ("team.plan.code", False),
+        ("team.code.normal", False),
+        ("team.code.plan", False),
+    ],
+)
+def test_enrich_enables_teammate_worktree_only_for_web_code_team(
+    mode: str,
+    expected_disabled: bool,
+) -> None:
+    spec = _make_team_spec()
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode=mode,
+        channel_id="web",
+    )
+
+    assert spec.build_context.disable_teammate_worktree is expected_disabled
+    assert spec.build_context_seed["disable_teammate_worktree"] is expected_disabled
 
 
 def test_distributed_member_rebuild_reconstructs_build_context() -> None:

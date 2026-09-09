@@ -9,7 +9,7 @@
   按 schedule 投递 follow-up prompt,使 Agent 回到同一线程继续处理。
 
 字段命名原则:与 Cron 已有字段语义一致的必须同名同义(``id/name/enabled/created_at/updated_at/
-timezone/delete_after_run``);Heartbeat 独有语义才新增字段。
+timezone``);Heartbeat 独有语义才新增字段。
 """
 
 from __future__ import annotations
@@ -63,6 +63,10 @@ HEARTBEAT_SOURCES: tuple[str, ...] = (
 SCHEDULE_INTERVAL: str = "interval"
 SCHEDULE_CRON: str = "cron"
 SCHEDULE_ONCE: str = "once"
+
+# datetime supports Unix seconds through year 9999. Larger values are almost
+# certainly millisecond timestamps and cannot represent a useful schedule.
+MAX_UNIX_TIMESTAMP_SECONDS: float = 253_402_300_799.0
 
 HEARTBEAT_SCHEDULE_TYPES: tuple[str, ...] = (SCHEDULE_INTERVAL, SCHEDULE_CRON, SCHEDULE_ONCE)
 
@@ -155,7 +159,7 @@ class HeartbeatSchedule:
     type: str
     # interval 模式使用,>=60。
     interval_seconds: int | None = None
-    # cron 模式使用,5 字段。
+    # cron 模式使用,支持 5 字段 crontab 或普通 Cron 任务使用的 7 字段格式。
     cron_expr: str | None = None
     # cron 模式时区,默认 Asia/Shanghai。
     timezone: str | None = None
@@ -204,17 +208,11 @@ class HeartbeatSchedule:
             cron_expr = str(data.get("cron_expr") or "").strip()
             if not cron_expr:
                 raise ValueError("schedule.cron_expr is required for cron type")
-            field_count = len(cron_expr.split())
-            if field_count != 5:
-                raise ValueError(
-                    "heartbeat schedule.cron_expr must have exactly 5 fields, "
-                    f"got {field_count}"
-                )
             tz = _validate_timezone(
                 str(data.get("timezone") or "").strip() or default_timezone,
                 default=default_timezone,
             )
-            # Heartbeat 只允许 5 字段；表达式内容继续复用 Cron helper 校验。
+            # 与普通 Cron 任务保持一致，支持 5 字段和 7 字段，并保留原表达式。
             validate_cron_expression(cron_expr, timezone=tz)
             return HeartbeatSchedule(
                 type=SCHEDULE_CRON,
@@ -362,7 +360,6 @@ class HeartbeatJob:
     concurrency_policy: str = DEFAULT_CONCURRENCY_POLICY
     session_deleted_policy: str = DEFAULT_SESSION_DELETED_POLICY
     max_runs: int | None = DEFAULT_MAX_RUNS
-    delete_after_run: bool = False
     kind: str = HEARTBEAT_KIND
     created_at: float | None = None
     updated_at: float | None = None
@@ -389,7 +386,6 @@ class HeartbeatJob:
             "concurrency_policy": self.concurrency_policy,
             "session_deleted_policy": self.session_deleted_policy,
             "max_runs": self.max_runs,
-            "delete_after_run": bool(self.delete_after_run),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "next_run_at": self.next_run_at,
@@ -474,12 +470,6 @@ class HeartbeatJob:
             if max_runs < 1:
                 raise ValueError("max_runs must be at least 1")
 
-        delete_after_run = _persisted_bool(
-            data, "delete_after_run", default=False
-        )
-        if not isinstance(delete_after_run, bool):
-            raise ValueError("delete_after_run must be boolean")
-
         created_at = data.get("created_at", None)
         updated_at = data.get("updated_at", None)
         created_at_f = float(created_at) if isinstance(created_at, (int, float)) else None
@@ -499,6 +489,13 @@ class HeartbeatJob:
         )
 
         run_count = int(data.get("run_count") or 0)
+        # Heartbeat once exposed ``delete_after_run`` as a second run limit.
+        # Retired records are normalized on read and serialized without it.
+        if data.get("delete_after_run") is True:
+            if status in HEARTBEAT_TERMINAL_STATUSES:
+                max_runs = max(1, run_count)
+            else:
+                max_runs = run_count + 1
 
         metadata_raw = data.get("metadata", None)
         metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
@@ -522,7 +519,6 @@ class HeartbeatJob:
             concurrency_policy=concurrency_policy,
             session_deleted_policy=session_deleted_policy,
             max_runs=max_runs,
-            delete_after_run=delete_after_run,
             created_at=created_at_f,
             updated_at=updated_at_f,
             next_run_at=next_run_at,

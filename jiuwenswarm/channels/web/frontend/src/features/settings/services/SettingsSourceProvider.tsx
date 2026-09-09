@@ -74,13 +74,13 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
 
   if (loading)
     return (
-      <div className="settings-page__loading">
+      <div className="settings-page__loading" data-testid="settings-source-loading" data-variant="config">
         <Loading aria-label={t('common.loading')} />
       </div>
     );
   if (error)
     return (
-      <div className="settings-page__error" role="alert">
+      <div className="settings-page__error" role="alert" data-testid="settings-source-error" data-variant="config">
         {error}
       </div>
     );
@@ -176,13 +176,13 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
 
   if (loading)
     return (
-      <div className="settings-page__loading">
+      <div className="settings-page__loading" data-testid="settings-source-loading" data-variant="browser">
         <Loading aria-label={t('common.loading')} />
       </div>
     );
   if (error)
     return (
-      <div className="settings-page__error" role="alert">
+      <div className="settings-page__error" role="alert" data-testid="settings-source-error" data-variant="browser">
         {error}
       </div>
     );

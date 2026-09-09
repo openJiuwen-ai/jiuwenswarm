@@ -6,6 +6,8 @@ from openjiuwen.core.foundation.tool import Tool, ToolCard
 from text_utils import (
     CJK_PDF_TO_WORD_NOTE,
     _coerce_table,
+    _table_column_count,
+    coerce_generator_inputs,
     collect_structured_content_text,
     contains_cjk,
     normalize_generator_content,
@@ -40,8 +42,8 @@ class DocumentGenerator(Tool):
                     "properties": {
                         "format": {
                             "type": "string",
-                            "enum": ["pdf", "word", "excel", "ppt"],
-                            "description": "输出文件格式",
+                            "enum": ["pdf", "word", "excel", "ppt", "pptx", "docx", "xlsx"],
+                            "description": "输出文件格式。ppt/pptx、word/docx、excel/xlsx 等价",
                         },
                         "filename": {
                             "type": "string",
@@ -70,22 +72,24 @@ class DocumentGenerator(Tool):
         )
 
     async def invoke(self, inputs, **kwargs):
-        fmt = inputs.get("format", "")
-        filename = inputs.get("filename", "")
-        content = inputs.get("content", {})
-        output_dir = inputs.get("output_dir", "")
+        parsed = coerce_generator_inputs(inputs if isinstance(inputs, dict) else {})
+        fmt = parsed.get("format", "")
+        filename = parsed.get("filename", "")
+        content = parsed.get("content", {})
+        output_dir = parsed.get("output_dir", "")
 
         if not all((fmt, filename, content, output_dir)):
             return {
                 "success": False,
                 "error": "缺少必要参数: format, filename, content, output_dir",
             }
+        if not isinstance(content, dict):
+            return {"success": False, "error": "content 必须是结构化对象"}
 
-        if isinstance(content, dict):
-            content = normalize_generator_content(content)
-            validation_error = validate_generator_content(content, fmt)
-            if validation_error:
-                return {"success": False, "error": validation_error}
+        content = normalize_generator_content(content)
+        validation_error = validate_generator_content(content, fmt)
+        if validation_error:
+            return {"success": False, "error": validation_error}
 
         base_dir = Path(output_dir).expanduser()
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -172,13 +176,14 @@ class DocumentGenerator(Tool):
         for table in content.get("tables", []):
             pdf.ln(5)
             data = _coerce_table(table)
-            if data:
-                col_count = max(len(row) for row in data) if data else 1
-                col_width = 180 / col_count
-                for row in data:
-                    for cell in row:
-                        pdf.cell(col_width, 7, str(cell)[:50], border=1)
-                    pdf.ln()
+            col_count = _table_column_count(data)
+            if not data or col_count < 1:
+                continue
+            col_width = 180 / col_count
+            for row in data:
+                for cell in row:
+                    pdf.cell(col_width, 7, str(cell)[:50], border=1)
+                pdf.ln()
 
         pdf.output(file_path)
 
@@ -210,14 +215,14 @@ class DocumentGenerator(Tool):
 
         for table in content.get("tables", []):
             data = _coerce_table(table)
-            if data:
-                rows = len(data)
-                cols = max(len(row) for row in data) if data else 1
-                t = doc.add_table(rows=rows, cols=cols)
-                for i, row in enumerate(data):
-                    for j, cell in enumerate(row):
-                        if j < cols:
-                            t.rows[i].cells[j].text = str(cell)
+            cols = _table_column_count(data)
+            if not data or cols < 1:
+                continue
+            t = doc.add_table(rows=len(data), cols=cols)
+            for i, row in enumerate(data):
+                for j, cell in enumerate(row):
+                    if j < cols:
+                        t.rows[i].cells[j].text = str(cell)
 
         doc.save(file_path)
 
@@ -233,18 +238,17 @@ class DocumentGenerator(Tool):
             table_data = content.get("tables", [])
             if table_data:
                 data = _coerce_table(table_data[0])
-                for row in data:
-                    ws.append(row)
             else:
-                for row in content.get("rows", []):
-                    ws.append(row)
+                data = _coerce_table(content.get("rows") or [])
+            for row in data:
+                ws.append(row)
         else:
             wb.remove(wb.active)
             for sheet_data in sheets:
                 ws = wb.create_sheet(
                     title=sheet_data.get("sheet_name", "Sheet")
                 )
-                for row in sheet_data.get("rows", []):
+                for row in _coerce_table(sheet_data):
                     ws.append(row)
 
         wb.save(file_path)
@@ -262,7 +266,9 @@ class DocumentGenerator(Tool):
 
     @staticmethod
     def _apply_cjk_font(text_frame, size_pt: int, bold: bool = False) -> None:
+        from lxml import etree
         from pptx.dml.color import RGBColor
+        from pptx.oxml.ns import qn
         from pptx.util import Pt
 
         font_name = "Microsoft YaHei"
@@ -273,6 +279,12 @@ class DocumentGenerator(Tool):
                 run.font.size = Pt(size_pt)
                 run.font.bold = bold
                 run.font.color.rgb = color
+                r_pr = getattr(run, "_r").get_or_add_rPr()
+                for tag in ("latin", "ea", "cs"):
+                    element = r_pr.find(qn(f"a:{tag}"))
+                    if element is None:
+                        element = etree.SubElement(r_pr, qn(f"a:{tag}"))
+                    element.set("typeface", font_name)
 
     @staticmethod
     def _add_textbox(slide, spec: _TextBoxSpec):
@@ -288,13 +300,16 @@ class DocumentGenerator(Tool):
         return box
 
     @staticmethod
-    def _add_slide_table(slide, data, top_inches: float = 1.6) -> None:
+    def _add_slide_table(slide, data, top_inches: float = 1.6) -> float:
         from pptx.util import Inches
 
         rows = len(data)
-        cols = max(len(row) for row in data) if data else 1
+        cols = _table_column_count(data)
+        if rows < 1 or cols < 1:
+            return top_inches
+        height = min(4.8, max(0.6, 0.32 * rows + 0.2))
         table = slide.shapes.add_table(
-            rows, cols, Inches(0.5), Inches(top_inches), Inches(9.0), Inches(4.8)
+            rows, cols, Inches(0.5), Inches(top_inches), Inches(9.0), Inches(height)
         ).table
         for i, row in enumerate(data):
             for j, cell in enumerate(row):
@@ -305,6 +320,7 @@ class DocumentGenerator(Tool):
                         size_pt=12,
                         bold=(i == 0),
                     )
+        return top_inches + height + 0.2
 
     @staticmethod
     def _generate_ppt(file_path: str, content: dict) -> None:
@@ -328,7 +344,7 @@ class DocumentGenerator(Tool):
             if not isinstance(body, str):
                 body = "\n".join(str(item) for item in body if item)
             tables = [_coerce_table(item) for item in slide_data.get("tables", [])]
-            tables = [item for item in tables if item]
+            tables = [item for item in tables if _table_column_count(item) > 0]
             slide = prs.slides.add_slide(blank_layout)
             slide_title = slide_data.get("title", "")
             if slide_title:
@@ -343,9 +359,12 @@ class DocumentGenerator(Tool):
                     slide,
                     _TextBoxSpec(body, 0.5, 1.15, 9.0, 2.0 if tables else 5.8, 18),
                 )
+            table_top = 3.3 if body else 1.2
             for data in tables:
-                DocumentGenerator._add_slide_table(
-                    slide, data, top_inches=3.3 if body else 1.2
+                table_top = DocumentGenerator._add_slide_table(
+                    slide, data, top_inches=table_top
                 )
 
+        if not prs.slides:
+            raise ValueError("PPT 没有有效幻灯片，请提供 slides[].title 与 body/tables")
         prs.save(file_path)

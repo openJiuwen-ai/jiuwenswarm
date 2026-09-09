@@ -59,7 +59,7 @@ def _build_skill_zip_bytes_flat_root(*, skill_name: str) -> bytes:
 def test_get_team_skills_hub_base_url_default(monkeypatch):
     monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
-    assert manager.get_team_skills_hub_base_url() == "https://teamskills.openjiuwen.com"
+    assert manager.get_team_skills_hub_base_url() == "https://swarmskills.openjiuwen.com"
 
 
 def test_get_team_skills_hub_base_url_env_override(monkeypatch):
@@ -72,7 +72,7 @@ def test_get_team_skills_hub_base_url_default_without_override(monkeypatch):
     """未配置 TEAM_SKILLS_HUB_BASE_URL 时应回退默认值。"""
     monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
-    assert manager.get_team_skills_hub_base_url() == "https://teamskills.openjiuwen.com"
+    assert manager.get_team_skills_hub_base_url() == "https://swarmskills.openjiuwen.com"
 
 
 @pytest.mark.asyncio
@@ -648,6 +648,14 @@ def test_team_skills_hub_allowed_download_hosts_support_wildcard_region(monkeypa
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
     manager.call_assert_team_skills_hub_download_url_allowed(
         "https://openjiuwen-market.obs.ap-east-1.myhuaweicloud.com/plugins/demo.zip"
+    )
+
+
+def test_team_skills_hub_default_allowed_download_hosts_include_official_test_bucket(monkeypatch):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    manager.call_assert_team_skills_hub_download_url_allowed(
+        "https://openjiuwen-market-test.obs.ap-southeast-1.myhuaweicloud.com/plugins/demo.zip"
     )
 
 

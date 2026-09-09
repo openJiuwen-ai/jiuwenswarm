@@ -379,14 +379,17 @@ def test_constructor_does_not_read_or_write_yaml(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_without_yaml_keeps_host_unconfigured(tmp_path: Path) -> None:
+async def test_start_without_yaml_bootstraps_default_config(tmp_path: Path) -> None:
     home = tmp_path / "personal_context"
     host = PersonalContextHostAPI(home=home)
     await host.start()
     status = await host.get_status()
-    assert status.configured is False
-    assert status.state == "CREATED"
-    assert not home.exists()
+    # First deployment bootstraps a default config (collection + agent-use ON)
+    # so the settings page opens with the toggle enabled by default.
+    assert status.configured is True
+    assert status.collection_enabled is True
+    assert status.agent_use_enabled is True
+    assert (home / "personal_context.yaml").is_file()
 
 
 @pytest.mark.asyncio
@@ -442,7 +445,7 @@ async def test_unconfigured_projection_and_stop_are_read_only_until_first_start(
     started = await host.set_collection_enabled(True)
 
     assert started["collection_enabled"] is True
-    assert started["agent_use_enabled"] is False
+    assert started["agent_use_enabled"] is True
     assert started["strategy_profile"] == "rules"
     assert started["model_index"] is None
     assert started["fetch_services"] == []

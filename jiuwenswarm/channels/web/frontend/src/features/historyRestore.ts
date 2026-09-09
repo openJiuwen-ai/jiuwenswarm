@@ -12,6 +12,11 @@ import {
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
 import { readAgentTemplateName } from './agentIdentity';
+import {
+  isSingleAgentContextUsageSnapshot,
+  isTeamLeaderContextUsageSnapshot,
+  parseContextUsageSnapshot,
+} from './contextUsage/contextUsageModel';
 
 export { HistoryRecordReassembler };
 
@@ -1168,10 +1173,16 @@ function parseHistoryTimelineEntry(
     // These keys are normally history-record metadata and are therefore
     // omitted by buildEventPayloadForRecord. They are also part of the full
     // context.usage event, so put them back for the restored frontend payload.
-    for (const key of ['request_id', 'session_id', 'timestamp']) {
+    for (const key of ['request_id', 'session_id', 'timestamp', 'mode']) {
       if (contextPayload[key] === undefined && record[key] !== undefined) {
         contextPayload[key] = record[key];
       }
+    }
+    if (
+      contextPayload.role === undefined &&
+      (record.role === 'leader' || record.role === 'teammate')
+    ) {
+      contextPayload.role = record.role;
     }
     return {
       kind: 'context_usage',
@@ -1430,6 +1441,24 @@ function materializeHistoryTimeline(
   };
 }
 
+function selectLatestContextUsagePayload(items: HistoryContextUsageReplayItem[]): Record<string, unknown> | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const snapshot = parseContextUsageSnapshot(item.payload);
+    if (!snapshot) continue;
+
+    const mode = typeof item.payload.mode === 'string' ? item.payload.mode.trim().toLowerCase() : '';
+    const eligible =
+      mode === 'team'
+        ? isTeamLeaderContextUsageSnapshot(snapshot)
+        : mode === 'agent'
+          ? isSingleAgentContextUsageSnapshot(snapshot)
+          : isTeamLeaderContextUsageSnapshot(snapshot) || isSingleAgentContextUsageSnapshot(snapshot);
+    if (eligible) return item.payload;
+  }
+  return null;
+}
+
 /**
  * 将磁盘上的 history.json 解析结果（通常为记录数组）转为与历史恢复相同的筛选规则下的消息列表，
  * 并按时间升序返回全部可展示的用户/助手消息。
@@ -1510,10 +1539,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     executions,
     reasoningSegments,
     mode: isTeam ? 'team' : null,
-    contextUsageSnapshot:
-      contextUsageReplay.length > 0
-        ? contextUsageReplay[contextUsageReplay.length - 1].payload
-        : null,
+    contextUsageSnapshot: selectLatestContextUsagePayload(contextUsageReplay),
   };
 }
 
@@ -1819,9 +1845,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
     const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
       materializeHistoryTimeline(entries);
-    const latestContextUsage = contextUsageReplay.length > 0
-      ? contextUsageReplay[contextUsageReplay.length - 1].payload
-      : null;
+    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     stopListening();
 
@@ -1992,9 +2016,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
 
     const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
       materializeHistoryTimeline(entries);
-    const latestContextUsage = contextUsageReplay.length > 0
-      ? contextUsageReplay[contextUsageReplay.length - 1].payload
-      : null;
+    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     dispose();
 

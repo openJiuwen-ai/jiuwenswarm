@@ -190,8 +190,6 @@ class AgentTool(Tool):
     def _create_sub_agent(self, agent_def, sub_session_id: str) -> DeepAgent:
         """从 AgentDefinition 直接创建子 DeepAgent，绕过 deep_config.subagents。"""
         from openjiuwen.harness.factory import create_deep_agent
-        from openjiuwen.harness.schema.config import SubAgentConfig
-        from openjiuwen.core.single_agent import AgentCard as OJAgentCard
         from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _agent_def_to_subagent_config
 
         parent_config = getattr(self._parent_agent, "deep_config", None)
@@ -260,6 +258,14 @@ class AgentTool(Tool):
         }
 
         factory_kwargs = dict(spec.factory_kwargs or {})
+        # CodeAgentRail creates custom subagents directly instead of using
+        # DeepAgent.create_subagent().  Preserve the parent's explicit image
+        # policy by default, while allowing a custom Agent with another model
+        # to declare its own value through factory_kwargs.
+        factory_kwargs.setdefault(
+            "enable_read_image_multimodal",
+            getattr(parent_config, "enable_read_image_multimodal", None),
+        )
 
         sub_agent = create_deep_agent(**create_kwargs, **factory_kwargs)
         logger.info("[AgentTool] Created sub-agent for '%s' via create_deep_agent()", agent_def.name)
@@ -438,7 +444,7 @@ class CodeAgentRail(DeepAgentRail):
             service = AgentConfigService(self._workspace_dir)
             return [
                 a for a in service.list_agents()
-                if a.source != "builtin" and a.enabled == True
+                if a.source != "builtin" and a.enabled
             ]
         except Exception:
             logger.warning("[CodeAgentRail] Failed to load custom agents", exc_info=True)

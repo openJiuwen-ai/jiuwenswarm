@@ -120,9 +120,10 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
   const canUse = item.installed && item.connectionState === 'connected' && item.enabled !== false;
   const needsConnection = item.installed && item.connectionState !== 'connected';
   const avatarUrl = getAgentAvatarUrl(item);
+  const description = item.description || t('agentManagement.unknownDescription');
 
   return (
-    <article className={`agent-management-card page-card agent-management-card--${scope}`} data-testid={`agent-card-${item.id}`}>
+    <article className={`agent-management-card page-card agent-management-card--${scope}${item.installed ? ' agent-management-card--multi-action' : ''}`} data-testid={`agent-card-${item.id}`}>
       <button
         type="button"
         className="agent-management-card__body"
@@ -135,7 +136,7 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
           </span>
           <span className="agent-management-card__content">
             <span className="agent-management-card__title-row">
-              <span className="agent-management-card__title">{item.displayName}</span>
+              <span className="agent-management-card__title" title={item.displayName}>{item.displayName}</span>
               {scope === 'mine' && item.updateAvailable ? (
                 <span className="agent-management-card__update">
                   <ReminderIcon aria-hidden="true" />
@@ -156,7 +157,7 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
             />
           </span>
         </span>
-        <span className="agent-management-card__description">{item.description || t('agentManagement.unknownDescription')}</span>
+        <span className="agent-management-card__description" title={description}>{description}</span>
       </button>
       <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
         {item.installed ? (

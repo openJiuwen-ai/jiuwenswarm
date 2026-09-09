@@ -4,8 +4,11 @@ export type SidebarNavKey =
   | 'chat'
   | 'skills'
   | 'agents'
+  | 'teams'
   | 'sessions'
   | 'cron'
+  | 'personalContext'
+  | 'personalContextSettings'
   | 'settings'
   | 'updatepanel';
 

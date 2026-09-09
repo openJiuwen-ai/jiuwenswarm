@@ -12,11 +12,21 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
+    PreparedSessionProvision,
     RuntimeSessionProvisioner,
     SessionDeleteResult,
+    SessionForkInput,
+    SessionForkResult,
+    SessionProvisionCommitContext,
+    SessionProvisionCommitTiming,
+    SessionProvisionResult,
+    SessionProvisionState,
+    SessionSwitchInput,
+    SessionSwitchResult,
 )
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
@@ -29,6 +39,11 @@ if TYPE_CHECKING:
     from jiuwenswarm.runtime.session_provisioner import SessionDeleteLifecycle
 
 logger = logging.getLogger(__name__)
+
+_SessionProvisionResultT = TypeVar(
+    "_SessionProvisionResultT",
+    bound=SessionProvisionResult,
+)
 
 _PROCESS_RUNTIME_DEPENDENCY_LOCK = asyncio.Lock()
 _PROCESS_RUNTIME_DEPENDENCY_USERS = 0
@@ -232,7 +247,10 @@ class AgentRuntime:
 
     The class is intentionally one-shot: after ``close`` it cannot be started
     again.  A process-style CLI creates one instance per command, while
-    AgentServer owns one instance for its service lifetime.
+    AgentServer owns one instance for its service lifetime.  A prepared Session
+    provision is an outstanding Runtime operation: callers must commit or abort
+    it before closing.  ``close`` rejects unfinished provisions before touching
+    owned resources, so finalizers never run against a torn-down Runtime.
     """
 
     def __init__(
@@ -267,6 +285,10 @@ class AgentRuntime:
         self._enable_kvc_tracking = bool(enable_kvc_tracking)
         self._stateless_agents: dict[str, Any] = {}
         self._lifecycle_lock = asyncio.Lock()
+        self._session_provision_prepares = 0
+        self._pending_session_provisions: set[
+            PreparedSessionProvision[Any]
+        ] = set()
         self._started = False
         self._closed = False
 
@@ -282,6 +304,32 @@ class AgentRuntime:
     def set_admission_controller(self, controller: Any | None) -> None:
         """Attach optional host-owned scheduling admission to chat execution."""
         self._admission_controller = controller
+
+    async def _mark_pending_interaction(self, event: RuntimeEvent) -> None:
+        if event.event_type != "chat.ask_user_question":
+            return
+        marker = getattr(
+            self._admission_controller,
+            "mark_interaction_pending",
+            None,
+        )
+        if callable(marker):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            await marker(
+                event.session_id or "default",
+                str(payload.get("request_id") or ""),
+            )
+
+    async def _clear_pending_interaction(
+        self, session_id: str, request_id: str | None = None
+    ) -> None:
+        clearer = getattr(
+            self._admission_controller,
+            "clear_interaction_pending",
+            None,
+        )
+        if callable(clearer):
+            await clearer(session_id, request_id)
 
     def set_session_delete_lifecycle(
         self,
@@ -353,6 +401,87 @@ class AgentRuntime:
             session_id=requested or None,
         )
 
+    async def prepare_session_fork(
+        self,
+        provision_input: SessionForkInput,
+    ) -> PreparedSessionProvision[SessionForkResult]:
+        """Prepare a transport-neutral Session fork on this Runtime."""
+        async with self._lifecycle_lock:
+            self._require_started()
+            self._session_provision_prepares += 1
+
+        prepared: PreparedSessionProvision[SessionForkResult] | None = None
+        try:
+            prepared = await self._session_provisioner.prepare_session_fork(
+                provision_input
+            )
+            return prepared
+        finally:
+            self._session_provision_prepares -= 1
+            if prepared is not None:
+                self._pending_session_provisions.add(prepared)
+
+    async def prepare_session_switch(
+        self,
+        provision_input: SessionSwitchInput,
+    ) -> PreparedSessionProvision[SessionSwitchResult]:
+        """Prepare a transport-neutral Session switch on this Runtime."""
+        async with self._lifecycle_lock:
+            self._require_started()
+            self._session_provision_prepares += 1
+
+        prepared: PreparedSessionProvision[SessionSwitchResult] | None = None
+        try:
+            prepared = await self._session_provisioner.prepare_session_switch(
+                provision_input
+            )
+            return prepared
+        finally:
+            self._session_provision_prepares -= 1
+            if prepared is not None:
+                self._pending_session_provisions.add(prepared)
+
+    async def commit_session_provision(
+        self,
+        prepared: PreparedSessionProvision[_SessionProvisionResultT],
+        *,
+        timing: SessionProvisionCommitTiming,
+        context: SessionProvisionCommitContext | None = None,
+    ) -> _SessionProvisionResultT:
+        """Commit a prepared Session operation before Runtime shutdown."""
+        async with self._lifecycle_lock:
+            self._require_started()
+        try:
+            return await self._session_provisioner.commit_session_provision(
+                prepared,
+                timing=timing,
+                context=context,
+            )
+        finally:
+            self._discard_finalized_session_provision(prepared)
+
+    async def abort_session_provision(
+        self,
+        prepared: PreparedSessionProvision[_SessionProvisionResultT],
+    ) -> None:
+        """Abort a prepared Session operation before Runtime shutdown."""
+        async with self._lifecycle_lock:
+            self._require_started()
+        try:
+            await self._session_provisioner.abort_session_provision(prepared)
+        finally:
+            self._discard_finalized_session_provision(prepared)
+
+    def _discard_finalized_session_provision(
+        self,
+        prepared: PreparedSessionProvision[Any],
+    ) -> None:
+        if prepared.state in {
+            SessionProvisionState.COMMITTED,
+            SessionProvisionState.ABORTED,
+        }:
+            self._pending_session_provisions.discard(prepared)
+
     async def prepare_chat_turn(
         self,
         request: AgentRequest,
@@ -392,11 +521,24 @@ class AgentRuntime:
             raise RuntimeStateError("runtime is already closed")
         from jiuwenswarm.runtime.request import cancel_request
 
-        return await cancel_request(
+        response = await cancel_request(
             self._agent_manager,
             request,
             allow_create=allow_create,
         )
+        params = request.params if isinstance(request.params, dict) else {}
+        if (
+            response.ok
+            and str(params.get("intent") or "cancel") in {"cancel", "supplement"}
+            and not (
+                isinstance(response.payload, dict)
+                and response.payload.get("success") is False
+            )
+        ):
+            await self._clear_pending_interaction(
+                request.session_id or "default"
+            )
+        return response
 
     async def cancel_all_inflight_work(
         self,
@@ -485,6 +627,12 @@ class AgentRuntime:
         kvc_task_started = False
         kvc_task_succeeded = False
         admitted = foreground and not self._request_targets_team(request)
+        interrupt_resume = self._is_interrupt_resume_request(request)
+        interaction_answer = (
+            interrupt_resume or request.req_method == ReqMethod.CHAT_ANSWER
+        )
+        if admitted and interrupt_resume:
+            admitted = self._should_admit_interrupt_resume(request)
         foreground_started = False
         admission_started = False
         events: list[RuntimeEvent] = []
@@ -505,6 +653,16 @@ class AgentRuntime:
                     request.session_id or "default"
                 )
                 admission_started = True
+            if interaction_answer:
+                params = request.params if isinstance(request.params, dict) else {}
+                await self._clear_pending_interaction(
+                    request.session_id or "default",
+                    str(
+                        params.get("request_id")
+                        or params.get("interaction_id")
+                        or ""
+                    ),
+                )
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
             else:
@@ -527,16 +685,16 @@ class AgentRuntime:
                         handler=on_control_event,
                     )
             response = await agent.process_message(request)
-            events.append(
-                RuntimeEvent.from_agent_message(
-                    response,
-                    request_id=request.request_id,
-                    channel_id=channel_id,
-                    session_id=request.session_id,
-                    default_agent_ref=request.agent_ref,
-                    default_complete=True,
-                )
+            response_event = RuntimeEvent.from_agent_message(
+                response,
+                request_id=request.request_id,
+                channel_id=channel_id,
+                session_id=request.session_id,
+                default_agent_ref=request.agent_ref,
+                default_complete=True,
             )
+            await self._mark_pending_interaction(response_event)
+            events.append(response_event)
             kvc_task_succeeded = True
         except asyncio.CancelledError as exc:
             cancellation = exc
@@ -637,8 +795,6 @@ class AgentRuntime:
         on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> list[RuntimeEvent]:
         """Answer a paused Runtime interaction through the existing Agent."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-
         if request.req_method != ReqMethod.CHAT_ANSWER:
             raise ValueError("interaction answer must use ReqMethod.CHAT_ANSWER")
         return await self.invoke(
@@ -718,6 +874,12 @@ class AgentRuntime:
             and not background
             and not self._request_targets_team(request)
         )
+        interrupt_resume = self._is_interrupt_resume_request(request)
+        interaction_answer = (
+            interrupt_resume or request.req_method == ReqMethod.CHAT_ANSWER
+        )
+        if admitted and interrupt_resume:
+            admitted = self._should_admit_interrupt_resume(request)
         foreground_started = False
         admission_started = False
         agent: Any = None
@@ -738,6 +900,16 @@ class AgentRuntime:
                     request.session_id or "default"
                 )
                 admission_started = True
+            if interaction_answer:
+                params = request.params if isinstance(request.params, dict) else {}
+                await self._clear_pending_interaction(
+                    request.session_id or "default",
+                    str(
+                        params.get("request_id")
+                        or params.get("interaction_id")
+                        or ""
+                    ),
+                )
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
             else:
@@ -756,9 +928,11 @@ class AgentRuntime:
                     control_events = self._control_events(request, plan_result.events)
                     if on_control_event is not None:
                         for event in control_events:
+                            await self._mark_pending_interaction(event)
                             await on_control_event(event)
                     else:
                         for event in control_events:
+                            await self._mark_pending_interaction(event)
                             yield event
             if on_agent_ready is not None:
                 ready_result = on_agent_ready(agent)
@@ -767,13 +941,15 @@ class AgentRuntime:
             response_stream = agent.process_message_stream(request)
             try:
                 async for chunk in response_stream:
-                    yield RuntimeEvent.from_agent_message(
+                    event = RuntimeEvent.from_agent_message(
                         chunk,
                         request_id=request.request_id,
                         channel_id=channel_id,
                         session_id=request.session_id,
                         default_agent_ref=request.agent_ref,
                     )
+                    await self._mark_pending_interaction(event)
+                    yield event
                 kvc_task_succeeded = True
             finally:
                 close_stream = getattr(response_stream, "aclose", None)
@@ -804,9 +980,11 @@ class AgentRuntime:
                     )
                     if on_control_event is not None:
                         for event in control_events:
+                            await self._mark_pending_interaction(event)
                             await on_control_event(event)
                     elif generator_exit is None:
                         for event in control_events:
+                            await self._mark_pending_interaction(event)
                             yield event
             except BaseException as exc:  # preserve execution/cancellation below
                 plan_error = exc
@@ -931,10 +1109,26 @@ class AgentRuntime:
         self._session_provisioner.commit_session_delete(result)
 
     async def close(self) -> None:
-        """Cancel in-flight work and release all owned Runtime resources."""
+        """Release resources unless a Session provision is unfinished.
+
+        The check is fail-fast rather than a wait or implicit abort: only the
+        caller knows whether a two-phase operation must commit or compensate.
+        A rejected close leaves the Runtime started and can be retried after the
+        caller finalizes every issued provision lease.
+        """
         async with self._lifecycle_lock:
             if self._closed:
                 return
+            for prepared in tuple(self._pending_session_provisions):
+                self._discard_finalized_session_provision(prepared)
+            if (
+                self._session_provision_prepares > 0
+                or self._pending_session_provisions
+            ):
+                raise RuntimeStateError(
+                    "runtime has unfinished session provisions; "
+                    "commit or abort them before close"
+                )
             cleanup_errors: list[BaseException] = []
             try:
                 await self._agent_manager.cancel_all_inflight_work("[runtime close] ")
@@ -984,6 +1178,39 @@ class AgentRuntime:
         from jiuwenswarm.runtime.request import CHAT_TURN_METHODS
 
         return CHAT_TURN_METHODS
+
+    @staticmethod
+    def _is_interrupt_resume_request(request: AgentRequest) -> bool:
+        """Do not re-admit answers that inject into an active interaction.
+
+        ``ask_user`` / permission answers are transported as ``chat.send``
+        with an interrupt payload.  The original chat turn still owns the
+        session admission while it waits for that answer, so making the
+        answer wait for a second user admission deadlocks the interaction and
+        blocks Heartbeat indefinitely.
+        """
+        # Keep this dependency lazy with the request-shape inspection path.
+        # pylint: disable-next=import-outside-toplevel
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            is_interrupt_resume_payload,
+        )
+
+        return is_interrupt_resume_payload(request.params)
+
+    def _should_admit_interrupt_resume(self, request: AgentRequest) -> bool:
+        """Admit a stale answer, but let a live turn inject without waiting.
+
+        A valid interrupt answer normally arrives while the original user turn
+        still owns the session admission.  Only that case skips a second
+        admission.  If no user work is active, retain the normal admission
+        barrier so an expired answer cannot race a Heartbeat run.
+        """
+        controller = self._admission_controller
+        if controller is None:
+            return False
+        if not callable(getattr(controller, "is_user_active", None)):
+            return False
+        return not bool(controller.is_user_active(request.session_id or "default"))
 
     @staticmethod
     def _request_targets_team(request: AgentRequest) -> bool:
@@ -1037,7 +1264,6 @@ class AgentRuntime:
                 ).strip(),
                 params=params,
                 channel_id=str(request.channel_id or "default"),
-                agent_manager=self._agent_manager,
             )
         except Exception as exc:  # noqa: BLE001 - optional product hook
             logger.warning(
@@ -1047,8 +1273,8 @@ class AgentRuntime:
                 exc,
             )
 
+    @staticmethod
     def _record_kvc_chat_finished(
-        self,
         request: AgentRequest,
         *,
         succeeded: bool,
@@ -1065,7 +1291,6 @@ class AgentRuntime:
                     request.session_id or params.get("session_id") or ""
                 ).strip(),
                 succeeded=succeeded,
-                agent_manager=self._agent_manager,
             )
         except Exception as exc:  # noqa: BLE001 - optional product hook
             logger.warning(
@@ -1091,8 +1316,6 @@ class AgentRuntime:
 
     @staticmethod
     def _is_readonly_goal_get_request(request: AgentRequest) -> bool:
-        from jiuwenswarm.common.schema.message import ReqMethod
-
         if request.req_method != ReqMethod.COMMAND_GOAL:
             return False
         params = request.params if isinstance(request.params, dict) else {}
@@ -1155,8 +1378,8 @@ class AgentRuntime:
             for payload in payloads
         ]
 
-    @staticmethod
     async def _emit_control_events(
+        self,
         request: AgentRequest,
         payloads: list[dict[str, Any]],
         *,
@@ -1165,9 +1388,12 @@ class AgentRuntime:
     ) -> None:
         control_events = AgentRuntime._control_events(request, payloads)
         if handler is None:
+            for event in control_events:
+                await self._mark_pending_interaction(event)
             events.extend(control_events)
             return
         for event in control_events:
+            await self._mark_pending_interaction(event)
             await handler(event)
 
     @staticmethod

@@ -273,7 +273,7 @@ cd jiuwenswarm
 
 - **保存后自动热重载**：点击保存后，系统会自动热重载配置；多数配置项即时生效，少数变更可能触发进程重启
 - **必填项**：以上四项是模型运行的基础配置，必须填写完整才能正常使用
-- **模型供应商**：`OpenAI`、`DeepSeek`、`DashScope`、`SiliconFlow`、`InferenceAffinity`、`OpenRouter`、`OpenAIAccount`
+- **模型供应商**：`OpenAI`、`DeepSeek`、`DashScope`、`SiliconFlow`、`AscendAffinity`、`OpenRouter`、`OpenAIAccount`
 
 ## 开始对话
 

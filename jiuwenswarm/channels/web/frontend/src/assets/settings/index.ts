@@ -4,6 +4,7 @@ import ModelsIcon from './navigation/models.svg?react';
 import AgentIcon from './navigation/agent.svg?react';
 import BrowserIcon from './navigation/browser.svg?react';
 import ChannelsIcon from './navigation/channels.svg?react';
+import PersonalContextIcon from './navigation/personal-context.svg?react';
 import ExperimentalIcon from './navigation/experimental.svg?react';
 import RefreshIcon from './actions/refresh.svg?react';
 import EditIcon from './actions/edit.svg?react';
@@ -28,6 +29,7 @@ export const settingsNavigationIcons = {
   agent: AgentIcon,
   browser: BrowserIcon,
   channels: ChannelsIcon,
+  personalContext: PersonalContextIcon,
   experimental: ExperimentalIcon,
 } as const satisfies Record<string, SettingsNavigationIcon>;
 

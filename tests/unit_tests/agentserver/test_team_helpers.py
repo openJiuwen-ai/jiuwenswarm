@@ -370,6 +370,10 @@ class _InactiveTeamRuntimeManagerMixin:
         self._seen_team_events: dict[str, bool] = {}
         self._workflow_completed: dict[str, bool] = {}
         self._test_rounds: dict[str, str] = {}
+        self._test_startup_locks: dict[str, asyncio.Lock] = {}
+
+    def get_startup_lock(self, session_id: str) -> asyncio.Lock:
+        return self._test_startup_locks.setdefault(session_id, asyncio.Lock())
 
     def mark_seen_team_events(self, session_id: str) -> None:
         self._seen_team_events[session_id] = True
@@ -2144,7 +2148,11 @@ async def test_cancelled_heartbeat_followup_aborts_submitted_team_round(monkeypa
 
 
 @pytest.mark.anyio
-async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypatch):
+@pytest.mark.parametrize("mode", ["team", "team.plan", "team.code.plan"])
+@pytest.mark.parametrize("completion_timing", ["after_ack", "final_before_ack", "terminal_before_ack"])
+async def test_interactive_team_followup_uses_round_only_for_lifecycle(
+    monkeypatch, mode, completion_timing,
+):
     from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
         SessionRunAdmission,
     )
@@ -2158,10 +2166,25 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
             return SimpleNamespace(team_name="unit-team")
 
         async def interact(self, session_id: str, query: str):
+            # Plan skip can finish without a model call, before interact returns.
+            if completion_timing != "after_ack":
+                await self.broadcast_event(
+                    session_id, {"event_type": "chat.final", "content": "continued"},
+                )
+            if completion_timing == "terminal_before_ack":
+                await self.broadcast_event(
+                    session_id,
+                    {
+                        "event_type": "chat.processing_status",
+                        "is_processing": False,
+                        "is_complete": True,
+                    },
+                )
             return True, None
 
     manager = _FakeManager()
-    manager.add_waiter("sess-team-user", "req-browser", asyncio.Queue())
+    browser_queue = asyncio.Queue()
+    manager.add_waiter("sess-team-user", "req-browser", browser_queue)
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
     admission = SessionRunAdmission()
@@ -2170,7 +2193,7 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         request_id="req-user-followup",
         channel_id="web",
         metadata={},
-        params={"mode": "team"},
+        params={"mode": mode},
         user_id="owner",
     )
 
@@ -2190,6 +2213,13 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         team_helpers.reset_team_heartbeat_service(heartbeat_token)
 
     assert chunks[0].payload["event_type"] == "chat.processing_status_deferred"
+    if completion_timing == "terminal_before_ack":
+        # A late acknowledgement must not resurrect an already completed round.
+        assert manager.is_round_active("sess-team-user") is False
+        assert admission.is_user_active("sess-team-user") is False
+        assert browser_queue.get_nowait()["event_type"] == "chat.final"
+        assert browser_queue.get_nowait()["is_processing"] is False
+        return
     # The user admission is retained until the actual Team round terminates,
     # even though the short follow-up transport has already returned.
     assert admission.is_user_active("sess-team-user") is True
@@ -2199,11 +2229,12 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         SimpleNamespace(admission=admission)
     )
     try:
-        await team_helpers._broadcast_event(
-            "web",
-            "sess-team-user",
-            {"event_type": "chat.final", "content": "continued"},
-        )
+        if completion_timing == "after_ack":
+            await team_helpers._broadcast_event(
+                "web",
+                "sess-team-user",
+                {"event_type": "chat.final", "content": "continued"},
+            )
         await team_helpers._broadcast_event(
             "web",
             "sess-team-user",
@@ -2217,6 +2248,233 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         team_helpers.reset_team_heartbeat_service(terminal_token)
     assert manager.is_round_active("sess-team-user") is False
     assert admission.is_user_active("sess-team-user") is False
+    assert browser_queue.get_nowait()["event_type"] == "chat.final"
+    assert browser_queue.get_nowait()["is_processing"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first_outcome", ["success", "error", "cancel"])
+async def test_concurrent_team_cold_start_delivers_output_once(monkeypatch, first_outcome):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    preparing = asyncio.Event()
+    allow_prepare = asyncio.Event()
+    second_entered = asyncio.Event()
+    interacted = asyncio.Event()
+    runner_started = asyncio.Event()
+    emit_output = asyncio.Event()
+    starts = []
+    interactions = []
+    spec_calls = []
+
+    class _FakeManager(TeamManager):
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            spec_calls.append(kwargs["request_id"])
+            if len(spec_calls) == 1:
+                preparing.set()
+                await allow_prepare.wait()
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False, agents={})
+
+        async def interact(self, session_id, query):
+            interactions.append(_delivered_content(query))
+            interacted.set()
+            return True, None
+
+    manager = _FakeManager()
+    session_id = "sess-concurrent-cold-start"
+
+    async def _runner(channel_id, session_id, spec, query, **kwargs):
+        starts.append(_delivered_content(query))
+        runner_started.set()
+        try:
+            await emit_output.wait()
+            await manager.broadcast_event(
+                session_id, {"event_type": "chat.delta", "content": "杭州", "role": "leader"},
+            )
+        finally:
+            manager.clear_pending_runtime(session_id)
+            manager.pop_stream_task(session_id)
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: manager)
+    monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _runner)
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
+    round_count = 0
+
+    def _increment_round(_session_id):
+        nonlocal round_count
+        round_count += 1
+        if first_outcome == "error" and round_count == 1:
+            # Fail after pending runtime + waiter registration to exercise rollback.
+            raise RuntimeError("startup failed")
+        return round_count
+
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", _increment_round)
+    monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
+
+    async def _submit(request_id, query):
+        request = SimpleNamespace(
+            session_id=session_id, request_id=request_id, channel_id="web",
+            metadata={}, params={"mode": "team"}, user_id="owner",
+        )
+        if request_id == "req-gold":
+            second_entered.set()
+        return [
+            chunk async for chunk in team_helpers.process_team_message_stream(
+                request, {"query": query}, object(),
+            )
+        ]
+
+    tasks = [asyncio.create_task(_submit("req-weather", "查询杭州天气"))]
+    try:
+        await asyncio.wait_for(preparing.wait(), timeout=1)
+        tasks.append(asyncio.create_task(_submit("req-gold", "查询今日金价")))
+        await asyncio.wait_for(second_entered.wait(), timeout=1)
+        assert spec_calls == ["req-weather"]
+        if first_outcome == "cancel":
+            tasks[0].cancel()
+        else:
+            allow_prepare.set()
+        await asyncio.wait_for(runner_started.wait(), timeout=2)
+        if first_outcome == "success":
+            await asyncio.wait_for(interacted.wait(), timeout=1)
+            assert starts == ["查询杭州天气"]
+            assert interactions == ["查询今日金价"]
+            expected_waiter = "req-weather"
+        else:
+            assert starts == ["查询今日金价"]
+            assert interactions == []
+            expected_waiter = "req-gold"
+        assert [rid for rid, _ in manager.get_waiters(session_id)] == [expected_waiter]
+        emit_output.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1)
+        assert isinstance(results[1], list)
+        if first_outcome == "success":
+            assert isinstance(results[0], list)
+        elif first_outcome == "error":
+            assert isinstance(results[0], RuntimeError)
+            assert str(results[0]) == "startup failed"
+        elif first_outcome == "cancel":
+            assert isinstance(results[0], asyncio.CancelledError)
+        deltas = [
+            chunk.payload["content"] for result in results if isinstance(result, list) for chunk in result
+            if chunk.payload and chunk.payload.get("event_type") == "chat.delta"
+        ]
+        assert deltas == ["杭州"]
+        assert not manager.has_waiters(session_id)
+        assert not manager.is_runtime_pending(session_id)
+        assert not manager.get_startup_lock(session_id).locked()
+    finally:
+        background = manager.pop_stream_task(session_id)
+        if background is not None:
+            tasks.append(background)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_concurrent_team_fallback_starts_one_replacement_stream(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    both_prepared = asyncio.Event()
+    deliver_inputs = asyncio.Event()
+    both_attempted = asyncio.Event()
+    allow_activation = asyncio.Event()
+    interacted = asyncio.Event()
+    finish = asyncio.Event()
+    starts = []
+    interactions = []
+
+    class _FakeManager(TeamManager):
+        old_stream_active = True
+        spec_calls = 0
+        activation_calls = 0
+        delivery_attempts = 0
+
+        def has_stream_task(self, session_id):
+            return self.old_stream_active or super().has_stream_task(session_id)
+
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            self.spec_calls += 1
+            if self.spec_calls == 2:
+                both_prepared.set()
+            await deliver_inputs.wait()
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False, agents={})
+
+        async def prepare_runtime_activation(self, session_id, team_name):
+            self.activation_calls += 1
+            await allow_activation.wait()
+            await super().prepare_runtime_activation(session_id, team_name)
+
+        async def interact(self, session_id, query):
+            self.delivery_attempts += 1
+            if self.delivery_attempts == 2:
+                both_attempted.set()
+            if not self.has_stream_task(session_id):
+                return False, "not_active"
+            interactions.append(_delivered_content(query))
+            interacted.set()
+            return True, None
+
+    manager = _FakeManager()
+    session_id = "sess-concurrent-fallback"
+
+    async def _runner(channel_id, session_id, spec, query, **kwargs):
+        starts.append(_delivered_content(query))
+        try:
+            await finish.wait()
+            await manager.broadcast_event(
+                session_id, {"event_type": "chat.delta", "content": "杭州", "role": "leader"},
+            )
+        finally:
+            manager.clear_pending_runtime(session_id)
+            manager.pop_stream_task(session_id)
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: manager)
+    monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _runner)
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda _: 1)
+    monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
+
+    async def _submit(request_id, query):
+        request = SimpleNamespace(
+            session_id=session_id, request_id=request_id, channel_id="web",
+            metadata={}, params={"mode": "team"}, user_id="owner",
+        )
+        return [
+            chunk async for chunk in team_helpers.process_team_message_stream(
+                request, {"query": query}, object(),
+            )
+        ]
+
+    tasks = [
+        asyncio.create_task(_submit("req-weather", "查询杭州天气")),
+        asyncio.create_task(_submit("req-gold", "查询今日金价")),
+    ]
+    try:
+        await asyncio.wait_for(both_prepared.wait(), timeout=1)
+        manager.old_stream_active = False
+        deliver_inputs.set()
+        await asyncio.wait_for(both_attempted.wait(), timeout=1)
+        assert manager.activation_calls == 1
+        allow_activation.set()
+        await asyncio.wait_for(interacted.wait(), timeout=1)
+        assert starts == ["查询杭州天气"]
+        assert interactions == ["查询今日金价"]
+        assert len(manager.get_waiters(session_id)) == 1
+        finish.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert sum(
+            chunk.payload is not None and chunk.payload.get("event_type") == "chat.delta"
+            for result in results for chunk in result
+        ) == 1
+    finally:
+        background = manager.pop_stream_task(session_id)
+        if background is not None:
+            tasks.append(background)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.anyio

@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""Search tools implemented with openjiuwen @tool style."""
+"""Neutral structured search providers and result renderers.
+
+This module does not register tools or depend on permission infrastructure.
+Host integrations own tool registration and optional provenance handling.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,6 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 import urllib3
-from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 from jiuwenswarm.common.utils import env_url
@@ -24,6 +27,18 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+DEFAULT_SEARCH_MAX_RESULTS = 8
+MIN_SEARCH_MAX_RESULTS = 1
+MAX_SEARCH_MAX_RESULTS = 20
+
+
+def normalize_search_max_results(value: int) -> int:
+    """Clamp a search result count to the shared neutral search contract."""
+
+    return max(MIN_SEARCH_MAX_RESULTS, min(value, MAX_SEARCH_MAX_RESULTS))
+
+
 _REQUEST_HEADERS = {"User-Agent": _USER_AGENT}
 _FREE_SEARCH_DDG_ENABLED_ENV = "FREE_SEARCH_DDG_ENABLED"
 _FREE_SEARCH_BING_ENABLED_ENV = "FREE_SEARCH_BING_ENABLED"
@@ -284,9 +299,12 @@ def _search_bing_sync(query: str, max_results: int, timeout_seconds: int) -> lis
     return rows
 
 
-def _search_free_sync(
+def run_free_search_structured(
     query: str, max_results: int, timeout_seconds: int
 ) -> tuple[str, list[dict[str, str]]]:
+    """Return free-search results without tool or permission integration."""
+
+    max_results = normalize_search_max_results(max_results)
     errors: list[str] = []
     engines = []
     if _env_flag(_FREE_SEARCH_DDG_ENABLED_ENV, default=False):
@@ -317,6 +335,20 @@ def _engine_display_name(engine: str) -> str:
         "bing": "Bing",
     }
     return mapping.get(engine, engine)
+
+
+def render_free_search_result(
+    *, query: str, engine_used: str, rows: list[dict[str, str]]
+) -> str:
+    """Render structured free-search rows using the develop branch format."""
+
+    lines = [f"Free search results ({_engine_display_name(engine_used)}) for: {query}"]
+    for idx, row in enumerate(rows, 1):
+        lines.append(f"{idx}. {row['title']}")
+        lines.append(f"   URL: {row['url']}")
+        if row.get("snippet"):
+            lines.append(f"   Snippet: {row['snippet']}")
+    return "\n".join(lines)
 
 
 def _parse_perplexity_citations(data: dict[str, Any]) -> list[str]:
@@ -499,56 +531,15 @@ def _jina_search_sync(query: str, timeout_seconds: int) -> dict[str, Any]:
     return {"provider": "jina", "answer": (answer or "").strip(), "urls": urls}
 
 
-@tool(
-    name="mcp_free_search",
-    description="Free search via DuckDuckGo. Input query and return ranked URLs with snippets.",
-)
-async def mcp_free_search(query: str, max_results: int = 8, timeout_seconds: int = 20) -> str:
-    query = (query or "").strip()
-    if not query:
-        return "[ERROR]: query cannot be empty."
-
-    max_results = max(1, min(max_results, 20))
-    timeout_seconds = max(5, min(timeout_seconds, 60))
-    try:
-        engine_used, rows = await asyncio.to_thread(
-            _search_free_sync, query, max_results, timeout_seconds
-        )
-    except Exception as exc:
-        return f"[ERROR]: free search failed: {exc}"
-
-    if not rows:
-        return f"No search results for: {query}"
-
-    lines = [f"Free search results ({_engine_display_name(engine_used)}) for: {query}"]
-    for idx, row in enumerate(rows, 1):
-        lines.append(f"{idx}. {row['title']}")
-        lines.append(f"   URL: {row['url']}")
-        if row.get("snippet"):
-            lines.append(f"   Snippet: {row['snippet']}")
-    return "\n".join(lines)
-
-
-@tool(
-    name="mcp_paid_search",
-    description="Paid search via Bocha/Perplexity/SERPER/JINA. Support provider=auto|bocha|perplexity|serper|jina.",
-)
-async def mcp_paid_search(
+async def run_paid_search_structured(
     query: str,
     provider: str = "auto",
-    max_results: int = 8,
+    max_results: int = DEFAULT_SEARCH_MAX_RESULTS,
     timeout_seconds: int = 45,
-) -> str:
-    query = (query or "").strip()
-    if not query:
-        return "[ERROR]: query cannot be empty."
+) -> tuple[str, str, list[str]]:
+    """Return one successful paid-search result without tool integration."""
 
-    provider = (provider or "auto").strip().lower()
-    if provider not in {"auto", "bocha", "jina", "serper", "perplexity"}:
-        return "[ERROR]: provider must be one of auto|bocha|jina|serper|perplexity."
-
-    timeout_seconds = max(10, min(timeout_seconds, 120))
-    max_results = max(1, min(max_results, 20))
+    max_results = normalize_search_max_results(max_results)
 
     runners = {
         "bocha": lambda: _bocha_search_sync(
@@ -574,35 +565,48 @@ async def mcp_paid_search(
         available_providers.append("jina")
     
     if not available_providers:
-        return "[ERROR]: no paid search API keys configured."
+        raise RuntimeError("no paid search API keys configured.")
     
     if provider != "auto":
         if provider not in available_providers:
-            return f"[ERROR]: {provider} API key not configured. Available providers: {', '.join(available_providers)}"
+            raise RuntimeError(
+                f"{provider} API key not configured. "
+                f"Available providers: {', '.join(available_providers)}"
+            )
         order = [provider]
     else:
         order = [p for p in ["bocha", "perplexity", "serper", "jina"] if p in available_providers]
 
     errors: list[str] = []
     for name in order:
+        runner = runners.get(name)
+        if runner is None:
+            errors.append(f"{name}: provider runner unavailable")
+            continue
         try:
-            result = await asyncio.to_thread(runners[name])
+            result = await asyncio.to_thread(runner)
         except Exception as exc:
             errors.append(f"{name}: {exc}")
             continue
 
         answer = str(result.get("answer", "") or "").strip()
         urls = [str(u) for u in (result.get("urls", []) or []) if u][:max_results]
-        lines = [f"Paid search provider: {name}"]
-        if answer:
-            lines.append("Answer:")
-            lines.append(answer)
-        if urls:
-            lines.append("URLs:")
-            for idx, url in enumerate(urls, 1):
-                lines.append(f"{idx}. {url}")
-        if not answer and not urls:
-            lines.append("No usable result payload.")
-        return "\n".join(lines)
+        return name, answer, urls
 
-    return "[ERROR]: paid search failed. " + " | ".join(errors)
+    raise RuntimeError("paid search failed. " + " | ".join(errors))
+
+
+def render_paid_search_result(*, provider: str, answer: str, urls: list[str]) -> str:
+    """Render structured paid-search data using the develop branch format."""
+
+    lines = [f"Paid search provider: {provider}"]
+    if answer:
+        lines.append("Answer:")
+        lines.append(answer)
+    if urls:
+        lines.append("URLs:")
+        for idx, url in enumerate(urls, 1):
+            lines.append(f"{idx}. {url}")
+    if not answer and not urls:
+        lines.append("No usable result payload.")
+    return "\n".join(lines)

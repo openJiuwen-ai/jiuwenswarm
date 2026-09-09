@@ -8,6 +8,7 @@ import FolderAssetIcon from '../../assets/work-mode/folder.svg?react';
 import FolderFoldAssetIcon from '../../assets/work-mode/folder-fold.svg?react';
 import { CodePreview } from '../ArtifactsPanel/CodePreview';
 import { MarkdownRenderer } from '../MarkdownRenderer';
+import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 
 type DefinitionFilePreviewProps = {
   files: DefinitionFileEntry[];
@@ -137,10 +138,8 @@ export function DefinitionFilePreview({
   }, [fileContent]);
 
   useEffect(() => {
-    if (filesStatus === 'success' && selectedFilePath) {
-      setExpanded(findExpandedDirectories(files));
-    }
-  }, [files, filesStatus, selectedFilePath]);
+    if (filesStatus === 'success') setExpanded(findExpandedDirectories(files));
+  }, [files, filesStatus]);
 
   const toggleFolder = (path: string) => {
     setExpanded(current => {
@@ -162,13 +161,32 @@ export function DefinitionFilePreview({
     window.setTimeout(() => setCopyState('idle'), 1600);
   };
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!fileContent) return;
+    const filename = getLabel(fileContent.relativePath);
     const blob = new Blob([fileContent.content], { type: 'text/plain;charset=utf-8' });
+    const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => DesktopSaveApiResult } } }).pywebview?.api;
+    if (pywebviewApi?.download_file) {
+      try{
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+        const outcome = await executeDesktopSave(() => pywebviewApi.download_file!(dataUrl, filename));
+        if (outcome === 'failed') {
+          window.alert(t('artifacts.downloadFailed', { name: filename }));
+        }
+      }catch {
+        window.alert(t('artifacts.downloadFailed', { name: filename }));
+      }
+      return;
+    }
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = getLabel(fileContent.relativePath);
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

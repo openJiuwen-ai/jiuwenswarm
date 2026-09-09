@@ -41,7 +41,11 @@ class SymphonyToolStreamHandler:
             return
 
         async def progress_callback(event: dict[str, Any]) -> None:
-            await self._emit_progress(session, tool_call, event)
+            await self._emit_progress(
+                session,
+                tool_call,
+                event,
+            )
 
         ctx.extra[self._PROGRESS_TOKEN_KEY] = bind_tool_progress(progress_callback)
 
@@ -60,6 +64,30 @@ class SymphonyToolStreamHandler:
             if key in raw_output:
                 payload[key] = raw_output[key]
 
+    def request_force_finish(
+        self,
+        ctx: AgentCallbackContext,
+        tool_call: Any,
+        result: Any,
+    ) -> None:
+        """Honor Symphony direct-display results without another model turn."""
+        if not self.matches(tool_call):
+            return
+        content = self._direct_display_content(result)
+        if not content or self._continues_after_display(result):
+            return
+        ctx.request_force_finish({"output": content, "result_type": "answer"})
+
+    @staticmethod
+    def _direct_display_content(result: Any) -> str:
+        if not isinstance(result, dict) or not bool(result.get("direct_display")):
+            return ""
+        return str(result.get("content") or result.get("result") or "").strip()
+
+    @staticmethod
+    def _continues_after_display(result: Any) -> bool:
+        return bool(isinstance(result, dict) and result.get("continue_after_display"))
+
     @staticmethod
     def _tool_name(tool_call: Any) -> str:
         return str(getattr(tool_call, "name", "") if tool_call else "").strip()
@@ -73,18 +101,17 @@ class SymphonyToolStreamHandler:
         if not isinstance(event.get("graph"), dict):
             return
         try:
+            payload = {
+                "tool_name": getattr(tool_call, "name", ""),
+                "tool_call_id": getattr(tool_call, "id", ""),
+                "status": "in_progress",
+                "beam_search_event": event,
+            }
             await session.write_stream(
                 OutputSchema(
                     type="tool_update",
                     index=0,
-                    payload={
-                        "tool_update": {
-                            "tool_name": getattr(tool_call, "name", ""),
-                            "tool_call_id": getattr(tool_call, "id", ""),
-                            "status": "in_progress",
-                            "beam_search_event": event,
-                        }
-                    },
+                    payload={"tool_update": payload},
                 )
             )
         except Exception:

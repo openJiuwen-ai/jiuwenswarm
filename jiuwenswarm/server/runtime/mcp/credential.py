@@ -31,6 +31,10 @@ from typing import Any
 from jiuwenswarm.common.utils import get_workspace_dir
 
 from jiuwenswarm.server.runtime.mcp.paths import load_json
+from jiuwenswarm.server.runtime.mcp.package_manifest import (
+    McpPackageManifest,
+    resolve_mcp_package,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +50,20 @@ def _packages_dir() -> Path:
     return _mcp_root() / "mcp_builtins"
 
 
-def _pkg_dir(name: str) -> Path:
-    return _packages_dir() / str(name or "").strip()
+def _hub_packages_dir() -> Path:
+    return _mcp_root() / "mcp_hub"
+
+
+def _resolve_package(name: str) -> McpPackageManifest | None:
+    return resolve_mcp_package(
+        str(name or "").strip(), _packages_dir(), _hub_packages_dir()
+    )
 
 
 def _load_mcp_cfg(name: str) -> dict[str, Any] | None:
-    """Read marketplace mcp.json, return the first server cfg."""
-    raw = _load_json(_pkg_dir(name) / "mcp.json")
-    if not raw or not isinstance(raw.get("mcpServers"), dict):
-        return None
-    first = next(iter(raw["mcpServers"].values()), {})
-    return first if isinstance(first, dict) else None
+    """Return the manifest-declared MCP server configuration."""
+    package = _resolve_package(name)
+    return dict(package.server_config) if package and package.server_config else None
 
 # credential kinds (see module docstring)
 KIND_NONE = "none"
@@ -99,7 +106,10 @@ def load_token_schema(name: str) -> dict[str, Any] | None:
     placeholders in mcp.json. Returns the parsed schema
     ({title, docUrl, fields:[{key,label,type,required,...}]}) or None.
     """
-    raw = load_json(_pkg_dir(name) / "token-schema.json")
+    package = _resolve_package(name)
+    if package is None or package.credentials_file is None:
+        return None
+    raw = load_json(package.credentials_file)
     if not raw or not isinstance(raw.get("fields"), list):
         return None
     return raw
@@ -162,22 +172,16 @@ def build_credentials_prompt(name: str, missing_tokens: list[str]) -> dict[str, 
 
 
 def detect_credential_kind(name: str) -> str:
-    """Classify an MCP's credential acquisition strategy from its package.
-
-    * has cli.json -> ``cli_oauth`` (CLI manages OAuth; form C).
-    * mcp.json declares any ``${VAR}`` placeholder -> ``token`` (form B).
-    * has token-schema.json with required fields -> ``token`` (form B variant:
-      skill-only MCPs like ctrip-wendao that have no mcp.json).
-    * otherwise -> ``none`` (form A free-connect).
-    """
+    """Return the credential strategy explicitly declared by the manifest."""
     n = str(name or "").strip()
     if not n:
         return KIND_NONE
-    if (_pkg_dir(n) / "cli.json").is_file():
+    package = _resolve_package(n)
+    if package is None:
+        return KIND_NONE
+    if package.credentials_type == "cli-oauth":
         return KIND_CLI_OAUTH
-    if extract_placeholders(_load_mcp_cfg(n)):
-        return KIND_TOKEN
-    if required_tokens_from_schema(n):
+    if package.credentials_type == "token":
         return KIND_TOKEN
     return KIND_NONE
 
