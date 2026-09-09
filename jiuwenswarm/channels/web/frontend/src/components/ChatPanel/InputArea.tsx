@@ -2717,42 +2717,61 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           )}
                         </div>
                       </div>
-                    ) : (
-                      filteredAgentOptions.map((item) => {
-                        const avatarUrl = getAgentAvatarUrl(item);
-                        const isSelected = selectedAgentId === item.id;
-                        return (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className={clsx('chat-agent-picker__item', isSelected && 'is-selected')}
-                            role="menuitemradio"
-                            aria-checked={isSelected}
-                            data-tooltip={item.description || undefined}
-                            {...agentTooltipHandlers}
-                            onClick={() => {
-                              if (!activeSessionId) return;
-                              useSessionStore.getState().setMode(activeSessionId, 'agent');
-                              setAgentSelectionIntent(activeSessionId, { kind: 'select', id: item.id });
-                              setAttachMenuOpen(false);
+                      <button
+                        type="button"
+                        className="chat-input-attachment-remove"
+                        data-testid="chat-panel-input-attachment-remove"
+                        onPointerDown={(e) => startAttachmentMenuTimer(attachment.id, e.currentTarget)}
+                        onPointerUp={stopAttachmentMenuTimer}
+                        onPointerCancel={stopAttachmentMenuTimer}
+                        onPointerLeave={stopAttachmentMenuTimer}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          stopAttachmentMenuTimer();
+                          setAttachmentMenuAnchor(event.currentTarget.getBoundingClientRect());
+                          setAttachmentMenuId(attachment.id);
+                        }}
+                        onClick={() => handleAttachmentRemoveClick(attachment.id)}
+                        title={t('chat.deleteLongPress')}
+                        aria-label={t('chat.deleteAttachment')}
+                      >
+                        <X size={12} strokeWidth={2} />
+                      </button>
+                      {attachmentMenuId === attachment.id &&
+                        attachmentMenuAnchor &&
+                        createPortal(
+                          <div
+                            className="chat-input-attachment-menu"
+                            role="menu"
+                            data-testid="chat-panel-input-attachment-menu"
+                            style={{
+                              position: 'fixed',
+                              top: attachmentMenuAnchor.top,
+                              left: attachmentMenuAnchor.right + 4,
+                              zIndex: 9999,
                             }}
                           >
-                            <span className="chat-agent-picker__avatar" aria-hidden="true">
-                              {avatarUrl ? <img src={avatarUrl} alt="" /> : item.displayName.trim().slice(0, 1).toUpperCase() || '?'}
-                            </span>
-                            <span className="chat-agent-picker__item-name">{item.displayName}</span>
-                            {isSelected && (
-                              <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" />
-                              </svg>
-                            )}
-                          </button>
-                        );
-                      })
-                    )}
-                  </PickerPanel>
-                )}
-                {agentTooltipNode}
+                            <button
+                              type="button"
+                              role="menuitem"
+                              data-testid="chat-panel-input-attachment-menu-delete"
+                              onClick={() => removeAttachment(attachment.id)}
+                            >
+                              {t('chat.delete')}
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              data-testid="chat-panel-input-attachment-menu-clear"
+                              onClick={clearAttachments}
+                            >
+                              {t('chat.clearAttachments')}
+                            </button>
+                          </div>,
+                          document.body,
+                        )}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -2992,36 +3011,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                           className={clsx('chat-agent-picker__item', isSelected && 'is-selected')}
                                           role="menuitemradio"
                                           aria-checked={isSelected}
-                                          aria-describedby={
-                                            agentTooltip?.id === item.id ? 'chat-agent-picker-tooltip' : undefined
-                                          }
-                                          onMouseEnter={(event) => {
-                                            if (!item.description) return;
-                                            const rect = event.currentTarget.getBoundingClientRect();
-                                            const tooltipWidth = 240;
-                                            const left =
-                                              rect.right + 8 + tooltipWidth <= window.innerWidth
-                                                ? rect.right + 8
-                                                : Math.max(8, rect.left - tooltipWidth - 8);
-                                            setAgentTooltip({
-                                              id: item.id,
-                                              description: item.description,
-                                              top: Math.min(rect.top, Math.max(8, window.innerHeight - 80)),
-                                              left,
-                                            });
-                                          }}
-                                          onMouseLeave={() => setAgentTooltip(null)}
-                                          onFocus={(event) => {
-                                            if (!item.description) return;
-                                            const rect = event.currentTarget.getBoundingClientRect();
-                                            setAgentTooltip({
-                                              id: item.id,
-                                              description: item.description,
-                                              top: Math.min(rect.top, Math.max(8, window.innerHeight - 80)),
-                                              left: Math.max(8, rect.left - 248),
-                                            });
-                                          }}
-                                          onBlur={() => setAgentTooltip(null)}
+                                          data-tooltip={item.description || undefined}
+                                          {...agentTooltipHandlers}
                                           onClick={() => {
                                             if (!activeSessionId) return;
                                             useSessionStore.getState().setMode(activeSessionId, 'agent');
@@ -3059,16 +3050,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   )}
                                 </PickerPanel>
                               )}
-                              {agentTooltip ? (
-                                <div
-                                  id="chat-agent-picker-tooltip"
-                                  className="chat-agent-picker__tooltip"
-                                  role="tooltip"
-                                  style={{ top: agentTooltip.top, left: agentTooltip.left }}
-                                >
-                                  {agentTooltip.description}
-                                </div>
-                              ) : null}
+                              {agentTooltipNode}
                             </div>
                           </>
                         )}

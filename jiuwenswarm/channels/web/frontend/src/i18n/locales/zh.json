@@ -2901,7 +2901,7 @@
     "subtitle": "创建并管理插件、连接器",
     "tabs": {
       "plugin": "插件",
-      "applicationPlugins": "应用插件"
+      "applicationPlugins": "应用插件",
       "mcp": "连接器",
       "pluginMarket": "插件广场",
       "mcpMarket": "连接器广场",
