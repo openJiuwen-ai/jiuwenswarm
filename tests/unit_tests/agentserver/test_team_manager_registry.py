@@ -698,6 +698,14 @@ async def test_create_team_does_not_run_global_runtime_cleanup(monkeypatch: pyte
     assert manager.get_team_agent("sess-1") is team_agent
 
 
+def test_get_team_agent_includes_runner_owned_leader() -> None:
+    manager = TeamManager()
+    leader = SimpleNamespace()
+    manager._runner_team_agents["runner-session"] = leader
+
+    assert manager.get_team_agent("runner-session") is leader
+
+
 @pytest.mark.asyncio
 async def test_create_team_appends_session_id_to_team_name(monkeypatch: pytest.MonkeyPatch) -> None:
     created_team_names: list[str] = []

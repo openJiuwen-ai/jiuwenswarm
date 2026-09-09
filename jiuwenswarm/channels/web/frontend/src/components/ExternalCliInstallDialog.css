@@ -133,6 +133,21 @@
   color: var(--color-text-secondary);
 }
 
+.external-cli-install-dialog__activity {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.external-cli-install-dialog__activity code {
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary);
+  font-family: inherit;
+}
+
 .external-cli-install-dialog__footer {
   display: flex;
   justify-content: flex-end;

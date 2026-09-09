@@ -1,5 +1,6 @@
 export { Button, type ButtonProps } from './Button/Button';
 export { CollapsibleText, type CollapsibleTextProps } from './CollapsibleText/CollapsibleText';
+export { InfoCard, type InfoCardProps } from './InfoCard/InfoCard';
 export { Input, type InputProps } from './Input/Input';
 export { Textarea, type TextareaProps } from './Textarea/Textarea';
 export { Select, type SelectOption, type SelectProps } from './Select/Select';
@@ -9,3 +10,6 @@ export { HelpTips } from './HelpTips/HelpTips';
 export { Loading } from './Loading/Loading';
 export { Dialog } from './Dialog/Dialog';
 export { Tag, type TagProps, type TagVariant } from './Tag/Tag';
+export { PageHeader, type PageHeaderProps } from './PageHeader/PageHeader';
+export { CategoryTabs, type CategoryTabsOption, type CategoryTabsProps } from './CategoryTabs/CategoryTabs';
+export { PageToolbarSearch, type PageToolbarSearchProps } from './PageToolbarSearch/PageToolbarSearch';

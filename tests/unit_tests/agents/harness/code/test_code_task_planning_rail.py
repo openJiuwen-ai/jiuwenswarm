@@ -138,7 +138,8 @@ async def test_code_task_planning_rail_injects_task_reminder_attachment_after_th
     assert "The following dynamic context is currently active" in rendered
     assert reminder.content in rendered
     assert "<prompt-attachment" not in rendered
-    assert "<system-reminder>" not in rendered
+    assert rendered.startswith("<system-reminder>\n")
+    assert rendered.endswith("\n</system-reminder>")
 
 
 @pytest.mark.asyncio

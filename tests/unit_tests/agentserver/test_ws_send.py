@@ -242,6 +242,78 @@ async def test_team_stream_admission_is_owned_by_actual_round_not_transport():
     admission.end_user.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_name", ["_handle_unary", "_handle_stream"])
+async def test_interrupt_resume_skips_existing_user_admission(handler_name):
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    admission = SimpleNamespace(
+        is_user_active=lambda session_id: True,
+        begin_user=AsyncMock(),
+        end_user=AsyncMock(),
+    )
+    server._agent_manager = None
+    server._heartbeat_runtime = SimpleNamespace(admission=admission)
+    server._should_trigger_before_chat_request_hook = lambda request: False
+    server._handle_unary_impl = AsyncMock()
+    server._handle_stream_impl = AsyncMock()
+    request = AgentRequest(
+        request_id="answer-dispatch",
+        channel_id="web",
+        session_id="ask-user-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "request_id": "call_ask_user",
+            "answers": [{"question": "choose", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+        },
+        is_stream=handler_name == "_handle_stream",
+    )
+
+    await getattr(server, handler_name)(FakeWebSocket(), request, asyncio.Lock())
+
+    admission.begin_user.assert_not_awaited()
+    admission.end_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_name", ["_handle_unary", "_handle_stream"])
+async def test_stale_interrupt_resume_retains_normal_admission(handler_name):
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    admission = SimpleNamespace(
+        is_user_active=lambda session_id: False,
+        begin_user=AsyncMock(),
+        end_user=AsyncMock(),
+    )
+    server._agent_manager = None
+    server._heartbeat_runtime = SimpleNamespace(admission=admission)
+    server._should_trigger_before_chat_request_hook = lambda request: False
+    server._handle_unary_impl = AsyncMock()
+    server._handle_stream_impl = AsyncMock()
+    request = AgentRequest(
+        request_id="stale-answer-dispatch",
+        channel_id="web",
+        session_id="stale-answer-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "request_id": "call_stale_ask_user",
+            "answers": [{"question": "choose", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+        },
+        is_stream=handler_name == "_handle_stream",
+    )
+
+    await getattr(server, handler_name)(FakeWebSocket(), request, asyncio.Lock())
+
+    admission.begin_user.assert_awaited_once_with("stale-answer-session")
+    admission.end_user.assert_awaited_once_with("stale-answer-session")
+
+
 def test_agent_ws_server_has_no_direct_websocket_send_calls():
     path = Path(agent_ws_server.__file__)
     source = path.read_text(encoding="utf-8")

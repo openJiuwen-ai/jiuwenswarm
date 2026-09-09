@@ -3,8 +3,8 @@ import { MermaidDiagram } from '../diagrams/MermaidDiagram';
 import { SvgDiagram } from '../diagrams/SvgDiagram';
 import type { FencedCodeAdapter, FencedCodeBlock, FencedCodeRendererProps } from './types';
 
-function MermaidCodeBlock({ code }: FencedCodeRendererProps): JSX.Element {
-  return <MermaidDiagram code={code} />;
+function MermaidCodeBlock({ code, canvasMinHeight }: FencedCodeRendererProps): JSX.Element {
+  return <MermaidDiagram code={code} canvasMinHeight={canvasMinHeight} />;
 }
 
 const FENCED_CODE_ADAPTERS: readonly FencedCodeAdapter[] = [

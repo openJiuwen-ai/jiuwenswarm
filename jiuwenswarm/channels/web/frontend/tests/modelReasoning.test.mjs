@@ -67,7 +67,7 @@ const catalogPayload = {
 const catalog = parseVendorCatalog(catalogPayload);
 const preset = catalog.custom_api[0];
 
-test('reasoning options preserve backend values and order without translation or a frontend enum', () => {
+test('reasoning options preserve backend values and order; labels stay raw without a resolver', () => {
   const capability = parseReasoningCapability({ options: ['on', 'off', 'new-tier'], recommended: 'on' });
   assert.deepEqual(buildReasoningOptions(capability, '使用默认值'), [
     { value: '', label: '使用默认值' },
@@ -80,6 +80,30 @@ test('reasoning options preserve backend values and order without translation or
     { value: 'off', label: 'off' },
     { value: 'new-tier', label: 'new-tier' },
   ]);
+});
+
+test('reasoning option labels use resolver for known tiers and fall back to raw value', () => {
+  const capability = parseReasoningCapability({
+    options: ['off', 'low', 'medium', 'high', 'new-tier'],
+    recommended: 'low',
+  });
+  const labels = {
+    off: '关闭',
+    low: '低',
+    medium: '中',
+    high: '高',
+  };
+  assert.deepEqual(
+    buildReasoningOptions(capability, '使用默认值', (value) => labels[value] ?? value),
+    [
+      { value: '', label: '使用默认值' },
+      { value: 'off', label: '关闭' },
+      { value: 'low', label: '低' },
+      { value: 'medium', label: '中' },
+      { value: 'high', label: '高' },
+      { value: 'new-tier', label: 'new-tier' },
+    ],
+  );
 });
 
 test('empty capability hides the select, while default remains a valid persistence value', () => {

@@ -84,8 +84,12 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     from jiuwenswarm.gateway.channel_manager.web.container_file_http import (
         attach_container_file_routes,
     )
+    from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
+        attach_trajectory_routes,
+    )
 
     attach_container_file_routes(app, channel)
+    attach_trajectory_routes(app, channel)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

@@ -17,6 +17,7 @@ from jiuwenswarm.symphony.service import (
     SwarmSymphonyService,
     get_swarm_symphony_service,
 )
+from jiuwenswarm.symphony.llm import LLMConfig, current_request_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,13 @@ class _ComposeGraphLocalFunction(LocalFunction):
 class SymphonyToolkit:
     """Expose the process-local Symphony service as model-callable tools."""
 
-    def __init__(self, service: SwarmSymphonyService | None = None) -> None:
+    def __init__(
+        self,
+        service: SwarmSymphonyService | None = None,
+        llm_config_provider: Callable[[], LLMConfig | None] | None = None,
+    ) -> None:
         self._service = service
+        self._llm_config_provider = llm_config_provider or current_request_llm_config
 
     @staticmethod
     def _resolve_timeout_s(default_s: float = 1800.0) -> float:
@@ -73,13 +79,8 @@ class SymphonyToolkit:
             else _DEFAULT_SERVICE_TIMEOUT_S
         )
         timeout_s = self._resolve_timeout_s(default_timeout_s)
-        try:
-            service = self._service or get_swarm_symphony_service()
-            handler = getattr(service, operation)
-            payload = await asyncio.wait_for(
-                handler(*args, **kwargs), timeout=timeout_s
-            )
-        except asyncio.TimeoutError:
+
+        def timeout_payload() -> dict[str, Any]:
             if operation not in {"plan", "refresh_graph"}:
                 return {
                     "success": False,
@@ -94,9 +95,24 @@ class SymphonyToolkit:
                 "timeout_s": timeout_s,
                 "detail": f"symphony.{operation}: timeout after {timeout_s}s",
             }
+
+        timeout_context = None
+        try:
+            service = self._service or get_swarm_symphony_service()
+            handler = getattr(service, operation)
+            async with asyncio.timeout(timeout_s) as timeout_context:
+                payload = await handler(*args, **kwargs)
+        except asyncio.TimeoutError as exc:
+            if timeout_context is not None and timeout_context.expired():
+                return timeout_payload()
+            logger.exception("Symphony service failed: %s", operation)
+            return {"success": False, "detail": f"symphony.{operation}: {exc}"}
         except Exception as exc:  # noqa: BLE001
             logger.exception("Symphony service failed: %s", operation)
             return {"success": False, "detail": f"symphony.{operation}: {exc}"}
+
+        if timeout_context is not None and timeout_context.expired():
+            return timeout_payload()
 
         return (
             payload
@@ -113,6 +129,29 @@ class SymphonyToolkit:
             "detail": "Symphony is disabled by config: symphony.enabled=false",
         }
 
+    def _llm_config_kwargs(
+        self,
+        operation: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        try:
+            llm_config = self._llm_config_provider()
+        except Exception as exc:  # noqa: BLE001 - tool boundary returns a payload
+            logger.exception(
+                "Symphony request model resolution failed: %s",
+                operation,
+            )
+            return {}, {
+                "success": False,
+                "reason": "llm_config_unavailable",
+                "retryable": False,
+                "operation": operation,
+                "detail": (
+                    f"symphony.{operation}: request-selected model configuration "
+                    f"is unavailable ({type(exc).__name__})"
+                ),
+            }
+        return ({"llm_config": llm_config} if llm_config is not None else {}), None
+
     async def graph_status(self) -> dict[str, Any]:
         if not self.is_enabled():
             return self._disabled_payload("symphony_read_graph")
@@ -121,63 +160,55 @@ class SymphonyToolkit:
     async def refresh_graph(self) -> dict[str, Any]:
         if not self.is_enabled():
             return self._disabled_payload("symphony_refresh_graph")
+        kwargs: dict[str, Any] = {"progress": current_tool_progress()}
+        llm_kwargs, error = self._llm_config_kwargs("refresh_graph")
+        if error is not None:
+            return error
+        kwargs.update(llm_kwargs)
         return await self._call_service(
             "refresh_graph",
-            progress=current_tool_progress(),
+            **kwargs,
         )
 
     @classmethod
     def _compact_plan_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        planning_payload = cls._planning_payload(payload)
         compact: dict[str, Any] = {
             "success": payload.get("success", True),
         }
+        if bool(compact["success"]):
+            planned_graph = payload.get("planned_graph")
+            if not isinstance(planned_graph, dict):
+                return {
+                    "success": False,
+                    "detail": "Symphony orchestration returned no planned_graph",
+                }
+            compact["planned_graph"] = planned_graph
+            graph_build = payload.get("graph_build")
+            if isinstance(graph_build, dict) and graph_build.get("rebuilt") is True:
+                compact["graph_build"] = cls._compact_graph_build(graph_build)
+            return compact
+
         for key in (
             "disabled",
-            "content",
-            "direct_display",
-            "continue_after_display",
-            "followup_action",
+            "method",
+            "reason",
+            "detail",
+            "error",
             "timed_out",
             "retryable",
+            "build_status",
             "operation",
             "timeout_s",
         ):
-            if key in payload:
-                compact[key] = payload[key]
-
-        for key in ("detail", "error"):
             value = payload.get(key)
             if value not in (None, ""):
                 compact[key] = value
-        if not bool(compact["success"]):
-            reason = payload.get("reason")
-            if reason not in (None, ""):
-                compact["reason"] = reason
-
         graph_status = payload.get("graph_status")
-        graph_build = payload.get("graph_build")
-        if not bool(compact["success"]) and isinstance(graph_status, dict):
+        if isinstance(graph_status, dict):
             compact["graph_status"] = cls._compact_graph_status(graph_status)
-        if isinstance(graph_build, dict) and (
-            not bool(compact["success"]) or graph_build.get("rebuilt") is True
-        ):
+        graph_build = payload.get("graph_build")
+        if isinstance(graph_build, dict):
             compact["graph_build"] = cls._compact_graph_build(graph_build)
-
-        beam_search = planning_payload.get("beam_search")
-        if isinstance(beam_search, dict):
-            compact["beam_search"] = cls._compact_beam_search(beam_search)
-
-        for key in ("plan_id", "dynamic_graph_enabled"):
-            value = planning_payload.get(key)
-            if value in (None, ""):
-                value = payload.get(key)
-            if value not in (None, ""):
-                compact[key] = value
-
-        plan = cls._compact_plan(cls._primary_plan(planning_payload))
-        if plan:
-            compact["plan"] = plan
 
         return compact
 
@@ -253,168 +284,6 @@ class SymphonyToolkit:
             ("stage", "label", "percent", "status", "current", "total"),
         )
 
-    @classmethod
-    def _compact_beam_search(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        compact = _copy_compact_fields(
-            payload,
-            (
-                "language",
-                "round_index",
-            ),
-        )
-        graph = payload.get("graph")
-        if isinstance(graph, dict):
-            compact["graph"] = cls._compact_beam_graph(graph)
-        return compact
-
-    @classmethod
-    def _compact_beam_graph(cls, graph: dict[str, Any]) -> dict[str, Any]:
-        compact: dict[str, Any] = {}
-        nodes = graph.get("nodes")
-        if isinstance(nodes, list):
-            compact["nodes"] = [
-                cls._compact_beam_node(node) for node in nodes if isinstance(node, dict)
-            ]
-        edges = graph.get("edges")
-        if isinstance(edges, list):
-            compact["edges"] = [
-                cls._compact_beam_edge(edge) for edge in edges if isinstance(edge, dict)
-            ]
-        return compact
-
-    @staticmethod
-    def _compact_beam_node(node: dict[str, Any]) -> dict[str, Any]:
-        return _copy_compact_fields(
-            node,
-            ("id", "label", "status", "seed"),
-        )
-
-    @staticmethod
-    def _compact_beam_edge(edge: dict[str, Any]) -> dict[str, Any]:
-        return _copy_compact_fields(
-            edge,
-            ("source", "target", "status"),
-        )
-
-    @classmethod
-    def _compact_plan(cls, plan: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(plan, dict) or not plan:
-            return {}
-        compact = _copy_compact_fields(plan, ("title", "status", "reason"))
-        steps = plan.get("steps")
-        if isinstance(steps, list):
-            compact["steps"] = [
-                cls._compact_plan_step(step, index)
-                for index, step in enumerate(steps, start=1)
-                if isinstance(step, dict)
-            ]
-        edges = plan.get("can_feed_edges")
-        if isinstance(edges, list):
-            compact["can_feed_edges"] = [
-                cls._compact_can_feed_edge(edge)
-                for edge in edges
-                if isinstance(edge, dict)
-            ]
-        missing_inputs = plan.get("missing_inputs")
-        if isinstance(missing_inputs, list):
-            compact["missing_inputs"] = missing_inputs
-        return compact
-
-    @staticmethod
-    def _compact_plan_step(step: dict[str, Any], index: int) -> dict[str, Any]:
-        compact = _copy_compact_fields(step, ("step", "skill_id", "reason"))
-        compact.setdefault("step", index)
-        name = step.get("name") or step.get("skill_name")
-        if name not in (None, ""):
-            compact["name"] = name
-        return compact
-
-    @staticmethod
-    def _compact_can_feed_edge(edge: dict[str, Any]) -> dict[str, Any]:
-        compact: dict[str, Any] = {}
-        source = edge.get("source_id") or edge.get("source")
-        target = edge.get("target_id") or edge.get("target")
-        if source not in (None, ""):
-            compact["source_id"] = source
-        if target not in (None, ""):
-            compact["target_id"] = target
-        method = edge.get("method")
-        if method not in (None, ""):
-            compact["method"] = method
-        reason = edge.get("reason")
-        if reason not in (None, ""):
-            compact["reason"] = reason
-        return compact
-
-    @staticmethod
-    def _primary_plan(payload: dict[str, Any]) -> dict[str, Any]:
-        for key in ("recommended_plans", "plans"):
-            plans = payload.get(key)
-            if not isinstance(plans, list):
-                continue
-            for plan in plans:
-                if isinstance(plan, dict):
-                    return plan
-        return {}
-
-    @classmethod
-    def _planning_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
-        result = payload.get("result")
-        return result if isinstance(result, dict) else payload
-
-    @classmethod
-    def _needs_external_skill_discovery(cls, payload: dict[str, Any]) -> bool:
-        planning_payload = cls._planning_payload(payload)
-        plan = cls._primary_plan(planning_payload)
-        status = (
-            str(
-                plan.get("status")
-                or planning_payload.get("status")
-                or payload.get("status")
-                or ""
-            )
-            .strip()
-            .lower()
-        )
-        missing_inputs = (
-            plan.get("missing_inputs") or planning_payload.get("missing_inputs") or []
-        )
-        if status == "needs_input" or missing_inputs:
-            return False
-        if status == "no_plan":
-            return True
-
-        steps = plan.get("steps") if isinstance(plan, dict) else []
-        execution_graph = planning_payload.get("execution_graph")
-        if not isinstance(execution_graph, dict):
-            execution_graph = payload.get("execution_graph")
-        graph_nodes = (
-            execution_graph.get("nodes") if isinstance(execution_graph, dict) else []
-        )
-        return not steps and not graph_nodes
-
-    @classmethod
-    def _attach_followup_control(cls, payload: dict[str, Any]) -> None:
-        if payload.get("reason") == "graph_build_timeout":
-            payload["continue_after_display"] = False
-            if payload.get("followup_action") == "external_skill_discovery":
-                payload.pop("followup_action")
-            return
-        if cls._needs_external_skill_discovery(payload):
-            payload["continue_after_display"] = True
-            payload["followup_action"] = "external_skill_discovery"
-            return
-        payload.setdefault("continue_after_display", False)
-
-    @staticmethod
-    def _failure_detail(payload: dict[str, Any], fallback: str) -> str:
-        return str(
-            payload.get("detail")
-            or payload.get("reason")
-            or payload.get("error")
-            or fallback
-        ).strip()
-
     async def plan(
         self,
         query: str,
@@ -430,15 +299,17 @@ class SymphonyToolkit:
         normalized_candidate_skill_ids = _normalize_candidate_skill_ids(
             candidate_skill_ids
         )
-        payload = await self._call_service(
-            "plan",
-            query_text,
-            mode=mode_text or None,
-            candidate_skill_ids=normalized_candidate_skill_ids,
-            progress=current_tool_progress(),
-        )
+        kwargs: dict[str, Any] = {
+            "mode": mode_text or None,
+            "candidate_skill_ids": normalized_candidate_skill_ids,
+            "progress": current_tool_progress(),
+        }
+        llm_kwargs, error = self._llm_config_kwargs("plan")
+        if error is not None:
+            return self._compact_plan_payload(error)
+        kwargs.update(llm_kwargs)
+        payload = await self._call_service("plan", query_text, **kwargs)
         if isinstance(payload, dict):
-            self._attach_followup_control(payload)
             return self._compact_plan_payload(payload)
         return payload
 
@@ -504,10 +375,16 @@ class SymphonyToolkit:
                     "skills or an ordered skill workflow. Discovery, comparison, and "
                     "recommendation alone do not require this tool. Pass only shortlisted "
                     "exact skill IDs in candidate_skill_ids; omit that argument when the "
-                    "user requested a plan but no candidate is known. The tool may refresh a "
-                    "missing or stale graph before composing. Use its returned plan and ask "
-                    "for any missing inputs it reports. If it returns graph_build_timeout or "
-                    "manual_graph_build, do not retry graph tools in the same round."
+                    "user requested a plan but no candidate is known. Before composing, use "
+                    "discovery metadata directly; do not call skill_tool, read_file, or read "
+                    "any SKILL.md. The tool may refresh a missing or stale graph before "
+                    "composing. Use its returned plan and ask for any missing inputs it "
+                    "reports. When the plan is ready, choose one currently executable Skill, "
+                    "read only that Skill's SKILL.md immediately before executing it, and do "
+                    "not preload all selected Skill instructions. When the plan needs input "
+                    "or no plan is available, do not read Skills merely for orchestration. "
+                    "If it returns graph_build_timeout or manual_graph_build, do not retry "
+                    "graph tools in the same round."
                 ),
                 {
                     "type": "object",

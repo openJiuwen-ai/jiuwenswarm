@@ -66,6 +66,7 @@ export type RenderItem =
       key: string;
       showAvatar: boolean;
       executions: ToolExecution[];
+      agentTemplateName?: string;
       notices: string[];
       collapseSkillTreeWhenContentStarts: boolean;
       turnId: number;
@@ -242,6 +243,8 @@ function consolidateReasoning(items: RenderItem[], isTeamMode: boolean): RenderI
             ...prev.segment,
             text: mergedText,
             closed: item.segment.closed,
+            agentTemplateName:
+              prev.segment.agentTemplateName ?? item.segment.agentTemplateName,
             updatedAt: mergedUpdatedAt,
           },
         };
@@ -267,6 +270,9 @@ export function buildRenderItems(items: TimelineItem[], isTeamMode: boolean, isP
       key: `tool-group-${pendingToolExecutions[0].toolCallId}`,
       showAvatar: true,
       executions: pendingToolExecutions,
+      agentTemplateName: pendingToolExecutions
+        .map((execution) => execution.agentTemplateName?.trim())
+        .find((name): name is string => Boolean(name)),
       notices: [],
       collapseSkillTreeWhenContentStarts,
       turnId: currentTurnId,
@@ -434,6 +440,12 @@ function assignTurnTopAvatars(items: RenderItem[], isTeamMode: boolean): void {
   }
 }
 
+/**
+ * 空窗轮起点透传规则：仅当下一轮 user 消息是「设目标」消息（isGoalObjectiveMessage）时并入。
+ * goal 插队场景里「上一个提问」和「设目标」同属一次交互流程，真正承载回答的那一轮耗时
+ * 要从上一提问算起；普通新提问与上一条空窗提问无关（如隔天再来提问），不继承起点，
+ * 避免把跨会话闲置时间算进新一轮「已完成」耗时。
+ */
 function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): RenderItem[] {
   const out: RenderItem[] = [];
   let startMs = Number.POSITIVE_INFINITY;
@@ -446,6 +458,9 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
   let seq = 0;
   // 时间行插入点：本轮首条 assistant 内容之前（视觉上位于头像下第一行）。
   let turnContentStart = 0;
+  // 空窗轮（只有 user 消息、无任何活动）透传给下一轮的起点。
+  // 先挂起，仅并入下一轮「设目标」消息开启的轮次（见 user 消息分支），其余轮次丢弃。
+  let carriedStartMs = Number.POSITIVE_INFINITY;
 
   const acc = (value: number, asWork = false) => {
     if (!Number.isFinite(value) || value <= 0) return;
@@ -459,8 +474,8 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
   const flush = (isLastTurn: boolean) => {
     const shouldShow = (isLastTurn && isProcessing) || hasActivity;
     // 整段没有任何活动（goal 插队时「上一个提问」和「设目标」两条 user 消息紧挨着，中间
-    // 空窗）：不出耗时条，起止时刻也别丢，留给真正承载这段回答的那一轮当起点，否则那一轮
-    // 从首次思考才开始算，耗时显示成 0s。
+    // 空窗）：不出耗时条，起点先挂起，仅并入下一轮「设目标」消息开启的轮次（见 user 消息
+    // 分支），否则那一轮从首次思考才开始算，耗时显示成 0s。
     const carryTimestamps = !hasActivity;
     if (shouldShow && Number.isFinite(startMs) && Number.isFinite(endMs)) {
       const summary: Extract<RenderItem, { type: 'turnSummary' }> = {
@@ -491,10 +506,13 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
       }
       out.splice(turnContentStart, 0, summary);
     }
-    if (!carryTimestamps) {
-      startMs = Number.POSITIVE_INFINITY;
-      endMs = Number.NEGATIVE_INFINITY;
+    if (carryTimestamps && Number.isFinite(startMs)) {
+      carriedStartMs = startMs;
+    } else {
+      carriedStartMs = Number.POSITIVE_INFINITY;
     }
+    startMs = Number.POSITIVE_INFINITY;
+    endMs = Number.NEGATIVE_INFINITY;
     workStartMs = Number.POSITIVE_INFINITY;
     workEndMs = Number.NEGATIVE_INFINITY;
     hasActivity = false;
@@ -505,13 +523,20 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
     if (item.type === 'message' && item.message.role === 'user') {
       flush(false);
       turnId += 1;
+      // 空窗起点仅并入「设目标」消息开启的轮次：goal 插队时上一提问与设目标同属一次
+      // 交互流程，本轮耗时从上一提问算起；普通新提问（哪怕只隔几分钟）与上一条空窗
+      // 提问无关，不继承起点，避免把无关/跨会话等待算进本轮「已完成」耗时。
+      if (Number.isFinite(carriedStartMs) && item.message.isGoalObjectiveMessage) {
+        acc(carriedStartMs, false);
+      }
+      carriedStartMs = Number.POSITIVE_INFINITY;
       acc(toTimestampMs(item.message.timestamp), false);
       out.push(item);
       turnContentStart = out.length;
       continue;
     }
     // slash 命令结果不属于上一轮 assistant 工作，也不应产生自己的「任务用时」。
-    // 先收束上一轮，再把 BTW/compact 等命令结果作为独立时间线块插入。
+    // 先收束上一轮，再把 compact 等命令结果作为独立时间线块插入。
     if (item.type === 'message' && item.message.isCommandOutput) {
       flush(false);
       out.push(item);

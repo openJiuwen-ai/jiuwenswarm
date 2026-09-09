@@ -1,5 +1,4 @@
 import asyncio
-from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -48,6 +47,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
+from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -290,6 +290,13 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     assert "Calling `skill_branch_explore` creates a mandatory orchestration follow-up" in prompt
     assert "never pass every Skill returned by exploration" in prompt
     assert "still call `symphony_compose_graph`" in prompt
+    assert "`planned_graph.graph.metadata.status`" in prompt
+    assert "`planned_graph.graph.nodes`" in prompt
+    assert "`planned_graph.graph.edges`" in prompt
+    assert "Do not present a planning" in prompt
+    assert "search_skill" not in prompt
+    assert "install_skill" not in prompt
+    assert "returned\n`content` directly" not in prompt
     assert "none of the three trigger conditions is true" in prompt
     assert "Symphony" not in prompt
 
@@ -362,6 +369,76 @@ async def test_symphony_timeout_is_terminal_manual_build_result(
     assert ctx.extra["symphony_graph_build_timeout"] is True
     assert ctx.force_finished == [
         {"output": result["content"], "result_type": "answer"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_symphony_graph_preparing_is_terminal_for_current_round():
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = SymphonyOrchestrationRail(
+        config_base={"symphony": {"enabled": True}},
+    )
+    rail.init(agent)
+    invocation_extra: dict = {}
+    tool_ctx = _tool_call_ctx(
+        "symphony_compose_graph",
+        {"query": "compose"},
+        extra=invocation_extra,
+        result={
+            "success": False,
+            "reason": "graph_preparing",
+            "retryable": False,
+            "build_status": "running",
+            "operation": "plan",
+        },
+    )
+
+    await rail.after_tool_call(tool_ctx)
+
+    result = tool_ctx.inputs.tool_result
+    assert result["direct_display"] is True
+    assert result["continue_after_display"] is False
+    assert result["followup_action"] == "wait_graph_build"
+    assert "正在构建" in result["content"]
+    assert tool_ctx.force_finished == [
+        {"output": result["content"], "result_type": "answer"}
+    ]
+
+    model_ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(
+            tools=[
+                SimpleNamespace(name="symphony_compose_graph"),
+                SimpleNamespace(name="symphony_refresh_graph"),
+                SimpleNamespace(name="other_tool"),
+            ]
+        ),
+        session=_FakeSession(),
+        extra=invocation_extra,
+    )
+    await rail.before_model_call(model_ctx)
+
+    assert [rail._model_tool_name(tool) for tool in model_ctx.inputs.tools] == [
+        "other_tool"
+    ]
+
+    next_model_ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(
+            tools=[
+                SimpleNamespace(name="symphony_compose_graph"),
+                SimpleNamespace(name="symphony_refresh_graph"),
+            ]
+        ),
+        session=_FakeSession(),
+        extra={},
+    )
+    await rail.before_model_call(next_model_ctx)
+
+    assert [rail._model_tool_name(tool) for tool in next_model_ctx.inputs.tools] == [
+        "symphony_compose_graph",
+        "symphony_refresh_graph",
     ]
 
 
@@ -717,6 +794,19 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     ]
     assert fake_instance.ability_manager.added == fake_resource.added
 
+    # Re-applying the same enabled snapshot is idempotent. Code cold start and
+    # reload both use this path, so neither cards nor registrations may grow.
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
+
+    assert len(seen_configs) == 1
+    assert len(adapter._tool_cards) == 3
+    assert fake_resource.added == [
+        "symphony_read_graph",
+        "symphony_refresh_graph",
+        "symphony_compose_graph",
+    ]
+    assert fake_instance.ability_manager.added == fake_resource.added
+
     adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": False}})
 
     assert adapter._symphony_tools == []
@@ -731,6 +821,105 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
         "symphony_refresh_graph",
         "symphony_compose_graph",
     ]
+
+
+@pytest.mark.asyncio
+async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
+        lambda config=None: SimpleNamespace(enabled=True),
+    )
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+
+    def runtime_model(name: str, api_key: str):
+        return SimpleNamespace(
+            model_client_config={
+                "api_base": "https://selected.example/v1",
+                "api_key": api_key,
+                "client_provider": "OpenAI",
+                "model_name": name,
+            },
+            model_config={"model": name},
+        )
+
+    model_a = runtime_model("model-a", "key-a")
+    model_b = runtime_model("model-b", "key-b")
+    inputs_a = adapter._with_symphony_request_model({"query": "a"}, model_a)
+    inputs_b = adapter._with_symphony_request_model({"query": "b"}, model_b)
+
+    # Only opaque references cross the interaction queue; credentials stay in
+    # the process-local registry.
+    assert "key-a" not in repr(inputs_a)
+    assert "key-b" not in repr(inputs_b)
+
+    seen: dict[str, str] = {}
+
+    async def plan(query, *, llm_config, **kwargs):
+        del kwargs
+        seen[query] = llm_config.model
+        return {
+            "success": True,
+            "planned_graph": {
+                "graph": {
+                    "metadata": {"status": "no_plan"},
+                    "nodes": {},
+                    "edges": [],
+                }
+            },
+        }
+
+    toolkit = SymphonyToolkit(SimpleNamespace(plan=plan))
+    rail = SymphonyOrchestrationRail()
+    a_bound = asyncio.Event()
+    b_bound = asyncio.Event()
+
+    def tool_context(inputs):
+        reference = inputs["run"]["context"]["extra"][
+            SYMPHONY_LLM_CONFIG_REF_KEY
+        ]
+        return AgentCallbackContext(
+            agent=SimpleNamespace(),
+            inputs=ToolCallInputs(
+                tool_call=SimpleNamespace(
+                    id=f"call-{reference[:8]}",
+                    name="symphony_compose_graph",
+                    arguments={},
+                ),
+                tool_name="symphony_compose_graph",
+                tool_args={},
+            ),
+            extra={"run_context": SimpleNamespace(extra={
+                SYMPHONY_LLM_CONFIG_REF_KEY: reference,
+            })},
+        )
+
+    async def invoke_a():
+        ctx = tool_context(inputs_a)
+        await rail.before_tool_call(ctx)
+        a_bound.set()
+        await b_bound.wait()
+        adapter._active_request_model = model_b
+        try:
+            return await toolkit.plan("a")
+        finally:
+            await rail.after_tool_call(ctx)
+
+    async def invoke_b():
+        await a_bound.wait()
+        ctx = tool_context(inputs_b)
+        await rail.before_tool_call(ctx)
+        b_bound.set()
+        try:
+            return await toolkit.plan("b")
+        finally:
+            await rail.after_tool_call(ctx)
+
+    results = await asyncio.gather(invoke_a(), invoke_b())
+
+    assert all(result["success"] is True for result in results)
+    assert seen == {"a": "model-a", "b": "model-b"}
 
 
 @pytest.mark.asyncio
@@ -819,6 +1008,67 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
 
 
 @pytest.mark.asyncio
+async def test_runtime_attachment_request_mode_wins_over_localized_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    runtime_rail = RuntimePromptRail(language="cn", channel="web")
+    runtime_rail.init(agent)
+    runtime_rail.set_mode("agent")
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    # The first refresh falls back to the request-bound canonical mode while
+    # the asynchronous diagnostic snapshot does not exist yet.
+    await runtime_rail.before_invoke(ctx)
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    first_rendered = agent.prompt_attachment_manager.render(items)
+    assert "当前模式：agent" in first_rendered
+
+    # Once the snapshot appears, its localized representation must not create
+    # a false attachment update for the same effective mode.
+    runtime_state = tmp_path / "runtime_state" / "default.yaml"
+    runtime_state.parent.mkdir(parents=True, exist_ok=True)
+    runtime_state.write_text("mode: 智能体模式\n", encoding="utf-8")
+    await runtime_rail.before_model_call(ctx)
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    second_rendered = agent.prompt_attachment_manager.render(items)
+    assert second_rendered == first_rendered
+
+
+@pytest.mark.asyncio
+async def test_runtime_attachment_tracks_request_mode_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeAgent(builder)
+    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail.init(agent)
+    runtime_rail.set_mode("agent")
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await runtime_rail.before_model_call(ctx)
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    rendered = agent.prompt_attachment_manager.render(items)
+    assert "Current mode: agent" in rendered
+
+    runtime_rail.set_mode("team")
+    await runtime_rail.before_model_call(ctx)
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    rendered = agent.prompt_attachment_manager.render(items)
+    assert "Current mode: team" in rendered
+    assert "Current mode: agent" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     rail = BrowserTaskPromptRail()
     assert rail is not None
@@ -883,6 +1133,7 @@ async def test_runtime_attachment_tracks_live_code_agent_mode(tmp_path, monkeypa
     agent = _FakeLiveModeAgent(builder, mode="plan")
     runtime_rail = RuntimePromptRail(language="en", channel="tui")
     runtime_rail.init(agent)
+    runtime_rail.set_mode("code.normal")
     ctx = AgentCallbackContext(
         # Inner ReactAgent callbacks do not expose DeepAgent.load_state().
         agent=SimpleNamespace(),
@@ -992,12 +1243,17 @@ async def test_runtime_prompt_uses_runtime_cwd_over_stale_trusted_dir(tmp_path, 
     assert "# Directory and File-Operation Boundaries" in prompt
     assert "# Runtime Directory Context" not in prompt
     assert "# Working Directory Runtime Values" not in prompt
-    assert "The project directory is your current workspace" in prompt
+    assert "The project directory is the project root and project-context boundary" in prompt
     assert f"the current project directory is: `{project_dir}`" in prompt
+    assert (
+        f"The current working directory (cwd, relative-path base, and Bash default) is: `{current_dir}`"
+        in prompt
+    )
+    assert "Resolve relative paths in user tasks against the current working directory" in prompt
     assert "Agent internal data directory" in prompt
     assert "## JiuwenSwarm Internal Directories" in prompt
     assert str(project_dir) in prompt
-    assert str(current_dir) not in prompt
+    assert str(current_dir) in prompt
     assert str(stale_dir) not in prompt
     assert str(extra_dir) not in prompt
     assert "System directory" not in prompt
@@ -1036,8 +1292,8 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
     await runtime_rail.before_model_call(ctx)
 
     prompt = builder.build()
-    assert "The project directory is your current workspace" in prompt
-    assert f"the current project directory is: `{task_dir}`" in prompt
+    assert "## Current Project Directory" in prompt
+    assert f"current runtime workspace: `{task_dir}`" in prompt
     assert "Other accessible directories" not in prompt
     assert "fallen back to the Agent internal data directory" not in prompt
 
@@ -1071,7 +1327,7 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
 
     prompt = builder.build()
     assert "# 目录与文件操作边界" in prompt
-    assert f"当前项目目录是：`{agent_data_dir}`" in prompt
+    assert f"当前运行时工作空间：`{agent_data_dir}`" in prompt
     assert "其他可访问目录" not in prompt
 
 
@@ -1135,7 +1391,7 @@ async def test_runtime_prompt_reports_powershell_and_removes_generic_shell_rules
     prompt = builder.build()
     assert "- Shell：PowerShell" in prompt
     assert "Shell 规则：" not in prompt
-    assert "### 项目目录规则" in prompt
+    assert "## 当前项目目录" in prompt
     assert "### 项目录规则" not in prompt
 
 
@@ -1223,14 +1479,10 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rendered = agent.prompt_attachment_manager.render(
         await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
-    assert "## Skill 发现" in rendered
-    assert "## 会话 Skill 候选快照" in rendered
-    assert "会话创建时没有已启用 Skill" in rendered
-    assert "`skill_index`" in rendered
-    assert "`list`、`search`、`read`" in rendered
-    assert "在有序 `pipeline`" in rendered
-    assert "基于已返回内容完成当前回答" in rendered
-    assert "`disable_output_truncation=true`" in rendered
+    assert "## 已安装 Skill" not in rendered
+    assert "## 已安装 Skill" in builder.build()
+    assert "当前没有可用 Skill" in builder.build()
+    assert "## Skill 发现" not in rendered
 
     class _AttachmentContext:
         def __init__(self):
@@ -1245,7 +1497,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
 
     history = _AttachmentContext()
     manager = agent.prompt_attachment_manager
-    assert await manager.sync_to_context(history, "sess1") is not None
+    assert await manager.sync_to_context(history, "sess1") is None
 
     # before_invoke runs before the model tool list exists. It must not clear
     # and then re-add the same large snapshot on every user turn.
@@ -1259,7 +1511,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
     await rail.before_model_call(ctx)
     assert await manager.sync_to_context(history, "sess1") is None
-    assert len(history.messages) == 1
+    assert len(history.messages) == 0
 
     missing_index_ctx = AgentCallbackContext(
         agent=agent,
@@ -1292,21 +1544,10 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
             ),
         ),
     )
-    indexed_guidance = rail._build_guidance("cn", indexed)
     indexed_appendix = rail._build_candidate_appendix("cn", indexed)
-    assert 'list(paths=["/OfficeDocs"], view="details")' in indexed_guidance
-    assert "普通问答、闲聊" in indexed_guidance
-    assert "`/OfficeDocs`: 办公文档处理。 Select when: 用户要处理 Word 或 PDF。" in indexed_appendix
+    assert "`OfficeDocs`: 办公文档处理。 Select when: 用户要处理 Word 或 PDF。" in indexed_appendix
     assert "Covers 8 descendant skills" not in indexed_appendix
     assert "Representative keywords" not in indexed_appendix
-
-    stale = replace(indexed, mode="indexed-stale", index_state="stale")
-    stale_chinese = rail._build_guidance("cn", stale)
-    stale_english = rail._build_guidance("en", stale)
-    assert "直接对完整目录 `/` 执行一次高信号 `search`" in stale_chinese
-    assert "沿主能力分支逐层浏览" not in stale_chinese
-    assert "full catalog `/` first" in stale_english
-    assert "do not browse the old tree first" in stale_english
 
 
 @pytest.mark.asyncio

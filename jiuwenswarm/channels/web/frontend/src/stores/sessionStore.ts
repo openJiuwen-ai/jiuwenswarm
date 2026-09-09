@@ -5,7 +5,11 @@
  */
 
 import { create } from 'zustand';
-import { parseContextUsageSnapshot } from '../features/contextUsage/contextUsageModel';
+import {
+  isSingleAgentContextUsageSnapshot,
+  isTeamLeaderContextUsageSnapshot,
+  parseContextUsageSnapshot,
+} from '../features/contextUsage/contextUsageModel';
 import {
   Session,
   AgentMode,
@@ -24,6 +28,14 @@ import {
 } from '../features/teamTaskProgressBaseline';
 import type { AgentSelectionIntent } from '../features/agentManagement/types';
 import { isTeamAgentMode, stripPlanSuffix } from '../features/planMode/wireMode';
+import {
+  applyWorkflowUpdate as applyWorkflowUpdateImpl,
+  reassembleAgentFieldParts,
+  type WorkflowAgent,
+  type WorkflowPhase,
+  type WorkflowRun,
+} from '../components/teamArea/workflowTypes';
+import { requestAgentDetail, requestPhaseAgents } from '../services/webClient';
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
@@ -72,6 +84,13 @@ function loadAgentSelectionIntent(sessionId: string): AgentSelectionIntent {
   }
 }
 
+function contextUsageTimestamp(snapshot: ContextUsageSnapshot | null): number | null {
+  const raw = snapshot?.timestamp;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function saveAgentSelectionIntent(sessionId: string, intent: AgentSelectionIntent) {
   if (typeof localStorage === 'undefined') return;
   if (sessionId === TRANSIENT_NEW_CONVERSATION_ID) {
@@ -97,6 +116,14 @@ function saveAgentSelectionIntent(sessionId: string, intent: AgentSelectionInten
   } catch {
     // Browser storage can be unavailable in private/restricted contexts.
   }
+}
+
+function sameAgentSelectionIntent(
+  left: AgentSelectionIntent,
+  right: AgentSelectionIntent,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  return left.kind !== 'select' || right.kind === 'select' && left.id === right.id;
 }
 
 function loadModeFromStorage(): AgentMode {
@@ -268,6 +295,8 @@ export interface TeamTaskEvent {
   team_name?: string;
   title?: string;
   content?: string;
+  /** Swarmflow run that produced this task (absent on plain team tasks). */
+  workflow_run_id?: string;
   // Truncation observability flags — backend may set these on team.task.created/
   // updated events when the title/content exceeded the wire limit. Purely
   // passthrough: the store does not render a badge; the inline marker
@@ -298,6 +327,8 @@ export interface TeamTask {
   timestamp?: number;
   skills?: string[];
   files?: string[];
+  /** Swarmflow run that produced this task (absent on plain team tasks). */
+  workflow_run_id?: string;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these
@@ -405,11 +436,20 @@ export interface SessionRuntime {
   /**
    * 本会话期间持续启用的插件id/MCP名，由输入框"+"菜单"扩展"面板的开关控制。与
    * selectedSkills 不同：这两个字段发 chat.send 后不清空，会一直带在每条消息里，直到用户在
-   * 面板里手动关闭开关。插件字段名 plugin_names 后端尚未定义（backend-requests.md 需求11，
-   * 前端乐观发送，后端目前忽略）；mcp 字段名是 MCP 接口文档 v2 §6.2 的权威定义。
+   * 面板里手动关闭开关。恢复历史会话时由后端 session_equipment 快照重新填充。
    */
   enabledPlugins: string[];
   enabledMcps: string[];
+  /** 是否已从后端快照恢复，或已由用户在本地明确修改。 */
+  extensionsHydrated: boolean;
+  /** SwarmFlow 是否激活（曾收到过 swarmflow 事件即置真，粘性） */
+  swarmflowActive: boolean;
+  /** 本会话是否启用 swarmflow（会话级，随 chat.send 下发） */
+  enableSwarmflow: boolean;
+  /** 本会话 swarmflow token 上限（留空=不限） */
+  swarmflowBudget: number | null;
+  /** SwarmFlow 工作流运行列表（树视图渲染） */
+  workflowRuns: WorkflowRun[];
 }
 
 function createEmptyRuntime(sessionId?: string): SessionRuntime {
@@ -436,6 +476,11 @@ function createEmptyRuntime(sessionId?: string): SessionRuntime {
     agentSelectionIntent: sessionId ? loadAgentSelectionIntent(sessionId) : { kind: 'keep' },
     enabledPlugins: [],
     enabledMcps: [],
+    extensionsHydrated: false,
+    swarmflowActive: false,
+    enableSwarmflow: false,
+    swarmflowBudget: null,
+    workflowRuns: [],
   };
 }
 
@@ -498,7 +543,7 @@ interface SessionState {
   setSessionMetadata: (sessionId: string, metadata: Record<string, unknown> | null) => void;
   /** 输入栏智能体选择：选择、清空或恢复为不修改 */
   setAgentSelectionIntent: (sessionId: string, intent: AgentSelectionIntent) => void;
-  clearAgentSelectionIntent: (sessionId: string) => void;
+  clearAgentSelectionIntent: (sessionId: string, expectedIntent?: AgentSelectionIntent) => void;
   /** 本会话启用插件：追加（去重） */
   addEnabledPlugin: (sessionId: string, pluginId: string) => void;
   /** 本会话启用插件：移除指定项 */
@@ -511,6 +556,11 @@ interface SessionState {
   removeEnabledMcp: (sessionId: string, mcpName: string) => void;
   /** 本会话启用MCP：清空 */
   clearEnabledMcps: (sessionId: string) => void;
+  /** 用后端的会话级装备快照恢复插件/MCP选择。 */
+  restoreSessionEquipment: (
+    sessionId: string,
+    equipment: { plugin_names?: string[]; mcp?: string[] },
+  ) => void;
   addTeamMember: (sessionId: string, member: TeamMember) => void;
   updateTeamMemberStatus: (sessionId: string, memberId: string, newStatus: string, timestamp?: number) => void;
   setTeamHumanShareCommands: (sessionId: string, commands: HumanShareCommand[]) => void;
@@ -532,6 +582,27 @@ interface SessionState {
   clearTeamMemberContextCompressionStatus: (sessionId: string, memberId: string) => void;
   clearAllTeamMemberContextCompressionStatus: (sessionId: string) => void;
   setTeamHistoryMessages: (sessionId: string, messages: Message[]) => void;
+
+  // SwarmFlow actions
+  /** 增量合并一条 workflow 更新到 workflowRuns */
+  applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
+  /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
+  setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;  /** 置位 swarmflowActive 粘性视图标志（置真后不再回 false）；后端 swarmflow.activated 事件专用 */
+  setSwarmflowViewActive: (sessionId: string) => void;
+  /** 懒加载 phase 完整 agents（command.workflows get_phase） */
+  loadPhaseAgents: (
+    sessionId: string,
+    workflowId: string,
+    phaseId: string,
+    agentOffset?: number,
+  ) => Promise<void>;
+  /** 懒加载单个 agent 完整体（command.workflows get_agent） */
+  loadAgentDetail: (
+    sessionId: string,
+    workflowId: string,
+    phaseId: string,
+    agentId: string,
+  ) => Promise<void>;
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -663,10 +734,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const agentSelectionIntent = normalizedMode === 'agent'
         ? runtime.agentSelectionIntent
         : { kind: 'clear' as const };
+      // 切离 team 模式时自动关闭 swarmflow
+      const closingSwarmflow =
+        runtime.mode === 'team' && normalizedMode !== 'team' && runtime.enableSwarmflow;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, mode: normalizedMode, agentSelectionIntent },
+          [sessionId]: {
+            ...runtime,
+            mode: normalizedMode,
+            contextUsageSnapshot: runtime.mode === normalizedMode ? runtime.contextUsageSnapshot : null,
+            agentSelectionIntent,
+            ...(closingSwarmflow
+              ? { enableSwarmflow: false, swarmflowBudget: null }
+              : {}),
+          },
         },
       };
     });
@@ -708,11 +790,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   receiveContextUsage: (payload) => {
     const snapshot = parseContextUsageSnapshot(payload);
-    if (!snapshot || snapshot.depth !== 0 || snapshot.team_id !== null || snapshot.member_name !== null) return;
+    if (!snapshot) return;
     const sessionId = snapshot.product_session_id;
     set((state) => {
       const runtime = state.runtimes[sessionId];
-      if (!runtime || runtime.mode !== 'agent') return state;
+      if (!runtime) return state;
+      const isEligible =
+        runtime.mode === 'agent'
+          ? isSingleAgentContextUsageSnapshot(snapshot)
+          : runtime.mode === 'team' && isTeamLeaderContextUsageSnapshot(snapshot);
+      if (!isEligible) return state;
+      const incomingTimestamp = contextUsageTimestamp(snapshot);
+      const currentTimestamp = contextUsageTimestamp(runtime.contextUsageSnapshot);
+      // history.get pages are loaded newest-first. Keep an older page from
+      // replacing the latest live/history snapshot already shown in the UI.
+      if (
+        incomingTimestamp !== null &&
+        currentTimestamp !== null &&
+        incomingTimestamp < currentTimestamp
+      ) {
+        return state;
+      }
       return {
         runtimes: {
           ...state.runtimes,
@@ -1060,10 +1158,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  clearAgentSelectionIntent: (sessionId) => {
+  clearAgentSelectionIntent: (sessionId, expectedIntent) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime || runtime.agentSelectionIntent.kind === 'keep') return state;
+      if (expectedIntent && !sameAgentSelectionIntent(runtime.agentSelectionIntent, expectedIntent)) {
+        return state;
+      }
       // A selected Agent is a session-level attachment, not a one-shot input hint.
       // Keep the visible selection after a successful send; only a clear intent is
       // consumed after the server has applied the detach request.
@@ -1086,7 +1187,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledPlugins: [...runtime.enabledPlugins, normalized] },
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: [...runtime.enabledPlugins, normalized],
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1102,7 +1207,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledPlugins: runtime.enabledPlugins.filter((s) => s !== normalized) },
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: runtime.enabledPlugins.filter((s) => s !== normalized),
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1112,11 +1221,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      if (runtime.enabledPlugins.length === 0) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledPlugins: [] },
+          [sessionId]: { ...runtime, enabledPlugins: [], extensionsHydrated: true },
         },
       };
     });
@@ -1131,7 +1239,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledMcps: [...runtime.enabledMcps, normalized] },
+          [sessionId]: {
+            ...runtime,
+            enabledMcps: [...runtime.enabledMcps, normalized],
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1147,7 +1259,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledMcps: runtime.enabledMcps.filter((s) => s !== normalized) },
+          [sessionId]: {
+            ...runtime,
+            enabledMcps: runtime.enabledMcps.filter((s) => s !== normalized),
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1157,11 +1273,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      if (runtime.enabledMcps.length === 0) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, enabledMcps: [] },
+          [sessionId]: { ...runtime, enabledMcps: [], extensionsHydrated: true },
+        },
+      };
+    });
+  },
+
+  restoreSessionEquipment: (sessionId, equipment) => {
+    const normalize = (values: string[] | undefined) => Array.from(new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ));
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            enabledPlugins: normalize(equipment.plugin_names),
+            enabledMcps: normalize(equipment.mcp),
+            extensionsHydrated: true,
+          },
         },
       };
     });
@@ -1441,6 +1578,101 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, teamHistoryMessages: messages },
+        },
+      };
+    });
+  },
+
+  applyWorkflowUpdate: (sessionId, workflow) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            swarmflowActive: true,
+            workflowRuns: applyWorkflowUpdateImpl(runtime.workflowRuns, workflow),
+          },
+        },
+      };
+    });
+  },
+
+  loadPhaseAgents: async (sessionId, workflowId, phaseId, agentOffset = 0) => {
+    const payload = await requestPhaseAgents(sessionId, workflowId, phaseId, agentOffset);
+    if (payload.error || !payload.phase || typeof payload.phase !== 'object') return;
+    const phase = payload.phase as WorkflowPhase;
+    const runtime = get().runtimes[sessionId];
+    const existing = runtime?.workflowRuns.find((item) => item.id === workflowId);
+    if (!existing) return;
+    const updatedPhases = (existing.phases ?? []).map((p) =>
+      p.id === phaseId
+        ? {
+            ...p,
+            ...phase,
+            agents: (phase.agents ?? p.agents ?? []).map((a) =>
+              reassembleAgentFieldParts(a),
+            ),
+          }
+        : p,
+    );
+    get().applyWorkflowUpdate(sessionId, { ...existing, phases: updatedPhases });
+  },
+
+  loadAgentDetail: async (sessionId, workflowId, phaseId, agentId) => {
+    const payload = await requestAgentDetail(sessionId, workflowId, phaseId, agentId);
+    if (payload.error || !payload.agent || typeof payload.agent !== 'object') return;
+    const agent = reassembleAgentFieldParts(payload.agent as WorkflowAgent);
+    const runtime = get().runtimes[sessionId];
+    const existing = runtime?.workflowRuns.find((item) => item.id === workflowId);
+    if (!existing) return;
+    const updatedPhases = (existing.phases ?? []).map((phase) =>
+      phase.id === phaseId
+        ? {
+            ...phase,
+            agents: (phase.agents ?? []).map((a) =>
+              a.id === agentId ? { ...a, ...agent } : a,
+            ),
+          }
+        : phase,
+    );
+    get().applyWorkflowUpdate(sessionId, { ...existing, phases: updatedPhases });
+  },
+
+  setSwarmflowActive: (sessionId, active, budget) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      // budget === undefined → caller 不关心,保留旧值(仅切开关);
+      // budget === null   → 显式设为无限制(覆盖旧值);
+      // budget 为正整数   → 设置具体上限。
+      const nextBudget = !active
+        ? null
+        : budget !== undefined
+          ? budget
+          : (rt.swarmflowBudget ?? null);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...rt,
+            enableSwarmflow: active,
+            swarmflowBudget: nextBudget,
+          },
+        },
+      };
+    });
+  },
+
+  setSwarmflowViewActive: (sessionId) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...rt, swarmflowActive: true },
         },
       };
     });

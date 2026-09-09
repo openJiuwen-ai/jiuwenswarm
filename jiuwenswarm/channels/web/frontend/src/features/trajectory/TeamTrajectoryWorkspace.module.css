@@ -1,0 +1,99 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+.root {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.lanes {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.laneRow {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.laneRowExpanded {
+  height: 100%;
+  min-height: 0;
+  flex: 0 0 100%;
+}
+
+.memberControl {
+  display: inline-flex;
+  min-width: 0;
+  height: 20px;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 3px;
+  padding: 0 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font: var(--dsw-font-xxs-12);
+}
+
+.memberControl:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.memberControl:focus-visible {
+  outline: 1px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.statusDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-secondary);
+}
+
+.status_running {
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.status_completed {
+  background: var(--dsw-alias-state-success-primary);
+}
+
+.status_error {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.status_idle {
+  background: var(--dsw-alias-label-caption);
+}
+
+.memberName {
+  min-width: 0;
+  max-width: 10rem;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 0.75rem;
+  line-height: 1;
+}

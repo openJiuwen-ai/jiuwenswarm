@@ -11,7 +11,7 @@ JiuwenSwarm has two independent logging systems, stored in different directories
 | Log Directory | System | Description |
 |---------|---------|------|
 | `~/.jiuwenswarm/agent/.logs/` | JiuwenSwarm application-layer logs | Records application-layer logs for the gateway, channels, agent server, etc. Managed by `jiuwenswarm/common/utils.py`, configured in the `logging:` section of `config.yaml` |
-| `~/.jiuwenswarm/logs/logs/` | OpenJiuwen framework-layer logs | Records framework-layer logs for runners, sessions, LLM, memory, tools, etc. Managed by the OpenJiuwen framework's own logging system, configured in a separate logging configuration file |
+| `~/.jiuwenswarm/logs/logs/` | OpenJiuwen framework-layer logs | Records framework-layer logs for runners, sessions, LLM, memory, tools, etc. Managed by the OpenJiuwen framework's own logging system, controlled by a built-in default config (`DEFAULT_INNER_LOG_CONFIG`) and optionally overridden via `config/logging.yaml` |
 
 ### 1.2 Log File Classification
 
@@ -124,7 +124,7 @@ The logging system adopts the following rotation strategy:
 - **Automatic Rotation**: When a log file reaches the size limit, a new file is automatically created and old files are archived
 - **Naming Format**: Archived files are named `{filename}_{YYYYMMDD_HHMMSS}.log`, e.g., `gateway_20260519_153045.log`
 
-> **Note**: To modify rotation parameters (max_bytes, backup_count), you need to modify the source code constants in `jiuwenswarm/common/utils.py` at lines 47-48.
+> **Note**: To modify rotation parameters (max_bytes, backup_count), you need to modify the source code constants in `jiuwenswarm/common/utils.py` at lines 49-50.
 
 ## 4. Log System Architecture
 
@@ -158,7 +158,7 @@ logging:
   full: INFO             # Full log level
 ```
 
-> **Note**: Log rotation parameters (max_bytes, backup_count) are hardcoded constants and cannot be configured via config.yaml. To adjust them, modify the source code in `jiuwenswarm/common/utils.py` at lines 47-48.
+> **Note**: Log rotation parameters (max_bytes, backup_count) are hardcoded constants and cannot be configured via config.yaml. To adjust them, modify the source code in `jiuwenswarm/common/utils.py` at lines 49-50.
 
 ### 5.2 Environment Variables
 
@@ -218,7 +218,7 @@ Audit logs use structured JSON format:
 **Solution**:
 - Lower log level to reduce log output (modify `logging.level` in config.yaml)
 - Periodically clean up archived log files (manual cleanup or scheduled tasks)
-- To adjust rotation parameters, modify the hardcoded constants in `jiuwenswarm/common/utils.py` at lines 47-48:
+- To adjust rotation parameters, modify the hardcoded constants in `jiuwenswarm/common/utils.py` at lines 49-50:
   ```python
   _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024  # Modify this to change single file size
   _LOG_FILE_BACKUP_COUNT = 20             # Modify this to change the number of archives

@@ -20,6 +20,8 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
+_INTERNAL_CHANNEL_IDS = frozenset({"subagent"})
+
 
 @dataclass
 class SessionSummary:
@@ -111,9 +113,19 @@ class HeartbeatSessionResolver:
         if not isinstance(delivery, dict):
             delivery = {}
         route_metadata = delivery.get("route_metadata")
+        delivery_channel_id = str(delivery.get("channel_id") or "").strip()
+        if delivery_channel_id in _INTERNAL_CHANNEL_IDS:
+            logger.warning(
+                "[HeartbeatSessionResolver] ignore internal delivery channel "
+                "session_id=%s channel_id=%s fallback_channel_id=%s",
+                sid,
+                delivery_channel_id,
+                cid,
+            )
+            delivery_channel_id = cid
         return SessionSummary(
             session_id=sid,
-            channel_id=str(delivery.get("channel_id") or cid).strip() or cid,
+            channel_id=delivery_channel_id or cid,
             title=str(title) if isinstance(title, str) and title.strip() else None,
             route_metadata=(
                 dict(route_metadata) if isinstance(route_metadata, dict) else None

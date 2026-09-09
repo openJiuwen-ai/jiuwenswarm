@@ -48,12 +48,16 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
-After successful startup, the terminal will display backend service status:
+After successful startup, the terminal will display a service port banner:
 
 ```
-[INFO] Starting JiuwenSwarm server...
-[INFO] API server running at http://localhost:8000
-[INFO] Web server running at http://localhost:5173
+[INFO] ================================================================
+[INFO]   Service started. Port information:
+[INFO]   ✓ Web UI                http://localhost:5173
+[INFO]   ✓ AgentServer WebSocket  ws://localhost:18092
+[INFO]   ✓ Gateway HTTP           http://localhost:19001
+[INFO]   ✓ WebChannel WebSocket   ws://localhost:19000/ws
+[INFO] ================================================================
 ```
 
 When you see similar output, the service is ready. Open `http://localhost:5173` in your browser to use.
@@ -156,11 +160,6 @@ cd jiuwenswarm
   - Static run (suitable for production deployment)
     ```bash
     npm run build
-    # Copy build output into the user workspace
-    # Windows:
-    xcopy /E /I dist %USERPROFILE%\.jiuwenswarm\channels\web\frontend\dist
-    # macOS/Linux:
-    cp -r dist ~/.jiuwenswarm/channels/web/frontend/dist
     cd ../../../
     uv run jiuwenswarm-init
     uv run jiuwenswarm-start
@@ -261,7 +260,7 @@ Complete the following basic configuration, then click "Save" in the top right:
 | `model_name` | `MODEL_NAME` | Model name, e.g., `deepseek-chat`, `gpt-4o` | ✅ Required |
 | `api_base` | `API_BASE` | Model API base URL, e.g., `https://api.deepseek.com` | ✅ Required |
 | `api_key` | `API_KEY` | Model API key | ✅ Required |
-| `model_provider` | `MODEL_PROVIDER` | Model provider, e.g., `OpenAI`, `DeepSeek`, `Anthropic` | ✅ Required |
+| `model_provider` | `MODEL_PROVIDER` | Model provider, e.g., `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter`, `OpenAIAccount` | ✅ Required |
 
 **Test After Configuration:**
 
@@ -272,9 +271,9 @@ After filling in the configuration, click the "Test" button to verify model avai
 
 **Notes:**
 
-- **Auto-restart after save**: Backend automatically restarts to load new configuration
+- **Auto hot-reload after save**: After saving, the system will hot-reload the configuration; most configuration items take effect immediately, while a few changes may trigger a process restart
 - **Required fields**: The four fields above are basic configuration required for normal operation
-- **Model Providers**: `OpenAI`, `DashScope`, `SiliconFlow`, `InferenceAffinity`
+- **Model Providers**: `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter`, `OpenAIAccount`
 
 ## Start Conversation
 

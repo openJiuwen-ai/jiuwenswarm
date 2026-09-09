@@ -6,7 +6,9 @@ from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
 from openjiuwen.symphony import (
+    CapabilityFingerprint,
     CapabilityDescriptor,
+    FingerprintArtifact,
     FingerprintSettings,
     OrchestrationConfig,
     ScanResult,
@@ -33,6 +35,24 @@ class ScanResultCapabilityProvider:
         self,
     ) -> tuple[SourceSnapshot, tuple[CapabilityDescriptor, ...]]:
         return self.result.source_snapshot, self.result.capabilities
+
+
+@dataclass(frozen=True)
+class FingerprintArtifactCapabilityProvider:
+    """Expose one immutable fingerprint artifact through CapabilityProvider."""
+
+    artifact: FingerprintArtifact
+
+    async def capabilities(self) -> tuple[CapabilityFingerprint, ...]:
+        return self.artifact.fingerprints
+
+    async def source_snapshot(self) -> SourceSnapshot:
+        return self.artifact.source_snapshot
+
+    async def inventory_snapshot(
+        self,
+    ) -> tuple[SourceSnapshot, tuple[CapabilityFingerprint, ...]]:
+        return self.artifact.source_snapshot, self.artifact.fingerprints
 
 
 class FingerprintLLMAdapter:
@@ -156,24 +176,3 @@ def model_from_config(config: LLMConfig):
 
 def model_response_observer_from_config(config: LLMConfig):
     return create_model_response_observer(config)
-
-
-def swarm_plan_from_public(value: Any) -> Any:
-    """Restore the Agent-tool field vocabulary while core stays capability-first."""
-
-    key_mapping = {
-        "capability_id": "skill_id",
-        "capability_ids": "skill_ids",
-        "candidate_ids": "candidate_skill_ids",
-        "candidate_count": "candidate_skill_count",
-    }
-    if isinstance(value, dict):
-        return {
-            key_mapping.get(key, key): swarm_plan_from_public(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [swarm_plan_from_public(item) for item in value]
-    if isinstance(value, tuple):
-        return [swarm_plan_from_public(item) for item in value]
-    return value

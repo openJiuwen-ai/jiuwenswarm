@@ -557,3 +557,6 @@ class CronRunState:
     timezone: str | None = None
     exec_channel_id: str | None = None
     exec_session_id: str | None = None
+    # ``run_now`` 为普通 cron 提前向 AgentServer 分配真实会话，供 Web 立即跳转。
+    # 后续 wake 阶段必须复用该会话，不能再按同一 run 重复创建。
+    execution_session_allocated: bool = False

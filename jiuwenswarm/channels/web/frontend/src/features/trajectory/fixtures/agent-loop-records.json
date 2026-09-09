@@ -1,0 +1,111 @@
+[
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "dddddddddddddddddddddddddddddddd",
+      "spanId": "1000000000000001",
+      "name": "llm.call",
+      "startTimeUnixNano": "1000000000",
+      "endTimeUnixNano": "2000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "behavior-session" } },
+        { "key": "gen_ai.system_instructions", "value": { "stringValue": "[{\"type\":\"text\",\"content\":\"Session system v1\"}]" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeat question\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"<system-reminder><prompt-attachment type=\\\"context\\\">Dynamic context</prompt-attachment></system-reminder>\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Historical output\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } },
+        { "key": "dsh.session.source_sequence", "value": { "intValue": "1" } }
+      ],
+      "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "spanId": "2000000000000002",
+      "name": "llm.call",
+      "startTimeUnixNano": "3000000000",
+      "endTimeUnixNano": "4000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "behavior-session" } },
+        { "key": "gen_ai.system_instructions", "value": { "stringValue": "[{\"type\":\"text\",\"content\":\"Session system v1\"}]" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeat question\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Historical output\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeat question\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"<system-reminder><prompt-attachment type=\\\"context\\\">Dynamic context</prompt-attachment></system-reminder>\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"I will search\"},{\"type\":\"tool_call\",\"id\":\"call-loop-1\",\"name\":\"search\",\"arguments\":{\"q\":\"fact\"}}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } },
+        { "key": "dsh.session.source_sequence", "value": { "intValue": "2" } }
+      ],
+      "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "spanId": "3000000000000003",
+      "name": "tool.search",
+      "startTimeUnixNano": "4100000000",
+      "endTimeUnixNano": "4300000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+        { "key": "gen_ai.tool.name", "value": { "stringValue": "search" } },
+        { "key": "gen_ai.tool.call.id", "value": { "stringValue": "call-loop-1" } },
+        { "key": "gen_ai.tool.call.arguments", "value": { "stringValue": "{\"q\":\"fact\"}" } },
+        { "key": "openjiuwen.tool.authoritative", "value": { "boolValue": true } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "tool" } },
+        { "key": "dsh.session.source_sequence", "value": { "intValue": "3" } }
+      ],
+      "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "spanId": "4000000000000004",
+      "name": "llm.call",
+      "startTimeUnixNano": "4400000000",
+      "endTimeUnixNano": "5000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "behavior-session" } },
+        { "key": "gen_ai.system_instructions", "value": { "stringValue": "[{\"type\":\"text\",\"content\":\"Session system v2\"}]" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeat question\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeat question\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"I will search\"},{\"type\":\"tool_call\",\"id\":\"call-loop-1\",\"name\":\"search\",\"arguments\":{\"q\":\"fact\"}}]},{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"call-loop-1\",\"name\":\"search\",\"response\":{\"answer\":42}}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"New context fact\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"<system-reminder><prompt-attachment type=\\\"context\\\">Dynamic context</prompt-attachment></system-reminder>\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The answer is 42\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.step.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } },
+        { "key": "dsh.session.source_sequence", "value": { "intValue": "4" } }
+      ],
+      "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "spanId": "5000000000000005",
+      "name": "llm.call",
+      "startTimeUnixNano": "5500000000",
+      "endTimeUnixNano": "6200000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "behavior-session" } },
+        { "key": "gen_ai.system_instructions", "value": { "stringValue": "[{\"type\":\"text\",\"content\":\"Session system v2\"}]" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeat question\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeat question\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"I will search\"},{\"type\":\"tool_call\",\"id\":\"call-loop-1\",\"name\":\"search\",\"arguments\":{\"q\":\"fact\"}}]},{\"role\":\"tool\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"call-loop-1\",\"name\":\"search\",\"response\":{\"answer\":42}}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"<system-reminder><prompt-attachment type=\\\"context\\\">Dynamic context</prompt-attachment></system-reminder>\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Done\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.step.number", "value": { "intValue": "3" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "3" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } },
+        { "key": "dsh.session.source_sequence", "value": { "intValue": "5" } }
+      ],
+      "status": { "code": 1 }
+    }] }] }]
+  }
+]

@@ -63,11 +63,7 @@ symphony:
     min_edge_confidence: 0.5
 
   skill_retrieval:
-    enabled: false
-    # Controls taxonomy construction and consumption independently of discovery.
-    # Enabling it never changes a live session's frozen directory strategy.
-    index:
-      enabled: false
+    enabled: true
     artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
     discovery:
       # Strictly below the fixed 1% context threshold, a new session receives
@@ -517,6 +513,25 @@ agent_observability:
   langfuse_secret_key: ""           # Langfuse OTLP 认证 secret key（可选）
   traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
   file_retention_days: 7            # file exporter 文件保留天数
+
+# ============================================================
+# 单 Agent 轨迹观测 Web 数据面
+# ============================================================
+# enabled=true 会作为 Agent / Team OTel provider 的额外 demand，但仍完整复用
+# agent_observability / team_observability 的 exporter、采样、脱敏、字段长度
+# 与 Langfuse 配置。Processor 后的数据由 AgentServer 有界队列写入 SQLite；
+# Gateway 只读查询。Agent 与 Team 会话均向 Web 暴露轨迹。
+# auto_harness 不向 Web 暴露轨迹。
+# ============================================================
+trajectory_ui:
+  enabled: false                     # 启用“对话 / 轨迹”数据链路
+  db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
+  retention_days: 7                 # SQLite 轨迹保留天数
+  queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
+  batch_size: 64                    # writer 单事务最大记录数
+  flush_interval_ms: 200            # writer 最大合批等待时间
+  poll_interval_ms: 2000            # Web 端兜底轮询间隔
+  detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
 # ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
@@ -1413,6 +1428,23 @@ modes:
       # SwarmFlow agent calls with options.isolation="worktree".
       worktree:
         enabled: true
+
+      # 任务调度模式（TeamAgentSpec.dispatch_mode，静态配置，运行时不可切换）：
+      #   autonomous（默认）— 任务放到共享看板，成员按专长自行认领，
+      #                        leader 通过 send_message 广播启动。
+      #   scheduled        — leader 把每个任务预先指派给具名成员，
+      #                        F_62 调度运行时（agent/scheduling）统一处理
+      #                        start / 送审 / 返工 / 验收等 leader 身份的
+      #                        邮箱消息；成员失去 claim_task，改用
+      #                        member_complete_task。
+      dispatch_mode: autonomous
+
+      # 调度模式下的验收开关（TeamAgentSpec.enable_task_verification）：
+      # 纯 prompt 驱动，开启后 leader 建任务时会按自己的判断给部分任务
+      # 指派 0..N 个 reviewer（无强制校验，leader 认为无需验收的任务可以
+      # 不带 reviewer）。reviewer 机制（列、guard、投票）本身始终可用，
+      # 与本开关无关；本开关只影响 leader 的建任务引导语。见 F_62。
+      enable_task_verification: false
 
       leader:
         member_name: team-leader

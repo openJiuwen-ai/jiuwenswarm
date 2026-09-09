@@ -863,6 +863,15 @@ def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_trajectory_ui_in_config(enabled: bool) -> None:
+    """Update the trajectory UI feature switch and persist config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "trajectory_ui" not in data or data["trajectory_ui"] is None:
+        data["trajectory_ui"] = {}
+    data["trajectory_ui"]["enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_updater_in_config(updates: dict[str, Any]) -> None:
     """只更新 updater 段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -1547,6 +1556,19 @@ def _transform_front_team_model_config(model_raw: dict[str, Any]) -> dict[str, A
             model_request_config["model"] = raw_model[:raw_model.rfind("#")]
         else:
             model_request_config["model"] = raw_model
+
+    if model_request_config:
+        from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+
+        model_request_config = build_reasoning_model_request_kwargs(
+            model_client_config=model_client_config,
+            model_config_obj=model_request_config,
+            model_name=str(
+                model_request_config.get("model")
+                or model_client_config.get("model_name")
+                or ""
+            ),
+        )
 
     transformed: dict[str, Any] = {}
     if model_client_config:

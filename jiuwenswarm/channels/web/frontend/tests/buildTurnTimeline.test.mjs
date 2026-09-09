@@ -56,10 +56,10 @@ function commandOutputMessage(ms, id = 'cmd1') {
     message: {
       id,
       role: 'system',
-      content: '/btw side question\nside answer',
+      content: '/compact\ncontext compressed',
       timestamp: iso(ms),
       isCommandOutput: true,
-      commandName: 'btw',
+      commandName: 'compact',
     },
   };
 }
@@ -68,7 +68,7 @@ function turnSummaryOf(items) {
   return items.find((item) => item.type === 'turnSummary');
 }
 
-function execution({ status, startedAt, updatedAt }) {
+function execution({ status, startedAt, updatedAt, agentTemplateName }) {
   return {
     toolCallId: `tc-${startedAt}`,
     toolCall: { id: `tc-${startedAt}`, name: 'bash', arguments: {} },
@@ -76,8 +76,47 @@ function execution({ status, startedAt, updatedAt }) {
     startedAt: iso(startedAt),
     updatedAt: iso(updatedAt),
     timeoutAt: iso(startedAt + 60_000),
+    ...(agentTemplateName ? { agentTemplateName } : {}),
   };
 }
+
+test('tool-first group keeps the Web Agent identity for its avatar', () => {
+  const items = [
+    userMessage(U),
+    {
+      type: 'toolExecution',
+      key: 'tc-agent',
+      timestampMs: S,
+      sourceIndex: 0,
+      execution: execution({
+        status: 'pending',
+        startedAt: S,
+        updatedAt: S,
+        agentTemplateName: 'expert-a',
+      }),
+    },
+  ];
+
+  const toolGroup = buildRenderItems(items, false, true).find((item) => item.type === 'toolGroup');
+  assert.equal(toolGroup?.agentTemplateName, 'expert-a');
+});
+
+test('adjacent reasoning keeps a later Agent identity when the first segment lacks one', () => {
+  const items = [
+    userMessage(U),
+    reasoningItem({ id: 'rsn-first', text: 'first', startedAt: S, closed: true }),
+    reasoningItem({
+      id: 'rsn-second',
+      text: 'second',
+      startedAt: S + 1,
+      closed: true,
+      agentTemplateName: 'expert-a',
+    }, 1),
+  ];
+
+  const reasoning = buildRenderItems(items, false, false).find((item) => item.type === 'reasoning');
+  assert.equal(reasoning?.segment.agentTemplateName, 'expert-a');
+});
 
 test('异常结束（无 closedAt）：reasoning.updatedAt 兜底为耗时终点', () => {
   const items = [

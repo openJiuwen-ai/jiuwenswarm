@@ -145,7 +145,7 @@ def _build_swarm_context_from_seed(seed: dict[str, Any]) -> SwarmBuildContext:
     Registered with openjiuwen so ``from_spawn_payload`` / ``recover_from_session``
     restore the provider build context after deserialization.
     """
-    from jiuwenswarm.agents.harness.observability_runtime import (
+    from openjiuwen.extensions.observability.demand import (
         get_trajectory_span_processor,
     )
 

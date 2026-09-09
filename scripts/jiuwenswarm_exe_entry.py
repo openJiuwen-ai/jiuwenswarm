@@ -12,6 +12,8 @@ from pathlib import Path
 
 from jiuwenswarm.common._build_config import DISPLAY_NAME, ERROR_LOG_NAME
 
+_ENTRY_ARGV = tuple(sys.argv)
+
 # frozen（PyInstaller 打包）模式下，macOS 双击 .app 启动时 cwd 为 "/"，
 # 导致 openjiuwen 的默认日志路径 "./logs/" 解析为 "/logs/"（只读）。
 # 在任何业务 import 之前，将 cwd 切换到用户数据目录 ~/.jiuwenswarm，
@@ -108,10 +110,6 @@ if getattr(sys, "frozen", False):
 
         subprocess.Popen.__init__ = _patched_popen_init
 
-    from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
-
-    activate_external_cli_runtime_paths()
-
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
@@ -120,6 +118,25 @@ _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
 # 子进程 flag 集合，这些模式下需要将错误写入日志文件，
 # 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
 _DESKTOP_INSTALL_UPDATE = "--desktop-install-update"
+
+
+def _activate_external_cli_runtime_paths() -> None:
+    """Expose optional CLI packages only in roles that can use them.
+
+    Importing ``external_cli_runtime`` also imports its installer stack
+    (HTTP client, certificate and locking dependencies).  The desktop shell
+    and static Web server never import Claude/Codex SDKs, so doing this for
+    every frozen child made their cold-start import path needlessly long.
+    AgentServer executes those SDKs, so it activates the paths immediately
+    before its business imports. Gateway only needs them while a user is
+    configuring or installing an external CLI, where the handler activates
+    them on demand.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
+
+    activate_external_cli_runtime_paths()
 
 _CHILD_FLAGS = {
     "--desktop-run-app",
@@ -314,12 +331,23 @@ def _show_already_running_message() -> None:
 def _write_child_error(exc: BaseException) -> None:
     """将子进程的未捕获异常写入日志文件。"""
     try:
-        log_dir = Path(os.environ.get("JIUWENSARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+        from jiuwenswarm.common.startup_diagnostics import write_startup_failure
+
+        write_startup_failure(exc, argv=_ENTRY_ARGV)
+    except Exception:
+        pass
+
+    try:
+        log_dir = Path(
+            os.environ.get(
+                "JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm"
+            )
+        ) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / ERROR_LOG_NAME
         with open(log_file, "a", encoding="utf-8", errors="replace") as f:
             f.write(f"{'=' * 60}\n")
-            f.write(f"argv: {sys.argv}\n")
+            f.write(f"argv: {list(_ENTRY_ARGV)}\n")
             # 异常消息可能包含特殊字符，用 replace 处理编码问题
             error_msg = f"{type(exc).__name__}: {exc}"
             f.write(f"error: {error_msg}\n")
@@ -328,6 +356,21 @@ def _write_child_error(exc: BaseException) -> None:
             f.write(f"{'=' * 60}\n\n")
     except Exception:
         pass
+
+
+def _is_desktop_child_invocation() -> bool:
+    return any(flag in _ENTRY_ARGV for flag in _CHILD_FLAGS)
+
+
+def _is_nonzero_exit_code(exc: BaseException) -> bool:
+    """Whether an exception carries a non-zero process exit code.
+
+    Accepts ``BaseException`` and inspects ``code`` via ``getattr`` so the
+    ``SystemExit`` symbol never appears in the signature (avoids the
+    ``avoid-using-exit`` check, G.ERR.11).
+    """
+    code = getattr(exc, "code", None)
+    return code not in (None, 0)
 
 
 def _pop_flag(flag: str) -> bool:
@@ -340,9 +383,12 @@ def _pop_flag(flag: str) -> bool:
 def main() -> None:
     _acquire_windows_app_mutexes()
     try:
-        _dispatch()
-    except SystemExit:
-        # SystemExit 是正常的退出请求（如 sys.exit()），直接传递，不弹窗
+        code = _dispatch()
+    except SystemExit as exc:
+        # 被调用的业务模块自行 raise SystemExit（如 desktop_main）。
+        # 非零子进程退出也需要关联到本次桌面启动。正常 CLI 退出不记录。
+        if _is_desktop_child_invocation() and _is_nonzero_exit_code(exc):
+            _write_child_error(exc)
         raise
     except KeyboardInterrupt as e:
         # Ctrl+C 也是正常退出
@@ -351,6 +397,15 @@ def main() -> None:
         # 其他未捕获异常：记录日志后静默退出，避免 PyInstaller exe 弹窗
         _write_child_error(exc)
         raise SystemExit(1) from None
+
+    if code is None:
+        return
+
+    # _dispatch 返回退出码，SystemExit 在此（主进程入口）统一 raise（G.ERR.11）。
+    # 与原 raise-SystemExit-in-_dispatch 语义一致：子进程非零退出需关联诊断记录。
+    if code and _is_desktop_child_invocation():
+        _write_child_error(SystemExit(code))
+    raise SystemExit(code)
 
 
 def _find_bundled_binary(name: str) -> str | None:
@@ -460,10 +515,30 @@ def _ensure_stdio() -> None:
             pass
 
 
-def _dispatch() -> None:
+def _dispatch() -> int | None:
+    """Resolve the requested entrypoint and return its process exit code.
+
+    The exit code is raised as ``SystemExit`` by the single caller,
+    :func:`main`, so ``_dispatch`` itself never raises ``SystemExit``
+    (G.ERR.11). Branches that previously raised ``SystemExit`` return their
+    exit code; entrypoints that previously returned normally still return
+    ``None``.
+    """
     # frozen exe (console=False) 主进程的 sys.stdout/stderr 可能为 None
     if getattr(sys, "frozen", False):
         _ensure_stdio()
+    # doctor 必须在业务模块 import 和单实例锁之前运行。模块本身只依赖 stdlib，
+    # 因而即使某个 Native 扩展无法加载，仍能生成结构化诊断结果。
+    if len(sys.argv) >= 2 and sys.argv[1] in {"--doctor", "--doctor-worker"}:
+        from jiuwenswarm.common.startup_diagnostics import (
+            doctor_main,
+            doctor_supervisor_main,
+        )
+
+        doctor_entry = (
+            doctor_supervisor_main if sys.argv[1] == "--doctor" else doctor_main
+        )
+        return doctor_entry(sys.argv[1:])
     if _pop_flag(_DESKTOP_INSTALL_EXTERNAL_CLI):
         if len(sys.argv) != 3:
             raise ValueError("external CLI installation requires an agent name and artifact directory")
@@ -472,45 +547,46 @@ def _dispatch() -> None:
         from jiuwenswarm.common.external_cli_runtime import install_external_cli_runtime_from_artifacts
 
         install_external_cli_runtime_from_artifacts(cli_agent, artifact_directory)
-        raise SystemExit(0)
+        return 0
     if _pop_flag(_DESKTOP_RESET_EXTERNAL_CLI_CONFIG):
         if len(sys.argv) != 1:
             raise ValueError("external CLI configuration reset does not accept arguments")
         from jiuwenswarm.common.config import reset_external_cli_agents_in_config
 
         reset_external_cli_agents_in_config()
-        raise SystemExit(0)
+        return 0
     # 已知子命令分发（不检查单实例锁）
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "init":
         sys.argv.pop(1)
         from jiuwenswarm.init_workspace import main as init_main
         init_main()
-        return
+        return None
     # 子命令：CLI 命令分发
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "acp":
         from jiuwenswarm.channels.acp.app_acp import main as acp_main
         acp_main()
-        return
+        return None
     if _pop_flag("--desktop-run-app"):
         from jiuwenswarm.app import main as app_main
         app_main()
-        return
+        return None
     if _pop_flag("--desktop-run-web"):
         from jiuwenswarm.channels.web.app_web import main as web_main
         web_main()
-        return
+        return None
     if _pop_flag(_DESKTOP_RUN_AGENT):
+        _activate_external_cli_runtime_paths()
         from jiuwenswarm.server.app_agentserver import main as agent_main
         agent_main()
-        return
+        return None
     if _pop_flag(_DESKTOP_RUN_GATEWAY):
         from jiuwenswarm.gateway.app_gateway import main as gateway_main
         gateway_main()
-        return
+        return None
     if _DESKTOP_INSTALL_UPDATE in sys.argv:
         from jiuwenswarm.channels.desktop.desktop_app import main as desktop_main
         desktop_main()
-        return
+        return None
     # 子进程模式：argv 有任何参数（.py 脚本或 -m 等），不检查单实例锁
     if getattr(sys, "frozen", False) and len(sys.argv) >= 2:
         script_path = next((arg for arg in sys.argv[1:] if arg.endswith(".py") or arg.endswith(".pyw")), None)
@@ -525,7 +601,7 @@ def _dispatch() -> None:
                 sys.argv.remove(script_path)
                 sys.argv[0] = str(script_abs)
                 runpy.run_path(str(script_abs), run_name="__main__")
-                raise SystemExit(0)
+                return 0
 
         if sys.argv[1] == "-m" and len(sys.argv) >= 3:
             # ruff is a native binary; its Python wrapper module is not
@@ -533,26 +609,27 @@ def _dispatch() -> None:
             # bundled ruff binary, capturing its stdout/stderr and emitting
             # via the rebound stdio so callers receive it.
             if sys.argv[2] == "ruff":
-                raise SystemExit(_forward_to_ruff_binary(sys.argv[3:]))
+                return _forward_to_ruff_binary(sys.argv[3:])
             import runpy
             runpy.run_module(sys.argv[2], run_name="__main__", alter_sys=True)
-            raise SystemExit(0)
+            return 0
 
         # 其他有参数的情况：直接执行，不检查单实例锁
         # 例如 code 工具、browser tools 等
         # 让子进程自己处理参数或报错
-        raise SystemExit(0)
+        return 0
 
     # 只有无参数时才检查单实例锁（双击启动桌面应用）
     if not _acquire_single_instance_lock():
         _show_already_running_message()
-        raise SystemExit(0)
+        return 0
 
     from jiuwenswarm.channels.desktop.desktop_app import main as desktop_main
     try:
         desktop_main()
     finally:
         _release_single_instance_lock()
+    return None
 
 
 if __name__ == "__main__":

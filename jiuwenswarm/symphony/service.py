@@ -7,13 +7,12 @@ from concurrent.futures import Future as ConcurrentFuture
 import inspect
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 
-from openjiuwen.symphony import SymphonyRuntime
+from openjiuwen.symphony import SymphonyRuntime, normalize_name_key
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
@@ -24,10 +23,9 @@ from jiuwenswarm.symphony.adapter import (
     model_from_config,
     model_response_observer_from_config,
     orchestration_config_from_swarm,
-    swarm_plan_from_public,
 )
-from jiuwenswarm.symphony.llm import LLMConfig
-from jiuwenswarm.symphony.config import load_symphony_config
+from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
+from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
 from jiuwenswarm.symphony.evolution.service import load_dynamic_overlay
@@ -67,6 +65,7 @@ class SwarmSymphonyService:
                 symphony_config=config,
             ).to_dict()
             payload.update(_build_log_payload(graph_dir))
+            _prefer_build_failure_detail(payload)
             return payload
 
         return await asyncio.to_thread(status)
@@ -76,8 +75,13 @@ class SwarmSymphonyService:
         *,
         force: bool = False,
         progress: ProgressCallback | None = None,
+        llm_config: LLMConfig | None = None,
     ) -> dict[str, Any]:
-        return await self._build_graph(force=force, progress=progress)
+        return await self._build_graph(
+            force=force,
+            progress=progress,
+            llm_config=llm_config,
+        )
 
     async def start_refresh_graph(
         self,
@@ -117,7 +121,12 @@ class SwarmSymphonyService:
                 force=force,
             )
             task = asyncio.create_task(
-                self._build_graph(force=force, progress=None, prestarted=True),
+                self._build_graph(
+                    force=force,
+                    progress=None,
+                    prestarted=True,
+                    config=config,
+                ),
                 name="symphony-graph-build",
             )
             self._active_build_task = task
@@ -200,6 +209,7 @@ class SwarmSymphonyService:
                 ),
             )
         payload.update(_build_log_payload(graph_dir))
+        _prefer_build_failure_detail(payload)
         return payload
 
     async def plan(
@@ -209,6 +219,7 @@ class SwarmSymphonyService:
         candidate_skill_ids: list[str] | None = None,
         *,
         progress: ProgressCallback | None = None,
+        llm_config: LLMConfig | None = None,
     ) -> dict[str, Any]:
         query = str(query or "").strip()
         if not query:
@@ -225,9 +236,6 @@ class SwarmSymphonyService:
         except ValueError as exc:
             return {
                 "success": False,
-                "graph_dir": str(graph_dir),
-                "query": query,
-                "mode": config.orchestration.mode,
                 "detail": str(exc),
             }
 
@@ -239,23 +247,39 @@ class SwarmSymphonyService:
                 "graph_status": status,
             }
         if _graph_needs_build(status):
-            graph_build = await self.refresh_graph(progress=progress)
-            graph_build["rebuilt"] = True
+            refresh_kwargs: dict[str, Any] = {"progress": progress}
+            if llm_config is not None:
+                refresh_kwargs["llm_config"] = llm_config
+            graph_build = await self.refresh_graph(**refresh_kwargs)
             if not graph_build.get("success"):
-                return {
+                failure = {
                     "success": False,
                     "detail": "Skill Score build failed before planning",
                     "graph_status": status,
                     "graph_build": graph_build,
                 }
+                if graph_build.get("reason") == "graph_preparing":
+                    failure.update(
+                        {
+                            "reason": "graph_preparing",
+                            "retryable": False,
+                            "build_status": "running",
+                            "operation": "plan",
+                            "detail": graph_build.get("detail")
+                            or failure["detail"],
+                        }
+                    )
+                return failure
+            graph_build["rebuilt"] = True
         else:
-            graph_build = {
-                "success": True,
-                "rebuilt": False,
-                "reason": "not_required",
-            }
+            graph_build = None
         try:
-            public_payload = await self._runtime_for(config).orchestration.plan(
+            runtime = (
+                self._runtime_for(config, llm_config=llm_config)
+                if llm_config is not None
+                else self._runtime_for(config)
+            )
+            public_payload = await runtime.orchestration.plan(
                 query,
                 candidate_ids=candidate_ids,
                 language=language,
@@ -268,34 +292,39 @@ class SwarmSymphonyService:
                 ),
                 mode=requested_mode,
             )
-            payload = swarm_plan_from_public(public_payload.to_dict())
+            payload = public_payload.to_dict()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Symphony planning failed")
             payload = {"success": False, "detail": str(exc)}
+        if not isinstance(payload, dict):
+            return {
+                "success": False,
+                "detail": "Symphony orchestration returned an invalid payload",
+                "graph_status": status,
+                **({"graph_build": graph_build} if graph_build else {}),
+            }
         if payload.get("success") is False:
             return {
                 "success": False,
-                "graph_dir": str(graph_dir),
-                "query": query,
-                "mode": requested_mode,
-                "language": language,
                 "graph_status": status,
-                "graph_build": graph_build,
+                **({"graph_build": graph_build} if graph_build else {}),
                 **payload,
             }
-        presentation = _build_presentation(payload, language=language)
-        return {
+        planned_graph = payload.get("planned_graph")
+        if not isinstance(planned_graph, dict):
+            return {
+                "success": False,
+                "detail": "Symphony orchestration returned no planned_graph",
+                "graph_status": status,
+                **({"graph_build": graph_build} if graph_build else {}),
+            }
+        result = {
             "success": True,
-            "graph_dir": str(graph_dir),
-            "query": query,
-            "mode": requested_mode,
-            "language": language,
-            "content": presentation["markdown"],
-            "direct_display": True,
-            "graph_status": status,
-            "graph_build": graph_build,
-            "result": payload,
+            "planned_graph": planned_graph,
         }
+        if graph_build is not None:
+            result["graph_build"] = graph_build
+        return result
 
     async def _build_graph(
         self,
@@ -303,8 +332,10 @@ class SwarmSymphonyService:
         force: bool,
         progress: ProgressCallback | None,
         prestarted: bool = False,
+        config: SymphonyConfig | None = None,
+        llm_config: LLMConfig | None = None,
     ) -> dict[str, Any]:
-        config = load_symphony_config()
+        config = config or load_symphony_config()
         skills_root = config.paths.skills_root
         graph_dir = config.paths.graph_dir
         current_task = asyncio.current_task()
@@ -318,6 +349,9 @@ class SwarmSymphonyService:
                 payload = {
                     "success": False,
                     "graph_dir": str(graph_dir),
+                    "reason": "graph_preparing",
+                    "retryable": False,
+                    "build_status": "running",
                     "detail": "已有技能总谱构建正在运行，请等待完成或先取消当前构建。",
                 }
                 payload.update(_build_log_payload(graph_dir))
@@ -340,11 +374,37 @@ class SwarmSymphonyService:
                     force=force,
                 )
             try:
+                try:
+                    llm_config = llm_config or LLMConfig.from_default_model()
+                    model_name = str(getattr(llm_config, "model", "") or "")
+                    build_logger.record(
+                        "model.probe.start",
+                        model=model_name,
+                    )
+                    await probe_model_connection(llm_config)
+                    build_logger.record("model.probe.done", model=model_name)
+                except Exception as exc:  # noqa: BLE001
+                    error = str(exc).strip() or type(exc).__name__
+                    detail = f"主模型连接测试未通过：{error}"
+                    build_logger.record(
+                        "update.failed",
+                        error=error,
+                        detail=detail,
+                        failure_stage="model.probe",
+                    )
+                    payload = {
+                        "success": False,
+                        "graph_dir": str(graph_dir),
+                        "detail": detail,
+                        "error": error,
+                    }
+                    payload.update(_build_log_payload(graph_dir))
+                    return payload
                 result = (
                     await service_build_graph(
                         skills_root,
                         graph_dir,
-                        LLMConfig.from_default_model(),
+                        llm_config,
                         force=force,
                         symphony_config=config,
                         build_log=build_logger.record,
@@ -367,11 +427,18 @@ class SwarmSymphonyService:
                 payload.update(_build_log_payload(graph_dir))
                 return payload
             except Exception as exc:  # noqa: BLE001
-                build_logger.record("update.failed", error=str(exc))
+                error = str(exc).strip() or type(exc).__name__
+                detail = f"Symphony 总谱构建失败: {error}"
+                build_logger.record(
+                    "update.failed",
+                    error=error,
+                    detail=detail,
+                )
                 payload = {
                     "success": False,
                     "graph_dir": str(graph_dir),
-                    "detail": f"Symphony 总谱构建失败: {exc}",
+                    "detail": detail,
+                    "error": error,
                 }
                 payload.update(_build_log_payload(graph_dir))
                 return payload
@@ -392,8 +459,13 @@ class SwarmSymphonyService:
             finally:
                 await self._clear_active_build_task(current_task)
 
-    def _runtime_for(self, config) -> SymphonyRuntime:
-        llm_config = LLMConfig.from_default_model()
+    def _runtime_for(
+        self,
+        config,
+        *,
+        llm_config: LLMConfig | None = None,
+    ) -> SymphonyRuntime:
+        llm_config = llm_config or LLMConfig.from_default_model()
         llm_signature = llm_config_signature(llm_config)
         key = (
             str(config.paths.graph_dir),
@@ -605,7 +677,7 @@ def _capability_id(value: Any) -> str:
 
 
 def _normalize_capability_ref(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", _capability_id(value).strip().lower()).strip("-")
+    return normalize_name_key(_capability_id(value))
 
 
 def _resolve_orchestration_language(value: Any = None) -> str:
@@ -615,25 +687,10 @@ def _resolve_orchestration_language(value: Any = None) -> str:
     return language if language in {"cn", "en"} else "cn"
 
 
-def _select_primary_plan(payload: dict[str, Any]) -> dict[str, Any]:
-    for key in ("recommended_plans", "plans"):
-        plans = payload.get(key)
-        if not isinstance(plans, list):
-            continue
-        for plan in plans:
-            if isinstance(plan, dict):
-                return plan
-    return {}
-
-
-def _default_plan_title(language: str) -> str:
-    if _resolve_orchestration_language(language) == "en":
-        return "Symphony plan"
-    return "Symphony 编排计划"
-
-
 _BUILD_STAGE_LABELS = {
     "update.start": "开始构建技能总谱",
+    "model.probe.start": "测试主模型连接",
+    "model.probe.done": "主模型连接测试通过",
     "update.cancel_requested": "正在取消技能总谱构建",
     "update.cancelled": "技能总谱构建已取消",
     "scan.start": "扫描技能目录",
@@ -679,6 +736,8 @@ def _starting_build_progress() -> dict[str, Any]:
 
 _BUILD_STAGE_PROGRESS = {
     "update.start": 3,
+    "model.probe.start": 5,
+    "model.probe.done": 7,
     "update.cancel_requested": 100,
     "update.cancelled": 100,
     "scan.start": 8,
@@ -714,11 +773,15 @@ def _build_log_payload(graph_dir: Path | str, *, limit: int = 80) -> dict[str, A
     build_progress = _build_progress(entries)
     if token_usage:
         build_progress["llm_token_usage"] = token_usage
-    return {
+    payload = {
         "build_log": entries,
         "build_progress": build_progress,
         "llm_token_usage": token_usage,
     }
+    build_error = str(build_progress.get("detail") or "").strip()
+    if build_progress.get("status") == "error" and build_error:
+        payload["build_error"] = build_error
+    return payload
 
 
 def _read_build_log(graph_dir: Path, *, limit: int = 80) -> list[dict[str, Any]]:
@@ -801,7 +864,7 @@ def _build_progress(entries: list[dict[str, Any]]) -> dict[str, Any]:
         candidate_counts = _graph_resolve_candidate_counts(latest)
         if candidate_counts is not None:
             current, total = candidate_counts
-    return {
+    progress = {
         "stage": stage,
         "label": str(latest.get("label") or _BUILD_STAGE_LABELS.get(stage, stage)),
         "percent": _build_stage_percent(stage, latest, entries=entries),
@@ -810,6 +873,33 @@ def _build_progress(entries: list[dict[str, Any]]) -> dict[str, Any]:
         "total": total,
         "ts": latest.get("ts"),
     }
+    if status == "error":
+        detail = _build_failure_detail(latest)
+        if detail:
+            progress["detail"] = detail
+        error = str(latest.get("error") or "").strip()
+        if error:
+            progress["error"] = error
+    return progress
+
+
+def _build_failure_detail(entry: dict[str, Any]) -> str:
+    detail = str(entry.get("detail") or "").strip()
+    if detail:
+        return detail
+    error = str(entry.get("error") or "").strip()
+    if error:
+        return f"Symphony 总谱构建失败: {error}"
+    return _BUILD_STAGE_LABELS["update.failed"]
+
+
+def _prefer_build_failure_detail(payload: dict[str, Any]) -> None:
+    progress = payload.get("build_progress")
+    if not isinstance(progress, dict) or progress.get("status") != "error":
+        return
+    detail = str(payload.get("build_error") or progress.get("detail") or "").strip()
+    if detail:
+        payload["detail"] = detail
 
 
 def _latest_effective_build_log_entry(entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1154,73 +1244,3 @@ def _compact_details(details: dict[str, Any]) -> str:
         return "{}"
     rendered = json.dumps(details, ensure_ascii=False, default=str)
     return rendered if len(rendered) <= 500 else rendered[:497] + "..."
-
-
-def _build_presentation(
-    payload: dict[str, Any],
-    *,
-    language: str = "cn",
-) -> dict[str, str]:
-    plan = _select_primary_plan(payload)
-    title = str(plan.get("title") or _default_plan_title(language)).strip()
-    mermaid = _plan_to_mermaid(plan, payload.get("execution_graph") or {})
-    lines = [
-        f"## {title}",
-        "",
-        "```mermaid",
-        mermaid,
-        "```",
-    ]
-    reason = str(plan.get("reason") or payload.get("reason") or "").strip()
-    if reason:
-        lines.extend(["", reason])
-    steps = plan.get("steps") if isinstance(plan, dict) else []
-    if isinstance(steps, list) and steps:
-        confirmation = (
-            "Would you like to proceed with the orchestration plan above?"
-            if language == "en"
-            else "是否按照上述编排结果执行？"
-        )
-        lines.extend(["", confirmation])
-    return {"markdown": "\n".join(lines), "mermaid": mermaid}
-
-
-def _plan_to_mermaid(plan: dict[str, Any], graph: dict[str, Any]) -> str:
-    steps = plan.get("steps") if isinstance(plan, dict) else []
-    edges = graph.get("edges") if isinstance(graph, dict) else []
-    labels = {
-        str(step.get("skill_id") or ""): str(
-            step.get("skill_name") or step.get("name") or step.get("skill_id") or ""
-        )
-        for step in steps or []
-        if isinstance(step, dict)
-    }
-    node_ids = [skill_id for skill_id in labels if skill_id]
-    for edge in edges or []:
-        source = str(edge.get("source") or "")
-        target = str(edge.get("target") or "")
-        if source and source not in node_ids:
-            node_ids.append(source)
-        if target and target not in node_ids:
-            node_ids.append(target)
-    if not node_ids:
-        return 'flowchart LR\n  none["No Symphony plan"]'
-
-    node_keys = {
-        node_id: f"N{index}" for index, node_id in enumerate(node_ids, start=1)
-    }
-    lines = ["flowchart LR"]
-    for node_id in node_ids:
-        lines.append(
-            f'  {node_keys[node_id]}["{_mermaid_escape(labels.get(node_id) or node_id)}"]'
-        )
-    for edge in edges or []:
-        source = str(edge.get("source") or "")
-        target = str(edge.get("target") or "")
-        if source in node_keys and target in node_keys:
-            lines.append(f"  {node_keys[source]} --> {node_keys[target]}")
-    return "\n".join(lines)
-
-
-def _mermaid_escape(value: str) -> str:
-    return str(value or "").replace("\\", "\\\\").replace('"', '\\"')[:80]

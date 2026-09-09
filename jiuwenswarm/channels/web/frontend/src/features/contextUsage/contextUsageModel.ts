@@ -24,6 +24,10 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
 }
 
+function isOptionalContextRole(value: unknown): value is 'leader' | 'teammate' | null | undefined {
+  return value === undefined || value === null || value === 'leader' || value === 'teammate';
+}
+
 /** Validate only the v1 fields we consume. Never read aliases or calculate missing usage. */
 export function parseContextUsageSnapshot(value: unknown): ContextUsageSnapshot | null {
   if (
@@ -35,6 +39,7 @@ export function parseContextUsageSnapshot(value: unknown): ContextUsageSnapshot 
     !value.request_id ||
     typeof value.product_session_id !== 'string' ||
     !value.product_session_id ||
+    !isOptionalContextRole(value.role) ||
     !isTokenCount(value.depth) ||
     !isNullableString(value.team_id) ||
     !isNullableString(value.member_name)
@@ -68,12 +73,17 @@ export function parseContextUsageSnapshot(value: unknown): ContextUsageSnapshot 
     validatedParts.push([key, { category: key, tokens: part.tokens, percentage_of_window: part.percentage_of_window }]);
   }
 
+  const timestamp = typeof value.timestamp === 'string' && value.timestamp.trim()
+    ? value.timestamp
+    : undefined;
+
   return {
     event_type: value.event_type,
     schema_version: value.schema_version,
     phase: value.phase,
     request_id: value.request_id,
     product_session_id: value.product_session_id,
+    role: value.role ?? null,
     depth: value.depth,
     team_id: value.team_id,
     member_name: value.member_name,
@@ -84,7 +94,23 @@ export function parseContextUsageSnapshot(value: unknown): ContextUsageSnapshot 
     },
     parts: Object.fromEntries(validatedParts),
     session_kv_cache_hit_rate: sessionCacheHitRate,
+    ...(timestamp ? { timestamp } : {}),
   };
+}
+
+/** Single-Agent snapshots keep the existing root-context identity contract. */
+export function isSingleAgentContextUsageSnapshot(snapshot: ContextUsageSnapshot): boolean {
+  return (
+    snapshot.role === null &&
+    snapshot.depth === 0 &&
+    snapshot.team_id === null &&
+    snapshot.member_name === null
+  );
+}
+
+/** Team identity is backend-owned; do not infer it from depth, names, or IDs. */
+export function isTeamLeaderContextUsageSnapshot(snapshot: ContextUsageSnapshot): boolean {
+  return snapshot.role === 'leader';
 }
 
 export function formatContextPercent(ratio: number): string {

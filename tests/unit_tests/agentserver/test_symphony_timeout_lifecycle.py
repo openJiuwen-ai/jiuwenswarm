@@ -132,6 +132,7 @@ async def test_outer_symphony_timeout_terminates_without_retry(
     payload, _tool_message = results[0]
     assert payload["success"] is False
     assert payload["reason"] == "graph_build_timeout"
+    assert "planned_graph" not in payload
     assert payload["direct_display"] is True
     assert payload["continue_after_display"] is False
     assert payload["followup_action"] == "manual_graph_build"

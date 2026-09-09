@@ -10,11 +10,17 @@
 
 from __future__ import annotations
 
+from importlib import import_module
+
 from jiuwenswarm.agents.harness.team.config_loader import (
     get_team_template_snapshot,
     list_team_template_summaries,
     load_team_spec_dict,
 )
+# Load this sibling before TeamManager.  ``from package import name`` tries to
+# resolve ``name`` from this partially initialized package; importlib loads the
+# concrete submodule directly instead.
+import_module(f"{__name__}.kv_cache_hooks")
 from jiuwenswarm.agents.harness.team.team_manager import (
     cancel_all_team_stream_tasks_across_managers,
     TeamManager,

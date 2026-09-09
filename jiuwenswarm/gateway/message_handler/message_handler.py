@@ -3008,6 +3008,9 @@ class MessageHandler(ABC):
             session_id: str | None = str(sid_raw)
         else:
             session_id = self._stream_sessions.get(rid)
+
+        if await self._handle_trajectory_update_push(chunk, session_id):
+            return
         
         # 获取原始请求的 metadata，用于合并
         request_metadata = self._stream_metadata.get(rid)
@@ -3091,6 +3094,49 @@ class MessageHandler(ABC):
             chunk.channel_id,
             _push_app_id,
         )
+
+    async def _handle_trajectory_update_push(
+        self,
+        chunk: Any,
+        session_id: str | None,
+    ) -> bool:
+        """Forward one AgentServer trajectory watermark to the browser channel."""
+        payload = chunk.payload
+        if not isinstance(payload, dict) or payload.get("event_type") != "trace.updated":
+            return False
+        resolved_session_id = str(payload.get("session_id") or session_id or "").strip()
+        trace_id = str(payload.get("trace_id") or "").strip()
+        if not resolved_session_id or not trace_id:
+            logger.warning("[MessageHandler] invalid trajectory update push ignored")
+            return True
+        try:
+            revision = int(payload.get("revision", 0))
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("[MessageHandler] invalid trajectory update revision ignored")
+            return True
+        if revision < 1:
+            logger.warning("[MessageHandler] non-positive trajectory update revision ignored")
+            return True
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            logger.debug(
+                "[MessageHandler] trajectory update skipped because web channel is unavailable"
+            )
+            return True
+        from jiuwenswarm.observability.models import CommittedTraceUpdate
+
+        web_channel.schedule_trajectory_updates(
+            (
+                CommittedTraceUpdate(
+                    session_id=resolved_session_id,
+                    trace_id=trace_id,
+                    revision=revision,
+                    store_epoch=payload.get("store_epoch"),
+                    lifecycle=str(payload.get("lifecycle") or "final"),
+                ),
+            )
+        )
+        return True
 
     def set_cron_controller(self, controller: Any) -> None:
         self._cron_controller = controller

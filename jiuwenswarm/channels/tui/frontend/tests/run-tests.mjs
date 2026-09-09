@@ -35,6 +35,7 @@ import {
   isWorkflowBudgetLow,
   isSessionNode,
   mergeWorkflowRun,
+  pendingHumanViewHint,
   shouldShowSessionTree,
   shouldShowTurnInDetailOrReply,
   sessionTurnLabelNumber,
@@ -629,6 +630,108 @@ const slashCommands = AppScreen.prototype.buildSlashCommands.call({
 assert.deepEqual(
   slashCommands.map((command) => command.name),
   ["swarmflows", "workspace"],
+);
+
+function createHumanInputShortcutScreen({ hasPendingHumanInput = true } = {}) {
+  const editorInputs = [];
+  const notices = [];
+  let pendingListOpenCount = 0;
+  const pendingHumanPrompts = hasPendingHumanInput
+    ? new Map([["workflow-1:human-1", { workflowId: "workflow-1", agentId: "human-1" }]])
+    : new Map();
+  const snapshot = {
+    pendingQuestion: null,
+    btwOverlay: null,
+    btwActive: false,
+    cancellableWork: null,
+    runningCommand: null,
+    pendingHumanPrompts,
+    isProcessing: false,
+  };
+  const editor = {
+    text: "draft ",
+    getText() {
+      return this.text;
+    },
+    setText(value) {
+      this.text = value;
+    },
+    handleInput(data) {
+      editorInputs.push(data);
+      if (data.length === 1) this.text += data;
+    },
+  };
+  const screen = Object.create(AppScreen.prototype);
+  Object.assign(screen, {
+    transcriptScrollOffset: 0,
+    btwOverlayScrollOffset: 0,
+    escClearPending: false,
+    transientNotice: null,
+    startupPromptList: null,
+    resumeSessionList: null,
+    statusViewState: null,
+    mcpDetail: null,
+    mcpToolDetail: null,
+    mcpList: null,
+    mcpTools: null,
+    modelList: null,
+    toolSelector: null,
+    themeList: null,
+    swarmWorkflowsViewState: null,
+    configEditorState: null,
+    fileViewerState: null,
+    diffViewerState: null,
+    mvController: null,
+    showTeamPanel: false,
+    replyingToHumanPrompt: null,
+    editor,
+    state: {
+      recordActivity: () => undefined,
+      getSnapshot: () => snapshot,
+      isHelpVisible: () => false,
+      hasServerTask: () => false,
+      requestLocalInterrupt: () => false,
+    },
+    tui: {
+      terminal: { rows: 40 },
+      requestRender: () => undefined,
+      invalidate: () => undefined,
+    },
+    enterSwarmWorkflowsPendingList: async () => {
+      pendingListOpenCount += 1;
+    },
+    showTransientNotice: (message) => {
+      notices.push(message);
+    },
+  });
+  return {
+    screen,
+    editorInputs,
+    notices,
+    getPendingListOpenCount: () => pendingListOpenCount,
+  };
+}
+
+const humanInputShortcut = createHumanInputShortcutScreen();
+humanInputShortcut.screen.handleInput("h");
+assert.deepEqual(humanInputShortcut.editorInputs, ["h"]);
+assert.equal(humanInputShortcut.getPendingListOpenCount(), 0);
+
+humanInputShortcut.screen.handleInput("\x1bh");
+assert.deepEqual(humanInputShortcut.editorInputs, ["h"]);
+assert.equal(humanInputShortcut.getPendingListOpenCount(), 1);
+
+const noPendingHumanInputShortcut = createHumanInputShortcutScreen({
+  hasPendingHumanInput: false,
+});
+noPendingHumanInputShortcut.screen.handleInput("\x1bh");
+assert.equal(noPendingHumanInputShortcut.getPendingListOpenCount(), 0);
+assert.deepEqual(noPendingHumanInputShortcut.notices, ["No human inputs waiting."]);
+
+assert.equal(pendingHumanViewHint("alt+h"), "alt+h to view human inputs");
+assert.equal(
+  pendingHumanViewHint(null),
+  "use /swarmflows to view human inputs",
 );
 
 // Escape and left both move from the workflow's agents panel back to phases.

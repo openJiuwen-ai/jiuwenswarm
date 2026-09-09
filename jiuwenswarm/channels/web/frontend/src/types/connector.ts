@@ -25,17 +25,22 @@
 
 export type ConnectorIntegrationType = 'stdio-mcp' | 'cli' | 'remote-mcp' | 'skill-only';
 export type ConnectorConnectionState = 'connected' | 'disconnected' | 'connecting' | 'error';
-export type ConnectorSource = 'built_in' | 'customize';
+export type ConnectorSource = 'built_in' | 'customize' | 'hub';
 // connectorStore.busyMap 的取值——per-name 进行中的重操作种类（原来只是个 boolean，卡片一律显示
 // "连接中"，2026-08-11 用户发现点"解绑"卡片却显示"连接中"才暴露这个问题：busy 态需要知道具体
 // 是哪种操作才能给出准确文案，见 mcpState.ts busyLabelKey）。
 // 2026-08-17：'delete' 随 deleteConnector action 一并删除——当时彻底删除入口移除后不再有"删除中"
 // 态。2026-08-19 用户明确要求恢复：断联态的自定义 MCP 详情页"卸载"按钮要走真删除（mcp.delete_
 // custom），不能只是再调一次 disconnect，'delete' 取值随之恢复。
-export type McpBusyKind = 'connect' | 'disconnect' | 'delete' | 'saveCredentials';
+export type McpBusyKind = 'install' | 'uninstall' | 'connect' | 'disconnect' | 'delete' | 'saveCredentials';
 
 export interface ConnectorSummary {
+  /** Stable marketplace identity. Hub packages use the Hub asset id. */
+  id: string;
   name: string;
+  /** Runtime package name used by mcp.connect/chat.send. */
+  runtimePackageName: string;
+  hubAssetId?: string;
   displayName: string;
   // mcp.list 现在直接下发简介（backend-requests.md 需求14已解决），恒为 string，不再是可选缺省。
   description: string;
@@ -46,6 +51,21 @@ export interface ConnectorSummary {
   icon?: string | null;
   // "我的"vs"广场"归属的唯一依据，见文件头注释。
   source: ConnectorSource;
+  installed: boolean;
+  version?: string;
+  tags?: string[];
+}
+
+export interface ConnectorInstallResponse {
+  type: 'installed';
+  item: { id: string; name: string; installed: boolean };
+}
+
+export interface ConnectorUninstallResponse {
+  type: 'uninstalled';
+  item: { id: string; name: string; removed: boolean };
+  applied: boolean;
+  error?: string;
 }
 
 export interface ConnectorTool {

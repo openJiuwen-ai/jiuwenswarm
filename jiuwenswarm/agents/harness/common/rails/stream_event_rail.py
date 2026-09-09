@@ -461,6 +461,15 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         sid = session_id or "default"
         self._abort_requested.pop(sid, None)
 
+    def is_abort_requested(self, session_id: str = "") -> bool:
+        """Whether interrupt cancel/supplement armed the abort flag for *session_id*.
+
+        Lets the adapter's 0-token empty-run guard tell a user-cancelled round
+        (abort flag set) from a silently failed one (flag never set).
+        """
+        sid = session_id or "default"
+        return bool(self._abort_requested.get(sid, False))
+
     def reset_for_new_task(self, session_id: str = "") -> None:
         """Unblock the pause event for the next task without touching the abort flag.
 
@@ -614,6 +623,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         next_tools: list[Any] = []
         changed = False
         for tool in tools:
+            if getattr(tool, "name", None) == "skill_index":
+                next_tools.append(tool)
+                continue
             params = getattr(tool, "parameters", None)
             if not isinstance(params, dict):
                 next_tools.append(tool)
@@ -725,11 +737,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             self._inflight_tool_calls.pop(tc_id, None)
 
         await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
-        self._symphony_stream_handler.request_force_finish(
-            ctx,
-            tc,
-            ctx.inputs.tool_result,
-        )
         await self._emit_ask_user_question_if_interrupted(
             session,
             tc,

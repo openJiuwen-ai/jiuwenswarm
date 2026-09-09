@@ -4,6 +4,9 @@ import type { HeartbeatScheduleKind } from '../../types/heartbeat';
 import { validateHeartbeatCronExpr } from './heartbeatCronValidation';
 import { TIMEZONE_OPTIONS } from '../CronPanel/constants';
 import SimpleSelect from '../CronPanel/SimpleSelect';
+import DatePicker from '../CronPanel/DatePicker';
+import TimePicker from '../CronPanel/TimePicker';
+import { nowWallClock } from '../CronPanel/scheduleConvert';
 
 interface HeartbeatScheduleEditorProps {
   value: HeartbeatScheduleFormValue;
@@ -21,6 +24,11 @@ export default function HeartbeatScheduleEditor({ value, onChange, minIntervalSe
   const intervalMinutes = Math.max(minIntervalMinutes, Math.round(value.intervalSeconds / 60));
   const cronError =
     value.kind === 'cron' && value.cronExpr.trim() ? validateHeartbeatCronExpr(value.cronExpr).error : undefined;
+  // "单次"用：今天之前的日期不可选；选中日期正好是今天时，当前时刻之前的时间点也不可选。
+  // 与 CronPanel 单次排班同一套做法（nowWallClock 按表单时区取当前墙钟）。
+  const nowStr = nowWallClock(value.timezone);
+  const todayStr = nowStr.slice(0, 10);
+  const nowTimeStr = nowStr.slice(11, 16);
 
   return (
     <div className="space-y-3">
@@ -60,7 +68,7 @@ export default function HeartbeatScheduleEditor({ value, onChange, minIntervalSe
         <div className="space-y-2">
           <input
             type="text"
-            placeholder="0 9 * * 1-5"
+            placeholder="0 0 9 * * ? *"
             value={value.cronExpr}
             onChange={(e) => onChange({ ...value, cronExpr: e.target.value })}
             title={t('heartbeat.schedule.cron.hint') ?? undefined}
@@ -77,19 +85,38 @@ export default function HeartbeatScheduleEditor({ value, onChange, minIntervalSe
       )}
 
       {value.kind === 'once' && (
-        <div className="flex items-center gap-2" title={t('heartbeat.schedule.once.hint') ?? undefined}>
-          <input
-            type="date"
-            value={value.onceDate}
-            onChange={(e) => onChange({ ...value, onceDate: e.target.value })}
-            className="rounded-md border border-border bg-card px-2 py-1 text-sm"
-          />
-          <input
-            type="time"
-            value={value.onceTime}
-            onChange={(e) => onChange({ ...value, onceTime: e.target.value })}
-            className="rounded-md border border-border bg-card px-2 py-1 text-sm"
-          />
+        <div className="flex items-start gap-2" title={t('heartbeat.schedule.once.hint') ?? undefined} data-testid="heartbeat-panel-once-row">
+          {/* 复用 CronPanel 的自绘选择器：原生 <input type="date"> 的占位格式跟随浏览器 locale，
+              会渲染成「yyyy/mm/日」中英混排；自绘组件全走 i18n 且支持 minDate/minTime 禁选过期。
+              未选择时留白（不传 placeholder），见 bug002 用户确认。
+              minDate/minTime 每次渲染按 nowWallClock 重算，父层抽屉每 10s 触发一次重渲染，
+              用户停在弹层里等到所选时刻过期时，过期的日期/时分选项会即时变为禁选。 */}
+          <div className="min-w-0 flex-1">
+            <label className="mb-1 block text-xs text-text-muted" data-testid="heartbeat-panel-once-date-label">
+              {t('heartbeat.schedule.once.dateLabel')}
+              <span className="text-red-500">*</span>
+            </label>
+            <DatePicker
+              value={value.onceDate}
+              onChange={(v) => onChange({ ...value, onceDate: v })}
+              minDate={todayStr}
+              className="w-full"
+            />
+          </div>
+          <div className="w-32 shrink-0">
+            <label className="mb-1 block text-xs text-text-muted" data-testid="heartbeat-panel-once-time-label">
+              {t('heartbeat.schedule.once.timeLabel')}
+              <span className="text-red-500">*</span>
+            </label>
+            <TimePicker
+              value={value.onceTime}
+              onChange={(v) => onChange({ ...value, onceTime: v })}
+              // 日期未选时按「今天」处理（minDate 已锁死不能选过去），
+              // 否则先开时间下拉、还没选日期时整列时分都不禁选，能选到已经过去的点。
+              minTime={!value.onceDate || value.onceDate === todayStr ? nowTimeStr : undefined}
+              className="w-full"
+            />
+          </div>
         </div>
       )}
     </div>

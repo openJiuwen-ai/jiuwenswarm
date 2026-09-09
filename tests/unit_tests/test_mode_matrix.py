@@ -16,6 +16,7 @@ from jiuwenswarm.common.mode_matrix import (
     base_mode_without_plan,
     deprecate_mode,
     is_plan_mode,
+    is_single_agent_mode,
     is_team_mode,
     resolve_request_mode,
 )
@@ -377,6 +378,35 @@ def test_is_plan_mode(mode, expected):
 )
 def test_is_team_mode(mode, expected):
     assert is_team_mode(mode) is expected
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        NEW_AGENT_WORK_NORMAL,
+        NEW_AGENT_WORK_PLAN,
+        NEW_AGENT_CODE_NORMAL,
+        NEW_AGENT_CODE_PLAN,
+    ],
+)
+def test_single_agent_modes_use_new_canonical_names(mode):
+    assert is_single_agent_mode(mode)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["agent", "agent.fast", "agent.plan", "code", "code.normal", "code.plan"],
+)
+def test_single_agent_mode_rejects_legacy_names(mode):
+    assert not is_single_agent_mode(mode)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [NEW_TEAM_WORK_NORMAL, NEW_TEAM_WORK_PLAN, NEW_TEAM_CODE_NORMAL, NEW_TEAM_CODE_PLAN],
+)
+def test_single_agent_mode_rejects_new_team_canonical_names(mode):
+    assert not is_single_agent_mode(mode)
 
 
 def test_base_mode_without_plan_is_identity_for_normal_modes():

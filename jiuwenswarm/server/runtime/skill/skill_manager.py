@@ -64,6 +64,15 @@ from jiuwenswarm.server.runtime.skill.skill_files import (
     resolve_skill_relative_file,
 )
 from jiuwenswarm.server.runtime.skill.skill_type import SKILL_TYPE_SWARM, detect_skill_type
+from jiuwenswarm.server.runtime.marketplace.hub_client import (
+    DEFAULT_HUB_BASE_URL,
+    HttpHubTransport,
+    HubNotFoundError,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_models import HubArtifact
+from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
+    HubPackageDownloader,
+)
 
 
 def _get_ssl_verify() -> bool:
@@ -94,6 +103,8 @@ ERROR_SKILLHUB_DETAIL_FAILED = "SKILLHUB_DETAIL_FAILED"
 
 _DETAIL_KEY_SKILLHUB_DETAIL_NOT_FOUND = "skills.swarmskillshub.errors.detailNotFound"
 _DETAIL_KEY_SKILLHUB_DETAIL_FAILED = "skills.swarmskillshub.errors.detailFailed"
+# 广场详情从产物回填 detail_desc 时的正文长度上限（字符）
+_SKILLHUB_DETAIL_DESC_MAX_CHARS = 200 * 1024
 
 # ZIP 解包配额（防 zip bomb）
 _SKILL_ZIP_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -135,9 +146,10 @@ _FREE_SEARCH_DEFAULT_NO_PROXY = "127.0.0.1,.huawei.com,localhost,local,.local,10
 
 # Team Skills Hub（仅 TEAM_SKILLS_HUB_* 环境变量）
 _TEAM_SKILLS_HUB_MARKET_TIMEOUT: float = float(os.environ.get("TEAM_SKILLS_HUB_TIMEOUT", "60"))
-_TEAM_SKILLS_HUB_BASE_URL_DEFAULT = "https://teamskills.openjiuwen.com"
+_TEAM_SKILLS_HUB_BASE_URL_DEFAULT = DEFAULT_HUB_BASE_URL
 _TEAM_SKILLS_HUB_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = (
     "openjiuwen-market.obs.*.myhuaweicloud.com",
+    "openjiuwen-market-test.obs.*.myhuaweicloud.com",
     "127.0.0.1",
     "localhost",
 )
@@ -881,7 +893,7 @@ class SkillManager:
         meta["has_evolutions"] = _has_effective_evolutions(
             skill_dir if version_requested is None else read_root
         )
-        self._apply_enabled_config(meta, name)
+        self._apply_enabled_config(meta, str(meta.get("name") or name))
         meta["version"] = response_version
         meta["skill_type"] = detect_skill_type(skill_dir if version_requested is None else read_root)
 
@@ -1383,7 +1395,6 @@ class SkillManager:
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             build_discovery_settings,
             is_skill_retrieval_enabled,
-            is_skill_retrieval_index_enabled,
             resolve_skill_retrieval_strategy,
             skill_retrieval_artifact_root,
             skill_sources_from_manager,
@@ -1403,9 +1414,7 @@ class SkillManager:
         )
         config = get_config() or {}
         configured_enabled = is_skill_retrieval_enabled(config)
-        configured_index_enabled = is_skill_retrieval_index_enabled(config)
         enabled = configured_enabled
-        index_enabled = configured_index_enabled
         artifact_root = skill_retrieval_artifact_root()
         settings = build_discovery_settings(config)
         flat_directory = SkillFS(
@@ -1417,7 +1426,7 @@ class SkillManager:
         snapshot = flat_directory.prompt_snapshot()
         candidate_scale = "small" if snapshot.all_candidates_included else "large"
         directory = flat_directory
-        if enabled and index_enabled and candidate_scale == "large":
+        if enabled and candidate_scale == "large":
             directory = SkillFS(
                 lambda: visible_documents,
                 settings=replace(settings, use_existing_index=True),
@@ -1446,7 +1455,6 @@ class SkillManager:
                 session_profile.get("pinned_index_revision") or ""
             )
             enabled = configured_enabled and bool(session_profile.get("enabled"))
-            index_enabled = bool(session_profile.get("index_enabled"))
             if session_profile.get("candidate_scale") in {"small", "large"}:
                 candidate_scale = str(session_profile["candidate_scale"])
             estimated_candidate_tokens = max(
@@ -1515,18 +1523,11 @@ class SkillManager:
                     index_state=public_index_state,
                 )
             )
-        index_recommended = (
-            enabled and candidate_scale == "large" and not index_enabled
-        )
-        build_supported = (
-            configured_enabled
-            and configured_index_enabled
-            and candidate_scale == "large"
-        )
+        build_supported = configured_enabled and candidate_scale == "large"
         logs = build.get("logs") if isinstance(build.get("logs"), list) else []
         return {
             "enabled": enabled,
-            "index_enabled": index_enabled,
+            "index_enabled": enabled,
             "mode": self._skill_retrieval_mode(),
             "candidate_scale": candidate_scale,
             "estimated_candidate_tokens": estimated_candidate_tokens,
@@ -1534,8 +1535,8 @@ class SkillManager:
             "effective_strategy": effective_strategy,
             "layout": layout,
             "index_state": public_index_state,
-            "index_required": index_recommended,
-            "index_recommended": index_recommended,
+            "index_required": False,
+            "index_recommended": False,
             "build_supported": build_supported,
             "build_status": str(build.get("status") or "idle"),
             "build_stage": str(build.get("stage") or ""),
@@ -1565,7 +1566,6 @@ class SkillManager:
         from jiuwenswarm.common.config import get_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             is_skill_retrieval_enabled,
-            is_skill_retrieval_index_enabled,
         )
 
         config = get_config() or {}
@@ -1576,14 +1576,6 @@ class SkillManager:
                 "effective_strategy": "legacy",
                 "build_status": status["build_status"],
                 "detail": "Enable Skill retrieval before building its taxonomy.",
-            }
-        if not is_skill_retrieval_index_enabled(config):
-            return {
-                "success": False,
-                "error_code": "skill_index_disabled",
-                "effective_strategy": status["effective_strategy"],
-                "build_status": status["build_status"],
-                "detail": "Enable the Skill taxonomy switch before building it.",
             }
         if status["candidate_scale"] == "small":
             return {
@@ -2404,6 +2396,72 @@ class SkillManager:
             "query": query,
             "items": self._aggregate_online_search_results(query, source_results, limit),
             "sources": source_statuses,
+        }
+
+    async def handle_skills_online_search_install(self, params: dict) -> dict:
+        """统一安装在线搜索/广场结果：按 source 转发到既有安装实现.
+
+        params:
+            source: teamskillshub | clawhub | skillnet；缺省按 teamskillshub
+            identifier: hub asset_id / clawhub slug / skillnet url
+            force: bool
+            owner_handle / display_name: clawhub 可选
+            url: skillnet 可选；缺省用 identifier
+        """
+        params = params or {}
+        source = str(params.get("source") or "teamskillshub").strip().casefold()
+        identifier = str(
+            params.get("identifier")
+            if params.get("identifier") is not None
+            else params.get("asset_id") or params.get("slug") or params.get("url") or ""
+        ).strip()
+        if not identifier:
+            return {"success": False, "detail": "缺少参数: identifier"}
+
+        force = bool(params.get("force", False))
+        if source in {"teamskillshub", "swarmskillshub"}:
+            return await self.handle_skills_team_skills_hub_install(
+                {
+                    "asset_id": identifier,
+                    "force": force,
+                    **(
+                        {"version": params["version"]}
+                        if params.get("version") is not None
+                        else {}
+                    ),
+                    **(
+                        {"market_url": params["market_url"]}
+                        if params.get("market_url") is not None
+                        else {}
+                    ),
+                }
+            )
+        if source == "clawhub":
+            payload: dict[str, Any] = {
+                "slug": identifier,
+                "force": force,
+            }
+            owner_handle = str(params.get("owner_handle") or "").strip()
+            display_name = str(params.get("display_name") or "").strip()
+            if owner_handle:
+                payload["owner_handle"] = owner_handle
+            if display_name:
+                payload["display_name"] = display_name
+            if params.get("version") is not None:
+                payload["version"] = params.get("version")
+            if params.get("tag") is not None:
+                payload["tag"] = params.get("tag")
+            return await self.handle_skills_clawhub_download(payload)
+        if source == "skillnet":
+            url = str(params.get("url") or identifier).strip()
+            skillnet_params: dict[str, Any] = {"url": url, "force": force}
+            if params.get("mirror_url") is not None:
+                skillnet_params["mirror_url"] = params.get("mirror_url")
+            return await self.handle_skills_skillnet_install(skillnet_params)
+        return {
+            "success": False,
+            "detail": f"不支持的 source: {source}",
+            "detail_key": "skills.onlineSearch.unsupportedSource",
         }
 
     async def handle_skills_skillnet_search(self, params: dict) -> dict:
@@ -3695,8 +3753,12 @@ class SkillManager:
                 token=auth.get("token"),
                 system_token=auth.get("system_token"),
             )
-            public_latest_version = str(plugin_item.get("public_latest_version") or "").strip()
-            if not public_latest_version:
+            # 广场搜索可能返回尚无 public_latest_version 的资产（官网仍用 latest_version 展示）。
+            resolved_version = (
+                str(plugin_item.get("public_latest_version") or "").strip()
+                or str(plugin_item.get("latest_version") or "").strip()
+            )
+            if not resolved_version:
                 return {
                     "success": False,
                     "detail": "SkillHub 资产无公开版本",
@@ -3706,14 +3768,14 @@ class SkillManager:
 
             version_detail = await self._team_skills_hub_get_version_detail(
                 asset_id,
-                public_latest_version,
+                resolved_version,
                 base_url=base_url,
                 token=auth.get("token"),
                 system_token=auth.get("system_token"),
             )
             resp_asset_id = str(version_detail.get("asset_id") or "").strip()
             resp_version = str(version_detail.get("version") or "").strip()
-            if resp_asset_id != asset_id or resp_version != public_latest_version:
+            if resp_asset_id != asset_id or resp_version != resolved_version:
                 return {
                     "success": False,
                     "detail": "SkillHub 版本详情与解析结果不一致",
@@ -3722,10 +3784,20 @@ class SkillManager:
                 }
 
             data = self._merge_skillhub_public_detail(plugin_item, version_detail)
+            if not str(data.get("detail_desc") or "").strip():
+                hydrated = await self._hydrate_skillhub_detail_desc_from_artifact(
+                    asset_id,
+                    resolved_version,
+                    base_url=base_url,
+                    token=auth.get("token"),
+                    system_token=auth.get("system_token"),
+                )
+                if hydrated:
+                    data["detail_desc"] = hydrated
             return {
                 "success": True,
                 "asset_id": asset_id,
-                "version": public_latest_version,
+                "version": resolved_version,
                 "data": data,
             }
         except SkillRpcError as exc:
@@ -3748,6 +3820,114 @@ class SkillManager:
                 "detail_key": _DETAIL_KEY_SKILLHUB_DETAIL_FAILED,
                 "code": ERROR_SKILLHUB_DETAIL_FAILED,
             }
+
+    async def _hydrate_skillhub_detail_desc_from_artifact(
+        self,
+        asset_id: str,
+        version: str,
+        *,
+        base_url: str | None = None,
+        token: str | None = None,
+        system_token: str | None = None,
+    ) -> str:
+        """detail_desc 为空时，从公开版产物包提取 README/SKILL.md 正文（仅展示，不安装）.
+
+        临时目录在 with 结束时自动删除。失败返回空串，不抬升为 detail 失败。
+        """
+        version_str = str(version or "").strip()
+        try:
+            artifact_data = await self._team_skills_hub_http_get_data(
+                f"/api/v1/artifacts/{asset_id}",
+                params={"version": version_str} if version_str else None,
+                timeout=_TEAM_SKILLS_HUB_MARKET_TIMEOUT,
+                base_url=base_url,
+                token=token,
+                system_token=system_token,
+            )
+            if not isinstance(artifact_data, dict):
+                return ""
+            download_url = str(artifact_data.get("download_url", "")).strip()
+            if not download_url:
+                return ""
+            self._assert_team_skills_hub_download_url_allowed(download_url)
+            checksum_sha256 = str(artifact_data.get("checksum_sha256", "")).strip()
+            artifact_bytes = await self._download_zip_and_verify(
+                download_url, checksum_sha256=checksum_sha256
+            )
+            with tempfile.TemporaryDirectory(prefix="jiuwenswarm_skillhub_detail_") as tmpdir:
+                tmp_path = Path(tmpdir)
+                self._safe_extract_zip_bytes_to_dir(artifact_bytes, tmp_path)
+                skill_dir = self._locate_skill_dir(tmp_path)
+                text = self._extract_skillhub_detail_desc_from_package(
+                    tmp_path, skill_dir=skill_dir
+                )
+                if not text:
+                    return ""
+                if len(text) > _SKILLHUB_DETAIL_DESC_MAX_CHARS:
+                    return text[:_SKILLHUB_DETAIL_DESC_MAX_CHARS]
+                return text
+        except Exception as exc:
+            logger.warning(
+                "SkillHub 详情从产物回填 detail_desc 失败: asset_id=%s version=%s error=%s",
+                asset_id,
+                version_str,
+                exc,
+            )
+            return ""
+
+    @classmethod
+    def _read_text_file_limited(cls, path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    @classmethod
+    def _find_readme_files(cls, root: Path) -> list[Path]:
+        """在解压根下查找 README.md（大小写不敏感），浅路径优先."""
+        if not root.is_dir():
+            return []
+        found: list[Path] = []
+        for path in root.rglob("*"):
+            if path.is_file() and path.name.lower() == "readme.md":
+                found.append(path)
+        found.sort(key=lambda p: (len(p.relative_to(root).parts), str(p).lower()))
+        return found
+
+    @classmethod
+    def _extract_skillhub_detail_desc_from_package(
+        cls,
+        package_root: Path,
+        *,
+        skill_dir: Path | None,
+    ) -> str:
+        """优先包内 README，否则 SKILL.md body；不回退 short_desc."""
+        # 1) skill 目录内 README
+        if skill_dir is not None and skill_dir.is_dir():
+            for path in cls._find_readme_files(skill_dir):
+                text = cls._read_text_file_limited(path)
+                if text:
+                    return text
+        # 2) 整个解压树内 README（官网常见放在包根）
+        for path in cls._find_readme_files(package_root):
+            text = cls._read_text_file_limited(path)
+            if text:
+                return text
+        # 3) SKILL.md 正文（去掉 frontmatter）
+        if skill_dir is None:
+            return ""
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.is_file():
+            for md in skill_dir.glob("*.md"):
+                if md.name.lower() == "skill.md":
+                    skill_md = md
+                    break
+            else:
+                return ""
+        parsed = cls._parse_skill_md(skill_md)
+        if not parsed:
+            return ""
+        return str(parsed.get("body") or "").strip()
 
     async def _skillnet_install_background(
         self,
@@ -5104,6 +5284,7 @@ class SkillManager:
         if meta is None:
             return None
 
+        registered_name = self._resolve_skill_name(child, md, meta)
         # 工作区技能身份以目录名为准，避免 frontmatter name 与目录不一致时
         # （如 skill-creator-normal 仍写 name: skill-creator）产生重复列表项。
         meta["name"] = child.name
@@ -5119,7 +5300,7 @@ class SkillManager:
                 break
         # 检查是否通过 import_local / SkillNet 等写入 local_skills（含 origin 供前端对照 skill_url）
         for ls in self._state.get("local_skills", []):
-            if ls.get("name") == meta.get("name"):
+            if ls.get("name") in (meta.get("name"), registered_name):
                 source = ls.get("source", source_default) if isinstance(ls, dict) else source_default
                 if isinstance(ls, dict):
                     origin = ls.get("origin")
@@ -5132,7 +5313,7 @@ class SkillManager:
 
         meta["source"] = source
         if not str(meta.get("display_name") or "").strip():
-            meta["display_name"] = meta.get("name", "")
+            meta["display_name"] = registered_name
         meta["installed"] = True
         meta["enabled"] = self.get_skill_enabled(meta.get("name", ""))
         # 判断是否为内置技能（传入 child 路径，通过实际路径判断）
@@ -5594,25 +5775,21 @@ class SkillManager:
                 meta = self._parse_skill_md(md)
                 if meta is None:
                     continue
-                if meta.get("name") == md.stem:
-                    meta["name"] = child.name
-                if meta.get("name") != name:
+                registered_name = self._resolve_skill_name(child, md, meta)
+                if name not in (child.name, registered_name):
+                    continue
+                listed_meta = self._scan_one_skill_dir(child)
+                if listed_meta is None:
                     continue
                 base = {
-                    "name": meta.get("name", name),
-                    "source": self._resolve_skill_source(meta.get("name", "")),
-                    "display_name": self._resolve_skill_display_name(meta.get("name", "")),
-                    "is_builtin": self._is_builtin_skill(
-                        meta.get("name", ""), self._get_installed_plugins(), child
+                    "name": listed_meta.get("name", child.name),
+                    "source": listed_meta.get("source", "project"),
+                    "display_name": listed_meta.get("display_name", registered_name),
+                    "is_builtin": bool(listed_meta.get("is_builtin", False)),
+                    "is_builtin_source": bool(
+                        listed_meta.get("is_builtin_source", False)
                     ),
-                    "is_builtin_source": False,
                 }
-                builtin_dir = get_builtin_skills_dir()
-                if builtin_dir.exists():
-                    builtin_skill_path = builtin_dir / child.name
-                    base["is_builtin_source"] = (
-                        builtin_skill_path.exists() and builtin_skill_path.is_dir()
-                    )
                 return child, base
 
         # marketplace 未安装副本（只支持读 workspace 语义，无本地产品版本）
@@ -6605,43 +6782,18 @@ class SkillManager:
         system_token: str | None = None,
         not_found_code: str | None = None,
     ) -> Any:
-        base_url = (base_url or self._get_team_skills_hub_base_url()).rstrip("/")
-        rel_path = path if path.startswith("/") else f"/{path}"
-        req_url = f"{base_url}{rel_path}"
-        headers = self._teamskills_hub_auth_headers(token=token, system_token=system_token)
+        transport = HttpHubTransport(
+            base_url=base_url or self._get_team_skills_hub_base_url(),
+            timeout=timeout,
+            token=token,
+            system_token=system_token,
+        )
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-                resp = await client.get(req_url, params=params, headers=headers or None)
-        except Exception as exc:
-            raise RuntimeError(f"无法连接 Team Skills Hub: {exc}") from exc
-
-        if resp.status_code == 404:
+            return await transport.get_data(path, params=params)
+        except HubNotFoundError as exc:
             if not_found_code:
-                raise SkillRpcError(not_found_code, "SkillHub 资源不存在")
-            raise RuntimeError("Team Skills Hub API 错误 HTTP 404")
-
-        if not resp.is_success:
-            # 不向调用方透传上游响应体，避免泄露敏感信息。
-            raise RuntimeError(f"Team Skills Hub API 错误 HTTP {resp.status_code}")
-        try:
-            payload = resp.json()
-        except Exception as exc:
-            raise RuntimeError(f"Team Skills Hub API 响应不是合法 JSON: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise RuntimeError("Team Skills Hub API 响应格式错误")
-
-        code = payload.get("code", 200)
-        try:
-            code_int = int(code)
-        except Exception as exc:
-            raise RuntimeError("Team Skills Hub API 响应 code 格式错误") from exc
-        if code_int != 200:
-            raise RuntimeError("Team Skills Hub API 返回失败")
-
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise RuntimeError("Team Skills Hub API 响应 data 格式错误")
-        return data
+                raise SkillRpcError(not_found_code, "SkillHub 资源不存在") from exc
+            raise RuntimeError("Team Skills Hub API 错误 HTTP 404") from exc
 
     async def _team_skills_hub_http_post_data(
         self,
@@ -6942,30 +7094,21 @@ class SkillManager:
         checksum_sha256: str = "",
         timeout: float | None = None,
     ) -> bytes:
-        timeout = max(30.0, timeout or _TEAM_SKILLS_HUB_MARKET_TIMEOUT)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-            resp = await client.get(download_url)
-            resp.raise_for_status()
-            body = resp.content or b""
-
-        if not body:
-            raise RuntimeError("下载内容为空")
-        if len(body) < 4 or not body.startswith(b"PK"):
-            raise RuntimeError("下载内容不是 ZIP 文件")
-
-        expected = checksum_sha256.strip().lower()
-        if expected:
-            digest = hashlib.sha256(body).hexdigest().lower()
-            if digest != expected:
-                raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
-
-        try:
-            with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
-                if zf.testzip() is not None:
-                    raise RuntimeError("下载 ZIP 文件已损坏")
-        except zipfile.BadZipFile as exc:
-            raise RuntimeError("下载内容不是有效 ZIP 文件") from exc
-        return body
+        downloader = HubPackageDownloader(
+            allowed_download_hosts=tuple(
+                self._get_team_skills_hub_allowed_download_hosts()
+            ),
+            timeout=max(30.0, timeout or _TEAM_SKILLS_HUB_MARKET_TIMEOUT),
+        )
+        return await downloader.download_bytes(
+            HubArtifact(
+                asset_id="skill-download",
+                plugin_type="skill",
+                version="unknown",
+                download_url=download_url,
+                checksum_sha256=checksum_sha256,
+            )
+        )
 
     @staticmethod
     def _get_github_token() -> str:

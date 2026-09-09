@@ -12,6 +12,7 @@ import yaml
 
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.config import (
+    _transform_front_team_model_config,
     get_configured_read_image_multimodal,
     get_config_raw,
     get_evolution_auto_save_enabled,
@@ -1075,6 +1076,42 @@ modes:
 
         raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
         assert "team" not in raw["modes"]
+
+    @staticmethod
+    def test_transform_front_team_model_config_maps_reasoning_level(
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_config_raw",
+            lambda: {
+                "models": {
+                    "defaults": [
+                        {
+                            "model_client_config": {
+                                "model_name": "Deepseek-V4-Flash-0731",
+                                "client_provider": "OpenAI",
+                                "api_base": "https://example.test/v1",
+                                "api_key": "sk-test",
+                            },
+                            "model_config_obj": {
+                                "temperature": 0.95,
+                                "reasoning_level": "off",
+                            },
+                        }
+                    ]
+                }
+            },
+        )
+
+        transformed = _transform_front_team_model_config(
+            {"model": "Deepseek-V4-Flash-0731#0"}
+        )
+        request_config = transformed["model_request_config"]
+
+        assert "reasoning_level" not in request_config
+        assert request_config["reasoning"] == {"mode": "disabled"}
+        assert request_config["temperature"] == 0.95
+        assert request_config["model"] == "Deepseek-V4-Flash-0731"
 
 
 class TestUpdateXiaoyiRuntimeInConfig:

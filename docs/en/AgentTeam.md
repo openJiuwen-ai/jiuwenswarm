@@ -322,9 +322,9 @@ The Leader assigns roles, for example:
 
 ![Leader forms the team](../assets/images/leader组建团队.png)
 
-**Team Agent executes**
+**Teammate Agent executes**
 
-After assignment, team agents execute their tasks.
+After assignment, teammate agents execute their tasks.
 
 ![Teammates receive and run tasks](../assets/images/团队成员接收任务.png)
 

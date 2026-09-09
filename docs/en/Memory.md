@@ -118,10 +118,12 @@ The LLM call reuses `models.default`; no extra model config required.
 Memory is plain Markdown; the agent uses file tools:
 
 ```
-{workspace_dir}/memory
-├── MEMORY.md               # Long-term memory
-├── USER.md                 # User profile
-└── YYYY-MM-DD.md           # Daily log
+{workspace_dir}/
+├── USER.md                 # User profile (in the workspace root, not under memory/)
+└── memory/
+    ├── MEMORY.md           # Long-term memory
+    └── daily_memory/
+        └── YYYY-MM-DD.md   # Daily log
 ```
 ![Memory files](../assets/images/memory_files.png)
 
@@ -147,9 +149,9 @@ During interactions with users, JiuwenSwarm automatically triggers memory writes
 | Information Type | Target File | Operation | Example |
 |------------------|-------------|-----------|---------|
 | Decisions, preferences, persistent facts | `memory/MEMORY.md` | write / edit tools | "Project uses Python 3.12", "Prefers pytest framework" |
-| User personal information | `memory/USER.md` | write / edit tools | User name, occupation, hobbies |
-| Daily notes, runtime context | `memory/YYYY-MM-DD.md` | write / edit tools | "Fixed login bug today", "Deployed v2.1" |
-| User says "remember this" | `memory/YYYY-MM-DD.md` | write tool | "Remember I stored project files on D drive" |
+| User personal information | `USER.md` (in the workspace root) | write / edit tools | User name, occupation, hobbies |
+| Daily notes, runtime context | `memory/daily_memory/YYYY-MM-DD.md` | write / edit tools | "Fixed login bug today", "Deployed v2.1" |
+| User says "remember this" | `memory/daily_memory/YYYY-MM-DD.md` | write tool | "Remember I stored project files on D drive" |
 
 ![Memory Write Triggers](../assets/images/记忆.png)
 ![Memory Write](../assets/images/记忆写入.png)
@@ -195,16 +197,16 @@ In Agent Team mode, each team has two memory layers:
 ### Layout
 
 ```
-~/.openjiuwen/.agent_teams/{team_name}/
-├── team-memory/                          # Shared team memory
-│   └── TEAM_MEMORY.md
+~/.jiuwenswarm/.agent_teams/{team_name}/
 ├── workspaces/
 │   ├── alice_workspace/                   # New member (created inside the team)
 │   │   ├── memory/                        # personal memory (general scenario)
 │   │   └── coding_memory/                 # personal memory (coding scenario)
-│   └── bob_workspace -> ~/.openjiuwen/bob_workspace/   # Predefined member (symlink)
-└── team-workspace/                        # Shared file area (not memory)
+│   └── bob_workspace -> ~/.jiuwenswarm/bob_workspace/   # Predefined member (symlink)
+└── team-workspace/                        # Shared file area (including shared team memory TEAM_MEMORY.md)
 ```
+
+> **Note**: The actual location of the shared team memory `TEAM_MEMORY.md` is configured via `modes.team.<team_name>.memory.team_memory_dir` in `config.yaml`; by default it is created under `team-workspace/` along with the team workspace, not in a separate `team-memory/` subdirectory.
 
 - **New members**: workspace freshly created under the team home; personal memory starts empty
 - **Predefined members**: a symlink points to the existing personal workspace, so prior memory carries over

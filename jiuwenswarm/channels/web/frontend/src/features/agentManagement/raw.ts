@@ -7,6 +7,7 @@ export type RawLocalizedText = {
 
 export type RawAgentTemplateListItem = {
   id: string;
+  packageName?: string;
   displayName?: RawLocalizedText;
   displayDescription?: RawLocalizedText;
   category?: string;
@@ -17,6 +18,7 @@ export type RawAgentTemplateListItem = {
   updateAvailable?: boolean;
   tags?: RawAgentTag[];
   avatar?: string;
+  version?: string;
 };
 
 export type RawAgentCapability = {

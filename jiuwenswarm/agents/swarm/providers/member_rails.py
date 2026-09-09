@@ -192,6 +192,19 @@ class RuntimePromptInput(ConstructionInput):
         resolver=_workspace_root,
         description="Current member workspace root (cwd fallback without a project).",
     )
+    task_workspace_root: str | None = context_field(
+        attr="task_workspace_root",
+        description="Shared final-deliverables root for a projectless team "
+        "(team-workspace/artifacts/<date>/chat-<n>/). Only set when "
+        "project_dir is None; members bound to a project keep it None so "
+        "the runtime prompt rail stays on its else branch.",
+    )
+    team_outputs_dir: str | None = context_field(
+        attr="team_outputs_dir",
+        description="Final-deliverables directory under task_workspace_root. "
+        "Only set when project_dir is None. Surfaced to the team policy rail "
+        "as the team info body's deliverables bullet too.",
+    )
     trusted_dirs: list[str] | None = context_field(
         attr="trusted_dirs",
         description="Directories the client declared as trusted for this request.",
@@ -227,13 +240,50 @@ def _build_runtime_prompt_rail(
     # Report the member's real working directory. cwd and workspace are
     # separate layers (see openjiuwen.core.sys_operation.cwd): with a project
     # the member runs in the project dir, without one it runs in its own
-    # workspace. Reporting anything else makes the model resolve relative
-    # paths against a directory the tools never use.
-    rail.set_runtime_paths(
-        cwd=inp.project_dir or inp.member_workspace_root,
-        project_dir=inp.project_dir,
-        workspace_dir=inp.member_workspace_root,
-    )
+    # per-member work directory under the shared artifact root. Reporting
+    # anything else makes the model resolve relative paths against a directory
+    # the tools never use.
+    #
+    # A projectless team member (no project_dir) is handed the shared
+    # final-deliverables directory so the runtime prompt rail takes its
+    # ``has_projectless_task`` branch — the prompt then names the member's
+    # own ``work/<member>/`` as the temporary working directory (cwd moves
+    # there, so intermediate files stay isolated per member) and points final
+    # deliverables at the shared team ``outputs/``. Members bound to a project
+    # keep the task paths unset so the rail's else branch ("deliverables in the
+    # project") applies, matching single-agent behaviour.
+    #
+    # The per-member work directory is resolved through the build context
+    # (``SwarmBuildContext.resolve_member_work_dir``) so there is one creation
+    # point shared with ``AgentConfigurator``, which sets the same path as the
+    # member's shell cwd. Calling the allocator again here would be idempotent
+    # but redundant.
+    if inp.project_dir or not inp.team_outputs_dir or not inp.task_workspace_root:
+        rail.set_runtime_paths(
+            cwd=inp.project_dir or inp.member_workspace_root,
+            project_dir=inp.project_dir,
+            workspace_dir=inp.member_workspace_root,
+        )
+    else:
+        work_dir = context.resolve_member_work_dir()
+        # ``task_workspace_root`` is non-None here (guarded above), and the
+        # context's resolver returns a path whenever that root is set, so a
+        # None would be an internal invariant violation rather than a runtime
+        # condition to paper over. Use an explicit raise instead of assert so
+        # the guard survives ``python -O`` (G.TES.01).
+        if work_dir is None:
+            raise RuntimeError(
+                "resolve_member_work_dir() returned None despite "
+                "task_workspace_root being set"
+            )
+        rail.set_runtime_paths(
+            cwd=work_dir,
+            project_dir=inp.project_dir,
+            workspace_dir=inp.member_workspace_root,
+            task_workspace_root=inp.task_workspace_root,
+            task_work_dir=work_dir,
+            task_outputs_dir=inp.team_outputs_dir,
+        )
     # Without this the member never renders the trusted_dirs policy section a
     # single agent gets from ``_apply_runtime_config_stages``.
     rail.set_trusted_dirs(inp.trusted_dirs)
@@ -351,6 +401,12 @@ class TeamWorkspaceReportPathInput(ConstructionInput):
         attr="project_dir",
         description="User project root for final project deliverables.",
     )
+    team_outputs_dir: str | None = context_field(
+        attr="team_outputs_dir",
+        description="Shared final-deliverables directory for projectless members "
+        "(team-workspace/artifacts/<date>/chat-<n>/outputs/). None for members "
+        "bound to a project.",
+    )
     team_id: str = context_field(attr="team_id", default="", description="Team name.")
     language: str = context_field(
         attr="language",
@@ -386,6 +442,7 @@ def _build_team_workspace_report_path_rail(
     rail = TeamWorkspaceReportPathRail(
         root_dir=inp.team_ws_root,
         project_dir=inp.project_dir,
+        outputs_dir=inp.team_outputs_dir,
         team_id=inp.team_id,
         language=inp.language,
     )

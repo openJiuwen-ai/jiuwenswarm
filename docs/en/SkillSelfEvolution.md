@@ -62,28 +62,34 @@ Reviewer Feedback does not create or update member-private Skill copies. The uni
 If you want to immediately trigger evolution for a specific skill, you can enter:
 
 ```bash
-/evolve <skill_name>
+/evolve <skill_name> [user_intent]
 ```
+
+- `<skill_name>`: Required, the target Skill name.
+- `[user_intent]`: Optional, a description of the user intent / direction to focus on for this evolution; it will be used as part of the review prompt. When omitted, the system scans in the default direction.
 
 For example:
 
 ```bash
 /evolve xlsx
+/evolve xlsx improve edge handling of numeric formatting in tables
 ```
 
 The system scans recent dialogue and execution records, generates evolution experience for the skill, and displays the generated results.
+
+> **Team Mode Note**: In Team mode, `/evolve` only supports evolving Swarm Skill / Team Skill (kind is `swarm-skill` or `team-skill`); ordinary Skill is not allowed to evolve in Team mode and needs to switch back to normal mode to trigger.
 
 ![Manual trigger](../assets/images/skill演进_手动触发.png)
 
 ### 2.5 View Evolution Status
 
-To see which skills have pending evolution experience, you can enter:
+To view the pending evolution records for a specific skill, you can enter:
 
 ```bash
-/evolve list
+/evolve_list <skill_name> [--sort score]
 ```
 
-The system lists all skills containing pending evolution records and their specific content summaries.
+The system lists the pending evolution records and their content summaries for the specified skill.
 
 ![Evolution overview](../assets/images/skill演进_查看和整理经验.png)
 
@@ -289,7 +295,7 @@ User chat / tool run
 │    (Under Skill directory) │
 └────────────┬───────────────┘
              │
-             ▼ (via /evolve rebuild or auto-load)
+             ▼ (via /evolve_rebuild or auto-load)
 ┌─────────────────────────────┐
 │      rewrite_skill()         │  Merges into SKILL.md
 └─────────────────────────────┘

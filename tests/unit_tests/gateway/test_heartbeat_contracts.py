@@ -99,25 +99,59 @@ async def test_agent_tools_call_agentserver_local_service() -> None:
 
     tools = HeartbeatRuntimeBridge(Service()).build_tools(context=_Context())
     assert len(tools) == 9
+    list_jobs = next(tool for tool in tools if tool.card.name == "heartbeat_list_jobs")
     create = next(tool for tool in tools if tool.card.name == "heartbeat_create_job")
+    assert "active_count, not len(jobs)" in list_jobs.card.description
+    assert "authoritative active-job limit check" in create.card.description
+    assert "delete_after_run" not in create.card.input_params["properties"]
+    max_runs_schema = create.card.input_params["properties"]["max_runs"]
+    assert max_runs_schema["type"] == ["integer", "null"]
+    assert max_runs_schema["default"] == 12
+    run_at_schema = create.card.input_params["properties"]["schedule"]["properties"]["run_at"]
+    assert run_at_schema["maximum"] == 253_402_300_799.0
+    assert "Unix timestamp in seconds" in run_at_schema["description"]
     result = await create._func(
         name="follow up",
         prompt="continue",
         schedule={"type": "interval", "interval_seconds": 120},
         max_runs=None,
-        delete_after_run=None,
     )
     assert result == {"ok": True}
     action, data, context = calls[-1]
     assert action == "create"
-    assert "max_runs" not in data
-    assert "delete_after_run" not in data
+    assert data["max_runs"] is None
     assert context == {
         "channel_id": "web",
         "session_id": "session-1",
         "user_id": "user-1",
         "source": "agent_tool",
     }
+
+    await create.invoke(
+        {
+            "name": "default finite follow up",
+            "prompt": "continue",
+            "schedule": {"type": "interval", "interval_seconds": 120},
+        }
+    )
+    assert calls[-1][1]["max_runs"] == 12
+
+    await create.invoke(
+        {
+            "name": "explicit unlimited follow up",
+            "prompt": "continue",
+            "schedule": {"type": "interval", "interval_seconds": 120},
+            "max_runs": None,
+        }
+    )
+    assert calls[-1][1]["max_runs"] is None
+
+    await create._func(
+        name="finite follow up",
+        prompt="continue",
+        schedule={"type": "interval", "interval_seconds": 120},
+    )
+    assert "max_runs" not in calls[-1][1]
 
 
 async def test_agent_tools_are_hidden_without_local_service() -> None:

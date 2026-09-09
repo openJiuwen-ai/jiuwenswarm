@@ -7,11 +7,21 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.agents.harness.observability_runtime import (
+from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
+
+
+def _assert_symphony_request_model_context(inputs: dict) -> None:
+    run = inputs["run"]
+    assert run["kind"] == "normal"
+    assert set(run["context"]["extra"]) == {SYMPHONY_LLM_CONFIG_REF_KEY}
+    reference = run["context"]["extra"][SYMPHONY_LLM_CONFIG_REF_KEY]
+    assert isinstance(reference, str)
+    assert len(reference) == 64
 
 
 @pytest.mark.anyio
@@ -571,10 +581,54 @@ def _install_interaction_followup_agent(
     )
 
 
+def _capture_agent_run_close(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability as swarm_agent_observability
+
+    closed_run_spans: list[dict] = []
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        harness_observability,
+        "close_agent_run_span",
+        lambda _handle, **kwargs: closed_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        swarm_agent_observability,
+        "sync_agent_observability",
+        lambda **_kwargs: None,
+    )
+    return closed_run_spans
+
+
 @pytest.mark.anyio
 async def test_stream_error_answer_aborts_active_round_without_debug_logger(monkeypatch):
     adapter = _adapter_ready_for_followup_execution(monkeypatch)
     closed_with: list[bool] = []
+    opened_run_spans: list[dict] = []
+    closed_run_spans: list[dict] = []
+
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability as swarm_agent_observability
+
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **kwargs: opened_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        harness_observability,
+        "close_agent_run_span",
+        lambda _handle, **kwargs: closed_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        swarm_agent_observability,
+        "sync_agent_observability",
+        lambda **_kwargs: None,
+    )
 
     class _FakeInteractionStream:
         def __aiter__(self):
@@ -616,6 +670,173 @@ async def test_stream_error_answer_aborts_active_round_without_debug_logger(monk
     } in payloads
     assert not any(payload.get("event_type") == "chat.final" for payload in payloads)
     assert closed_with == [True]
+    assert opened_run_spans[0]["mode"] == "agent.work.plan"
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["exception"] is None
+    assert closed_run_spans[0]["error_type"] == "answer_error"
+    assert closed_run_spans[0]["error_message"] == (
+        "任务循环单轮执行超过 10 秒，已终止本轮任务。"
+    )
+
+
+@pytest.mark.anyio
+async def test_non_stream_error_answer_closes_root_with_structured_failure(monkeypatch):
+    adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    opened_run_spans: list[dict] = []
+    closed_run_spans: list[dict] = []
+    seen_inputs: list[dict] = []
+
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability as swarm_agent_observability
+
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **kwargs: opened_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        harness_observability,
+        "close_agent_run_span",
+        lambda _handle, **kwargs: closed_run_spans.append(kwargs),
+    )
+    monkeypatch.setattr(
+        swarm_agent_observability,
+        "sync_agent_observability",
+        lambda **_kwargs: None,
+    )
+    _install_interaction_followup_agent(
+        adapter,
+        chunk=SimpleNamespace(
+            type="answer",
+            payload={"output": "provider rejected request", "result_type": "error"},
+        ),
+        seen_inputs=seen_inputs,
+    )
+
+    response = await adapter.process_message_impl(
+        AgentRequest(
+            request_id="req-provider-error",
+            channel_id="web",
+            session_id="sess-provider-error",
+            params={"query": "run", "mode": "agent.plan"},
+        ),
+        {"query": "run"},
+    )
+
+    assert response.ok is False
+    assert response.payload == {"error": "provider rejected request"}
+    assert opened_run_spans[0]["mode"] == "agent.work.plan"
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["exception"] is None
+    assert closed_run_spans[0]["error_type"] == "answer_error"
+    assert closed_run_spans[0]["error_message"] == "provider rejected request"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("chunk", "expected_type", "expected_message"),
+    [
+        (
+            SimpleNamespace(
+                type=interface_deep_module.ERROR_EVENT_TYPE,
+                payload={"code": "provider_failed", "message": "model unavailable"},
+            ),
+            "provider_failed",
+            "model unavailable",
+        ),
+        (
+            SimpleNamespace(
+                type="error",
+                payload={"error_type": "transport_error", "error": "socket closed"},
+            ),
+            "transport_error",
+            "socket closed",
+        ),
+        (
+            {
+                "type": interface_deep_module.ERROR_EVENT_TYPE,
+                "payload": {"code": "dict_error", "message": "dict failure"},
+            },
+            "dict_error",
+            "dict failure",
+        ),
+    ],
+)
+async def test_stream_structured_errors_close_root_as_error(
+    monkeypatch,
+    chunk,
+    expected_type: str,
+    expected_message: str,
+):
+    adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    closed_run_spans = _capture_agent_run_close(monkeypatch)
+    seen_inputs: list[dict] = []
+    _install_interaction_followup_agent(
+        adapter,
+        chunk=chunk,
+        seen_inputs=seen_inputs,
+    )
+
+    _chunks = [
+        item
+        async for item in adapter.process_message_stream_impl(
+            AgentRequest(
+                request_id="req-structured-error",
+                channel_id="web",
+                session_id="sess-structured-error",
+                params={"query": "run", "mode": "agent.plan"},
+                is_stream=True,
+            ),
+            {"query": "run"},
+        )
+    ]
+
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["exception"] is None
+    assert closed_run_spans[0]["error_type"] == expected_type
+    assert closed_run_spans[0]["error_message"] == expected_message
+
+
+@pytest.mark.anyio
+async def test_stream_goal_control_error_closes_open_root_as_error(monkeypatch):
+    adapter = _adapter_ready_for_followup_execution(monkeypatch)
+    closed_run_spans = _capture_agent_run_close(monkeypatch)
+    adapter._instance.attach_output = AsyncMock(return_value=None)  # pylint: disable=protected-access
+
+    async def _goal_error(**_kwargs):
+        return {
+            "result_type": "goal_error",
+            "error_code": "invalid_goal",
+            "error": "goal rejected",
+        }
+
+    monkeypatch.setattr(adapter, "_dispatch_goal_control", _goal_error)
+
+    chunks = [
+        item
+        async for item in adapter.process_message_stream_impl(
+            AgentRequest(
+                request_id="req-goal-error",
+                channel_id="web",
+                session_id="sess-goal-error",
+                req_method=ReqMethod.COMMAND_GOAL,
+                params={
+                    "query": "",
+                    "mode": "agent.plan",
+                    "action": "set",
+                    "objective": "bad goal",
+                },
+                is_stream=True,
+            ),
+            {"query": ""},
+        )
+    ]
+
+    assert chunks[0].payload["event_type"] == interface_deep_module.ERROR_EVENT_TYPE
+    assert chunks[0].payload["code"] == "invalid_goal"
+    assert len(closed_run_spans) == 1
+    assert closed_run_spans[0]["error_type"] == "invalid_goal"
+    assert closed_run_spans[0]["error_message"] == "goal rejected"
 
 
 @pytest.mark.anyio
@@ -647,7 +868,9 @@ async def test_non_stream_error_answer_returns_failure_instead_of_empty_success(
 
     assert response.ok is False
     assert response.payload == {"error": "Error code: 401 - model access denied"}
-    assert seen_inputs == [{"query": "run task"}]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "run task"
+    _assert_symphony_request_model_context(seen_inputs[0])
 
 
 @pytest.mark.anyio
@@ -680,9 +903,10 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
         {"query": "/evolve code-runner"},
     )
 
-    assert seen_inputs == [
-        {"query": "review and evolve code-runner", "_invoke_turn_id": "req-followup"}
-    ]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "review and evolve code-runner"
+    assert seen_inputs[0]["_invoke_turn_id"] == "req-followup"
+    _assert_symphony_request_model_context(seen_inputs[0])
     assert response.ok is True
     assert response.payload == {"content": "agent completed"}
 
@@ -720,9 +944,10 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
     ):
         chunks.append(chunk)
 
-    assert seen_inputs == [
-        {"query": "review and simplify code-runner", "_invoke_turn_id": "req-followup-stream"}
-    ]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "review and simplify code-runner"
+    assert seen_inputs[0]["_invoke_turn_id"] == "req-followup-stream"
+    _assert_symphony_request_model_context(seen_inputs[0])
     assert chunks[0].payload == {"event_type": "chat.delta", "content": "agent delta"}
     assert chunks[-1].is_complete is True
 

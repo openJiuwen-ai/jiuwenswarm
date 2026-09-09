@@ -582,15 +582,30 @@ class HeartbeatJobStore:
                     run_state=new_rs,
                     updated_at=float(now),
                 )
+            if job.status == STATUS_RUNNING:
+                resume_next = job.next_run_at
+                resume_enabled = job.enabled
+            # A due tick can consume the once slot during a manual run. Keep
+            # that decision instead of restoring scheduled with no next run.
+            # A non-null due time is still pending, even if it is in the past.
+            if (
+                job.schedule.type == SCHEDULE_ONCE
+                and resume_status == STATUS_SCHEDULED
+                and resume_next is None
+            ):
+                resume_status = STATUS_EXPIRED
+                resume_enabled = False
+                new_rs = replace(
+                    new_rs,
+                    queued_run_id=None,
+                    queued_trigger=None,
+                    queued_reschedule=False,
+                )
             return replace(
                 job,
                 status=resume_status,
-                enabled=bool(job.enabled if job.status == STATUS_RUNNING else resume_enabled),
-                next_run_at=(
-                    job.next_run_at
-                    if job.status == STATUS_RUNNING
-                    else resume_next
-                ),
+                enabled=bool(resume_enabled),
+                next_run_at=resume_next,
                 last_run_at=float(now),
                 run_count=run_count,
                 run_state=new_rs,
@@ -754,7 +769,6 @@ class HeartbeatJobStore:
         concurrency_policy: str = DEFAULT_CONCURRENCY_POLICY,
         session_deleted_policy: str = DEFAULT_SESSION_DELETED_POLICY,
         max_runs: int | None = DEFAULT_MAX_RUNS,
-        delete_after_run: bool = False,
         source: str = SOURCE_AGENT_TOOL,
         metadata: dict[str, Any] | None = None,
         next_run_at: float | None = None,
@@ -768,8 +782,6 @@ class HeartbeatJobStore:
         """
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be boolean")
-        if not isinstance(delete_after_run, bool):
-            raise ValueError("delete_after_run must be boolean")
         ts = float(now) if now is not None else time.time()
         # source 校验:controller 应已校验,此处再校一遍防绕过。
         src = validate_metadata_source(source)
@@ -825,7 +837,6 @@ class HeartbeatJobStore:
                 session_deleted_policy or DEFAULT_SESSION_DELETED_POLICY
             ),
             max_runs=max_runs,
-            delete_after_run=delete_after_run,
             created_at=ts,
             updated_at=ts,
             next_run_at=(
@@ -944,11 +955,6 @@ class HeartbeatJobStore:
                     if mr < 1:
                         raise ValueError("max_runs must be at least 1")
                     updated = replace(updated, max_runs=mr)
-            if "delete_after_run" in patch:
-                value = patch.get("delete_after_run")
-                if not isinstance(value, bool):
-                    raise ValueError("delete_after_run must be boolean")
-                updated = replace(updated, delete_after_run=value)
             if "schedule" in patch:
                 updated = replace(
                     updated,
@@ -972,7 +978,15 @@ class HeartbeatJobStore:
                     raise ValueError("enabled must be boolean")
                 updated = replace(updated, enabled=enabled_val)
                 if not enabled_val:
-                    updated = replace(updated, status=STATUS_DISABLED, next_run_at=None)
+                    # A stale UI may send its pause toggle after the scheduler
+                    # has already completed/expired the job.  Disabling an
+                    # already terminal job is a no-op for lifecycle status:
+                    # otherwise the late request rewrites "completed" into
+                    # "disabled" (displayed as "paused").
+                    if existing.status not in HEARTBEAT_TERMINAL_STATUSES:
+                        updated = replace(
+                            updated, status=STATUS_DISABLED, next_run_at=None
+                        )
                 elif existing.status in HEARTBEAT_TERMINAL_STATUSES:
                     next_at = patch.get("next_run_at")
                     if next_at is None:

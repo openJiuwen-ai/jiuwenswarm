@@ -33,9 +33,8 @@
   "nav": {
     "chat": "Chat",
     "work": "Tasks",
-    "agent": "Agent",
+    "agent": "Experts",
     "experiments": "Experiments",
-    "teams": "Teams",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -68,12 +67,15 @@
     },
     "dialog": {
       "discardTitle": "Discard unsaved changes",
-      "discardConfirm": "You have unsaved changes. Discard them?"
+      "discardConfirm": "You have unsaved changes. Discard them?",
+      "clearTitle": "Clear {{name}}",
+      "clearConfirm": "The saved {{name}} will be deleted. Are you sure you want to clear it?"
     },
     "common": {
       "configured": "Configured",
       "notConfigured": "Not configured",
       "configure": "Configure",
+      "clear": "Clear",
       "showValue": "Show value",
       "hideValue": "Hide value"
     },
@@ -142,7 +144,9 @@
       "fetchReasons": {
         "noEndpoint": "Using the provider preset list: this provider does not expose a model-list endpoint",
         "apiKeyRequired": "Using the provider preset list: enter an API key to fetch the latest models",
-        "remoteFailed": "Using the provider preset list: the remote request failed or returned no models"
+        "remoteFailed": "Using the provider preset list: the remote request failed or returned no models",
+        "remoteAuthFailed": "Using the provider preset list: invalid API key or auth mismatch (HTTP 401/403)",
+        "remoteRateLimited": "Using the provider preset list: rate limited (HTTP 429), retry later"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
@@ -169,7 +173,17 @@
         "anthropicUnavailable": "This provider plan does not support the Anthropic protocol"
       },
       "reasoning": {
-        "auto": "Use default"
+        "auto": "Use default",
+        "options": {
+          "off": "Off",
+          "on": "On",
+          "minimal": "Minimal",
+          "low": "Low",
+          "medium": "Medium",
+          "high": "High",
+          "xhigh": "Extra high",
+          "max": "Max"
+        }
       },
       "openaiAccount": "OpenAI account",
       "agentOsReadonly": "AgentOS read-only",
@@ -178,6 +192,8 @@
       "reloadAfterFailure": "Reload and verify",
       "modelsResponseInvalid": "The model-list response is invalid. Please try again.",
       "catalogResponseInvalid": "The model-provider catalog response is invalid. Please try again.",
+      "catalogLoadingCustomAvailable": "Loading built-in model providers. You can still choose Custom to continue.",
+      "catalogLoadFailedCustomAvailable": "Built-in model providers failed to load. You can still choose Custom to continue.",
       "catalogLoading": "Loading model providers and reasoning options. Please wait.",
       "catalogLoadFailed": "Model providers and reasoning options failed to load. Retry before saving.",
       "saveResponseInvalid": "The model-save response is invalid. Reload to verify the server state.",
@@ -185,6 +201,7 @@
       "savedRestartRequired": "Saved; takes effect after restart",
       "validationOk": "Connection test passed",
       "validationFailed": "Connection test failed",
+      "validationFailedWithDetail": "Connection test failed: {{detail}}",
       "testingConnection": "Testing connection…",
       "savingModel": "Saving…",
       "validationBeforeSaveTitle": "Connection test failed",
@@ -211,8 +228,19 @@
       "webSearch": "Web search",
       "mediaTools": "Tools",
       "vision": "Image processing",
+      "visionDescription": "Enable image processing; disabling it keeps the saved model configuration.",
+      "visionConfigTitle": "Configure image processing model",
       "audio": "Audio processing",
+      "audioDescription": "Enable audio processing; disabling it keeps the saved model configuration.",
+      "audioConfigTitle": "Configure audio processing model",
       "video": "Video understanding",
+      "videoDescription": "Enable video understanding; disabling it keeps the saved model configuration.",
+      "videoConfigTitle": "Configure video understanding model",
+      "toggleCapability": "Toggle {{name}} capability",
+      "saveAndEnable": "Save and enable",
+      "savedRestartRequired": "Saved; takes effect after restart.",
+      "deleteModelTitle": "Delete model configuration",
+      "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
     },
     "browser": {
@@ -220,7 +248,6 @@
       "runtimeDescription": "The existing backend resets the browser runtime after saving.",
       "path": "Browser path",
       "pathDescription": "Specify the browser executable path, or leave it empty for automatic detection.",
-      "preferredBrowser": "Preferred browser",
       "runMode": "Browser run mode",
       "runModeDescription": "Show the browser window in the foreground or run in headless mode.",
       "headed": "Show in foreground",
@@ -234,6 +261,7 @@
       "externalCliAgentsDescription": "For Team mode only.",
       "a2ui": "A2UI generation",
       "rsi": "RSI · Recursive self-improvement",
+      "trajectoryUi": "Trajectory UI",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
@@ -248,10 +276,6 @@
         "title": "Browser path",
         "description": "Specify the browser executable path, or leave it empty for automatic detection.",
         "placeholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-      },
-      "browser_type": {
-        "title": "Preferred browser",
-        "description": "Pinning a type searches only that browser; an explicit path always wins."
       },
       "headless": {
         "title": "Browser run mode",
@@ -275,8 +299,8 @@
         "description": "Control automatic evolution and retention of local skills."
       },
       "skill_retrieval_enabled": {
-        "title": "Automatic skill search",
-        "description": "Control whether the agent automatically retrieves available skills."
+        "title": "Automatic Skill Retrieval",
+        "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
@@ -300,10 +324,6 @@
       "video_api_key": { "title": "API key" },
       "video_model": { "title": "Model name" },
       "video_provider": { "title": "Model provider" },
-      "swarmflow_enabled": {
-        "title": "Dynamic workflow",
-        "description": "Control whether the agent team enables dynamic workflow capabilities."
-      },
       "permissions_mode": {
         "title": "Global permission mode",
         "description": "Choose the shared guardrail mode for ordinary Agents and Teams."
@@ -313,6 +333,7 @@
         "title": "Enable RSI",
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
+      "trajectory_ui_enabled": { "title": "Enable trajectory UI", "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path." },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",
         "description": "Allow a Team Leader to spawn a Claude Agent."
@@ -349,6 +370,24 @@
     "validation": {
       "required": "This field is required",
       "integerRange": "Enter an integer from {{min}} to {{max}}"
+
+    }
+  },
+  "trajectory": {
+    "loading": "Loading trajectory UI…",
+    "tabs": {
+      "aria": "Agent and Team content view",
+      "trajectory": "Trajectory"
+    },
+    "team": {
+      "memberLanes": "Member trajectory lanes",
+      "members": "Members"
+    },
+    "layout": {
+      "hideSessions": "Collapse sessions",
+      "showSessions": "Show sessions",
+      "hideTasks": "Collapse tasks",
+      "showTasks": "Show tasks"
     }
   },
   "team": {
@@ -374,6 +413,7 @@
     "elapsedTime": "Elapsed time: {{value}}",
     "duration": "Duration",
     "noTasks": "No tasks currently",
+    "moreTasks": "{{count}} more tasks",
     "noMemberData": "No member data",
     "selectMember": "Select a team member",
     "detailTabs": {
@@ -481,7 +521,9 @@
       "views": {
         "list": "List view",
         "structure": "Structure view",
-        "board": "Board view"
+        "board": "Board view",
+        "graph": "Graph view",
+        "workflow": "Workflow view"
       },
       "metrics": {
         "progress": "Progress",
@@ -542,30 +584,6 @@
     "tab": "References",
     "empty": "No references currently"
   },
-  "teams": {
-    "title": "Team Management",
-    "subtitle": "Inspect team directories or delete teams",
-    "teamList": "Teams",
-    "count": "{{count}} team(s)",
-    "sessionCount": "{{count}} session(s)",
-    "directory": "Team Directory",
-    "noneSelected": "No team selected",
-    "empty": "No teams",
-    "selectFirst": "Select a team first",
-    "loadingDirectory": "Loading team directory...",
-    "emptyDirectory": "No files in this team directory",
-    "deleteTeam": "Delete team",
-    "deleting": "Deleting...",
-    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
-    "folder": "Folder",
-    "notPreviewable": "Not previewable",
-    "selectFile": "Select a file to view",
-    "errors": {
-      "loadTeams": "Failed to load teams",
-      "loadDirectory": "Failed to load team directory",
-      "deleteTeam": "Failed to delete team: {{team}}"
-    }
-  },
   "statusBar": {
     "evolving": "Checking whether skill evolution is needed...",
     "evolutionStages": {
@@ -585,10 +603,11 @@
   "chat": {
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
+    "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
     "placeholderProcessing": "Processing, enter to interrupt...",
     "placeholderProcessingQueue": "Processing, new input will join the queue...",
-    "placeholderTeamMode": "What can I do for you? Type \"/\" to quickly reference skills and commands",
-    "placeholderTeamModeProcessing": "Team mode processing, new input will run in parallel...",
+    "placeholderTeamMode": "What can I do for you? Type \"/\" to quickly reference skills",
+    "placeholderTeamModeProcessing": "Team mode processing, new messages will run in parallel...",
     "placeholderVoice": "Listening...",
     "welcomeLogoAlt": "WorkSwarm logo",
     "welcomeBubbleText": "Hi~ I'm your personal desktop smart buddy.",
@@ -614,6 +633,7 @@
     "addImageDisabled": "Cannot add images while processing or recording",
     "addFile": "Add file",
     "addFileDisabled": "Cannot add files while processing or recording",
+    "addFileTooltip": "Add files, experts, skills, connectors",
     "addAttachment": "Add attachment",
     "removeImage": "Remove image",
     "sendTask": "Send message without interrupting model",
@@ -645,7 +665,7 @@
       "detailTitle": "Context usage",
       "systemPrompt": "System prompt",
       "messages": "Conversation messages",
-      "tools": "Tools & MCP",
+      "tools": "Tools & Connectors",
       "skills": "Skills",
       "notReported": "Not reported",
       "close": "Close context details",
@@ -664,20 +684,21 @@
     "skillsManage": "More skills",
     "skillsAdd": "Add to composer",
     "skillsRemove": "Remove",
-    "agent": "Agents",
-    "agentToggle": "Choose an installed Agent",
+    "agent": "Experts",
+    "agentToggle": "Choose an installed Expert",
     "agentSearchPlaceholder": "Enter keywords to search",
-    "agentNoInstalled": "No installed Agents",
-    "agentNoMatches": "No matching Agents found",
+    "agentNoInstalled": "No installed Experts",
+    "agentNoMatches": "No matching Experts found",
     "agentAdd": "Add to composer",
-    "agentRemove": "Remove Agent",
+    "agentRemove": "Remove Expert",
     "agentMore": "More",
     "extension": "Extensions",
     "extensionSearchPlaceholder": "Search by keyword",
     "extensionEmpty": "No results",
     "extensionConnect": "Connect",
     "extensionManagePlugins": "Manage My Plugins",
-    "extensionManageMcps": "Manage My MCPs",
+    "extensionManageMcps": "Manage My Connectors",
+    "extensionMore": "More",
     "recentTasks": "Progress",
     "contextCompressionCommandRunning": "Compressing context",
     "teamPause": "Pause",
@@ -1146,9 +1167,12 @@
       "codexHint": "The SDK is installed automatically when needed; use the built-in CLI, a CLI from PATH, or a specified path.",
       "useBuiltin": "Use built-in CLI",
       "detect": "Detect",
+      "detectHint": "Find the CLI in PATH or at the given path and check version compatibility",
       "selectFile": "Choose file",
       "selectFileTitle": "Choose {{agent}} command",
       "selectFileFailed": "Failed to choose file",
+      "copyPath": "Copy detected path",
+      "copied": "Copied",
       "cliPathPlaceholder": "Auto-detect {{agent}}, or enter an executable path",
       "statusUnknown": "Not checked",
       "statusOk": "Available",
@@ -1160,16 +1184,14 @@
       "compatibilityWarning": "The detected version may be incompatible. You can change the executable path, upgrade the version, or select \"Use built-in CLI\" to use the default startup mode.",
       "compatibilityWarningWithVersion": "The detected version may be incompatible. You can change the executable path, upgrade to {{version}} or later, or select \"Use built-in CLI\" to use the default startup mode.",
       "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or select \"Use built-in CLI\".",
-      "dependencyInstalling": "Installing optional components for {{agents}} in the background. They remain disabled during installation; enable them again and save the configuration when installation finishes.",
-      "dependencyInstalled": "The optional {{agent}} component is installed. Enable it again and save the configuration.",
-      "dependencyInstallPhasePreparing": "Preparing {{agent}} dependency installation",
-      "dependencyInstallPhaseInstalling": "Installing {{agent}} dependencies",
-      "dependencyInstallPhaseVerifying": "Verifying {{agent}} dependencies",
-      "dependencyInstallPhaseSucceeded": "{{agent}} dependencies installed. Enable {{agent}} again and save the configuration.",
-      "dependencyInstallPhaseFailed": "{{agent}} dependency installation failed",
+      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or select \"Use built-in CLI\".",
+      "missingPath": "Path does not exist: {{path}}. Check the path, or select \"Use built-in CLI\".",
+      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or select \"Use built-in CLI\".",
+      "autoSaved": "{{agents}} dependencies finished installing. Your configuration has been saved automatically.",
       "installDialogTitle": "Install optional components",
-      "installDialogDescription": "Closing this dialog does not interrupt installation. When it finishes, return to Third-Party Agent settings, enable the component again, and save the configuration.",
+      "installDialogDescription": "Closing this dialog does not interrupt installation. Your configuration will be saved automatically when installation finishes.",
       "installArtifact": "Downloading file {{current}} of {{total}}: {{package}} {{version}}",
+      "installActivity": "Latest installation activity",
       "installProgress": "Download progress",
       "installEta": "About {{eta}} remaining",
       "installRetry": "Download interrupted. Retrying ({{current}}/{{total}})",
@@ -1184,7 +1206,7 @@
         "downloading": "Downloading",
         "installing": "Installing",
         "verifying": "Verifying",
-        "succeeded": "Installed. Enable again to use",
+        "succeeded": "Installed",
         "failed": "Installation failed",
         "running": "Installing"
       }
@@ -1482,9 +1504,6 @@
     }
   },
   "browser": {
-    "browserTypeAuto": "Auto (Chrome > Edge)",
-    "browserTypeChrome": "Chrome",
-    "browserTypeEdge": "Microsoft Edge",
     "errors": {
       "loadPath": "Failed to load browser settings"
     }
@@ -1519,7 +1538,12 @@
     "mySkillsTabs": {
       "all": "All",
       "enabled": "Enabled",
-      "disabled": "Disabled"
+      "disabled": "Disabled",
+      "builtin": "Builtin"
+    },
+    "mySkillsGroups": {
+      "added": "Added Skills",
+      "builtin": "Built-in Skills"
     },
     "publishFilter": {
       "all": "All",
@@ -1546,6 +1570,7 @@
     "disable": "Disable",
     "noDisabledSkills": "No disabled skills",
     "noEnabledSkills": "No enabled skills",
+    "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
@@ -1638,7 +1663,11 @@
       "errorInvalidVersion": "Version format should be x.y.z (e.g. 1.0.0)",
       "errorDisplayNameTooLong": "Display name cannot exceed {{max}} characters",
       "pathNotFound": "Unable to determine skill directory",
-      "forceOverwrite": "Force overwrite (overwrite existing plugin when version exists)"
+      "forceOverwrite": "Force overwrite (overwrite existing plugin when version exists)",
+      "skillNameTooltip": "Field name: name. Lowercase letters, digits, and hyphens; must match the skill root folder naming rule inside the package, e.g. my-demo-skill.",
+      "displayNameTooltip": "Field name: display_name. The name shown in skill lists and details.",
+      "descriptionTooltip": "Field name: description. When empty, the marketplace summary uses the description from the YAML header in SKILL.md. If filled, it is written to plugin.yaml and overrides the file header.",
+      "tagsTooltip": "Field name: tags. Separate multiple tags with commas."
     },
     "oauthLogin": {
       "title": "Login to Publish Skill",
@@ -1653,9 +1682,8 @@
     "uploadSkillModal": {
       "title": "Upload Skill",
       "pathLabel": "Local Skill Path",
-      "pathPlaceholder": "Enter skill file/directory path",
-      "notice": "Folders or .zip files must contain a SKILL.md file. The .md file must include skill name and description in YAML format.",
-      "dropHint": "Click or drag a compressed file or folder here",
+      "notice": "Only .zip archives are supported. The .zip must contain a SKILL.md file with skill name (name) and description (description) declared in its YAML frontmatter.",
+      "dropHint": "Click or drag a .zip file here",
       "confirm": "Import",
       "cancel": "Cancel"
     },
@@ -1698,7 +1726,7 @@
     "contentPreview": "Content Preview",
     "noDescription": "No description",
     "noContent": "No content",
-    "searchPlaceholder": "Search skill names, descriptions, or tags",
+    "searchPlaceholder": "Search skill names",
     "totalCount": "{{count}} total",
     "listError": "Failed to load skills. Please check the backend service.",
     "featuredTeamSkills": "Featured Team Skills",
@@ -1722,6 +1750,9 @@
       "noPreview": "Unable to preview this file",
       "contentPreview": "Content Preview",
       "selectFileToPreview": "Select a file on the left to preview",
+      "defaultVersion": "Default",
+      "unavailableVersion": "Unavailable",
+      "notPreviewable": "Not previewable",
       "tabs": {
         "contentDetail": "Content Details",
         "filePreview": "File Preview",
@@ -1748,7 +1779,6 @@
       "description": "When Skill discovery is enabled, the 1% threshold selects a complete snapshot or live skill_index retrieval for new sessions. Taxonomy construction is controlled independently by the index switch. Existing sessions keep the strategy frozen at creation.",
       "globalDisabledHint": "The global discovery switch is off. Agents use the original JiuwenSwarm Skill logic; any existing taxonomy files remain stored and unused.",
       "indexNotNeeded": "A taxonomy is not needed while the complete candidate snapshot fits below the 1% threshold. No taxonomy build is started, even if the saved index preference is on.",
-      "indexRecommended": "The catalog exceeds the 1% threshold. Live flat retrieval remains complete and usable. You may enable the optional taxonomy index in Configuration for hierarchical browsing; construction and refresh consume model tokens.",
       "indexDisabled": "The taxonomy switch is off. Live flat retrieval remains available, and existing taxonomy files are retained.",
       "indexBuildRunning": "The taxonomy is building in the background. Retrieval remains available during the build, which consumes model tokens.",
       "indexActive": "The taxonomy switch is on and the current taxonomy is active. Refreshing it consumes model tokens.",
@@ -1841,6 +1871,8 @@
       "zoomIn": "Zoom in",
       "zoomOut": "Zoom out",
       "zoomLevel": "Current zoom {{percent}}%",
+      "fullscreen": "Fullscreen",
+      "exitFullscreen": "Exit fullscreen",
       "actions": {
         "read": "Read graph",
         "incrementalBuild": "Incremental build",
@@ -1867,6 +1899,7 @@
         "readFailed": "Unable to read the skill graph. Refresh the graph first.",
         "refreshFailed": "Failed to refresh the skill graph",
         "cancelFailed": "Failed to cancel the skill graph build",
+        "primaryModelProbeFailed": "Primary model connection test failed: {{detail}}",
         "buildFailedWithDetail": "Symphony graph build failed: {{detail}}"
       },
       "serverDetails": {
@@ -1880,6 +1913,8 @@
       "buildStages": {
         "idle": "No build logs",
         "updateStart": "Starting skill graph build",
+        "modelProbeStart": "Testing primary model connection",
+        "modelProbeDone": "Primary model connection test passed",
         "updateCancelRequested": "Cancelling skill graph build",
         "updateCancelled": "Skill graph build cancelled",
         "scanStart": "Scanning skill directories",
@@ -2089,7 +2124,10 @@
       "packFailed": "Packaging failed",
       "downloadFailed": "Failed to download package file",
       "published": "Skill {{name}} published successfully",
-      "publishFailed": "Publishing failed"
+      "publishFailed": "Publishing failed",
+      "rebuilding": "Rebuilding skill, please wait…",
+      "rebuildCompleted": "Skill rebuild completed",
+      "rebuildFailed": "Rebuild failed: {{detail}}"
     },
     "errors": {
       "installFailed": "Install failed",
@@ -2101,6 +2139,9 @@
       "skillNetInstallFailedHint": "SkillNet install failed. Check the skill URL or dependencies.",
       "importFailed": "Import failed",
       "importFailedHint": "Import failed. Check the path or permissions.",
+      "uploadFailed": "File upload failed. Please try again.",
+      "uploadUnsafePath": "The filename contains disallowed characters or uses a reserved system name. Rename the file and upload it again.",
+      "uploadInvalidRequest": "The upload request is invalid or missing a file. Select the file again and upload it.",
       "uninstallFailed": "Uninstall failed",
       "uninstallFailedHint": "Uninstall failed. Please try again later."
     }
@@ -2127,18 +2168,20 @@
     }
   },
   "agentManagement": {
-    "title": "Agent Management",
-    "subtitle": "Create and manage reusable Agent assets",
-    "tabsLabel": "Agent management categories",
-    "tabs": { "catalog": "Agent marketplace", "mine": "My Agents" },
-    "source": { "builtin": "Official", "local": "Mine" },
-    "categoryLabel": "Agent categories",
+    "title": "Expert Management",
+    "subtitle": "Create and manage reusable Expert assets",
+    "tabsLabel": "Expert management categories",
+    "tabs": { "catalog": "Expert marketplace", "mine": "My Experts" },
+    "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
+    "categoryLabel": "Expert categories",
     "categoryAll": "All",
     "categoryOther": "Other",
-    "mineSubtitle": "Manage Agents you created or installed",
-    "searchLabel": "Search Agents",
-    "searchCatalog": "Search Agents",
-    "searchMine": "Search my Agents",
+    "categoryScrollPrev": "Scroll categories left",
+    "categoryScrollNext": "Scroll categories right",
+    "mineSubtitle": "Manage Experts you created or installed",
+    "searchLabel": "Search Experts",
+    "searchCatalog": "Search Experts",
+    "searchMine": "Search my Experts",
     "unknownDescription": "No capability description",
     "categories": {
       "IndustryConsultant": "Industry",
@@ -2164,42 +2207,47 @@
       "connecting": "Connecting…",
       "uninstall": "Uninstall",
       "uninstalling": "Uninstalling…",
+      "delete": "Delete",
+      "deleting": "Deleting…",
       "create": "Create",
       "createFirst": "Create manually",
       "createByChat": "Create via chat",
       "createByUpload": "Create from file",
       "uploading": "Uploading…",
-      "createViaChatPrompt": "Help me create an xxx Agent who is good at xxx",
+      "createViaChatPrompt": "Help me create an xxx Expert who is good at xxx",
       "back": "Back"
     },
-    "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}" },
+    "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}", "moreTagsTooltip": "More tags: {{tags}}" },
     "states": {
       "installed": "Installed",
-      "loadError": "Unable to load the Agent list. Try again.",
-      "detailError": "Unable to load Agent details. Try again.",
+      "loadError": "Unable to load the Expert list. Try again.",
+      "detailError": "Unable to load Expert details. Try again.",
       "actionError": "The action could not be completed. Try again in a moment.",
-      "duplicateName": "An Agent with this name already exists. Choose a different name and try again.",
-      "agentUnavailable": "This Agent is no longer available. Refresh the list and try again.",
-      "agentDefinitionUnavailable": "This Agent definition is incomplete and cannot be used right now.",
+      "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
+      "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
+      "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
       "skillUnavailable": "A selected skill is no longer available. Refresh the skill list and try again.",
-      "mcpUnavailable": "The selected MCP is no longer available. Refresh the MCP list and try again.",
+      "mcpUnavailable": "The selected connector is no longer available. Refresh the connector list and try again.",
       "promptInvalid": "A suggested question is invalid. Remove any blank question and try again.",
       "tagInvalid": "The domain tags are invalid. Select them again and try again.",
       "formInvalid": "Some form information is incomplete. Check the form and try again.",
-      "authRequired": "This Agent requires authentication before it can be installed",
-      "connectionUnavailable": "Required MCP connectors are not connected yet. Connect them before use.",
-      "connectorUnavailableNamed": "This Agent requires the MCP connector “{{connector}}”, which is not connected. Connect it and try again.",
-      "uploadSuccess": "Agent package {{id}} was imported. Review it in My Agents.",
-      "uploadError": "Unable to upload and import the Agent package. Check the file and try again.",
-      "newVersion": "This Agent has a new version available",
-      "teamUnavailable": "Team Agent management is not available yet",
+      "authRequired": "This Expert requires authentication before it can be installed",
+      "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
+      "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
+      "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
+      "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
+      "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
+      "uploadMissingReadme": "The Expert package is missing README.md.",
+      "uploadMissingPersona": "The Expert package is missing the persona directory, or it contains no .md files.",
+      "newVersion": "This Expert has a new version available",
+      "teamUnavailable": "Team Expert management is not available yet",
       "featureUnavailable": "This feature is outside this milestone",
-      "catalogEmpty": "No Agents to show",
-      "mineEmpty": "You do not have any Agents yet",
-      "noMatch": "No matching Agents found"
+      "catalogEmpty": "No Experts to show",
+      "mineEmpty": "You do not have any Experts yet",
+      "noMatch": "No matching Experts found"
     },
     "pagination": {
-      "label": "Agent list pagination",
+      "label": "Expert list pagination",
       "range": "Showing {{start}}-{{end}} of {{total}}",
       "page": "Page {{page}} / {{total}}",
       "previous": "Previous page",
@@ -2212,16 +2260,16 @@
       "skills": "Skills",
       "tools": "Tools",
       "rails": "Rail",
-      "mcps": "MCP capabilities",
+      "mcps": "Connector capabilities",
       "quickInputs": "Try asking me",
       "usePrompt": "Use prompt: {{prompt}}",
-      "tabsLabel": "Agent detail content",
+      "tabsLabel": "Expert detail content",
       "contentTab": "Details",
       "filesTab": "File preview",
-      "filesUnavailable": "Install the Agent to view its files."
+      "filesUnavailable": "Install the Expert to view its files."
     },
     "files": {
-      "treeLabel": "Agent files",
+      "treeLabel": "Expert files",
       "loadError": "Unable to load the file list. Try again.",
       "readError": "Unable to read the file. Try again.",
       "fileUnavailable": "This file is no longer available. Reload the file list.",
@@ -2236,20 +2284,23 @@
     },
     "form": {
       "title": "Create manually",
-      "subtitle": "Create a reusable Agent definition",
+      "subtitle": "Create a reusable Expert definition",
       "createOnly": "Create only",
       "createTabsLabel": "Creation type",
-      "createAgentTab": "Create Agent",
+      "createAgentTab": "Create Expert",
       "basic": "Basic information",
       "idLabel": "Runtime id",
       "idPlaceholder": "For example, content-creator",
-      "nameLabel": "Agent name",
+      "nameLabel": "Expert name",
       "namePlaceholder": "Enter a display name",
       "descriptionLabel": "Capability description",
-      "descriptionPlaceholder": "Describe what this Agent is good at",
+      "descriptionPlaceholder": "Describe what this Expert is good at",
+      "charCount": "{{count}}/{{max}}",
       "tagLabel": "Domain tags (optional)",
       "tagPlaceholder": "Choose strength tags",
       "toggleTags": "Expand or collapse domain tags",
+      "tagScrollPrev": "View domain tags to the left",
+      "tagScrollNext": "View domain tags to the right",
       "removeTag": "Remove domain tag {{name}}",
       "customTagPlaceholder": "Enter a custom domain tag",
       "addCustomTag": "Add",
@@ -2290,28 +2341,28 @@
       "refreshSkills": "Refresh skills",
       "skillsError": "Unable to load the skill list. Try again.",
       "skillsEmpty": "No skills available",
-      "mcpLabel": "MCP configuration (optional)",
-      "mcpToggle": "Collapse or expand MCP configuration",
-      "addMcp": "Add MCP",
-      "removeMcp": "Remove MCP {{name}}",
-      "selectMcp": "Select MCPs",
-      "myMcp": "My MCP",
-      "mcpMarket": "MCP market",
+      "mcpLabel": "Connector configuration (optional)",
+      "mcpToggle": "Collapse or expand connector configuration",
+      "addMcp": "Add connector",
+      "removeMcp": "Remove connector {{name}}",
+      "selectMcp": "Select connectors",
+      "myMcp": "My connectors",
+      "mcpMarket": "Connector market",
       "selectionSearchPlaceholder": "Search by keyword",
-      "mcpTypeFilter": "MCP type",
+      "mcpTypeFilter": "Connector type",
       "mcpTypeAll": "All types",
-      "mcpError": "Unable to load the MCP list. Try again.",
-      "mcpEmpty": "No MCPs available",
+      "mcpError": "Unable to load the connector list. Try again.",
+      "mcpEmpty": "No connectors available",
       "promptsLabel": "Try asking me (optional)",
       "promptsToggle": "Collapse or expand suggested questions",
       "promptPlaceholder": "Enter a suggested question",
       "addPrompt": "Add question",
       "removePrompt": "Remove question",
-      "saveError": "The Agent could not be created. Check the form and try again.",
+      "saveError": "The Expert could not be created. Check the form and try again.",
       "errors": {
         "idRequired": "Enter a runtime id",
         "idInvalid": "Use only letters, numbers, dots, underscores and hyphens",
-        "nameRequired": "Enter an Agent name",
+        "nameRequired": "Enter an Expert name",
         "descriptionRequired": "Enter a capability description",
         "personaRequired": "Enter a persona"
       }
@@ -2385,6 +2436,8 @@
       "toolName": "Tool name",
       "arguments": "Arguments",
       "result": "Result",
+      "flowchart": "Flowchart",
+      "flowchartHint": "click to expand/collapse",
       "truncated": "result truncated"
     },
     "toolGroup": {
@@ -2581,6 +2634,7 @@
       "restart_pending": "Restart pending",
       "restarting": "Restarting...",
       "installing": "Installing",
+      "connect": "Connect",
       "error": "Check failed",
       "unsupported": "Unsupported platform",
       "disabled": "Updater disabled"
@@ -2822,6 +2876,7 @@
     "prev": "Previous",
     "next": "Next",
     "cancel": "Cancel",
+    "replyLater": "Reply Later",
     "skip": "Skip",
     "nextStep": "Next",
     "confirm": "Confirm",
@@ -2834,10 +2889,12 @@
   },
   "connectorMarket": {
     "title": "Extensions",
-    "subtitle": "Create and manage plugins and MCPs",
+    "subtitle": "Create and manage plugins and connectors",
     "tabs": {
       "plugin": "Plugins",
-      "mcp": "MCP",
+      "mcp": "Connector",
+      "pluginMarket": "Plugin Marketplace",
+      "mcpMarket": "Connector Marketplace",
       "my": "My Extensions"
     },
     "categories": {
@@ -2853,7 +2910,7 @@
     },
     "search": {
       "plugin": "Search plugins",
-      "mcp": "Search MCP",
+      "mcp": "Search connectors",
       "my": "Search my extensions"
     },
     "statusFilter": {
@@ -2866,7 +2923,7 @@
       "manual": "Create manually",
       "withSkill": "Create via chat",
       "withUpload": "Create from file",
-      "registerMcp": "Configure MCP",
+      "registerMcp": "Configure connector",
       "basicInfo": "Basic info",
       "uploadHint": "Supports png, jpeg, gif, jpg, up to 200Kb",
       "avatarNotPersisted": "Local preview only for now, can't be saved yet (awaiting backend support)",
@@ -2877,24 +2934,26 @@
       "description": "Plugin description",
       "skillsOptional": "Skills (optional)",
       "addSkill": "Add skill",
-      "mcpOptional": "MCP (optional)",
-      "addMcp": "Add MCP",
+      "mcpOptional": "Connector (optional)",
+      "addMcp": "Add connector",
       "pickSkillTitle": "Select skills",
-      "pickMcpTitle": "Select MCP",
-      "submitError": "Creation failed - this still awaits backend support",
+      "pickMcpTitle": "Select connector",
+      "submitError": "Creation failed. Please check your input and try again.",
+      "fieldRequired": "This field is required",
       "withSkillNotWired": "This entry point isn't wired to the chat panel yet"
     },
     "chatPrompts": {
       "createPlugin": "Help me create a xxx plugin that's great at xxx"
     },
     "errors": {
-      "runtimeMissing": "This MCP requires a runtime environment that isn't installed. Please install it before using this MCP.",
-      "runtimeMissingNamed": "This MCP requires {{runtime}}. Please install {{runtime}} before using this MCP.",
+      "runtimeMissing": "This connector requires a runtime environment that isn't installed. Please install it before using this connector.",
+      "runtimeMissingNamed": "This connector requires {{runtime}}. Please install {{runtime}} before using this connector.",
       "installNetwork": "Failed to download a dependency. Please check your network connection and retry.",
       "cliIncomplete": "The CLI is incomplete or outdated. Please reconnect to retry.",
       "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
     },
     "card": {
+      "connect": "Connect",
       "use": "Use",
       "useNotWired": "Not wired yet — use it from the \"+\" panel in the chat input instead.",
       "install": "Install",
@@ -2902,6 +2961,7 @@
       "connecting": "Connecting",
       "disconnecting": "Disconnecting",
       "deleting": "Deleting",
+      "uninstalling": "Uninstalling",
       "stateError": "Connection failed",
       "retry": "Retry",
       "uninstall": "Uninstall",
@@ -2912,23 +2972,23 @@
     "detail": {
       "breadcrumbMy": "My Extensions",
       "breadcrumbPlugin": "Plugin details",
-      "breadcrumbMcp": "MCP details",
-      "mcpDisconnectedBanner": "This plugin's MCP isn't connected, so it can't be used normally",
-      "mcpDisconnectedBannerSelf": "This MCP isn't connected, so it can't be used normally",
-      "connectMcp": "Connect MCP",
+      "breadcrumbMcp": "Connector details",
+      "mcpDisconnectedBanner": "This plugin's connector isn't connected, so it can't be used normally",
+      "mcpDisconnectedBannerSelf": "This connector isn't connected, so it can't be used normally",
+      "connectMcp": "Connect",
       "sections": {
         "basicInfo": "Basic info",
         "skills": "Skills",
         "tools": "Tools",
         "rails": "Rails",
-        "mcps": "MCP",
+        "mcps": "Connectors",
         "connectionConfig": "Connection config",
         "examples": "Try it like this"
       },
       "integrationType": {
         "cli": "CLI authorization",
-        "stdioMcp": "Local MCP",
-        "remoteMcp": "Remote MCP",
+        "stdioMcp": "Local Connector",
+        "remoteMcp": "Remote Connector",
         "skillOnly": "Skills only"
       },
       "cliSpecPresentHint": "Supports CLI-driven setup",
@@ -2942,27 +3002,29 @@
     },
     "confirmUninstall": {
       "title": "Uninstall {{name}}?",
-      "message": "This MCP will become unavailable until you connect it again."
+      "message": "This connector will become unavailable until you connect it again."
     },
     "confirmUnbind": {
       "title": "Disconnect {{name}}?",
-      "message": "Disconnecting will clear the local credentials and disconnect this MCP, making it unavailable. The definition is kept so you can reconnect — you'll need to re-enter credentials to reconnect."
+      "message": "Disconnecting will clear the local credentials and disconnect this connector, making it unavailable. The definition is kept so you can reconnect — you'll need to re-enter credentials to reconnect."
     },
     "confirmDeleteMcp": {
       "title": "Permanently delete {{name}}?",
-      "message": "Deleting this custom MCP removes its configuration, credentials, and skills for good — this cannot be undone. If you just want to reconnect later, disconnect instead of deleting."
+      "message": "Deleting this custom connector removes its configuration, credentials, and skills for good — this cannot be undone. If you just want to reconnect later, disconnect instead of deleting."
     },
     "confirmUninstallPlugin": {
       "message": "This plugin will become unavailable — you can reinstall it anytime."
     },
     "empty": {
-      "myMcp": "No MCPs installed yet",
-      "myPlugin": "No plugins installed yet",
+      "myMcp": "No connectors yet",
+      "myPlugin": "No plugins yet",
+      "mcp": "No connectors available",
+      "plugin": "No plugins available",
       "searchNoResult": "No matches found",
       "loadingPlugin": "Loading plugins...",
-      "loadingMcp": "Loading MCPs...",
+      "loadingMcp": "Loading connectors...",
       "loadingMyPlugin": "Loading my plugins...",
-      "loadingMyMcp": "Loading my MCPs..."
+      "loadingMyMcp": "Loading my connectors..."
     },
     "pagination": {
       "pageSize": "Rows per page",
@@ -2972,9 +3034,12 @@
       "next": "Next page"
     },
     "toast": {
-      "mcpConnected": "MCP connected successfully.",
-      "mcpCreated": "MCP created successfully.",
-      "mcpCreatedAndConnected": "MCP created and connected successfully.",
+      "mcpConnected": "Connector connected successfully.",
+      "mcpInstalled": "Connector installed. Connect it before use.",
+      "mcpUninstalled": "Connector uninstalled successfully.",
+      "mcpUninstallPendingReload": "The package was removed, but the running service will finish refreshing on the next reload.",
+      "mcpCreated": "Connector created successfully.",
+      "mcpCreatedAndConnected": "Connector created and connected successfully.",
       "pluginInstalled": "Plugin installed successfully.",
       "pluginUninstalled": "Plugin uninstalled successfully."
     },
@@ -2996,8 +3061,8 @@
       "timeout": "Authorization timed out, please reopen the page and retry"
     },
     "registerMcp": {
-      "title": "Configure MCP",
-      "editTitle": "Edit MCP",
+      "title": "Configure connector",
+      "editTitle": "Edit connector",
       "creating": "Creating...",
       "saving": "Saving...",
       "name": "Name",
@@ -3022,14 +3087,17 @@
       "hint": "Supports .zip and .tar files; once extracted, the folder must include manifest.json and README.md, and the .json file must declare packageType.",
       "dropHint": "Click or drag a file here",
       "invalidType": "Only .zip / .tar files are supported",
-      "importSuccess": "Plugin imported successfully"
+      "importSuccess": "Plugin imported successfully",
+      "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
+      "missingReadme": "The plugin package is missing README.md."
     },
     "common": {
       "back": "Back",
       "cancel": "Cancel",
       "confirm": "Confirm",
       "search": "Search",
-      "noResult": "No matches found"
+      "noResult": "No matches found",
+      "loadFailed": "Failed to load details. Please try again."
     }
   },
   "auth": {
@@ -3058,8 +3126,8 @@
     "schedule": {
       "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
       "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Standard 5-field format: minute hour day month weekday (e.g. 0 9 * * 1-5 = weekdays at 9am)" },
-      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed" },
+      "cron": { "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)." },
+      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed", "dateLabel": "Date", "timeLabel": "Time" },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
         "cron": "{{expr}} ({{timezone}}), return to this session",
@@ -3067,7 +3135,7 @@
       }
     },
     "errors": {
-      "cronFieldCount": "Heartbeat cron expressions must have 5 fields (minute hour day month weekday)"
+      "cronFieldCount": "Heartbeat cron expressions must have 5 fields (minute hour day month weekday) or 7 fields (second minute hour day month weekday year)"
     },
     "drawer": {
       "fieldName": "Task name",
@@ -3077,13 +3145,15 @@
       "fieldPromptHint": "When the heartbeat fires, this text is delivered back into the current session as a new message; the agent continues in the existing context instead of starting a new session",
       "fieldSchedule": "Schedule",
       "fieldScheduleHint": "Choose how the heartbeat returns to this session: poll on an interval / fire on a cron schedule / fire once",
+      "scheduleExpired": "The selected time is in the past; pick a new one",
       "fieldConcurrencyPolicy": "Concurrency policy",
       "fieldConcurrencyPolicyHint": "What happens if the previous run hasn't finished when the next trigger fires: skip it (default) / queue one follow-up run (queue) / cancel the previous run and start fresh (replace)",
       "fieldSessionDeletedPolicy": "On session deleted",
       "fieldSessionDeletedPolicyHint": "If the bound session is deleted: disable the job and keep the record (default) / mark the job completed",
       "fieldMaxRuns": "Max runs",
       "fieldMaxRunsUnlimited": "Unlimited",
-      "fieldMaxRunsHint": "The job is marked completed automatically after this many runs; leave blank for no limit",
+      "fieldMaxRunsUnlimitedOption": "Unlimited",
+      "fieldMaxRunsHint": "Applies to interval/cron schedules only; the job is marked completed after this many runs, or keeps running forever when the Unlimited switch is on",
       "missingFields": "Still needed: {{fields}}",
       "submitCreate": "Create",
       "submitUpdate": "Save",
@@ -3103,7 +3173,7 @@
       "cancelRun": "Cancel this run",
       "pause": "Pause",
       "resume": "Resume",
-      "resumeFromCompletedHint": "Job completed or expired. Edit its schedule/stop conditions to a future time first — it will reactivate automatically",
+      "resumeFromCompletedHint": "Job completed or expired. Edit its schedule/stop conditions first, then click Resume",
       "delete": "Delete",
       "deleteConfirm": "Delete heartbeat job \"{{name}}\"?",
       "filterLabel": "Status",
@@ -3356,5 +3426,42 @@
       "candidateError": "Candidate {{index}}/{{total}} generation failed",
       "scoreSuffix": " · {{score}}"
     }
+  },
+  "swarmflow": {
+    "statusPlanned": "Planned",
+    "statusPending": "Pending",
+    "statusRunning": "Running",
+    "statusPaused": "Paused",
+    "statusCompleted": "Completed",
+    "statusFailed": "Failed",
+    "statusStopped": "Stopped",
+    "statusWaitingForHuman": "Waiting for input",
+    "subWorkflow": "Sub-workflow",
+    "clickToReply": "Click to reply",
+    "waitingForHuman": "Waiting for {{count}}",
+    "noWorkflow": "No workflow",
+    "layoutIndented": "Indented Tree",
+    "layoutOrgChart": "Org Chart",
+    "layoutGraph": "Flow Graph",
+    "pauseResumeHint": "Pause / Resume",
+    "stopHint": "Stop",
+    "sessionBudget": "Session budget (team-wide, never resets)",
+    "runBudget": "Run budget (META.workflow_token_limit)",
+    "sessionBudgetShort": "Session",
+    "runBudgetShort": "Run",
+    "budgetUnlimited": "unbounded",
+    "budgetExhaustedSession": "Session budget exhausted",
+    "budgetExhaustedWorkflow": "Run budget exhausted",
+    "toggleLabel": "SwarmFlow",
+    "tagHint": "SwarmFlow is active for this session",
+    "closeTag": "Close SwarmFlow",
+    "closeTagDisabled": "Cannot close while processing",
+    "configTitle": "SwarmFlow Configuration",
+    "configReadonlyHint": "Session is active, config is read-only",
+    "budgetPanelTitle": "SwarmFlow Budget",
+    "budgetPanelHint": "Set the Token limit for this session.",
+    "budgetPlaceholder": "Enter number",
+    "budgetActualHint": "Configured limit: {{count}} tokens",
+    "workflowList": "Workflow List"
   }
 }

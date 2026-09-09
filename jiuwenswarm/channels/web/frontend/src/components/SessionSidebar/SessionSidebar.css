@@ -101,8 +101,9 @@
   color: var(--color-text-primary);
 }
 
+/* hover 与选中态同色（--color-sidebar-nav-active） */
 .icon-rail-nav-item:hover {
-  background: var(--color-sidebar-nav-hover);
+  background: var(--color-sidebar-nav-active);
 }
 
 .icon-rail-nav-item--active {

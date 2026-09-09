@@ -39,6 +39,9 @@ class ReqMethod(Enum):
     COMMAND_SESSION = "command.session"
     COMMAND_WORKFLOWS = "command.workflows"
     COMMAND_STATUS = "command.status"
+    SWARMFLOW_PAUSE = "swarmflow.pause"
+    SWARMFLOW_RESUME = "swarmflow.resume"
+    SWARMFLOW_STOP = "swarmflow.stop"
 
     CONFIG_GET = "config.get"
     CONFIG_SET = "config.set"
@@ -53,6 +56,7 @@ class ReqMethod(Enum):
 
     SESSION_LIST = "session.list"
     SESSION_GET_METADATA = "session.get_metadata"
+    SESSION_PLAN_STATUS = "session.plan_status"
     SESSION_PIN = "session.pin"
     SESSION_COLOR_SET = "session.color_set"
     SESSION_PREVIEW = "session.preview"
@@ -171,6 +175,8 @@ class ReqMethod(Enum):
     # mcp management.
     MCP_LIST = "mcp.list"
     MCP_SHOW = "mcp.show"
+    MCP_INSTALL = "mcp.install"
+    MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
     MCP_DISCONNECT = "mcp.disconnect"
@@ -202,6 +208,7 @@ class ReqMethod(Enum):
     SKILLS_MARKETPLACE_TOGGLE = "skills.marketplace.toggle"
     SKILLS_UNINSTALL = "skills.uninstall"
     SKILLS_ONLINE_SEARCH = "skills.online_search.search"
+    SKILLS_ONLINE_SEARCH_INSTALL = "skills.online_search.install"
     SKILLS_SKILLNET_SEARCH = "skills.skillnet.search"
     SKILLS_SKILLNET_INSTALL = "skills.skillnet.install"
     SKILLS_SKILLNET_INSTALL_STATUS = "skills.skillnet.install_status"

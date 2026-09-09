@@ -771,6 +771,8 @@ def test_deep_adapter_apply_model_updates_deep_config_for_goal_assessor():
 
     react_agent.set_llm.assert_called_once_with(session_model)
     assert deep_config.model is session_model
+    assert adapter._model_client_config is session_model.model_client_config
+    assert adapter._model_request_config is session_model.model_config
     assert adapter._last_resolved_model is session_model
     assert adapter._active_request_model is session_model
 

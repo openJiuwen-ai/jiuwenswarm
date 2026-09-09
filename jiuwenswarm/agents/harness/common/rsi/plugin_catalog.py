@@ -66,6 +66,11 @@ def _export_manifest(source: Path, destination: Path, installation_id: str) -> N
     (destination / "manifest.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
     )
+    readme = destination / "README.md"
+    if not readme.is_file():
+        title = spec.name or spec.id or installation_id
+        description = spec.description or "RSI-generated Harness plugin."
+        readme.write_text(f"# {title}\n\n{description}\n", encoding="utf-8")
     load_plugin_package(destination / "manifest.json")
 
 

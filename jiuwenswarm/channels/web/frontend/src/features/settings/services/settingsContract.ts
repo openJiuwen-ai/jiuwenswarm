@@ -101,12 +101,12 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('video_vendor_key', 'agent', 'text', 'VIDEO_VENDOR_KEY'),
   envField('video_plan', 'agent', 'text', 'VIDEO_PLAN'),
   envField('video_enabled', 'agent', 'boolean', 'VIDEO_ENABLED'),
-  yamlField('swarmflow_enabled', 'agent', 'boolean', 'modes.team.jiuwen_team.enable_swarmflow'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
+  yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
   yamlField(
     'external_cli_agent_claude_enabled',
     'experimental',

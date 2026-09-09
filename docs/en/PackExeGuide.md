@@ -6,6 +6,7 @@ This guide explains how to build a desktop app with **uv**, **PyInstaller**, and
 
 - **uv**: Python package manager used by the project
 - **Node.js**: **Build-time only** for the web UI; the shipped app does not require Node at runtime
+- **Target-machine network access**: Setup uses Microsoft's download service when WebView2 Runtime is missing; an unavailable network does not block the main installation
 - **Windows**: `onedir` output for Inno Setup installers
 - **macOS**: `.app` bundle and `.dmg`
 
@@ -29,6 +30,8 @@ From the repo root:
 ```powershell
 .\scripts\build-exe.ps1
 ```
+
+The Setup executable no longer embeds the full WebView2 offline installer. When the target machine has no WebView2 Runtime, Setup downloads the x64 Evergreen Standalone Installer from Microsoft with a visible progress page and verifies its Microsoft Authenticode signature. A network failure or user cancellation does not block the main WorkSwarm installation: the web application remains available, while the desktop App requires WebView2 to be installed later.
 
 Or double-click `scripts\build-exe.bat`.
 

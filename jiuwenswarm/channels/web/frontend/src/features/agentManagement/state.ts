@@ -25,23 +25,27 @@ export type AgentManagementState = {
   skillsStatus: RequestStatus;
 };
 
-export const initialAgentManagementState: AgentManagementState = {
-  catalog: [],
-  catalogStatus: 'idle',
-  catalogError: null,
-  detail: null,
-  detailStatus: 'idle',
-  detailError: null,
-  files: [],
-  filesStatus: 'idle',
-  filesError: null,
-  selectedFilePath: null,
-  fileContent: null,
-  fileStatus: 'idle',
-  fileError: null,
-  skillOptions: [],
-  skillsStatus: 'idle',
-};
+export function createInitialAgentManagementState(): AgentManagementState {
+  return {
+    catalog: [],
+    catalogStatus: 'idle',
+    catalogError: null,
+    detail: null,
+    detailStatus: 'idle',
+    detailError: null,
+    files: [],
+    filesStatus: 'idle',
+    filesError: null,
+    selectedFilePath: null,
+    fileContent: null,
+    fileStatus: 'idle',
+    fileError: null,
+    skillOptions: [],
+    skillsStatus: 'idle',
+  };
+}
+
+export const initialAgentManagementState = createInitialAgentManagementState();
 
 export type AgentManagementAction =
   | { type: 'catalog.loading' }
@@ -71,7 +75,7 @@ export function agentManagementReducer(
     case 'catalog.loaded':
       return { ...state, catalog: action.catalog, catalogStatus: 'success', catalogError: null };
     case 'catalog.error':
-      return { ...state, catalogStatus: 'error', catalogError: action.message };
+      return { ...state, catalog: [], catalogStatus: 'error', catalogError: action.message };
     case 'detail.loading':
       return {
         ...state,

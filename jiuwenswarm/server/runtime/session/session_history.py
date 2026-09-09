@@ -125,6 +125,15 @@ def _has_persistable_assistant_payload(
         return True
     if str(payload.get("reasoning_content") or "").strip():
         return True
+    if et == "context.usage":
+        # context.usage is a blank assistant event whose complete structured
+        # payload must survive history restore. Reject the legacy invalid
+        # fallback frame, which has no canonical context snapshot fields.
+        return isinstance(payload.get("context_window"), dict) and isinstance(
+            payload.get("parts"), dict
+        )
+    if et == "chat.usage_summary" and isinstance(payload.get("usage"), dict):
+        return bool(payload["usage"])
     if et == "chat.file" and payload.get("files"):
         return True
     if et == "chat.tool_call" and (payload.get("tool_call") or payload.get("tool_calls")):
@@ -731,12 +740,19 @@ def append_history_record(
             user_content=content_text if role_norm == "user" else None,
             # 传入渠道元数据,首次写入时持久化
             channel_metadata=channel_metadata,
-            mode=mode,
+            # A subagent record carries its own history mode, but it belongs
+            # to the parent product Session and must not replace that Session's
+            # routing mode with the internal ``subagent`` label.
+            mode=None if subagent_id else mode,
             # 用户消息时刷新 last_user_message_at(用消息时间戳,比请求到达时刻更精确;
             # 与 AgentServer 的 _sync_chat_request_metadata 互补,覆盖所有记录用户消息的路径)
             last_user_message_at=float(timestamp) if role_norm == "user" else None,
         )
-        if role_norm == "user":
+        # Child transcript entries are stored under the parent Session only as
+        # an ownership relationship.  Their internal ``subagent`` channel is
+        # not an external return route and must not replace the parent's
+        # delivery context.
+        if role_norm == "user" and not subagent_id:
             set_session_delivery_context(
                 session_id=sid,
                 channel_id=cid,
