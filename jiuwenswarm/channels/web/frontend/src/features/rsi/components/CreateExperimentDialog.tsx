@@ -98,6 +98,7 @@ interface FormState {
   tester: string;
   datasetFile: string;
   packageId: string;
+  evaluationMethod: 'agent' | 'script';
   maxIterations: number;
   optimizationInstruction: string;
   artifactPath: string;
@@ -112,6 +113,7 @@ function defaultForm(): FormState {
     tester: '',
     datasetFile: '',
     packageId: '',
+    evaluationMethod: 'agent',
     maxIterations: 2,
     optimizationInstruction: '',
     artifactPath: '',
@@ -280,6 +282,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                 tester: form.tester,
               },
               max_iterations: form.maxIterations,
+              evaluation_method: form.evaluationMethod === 'agent' ? 'llm_as_judge' : 'script_based',
             }
           : {
               scenario: 'ARTIFACT',
@@ -431,6 +434,23 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
               ))}
             </select>
             {pluginError && <Err text={pluginError} />}
+          </Field>
+        )}
+
+        {branch === 'HARNESS' && (
+          <Field label={t('rsi.createDialog.evaluationMethodLabel')}>
+            <select
+              className="rsi-input"
+              aria-label={t('rsi.createDialog.evaluationMethodLabel')}
+              value={form.evaluationMethod}
+              onChange={(event) => update('evaluationMethod', event.target.value === 'agent' ? 'agent' : 'script')}
+              disabled={submitting}
+            >
+              <option value="agent">{t('rsi.createDialog.evaluationMethodAgent')}</option>
+              <option value="script" disabled>
+                {t('rsi.createDialog.evaluationMethodScript')} ({t('rsi.createDialog.evaluationMethodComingSoon')})
+              </option>
+            </select>
           </Field>
         )}
 
