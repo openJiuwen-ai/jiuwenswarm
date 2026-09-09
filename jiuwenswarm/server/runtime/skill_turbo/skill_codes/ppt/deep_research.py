@@ -181,9 +181,11 @@ class PrepareNode(DisableThinkingMixin, PlanNode):
         output_dir = inputs.get("output_dir", "")
         outline_path = f"{output_dir}/outline.md" if output_dir else ""
 
-        outline_text = await self._read_file(outline_path)
+        outline_text = await PptCommon.read_file(
+            self, outline_path, required=False, label="outline.md"
+        )
         if not outline_text:
-            logger.warning("[P6.0] outline.md 为空或不存在")
+            logger.warning("[P6.0] 未能读取 outline.md")
             return {"prepare_status": "failed"}
 
         pages = await self._parse_outline_pages(outline_text)
@@ -238,19 +240,7 @@ class PrepareNode(DisableThinkingMixin, PlanNode):
         }
 
     async def _read_file(self, path: str) -> str:
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P6.0] read_file 工具不可用，无法读取文件 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            return PptCommon.parse_tool_file_content(result)
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P6.0] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file(self, path, required=False, label="file")
 
     async def _parse_outline_pages(self, outline_text: str) -> list[dict[str, Any]]:
         base_prompt = (

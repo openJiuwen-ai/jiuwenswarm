@@ -134,11 +134,13 @@ class OutlineReviewNode(PlanNode):
             return ""
 
     async def _write_outline(self, outline_path: str, content: str) -> None:
-        if not self.has_tool("write_file"):
-            logger.error("[P5] write_file 工具不可用，无法写入 outline.md")
-            return
         try:
-            await self.call_tool("write_file", path=outline_path, content=content)
+            await PptCommon.write_file(
+                self,
+                outline_path,
+                content,
+                label="outline.md",
+            )
         except Exception as e:
             if isinstance(e, AbortError):
                 raise

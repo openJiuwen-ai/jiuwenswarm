@@ -326,11 +326,67 @@ def test_wrap_skill_turbo_result_queues_ppt_skeleton_for_post_tool_emit() -> Non
 def test_wrap_skill_turbo_result_keeps_generic_hint_without_ppt_summary() -> None:
     clear_pending_ppt_delivery_summary()
     wrapped = _wrap_skill_turbo_result({"success": True, "result": "任务已完成"}, {})
+    assert "任务已完成" in wrapped["result"]
     assert "You should now summarize" in wrapped["result"]
     assert "did NOT confirm" in wrapped["result"]
     assert "ALREADY been sent" not in wrapped["result"]
     assert "逐字输出" not in wrapped["result"]
     assert take_pending_ppt_delivery_summary() == ""
+
+
+def test_ppt_delivery_failed_error_detects_p10_failed() -> None:
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        _ppt_delivery_failed_error,
+    )
+
+    assert _ppt_delivery_failed_error({}) == ""
+    assert (
+        _ppt_delivery_failed_error(
+            {
+                "p10_delivery": {
+                    "info": {"delivery_status": "ok", "task_completed": True},
+                }
+            }
+        )
+        == ""
+    )
+    err = _ppt_delivery_failed_error(
+        {
+            "p10_delivery": {
+                "info": {
+                    "delivery_status": "failed",
+                    "task_completed": False,
+                    "send_file_status": "skipped",
+                }
+            }
+        }
+    )
+    assert "PPT 生成失败" in err
+    assert "不要告知用户已经生成成功" in err
+
+
+def test_wrap_skill_turbo_result_marks_failure_when_p10_delivery_failed() -> None:
+    """P10 failed 时 tool result 不得再包装成「任务已完成」。"""
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        _ppt_delivery_failed_error,
+        _wrap_skill_turbo_result,
+    )
+
+    holder = {
+        "p10_delivery": {
+            "info": {
+                "delivery_status": "failed",
+                "task_completed": False,
+                "send_file_status": "skipped",
+            }
+        }
+    }
+    err = _ppt_delivery_failed_error(holder)
+    wrapped = _wrap_skill_turbo_result({"success": False, "error": err}, holder)
+    assert wrapped["success"] is False
+    assert "PPT 生成失败" in wrapped["error"]
+    assert "任务已完成" not in wrapped.get("result", "")
+    assert "You should now summarize" not in wrapped.get("error", "")
 
 
 @pytest.mark.asyncio
