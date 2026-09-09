@@ -3096,9 +3096,14 @@ class MessageHandler(FileTransferMixin, ABC):
                     source_identity = identities[0]
             source_resource_id = str(source_identity.get("bot_id") or "").strip()
             requested_resource_id = str(params.get("resource_id") or "").strip()
-            resource_identity_invalid = bool(
-                not source_resource_id or requested_resource_id != source_resource_id
-            )
+            missing_source = not source_resource_id
+            if method == A2A_TOOL_CANCEL_CALL:
+                # Cancel payloads only include jsonrpc_id; bind via active_calls.
+                resource_identity_invalid = missing_source
+            else:
+                resource_identity_invalid = bool(
+                    missing_source or requested_resource_id != source_resource_id
+                )
             if resource_identity_invalid:
                 logger.warning(
                     "[A2A] reverse RPC identity missing or mismatched: method=%s session_id=%s "

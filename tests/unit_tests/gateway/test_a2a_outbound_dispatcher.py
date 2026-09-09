@@ -1871,3 +1871,83 @@ async def test_gateway_cancel_call_cancels_only_same_session_active_rpc() -> Non
     with pytest.raises(asyncio.CancelledError):
         await dispatch_call
     assert replies[-1].params["response"]["result"]["canceled"] is True
+
+
+@pytest.mark.asyncio
+async def test_enterprise_cancel_call_binds_identity_via_active_calls(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    started = asyncio.Event()
+
+    class _Manager:
+        async def outbound_dispatch_task(self, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    handler = object.__new__(MessageHandler)
+    handler._a2a_outbound_tool_manager = _Manager()
+    handler._active_a2a_outbound_tool_tasks = {}
+    replies = []
+
+    async def publish(message):
+        replies.append(message)
+
+    handler.publish_user_messages = publish
+    metadata = {"routing": {"bot_id": "resource-1"}}
+    dispatch_chunk = SimpleNamespace(
+        payload={
+            "id": "rpc-dispatch",
+            "method": A2A_TOOL_DISPATCH_TASK,
+            "params": {
+                "agent_id": "agent-1",
+                "task": "work",
+                "mode": "sync",
+                "resource_id": "resource-1",
+            },
+        },
+        channel_id="web",
+    )
+    dispatch_call = asyncio.create_task(
+        handler._handle_a2a_outbound_tool_push(
+            chunk=dispatch_chunk, session_id="s1", request_metadata=metadata
+        )
+    )
+    await started.wait()
+
+    other_resource = SimpleNamespace(
+        payload={
+            "id": "rpc-cancel-other",
+            "method": A2A_TOOL_CANCEL_CALL,
+            "params": {"jsonrpc_id": "rpc-dispatch"},
+        },
+        channel_id="web",
+    )
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=other_resource,
+        session_id="s1",
+        request_metadata={"routing": {"bot_id": "resource-other"}},
+    )
+    try:
+        assert dispatch_call.done() is False
+        assert replies[-1].params["response"]["result"]["canceled"] is False
+
+        same_resource = SimpleNamespace(
+            payload={
+                "id": "rpc-cancel-own",
+                "method": A2A_TOOL_CANCEL_CALL,
+                "params": {"jsonrpc_id": "rpc-dispatch"},
+            },
+            channel_id="web",
+        )
+        await handler._handle_a2a_outbound_tool_push(
+            chunk=same_resource, session_id="s1", request_metadata=metadata
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(dispatch_call, timeout=0.5)
+        assert replies[-1].params["response"]["result"]["canceled"] is True
+    finally:
+        if not dispatch_call.done():
+            dispatch_call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await dispatch_call
