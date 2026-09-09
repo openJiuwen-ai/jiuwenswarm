@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import importlib
+import importlib.util
 import logging
 import pathlib
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
@@ -127,7 +128,14 @@ def _write_tool_module(
     body: str,
 ) -> str:
     """Write an importable module into ``tmp_path`` and return its import name."""
-    (tmp_path / f"{name}.py").write_text(body, encoding="utf-8")
+    source = tmp_path / f"{name}.py"
+    source.write_text(body, encoding="utf-8")
+    # Module names are reused across tests with different bodies. Drop the
+    # stale sys.modules entry AND the cached bytecode: the .pyc header stores
+    # mtime with second granularity, so a same-size rewrite in the same second
+    # would otherwise pass staleness validation and re-import the old code.
+    sys.modules.pop(name, None)
+    pathlib.Path(importlib.util.cache_from_source(source)).unlink(missing_ok=True)
     monkeypatch.syspath_prepend(str(tmp_path))
     return name
 

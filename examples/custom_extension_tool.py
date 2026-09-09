@@ -29,7 +29,6 @@ import asyncio
 import contextvars
 import json
 import logging
-from typing import Any
 
 from openjiuwen.core.foundation.tool import Tool, tool
 
