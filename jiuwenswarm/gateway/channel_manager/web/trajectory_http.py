@@ -44,6 +44,10 @@ _SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
+# Frames are far smaller than records, so a catch-up page carries more of
+# them: a reader returning after a disconnect closes the gap in few
+# round trips instead of many.
+_MAX_FRAME_PAGE = 2000
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
 _MAX_CURSOR_LENGTH = 512
 
@@ -266,6 +270,59 @@ class TrajectoryHttpService:
             }
         )
 
+    async def get_stream_frames(
+        self,
+        session_id: str,
+        *,
+        since_frame_seq: int,
+        limit: int,
+    ) -> Response:
+        """Build one page of a session's stream frames, in commit order.
+
+        A reader that fell behind -- a reconnect, a slow tab -- resumes from
+        the last frame it holds and walks forward, rather than waiting for
+        the answer to finish before it can show anything.
+        """
+        settings = self.settings
+        error = self._validate_access(session_id, settings)
+        if error is not None:
+            return error
+        if since_frame_seq < 0:
+            return _error_response("since_frame_seq must be >= 0", "BAD_REQUEST", 400)
+        if since_frame_seq > _MAX_SQLITE_INTEGER:
+            return _error_response("since_frame_seq is too large", "BAD_REQUEST", 400)
+        if not 1 <= limit <= _MAX_FRAME_PAGE:
+            return _error_response(
+                f"limit must be between 1 and {_MAX_FRAME_PAGE}",
+                "BAD_REQUEST",
+                400,
+            )
+        try:
+            result = await self._reader_for(settings).get_stream_frames(
+                session_id,
+                since_frame_seq=since_frame_seq,
+                limit=limit,
+            )
+        except Exception:
+            logger.exception(
+                "Trajectory stream-frame query failed: session_id=%s",
+                session_id,
+            )
+            return _error_response(
+                "trajectory query failed",
+                "TRAJECTORY_QUERY_FAILED",
+                500,
+            )
+        if result is None:
+            return _error_response("session not found", "NOT_FOUND", 404)
+        return _json_response(
+            {
+                "schema_version": 1,
+                "session_id": session_id,
+                **result,
+            }
+        )
+
     async def get_raw_record(
         self,
         session_id: str,
@@ -446,6 +503,34 @@ def attach_trajectory_routes(
             return _error_response("after_revision must be an integer", "BAD_REQUEST", 400)
         return await service.list_subjects(session_id, after_revision=parsed_after)
 
+
+    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/stream-frames")
+    async def get_trajectory_stream_frames(
+        session_id: str,
+        request: Request,
+        since_frame_seq: str = Query(default="0"),
+        limit: str = Query(default="500"),
+    ) -> Response:
+        """Read one page of a session's stream frames, in commit order."""
+        request.state.trajectory_route_handled = True
+        origin_error = _validate_http_origin(request)
+        if origin_error is not None:
+            return origin_error
+        parsed_since = _parse_integer_query(since_frame_seq)
+        parsed_limit = _parse_integer_query(limit)
+        if parsed_since is None:
+            return _error_response(
+                "since_frame_seq must be an integer",
+                "BAD_REQUEST",
+                400,
+            )
+        if parsed_limit is None:
+            return _error_response("limit must be an integer", "BAD_REQUEST", 400)
+        return await service.get_stream_frames(
+            session_id,
+            since_frame_seq=parsed_since,
+            limit=parsed_limit,
+        )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/archive")
     async def export_trajectory_archive(

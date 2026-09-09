@@ -3198,6 +3198,13 @@ class MessageHandler(ABC):
             return True
         from jiuwenswarm.observability.models import CommittedTraceUpdate
 
+        try:
+            frame_seq = int(payload.get("frame_seq", 0))
+        except (TypeError, ValueError, OverflowError):
+            # A malformed frame watermark must not cost the record watermark
+            # that arrived with it; the reader recovers frames on its next read.
+            logger.warning("[MessageHandler] invalid trajectory frame_seq ignored")
+            frame_seq = 0
         web_channel.schedule_trajectory_updates(
             (
                 CommittedTraceUpdate(
@@ -3206,6 +3213,7 @@ class MessageHandler(ABC):
                     revision=revision,
                     store_epoch=payload.get("store_epoch"),
                     lifecycle=str(payload.get("lifecycle") or "final"),
+                    frame_seq=max(0, frame_seq),
                 ),
             )
         )

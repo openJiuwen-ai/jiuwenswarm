@@ -37,7 +37,7 @@ from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
     session_database_path,
 )
-from jiuwenswarm.observability.models import TraceRecordData
+from jiuwenswarm.observability.models import StreamFrameData, TraceRecordData
 from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryStore
 
 test_logger = logging.getLogger("tests.trajectory_http")
@@ -257,6 +257,118 @@ async def test_http_list_detail_and_raw_preserve_contract(tmp_path: Path) -> Non
     assert raw_response.headers["content-type"] == "application/json; charset=utf-8"
     assert bytes(raw_response.body) == expected_raw
     test_logger.info("HTTP contract returned list, detail, and exact raw bytes")
+
+
+def _seed_frames(
+    database_path: Path,
+    count: int,
+    *,
+    session_id: str = "session-1",
+) -> None:
+    """Append *count* text frames to the seeded span."""
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        frames = [
+            StreamFrameData.from_core_frame(
+                SimpleNamespace(
+                    event_name="openjiuwen.stream.chunk",
+                    timestamp_unix_nano=1_700_000_000_000_000_000 + index,
+                    observed_timestamp_unix_nano=1_700_000_000_000_000_000 + index,
+                    trace_id=_TRACE_ID,
+                    span_id=_SPAN_ID,
+                    sequence=index,
+                    kind="text-delta",
+                    session_id=session_id,
+                    execution_subject_id="main",
+                    execution_subject_session_id=session_id,
+                    text=f"w{index} ",
+                    tool_call_id=None,
+                    tool_name=None,
+                    arguments_delta=None,
+                    request_id="request-1",
+                    run_id="run-1",
+                    agent_mode="agent.work.normal",
+                    schema_version="1",
+                )
+            )
+            for index in range(count)
+        ]
+        store.write_records([], frames)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_http_stream_frames_let_a_late_reader_catch_up(tmp_path: Path) -> None:
+    """A reader resumes from its own cursor instead of restarting the answer."""
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    _seed_frames(database_path, 120)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    first = _response_json(
+        await service.get_stream_frames("session-1", since_frame_seq=0, limit=50)
+    )
+    resumed = _response_json(
+        await service.get_stream_frames(
+            "session-1",
+            since_frame_seq=first["next_since_frame_seq"],
+            limit=500,
+        )
+    )
+
+    assert [frame["sequence"] for frame in first["frames"]] == list(range(50))
+    assert first["has_more"] is True
+    assert [frame["sequence"] for frame in resumed["frames"]] == list(range(50, 120))
+    assert resumed["has_more"] is False
+    assert resumed["reset"] is False
+    # The answer rebuilds byte for byte, spaces included.
+    rebuilt = "".join(
+        frame["text"] for frame in (*first["frames"], *resumed["frames"])
+    )
+    assert rebuilt == "".join(f"w{index} " for index in range(120))
+    test_logger.info("HTTP stream frames resumed from a cursor without a reset")
+
+
+@pytest.mark.asyncio
+async def test_http_stream_frames_reject_a_foreign_session(tmp_path: Path) -> None:
+    """One session's frames never surface under another session's id."""
+    database_path = tmp_path / "trajectory.sqlite3"
+    _seed(database_path)
+    _seed_frames(database_path, 5)
+    service = TrajectoryHttpService(
+        _settings(database_path),
+        reader=AsyncTrajectoryReader(database_path),
+        metadata_loader=_metadata_loader(),
+    )
+
+    other = await service.get_stream_frames("session-2", since_frame_seq=0, limit=100)
+    # The read is scoped by session, so a foreign id sees an empty stream
+    # rather than someone else's answer.
+    assert other.status_code == 200
+    assert _response_json(other)["frames"] == []
+    own = _response_json(
+        await service.get_stream_frames("session-1", since_frame_seq=0, limit=100)
+    )
+    assert len(own["frames"]) == 5
+    bad_cursor = await service.get_stream_frames(
+        "session-1",
+        since_frame_seq=-1,
+        limit=100,
+    )
+    assert bad_cursor.status_code == 400
+    oversized = await service.get_stream_frames(
+        "session-1",
+        since_frame_seq=0,
+        limit=999_999,
+    )
+    assert oversized.status_code == 400
+    test_logger.info("stream frame reads stayed inside their own session")
 
 
 @pytest.mark.asyncio
