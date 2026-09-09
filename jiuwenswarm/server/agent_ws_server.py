@@ -59,6 +59,7 @@ from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.runtime import (
     AgentRuntime,
+    SessionCreateInput,
     SessionForkInput,
     SessionProvisionCommitContext,
     SessionProvisionCommitTiming,
@@ -66,7 +67,6 @@ from jiuwenswarm.runtime import (
     SessionProvisionState,
     SessionSwitchInput,
 )
-from jiuwenswarm.server.runtime.agent_warm_pool import WarmClaim
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -9956,460 +9956,203 @@ class AgentWebSocketServer:
                 await send_wire_payload(ws, wire)
 
     async def _handle_session_create(
-            self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
     ) -> None:
-        """Handle AgentServer-owned creation and TUI external-ID compatibility.
-
-        Normal creation validates project identity before claiming a server-owned
-        warm or fresh Session. TUI callers may supply a compatibility ID through
-        this same method; AgentServer validates and serializes it, restores or
-        persists its binding, and always bypasses prewarming.
-
-        Args:
-            ws: WebSocket 连接
-            request: AgentRequest
-            send_lock: 发送锁
-        """
+        """Translate ``session.create`` between WebSocket wire and Runtime."""
         operation = "session.create"
-        logger.info("[AgentServer] %s: request_id=%s", operation, request.request_id)
+        logger.info(
+            "[AgentServer] %s: request_id=%s",
+            operation,
+            request.request_id,
+        )
+
+        runtime = None
+        prepared = None
+        response_delivered = False
+
+        async def abort_prepared(
+            primary_error: BaseException | None,
+        ) -> None:
+            if (
+                runtime is None
+                or prepared is None
+                or prepared.state is not SessionProvisionState.PREPARED
+            ):
+                return
+            try:
+                await runtime.abort_session_provision(prepared)
+            except asyncio.CancelledError:
+                if primary_error is None:
+                    raise
+                logger.warning(
+                    "[AgentServer] session.create abort was cancelled while "
+                    "preserving %s",
+                    type(primary_error).__name__,
+                )
+            except Exception as abort_error:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] session.create abort failed while preserving %s: %s",
+                    (
+                        type(primary_error).__name__
+                        if primary_error is not None
+                        else "normal completion"
+                    ),
+                    abort_error,
+                )
 
         try:
             channel_id = request.channel_id or "default"
             params = request.params if isinstance(request.params, dict) else {}
+            persist_session_supplied = "persist_session" in params
             raw_persist_session = params.get("persist_session", False)
             if not isinstance(raw_persist_session, bool):
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={
-                        "error": "persist_session must be a boolean",
-                        "code": "BAD_REQUEST",
-                    },
+                raise SessionProvisionError(
+                    "persist_session must be a boolean",
+                    code="BAD_REQUEST",
                 )
-                wire = encode_agent_response_for_wire(
-                    resp, response_id=request.request_id
-                )
-                async with send_lock:
-                    await send_wire_payload(ws, wire)
-                return
-            persist_session = raw_persist_session
-            mode, _, canonical_mode = resolve_agent_request_mode(params.get("mode", "agent"))
-            explicit_session_id = params.get("session_id")
-            previous_session_id = str(params.get("previous_session_id") or "").strip()
+
+            explicit_work_mode_marker = params.get("_work_mode_explicit")
+            requested = params.get("session_id")
             requested_session_id = (
-                explicit_session_id.strip()
-                if isinstance(explicit_session_id, str)
-                else ""
+                requested.strip() if isinstance(requested, str) else ""
             )
-            external_tui_session = bool(
-                requested_session_id
-                and request.req_method == ReqMethod.SESSION_CREATE
-                and channel_id.strip().lower() == "tui"
-            )
-            existing_metadata: dict[str, Any] | None = None
-            if requested_session_id and not external_tui_session:
-                raise ValueError(
-                    "session.create no longer accepts session_id; use session.switch to restore"
-                )
-            external_id_lock: asyncio.Lock | None = None
-            external_id_lock_acquired = False
-            if external_tui_session:
+            if requested_session_id and str(channel_id).strip().lower() == "tui":
                 logger.warning(
                     "[AgentServer] TUI supplied session_id via session.create; "
                     "bypassing prewarm compatibility path: session_id=%s",
                     requested_session_id,
                 )
-                if not is_valid_session_id(requested_session_id):
-                    raise ValueError("invalid session_id")
 
-                lock_key = f"external-create:{requested_session_id}"
-                external_id_lock = _session_switch_locks.get(lock_key)
-                if external_id_lock is None:
-                    external_id_lock = asyncio.Lock()
-                    _session_switch_locks[lock_key] = external_id_lock
-                await external_id_lock.acquire()
-                external_id_lock_acquired = True
-
-                # Existing TUI metadata is authoritative. The frontend injects its
-                # current cwd into every RPC, which must not rebind a restored session
-                # when `--session` is launched from another directory.
-                from jiuwenswarm.server.runtime.session.session_metadata import (
-                    get_session_metadata,
-                )
-                existing_metadata = get_session_metadata(requested_session_id)
-                if existing_metadata:
-                    existing_channel = str(
-                        existing_metadata.get("channel_id") or ""
-                    ).strip().lower()
-                    if existing_channel not in {"", "tui"}:
-                        raise ValueError("session_id is already owned by another channel")
-                    stored_persist_session = existing_metadata.get("persist_session") is True
-                    if (
-                        "persist_session" in params
-                        and persist_session != stored_persist_session
-                    ):
-                        resp = AgentResponse(
-                            request_id=request.request_id,
-                            channel_id=request.channel_id,
-                            ok=False,
-                            payload={
-                                "error": "persist_session is immutable after session creation",
-                                "code": "CONFLICT",
-                            },
-                        )
-                        wire = encode_agent_response_for_wire(
-                            resp, response_id=request.request_id
-                        )
-                        async with send_lock:
-                            await send_wire_payload(ws, wire)
-                        return
-                    persist_session = stored_persist_session
-                    for field in ("project_id", "project_dir", "work_mode", "mode"):
-                        value = existing_metadata.get(field)
-                        if isinstance(value, str) and value.strip():
-                            params[field] = value.strip()
-                    mode, _, canonical_mode = resolve_agent_request_mode(
-                        params.get("mode", "agent")
-                    )
-                else:
-                    # Resolve a new external TUI id while holding the per-id lock.
-                    # This keeps concurrent windows from rebinding the same id to
-                    # different projects before metadata becomes visible.
-                    from jiuwenswarm.server.runtime.session.project_store import (
-                        find_or_create_code_project_for_tui_params,
-                    )
-
-                    if not _uses_projectless_task_workspace(params, channel_id):
-                        project = find_or_create_code_project_for_tui_params(params)
-                        if project is not None:
-                            params["project_id"] = project.project_id
-                            params["project_dir"] = project.project_dir
-                            params["work_mode"] = project.work_mode
-            # TUI 无显式 session_id（未带 --session）创建时：AgentServer 侧按
-            # cwd/project_dir 解析真实的 code 项目并写回，避免落到默认 default_code
-            # （AgentOS 迁移前由 TUI 本地解析，现收敛到 AgentServer 保证归属一致）。
-            if (
-                not external_tui_session
-                and channel_id.strip().lower() == "tui"
-                and not _uses_projectless_task_workspace(params, channel_id)
-            ):
-                # An explicit TUI cwd/project_dir is promoted to a registered
-                # code project. Requests without either directory keep the
-                # dated task workspace behavior.
-                from jiuwenswarm.server.runtime.session.project_store import (
-                    find_or_create_code_project_for_tui_params,
-                )
-
-                candidate_dir = str(
-                    params.get("project_dir") or params.get("cwd") or ""
-                ).strip()
-                if not str(params.get("project_id") or "").strip() and candidate_dir:
-                    project = find_or_create_code_project_for_tui_params(params)
-                    if project is not None:
-                        params["project_id"] = project.project_id
-                        params["project_dir"] = project.project_dir
-                        params["work_mode"] = project.work_mode
-            # Step 1: 归一化 work_mode / project_id / project_dir 三元组
-            # (与 web _session_create 共用同一 helper，保持主路径/fallback 一致)
-            from jiuwenswarm.server.runtime.session.work_mode import resolve_session_work_mode_params
-            binding = resolve_session_work_mode_params(params, channel_id=channel_id)
-            if binding.error:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={"error": binding.error, "code": binding.code},
-                )
-                wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-                async with send_lock:
-                    await send_wire_payload(ws, wire)
-                return
-
-            # 校验并解析 project_id / project_dir 绑定关系:
-            # 一致性校验、按 project_id 自动补齐 project_dir、禁止单传 project_dir
-            from jiuwenswarm.server.runtime.session import project_store
-            from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
-            project_id, project_dir, p_err, p_code = project_store.resolve_session_project_binding(
-                binding.project_id, binding.project_dir
-            )
-            if p_err:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={"error": p_err, "code": p_code},
-                )
-                wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-                async with send_lock:
-                    await send_wire_payload(ws, wire)
-                return
-
-            # Step 3: 确定最终 work_mode
-            # 对真实 project_id: 最终 work_mode 以 Project 记录为准;若请求显式传了
-            # work_mode 且与 Project 不一致 → BAD_REQUEST(设计文档 §4.1.6)
-            # 对默认项目: 使用 binding 归一化的 work_mode
-            #
-            # has_explicit_work_mode 判定逻辑:
-            # - gateway 路径: params 含 _work_mode_explicit marker(由 gateway 注入),
-            #   消费后立即 pop。marker=True 表示用户显式传了 work_mode(需一致性校验);
-            #   marker=False 表示 gateway 注入的通道默认值(跳过校验)。
-            # - 直连路径(非 gateway): marker 缺失,使用 binding.has_explicit_work_mode
-            #   (此时 params 为原始值,binding 计算结果正确)。
-            explicit_work_mode_marker = params.pop("_work_mode_explicit", None)
-            if isinstance(explicit_work_mode_marker, bool):
-                has_explicit_work_mode = explicit_work_mode_marker
-            else:
-                # marker 缺失:直连 AgentServer 调用方,params 为原始值,
-                # binding.has_explicit_work_mode 正确反映用户是否显式传了 work_mode
-                has_explicit_work_mode = binding.has_explicit_work_mode
-            if not is_default_project_id(project_id):
-                proj = project_store.get_project_by_id(project_id, cache_bust=True)
-                if proj is not None:
-                    project_work_mode = proj.work_mode or DEFAULT_WEB_WORK_MODE
-                    if has_explicit_work_mode and project_work_mode != binding.work_mode:
-                        resp = AgentResponse(
-                            request_id=request.request_id,
-                            channel_id=request.channel_id,
-                            ok=False,
-                            payload={
-                                "error": f"work_mode mismatch: project is '{project_work_mode}' \
-                                    but request specified '{binding.work_mode}'",
-                                "code": "BAD_REQUEST",
-                            },
-                        )
-                        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-                        async with send_lock:
-                            await send_wire_payload(ws, wire)
-                        return
-                    final_work_mode = project_work_mode
-                else:
-                    # 竞态: project 已被其他进程删除/隐藏。
-                    # 不创建指向不存在项目的会话,返回 NOT_FOUND 由调用方决定回退策略。
-                    resp = AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=False,
-                        payload={
-                            "error": f"project not found: {project_id}",
-                            "code": "NOT_FOUND",
-                        },
-                    )
-                    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-                    async with send_lock:
-                        await send_wire_payload(ws, wire)
-                    return
-            else:
-                final_work_mode = binding.work_mode
-
-            # 将解析后的字段回写 params,保持与 fallback 路径(app_web_handlers)一致,
-            # 后续若读取 params.project_id/project_dir/work_mode 可直接拿到规范化值
-            params["project_id"] = project_id
-            params["project_dir"] = project_dir
-            params["work_mode"] = final_work_mode
-
-            # Resolve after the final work_mode is known. This is important for Web
-            # Team sessions: mode=team + work_mode=code must enter the same
-            # code.team runtime as the TUI team.code mode.
-            resolved = resolve_request_runtime_mode(
-                request,
-                work_mode=final_work_mode,
-            )
-            mode = resolved.manager_mode
-            canonical_mode = resolved.canonical_mode
-            params["mode"] = canonical_mode
-            is_swarm = bool(params.get("is_swarm")) or resolved.is_team
-            prewarm_eligible = (
-                not is_swarm
-                and canonical_mode
-                in {
-                    # 排除 *.plan 模式：plan 模式需先注入 plan reminder 并初始化 plan_state，
-                    # prewarm 对 plan 无意义甚至可能与 plan_slug 清理逻辑冲突，只对 normal 系有意义
-                    "agent",
-                    "code",
-                    "code.normal",
-                    "agent.work.normal",
-                    "agent.code.normal",
-                }
-                and _is_session_prewarm_model_eligible(params)
-            )
-            create_token = str(params.get("create_token") or "").strip()
-            if external_tui_session:
-                claim = WarmClaim(
-                    session_id=requested_session_id,
-                    prewarm_hit=False,
-                    prewarm_status="bypassed",
-                )
-            else:
-                if not create_token:
-                    raise ValueError("create_token is required")
-                claim = await self._agent_manager.claim_prewarmed_session(
+            runtime = self._execution_runtime()
+            await runtime.start()
+            prepared = await runtime.prepare_session_create(
+                SessionCreateInput(
                     channel_id=channel_id,
-                    project_id=project_id,
-                    project_dir=project_dir,
-                    work_mode=final_work_mode,
-                    is_swarm=is_swarm,
-                    persist_session=persist_session,
-                    prewarm_eligible=prewarm_eligible,
-                    create_token=create_token,
-                )
-            session_id = claim.session_id
-
-            # 会话目录已存在则拒绝,避免覆盖既有会话元数据(与 web 本地 handler 一致)
-            session_dir = get_agent_sessions_dir() / session_id
-            if (session_dir / "metadata.json").is_file():
-                if not external_tui_session:
-                    from jiuwenswarm.server.runtime.session.session_metadata import (
-                        get_session_metadata as read_session_metadata,
-                    )
-
-                    self._agent_manager.activate_session_prewarm(session_id)
-                    resp = AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=True,
-                        payload={
-                            "sessionId": session_id,
-                            "session_id": session_id,
-                            "projectId": project_id,
-                            "projectDir": project_dir,
-                            "workMode": final_work_mode,
-                            "persist_session": bool(
-                                read_session_metadata(session_id).get(
-                                    "persist_session", False
-                                )
-                            ),
-                            "prewarm_hit": claim.prewarm_hit,
-                            "prewarm_status": claim.prewarm_status,
-                        },
-                    )
-                    wire = encode_agent_response_for_wire(
-                        resp, response_id=request.request_id
-                    )
-                    async with send_lock:
-                        await send_wire_payload(ws, wire)
-                    return
-                session_created = False
-            else:
-                session_created = True
-
-            # 初始化会话元数据(同步写盘),将 project_dir/project_id 等字段落盘
-            if session_created:
-                from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
-                channel_metadata = None
-                if channel_id.strip().lower() == "tui":
-                    workspace = str(params.get("cwd") or project_dir or "").strip()
-                    if workspace and (
-                        not _uses_projectless_task_workspace(params, channel_id)
-                        or project_dir
-                    ):
-                        channel_metadata = {
-                            "cwd": workspace,
-                            "project_dir": project_dir or workspace,
-                        }
-                init_session_metadata(
-                    session_id=session_id,
-                    channel_id=channel_id,
-                    user_id=str(getattr(request, "user_id", "") or params.get("user_id", "") or "").strip(),
+                    requested_session_id=requested_session_id or None,
+                    previous_session_id=str(
+                        params.get("previous_session_id") or ""
+                    ).strip(),
+                    create_token=str(params.get("create_token") or "").strip(),
+                    persist_session=raw_persist_session,
+                    persist_session_supplied=persist_session_supplied,
+                    mode=params.get("mode", "agent"),
+                    previous_mode=params.get("previous_mode"),
+                    is_swarm=bool(params.get("is_swarm")),
+                    team_hint=bool(params.get("team")),
+                    project_id=params.get("project_id", ""),
+                    project_dir=params.get("project_dir", ""),
+                    cwd=params.get("cwd", ""),
+                    work_mode=params.get("work_mode"),
+                    work_mode_explicit=(
+                        explicit_work_mode_marker
+                        if isinstance(explicit_work_mode_marker, bool)
+                        else None
+                    ),
                     title=params.get("title", ""),
-                    mode=canonical_mode,
-                    project_dir=project_dir,
-                    project_id=project_id,
-                    persist_session=persist_session,
-                    work_mode=final_work_mode,
-                    # cron 执行会话（cron-session）创建时即写入 job 的 model（scheduler
-                    # SESSION_CREATE 携带 model_name），否则要等首条 chat.send 才落盘，
-                    # 前端首开会话会显示默认模型（刷新后才正确）。同步写盘，创建即可读。
-                    model=str(params.get("model_name") or "").strip(),
+                    user_id=str(
+                        getattr(request, "user_id", "")
+                        or params.get("user_id", "")
+                        or ""
+                    ).strip(),
+                    model_name=str(params.get("model_name") or "").strip(),
                     cron_id=str(params.get("cron_id") or "").strip(),
-                    channel_metadata=channel_metadata,
                 )
-                if not external_tui_session:
-                    self._agent_manager.activate_session_prewarm(session_id)
-
-            # team prepare 必须在 ack 前完成，避免首条 chat.send 与分布式切换竞态；
-            # 可选 KVC 信号放到回包后异步，避免拖慢 create RPC。
-            lifecycle_params = dict(params)
-            lifecycle_params["mode"] = canonical_mode
-            lifecycle_reason = "session.create switch: "
-            (
-                _target_is_team,
-                _resolved_mode,
-                switch_context,
-                team_manager,
-                dispatch_signals,
-            ) = await self._prepare_session_switch_owner(
-                channel_id=channel_id,
-                target_session_id=session_id,
-                previous_session_id=previous_session_id,
-                params=lifecycle_params,
-                reason=lifecycle_reason,
             )
+            params.pop("_work_mode_explicit", None)
+            result = prepared.result
 
-            resp = AgentResponse(
+            # Preserve the established mutation visible to in-process callers.
+            params["project_id"] = result.project_id
+            params["project_dir"] = result.project_dir
+            params["work_mode"] = result.work_mode
+            params["mode"] = result.canonical_mode
+
+            payload = {
+                "sessionId": result.session_id,
+                "session_id": result.session_id,
+                "projectId": result.project_id,
+                "projectDir": result.project_dir,
+                "workMode": result.work_mode,
+                "persist_session": result.persist_session,
+                "prewarm_hit": result.prewarm_hit,
+                "prewarm_status": result.prewarm_status,
+            }
+            if result.explicit_id_compatibility:
+                payload.update(
+                    {
+                        "created": result.created,
+                        "mode": result.canonical_mode,
+                    }
+                )
+
+            response = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={
-                    "sessionId": session_id,
-                    "session_id": session_id,
-                    "projectId": project_id,
-                    "projectDir": project_dir,
-                    "workMode": final_work_mode,
-                    "persist_session": persist_session,
-                    "prewarm_hit": claim.prewarm_hit,
-                    "prewarm_status": claim.prewarm_status,
-                    **(
-                        {"created": session_created, "mode": canonical_mode}
-                        if external_tui_session
-                        else {}
-                    ),
-                },
+                payload=payload,
             )
-            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            wire = encode_agent_response_for_wire(
+                response,
+                response_id=request.request_id,
+            )
             async with send_lock:
                 await send_wire_payload(ws, wire)
+            response_delivered = True
 
-            logger.info("[AgentServer] %s completed: session_id=%s", operation, session_id)
-
-            if switch_context is not None and dispatch_signals is not None:
-                kvc_task = asyncio.create_task(
-                    self._dispatch_session_switch_kvc(
-                        channel_id=channel_id,
-                        target_session_id=session_id,
-                        previous_session_id=previous_session_id,
-                        context=switch_context,
-                        dispatch_signals=dispatch_signals,
-                        view_id=str(params.get("view_id") or f"ws:{id(ws)}"),
-                    ),
-                    name=f"session-create-kvc-{session_id}",
-                )
-                _background_session_kvc_tasks.add(kvc_task)
-                kvc_task.add_done_callback(_background_session_kvc_tasks.discard)
-                kvc_task.add_done_callback(_log_background_session_kvc_failure)
-
-        except Exception as e:
-            logger.exception("[AgentServer] %s failed: %s", operation, e)
-            if not locals().get("external_tui_session", False):
-                await self._agent_manager.release_session_prewarm_claim(
-                    locals().get("session_id")
-                )
-            resp = AgentResponse(
+            await runtime.commit_session_provision(
+                prepared,
+                timing=SessionProvisionCommitTiming.AFTER_RESULT_DELIVERY,
+                context=SessionProvisionCommitContext(
+                    foreground_scope_id=str(params.get("view_id") or f"ws:{id(ws)}")
+                ),
+            )
+            logger.info(
+                "[AgentServer] %s completed: session_id=%s",
+                operation,
+                result.session_id,
+            )
+        except SessionProvisionError as error:
+            logger.warning("[AgentServer] %s rejected: %s", operation, error)
+            await abort_prepared(error)
+            if response_delivered:
+                return
+            payload = {"error": str(error)}
+            if error.code is not None:
+                payload["code"] = error.code
+            response = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(e)},
+                payload=payload,
             )
-            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            wire = encode_agent_response_for_wire(
+                response,
+                response_id=request.request_id,
+            )
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+        except Exception as error:
+            logger.exception("[AgentServer] %s failed: %s", operation, error)
+            await abort_prepared(error)
+            if response_delivered:
+                return
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(error)},
+            )
+            wire = encode_agent_response_for_wire(
+                response,
+                response_id=request.request_id,
+            )
             async with send_lock:
                 await send_wire_payload(ws, wire)
         finally:
-            external_id_lock = locals().get("external_id_lock")
-            if (
-                external_id_lock is not None
-                and locals().get("external_id_lock_acquired", False)
-            ):
-                external_id_lock.release()
+            await abort_prepared(sys.exception())
 
     async def _handle_session_fork(
             self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock

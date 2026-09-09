@@ -19,6 +19,8 @@ from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     RuntimeSessionProvisioner,
     SessionDeleteResult,
+    SessionCreateInput,
+    SessionCreateResult,
     SessionForkInput,
     SessionForkResult,
     SessionProvisionCommitContext,
@@ -413,6 +415,26 @@ class AgentRuntime:
         prepared: PreparedSessionProvision[SessionForkResult] | None = None
         try:
             prepared = await self._session_provisioner.prepare_session_fork(
+                provision_input
+            )
+            return prepared
+        finally:
+            self._session_provision_prepares -= 1
+            if prepared is not None:
+                self._pending_session_provisions.add(prepared)
+
+    async def prepare_session_create(
+        self,
+        provision_input: SessionCreateInput,
+    ) -> PreparedSessionProvision[SessionCreateResult]:
+        """Prepare a transport-neutral Session create on this Runtime."""
+        async with self._lifecycle_lock:
+            self._require_started()
+            self._session_provision_prepares += 1
+
+        prepared: PreparedSessionProvision[SessionCreateResult] | None = None
+        try:
+            prepared = await self._session_provisioner.prepare_session_create(
                 provision_input
             )
             return prepared
@@ -1130,6 +1152,10 @@ class AgentRuntime:
                     "commit or abort them before close"
                 )
             cleanup_errors: list[BaseException] = []
+            try:
+                await self._session_provisioner.close_background_tasks()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
             try:
                 await self._agent_manager.cancel_all_inflight_work("[runtime close] ")
             except BaseException as exc:  # preserve cancellation until cleanup completes
