@@ -289,7 +289,13 @@ async def _execute(
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS:
         return await host.get_authorization_status(_text(params, "provider"))
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER:
-        return await host.authorize_provider(_text(params, "provider"))
+        credentials = params.get("credentials")
+        if credentials is not None and not isinstance(credentials, dict):
+            raise ValueError("credentials must be an object")
+        return await host.authorize_provider(
+            _text(params, "provider"),
+            credentials=cast(dict[str, object] | None, credentials),
+        )
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES:
         return await host.search_graph(_text(params, "query"))
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_GET_NODE:

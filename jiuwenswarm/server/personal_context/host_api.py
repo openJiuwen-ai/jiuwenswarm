@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from copy import deepcopy
+import json
 import os
 from pathlib import Path
 import stat
@@ -17,34 +18,79 @@ import tempfile
 from collections.abc import Awaitable, Callable
 from typing import NoReturn, cast
 
+import httpx
 import yaml
 
 from openjiuwen.harness.personal_context import PersonalContext
 
-from jiuwenswarm.common.config import get_default_models
+from jiuwenswarm.common.config import get_config, get_default_models
 
 
 _CONFIG_FILENAME = "personal_context.yaml"
 _MAX_CONFIG_BYTES = 4 * 1024 * 1024
 _STOP_TIMEOUT_SECONDS = 30.0
 _PERSONAL_CONTEXT_MODEL_MAX_RETRIES = 2
+_PAT_VALIDATION_TIMEOUT_SECONDS = 15.0
+_MAX_PAT_RESPONSE_BYTES = 1024 * 1024
+_REPOSITORY_PAT_FIELDS = {"github": "token", "gitcode": "pat"}
+_REPOSITORY_USER_URLS = {
+    "github": "https://api.github.com/user",
+    "gitcode": "https://api.gitcode.com/api/v5/user",
+}
+
+
+def _directory_capacity_defaults() -> tuple[int, int]:
+    fields = PersonalContext.Config.model_fields
+    pages = fields["max_pages_per_directory"].default
+    subdirectories = fields["max_subdirectories_per_directory"].default
+    if type(pages) is not int or type(subdirectories) is not int:
+        raise RuntimeError("PersonalContext directory capacity defaults are invalid")
+    return pages, subdirectories
+
+
+def _global_embedding_values() -> tuple[str | None, str | None, str | None]:
+    try:
+        config = get_config() or {}
+    except Exception:
+        return None, None, None
+    embed = config.get("embed") if isinstance(config, dict) else None
+    if not isinstance(embed, dict):
+        return None, None, None
+    model = str(embed.get("embed_model") or "").strip()
+    base_url = str(
+        embed.get("embed_base_url") or embed.get("embed_api_base") or ""
+    ).strip()
+    api_key = str(embed.get("embed_api_key") or "").strip()
+    return (
+        (model, base_url, api_key)
+        if model and base_url and api_key
+        else (None, None, None)
+    )
 
 
 def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
+    max_pages, max_subdirectories = _directory_capacity_defaults()
     return {
         "collection_enabled": collection_enabled,
-        "agent_use_enabled": True,
+        "agent_use_enabled": False,
         "strategy_profile": "rules",
+        "max_pages_per_directory": max_pages,
+        "max_subdirectories_per_directory": max_subdirectories,
         "fetch_services": [],
+        "model_index": None,
+        "provider_credentials": {},
     }
 
 
 def _unconfigured_projection() -> dict[str, object]:
+    max_pages, max_subdirectories = _directory_capacity_defaults()
     return {
         "configured": False,
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": "rules",
+        "max_pages_per_directory": max_pages,
+        "max_subdirectories_per_directory": max_subdirectories,
         "model_index": None,
         "fetch_services": [],
     }
@@ -261,8 +307,53 @@ def _resolve_model_reference(
     return client, request
 
 
+def _normalize_provider_credentials(value: object) -> dict[str, dict[str, str]]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        _raise_host_error("provider_credentials must be an object")
+    unknown = set(value) - set(_REPOSITORY_PAT_FIELDS)
+    if unknown:
+        _raise_host_error("provider_credentials contains an unsupported provider")
+    normalized: dict[str, dict[str, str]] = {}
+    for provider, raw_credentials in value.items():
+        if not isinstance(raw_credentials, dict):
+            _raise_host_error(f"{provider} provider credentials must be an object")
+        field = _REPOSITORY_PAT_FIELDS[provider]
+        if set(raw_credentials) != {field}:
+            _raise_host_error(
+                f"{provider} provider credentials must contain only {field}"
+            )
+        secret = raw_credentials[field]
+        if not isinstance(secret, str) or not secret.strip():
+            _raise_host_error(
+                f"{provider} provider credential must be a non-empty string"
+            )
+        normalized[provider] = {field: secret.strip()}
+    return normalized
+
+
+def _project_service(service: dict[str, object]) -> dict[str, object]:
+    projected = deepcopy(service)
+    projected.pop("credentials", None)
+    return projected
+
+
+def _project_stored_config(stored: dict[str, object]) -> dict[str, object]:
+    projected = deepcopy(stored)
+    projected.pop("provider_credentials", None)
+    services = projected.get("fetch_services", [])
+    if not isinstance(services, list) or any(
+        not isinstance(service, dict) for service in services
+    ):
+        _raise_host_error("PersonalContext fetch_services are invalid")
+    projected["fetch_services"] = [_project_service(service) for service in services]
+    return projected
+
+
 def _build_core_config(stored: dict[str, object]) -> PersonalContext.Config:
     raw = deepcopy(stored)
+    raw.pop("provider_credentials", None)
     model_index = raw.pop("model_index", None)
     raw.pop("model_client", None)
     raw.pop("model_request", None)
@@ -286,13 +377,116 @@ def _prepare_stored_config(
     stored = deepcopy(config)
     stored.pop("model_client", None)
     stored.pop("model_request", None)
+    provider_credentials = _normalize_provider_credentials(
+        stored.pop("provider_credentials", {})
+    )
     candidate = _build_core_config(stored)
     normalized = candidate.model_dump(mode="json", by_alias=True)
     normalized.pop("model_client", None)
     normalized.pop("model_request", None)
     if "model_index" in stored:
         normalized["model_index"] = stored["model_index"]
+    normalized["provider_credentials"] = provider_credentials
     return normalized, candidate
+
+
+def _repository_authorization_result(
+    provider: str,
+    state: str,
+    *,
+    account: dict[str, str] | None = None,
+    error: str | None = None,
+) -> dict[str, object]:
+    return {
+        "provider": provider,
+        "state": state,
+        "account": deepcopy(account),
+        "verification_url": None,
+        "expires_at": None,
+        "error": error,
+    }
+
+
+async def _validate_repository_pat(provider: str, secret: str) -> dict[str, str]:
+    url = _REPOSITORY_USER_URLS.get(provider)
+    if url is None:
+        _raise_host_error("unsupported repository provider")
+    try:
+        async with httpx.AsyncClient(
+            timeout=_PAT_VALIDATION_TIMEOUT_SECONDS,
+            follow_redirects=False,
+        ) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {secret}",
+                },
+            )
+    except asyncio.CancelledError:
+        raise
+    except httpx.TimeoutException:
+        _raise_host_error("repository provider credential validation timed out")
+    except httpx.HTTPError:
+        _raise_host_error("repository provider credential validation request failed")
+    except Exception:
+        _raise_host_error("repository provider credential validation request failed")
+    if response.status_code != 200:
+        _raise_host_error(
+            f"repository provider credential validation returned HTTP {response.status_code}"
+        )
+    content_length = response.headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            if int(content_length) > _MAX_PAT_RESPONSE_BYTES:
+                _raise_host_error(
+                    "repository provider credential response exceeds the size limit"
+                )
+        except ValueError:
+            _raise_host_error(
+                "repository provider credential response has an invalid size"
+            )
+    content = response.content
+    if len(content) > _MAX_PAT_RESPONSE_BYTES:
+        _raise_host_error(
+            "repository provider credential response exceeds the size limit"
+        )
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError, TypeError):
+        _raise_host_error("repository provider credential response is invalid")
+    if not isinstance(payload, dict):
+        _raise_host_error("repository provider credential response is invalid")
+    login = payload.get("login") or payload.get("username")
+    display_name = payload.get("name") or payload.get("display_name") or login
+    if (
+        not isinstance(login, str)
+        or not login.strip()
+        or len(login) > 256
+        or any(ord(character) < 32 for character in login)
+        or not isinstance(display_name, str)
+        or not display_name.strip()
+        or len(display_name) > 256
+        or any(ord(character) < 32 for character in display_name)
+    ):
+        _raise_host_error("repository provider account response is invalid")
+    return {"login": login.strip(), "display_name": display_name.strip()}
+
+
+async def _validate_repository_pat_for_write(
+    provider: str,
+    secret: str,
+) -> dict[str, str]:
+    try:
+        return await _validate_repository_pat(provider, secret)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        raise _as_host_error(
+            exc,
+            f"{provider} credential verification failed",
+            status_name="CONTEXT_PROACTIVE_CONFIG_INVALID",
+        ) from None
 
 
 class PersonalContextHostAPI:
@@ -305,6 +499,18 @@ class PersonalContextHostAPI:
         self._config: PersonalContext.Config | None = None
         self._stored_config: dict[str, object] | None = None
         self._operation_lock = asyncio.Lock()
+
+    def _refresh_embedding_configuration(self) -> None:
+        model_name, base_url, api_key = _global_embedding_values()
+        self._personal_context._set_embedding_configuration(
+            model_name=model_name,
+            base_url=base_url,
+            api_key=api_key,
+        )
+
+    async def _start_collection_with_embedding(self) -> None:
+        self._refresh_embedding_configuration()
+        await self._personal_context.start_collection()
 
     async def configure(self, config: dict[str, object]) -> None:
         """Validate, save, and apply one complete configuration."""
@@ -381,6 +587,7 @@ class PersonalContextHostAPI:
 
             if candidate.collection_enabled:
                 phase = "activate"
+                self._refresh_embedding_configuration()
                 await self._personal_context.activate_runtime()
 
             if not disabled_yaml_published:
@@ -507,7 +714,11 @@ class PersonalContextHostAPI:
         """Return one consistent copy of the full configuration and Core status."""
 
         async with self._operation_lock:
-            config = deepcopy(self._stored_config)
+            config = (
+                _project_stored_config(self._stored_config)
+                if self._stored_config is not None
+                else None
+            )
             status = await self._personal_context.snapshot()
             return {
                 "configured": self._stored_config is not None,
@@ -521,7 +732,7 @@ class PersonalContextHostAPI:
         async with self._operation_lock:
             if self._stored_config is None:
                 return _unconfigured_projection()
-            return deepcopy(self._stored_config)
+            return _project_stored_config(self._stored_config)
 
     async def patch_runtime_config(
         self,
@@ -549,7 +760,7 @@ class PersonalContextHostAPI:
                 stored,
                 _serialize_config(stored),
             )
-            return deepcopy(stored)
+            return _project_stored_config(stored)
 
     async def select_model(self, model_index: int) -> dict[str, object]:
         """Select one current JiuwenSwarm model by its models.list index."""
@@ -567,7 +778,7 @@ class PersonalContextHostAPI:
                 stored,
                 _serialize_config(stored),
             )
-            return deepcopy(stored)
+            return _project_stored_config(stored)
 
     async def set_collection_enabled(self, enabled: bool) -> dict[str, object]:
         """Persist and apply the PersonalContext collection switch."""
@@ -596,7 +807,7 @@ class PersonalContextHostAPI:
                     stored,
                     _serialize_config(stored),
                     apply=(
-                        self._personal_context.start_collection
+                        self._start_collection_with_embedding
                         if enabled
                         else lambda: self._personal_context.stop_collection(
                             timeout_seconds=_STOP_TIMEOUT_SECONDS
@@ -609,11 +820,11 @@ class PersonalContextHostAPI:
                             )
                         )
                         if enabled
-                        else self._personal_context.start_collection
+                        else self._start_collection_with_embedding
                     ),
                     publish_before_apply=not enabled,
                 )
-            result = deepcopy(stored)
+            result = _project_stored_config(stored)
             if first_start:
                 result["model_index"] = None
             return result
@@ -644,7 +855,7 @@ class PersonalContextHostAPI:
                     else self._personal_context.start_agent_use
                 ),
             )
-            return deepcopy(stored)
+            return _project_stored_config(stored)
 
     async def list_fetch_services(self) -> list[dict[str, object]]:
         """Return every fixed fetch service configuration."""
@@ -652,10 +863,10 @@ class PersonalContextHostAPI:
         async with self._operation_lock:
             if self._stored_config is None:
                 return []
-            return cast(
-                list[dict[str, object]],
-                deepcopy(self._stored_config["fetch_services"]),
+            services = cast(
+                list[dict[str, object]], self._stored_config["fetch_services"]
             )
+            return [_project_service(service) for service in services]
 
     async def create_fetch_service(
         self,
@@ -687,8 +898,34 @@ class PersonalContextHostAPI:
                     _raise_host_error(
                         f"{normalized_provider} fetch service limit of 20 has been reached"
                     )
-            services.append(deepcopy(service))
+            internal_service = deepcopy(service)
+            if normalized_provider in _REPOSITORY_PAT_FIELDS:
+                if "credentials" in service:
+                    _raise_host_error(
+                        "repository fetch service credentials are managed by the provider authorization"
+                    )
+                provider_credentials = cast(
+                    dict[str, dict[str, str]],
+                    stored.get("provider_credentials", {}),
+                )
+                current = provider_credentials.get(normalized_provider)
+                field = _REPOSITORY_PAT_FIELDS[normalized_provider]
+                if current is None or field not in current:
+                    _raise_host_error(
+                        f"{normalized_provider} must be authorized before creating a fetch service"
+                    )
+                internal_service["credentials"] = {field: current[field]}
+            services.append(internal_service)
             stored, candidate = _prepare_stored_config(stored)
+            if normalized_provider in _REPOSITORY_PAT_FIELDS:
+                current_credentials = cast(
+                    dict[str, dict[str, str]],
+                    stored["provider_credentials"],
+                )[normalized_provider]
+                await _validate_repository_pat_for_write(
+                    normalized_provider,
+                    current_credentials[_REPOSITORY_PAT_FIELDS[normalized_provider]],
+                )
             await self._apply_configuration_locked(
                 candidate,
                 stored,
@@ -703,7 +940,7 @@ class PersonalContextHostAPI:
                 for item in normalized_services
                 if cast(str, item["service_id"]) not in existing_ids
             )
-            return deepcopy(created)
+            return _project_service(created)
 
     async def delete_fetch_service(self, service_id: str) -> None:
         """Remove one stopped service and its cursor while retaining Context files."""
@@ -793,7 +1030,6 @@ class PersonalContextHostAPI:
             "interval_seconds",
             "max_items_per_run",
             "source",
-            "credentials",
             "time_range",
         }
         if set(patch) - allowed:
@@ -830,7 +1066,7 @@ class PersonalContextHostAPI:
                 for service in updated_services
                 if service["service_id"] == normalized_id
             )
-            return deepcopy(updated)
+            return _project_service(updated)
 
     async def get_fetch_run_status(
         self,
@@ -927,28 +1163,14 @@ class PersonalContextHostAPI:
             return await self._personal_context.run_fetch(service_id=service_id)
 
     async def stop_fetch_run(self, service_id: str) -> dict[str, object]:
-        """Stop one service's active fetch run without changing its enabled flag.
-
-        Unlike stop_service (which toggles the scheduled-fetch `enabled` flag),
-        this aborts the in-flight fetch task only — the auto-fetch schedule is
-        preserved. Delegates to the Core's stop_fetch_service.
-        """
+        """Stop one active fetch round without changing persisted configuration."""
 
         if not isinstance(service_id, str) or not service_id.strip():
             _raise_host_error("service_id must be a non-empty string")
         normalized_id = service_id.strip()
         async with self._operation_lock:
-            try:
-                await self._personal_context.stop_fetch_service(normalized_id)
-            except asyncio.CancelledError:
-                raise
-            except BaseException as exc:
-                raise _as_host_error(
-                    exc,
-                    "PersonalContext fetch run could not be stopped",
-                    status_name="CONTEXT_PROACTIVE_FETCH_EXECUTION_ERROR",
-                ) from None
-            return {"ok": True}
+            await self._personal_context.stop_fetch_run(normalized_id)
+        return {"ok": True}
 
     async def get_graph(
         self,
@@ -986,9 +1208,47 @@ class PersonalContextHostAPI:
         return await self._personal_context.get_source(source_id)
 
     async def get_authorization_status(self, provider: str) -> dict[str, object]:
-        """Read provider authorization status without storing Host-side state."""
+        """Read the current provider credential state without exposing credentials."""
 
         async with self._operation_lock:
+            if not isinstance(provider, str) or not provider.strip():
+                _raise_host_error("provider must be a non-empty string")
+            normalized_provider = provider.strip().casefold()
+            if normalized_provider in _REPOSITORY_PAT_FIELDS:
+                if self._stored_config is None:
+                    return _repository_authorization_result(
+                        normalized_provider,
+                        "not_authorized",
+                    )
+                provider_credentials = cast(
+                    dict[str, dict[str, str]],
+                    self._stored_config.get("provider_credentials", {}),
+                )
+                current = provider_credentials.get(normalized_provider)
+                field = _REPOSITORY_PAT_FIELDS[normalized_provider]
+                if current is None or field not in current:
+                    return _repository_authorization_result(
+                        normalized_provider,
+                        "not_authorized",
+                    )
+                try:
+                    account = await _validate_repository_pat(
+                        normalized_provider,
+                        current[field],
+                    )
+                except Exception:
+                    return _repository_authorization_result(
+                        normalized_provider,
+                        "authorization_failed",
+                        error="credential verification failed",
+                    )
+                return _repository_authorization_result(
+                    normalized_provider,
+                    "authorized",
+                    account=account,
+                )
+            if normalized_provider != "feishu":
+                _raise_host_error("provider does not support authorization")
             if self._config is None:
                 _raise_host_error(
                     "PersonalContext configuration must be set before provider authorization"
@@ -996,7 +1256,9 @@ class PersonalContextHostAPI:
             result: dict[str, object] | None = None
             cancelled: asyncio.CancelledError | None = None
             try:
-                result = await self._personal_context.get_authorization_status(provider)
+                result = await self._personal_context.get_authorization_status(
+                    normalized_provider
+                )
             except asyncio.CancelledError as exc:
                 cancelled = exc
             except Exception as exc:
@@ -1011,16 +1273,74 @@ class PersonalContextHostAPI:
                 )
             return result
 
-    async def authorize_provider(self, provider: str) -> dict[str, object]:
+    async def authorize_provider(
+        self,
+        provider: str,
+        credentials: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         """Check or begin user authorization for a configured provider."""
 
         async with self._operation_lock:
+            if not isinstance(provider, str) or not provider.strip():
+                _raise_host_error("provider must be a non-empty string")
+            normalized_provider = provider.strip().casefold()
+            if normalized_provider in _REPOSITORY_PAT_FIELDS:
+                field = _REPOSITORY_PAT_FIELDS[normalized_provider]
+                if not isinstance(credentials, dict) or set(credentials) != {field}:
+                    _raise_host_error(
+                        f"{normalized_provider} credentials must contain only {field}"
+                    )
+                secret = credentials[field]
+                if not isinstance(secret, str) or not secret.strip():
+                    _raise_host_error(
+                        f"{normalized_provider} credential must be a non-empty string"
+                    )
+                normalized_secret = secret.strip()
+                account = await _validate_repository_pat_for_write(
+                    normalized_provider,
+                    normalized_secret,
+                )
+                stored = (
+                    deepcopy(self._stored_config)
+                    if self._stored_config is not None
+                    else _initial_stored_config(collection_enabled=False)
+                )
+                provider_credentials = _normalize_provider_credentials(
+                    stored.get("provider_credentials", {})
+                )
+                provider_credentials[normalized_provider] = {field: normalized_secret}
+                stored["provider_credentials"] = provider_credentials
+                stored, candidate = _prepare_stored_config(stored)
+                payload = _serialize_config(stored)
+                if self._stored_config is None:
+                    await self._apply_configuration_locked(candidate, stored, payload)
+                else:
+                    try:
+                        _publish_yaml(self._config_path, payload)
+                    except Exception as exc:
+                        raise _as_host_error(
+                            exc,
+                            "PersonalContext provider credential could not be saved",
+                            status_name="CONTEXT_PROACTIVE_FILE_EXECUTION_ERROR",
+                        ) from None
+                    self._stored_config = deepcopy(stored)
+                return _repository_authorization_result(
+                    normalized_provider,
+                    "authorized",
+                    account=account,
+                )
+            if normalized_provider != "feishu":
+                _raise_host_error("provider does not support authorization")
+            if credentials is not None:
+                _raise_host_error("feishu authorization does not accept credentials")
             if self._config is None:
                 _raise_host_error(
                     "PersonalContext configuration must be set before provider authorization"
                 )
             try:
-                return await self._personal_context.authorize_provider(provider)
+                return await self._personal_context.authorize_provider(
+                    normalized_provider
+                )
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:
@@ -1035,11 +1355,7 @@ class PersonalContextHostAPI:
             if self._config is None:
                 raw = _read_yaml(self._config_path)
                 if raw is None:
-                    # First deployment: persist a default config so the
-                    # settings page opens with collection ON by default.
-                    raw = _initial_stored_config(collection_enabled=True)
-                    payload = _serialize_config(raw)
-                    _publish_yaml(self._config_path, payload)
+                    return
                 stored, config = _prepare_stored_config(raw)
                 try:
                     await self._personal_context.set_configuration(config)
@@ -1057,6 +1373,7 @@ class PersonalContextHostAPI:
             if config is None or not config.collection_enabled:
                 return
             try:
+                self._refresh_embedding_configuration()
                 await self._personal_context.activate_runtime()
             except BaseException as exc:
                 if isinstance(exc, asyncio.CancelledError):
@@ -1115,6 +1432,7 @@ class PersonalContextHostAPI:
             return
         await self._personal_context.set_configuration(previous)
         if was_active and previous.collection_enabled:
+            self._refresh_embedding_configuration()
             await self._personal_context.activate_runtime()
         self._config = previous
         self._stored_config = deepcopy(previous_stored)

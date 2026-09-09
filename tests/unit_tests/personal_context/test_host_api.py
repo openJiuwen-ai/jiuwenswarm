@@ -30,6 +30,8 @@ UNCONFIGURED_PROJECTION = {
     "collection_enabled": False,
     "agent_use_enabled": False,
     "strategy_profile": "rules",
+    "max_pages_per_directory": 20,
+    "max_subdirectories_per_directory": 20,
     "model_index": None,
     "fetch_services": [],
 }
@@ -87,6 +89,41 @@ def _bookmark_service(service_id: str) -> dict[str, object]:
     }
 
 
+def _repository_service(service_id: str, provider: str) -> dict[str, object]:
+    return {
+        "service_id": service_id,
+        "provider": provider,
+        "enabled": True,
+        "interval_seconds": 60.0,
+        "max_items_per_run": None,
+        "time_range": {"mode": "all"},
+        "source": {
+            "owner": "acme",
+            "repo": "demo",
+            "resources": ["readme", "issues", "pull_requests", "commits", "code"],
+        },
+    }
+
+
+def _repository_config(
+    *,
+    github_token: str = "github-current",
+    gitcode_pat: str = "gitcode-current",
+    services: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "collection_enabled": False,
+        "agent_use_enabled": False,
+        "strategy_profile": "rules",
+        "model_index": None,
+        "provider_credentials": {
+            "github": {"token": github_token},
+            "gitcode": {"pat": gitcode_pat},
+        },
+        "fetch_services": services or [],
+    }
+
+
 def _config_with_services(
     services: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -111,6 +148,9 @@ class FakeCore:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.embedding_configurations: list[
+            tuple[str | None, str | None, str | None]
+        ] = []
         self.snapshot_result: object = object()
         self.snapshot_error: BaseException | None = None
         self.configured: object | None = None
@@ -136,6 +176,15 @@ class FakeCore:
         self.authorization_status_error: BaseException | None = None
         self.authorization_status_started: asyncio.Event | None = None
         self.authorization_status_release: asyncio.Event | None = None
+
+    def _set_embedding_configuration(
+        self,
+        *,
+        model_name: str | None,
+        base_url: str | None,
+        api_key: str | None,
+    ) -> None:
+        self.embedding_configurations.append((model_name, base_url, api_key))
 
     async def set_configuration(self, config: object) -> None:
         self.calls.append(("set_configuration", config))
@@ -251,6 +300,9 @@ class FakeCore:
             "service_ids": [service_id or "local-notes"],
         }
 
+    async def stop_fetch_run(self, service_id: str) -> None:
+        self.calls.append(("stop_fetch_run", service_id))
+
     def remove_fetch_cursor(self, service_id: str) -> bytes | None:
         self.calls.append(("remove_fetch_cursor", service_id))
         if self.remove_cursor_error is not None:
@@ -329,7 +381,7 @@ def fake_host(
     return host, fake
 
 
-def test_host_module_imports_personal_context_from_harness() -> None:
+def test_host_module_imports_only_personal_context_from_core() -> None:
     tree = ast.parse(HOST_API_PATH.read_text(encoding="utf-8"))
     imported: list[str] = []
     for node in ast.walk(tree):
@@ -378,18 +430,97 @@ def test_constructor_does_not_read_or_write_yaml(tmp_path: Path) -> None:
     assert host._config is None
 
 
+@pytest.mark.parametrize(
+    ("global_config", "expected"),
+    [
+        ({}, (None, None, None)),
+        ({"embed": {"embed_model": "model"}}, (None, None, None)),
+        (
+            {
+                "embed": {
+                    "embed_model": " embedding-model ",
+                    "embed_base_url": " https://embedding.invalid/v1/embeddings ",
+                    "embed_api_key": " top-secret ",
+                }
+            },
+            (
+                "embedding-model",
+                "https://embedding.invalid/v1/embeddings",
+                "top-secret",
+            ),
+        ),
+        (
+            {
+                "embed": {
+                    "embed_model": "legacy-model",
+                    "embed_api_base": "https://legacy.invalid/embeddings",
+                    "embed_api_key": "legacy-secret",
+                }
+            },
+            ("legacy-model", "https://legacy.invalid/embeddings", "legacy-secret"),
+        ),
+    ],
+)
+def test_global_embedding_values_require_one_complete_existing_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    global_config: dict[str, object],
+    expected: tuple[str | None, str | None, str | None],
+) -> None:
+    monkeypatch.setattr(host_module, "get_config", lambda: deepcopy(global_config))
+    assert host_module._global_embedding_values() == expected
+
+
 @pytest.mark.asyncio
-async def test_start_without_yaml_bootstraps_default_config(tmp_path: Path) -> None:
+async def test_host_refreshes_global_embedding_before_activation_without_persisting_it(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+    values = {
+        "embed_model": "embedding-model",
+        "embed_base_url": "https://embedding.invalid/v1/embeddings",
+        "embed_api_key": "top-secret",
+    }
+    monkeypatch.setattr(host_module, "get_config", lambda: {"embed": deepcopy(values)})
+
+    await host.configure(_config(enabled=True))
+
+    assert core.embedding_configurations == [
+        ("embedding-model", "https://embedding.invalid/v1/embeddings", "top-secret")
+    ]
+    serialized = host._config_path.read_text(encoding="utf-8")
+    core.snapshot_result = _FakeStatus()
+    overview = await host.get_overview()
+    assert "top-secret" not in serialized
+    assert "embedding.invalid" not in serialized
+    assert "top-secret" not in str(overview)
+    assert "embedding.invalid" not in str(overview)
+
+    await host.stop(timeout_seconds=1)
+    values.update(
+        {
+            "embed_model": "new-model",
+            "embed_base_url": "https://new.invalid/embeddings",
+            "embed_api_key": "new-secret",
+        }
+    )
+    await host.start()
+    assert core.embedding_configurations[-1] == (
+        "new-model",
+        "https://new.invalid/embeddings",
+        "new-secret",
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_without_yaml_keeps_host_unconfigured(tmp_path: Path) -> None:
     home = tmp_path / "personal_context"
     host = PersonalContextHostAPI(home=home)
     await host.start()
     status = await host.get_status()
-    # First deployment bootstraps a default config (collection + agent-use ON)
-    # so the settings page opens with the toggle enabled by default.
-    assert status.configured is True
-    assert status.collection_enabled is True
-    assert status.agent_use_enabled is True
-    assert (home / "personal_context.yaml").is_file()
+    assert status.configured is False
+    assert status.state == "CREATED"
+    assert not home.exists()
 
 
 @pytest.mark.asyncio
@@ -445,8 +576,10 @@ async def test_unconfigured_projection_and_stop_are_read_only_until_first_start(
     started = await host.set_collection_enabled(True)
 
     assert started["collection_enabled"] is True
-    assert started["agent_use_enabled"] is True
+    assert started["agent_use_enabled"] is False
     assert started["strategy_profile"] == "rules"
+    assert started["max_pages_per_directory"] == 20
+    assert started["max_subdirectories_per_directory"] == 20
     assert started["model_index"] is None
     assert started["fetch_services"] == []
     assert host._config_path.is_file()
@@ -455,6 +588,33 @@ async def test_unconfigured_projection_and_stop_are_read_only_until_first_start(
         "activate_runtime",
     ]
     assert core.active is True
+
+
+@pytest.mark.asyncio
+async def test_directory_capacity_is_persisted_and_projected_but_not_runtime_patchable(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    tmp_path: Path,
+) -> None:
+    host, _core = fake_host
+    config = _config(root_dir=tmp_path)
+    config.update(
+        max_pages_per_directory=7,
+        max_subdirectories_per_directory=9,
+    )
+
+    await host.configure(config)
+
+    projected = await host.get_runtime_config()
+    assert projected["max_pages_per_directory"] == 7
+    assert projected["max_subdirectories_per_directory"] == 9
+    persisted = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
+    assert persisted["max_pages_per_directory"] == 7
+    assert persisted["max_subdirectories_per_directory"] == 9
+
+    with pytest.raises(PersonalContext.Error):
+        await host.patch_runtime_config({"max_pages_per_directory": 8})
+
+    assert await host.get_runtime_config() == projected
 
 
 @pytest.mark.asyncio
@@ -825,7 +985,7 @@ async def test_get_status_does_not_wait_for_operation_lock(
 
 
 @pytest.mark.asyncio
-async def test_get_overview_returns_full_config_including_credentials(
+async def test_get_overview_omits_provider_and_service_credentials(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
 ) -> None:
@@ -839,16 +999,512 @@ async def test_get_overview_returns_full_config_including_credentials(
         "resources": ["readme", "issues", "pull_requests", "commits", "code"],
     }
     service["credentials"] = {"token": "plain-token"}
+    config["provider_credentials"] = {
+        "github": {"token": "current-token"},
+        "gitcode": {"pat": "current-pat"},
+    }
     core.snapshot_result = _FakeStatus()
 
     await host.configure(config)
     overview = await host.get_overview()
 
     assert overview["configured"] is True
-    assert overview["config"]["fetch_services"][0]["credentials"] == {
-        "token": "plain-token"
-    }
+    assert "provider_credentials" not in overview["config"]
+    assert "credentials" not in overview["config"]["fetch_services"][0]
     assert overview["status"] == {"state": "RUNNING", "configured": True}
+    saved = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
+    assert saved["provider_credentials"]["github"]["token"] == "current-token"
+    assert saved["fetch_services"][0]["credentials"]["token"] == "plain-token"
+    assert core.configured.fetch_services[0].credentials == {"token": "plain-token"}
+    assert not hasattr(core.configured, "provider_credentials")
+
+
+@pytest.mark.parametrize(
+    "provider_credentials",
+    [
+        {"github": {"token": ""}},
+        {"gitcode": {"pat": ""}},
+        {"github": {"pat": "wrong-field"}},
+        {"gitcode": {"token": "wrong-field"}},
+        {"github": {"token": "ok", "extra": "no"}},
+        {"unknown": {"token": "no"}},
+        {"github": "not-an-object"},
+    ],
+)
+def test_provider_credentials_reject_invalid_closed_shapes(
+    provider_credentials: object,
+) -> None:
+    config = _repository_config()
+    config["provider_credentials"] = provider_credentials
+
+    with pytest.raises(PersonalContext.Error):
+        host_module._prepare_stored_config(config)
+
+
+@pytest.mark.asyncio
+async def test_all_public_configuration_projections_are_deep_and_credential_free(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    tmp_path: Path,
+) -> None:
+    host, _core = fake_host
+    github = _repository_service("github-old", "github")
+    github["credentials"] = {"token": "github-snapshot"}
+    await host.configure(_repository_config(services=[github]))
+
+    runtime = await host.get_runtime_config()
+    listed = await host.list_fetch_services()
+    patched_runtime = await host.patch_runtime_config({"strategy_profile": "rules"})
+    created = await host.create_fetch_service(_bookmark_service("bookmarks"))
+    patched_service = await host.patch_fetch_service(
+        "bookmarks", {"interval_seconds": 120.0}
+    )
+
+    for projection in (runtime, patched_runtime):
+        assert "provider_credentials" not in projection
+        assert all(
+            "credentials" not in service for service in projection["fetch_services"]
+        )
+    assert all("credentials" not in service for service in listed)
+    assert "credentials" not in created
+    assert "credentials" not in patched_service
+    runtime["fetch_services"][0]["source"]["owner"] = "mutated"
+    reread = await host.get_runtime_config()
+    reread_github = next(
+        service
+        for service in reread["fetch_services"]
+        if service["service_id"] == "github-old"
+    )
+    assert reread_github["source"]["owner"] == "acme"
+    assert (
+        host._stored_config["provider_credentials"]["github"]["token"]
+        == "github-current"
+    )
+    stored_github = next(
+        service
+        for service in host._stored_config["fetch_services"]
+        if service["service_id"] == "github-old"
+    )
+    assert stored_github["credentials"]["token"] == "github-snapshot"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_current", [False, True])
+async def test_start_loads_existing_repository_snapshots_without_network_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    include_current: bool,
+) -> None:
+    home = tmp_path / "personal_context"
+    home.mkdir()
+    service = _repository_service("github-old", "github")
+    service["credentials"] = {"token": "old-service-token"}
+    config = _repository_config(services=[service])
+    if not include_current:
+        config["provider_credentials"] = {}
+    (home / "personal_context.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False),
+        encoding="utf-8",
+    )
+    host = PersonalContextHostAPI(home=home)
+    core = FakeCore()
+    monkeypatch.setattr(host, "_personal_context", core)
+
+    async def unexpected_validation(_provider: str, _secret: str) -> dict[str, str]:
+        raise AssertionError("startup must not validate repository PATs")
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", unexpected_validation, raising=False
+    )
+
+    await host.start()
+
+    assert core.configured.fetch_services[0].credentials == {
+        "token": "old-service-token"
+    }
+    assert host._stored_config["fetch_services"][0]["credentials"] == {
+        "token": "old-service-token"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "secret", "url", "payload"),
+    [
+        (
+            "github",
+            "github-canary",
+            "https://api.github.com/user",
+            {"login": "octocat", "name": "Octo Cat", "ignored": "secret"},
+        ),
+        (
+            "gitcode",
+            "gitcode-canary",
+            "https://api.gitcode.com/api/v5/user",
+            {"login": "gitcoder", "name": "Git Coder", "ignored": "secret"},
+        ),
+    ],
+)
+async def test_repository_pat_validation_uses_fixed_endpoint_and_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    secret: str,
+    url: str,
+    payload: dict[str, object],
+) -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    class Response:
+        status_code = 200
+        headers = {"Content-Length": "128", "Content-Type": "application/json"}
+        content = b"{}"
+
+        def json(self) -> dict[str, object]:
+            return dict(payload)
+
+    class Client:
+        def __init__(self, *, timeout: object, follow_redirects: bool) -> None:
+            assert timeout is not None
+            assert follow_redirects is False
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, request_url: str, *, headers: dict[str, str]) -> Response:
+            calls.append((request_url, dict(headers)))
+            return Response()
+
+    monkeypatch.setattr(host_module.httpx, "AsyncClient", Client)
+
+    account = await host_module._validate_repository_pat(provider, secret)
+
+    assert account == {"login": payload["login"], "display_name": payload["name"]}
+    assert calls == [
+        (url, {"Accept": "application/json", "Authorization": f"Bearer {secret}"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repository_pat_first_authorization_creates_minimal_stopped_configuration(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+    validations: list[tuple[str, str]] = []
+
+    async def validate(provider: str, secret: str) -> dict[str, str]:
+        validations.append((provider, secret))
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", validate, raising=False
+    )
+
+    result = await host.authorize_provider(
+        "github", credentials={"token": "first-token"}
+    )
+
+    assert result == {
+        "provider": "github",
+        "state": "authorized",
+        "account": {"login": "account", "display_name": "Account"},
+        "verification_url": None,
+        "expires_at": None,
+        "error": None,
+    }
+    assert validations == [("github", "first-token")]
+    assert [name for name, _value in core.calls] == ["set_configuration"]
+    saved = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
+    assert saved == {
+        "collection_enabled": False,
+        "agent_use_enabled": False,
+        "strategy_profile": "rules",
+        "max_pages_per_directory": 20,
+        "max_subdirectories_per_directory": 20,
+        "fetch_services": [],
+        "model_index": None,
+        "provider_credentials": {"github": {"token": "first-token"}},
+    }
+    assert "provider_credentials" not in await host.get_runtime_config()
+
+
+@pytest.mark.asyncio
+async def test_repository_pat_replacement_only_changes_future_service_snapshots(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+
+    async def validate(provider: str, secret: str) -> dict[str, str]:
+        return {"login": f"{provider}-{secret}", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", validate, raising=False
+    )
+    await host.authorize_provider("github", credentials={"token": "old-token"})
+    old_public = await host.create_fetch_service(
+        _repository_service("github-old", "github")
+    )
+    old_snapshot = host._stored_config["fetch_services"][0]["credentials"]["token"]
+    core.calls.clear()
+
+    await host.authorize_provider("github", credentials={"token": "new-token"})
+
+    assert core.calls == []
+    assert old_public.get("credentials") is None
+    assert (
+        host._stored_config["fetch_services"][0]["credentials"]["token"]
+        == old_snapshot
+        == "old-token"
+    )
+    new_public = await host.create_fetch_service(
+        _repository_service("github-new", "github")
+    )
+    snapshots = {
+        service["service_id"]: service["credentials"]["token"]
+        for service in host._stored_config["fetch_services"]
+    }
+    assert snapshots == {"github-new": "new-token", "github-old": "old-token"}
+    assert "credentials" not in new_public
+
+
+@pytest.mark.asyncio
+async def test_repository_authorization_and_creation_reject_unsafe_credentials(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    host, core = fake_host
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        raise RuntimeError("validation failed")
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", validate, raising=False
+    )
+    for provider, credentials in (
+        ("github", None),
+        ("github", {"pat": "wrong"}),
+        ("gitcode", {"token": "wrong"}),
+        ("feishu", {"token": "not-allowed"}),
+    ):
+        with pytest.raises((PersonalContext.Error, TypeError)):
+            await host.authorize_provider(provider, credentials=credentials)
+    assert core.calls == []
+
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    service = _repository_service("github-explicit", "github")
+    service["credentials"] = {"token": "request-secret"}
+    before = host._config_path.read_bytes()
+    with pytest.raises(PersonalContext.Error):
+        await host.create_fetch_service(service)
+    with pytest.raises(PersonalContext.Error):
+        await host.create_fetch_service(
+            _repository_service("github-no-current", "github")
+        )
+    assert host._config_path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_repository_authorization_status_is_live_bounded_and_credential_free(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, _core = fake_host
+    assert await host.get_authorization_status("github") == {
+        "provider": "github",
+        "state": "not_authorized",
+        "account": None,
+        "verification_url": None,
+        "expires_at": None,
+        "error": None,
+    }
+
+    should_fail = False
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        if should_fail:
+            raise RuntimeError("sensitive credential/network detail")
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", validate, raising=False
+    )
+    await host.authorize_provider("gitcode", credentials={"pat": "current-pat"})
+    authorized = await host.get_authorization_status("gitcode")
+    assert authorized["state"] == "authorized"
+    assert authorized["account"] == {"login": "account", "display_name": "Account"}
+    assert set(authorized) == {
+        "provider",
+        "state",
+        "account",
+        "verification_url",
+        "expires_at",
+        "error",
+    }
+
+    should_fail = True
+    failed = await host.get_authorization_status("gitcode")
+    assert failed["state"] == "authorization_failed"
+    assert failed["account"] is None
+    assert failed["error"] == "credential verification failed"
+    assert "sensitive" not in repr(failed)
+
+
+@pytest.mark.asyncio
+async def test_invalid_or_unpublishable_pat_replacement_preserves_old_state(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+
+    async def validate(_provider: str, secret: str) -> dict[str, str]:
+        if secret == "invalid-token":
+            raise RuntimeError("invalid secret detail")
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", validate, raising=False
+    )
+    await host.authorize_provider("github", credentials={"token": "old-token"})
+    old_yaml = host._config_path.read_bytes()
+    old_stored = deepcopy(host._stored_config)
+    core.calls.clear()
+
+    with pytest.raises((PersonalContext.Error, RuntimeError)):
+        await host.authorize_provider("github", credentials={"token": "invalid-token"})
+    assert host._config_path.read_bytes() == old_yaml
+    assert host._stored_config == old_stored
+    assert core.calls == []
+
+    def fail_replace(_temporary: Path, _path: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(host_module, "_replace_yaml", fail_replace)
+    with pytest.raises(PersonalContext.Error):
+        await host.authorize_provider("github", credentials={"token": "new-token"})
+    assert host._config_path.read_bytes() == old_yaml
+    assert host._stored_config == old_stored
+    assert core.calls == []
+    assert list(host._home.glob(".*.tmp")) == []
+
+
+@pytest.mark.asyncio
+async def test_repository_service_revalidation_failure_changes_nothing(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+    should_fail = False
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        if should_fail:
+            raise RuntimeError("current PAT is no longer valid")
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", validate, raising=False
+    )
+    await host.authorize_provider("github", credentials={"token": "current-token"})
+    old_yaml = host._config_path.read_bytes()
+    old_stored = deepcopy(host._stored_config)
+    core.calls.clear()
+    should_fail = True
+
+    with pytest.raises((PersonalContext.Error, RuntimeError)):
+        await host.create_fetch_service(_repository_service("github-failed", "github"))
+
+    assert host._config_path.read_bytes() == old_yaml
+    assert host._stored_config == old_stored
+    assert core.calls == []
+
+
+@pytest.mark.asyncio
+async def test_manual_service_pat_edit_requires_new_host_start_and_does_not_validate(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, _core = fake_host
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module, "_validate_repository_pat", validate, raising=False
+    )
+    await host.authorize_provider("github", credentials={"token": "current-token"})
+    await host.create_fetch_service(_repository_service("github-manual", "github"))
+    assert (
+        host._stored_config["fetch_services"][0]["credentials"]["token"]
+        == "current-token"
+    )
+
+    edited = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
+    edited["fetch_services"][0]["credentials"]["token"] = "manual-token"
+    host._config_path.write_text(
+        yaml.safe_dump(edited, sort_keys=False), encoding="utf-8"
+    )
+    assert (
+        host._stored_config["fetch_services"][0]["credentials"]["token"]
+        == "current-token"
+    )
+
+    restarted = PersonalContextHostAPI(home=host._home)
+    restarted_core = FakeCore()
+    monkeypatch.setattr(restarted, "_personal_context", restarted_core)
+
+    async def unexpected_validation(_provider: str, _secret: str) -> dict[str, str]:
+        raise AssertionError(
+            "startup must not validate manually edited service snapshots"
+        )
+
+    monkeypatch.setattr(host_module, "_validate_repository_pat", unexpected_validation)
+    await restarted.start()
+    assert (
+        restarted._stored_config["fetch_services"][0]["credentials"]["token"]
+        == "manual-token"
+    )
+    assert restarted_core.configured.fetch_services[0].credentials == {
+        "token": "manual-token"
+    }
+
+
+@pytest.mark.asyncio
+async def test_pat_http_failure_does_not_expose_response_or_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Response:
+        status_code = 401
+        headers = {"Content-Length": "64"}
+        content = b'{"token":"response-secret","message":"bad"}'
+
+        def json(self) -> dict[str, object]:
+            return {"token": "response-secret", "message": "bad"}
+
+    class Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "Client":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def get(self, _url: str, *, headers: dict[str, str]) -> Response:
+            assert headers["Authorization"] == "Bearer request-secret"
+            return Response()
+
+    monkeypatch.setattr(host_module.httpx, "AsyncClient", Client)
+
+    with pytest.raises(PersonalContext.Error) as caught:
+        await host_module._validate_repository_pat("github", "request-secret")
+
+    serialized = str(caught.value)
+    assert "request-secret" not in serialized
+    assert "response-secret" not in serialized
 
 
 @pytest.mark.asyncio
@@ -1344,7 +2000,6 @@ async def test_list_fetch_services_returns_configuration_without_runtime_state(
             "max_items_per_run": None,
             "time_range": {"mode": "all"},
             "source": {"root_dir": str(tmp_path)},
-            "credentials": {},
         }
     ]
     assert core.calls[-1] != ("snapshot", None)
@@ -1788,7 +2443,7 @@ async def test_patch_existing_fetch_service_without_changing_identity(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["service_id", "provider", "enabled"])
+@pytest.mark.parametrize("field", ["service_id", "provider", "enabled", "credentials"])
 async def test_patch_fetch_service_rejects_identity_and_switch_fields(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
@@ -1964,6 +2619,40 @@ async def test_run_fetch_is_serialized_with_configuration_operations(
         "service_ids": ["local-notes"],
     }
     assert core.calls == [("run_fetch", None)]
+
+
+@pytest.mark.asyncio
+async def test_stop_fetch_run_delegates_without_modifying_yaml(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    tmp_path: Path,
+) -> None:
+    host, core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    config_path = host._home / "personal_context.yaml"
+    saved = config_path.read_bytes()
+    configured = host._config
+    core.calls.clear()
+
+    result = await host.stop_fetch_run(" local-notes ")
+
+    assert result == {"ok": True}
+    assert core.calls == [("stop_fetch_run", "local-notes")]
+    assert host._config is configured
+    assert config_path.read_bytes() == saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service_id", ["", "   ", 1, None])
+async def test_stop_fetch_run_rejects_invalid_service_id(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    service_id: object,
+) -> None:
+    host, core = fake_host
+
+    with pytest.raises(PersonalContext.Error):
+        await host.stop_fetch_run(service_id)  # type: ignore[arg-type]
+
+    assert core.calls == []
 
 
 @pytest.mark.asyncio
