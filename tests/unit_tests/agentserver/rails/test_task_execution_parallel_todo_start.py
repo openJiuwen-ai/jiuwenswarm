@@ -268,3 +268,57 @@ async def test_later_complete_is_deferred_until_earlier_completes(monkeypatch) -
     }
     assert statuses["search_temp"] == "completed"
     assert statuses["load_skill"] == "completed"
+
+
+def test_rebuild_serial_deferred_from_disk_snapshot() -> None:
+    rail = TaskExecutionRail()
+    rail._todo_map = {
+        "search_temp": _todo_item("search_temp", "搜索", "in_progress", 0),
+        "load_skill": _todo_item("load_skill", "加载技能", "completed", 1),
+        "create_excel": _todo_item("create_excel", "生成 Excel", "in_progress", 2),
+    }
+    rail._todo_complete_deferred = {"stale"}
+    rail._todo_start_deferred = {"stale"}
+    rail._rebuild_serial_todo_deferred()
+    assert rail._todo_complete_deferred == {"load_skill"}
+    assert rail._todo_start_deferred == {"create_excel"}
+
+
+@pytest.mark.asyncio
+async def test_rebuilt_deferred_flush_after_new_invoke(monkeypatch) -> None:
+    """before_invoke clears in-memory deferred; rebuild from disk then flush."""
+    rail = TaskExecutionRail()
+    session = _FakeSession()
+    on_disk = [
+        {"id": "search_temp", "content": "搜索", "status": "in_progress"},
+        {"id": "load_skill", "content": "加载技能", "status": "completed"},
+    ]
+    rail._todo_map = rail._build_map_from_todo_items(on_disk)
+    rail._todo_started.add("search_temp")
+    rail._rebuild_serial_todo_deferred()
+    assert "load_skill" in rail._todo_complete_deferred
+
+    after_search_done = [
+        {"id": "search_temp", "content": "搜索", "status": "completed"},
+        {"id": "load_skill", "content": "加载技能", "status": "completed"},
+    ]
+    rail._todo_map_before_tool = dict(rail._todo_map)
+    monkeypatch.setattr(rail, "_load_todo_from_json", lambda _sid: after_search_done)
+    ctx = SimpleNamespace(
+        session=session,
+        inputs=SimpleNamespace(tool_name="todo_modify", request_id="req-2"),
+    )
+    await rail._sync_todo_and_emit_transitions(ctx)
+
+    types = _event_types(session)
+    assert types[:4] == [
+        "task.complete",
+        "task.start",
+        "task.complete",
+        "task.update",
+    ]
+    payloads = [getattr(ev, "payload", {}) for ev in session.events]
+    assert payloads[0]["task_id"] == "todo:search_temp"
+    assert payloads[1]["task_id"] == "todo:load_skill"
+    assert payloads[2]["task_id"] == "todo:load_skill"
+
