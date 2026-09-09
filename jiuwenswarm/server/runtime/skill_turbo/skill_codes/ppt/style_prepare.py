@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,16 @@ logger = logging.getLogger(__name__)
 
 
 _PRESET_STYLES = {"business-classic", "tech-minimal", "elegant-narrative", "industrial-tech"}
+
+
+@dataclass(frozen=True)
+class CustomStyleRequest:
+    topic: str
+    audience: str
+    style_id: str
+    style_description: str
+    user_query: str = ""
+    style_constraints: str = ""
 
 
 class StylePrepareNode(PlanNode):
@@ -108,6 +119,7 @@ class StylePrepareNode(PlanNode):
             return {
                 "style_file_path": "",
                 "pack_dir": pack_dir,
+                "style_constraints": str(inputs.get("style_constraints") or "").strip(),
                 "__artifact__": {"files": [{"path": pack_dir, "desc": "PPT模板包目录"}]},
             }
 
@@ -123,6 +135,7 @@ class StylePrepareNode(PlanNode):
                     logger.info("[P7] 模板包降级模式，使用模板 md 内容作为风格描述")
 
         style_content = ""
+        style_constraints = str(inputs.get("style_constraints") or "").strip()
         if style_id in _PRESET_STYLES:
             style_content = await self._load_preset_style(style_id, pptx_root)
 
@@ -130,11 +143,14 @@ class StylePrepareNode(PlanNode):
             if style_id in _PRESET_STYLES:
                 logger.warning("[P7] 预设风格 %s 加载失败，降级为自定义生成", style_id)
             style_content = await self._generate_custom_style(
-                topic,
-                audience,
-                style_id,
-                style_description,
-                user_query,
+                CustomStyleRequest(
+                    topic=topic,
+                    audience=audience,
+                    style_id=style_id,
+                    style_description=style_description,
+                    user_query=user_query,
+                    style_constraints=style_constraints,
+                )
             )
 
         if not style_content:
@@ -142,13 +158,15 @@ class StylePrepareNode(PlanNode):
                 "[P7] 预设加载与 LLM 自定义生成均失败 style_id=%s，返回空 style_file_path",
                 style_id,
             )
-            return {"style_file_path": ""}
+            return {"style_file_path": "", "style_constraints": style_constraints}
 
         style_file_path = f"{output_dir}/style-{style_id}.md"
         await self._write_style_file(style_file_path, style_content)
 
+        # preset：不改写 style.md；constraints 原样透传给 P8
         return {
             "style_file_path": style_file_path,
+            "style_constraints": style_constraints,
             "__artifact__": {"files": [{"path": style_file_path, "desc": "PPT风格文件"}]},
         }
 
@@ -201,32 +219,37 @@ class StylePrepareNode(PlanNode):
                 logger.warning("[P7] 读取预设风格失败 %s: %s", preset_path, e)
         return ""
 
-    async def _generate_custom_style(
-        self,
-        topic: str,
-        audience: str,
-        style_id: str,
-        style_description: str,
-        user_query: str = "",
-    ) -> str:
+    async def _generate_custom_style(self, request: CustomStyleRequest) -> str:
         user_query_clause = ""
-        if user_query:
-            user_query_clause = f"用户原始 query：{user_query}\n"
+        if request.user_query:
+            user_query_clause = f"用户原始 query：{request.user_query}\n"
+        constraints_clause = ""
+        if request.style_constraints.strip():
+            constraints_clause = (
+                "### 用户显式版式要求（必须烘焙进本文件，优先级最高）\n"
+                f"{request.style_constraints.strip()}\n"
+                "- 将上述约束写入排版与组件规范 / CSS 变量 / 设计禁忌中对应字段\n"
+                "- 若点名字号：写死具体 px，禁止用区间敷衍\n"
+                "- 若点名页码：必须在规范中二选一写死「保留页码（含格式）」或「不显示页码」；"
+                "禁止并列两种方案\n"
+                "- 未点名的维度仍按主题与风格描述推断\n\n"
+            )
         prompt = (
             "你是 PPT 视觉设计师。请根据主题和风格描述生成一份风格规范 Markdown 文件，"
             "供后续 HTML 幻灯片生成使用。\n\n"
-            f"PPT 主题：{topic or '（未提供）'}\n"
-            f"目标受众：{audience or '（未提供）'}\n"
-            f"风格标识：{style_id}\n"
-            f"用户风格描述：{style_description or '（未提供，请根据主题自由发挥）'}\n"
-            f"{user_query_clause}\n"
+            f"PPT 主题：{request.topic or '（未提供）'}\n"
+            f"目标受众：{request.audience or '（未提供）'}\n"
+            f"风格标识：{request.style_id}\n"
+            f"用户风格描述：{request.style_description or '（未提供，请根据主题自由发挥）'}\n"
+            f"{user_query_clause}"
+            f"{constraints_clause}"
             "### 输出要求（严格按以下结构生成，不得省略 frontmatter 或 CSS 变量）\n"
             "---\n"
             "font-family:\n"
             "  - Noto Sans SC\n"
             "  - sans-serif\n"
             "---\n"
-            f"# 风格规范：{style_id}\n"
+            f"# 风格规范：{request.style_id}\n"
             "\n"
             "## 整体风格描述\n"
             "{一句话风格定调，例如：现代简约科技风、温暖人文风、专业商务风}\n"
@@ -295,12 +318,16 @@ class StylePrepareNode(PlanNode):
                     lines = lines[:-1]
                 content = "\n".join(lines).strip()
             if content:
-                logger.info("[P7] 自定义风格生成成功 style_id=%s", style_id)
+                logger.info("[P7] 自定义风格生成成功 style_id=%s", request.style_id)
             return content
         except Exception as e:
             if isinstance(e, AbortError):
                 raise
-            logger.warning("[P7] 自定义风格 LLM 生成失败 style_id=%s: %s", style_id, e)
+            logger.warning(
+                "[P7] 自定义风格 LLM 生成失败 style_id=%s: %s",
+                request.style_id,
+                e,
+            )
             return ""
 
     async def _write_style_file(self, path: str, content: str) -> None:

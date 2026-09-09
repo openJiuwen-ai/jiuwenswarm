@@ -769,6 +769,71 @@ async def test_outer_todo_hides_inner_tasks_without_hiding_stage_messages(
 
 
 @pytest.mark.asyncio
+async def test_skill_turbo_returns_failure_when_p10_delivery_failed(
+    _skill_turbo_runtime,
+) -> None:
+    """P10 delivery_status=failed 时，不得再返回 success=True「任务已完成」。"""
+    adapter, turbo_session = _skill_turbo_runtime
+    turbo = _fake_turbo()
+    turbo.artifact_holder = {
+        "p10_delivery": {
+            "info": {
+                "delivery_status": "failed",
+                "task_completed": False,
+                "send_file_status": "skipped",
+            }
+        }
+    }
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_skill_turbo_adapter",
+            return_value=adapter,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_task_id",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_skill_turbo_resume_answers",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools.get_current_request_metadata",
+            return_value={},
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.get_subagent_parent_session",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars.get_effective_request_workspace_dir",
+            return_value=None,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+            return_value=turbo,
+        ),
+        patch(
+            "openjiuwen.core.session.agent.create_agent_session",
+            return_value=turbo_session,
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.set_skill_turbo_id",
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.skill_turbo.permission_bridge.load_resume_ctx",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        result = await skill_turbo.invoke({"query": _QUERY})
+
+    assert result.get("success") is False
+    assert "PPT 生成失败" in str(result.get("error") or "")
+    assert "任务已完成" not in str(result.get("result") or "")
+    turbo.run_stream.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_task_update_is_also_pushed_out_of_band(_skill_turbo_runtime) -> None:
     adapter, _turbo_session = _skill_turbo_runtime
     parent_session = SimpleNamespace(

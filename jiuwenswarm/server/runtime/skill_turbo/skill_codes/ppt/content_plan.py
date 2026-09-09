@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
+from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import (
+    CONTENT_BRANCH_MATERIAL,
+    CONTENT_BRANCH_RESEARCH,
+    PptCommon,
+    pipeline_role_boundary,
+    research_evidence_limited_mentioned,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +31,10 @@ _OUTLINE_FIELD_PATTERN = re.compile(
     r"^-?\s*\*\*(?P<field>[^*]+)\*\*[：:]\s*(?P<value>.+?)\s*$",
     re.MULTILINE,
 )
+_NOTES_LEAKAGE_RE = re.compile(
+    r"(演讲备注|讲者备注|演讲稿|讲稿|口播稿|speaker\s*notes)",
+    re.IGNORECASE,
+)
 _P4_MAX_ATTEMPTS = 2
 _INSUFFICIENT_INFO_MARKER = "[INSUFFICIENT_INFO]"
 _QUERY_BOUNDS_NO_MATERIAL = (5, 8)
@@ -37,7 +47,7 @@ _RESEARCH_DIMENSIONS = (
     "争议热点",
 )
 
-_P41_SYSTEM_PROMPT = """你是 PPT 内容策划助手。根据主题、目标页数与用户素材，评估素材充裕度并给出研究重点。
+_P41_SYSTEM_PROMPT = pipeline_role_boundary("P4.1") + """你是 PPT 内容策划助手。根据主题、目标页数与用户素材，评估素材充裕度并给出研究重点。
 
 素材充裕度 material_richness 判定：
 - rich（充实）：有清晰章节结构，且具体数据/案例/论述足以支撑目标页数
@@ -52,88 +62,106 @@ _P41_SYSTEM_PROMPT = """你是 PPT 内容策划助手。根据主题、目标页
 必须只输出 JSON：
 {"material_richness":"empty","focus_areas":"..."}"""
 
-_P42A_SYSTEM_PROMPT = """你是 PPT 快速调研助手。根据主题与研究重点生成网页搜索 query。
+_P42A_SYSTEM_PROMPT = pipeline_role_boundary("P4.2") + (
+    "你是 PPT 快速调研助手。根据主题、用户维度/结构、研究重点与用户素材，"
+    "生成固定批次的网页搜索查询（outline-planner §1.4）。\n\n"
+    "规则：\n"
+    "1. **维度优先级（强制）**：`user_dimensions` 非空时，每个用户维度先生成 1 条 "
+    "query（首要）；剩余预算再从「领域现状/关键维度/最新动态/核心玩家/争议热点」中选补充，"
+    "总 query 数 ≤8。`user_dimensions` 为空且 `user_structure` 非空时，从结构要点各生成 "
+    "1 条 query。两者都为空时，围绕 topic 本身生成 5–8 条 query。\n"
+    "2. **禁止偏题改写**：不得把 topic 改写成相邻行业/宏观报告（如把具体产品写成"
+    "「教育行业报告」「年度报告」）；query 必须直接服务 topic、user_dimensions 或 "
+    "user_structure。\n"
+    "3. 有用户素材时，聚焦素材未覆盖的维度，避免重复已有信息。\n"
+    "4. 中文主题可在同一逻辑主题下搭配中英 query，但中英文属于同一主题，不得重复计数突破预算。\n"
+    "5. 仅在 topic/维度确实需要时效信息时，才加当前年份或 latest/report/statistics 等词；"
+    "不要为了凑可信来源词而稀释实体名。\n"
+    "6. 只输出搜索 query，不写结论，不编造已确认事实。\n\n"
+    "必须只输出 JSON：\n"
+    '{"entity":"主题核心实体名,无明确实体填 null","queries":[{"dimension":"...","query":"..."}]}'
+)
 
-规则：
-1. 覆盖不同维度（可合并进单条 intent）：领域现状、关键维度、最新动态、核心玩家、争议热点。
-2. 中文主题搭配中英 query；可加当前年份或 latest/report。
-3. 有用户素材时只补未覆盖维度；不编造事实。
-4. 只产出搜索 query：禁止分析、结论、结果摘要、逐步推理正文。
-
-输出（唯一允许的全文）：一个 JSON 对象；无前言、无 Markdown 围栏、无结尾说明。
-{"entity":"主题核心实体名或 null","queries":[{"dimension":"领域现状","query":"..."}]}"""
-
-# 健康短 JSON（约 8 条 query）远小于此；基线级非 JSON 长散文（数万 token）必触发中途熔断。
 _P42A_RESPONSE_MAX_CHARS = 4096
 _P42_MAX_RETRIES = 2
 # 设计：R0 初始搜索用 _P42A_SYSTEM_PROMPT（广覆盖、中英双语、加年份/report 等可信词）；
 # 重搜用下方 _P42_RELEVANCE_SYSTEM_PROMPT 定向收窄/扩搜。重搜刻意不复用 _P42A_SYSTEM_PROMPT——
 # 其“加年份/report/statistics、覆盖5维度”规则正是 R0 把稀有实体名稀释的元凶，带入重搜会再次稀释。
-_P42_RELEVANCE_SYSTEM_PROMPT = """你是 PPT 快速调研的相关性判定与重搜助手。
+_P42_RELEVANCE_SYSTEM_PROMPT = pipeline_role_boundary("P4.2") + """你是 PPT 快速调研的相关性判定与重搜助手。
 
-判定视角：假设你需要用这些搜索结果为「主题实体」撰写一份 PPT 大纲，结果中的信息是否足够支撑你写出关于该实体的具体内容？
+判定视角：**能否用这些搜索摘要写出 outline.md**（不是要求实体名逐字出现，也不是要求数据已足够写正文）。
 
 相关性判定标准：
-- sufficient：搜索结果中至少有一条直接提及主题实体名，且包含该实体的具体信息（如功能、数据、案例、产品细节），足以支撑撰写关于该实体的 PPT 大纲
-- insufficient：搜索结果中均未提及主题实体名，或仅有同行业/同领域的泛泛内容但缺乏实体具体信息。即使结果属于同一行业领域，只要未直接提及实体名并包含实体具体信息，均判 insufficient
+- sufficient：摘要能支撑写出描述性大纲——覆盖 topic、user_dimensions 或 user_structure 中的至少一个核心点，或能提取可写进「内容概要/研究查询/数据需求」的主题、参与者、趋势/数据线索
+- insufficient：摘要与 topic/user_dimensions/user_structure 均无明显关联，或全是无关行业的泛化报告，无法据此规划任何内容页
 
-重搜 query 生成规则（仅在相关性 insufficient 或无可用结果时生成，2-4 条）：
-- failure_mode=empty（无可用搜索结果）：扩大查询范围，尝试同义词或英文变体
-- failure_mode=irrelevant（有结果但均不相关）：聚焦主题实体名，用纯实体名或实体名+官网/产品介绍/是什么等限定词收窄
+重搜 query 生成规则（仅在 insufficient 或无可用结果时生成，2-4 条）：
+- failure_mode=empty：扩大查询范围，尝试 topic/维度的同义词或英文变体
+- failure_mode=irrelevant：收窄到 topic 本身、user_dimensions 各 1 条，或有实体时用「实体名 + 官网/产品介绍/是什么」
+- 禁止把 topic 改写成相邻行业/年度报告类 query
 
 只输出 JSON：
 {"relevance":"sufficient|insufficient","reason":"...","retry_queries":[{"dimension":"...","query":"..."}]}
 相关性 sufficient 时 retry_queries 为空数组。不要编造 query。"""
 
-_P43_COMMON_RULES = """大纲格式要求（必须严格遵守）：
-
-1. 文件以 `# 大纲：{topic}` 开头，随后元信息行：
-   **受众**、**总页数**、**叙事主线**、**输入类型**、**搜索模式**
-2. 若需写入已搜索来源，在 `## 已搜索来源` 下用表格列出 URL 与覆盖维度（不写正式评分，评分留给 P6）。
-   无需搜索时删除整个 `## 已搜索来源` 章节。
-3. `## 页面规划` 下每页一个 `### P{N}:` 块，字段齐全：
-   - **类型**：cover/ending/agenda/section/chapter/trend/data/case/comparison/technology 等
-   - **研究需求**：cover/ending/agenda/section/chapter 标 ❌，其余标 ✅
-   - **标题**：结论性完整句（Action + Result）；结构性页面（cover/ending/agenda/section/chapter）可使用描述性标题
-   - **内容概要**：具体有信息量
-   - **研究查询**：✅ 页 2-4 个精准查询；❌ 页填 `-`
-   - **数据需求**：✅ 页写具体数据类型和维度，数据需求必须具体化；❌ 页填 `-`
-4. 内容页数（研究需求：✅）必须等于 page_count。封面（cover）、结束页（ending）及用户明确要求的结构页（section/agenda/chapter 等）标 ❌，其余页必须标 ✅。
-   中间结构页的添加规则见下方「中间结构页」指令（由系统根据用户需求动态注入）。
-   **页面顺序**：cover 必须是 P1（首页），ending 必须是末页（P{总页数}）。
-   **ending 页约束**：标题优先「感谢聆听」或 ≤16 字简短收束语；全文总结、数据回响、趋势展望必须放在最后一个内容页（✅），不得把长总结句写入 ending 页标题；ending 页内容概要只描述结束页展示（感谢语、可选一句总结语、汇报人/日期），不得复制正文页大纲。
-   **agenda 页内容**：内容概要只列内容页（✅）章节标题与导航，不得列入 cover/ending/agenda 等结构页本身。
-5. 基于给定素材与搜索结果，不编造不存在的趋势或数据。
-6. 只输出 Markdown 正文，不要 JSON，不要代码围栏。"""
+_P43_COMMON_RULES = pipeline_role_boundary("P4.3") + (
+    "大纲格式要求（必须严格遵守）：\n\n"
+    "1. 文件以 `# 大纲：{topic}` 开头，随后元信息行：\n"
+    "   **受众**、**总页数**、**叙事主线**、**输入类型**、**搜索模式**\n"
+    "2. 若需写入已搜索来源，在 `## 已搜索来源` 下用表格列出 URL 与覆盖维度"
+    "（不写正式评分，评分留给 P6）。\n"
+    "   无需搜索时删除整个 `## 已搜索来源` 章节。\n"
+    "3. `## 页面规划` 下每页一个 `### P{N}:` 块，字段齐全：\n"
+    "   - **类型**：cover/ending/agenda/section/chapter/trend/data/case/comparison/technology 等\n"
+    "   - **研究需求**：cover/ending/agenda/section/chapter 标 ❌，其余标 ✅\n"
+    "   - **标题**：结论性完整句（Action + Result）；结构性页面（cover/ending/agenda/section/chapter）可使用描述性标题\n"
+    "   - **内容概要**：具体有信息量\n"
+    "   - **研究查询**：✅ 页 2-4 个精准查询；❌ 页填 `-`\n"
+    "   - **数据需求**：✅ 页写具体数据类型和维度，数据需求必须具体化；❌ 页填 `-`\n"
+    "4. 内容页数（研究需求：✅）：\n"
+    "   - 严格模式（用户已指定页数）：必须等于 page_count\n"
+    "   - 扩展模式（用户给出维度/结构意图且未指定页数）：必须 ≥ page_count\n"
+    "   封面（cover）、结束页（ending）及用户明确要求的结构页（section/agenda/chapter 等）标 ❌，"
+    "其余页必须标 ✅。\n"
+    "   中间结构页的添加规则见下方「中间结构页」指令（由系统根据用户需求动态注入）。\n"
+    "   **页面顺序**：cover 必须是 P1（首页），ending 必须是末页（P{总页数}）。\n"
+    "   **ending 页约束**：标题优先「感谢聆听」或 ≤16 字简短收束语；全文总结、数据回响、趋势展望必须"
+    "放在最后一个内容页（✅），不得把长总结句写入 ending 页标题；ending 页内容概要只描述结束页展示"
+    "（感谢语、可选一句总结语、汇报人/日期），不得复制正文页大纲。\n"
+    "   **agenda 页内容**：内容概要只列内容页（✅）章节标题与导航，不得列入 cover/ending/agenda 等"
+    "结构页本身。\n"
+    "5. **内容概要禁止**出现「演讲备注 / 讲稿 / 讲者备注 / speaker notes / 口播稿」等备注通道内容"
+    "——备注另有通道，写入概要会被渲染成可见正文。\n"
+    "6. 基于给定素材与搜索结果，不编造不存在的趋势或数据。\n"
+    "7. 只输出 Markdown 正文，不要 JSON，不要代码围栏。"
+)
 
 _P43_TOPIC_SYSTEM_PROMPT = f"""你是 PPT 大纲策划师（source_type=topic）。基于搜索结果与用户素材，生成结构化 outline.md。
 
 {_P43_COMMON_RULES}
 
-## 信息充分性自检（强制，优先于大纲生成）
-生成大纲前，先自检搜索结果中关于主题实体的信息是否充分：
-- 充分：搜索结果中有至少1条直接提及主题实体名，且包含该实体的具体功能/产品/服务/案例信息，足以支撑撰写关于该实体的 PPT 大纲。
-- 不足：搜索结果中均未提及主题实体名，或虽有名称但仅为不同语境的同名实体，或无具体功能描述（仅有行业报告、竞品信息、通用趋势等）。
-
-若判定不足，必须只输出以下内容（禁止生成大纲、禁止编造功能）：
-{_INSUFFICIENT_INFO_MARKER} <一句话说明搜索结果中缺少关于主题实体的什么信息>
-
-示例：
-- 主题"产品X的核心功能"，搜索结果全是行业报告和竞品信息 →
-  {_INSUFFICIENT_INFO_MARKER} 搜索结果未包含关于产品X的具体功能描述，仅有行业趋势和竞品信息。
+## 信息不足也直接成稿（强制，outline-planner §1.4）
+即使 recon 搜索摘要不足，也必须直接生成完整 outline.md：
+- 标题用描述性表述，不下无依据的数值结论
+- 各 ✅ 页把信息缺口写入 `研究查询` / `数据需求`，留给下游 deep-researcher 补齐
+- 禁止输出 {_INSUFFICIENT_INFO_MARKER} 或拒绝成稿
 """
 
-_P43_OUTLINE_SYSTEM_PROMPT = f"""你是 PPT 大纲策划师（source_type=outline）。用户已提供结构化大纲，**必须保留原文**。
-
-核心规则：
-1. **禁止修改**用户原文的任何内容
-2. **禁止添加**原文中没有的新内容
-3. **禁止删除**原文中的任何内容
-4. 只做结构化重组，映射为 `### P{{N}}:` 页面块
-5. 保留用户原文标题与要点，整合到内容概要中，不重新措辞
-6. 为每页推断类型与研究需求标记；研究查询基于各页主题自动生成
-
-{_P43_COMMON_RULES}"""
+_P43_OUTLINE_SYSTEM_PROMPT = (
+    "你是 PPT 大纲策划师（source_type=outline）。用户已提供结构化大纲，**必须保留原文**。\n\n"
+    "核心规则：\n"
+    "1. **禁止修改**用户原文的任何内容\n"
+    "2. **禁止添加**原文中没有的新内容\n"
+    "3. **禁止删除**原文中的任何内容\n"
+    "4. 只做结构化重组，映射为 `### P{N}:` 页面块\n"
+    "5. 保留用户原文标题与要点，整合到内容概要中，不重新措辞\n"
+    "6. 为每页推断类型与研究需求标记；用户原文中明确标注为目录页、章节页的页面按结构页保留，"
+    "**否则中间页一律按内容页处理**；研究查询基于各页主题自动生成\n"
+    "7. 当 structural_page_request=agenda 时：用户结构中的「目录/议程」→ 唯一 1 页 agenda（❌）；"
+    "其余条目 → 内容页（✅）；禁止将 user_dimensions 中的维度标为 section/chapter\n"
+    "8. 仅当 structural_page_request=section/chapter/auto 时，才允许章节分隔页（section/chapter）\n\n"
+    f"{_P43_COMMON_RULES}"
+)
 
 _P43_DESCRIPTION_SYSTEM_PROMPT = f"""你是 PPT 大纲策划师（source_type=description）。从用户详细描述文本中提取页面结构。
 
@@ -176,29 +204,30 @@ def _require_p4_prerequisites(inputs: dict[str, Any]) -> None:
         raise ContentPlanError("缺少 output_dir，无法进入 P4")
 
 
-def _decide_p4_should_search(search_mode: str, material_richness: str) -> bool:
-    """按 outline-planner 素材充裕度 × search_mode 决策表计算是否执行 P4.2。"""
-    if search_mode == "no_search":
+def _decide_p4_should_search(inputs: dict[str, Any]) -> bool:
+    """Wave2：仅 research 分支在 search_mode!=no_search 时做 P4.2 宽搜。
+
+    material 分支缺口搜索下沉到 P6；search_mode 不得切换分支。
+    """
+    branch = PptCommon.ensure_content_branch(inputs)
+    if branch == CONTENT_BRANCH_MATERIAL:
         return False
-    if search_mode == "force_search":
-        return True
-    if material_richness == "rich":
-        return False
-    if material_richness in ("thin", "empty"):
-        return True
-    raise ContentPlanError(f"无效的 material_richness: {material_richness!r}")
+    search_mode = str(inputs.get("search_mode") or "").strip()
+    return search_mode != "no_search"
 
 
-def _p4_search_reason(search_mode: str, material_richness: str, should_search: bool) -> str:
+def _p4_search_reason(inputs: dict[str, Any], should_search: bool) -> str:
+    branch = str(inputs.get("content_branch") or "")
+    search_mode = str(inputs.get("search_mode") or "").strip()
+    if branch == CONTENT_BRANCH_MATERIAL:
+        return "content_branch=material，P4.2 宽搜跳过（缺口搜下沉 P6）"
     if not should_search:
         if search_mode == "no_search":
             return "search_mode=no_search，跳过快速调研"
-        if search_mode == "auto" and material_richness == "rich":
-            return "auto 模式且素材充实，跳过快速调研"
         return "无需快速调研"
     if search_mode == "force_search":
-        return "search_mode=force_search，执行快速调研"
-    return f"auto 模式且素材为 {material_richness}，执行快速调研"
+        return "research 分支 force_search，执行快速调研"
+    return "research 分支 auto，执行快速调研"
 
 
 def _parse_p41_response(raw: str) -> dict[str, str]:
@@ -222,13 +251,14 @@ def _parse_p41_response(raw: str) -> dict[str, str]:
 
 def _build_p41_prompt(inputs: dict[str, Any], source_material: str) -> str:
     parts = [
-        "请评估以下 PPT 需求的素材充裕度。\n",
+        "请评估以下 PPT 需求的素材充裕度（仅作诊断，不决定内容分支）。\n",
         f"- topic: {inputs.get('topic', '')}\n",
         f"- page_count: {inputs.get('page_count')}\n",
         f"- audience: {inputs.get('audience', '')}\n",
         f"- presentation_purpose: {inputs.get('presentation_purpose', '')}\n",
         f"- source_type: {inputs.get('source_type', '')}\n",
         f"- search_mode: {inputs.get('search_mode', '')}\n",
+        f"- content_branch: {inputs.get('content_branch', '')}\n",
         f"- has_documents: {bool(inputs.get('has_documents'))}\n",
         f"- doc_parse_ok: {bool(inputs.get('doc_parse_ok'))}\n",
     ]
@@ -236,7 +266,7 @@ def _build_p41_prompt(inputs: dict[str, Any], source_material: str) -> str:
     if isinstance(failure_reason, str) and failure_reason.strip():
         parts.append(f"上次失败原因：\n{failure_reason.strip()}\n")
     if source_material:
-        parts.append(f"用户素材（doc_raw 摘要）：\n{source_material}\n")
+        parts.append(f"用户素材（doc_summary）：\n{source_material}\n")
     else:
         parts.append("用户素材：无\n")
     parts.append("按 JSON 返回 material_richness、focus_areas。")
@@ -244,36 +274,60 @@ def _build_p41_prompt(inputs: dict[str, Any], source_material: str) -> str:
 
 
 def _apply_p41_result(inputs: dict[str, Any], parsed: dict[str, str], source_material: str) -> None:
-    search_mode = str(inputs.get("search_mode") or "").strip()
+    branch = PptCommon.ensure_content_branch(inputs)
     material_richness = parsed["material_richness"]
-    should_search = _decide_p4_should_search(search_mode, material_richness)
+    should_search = _decide_p4_should_search(inputs)
 
-    inputs["has_source_material"] = bool(source_material)
-    inputs["source_material_chars"] = len(source_material)
+    if branch == CONTENT_BRANCH_MATERIAL:
+        inputs["has_source_material"] = bool(source_material)
+        inputs["source_material_chars"] = len(source_material)
+    else:
+        # research 分支不以用户文档为主数据源
+        inputs["has_source_material"] = False
+        inputs["source_material_chars"] = 0
+
     inputs["material_richness"] = material_richness
     inputs["focus_areas"] = parsed["focus_areas"]
     inputs["p4_should_search"] = should_search
-    inputs["p4_search_reason"] = _p4_search_reason(search_mode, material_richness, should_search)
+    inputs["p4_search_reason"] = _p4_search_reason(inputs, should_search)
     inputs["content_plan_status"] = "normalized"
+    inputs["min_citations"] = PptCommon.min_citations_for_depth(
+        str(inputs.get("research_depth") or "L2")
+    )
 
 
 async def _run_p41_normalize(node: PlanNode, inputs: dict[str, Any]) -> None:
     _require_p4_prerequisites(inputs)
+    PptCommon.ensure_phase1_defaults(inputs)
+    branch = PptCommon.ensure_content_branch(inputs)
 
-    source_material = await PptCommon.read_file(
-        node,
-        inputs.get("doc_raw_path"),
-        max_chars=_SOURCE_MATERIAL_MAX_CHARS,
-        error_type=ContentPlanError,
-    )
-    response = await node.stream_llm_collect(
-        _build_p41_prompt(inputs, source_material),
-        system_prompt=_P41_SYSTEM_PROMPT,
-    )
-    if not isinstance(response, str) or not response.strip():
-        raise ContentPlanError("P4.1 失败：LLM 返回为空")
+    source_material = ""
+    if branch == CONTENT_BRANCH_MATERIAL:
+        source_material = await PptCommon.load_source_material(
+            node,
+            inputs,
+            max_chars=_SOURCE_MATERIAL_MAX_CHARS,
+            error_type=ContentPlanError,
+        )
+    else:
+        inputs["source_material"] = ""
 
-    parsed = _parse_p41_response(response)
+    # research 且无素材：仍要 focus_areas；material 有摘要时评估充裕度（诊断）
+    if branch == CONTENT_BRANCH_RESEARCH or source_material:
+        response = await node.stream_llm_collect(
+            _build_p41_prompt(inputs, source_material),
+            system_prompt=_P41_SYSTEM_PROMPT,
+        )
+        if not isinstance(response, str) or not response.strip():
+            raise ContentPlanError("P4.1 失败：LLM 返回为空")
+        parsed = _parse_p41_response(response)
+    else:
+        # material 但 summary 为空（仅散图等）：诊断 empty
+        parsed = {
+            "material_richness": "empty",
+            "focus_areas": str(inputs.get("topic") or "主题延展"),
+        }
+
     _apply_p41_result(inputs, parsed, source_material)
 
 
@@ -313,6 +367,30 @@ def _truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n\n...(内容已截断)"
 
 
+async def _stream_llm_collect_bounded(
+    node: PlanNode,
+    prompt: str,
+    *,
+    system_prompt: str,
+    max_chars: int,
+    error_prefix: str = "P4.2a",
+) -> str:
+    """流式收集 LLM 可见 content；超限立即失败以中止非 JSON 长正文空转。"""
+    chunks: list[str] = []
+    total = 0
+    async for chunk in node.stream_llm(prompt, system_prompt=system_prompt):
+        piece = chunk if isinstance(chunk, str) else str(chunk or "")
+        if not piece:
+            continue
+        total += len(piece)
+        if total > max_chars:
+            raise ContentPlanError(
+                f"{error_prefix} 响应过长（>{max_chars} 字符），疑似非 JSON 空转，已中止"
+            )
+        chunks.append(piece)
+    return "".join(chunks)
+
+
 def _parse_p42a_queries(raw: str, *, has_source_material: bool) -> list[dict[str, str]]:
     payload = PptCommon.parse_json_payload(raw)
     if not isinstance(payload, dict):
@@ -350,53 +428,119 @@ def _parse_p42a_queries(raw: str, *, has_source_material: bool) -> list[dict[str
     return parsed
 
 
+def _normalize_user_dimensions(inputs: dict[str, Any]) -> list[str]:
+    raw = inputs.get("user_dimensions") or []
+    if not isinstance(raw, list):
+        return []
+    dims: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item or "").strip()
+        if len(text) < 2:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        dims.append(text)
+    return dims
+
+
+def _user_context_search_terms(inputs: dict[str, Any]) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add(text: str) -> None:
+        cleaned = text.strip()
+        if len(cleaned) < 2:
+            return
+        key = cleaned.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        terms.append(cleaned)
+
+    for dim in _normalize_user_dimensions(inputs):
+        _add(dim)
+    structure = str(inputs.get("user_structure") or "").strip()
+    if structure:
+        for part in re.split(r"[、，,；;\n|/]", structure):
+            chunk = part.strip().strip("结构：").strip()
+            if chunk in ("封面", "目录", "结束页"):
+                continue
+            _add(chunk)
+    topic = str(inputs.get("topic") or "").strip()
+    if topic:
+        _add(topic)
+    return terms
+
+
+def _term_in_result_body(term: str, result: str) -> bool:
+    if not term:
+        return False
+    target = term.lower()
+    raw = (result or "").lower()
+    body = "\n".join(
+        line for line in raw.splitlines()
+        if not line.lstrip().startswith("query:")
+    )
+    return target in body
+
+
+def _results_cover_user_context(
+    inputs: dict[str, Any],
+    batches: list[dict[str, str]],
+) -> bool:
+    terms = _user_context_search_terms(inputs)
+    if not terms:
+        return False
+    for batch in batches:
+        body = batch.get("result") or ""
+        for term in terms:
+            if _term_in_result_body(term, body):
+                return True
+    return False
+
+
 def _build_p42a_prompt(inputs: dict[str, Any], source_material: str) -> str:
     now = datetime.now(tz=timezone.utc)
     now_str = now.strftime("%Y-%m-%d")
     current_year = now.strftime("%Y")
     min_count, max_count = _query_count_bounds(bool(source_material))
+    user_dimensions = _normalize_user_dimensions(inputs)
+    user_structure = str(inputs.get("user_structure") or "").strip()
     parts = [
-        f"当前日期：{now_str}（年份 {current_year}）。涉及时效的 query 优先带当前年份。\n",
-        f"生成 {min_count}~{max_count} 条并行搜索 query。\n",
+        f"# 当前日期\n\n"
+        f"- 当前日期：{now_str}\n"
+        f"- 当前年份：{current_year}\n"
+        '- 当用户询问"最新、当前、今年、本年、实时、近期"等信息并需要搜索时，'
+        '搜索 query 必须优先使用当前年份或日期\n',
+        f"请生成 {min_count}~{max_count} 条并行搜索 query（逻辑主题总数硬上限 8）。\n",
         f"- topic: {inputs.get('topic', '')}\n",
         f"- page_count: {inputs.get('page_count')}\n",
         f"- audience: {inputs.get('audience', '')}\n",
         f"- focus_areas: {inputs.get('focus_areas', '')}\n",
+        f"- user_dimensions: {user_dimensions if user_dimensions else '（空）'}\n",
+        f"- user_structure: {user_structure or '（空）'}\n",
         f"- has_source_material: {bool(source_material)}\n",
-        f"- 建议覆盖维度: {', '.join(_RESEARCH_DIMENSIONS)}\n",
     ]
+    if user_dimensions:
+        parts.append(
+            "- 维度优先级：先为每个 user_dimensions 生成 1 条 query，"
+            f"剩余 {max(0, 8 - len(user_dimensions))} 个名额再从补充维度选取\n"
+        )
+    elif user_structure:
+        parts.append("- 无 user_dimensions 但有 user_structure：从结构要点各生成 1 条 query\n")
+    else:
+        parts.append(f"- 无用户维度/结构：围绕 topic 生成 query，可参考 {', '.join(_RESEARCH_DIMENSIONS)}\n")
     if source_material:
         parts.append(f"用户素材摘要：\n{source_material}\n")
     parts.append(
-        "只输出一个 JSON："
-        '{"entity":"...或 null","queries":[{"dimension":"...","query":"..."}]}'
-        "——无其它文字。"
+        '按 JSON 返回 {"entity":"主题核心实体名,无明确实体填 null",'
+        '"queries":[{"dimension":"...","query":"..."}]}。'
+        "禁止把 topic 改写成相邻行业/宏观报告类 query。"
     )
     return "\n".join(parts)
-
-
-async def _stream_llm_collect_bounded(
-    node: PlanNode,
-    prompt: str,
-    *,
-    system_prompt: str,
-    max_chars: int,
-    error_prefix: str = "P4.2a",
-) -> str:
-    """流式收集 LLM 可见 content；超限立即失败以中止非 JSON 长正文空转。"""
-    chunks: list[str] = []
-    total = 0
-    async for chunk in node.stream_llm(prompt, system_prompt=system_prompt):
-        piece = chunk if isinstance(chunk, str) else str(chunk or "")
-        if not piece:
-            continue
-        total += len(piece)
-        if total > max_chars:
-            raise ContentPlanError(
-                f"{error_prefix} 响应过长（>{max_chars} 字符），疑似非 JSON 空转，已中止"
-            )
-        chunks.append(piece)
-    return "".join(chunks)
 
 
 def _format_search_results_for_p43(search_results: list[dict[str, str]]) -> str:
@@ -503,6 +647,8 @@ async def _assess_and_suggest_retry(
     entity: str,
     usable_batches: list[dict[str, str]],
     failure_mode: str,
+    *,
+    inputs: dict[str, Any] | None = None,
 ) -> tuple[str, str, list[dict[str, str]]]:
     """判定搜索结果与主题的相关性，相关性不足时生成重搜 query。
 
@@ -517,19 +663,31 @@ async def _assess_and_suggest_retry(
     1. 规则预检：搜索结果中直接提及实体名 → 判定 sufficient，跳过 LLM
     2. LLM 判定：规则预检未命中时，由 LLM 判定相关性
     """
-    # 方案2：规则预检 — 搜索结果中直接提及实体名则直接判定 sufficient
-    if failure_mode == "irrelevant" and _entity_in_results(entity, usable_batches):
-        logger.info("[P4.2] 规则预检命中：搜索结果中直接提及实体 '%s'，判定 sufficient", entity)
-        return "sufficient", f"规则预检：搜索结果中直接提及实体 '{entity}'", []
+    # 方案2：规则预检 — 实体名或 user_dimensions/structure/topic 关键词命中则 sufficient
+    if failure_mode == "irrelevant":
+        if entity and _entity_in_results(entity, usable_batches):
+            logger.info("[P4.2] 规则预检命中：搜索结果中直接提及实体 '%s'，判定 sufficient", entity)
+            return "sufficient", f"规则预检：搜索结果中直接提及实体 '{entity}'", []
+        if inputs and _results_cover_user_context(inputs, usable_batches):
+            logger.info("[P4.2] 规则预检命中：搜索结果覆盖 user_dimensions/structure/topic，判定 sufficient")
+            return "sufficient", "规则预检：搜索结果覆盖用户维度/结构/主题关键词", []
 
     if failure_mode == "empty":
         results_block = "（无可用搜索结果）"
     else:
-        # 按实体名出现优先排序：包含实体名的结果排前面，确保截断时丢弃的是不相关结果
+        # 按实体名或用户上下文关键词出现优先排序，截断时优先保留相关结果
+        context_terms = _user_context_search_terms(inputs) if inputs else []
+        sort_keys: list[str] = []
         if entity:
+            sort_keys.append(entity)
+        sort_keys.extend(t for t in context_terms if t.casefold() != entity.casefold())
+        if sort_keys:
             ordered = sorted(
                 usable_batches,
-                key=lambda b: not _entity_in_result_body(entity, b.get("result") or ""),
+                key=lambda b: not any(
+                    _term_in_result_body(term, b.get("result") or "")
+                    for term in sort_keys
+                ),
             )
         else:
             ordered = usable_batches
@@ -537,9 +695,13 @@ async def _assess_and_suggest_retry(
             f"query: {b['query']}\n{b['result'][:1200]}"
             for b in ordered
         )[:6000]
+    user_dimensions = _normalize_user_dimensions(inputs) if inputs else []
+    user_structure = str((inputs or {}).get("user_structure") or "").strip()
     prompt = (
         f"# 主题\n{topic}\n\n"
         f"# 主题实体\n{entity or '（无明显实体，为主题类）'}\n\n"
+        f"# user_dimensions\n{user_dimensions if user_dimensions else '（空）'}\n\n"
+        f"# user_structure\n{user_structure or '（空）'}\n\n"
         f"# 失败模式\n{failure_mode}\n\n"
         f"# 搜索结果\n{results_block}\n\n"
         "按系统提示判定相关性并在不足时生成重搜 query，只输出 JSON。"
@@ -593,7 +755,6 @@ async def _run_p42_quick_research(node: PlanNode, inputs: dict[str, Any]) -> Non
         _build_p42a_prompt(inputs, source_material),
         system_prompt=_P42A_SYSTEM_PROMPT,
         max_chars=_P42A_RESPONSE_MAX_CHARS,
-        error_prefix="P4.2a",
     )
     if not isinstance(response_a, str) or not response_a.strip():
         raise ContentPlanError("P4.2a 失败：LLM 返回为空")
@@ -609,15 +770,15 @@ async def _run_p42_quick_research(node: PlanNode, inputs: dict[str, Any]) -> Non
 
     # 相关性闸门 + 最多 _P42_MAX_RETRIES 轮重搜：
     #   无可用结果(empty) → 扩搜（换同义词/英文）
-    #   有结果但不相关(irrelevant) → 收窄（聚焦实体名）
-    # 任一轮判定 sufficient 即完成；耗尽仍 insufficient 则 raise，交由 P4 整体重试 / fallback 兜底。
+    #   有结果但不相关(irrelevant) → 收窄（聚焦 topic/维度/实体名）
+    # 任一轮判定 sufficient 即完成；耗尽仍 insufficient 则按 outline-planner §1.4 警告后继续成稿。
     last_relevance = "insufficient"
     last_reason = ""
     retry_round = 0
     while True:
         failure_mode = "empty" if not usable else "irrelevant"
         relevance, reason, retry_queries = await _assess_and_suggest_retry(
-            node, topic, entity, usable, failure_mode=failure_mode,
+            node, topic, entity, usable, failure_mode=failure_mode, inputs=inputs,
         )
         last_relevance, last_reason = relevance, reason
         if failure_mode == "irrelevant" and relevance == "sufficient":
@@ -633,14 +794,30 @@ async def _run_p42_quick_research(node: PlanNode, inputs: dict[str, Any]) -> Non
         raise ContentPlanError("P4.2b 快速调研失败：所有 web_search 均无有效结果")
 
     if last_relevance == "insufficient":
-        raise ContentPlanError(
-            f"P4.2 快速调研相关性不足：经 {retry_round} 轮重搜仍未获得关于主题「{topic}」的有效信息，"
-            f"建议用纯实体名或实体名+官网重搜定位权威来源。原因：{last_reason}"
+        logger.warning(
+            "[P4.2] 快速调研相关性不足（%d 轮重搜后），按 outline-planner §1.4 继续成稿：%s",
+            retry_round,
+            last_reason,
         )
+        inputs["p4_research_relevance_warning"] = last_reason
+        inputs["p4_research_insufficient"] = True
+    else:
+        inputs["p4_research_insufficient"] = False
 
-    # 按实体名出现优先排序：包含实体名的结果排前面，
-    # 确保 P4.3 截断时丢弃的是不相关结果（与 _assess_and_suggest_retry 中排序逻辑一致）
+    # 按实体名或用户上下文关键词出现优先排序，确保 P4.3 截断时丢弃不相关结果
+    context_terms = _user_context_search_terms(inputs)
+    sort_keys: list[str] = []
     if entity:
+        sort_keys.append(entity)
+    sort_keys.extend(t for t in context_terms if not entity or t.casefold() != entity.casefold())
+    if sort_keys:
+        usable.sort(
+            key=lambda b: not any(
+                _term_in_result_body(term, b.get("result") or "")
+                for term in sort_keys
+            )
+        )
+    elif entity:
         usable.sort(key=lambda b: not _entity_in_result_body(entity, b.get("result") or ""))
 
     inputs["search_results"] = usable
@@ -703,28 +880,41 @@ def _build_structural_page_directive(inputs: dict[str, Any]) -> str:
             "总页数 = page_count + 2。\n"
         )
 
-    # 用户要求了中间结构页
+    if spr == "agenda":
+        total_structural = PptCommon.resolve_mid_structural_page_count(
+            page_count, spr, spc,
+        )
+        return (
+            "- 中间结构页：用户要求目录页（agenda），固定生成 1 页 agenda。\n"
+            "  规则：\n"
+            "  1. 页面顺序：cover → agenda → 内容页（✅）… → ending\n"
+            "  2. 禁止生成 section/chapter/transition 等章节分隔页\n"
+            "  3. user_dimensions / user_structure 中的条目（除「封面」「目录」「结束页」外）"
+            "一律映射为内容页，不得标为 section\n"
+            f"  4. 总页数 = page_count + 2 + {total_structural}（内容页 + 封面/结束页 + agenda）\n"
+            "  5. agenda 页内容概要只列后续内容页（✅）的章节标题与导航\n"
+            "  6. conclusion/transition 不再支持；如需总结页，并入最后的 ending 页\n"
+        )
+
+    # section / chapter / auto：章节分隔页规则
     type_hint = {
-        "agenda": "agenda（目录页）",
         "section": "section（章节页/章节分隔页）",
         "chapter": "chapter（PART 页/章首页）",
         "auto": "section 或 chapter（根据用户语境自动选择：用户说'PART/章首页'用 chapter，其余用 section）",
     }.get(spr, "section")
 
-    # 数量计算
+    total_structural = PptCommon.resolve_mid_structural_page_count(
+        page_count, spr, spc,
+    )
     if isinstance(spc, int) and spc > 0:
         count_str = f"{spc} 页（用户指定数量）"
-        total_structural = spc
     elif isinstance(page_count, int) and page_count > 0:
-        if page_count <= 5:
-            default_count = 1
-        else:
-            default_count = -(-page_count // 4)  # ceil(page_count / 4)
-        count_str = f"{default_count} 页（用户未指定数量，按默认规则：page_count={page_count} -> {default_count} 页）"
-        total_structural = default_count
+        count_str = (
+            f"{total_structural} 页（用户未指定数量，按 outline-planner 默认："
+            f"page_count={page_count} → {total_structural} 页）"
+        )
     else:
-        count_str = "1 页（无法确定 page_count，默认 1 页）"
-        total_structural = 1
+        count_str = f"{total_structural} 页（无法确定 page_count，默认）"
 
     return (
         f"- 中间结构页：用户已明确要求中间结构页，类型={type_hint}，数量={count_str}。\n"
@@ -736,6 +926,38 @@ def _build_structural_page_directive(inputs: dict[str, Any]) -> str:
         f"  5. 结构页必须有明确的章节编号、章节标题或转场目的；不得为了填页数生成空泛页面\n"
         f"  6. conclusion/transition 不再支持；如需总结页，并入最后的 ending 页\n"
     )
+
+
+def _build_agenda_mapping_directive(inputs: dict[str, Any]) -> str:
+    """agenda 模式下注入显式页面映射，避免 user_dimensions 被误标为 section。"""
+    spr = str(inputs.get("structural_page_request") or "none").strip().lower()
+    if spr != "agenda":
+        return ""
+
+    parts = [
+        "- 页面映射（agenda 模式，强制）：\n",
+        "  - P1: cover；末页: ending\n",
+        "  - 紧接 cover 之后放 1 页 agenda（目录），类型必须为 agenda\n",
+        "  - 禁止生成 section/chapter/transition 章节分隔页\n",
+    ]
+
+    dims = inputs.get("user_dimensions") or []
+    if isinstance(dims, list):
+        clean_dims = [str(d).strip() for d in dims if isinstance(d, str) and d.strip()]
+        if clean_dims:
+            parts.append(
+                f"  - 以下 user_dimensions 每一项各对应 1 个内容页（研究需求 ✅），"
+                f"不得标为 section/chapter：{clean_dims}\n"
+            )
+
+    user_structure = str(inputs.get("user_structure") or "").strip()
+    if user_structure:
+        parts.append(
+            "  - user_structure 中除「封面/目录/结束页」外的条目均映射为内容页，"
+            f"不得标为 section：{user_structure}\n"
+        )
+
+    return "".join(parts)
 
 
 def _build_p43_prompt(
@@ -752,7 +974,12 @@ def _build_p43_prompt(
     presentation_purpose = str(inputs.get("presentation_purpose") or "").strip()
     include_sources = _should_include_searched_sources(inputs)
     degraded = _is_no_search_degraded(inputs)
-    user_text = PptCommon.collect_user_text(inputs).strip()
+    # 隔离契约（notes.md / SKILL.md §约束 11）：备注触发原文与文件体积要求不进大纲 prompt
+    user_text = PptCommon.strip_page_gen_excluded_text(
+        PptCommon.collect_user_text(inputs), inputs
+    ).strip()
+    branch = PptCommon.ensure_content_branch(inputs)
+    expand_mode = PptCommon.is_expand_page_mode(inputs)
 
     entity = str(inputs.get("p4_search_entity") or "").strip()
 
@@ -762,8 +989,33 @@ def _build_p43_prompt(
         f"- audience: {audience}\n",
         f"- source_type: {source_type}\n",
         f"- search_mode: {search_mode}\n",
+        f"- content_branch: {branch}\n",
         f"- focus_areas: {focus_areas}\n",
     ]
+    if expand_mode:
+        parts.append(
+            "- 页数门禁：扩展模式（用户给出维度/结构且未指定页数）→ "
+            "研究需求：✅ 数量必须 ≥ page_count，可按维度适当扩页。\n"
+        )
+    else:
+        parts.append(
+            "- 页数门禁：严格模式 → 研究需求：✅ 数量必须等于 page_count。\n"
+        )
+
+    dims = inputs.get("user_dimensions") or []
+    if isinstance(dims, list) and dims:
+        clean_dims = [str(d).strip() for d in dims if isinstance(d, str) and d.strip()]
+        if clean_dims:
+            parts.append(
+                f"- user_dimensions（优先于 focus_areas 的结构维度，须在大纲中覆盖）："
+                f"{clean_dims}\n"
+            )
+    user_structure = str(inputs.get("user_structure") or "").strip()
+    if user_structure:
+        parts.append(
+            f"- user_structure（用户结构意图原文，保形作为叙事骨架）：\n{user_structure}\n"
+        )
+
     if entity:
         parts.append(
             f"- 主题实体: {entity}（大纲内容必须基于搜索结果中关于此实体的具体信息，"
@@ -800,13 +1052,28 @@ def _build_p43_prompt(
 
     # 中间结构页需求注入
     parts.append(_build_structural_page_directive(inputs))
+    agenda_mapping = _build_agenda_mapping_directive(inputs)
+    if agenda_mapping:
+        parts.append(agenda_mapping)
 
     failure_reason = inputs.get("failure_reason")
     if isinstance(failure_reason, str) and failure_reason.strip():
         parts.append(f"上次失败原因：\n{failure_reason.strip()}\n")
 
     if source_material:
-        parts.append(f"用户素材（doc_raw）：\n{source_material}\n")
+        if branch == CONTENT_BRANCH_MATERIAL:
+            parts.append(
+                "用户素材摘要（主数据源；完整原文仅摘要不足时按 doc_raw_path 局部读取）：\n"
+                f"<uploaded_document_summary>\n{source_material}\n</uploaded_document_summary>\n"
+            )
+            raw_path = str(inputs.get("doc_raw_path") or "").strip()
+            manifest_path = str(inputs.get("doc_manifest_path") or "").strip()
+            if raw_path:
+                parts.append(f"- doc_raw_path: {raw_path}\n")
+            if manifest_path:
+                parts.append(f"- doc_manifest_path: {manifest_path}\n")
+        else:
+            parts.append(f"用户素材（doc_summary）：\n{source_material}\n")
     else:
         parts.append("用户素材：无\n")
 
@@ -836,6 +1103,7 @@ def _validate_outline_markdown_basic(
     page_count: Any,
     structural_page_request: str = "none",
     structural_page_count: Any = None,
+    expand_page_mode: bool = False,
 ) -> None:
     stripped = text.strip()
     if not stripped:
@@ -859,35 +1127,44 @@ def _validate_outline_markdown_basic(
     expected_content_pages = int(page_count) if page_count is not None else None
     if expected_content_pages is not None:
         pages = _split_outline_pages(stripped)
-        # 仅统计 ✅ 页（研究需求为 ✅ 的内容页），结构页（❌）不计入内容页配额。
-        # 使用 < 比较容忍 LLM 多生成内容页，但不容忍内容页不足。
         content_count = sum(1 for _, blk in pages if _is_research_required_page(blk))
-        if content_count < expected_content_pages:
+        if expand_page_mode:
+            if content_count < expected_content_pages:
+                raise ContentPlanError(
+                    f"P4.3 outline 扩展模式下内容页数（✅）应 ≥ {expected_content_pages}，"
+                    f"实际 {content_count}"
+                )
+        elif content_count != expected_content_pages:
             raise ContentPlanError(
-                f"P4.3 outline 内容页数（✅）应为 {expected_content_pages}，"
+                f"P4.3 outline 严格模式下内容页数（✅）应为 {expected_content_pages}，"
                 f"实际 {content_count}"
             )
 
     # 总页数校验：max(page_numbers) 应等于 page_count + 2(封面/结束) + 结构页数
     # 防止 intent 阶段 page_count 算错导致总页数与用户要求不一致
     if expected_content_pages is not None:
-        spr = str(structural_page_request or "none").strip().lower()
-        if isinstance(structural_page_count, int) and structural_page_count > 0:
-            structural_num = structural_page_count
-        elif spr != "none":
-            structural_num = 1
-        else:
-            structural_num = 0
+        structural_num = PptCommon.resolve_mid_structural_page_count(
+            expected_content_pages,
+            structural_page_request,
+            structural_page_count,
+        )
         expected_total = expected_content_pages + 2 + structural_num
         actual_total = max(page_numbers) if page_numbers else 0
-        if actual_total != expected_total:
+        if expand_page_mode:
+            if actual_total < expected_total:
+                raise ContentPlanError(
+                    f"P4.3 outline 扩展模式下总页数应 ≥ {expected_total}"
+                    f"（内容页{expected_content_pages} + 封面/结束2 + 结构页{structural_num}），"
+                    f"实际最大页码为 {actual_total}"
+                )
+        elif actual_total != expected_total:
             raise ContentPlanError(
                 f"P4.3 outline 总页数应为 {expected_total}"
                 f"（内容页{expected_content_pages} + 封面/结束2 + 结构页{structural_num}），"
                 f"实际最大页码为 {actual_total}"
             )
 
-    # 遵从 pptx-craft outline-planner Stage 3 产物验证：
+    # 遵从 pptx-craft outline-planner（Phase 2）产物验证：
     # 首页类型为 cover，末页类型为 ending（conclusion/transition 为别名）
     _struct_pages = _split_outline_pages(stripped)
     if _struct_pages:
@@ -925,7 +1202,7 @@ def _validate_structural_pages(
     structural_page_request: str = "none",
     structural_page_count: Any = None,
 ) -> None:
-    """校验中间结构页合法性，与 pptx-craft outline-planner Stage 3 对齐。
+    """校验中间结构页合法性，与 pptx-craft outline-planner（Phase 2）对齐。
 
     - structural_page_request="none": 不允许任何中间结构页（仅 cover/ending）
     - structural_page_request="agenda"/"section"/"chapter"/"auto": 允许对应类型的结构页，
@@ -1016,6 +1293,17 @@ def _is_placeholder_field_value(value: str) -> bool:
     return normalized in {"-", "—", "–", "无", "N/A", "n/a"}
 
 
+def _validate_notes_leakage(text: str) -> None:
+    """内容概要不得出现备注通道条目。"""
+    for page_number, block in _split_outline_pages(text):
+        summary = _extract_outline_field(block, "内容概要")
+        if summary and _NOTES_LEAKAGE_RE.search(summary):
+            raise ContentPlanError(
+                f"P4.4 P{page_number} 内容概要含备注通道内容（演讲备注/讲稿等），"
+                "须移除后重出大纲"
+            )
+
+
 def _validate_outline_markdown_full(
     text: str,
     *,
@@ -1024,6 +1312,7 @@ def _validate_outline_markdown_full(
     include_searched_sources: bool,
     structural_page_request: str = "none",
     structural_page_count: Any = None,
+    expand_page_mode: bool = False,
 ) -> None:
     _validate_outline_markdown_basic(
         text,
@@ -1031,7 +1320,9 @@ def _validate_outline_markdown_full(
         page_count=page_count,
         structural_page_request=structural_page_request,
         structural_page_count=structural_page_count,
+        expand_page_mode=expand_page_mode,
     )
+    _validate_notes_leakage(text)
 
     if include_searched_sources and "## 已搜索来源" not in text:
         raise ContentPlanError("P4.4 outline 缺少 `## 已搜索来源` 章节（搜索模式下必填）")
@@ -1061,6 +1352,7 @@ def _outline_validate_kwargs(inputs: dict[str, Any]) -> dict[str, Any]:
         "include_searched_sources": _should_include_searched_sources(inputs),
         "structural_page_request": str(inputs.get("structural_page_request") or "none"),
         "structural_page_count": inputs.get("structural_page_count"),
+        "expand_page_mode": PptCommon.is_expand_page_mode(inputs),
     }
 
 
@@ -1230,25 +1522,15 @@ async def _write_outline(
 
 
 def _check_insufficient_info(outline_text: str, inputs: dict[str, Any]) -> None:
-    """检查 LLM 是否标记了信息不足，若是则 raise ContentPlanError 触发重试/fallback。"""
+    """LLM 仍输出 INSUFFICIENT 标记时触发 P4 重试，强制按 skill 规则直接成稿。"""
     if _INSUFFICIENT_INFO_MARKER not in outline_text:
         return
 
     marker_pos = outline_text.find(_INSUFFICIENT_INFO_MARKER)
     detail = outline_text[marker_pos + len(_INSUFFICIENT_INFO_MARKER):].strip()
-    topic = str(inputs.get("topic") or "").strip()
-    entity = str(inputs.get("p4_search_entity") or "").strip()
-    entity_hint = f"（主题实体：{entity}）" if entity else ""
-
-    search_target = entity or topic
     raise ContentPlanError(
-        f"P4.3 信息不足自检触发：搜索结果中关于主题「{topic}」{entity_hint}的"
-        f"实体特定信息不充分。{detail}"
-        f"\n\n补充搜索指令：现有搜索结果不足以支撑大纲生成。"
-        f"你必须先使用 web_search 工具搜索更多关于「{search_target}」的信息"
-        f"（建议查询：'{search_target} 官网'、'{search_target} 是什么'、'{search_target} 产品功能'），"
-        f"再基于补充后的搜索结果生成大纲。"
-        f"禁止仅凭现有搜索结果推断或编造功能。"
+        "P4.3 禁止输出 INSUFFICIENT 标记：即使搜索摘要不足，也必须直接生成完整 outline.md，"
+        f"缺口写入各页研究查询/数据需求。{detail}"
     )
 
 
@@ -1259,12 +1541,20 @@ async def _run_p43_outline_gen(node: PlanNode, inputs: dict[str, Any]) -> None:
     if source_type not in _VALID_SOURCE_TYPES:
         raise ContentPlanError(f"P4.3 无效的 source_type: {source_type!r}")
 
-    source_material = await PptCommon.read_file(
-        node,
-        inputs.get("doc_raw_path"),
-        max_chars=_SOURCE_MATERIAL_MAX_CHARS,
-        error_type=ContentPlanError,
-    )
+    source_material = str(inputs.get("source_material") or "").strip()
+    if (
+        not source_material
+        and PptCommon.ensure_content_branch(inputs) == CONTENT_BRANCH_MATERIAL
+    ):
+        source_material = await PptCommon.load_source_material(
+            node,
+            inputs,
+            max_chars=_SOURCE_MATERIAL_MAX_CHARS,
+            error_type=ContentPlanError,
+        )
+    elif PptCommon.ensure_content_branch(inputs) == CONTENT_BRANCH_RESEARCH:
+        source_material = ""
+        inputs["source_material"] = ""
     search_results_text = ""
     search_results = inputs.get("search_results")
     if search_results:
@@ -1393,17 +1683,23 @@ class P42QuickResearchNode(PlanNode):
                 "1. p4_should_search=False → 直接跳过，写入 skipped\n"
                 "2. p4_should_search=True → LLM 生成固定批次 query（含 entity 实体名）\n"
                 "3. 并行 web_search，汇总搜索结果\n"
-                "4. 相关性闸门：无可用结果→扩搜（换同义词/英文）；有结果但不相关→收窄（聚焦实体名）\n"
+                "4. 相关性闸门：无可用结果→扩搜；有结果但不足→收窄（聚焦 topic/维度/实体名）\n"
                 "5. 最多 2 轮重搜；任一轮判定 sufficient 即完成\n"
                 "\n"
                 "### 失败兜底\n"
                 "- web_search 全部失败: raise ContentPlanError\n"
-                "- 2 轮重搜后仍无可用结果或仍不相关: raise ContentPlanError（交由 P4 整体重试 / fallback 兜底，不向下游传错误信息）\n"
+                "- 2 轮重搜后仍 insufficient: 记录警告并继续 P4.3（outline-planner §1.4 信息不足直接成稿）\n"
                 "- LLM 生成 query 失败: 使用 topic 直接作为单条 query 搜索\n"
             ),
         )
 
     async def _execute(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        branch = PptCommon.ensure_content_branch(inputs)
+        if branch == CONTENT_BRANCH_MATERIAL:
+            inputs["p4_should_search"] = False
+            inputs["p4_quick_research_status"] = "skipped_material_branch"
+            inputs["search_results"] = []
+            return inputs
         if not inputs.get("p4_should_search"):
             inputs["p4_quick_research_status"] = "skipped"
             return inputs

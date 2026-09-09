@@ -496,6 +496,20 @@ def _ppt_delivery_summary(artifact_holder: dict[str, Any] | None) -> str:
     return text.strip() if isinstance(text, str) else ""
 
 
+def _ppt_delivery_failed_error(artifact_holder: dict[str, Any] | None) -> str:
+    """P10 明确交付失败时，禁止把 skill_acceleration_exec 收成 success。"""
+    node = (artifact_holder or {}).get("p10_delivery")
+    if not isinstance(node, dict):
+        return ""
+    info = node.get("info") if isinstance(node.get("info"), dict) else {}
+    if str(info.get("delivery_status") or "") != "failed":
+        return ""
+    return (
+        "PPT 生成失败：未产出可交付的 pptx 文件。"
+        "请根据流水线失败阶段重试，不要告知用户已经生成成功。"
+    )
+
+
 def visible_ppt_turbo_finish_text(
     holder: dict[str, Any] | None,
     *,
@@ -923,8 +937,15 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                     event_type,
                 )
 
-        # 过程输出已通过 write_stream 实时推给前端，tool result 仅返回精简完成信号 + 产物摘要
+        # 过程输出已通过 write_stream 实时推给前端。交付失败时不得返回 success，
+        # 否则外层 LLM / 前端会把「任务已完成」当成 PPT 已生成。
         release_checkpoint = True
+        ppt_fail = _ppt_delivery_failed_error(skill_turbo_inst.artifact_holder)
+        if ppt_fail:
+            return _wrap_skill_turbo_result(
+                {"success": False, "error": ppt_fail},
+                artifact_holder=skill_turbo_inst.artifact_holder,
+            )
         return _wrap_skill_turbo_result(
             {"success": True, "result": "任务已完成"},
             artifact_holder=skill_turbo_inst.artifact_holder,
