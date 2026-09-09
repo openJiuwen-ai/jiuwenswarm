@@ -70,7 +70,6 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
-  yamlField('skill_retrieval_index_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.index.enabled'),
   envField('free_search_ddg_enabled', 'agent', 'boolean', 'FREE_SEARCH_DDG_ENABLED'),
   envField('free_search_bing_enabled', 'agent', 'boolean', 'FREE_SEARCH_BING_ENABLED'),
   envField('jina_api_key', 'agent', 'text', 'JINA_API_KEY'),
