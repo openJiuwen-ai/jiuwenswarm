@@ -395,7 +395,9 @@ class WorkflowRunState(BaseModel):
 
         A node left ``waiting_for_human`` at teardown (the run was torn down
         while a human_session turn was pending) is also closed — otherwise the
-        frontend would spin forever on a reply that will never arrive.
+        frontend would spin forever on a reply that will never arrive. A
+        ``paused`` node is closed too: stopping a paused run is the same
+        interruption as stopping a running one, just later.
 
         Counters are derived, so after stamping we refresh the phase card —
         otherwise the teardown / phase-seal path (which does not go through
@@ -404,7 +406,7 @@ class WorkflowRunState(BaseModel):
         recomputes from the same agent list.
         """
         for agent in phase.agents:
-            if agent.status in ("running", "waiting_for_human"):
+            if agent.status in ("running", "waiting_for_human", "paused"):
                 self._stamp_agent_terminal(agent, terminal_status)
         self._refresh_phase_counts(phase)
 
@@ -423,15 +425,15 @@ class WorkflowRunState(BaseModel):
         self._refresh_phase_counts(phase)
 
     def _finalize_running_phases(self, terminal_status: str) -> None:
-        """Mark all running phases and their running agents as terminal.
+        """Mark all running / paused phases and their agents as terminal.
 
-        Only ``running`` phases are affected. A ``planned`` phase that never
+        Only ``running`` and ``paused`` phases are affected. A ``planned`` phase that never
         started (no agent ever entered it) is left untouched on purpose — by
         design an unexecuted/skipped phase stays ``planned`` in the terminal
         snapshot rather than being forced to a terminal status.
         """
         for phase in self.phases:
-            if phase.status == "running":
+            if phase.status in ("running", "paused"):
                 phase.status = terminal_status
             self._finalize_running_agents(phase, terminal_status)
 

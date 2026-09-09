@@ -1285,3 +1285,31 @@ def test_workflow_started_delta_omits_recovered_when_never_set():
     delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
     assert delta is not None
     assert "recovered" not in delta
+
+
+# ---------------------------------------------------------------------------
+# stop cascades through a paused run
+# ---------------------------------------------------------------------------
+
+def test_workflow_stopped_on_paused_run_finalizes_paused_phase_and_agents():
+    """Stopping a paused run must cascade: a paused phase / agent is not
+    finished, but stopped is the 'interrupted' terminal state and applies to
+    it exactly as to a running one. Leaving them paused shows a stopped run
+    card over a purple sub-tree and skews the derived completion counters.
+    """
+    state = WorkflowRunState()
+    state.id = "wf"
+    state.apply(_make_progress("workflow_started", workflow_name="t", phases=[{"title": "p1"}]))
+    state.apply(_make_progress("phase", phase="p1"))
+    state.apply(_make_progress("agent_started", phase="p1", agent_id="a1", label="w", node_type="agent"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+
+    delta = state.apply(_make_progress("workflow_stopped"))
+
+    assert state.status == "stopped"
+    assert state.phases[0].status == "stopped"
+    assert state.phases[0].agents[0].status == "stopped"
+    assert state.phases[0].completed_agent_count == 1
+    assert delta is not None and delta["status"] == "stopped"
