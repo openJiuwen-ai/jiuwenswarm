@@ -1901,8 +1901,10 @@ function AppContent() {
     status?: UserAnswerStatus,
   ) => {
     const currentSessionId = sessionIdRef.current;
-    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
-    void sendUserAnswer(currentSessionId, requestId, answers, source, status);
+    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
+      return Promise.resolve();
+    }
+    return sendUserAnswer(currentSessionId, requestId, answers, source, status);
   }, [sendUserAnswer]);
 
   const handleLoadMoreHistory = useCallback(async () => {

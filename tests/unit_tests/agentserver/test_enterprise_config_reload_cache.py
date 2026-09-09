@@ -97,6 +97,37 @@ async def test_refresh_enterprise_config_restores_cache_when_load_fails(
     assert len(adapter._enterprise_config.mcp) == 1
 
 
+def test_skill_authorization_rail_uses_agent_template_without_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    monkeypatch.setattr(
+        interface_deep,
+        "get_effective_permissions_config",
+        lambda **_kwargs: {
+            "enabled": True,
+            "skill_authorization": {"enabled": False},
+            "defaults": {"*": "allow"},
+        },
+    )
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._agent_permissions_body = {
+        "enabled": True,
+        "skill_authorization": {"enabled": True},
+        "defaults": {"*": "ask"},
+    }
+    adapter._enterprise_config = None
+    adapter._permission_rail = None
+    adapter._skill_rail = None
+
+    rail = adapter._build_skill_authorization_rail()
+
+    assert rail is not None
+    assert rail._feature_enabled() is True
+    assert rail._base_effective_config("session-1")["defaults"] == {"*": "ask"}
+
+
 @pytest.mark.asyncio
 async def test_load_enterprise_config_keeps_cache_when_gateway_raises(
     monkeypatch: pytest.MonkeyPatch,

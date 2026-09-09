@@ -2118,6 +2118,7 @@ class JiuWenSwarmDeepAdapter:
         self._startup_config_base: dict[str, Any] | None = None
         self._model_config_source: str = "config.yaml"
         self._enterprise_config: Any = None
+        self._enterprise_config_resource_id: str | None = None
         self._config_cache: dict[str, Any] = {}
         self._filesystem_rail: SysOperationRail | None = None
         self._progressive_tool_rail: ProgressiveToolRail | None = None
@@ -2441,6 +2442,17 @@ class JiuWenSwarmDeepAdapter:
         sid = str(session_id or "").strip()
         return sid or "default"
 
+    @staticmethod
+    def _enterprise_resource_id_from_request(request: AgentRequest | None) -> str:
+        """Return the authenticated Agent resource id carried by a request."""
+        if request is None:
+            return ""
+        from jiuwenswarm.common.request_identity import web_routing_identity
+
+        metadata = request.metadata if isinstance(request.metadata, dict) else None
+        identity = web_routing_identity(metadata)
+        return str(identity.get("bot_id") or "").strip()
+
     def copy_tenant_env_bindings_from(self, source: "JiuWenSwarmDeepAdapter") -> None:
         """Copy tenant tip namespace bindings from another adapter instance."""
         self._env_agent_id = getattr(source, "_env_agent_id", "default")
@@ -2706,6 +2718,33 @@ class JiuWenSwarmDeepAdapter:
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
+            requested_resource_id = self._enterprise_resource_id_from_request(request)
+            existing_resource_id = str(
+                getattr(existing, "_enterprise_config_resource_id", None) or ""
+            ).strip()
+            enterprise_resource_changed = bool(
+                requested_resource_id
+                and existing_resource_id != requested_resource_id
+            )
+            if (
+                existing is not None
+                and is_enterprise()
+                and enterprise_resource_changed
+            ):
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] rebuilding session adapter for enterprise "
+                    "identity: session_id=%s previous_resource_id=%s resource_id=%s",
+                    sid,
+                    existing_resource_id or "<unbound>",
+                    requested_resource_id,
+                )
+                await existing.cleanup()
+                self._drop_session_adapter_cache_entry(
+                    sid,
+                    remove_lock=False,
+                    remove_runtime_state=False,
+                )
+                existing = None
             if existing is not None:
                 await self._reload_session_adapter_if_stale(sid, existing)
                 self._touch_session_adapter(sid)
@@ -4919,6 +4958,7 @@ class JiuWenSwarmDeepAdapter:
         """
         if not is_enterprise():
             self._enterprise_config = None
+            self._enterprise_config_resource_id = None
             return
         try:
             from jiuwenswarm.server.runtime.enterprise_config import (
@@ -4936,6 +4976,9 @@ class JiuWenSwarmDeepAdapter:
             DEFAULT_AGENT_LOAD_SLOTS,
         )
         self._enterprise_config = loaded
+        self._enterprise_config_resource_id = (
+            self._enterprise_resource_id_from_request(request) or None
+        )
         self._agent_permissions_body = resolve_permissions_body_from_enterprise(loaded)
         if loaded is not None and self._skill_manager is not None:
             try:
@@ -5957,7 +6000,10 @@ class JiuWenSwarmDeepAdapter:
                 install_subagent_authorization_wiring,
             )
 
-            install_subagent_authorization_wiring(self._instance)
+            install_subagent_authorization_wiring(
+                self._instance,
+                config_provider=self._resolve_skill_authorization_base_config,
+            )
         except Exception:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] subagent authorization wiring failed",
@@ -6900,7 +6946,7 @@ class JiuWenSwarmDeepAdapter:
                 prebuilt_dirs_provider=self._prebuilt_skill_dirs_snapshot,
                 builtin_dirs_provider=lambda: [get_builtin_skills_dir()],
                 skill_identity_refresher=self._refresh_skill_identity,
-                config_provider=get_effective_permissions_config,
+                config_provider=self._resolve_skill_authorization_base_config,
                 session_config_merger=lambda config, session_id: (
                     merge_session_permissions_overlay(
                         config,
@@ -8349,6 +8395,14 @@ class JiuWenSwarmDeepAdapter:
         if is_enterprise() and session_id is None:
             return get_base_permissions_config()
         return get_effective_permissions_config(session_id=session_id)
+
+    def _resolve_skill_authorization_base_config(self) -> dict[str, Any]:
+        """Return this Agent's permission baseline without relying on ContextVar propagation.
+
+        An empty explicit session id keeps session overlays out of the provider result;
+        ``SkillAuthorizationRail`` merges the target session overlay separately.
+        """
+        return self._resolve_permission_config_for_agent(session_id="")
 
     def _build_permission_rail_for_agent(
         self,
