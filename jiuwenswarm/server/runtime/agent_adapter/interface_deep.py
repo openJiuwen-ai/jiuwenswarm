@@ -2731,6 +2731,8 @@ class JiuWenSwarmDeepAdapter:
         self,
         session_id: str,
         adapter: "JiuWenSwarmDeepAdapter",
+        *,
+        host_external_input: bool = False,
     ) -> None:
         current_version = self._session_adapter_config_version
         if self._session_adapter_versions.get(session_id, 0) >= current_version:
@@ -2740,9 +2742,21 @@ class JiuWenSwarmDeepAdapter:
             self._session_adapter_versions[session_id] = current_version
             self._session_adapter_reload_failures.pop(session_id, None)
             return
+        permission_delta = adapter._has_permission_config_delta(  # pylint: disable=protected-access
+            config_base
+        )
+        smart_lifecycle = adapter._uses_smart_permission_lifecycle(config_base)
+        if smart_lifecycle and not host_external_input:
+            # Ordinary lookup is also used by approval resumes, internal
+            # dispatches and structured control APIs. Only a Host-verified
+            # external CHAT_SEND may attempt to publish the pending policy;
+            # TUI control text intentionally retains develop timing.
+            return
         failed = self._session_adapter_reload_failures.get(session_id)
         if failed is not None:
-            failed_version, failed_at = failed
+            failed_version, failed_at, failed_permission_delta = failed
+            if failed_version == current_version:
+                permission_delta = permission_delta or failed_permission_delta
             if (
                 failed_version == current_version
                 and time.monotonic() - failed_at < self.SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC
@@ -2753,7 +2767,23 @@ class JiuWenSwarmDeepAdapter:
                     session_id,
                     current_version,
                 )
+                if smart_lifecycle:
+                    raise RuntimeError("permission_session_reload_retry_suppressed")
                 return
+        if adapter._should_defer_permission_reload(  # pylint: disable=protected-access
+            config_base,
+            session_id=session_id,
+            known_permission_delta=permission_delta,
+        ):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] lazy session permission reload deferred: "
+                "session_id=%s version=%s",
+                session_id,
+                current_version,
+            )
+            if smart_lifecycle and host_external_input:
+                raise RuntimeError("permission_session_busy:retry_after_settlement")
+            return
         try:
             await adapter.reload_agent_config(
                 config_base,
@@ -2761,21 +2791,99 @@ class JiuWenSwarmDeepAdapter:
                 target_session_id=session_id,
                 reload_scopes=self._pending_session_reload_scopes,
             )
+        except asyncio.CancelledError:
+            if smart_lifecycle:
+                await self._evict_failed_permission_session_adapter(
+                    session_id,
+                    adapter,
+                )
+            raise
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] lazy session adapter reload failed: session_id=%s error=%s",
                 session_id,
                 exc,
             )
+            if smart_lifecycle:
+                await self._evict_failed_permission_session_adapter(
+                    session_id,
+                    adapter,
+                )
+                raise
             self._session_adapter_reload_failures[session_id] = (
                 current_version,
                 time.monotonic(),
+                False,
             )
             return
         self._session_adapter_versions[session_id] = current_version
         self._session_adapter_reload_failures.pop(session_id, None)
 
+    async def _evict_failed_permission_session_adapter(
+        self,
+        session_id: str,
+        adapter: "JiuWenSwarmDeepAdapter",
+    ) -> None:
+        """Drop only an isolated, fully cleaned child; old references stay closed."""
+        if (
+            self._session_adapters.get(session_id) is not adapter
+            or not adapter._permission_state.permission_isolated
+            or not adapter._permission_state.permission_cleanup_complete
+        ):
+            return
+        self._drop_session_adapter_cache_entry(
+            session_id,
+            remove_lock=False,
+            remove_runtime_state=False,
+        )
 
+    async def _reload_target_session_adapter(
+        self,
+        config_base: dict[str, Any],
+        env_overrides: dict[str, Any] | None,
+        *,
+        target_session_id: str,
+        reload_scopes: set[str] | None = None,
+    ) -> None:
+        """Reload one cached child while serialized with request admission."""
+        session_id = self._session_adapter_key(target_session_id)
+        lock = self._session_adapter_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            adapter = self._session_adapters.get(session_id)
+            if adapter is None:
+                return
+            if adapter._should_defer_permission_reload(  # pylint: disable=protected-access
+                config_base,
+                session_id=session_id,
+            ):
+                raise RuntimeError("permission_reload_deferred_manual_pending")
+            try:
+                await adapter.reload_agent_config(
+                    config_base,
+                    env_overrides,
+                    target_session_id=target_session_id,
+                    reload_scopes=reload_scopes,
+                )
+            except Exception as exc:
+                if adapter._uses_smart_permission_lifecycle(config_base) or adapter._permission_state.permission_isolated:
+                    await self._evict_failed_permission_session_adapter(session_id, adapter)
+                    raise
+                if (
+                    isinstance(exc, RuntimeError)
+                    and str(exc) == "permission_reload_deferred_manual_pending"
+                ):
+                    raise
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] session adapter reload failed: "
+                    "session_id=%s error=%s",
+                    session_id,
+                    exc,
+                )
+            else:
+                self._session_adapter_versions[session_id] = (
+                    self._session_adapter_config_version
+                )
+                self._session_adapter_reload_failures.pop(session_id, None)
 
     async def _evict_idle_session_adapters(self) -> None:
         if self._is_session_scoped_adapter:
@@ -3081,6 +3189,27 @@ class JiuWenSwarmDeepAdapter:
             )
             return adapter
 
+    def _should_defer_permission_reload(
+        self,
+        config_base: dict[str, Any],
+        *,
+        session_id: str,
+        known_permission_delta: bool | None = None,
+    ) -> bool:
+        """Keep active or pending work on its complete installed permission config."""
+
+        if not self._uses_smart_permission_lifecycle(config_base):
+            return False
+        permission_delta = (
+            self._has_permission_config_delta(config_base)
+            if known_permission_delta is None
+            else known_permission_delta
+        )
+        if not permission_delta:
+            return False
+        if self._has_live_root_permission_owner(session_id):
+            return True
+        return self._is_session_live(session_id)
 
     def _has_live_root_permission_owner(self, session_id: str | None = None) -> bool:
         root_session_id = self._resolve_interrupt_session_id(session_id) if session_id is not None else None
@@ -9528,6 +9657,8 @@ class JiuWenSwarmDeepAdapter:
         env_overrides: dict[str, Any] | None,
         target_sid: str | None,
         reload_scopes: set[str] | None = None,
+        *,
+        permission_delta: bool = False,
     ) -> None:
         """Cascade a config reload to the live per-session adapters.
 
@@ -9536,8 +9667,9 @@ class JiuWenSwarmDeepAdapter:
         Args:
             config_base: Normalized config snapshot to hand to the children.
             env_overrides: Environment variable delta passed through unchanged.
-            target_sid: When set, only that session is reloaded eagerly; when
-                None, every session adapter is marked stale for lazy reload.
+            target_sid: When set, only that session is reloaded eagerly for
+                non-permission changes.
+            permission_delta: Whether the global permission policy changed.
         """
         if self._is_session_scoped_adapter:
             return
@@ -9547,31 +9679,86 @@ class JiuWenSwarmDeepAdapter:
                 # the full agent/model reload remains lazy at the request boundary.
                 for _, adapter in self._iter_session_adapters_for_reload(None):
                     adapter.refresh_paid_search_tool_for_runtime()
+        smart_targets = self._coordinates_smart_permission_lifecycle(config_base, target_sid)
+        if not target_sid or (smart_targets and (permission_delta or reload_scopes == {"permissions"})):
             self._mark_session_adapters_stale_for_reload(
                 config_base,
                 env_overrides,
                 reload_scopes,
             )
             return
-        for session_id, adapter in self._iter_session_adapters_for_reload(target_sid):
-            try:
-                await adapter.reload_agent_config(
-                    config_base,
-                    env_overrides,
-                    target_session_id=target_sid,
-                    reload_scopes=reload_scopes,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] session adapter reload failed: session_id=%s error=%s",
-                    session_id,
-                    exc,
-                )
-            else:
-                self._session_adapter_versions[session_id] = self._session_adapter_config_version
-                self._session_adapter_reload_failures.pop(session_id, None)
+        await self._reload_target_session_adapter(
+            config_base,
+            env_overrides,
+            target_session_id=target_sid,
+            reload_scopes=reload_scopes,
+        )
 
     async def reload_agent_config(
+        self,
+        config_base: dict[str, Any] | None = None,
+        env_overrides: dict[str, Any] | None = None,
+        target_session_id: str | None = None,
+        reload_scopes: set[str] | None = None,
+    ) -> None:
+        """Keep develop reload unchanged except at a Smart session boundary."""
+        if self._is_session_scoped_adapter and target_session_id and (
+            self._session_adapter_key(target_session_id)
+            != self._session_adapter_key(self._parent_session_id)
+        ):
+            return
+        if self._permission_state.permission_isolated:
+            raise RuntimeError("permission_session_isolated")
+        candidate = get_config() if config_base is None else config_base
+        if not isinstance(candidate, dict):
+            raise TypeError("config_base must be a dict when provided")
+        scopes = set(reload_scopes or ())
+        if scopes == {"permissions"} and self._coordinates_smart_permission_lifecycle(
+            candidate, target_session_id,
+        ):
+            # A notification publishes desired state; it never waits for answers
+            # or rebuilds model/MCP/memory just to update permission settings.
+            self._config_base_cache = {
+                **self._config_base_cache, "permissions": copy.deepcopy(candidate.get("permissions", {})),
+            }
+            self._mark_session_adapters_stale_for_reload(candidate, env_overrides, scopes)
+            return
+        if not self._uses_smart_permission_lifecycle(candidate) or self._instance is None:
+            await self._reload_agent_config(candidate, env_overrides, target_session_id, reload_scopes)
+            return
+        sid = self._session_adapter_key(self._parent_session_id)
+        lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            if self._permission_state.permission_isolated:
+                raise RuntimeError("permission_session_isolated")
+            if self._permission_work_pending(sid):
+                raise RuntimeError("permission_session_busy:retry_after_settlement")
+            only_permissions = scopes == {"permissions"} or (
+                not env_overrides
+                and {k: v for k, v in candidate.items() if k != "permissions"}
+                == {k: v for k, v in self._config_base_cache.items() if k != "permissions"}
+            )
+            self._permission_state.permission_update_in_progress = True
+            full_reload_started = False
+            try:
+                if not only_permissions:
+                    # Full reload retains develop's owner and providers, with
+                    # all fallible live changes behind the same admission lock.
+                    full_reload_started = True
+                    await self._reload_agent_config(candidate, env_overrides, target_session_id, reload_scopes)
+                await self._replace_permission_group(candidate)
+            except BaseException:
+                if full_reload_started and not self._permission_state.permission_isolated:
+                    await self._isolate_permission_instance()
+                raise
+            finally:
+                self._permission_state.permission_update_in_progress = False
+        if only_permissions:
+            await self._fan_out_reload_to_session_adapters(
+                candidate, env_overrides, target_session_id, scopes, permission_delta=True,
+            )
+
+    async def _reload_agent_config(
         self,
         config_base: dict[str, Any] | None = None,
         env_overrides: dict[str, Any] | None = None,
@@ -9723,7 +9910,6 @@ class JiuWenSwarmDeepAdapter:
             )
 
         logger.info("[JiuWenSwarmDeepAdapter] 配置已热更新（configure），未重启进程")
-
 
     @staticmethod
     def _bind_runtime_cron_context(
