@@ -795,8 +795,6 @@ class AgentRuntime:
         on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> list[RuntimeEvent]:
         """Answer a paused Runtime interaction through the existing Agent."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-
         if request.req_method != ReqMethod.CHAT_ANSWER:
             raise ValueError("interaction answer must use ReqMethod.CHAT_ANSWER")
         return await self.invoke(
@@ -1318,8 +1316,6 @@ class AgentRuntime:
 
     @staticmethod
     def _is_readonly_goal_get_request(request: AgentRequest) -> bool:
-        from jiuwenswarm.common.schema.message import ReqMethod
-
         if request.req_method != ReqMethod.COMMAND_GOAL:
             return False
         params = request.params if isinstance(request.params, dict) else {}
