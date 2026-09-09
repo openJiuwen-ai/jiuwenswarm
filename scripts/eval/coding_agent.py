@@ -9,7 +9,8 @@ Eval-only deviations (documented, not product behavior):
 - no permission / plan-approval / ask-user interrupts
 - ``enable_read_image_multimodal=False``
 - no MCP / cron / browser
-- ``enable_task_loop=False`` (single-query fix)
+- ``enable_task_loop=False`` unless the runner passes ``enable_task_loop``
+  (``--product-defaults``)
 - extra ``EvalTraceRail`` for timings and intermediate payloads
 - optional ``hide_grep`` ablation
 """
@@ -22,7 +23,7 @@ import sys
 import time
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -52,13 +53,16 @@ from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config  # n
 from openjiuwen.harness.workspace.workspace import Workspace  # noqa: E402
 
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa: E402
+    INTERFACE_CLASSIC,
     PROFILE_GRAPH,
     PROFILE_OFF,
     CodeGraphFlags,
     apply_code_graph_profile,
+    effective_retrieval_interface,
     product_code_graph_config,
     resolve_code_graph_flags,
     resolve_profile,
+    resolve_retrieval_interface,
 )
 from trajectory import EvalTrace  # noqa: E402
 
@@ -108,12 +112,34 @@ def subagent_enabled(config_base: dict[str, Any], name: str, default: bool = Fal
     return spec.get("enabled") is True
 
 
-def config_dir_name(*, profile: str = "off", prefix: str = "") -> str:
+TASK_MODE_LOCATE = "locate"
+TASK_MODE_CODING = "coding"
+PROMPT_MODE_LOCATE = "locate"
+PROMPT_MODE_PRODUCT = "product"
+
+
+def config_dir_name(
+    *,
+    profile: str = "off",
+    prefix: str = "",
+    task_mode: str = TASK_MODE_LOCATE,
+    benchmark: str = "contextbench",
+    retrieval_interface: str = INTERFACE_CLASSIC,
+) -> str:
     """Folder name that states the profile, e.g. ``cfg_b__graph``."""
     resolved = (profile or "off").strip().lower()
     head = f"cfg_{prefix}" if prefix else "cfg_b"
     tag = "graph-off" if resolved == "off" else resolved
-    return f"{head}__{tag}"
+    name = f"{head}__{tag}"
+    iface = resolve_retrieval_interface(retrieval_interface)
+    if iface != INTERFACE_CLASSIC and resolved != "off":
+        name = f"{name}__{iface}"
+    if (benchmark or "contextbench").strip().lower() == "swe":
+        return f"{name}__swe"
+    mode = (task_mode or TASK_MODE_LOCATE).strip().lower()
+    if mode == TASK_MODE_CODING:
+        name += "__coding"
+    return name
 
 
 def cfg_paths(run_root: Path, name: str) -> dict[str, Path]:
@@ -160,16 +186,32 @@ def model_env_snapshot() -> dict[str, str]:
 def build_model_from_env() -> Model:
     load_eval_dotenv()
     api_key = os.getenv("API_KEY", "").strip()
-    if not api_key:
+    api_base = os.getenv("API_BASE", "").strip()
+    model_name = os.getenv("MODEL_NAME", "").strip()
+    provider = os.getenv("MODEL_PROVIDER", "").strip()
+    missing = [
+        name
+        for name, value in (
+            ("API_KEY", api_key),
+            ("API_BASE", api_base),
+            ("MODEL_NAME", model_name),
+            ("MODEL_PROVIDER", provider),
+        )
+        if not value
+    ]
+    if missing:
         raise SystemExit(
-            "API_KEY is required. Also set API_BASE, MODEL_NAME, MODEL_PROVIDER "
-            "(same variables as jiuwenswarm/resources/config.yaml)."
+            "Missing "
+            + ", ".join(missing)
+            + ". Copy jiuwenswarm/resources/.env.template to .env "
+            "(or jiuwenswarm/resources/.env) or pass --dotenv / EVAL_DOTENV. "
+            "Do not rely on openai.com / gpt-4.1 defaults."
         )
     return init_model(
-        provider=os.getenv("MODEL_PROVIDER", "OpenAI"),
-        model_name=os.getenv("MODEL_NAME", "gpt-4.1"),
+        provider=provider,
+        model_name=model_name,
         api_key=api_key,
-        api_base=os.getenv("API_BASE", "https://api.openai.com/v1"),
+        api_base=api_base,
         timeout=float(os.getenv("MODEL_TIMEOUT", "180")),
         temperature=float(os.getenv("MODEL_TEMPERATURE", "0.2")),
         top_p=float(os.getenv("MODEL_TOP_P", "0.9")),
@@ -208,6 +250,17 @@ CONTEXTBENCH_CODE_HIDDEN_TOOLS = (
     "edit_file",
     "write_file",
 )
+# Coding exam: graph on Root. Keep edit/bash so the agent can patch.
+CODING_FIND_HIDDEN_TOOLS = (
+    "grep",
+    "glob",
+    "task_tool",
+)
+# Coding exam: graph on code_agent. Keep edit/bash; hide text search only.
+CODING_CODE_HIDDEN_TOOLS = (
+    "grep",
+    "glob",
+)
 
 
 class EvalHideGrepRail(DeepAgentRail):
@@ -237,9 +290,9 @@ def _remove_named_tools(agent: Any, names: tuple[str, ...]) -> None:
             continue
 
 
-def _system_prompt() -> str:
+def _system_prompt(*, profile: str | None = None) -> str:
     if build_code_system_prompt is not None:
-        return build_code_system_prompt()
+        return build_code_system_prompt(profile=profile)
     return (
         "You are a coding agent. Use tools instead of guessing file contents. "
         "Read source files before editing."
@@ -277,18 +330,43 @@ def _graph_config(
     )
 
 
+def _profile_rail_kwargs(flags: CodeGraphFlags, graph_config: Any, prompt_mode: str) -> dict[str, Any]:
+    """Pass retrieval_interface only when this engine's rail accepts it."""
+    import inspect
+
+    kwargs: dict[str, Any] = {"config": graph_config, "prompt_mode": prompt_mode}
+    try:
+        from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
+
+        if "retrieval_interface" in inspect.signature(CodeGraphProfileRail.__init__).parameters:
+            kwargs["retrieval_interface"] = flags.retrieval_interface
+    except Exception:  # noqa: BLE001 — product engines ignore the extra knob
+        pass
+    return kwargs
+
+
 def _code_agent_profile_kwargs(
     flags: CodeGraphFlags,
     graph_config: Any,
     *,
     inject_builtin_plan_agents: bool = True,
+    prompt_mode: str = PROMPT_MODE_LOCATE,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "code_graph_profile": flags.profile,
-        "code_graph_prompt_mode": "locate",
+        "code_graph_prompt_mode": prompt_mode,
     }
     if flags.enabled:
         kwargs["code_graph_config"] = graph_config
+        import inspect
+
+        try:
+            from openjiuwen.harness.subagents.code_agent import create_code_agent
+
+            if "code_graph_retrieval_interface" in inspect.signature(create_code_agent).parameters:
+                kwargs["code_graph_retrieval_interface"] = flags.retrieval_interface
+        except Exception:  # noqa: BLE001 — older engines stay classic
+            pass
     if not inject_builtin_plan_agents:
         kwargs["inject_builtin_plan_agents"] = False
     return kwargs
@@ -333,12 +411,18 @@ def create_coding_agent(
     cache_dir: str | Path | None = None,
     config_base: dict[str, Any] | None = None,
     code_agent_system_prompt: str | None = None,
+    prompt_mode: str = PROMPT_MODE_LOCATE,
+    extra_hide_on_code_agent: tuple[str, ...] | None = None,
+    enable_task_loop: bool = False,
+    enable_task_planning: bool = False,
+    retrieval_interface: str | None = None,
 ) -> CodingAgentHandle:
     """Create the UI Single Coding Agent with an in-memory profile overlay.
 
     ``off`` is the original product agent (no graph). ``graph`` gives
-    ``code_agent`` the find_* tools. ContextBench uses locate-exam prompts;
-    the product TUI uses the product prompt.
+    ``code_agent`` the find_* tools. ``prompt_mode=locate`` hangs
+    ``submit_code_context`` (retrieval exam). ``prompt_mode=product`` is
+    the coding exam: locate then edit, no submit tool.
     """
     repo = Path(repo_root).expanduser().resolve()
     if not repo.is_dir():
@@ -354,13 +438,21 @@ def create_coding_agent(
         config_base if isinstance(config_base, dict) else load_product_config(),
         resolved_profile,
     )
-    flags = resolve_code_graph_flags(product)
+    flags = replace(
+        resolve_code_graph_flags(product),
+        retrieval_interface=effective_retrieval_interface(
+            profile=resolved_profile,
+            prompt_mode=prompt_mode,
+            explicit=retrieval_interface,
+        ),
+    )
     graph_config = _graph_config(product, work, cache_dir)
     model = model or build_model_from_env()
     trace = EvalTrace(
         repo_root=str(repo),
         flags={
             "profile": flags.profile,
+            "retrieval_interface": flags.retrieval_interface,
         },
     )
     capture = trace.make_rail()
@@ -416,7 +508,10 @@ def create_coding_agent(
         # Locate exam: hide bash/grep on CA whenever it owns graph tools.
         # Leaving bash (run12 baseline+CA) let a subagent `git checkout` and
         # poison the shared worktree for the next instance.
-        code_hide = CONTEXTBENCH_CODE_HIDDEN_TOOLS if graph_on_code_agent else ()
+        if extra_hide_on_code_agent is not None:
+            code_hide = extra_hide_on_code_agent
+        else:
+            code_hide = CONTEXTBENCH_CODE_HIDDEN_TOOLS if graph_on_code_agent else ()
         spec = build_code_agent_config(
             model,
             workspace=str(repo),
@@ -432,6 +527,7 @@ def create_coding_agent(
                 flags,
                 graph_config,
                 inject_builtin_plan_agents=not graph_on_code_agent,
+                prompt_mode=prompt_mode,
             ),
         )
         spec.factory_kwargs = {**graph_kwargs, **(spec.factory_kwargs or {})}
@@ -444,7 +540,9 @@ def create_coding_agent(
             id=f"coding-agent-{uuid.uuid4().hex[:8]}",
             description="Standalone coding agent for eval and local tests",
         ),
-        "system_prompt": _system_prompt(),
+        "system_prompt": _system_prompt(
+            profile=resolved_profile if attach_on_root else PROFILE_OFF
+        ),
         "subagents": subagents,
         "rails": _rails(
             SysOperationRail(),
@@ -452,8 +550,8 @@ def create_coding_agent(
         ),
         "workspace": workspace_obj,
         "language": language,
-        "enable_task_loop": False,
-        "enable_task_planning": False,
+        "enable_task_loop": enable_task_loop,
+        "enable_task_planning": enable_task_planning,
         "max_iterations": max_iterations,
         "restrict_to_work_dir": True,
         "add_general_purpose_agent": False,
@@ -475,8 +573,7 @@ def create_coding_agent(
                 capture,
                 CodeGraphProfileRail(
                     flags.profile,
-                    config=graph_config,
-                    prompt_mode="locate",
+                    **_profile_rail_kwargs(flags, graph_config, prompt_mode),
                 ),
             )
     import inspect

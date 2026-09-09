@@ -48,23 +48,21 @@ code_graph:
 
 ## 打开后能做什么
 
-定位已知类/函数：`resolve_symbol` → `read_symbol`。
+定位已知类/函数：`resolve_symbol` → `focus_code`。
 
-不知道精确名：`find_code_symbols` 生成候选，再 `read_symbol`。
+不知道精确名：`find_code_symbols` 生成候选，再 `focus_code`。
 
 精确字面量（报错、配置键、decorator）：`search_source_text`。
 
 文件或类结构：`inspect_code_structure`。
 
-邻居关系：`find_callers` / `find_callees` / `find_importers` / `find_base_classes` / `find_subclasses`。
+需要调用 / 继承关系时：`focus_code` 并打开 `include_relations`。产品 `graph` **没有**独立的 `find_callers` / `read_symbol` / `select_code_context`。
 
-多跳调用链：`trace_call_paths`（必须传 `direction`）。
-
-定位完成后，同一个挂载点继续 `edit_file` / `write_file` 并跑测试。产品模式**没有** `submit_code_context`。
+定位完成后，同一个挂载点继续 `edit_file` / `write_file` 并跑测试。产品模式**没有** `submit_code_context`。检索面不是 yaml 开关：`graph` 即 focused，`off` 即原工具。
 
 ## 和评测脚本的区别
 
-测试人员跑 ContextBench 用 `scripts/eval/`，会注入 locate 考试提示并挂上 `submit_code_context` 以产出 `<PATCH_CONTEXT>`。那不是产品用户路径，**不能直接套产品 yaml**。ContextBench 源码和 gold parquet **不在本仓库**；测试机设置 `CONTEXTBENCH_ROOT`（或把 ContextBench clone 成 `jiuwenswarm` 的兄弟目录 `../ContextBench`），不要依赖某台机器上的 `reconstruct_tmp`。
+测试人员跑 ContextBench 用 `scripts/eval/`，会注入 locate 考试提示并挂上 `submit_code_context` 以产出 `<PATCH_CONTEXT>`。那不是产品用户路径，**不能直接套产品 yaml**。ContextBench 源码和 gold parquet **不在本仓库**；测试机设置 `CONTEXTBENCH_ROOT`（或把 ContextBench clone 成 `jiuwenswarm` 的兄弟目录 `../ContextBench`）。
 
 - 任务不同：评测是 locate 考试（提交上下文），产品是定位后 `edit_file` / 跑测试。
 - 藏工具不同：评测还要藏 `bash` / `edit_file` / `write_file`（`--graph-agent root` 时再藏 `task_tool`），否则 Root 会不调图就交卷。产品只在图可用时藏 `grep` / `glob`；图 `UNAVAILABLE` 时加回来。评测失败不得回退 grep，否则污染 ablation。

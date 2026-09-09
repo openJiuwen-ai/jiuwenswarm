@@ -2,14 +2,17 @@
 """Eval support: ContextBench paths, project ``.env``, and the pinned engine.
 
 Path lookup: ``CONTEXTBENCH_ROOT`` / ``--contextbench-root`` / sibling
-``../ContextBench``. Do not assume ``reconstruct_tmp``.
+``../ContextBench``, then ``third_party/ContextBench``. Same idea for SWE
+(``SWE_BENCH_ROOT`` / ``../SWE-bench`` / ``third_party/SWE-bench``).
 
 ``.env``: eval is a plain ``python`` process. Keys already exported in the
 shell (often from ``~/.zshrc``) sit in ``os.environ`` before this file runs.
 ``python-dotenv`` defaults to *not* overwriting those, so a stale shell
-``API_KEY`` would beat ``jiuwenswarm/resources/.env``. ``load_eval_dotenv``
-uses ``override=True`` so the project file wins. Product ``jiuwenswarm-start``
-loads its own instance ``.env`` separately; this module is eval-only.
+``API_KEY`` would beat the file chosen below. ``load_eval_dotenv`` uses
+``override=True`` so that file wins. Search order: ``--dotenv``,
+``EVAL_DOTENV``, repo-root ``.env``, then ``jiuwenswarm/resources/.env``.
+Product ``jiuwenswarm-start`` still loads its own instance ``.env``.
+This module is eval-only.
 
 Engine: ``uv sync --extra code-graph`` installs
 ``openJiuwen/agent-core`` ``agent_os_code_search``. Eval does not prepend a
@@ -25,9 +28,9 @@ from pathlib import Path
 
 _EVAL_DIR = Path(__file__).resolve().parent
 JIUWEN_ROOT = _EVAL_DIR.parents[1]
-DEFAULT_OUTPUT = (
-    JIUWEN_ROOT / "docs" / "ai" / "experiments-contextbench" / "runs" / "scratch-contextbench"
-)
+# Local scratch only. Do not default into gitignored ``docs/ai/``.
+DEFAULT_OUTPUT = JIUWEN_ROOT / "eval-runs" / "contextbench"
+DEFAULT_SWE_OUTPUT = JIUWEN_ROOT / "eval-runs" / "swe"
 GOLD_PARQUET_NAME = "contextbench_verified.parquet"
 
 
@@ -56,11 +59,7 @@ def contextbench_root_candidates(
     explicit: Path | str | None = None,
     parquet: Path | str | None = None,
 ) -> list[Path]:
-    """Places to look, first match wins.
-
-    ``reconstruct_tmp/ContextBench`` is a last-resort local layout, not a
-    required path for other testers.
-    """
+    """Places to look, first match wins."""
     parent = JIUWEN_ROOT.parent
     env = os.environ.get("CONTEXTBENCH_ROOT", "").strip()
     parquet_env = os.environ.get("CONTEXTBENCH_PARQUET", "").strip()
@@ -78,7 +77,6 @@ def contextbench_root_candidates(
         [
             parent / "ContextBench",
             JIUWEN_ROOT / "third_party" / "ContextBench",
-            parent / "reconstruct_tmp" / "ContextBench",
         ]
     )
     return _unique(found)
@@ -136,6 +134,36 @@ def resolve_contextbench_parquet(
     )
 
 
+def is_swe_checkout(root: Path) -> bool:
+    """True when ``root`` is the SWE-bench source tree (harness + CLI)."""
+    return (root / "swebench" / "harness" / "run_evaluation.py").is_file()
+
+
+def swe_root_candidates(*, explicit: Path | str | None = None) -> list[Path]:
+    parent = JIUWEN_ROOT.parent
+    env = os.environ.get("SWE_BENCH_ROOT", "").strip()
+    found: list[Path] = []
+    if explicit is not None and str(explicit).strip():
+        found.append(Path(str(explicit)).expanduser())
+    if env:
+        found.append(Path(env).expanduser())
+    found.extend(
+        [
+            parent / "SWE-bench",
+            JIUWEN_ROOT / "third_party" / "SWE-bench",
+        ]
+    )
+    return _unique(found)
+
+
+def resolve_swe_root(explicit: Path | str | None = None) -> Path | None:
+    """Optional local SWE-bench checkout. Dataset itself comes from HuggingFace."""
+    for candidate in swe_root_candidates(explicit=explicit):
+        if is_swe_checkout(candidate):
+            return candidate.expanduser().resolve()
+    return None
+
+
 def prepend_contextbench(root: Path) -> Path:
     """Put the checkout on ``sys.path`` so ``contextbench.*`` imports resolve."""
     resolved = root.expanduser().resolve()
@@ -144,6 +172,30 @@ def prepend_contextbench(root: Path) -> Path:
         sys.path.remove(text)
     sys.path.insert(0, text)
     return resolved
+
+
+def prepend_swe_bench(root: Path) -> Path:
+    """Put a SWE-bench checkout first so ``swebench submit`` / ``eval`` resolve."""
+    return prepend_contextbench(root)
+
+
+def swe_harness_env(*, swe_root: Path | None = None) -> dict[str, str]:
+    """Env for ``swebench eval``. ARM Mac is not the official Linux x86_64 host."""
+    env = dict(os.environ)
+    if swe_root is not None:
+        resolved = swe_root.expanduser().resolve()
+        env["SWE_BENCH_ROOT"] = str(resolved)
+        env["PYTHONPATH"] = (
+            str(resolved)
+            + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        )
+    if sys.platform == "darwin":
+        # docker-py pull also needs this passed as platform=; see SWE-bench
+        # harness _pull_published_image. Overwrite so a stale shell arm64
+        # default cannot leak into eval.
+        env["SWE_BENCH_ALLOW_EXPERIMENTAL_HOST"] = "1"
+        env["DOCKER_DEFAULT_PLATFORM"] = "linux/amd64"
+    return env
 
 
 def describe_openjiuwen() -> str:
@@ -238,8 +290,8 @@ def resolve_dotenv_path() -> Path | None:
         path = Path(env).expanduser().resolve()
         return path if path.is_file() else None
     for candidate in (
-        JIUWEN_ROOT / "jiuwenswarm" / "resources" / ".env",
         JIUWEN_ROOT / ".env",
+        JIUWEN_ROOT / "jiuwenswarm" / "resources" / ".env",
     ):
         if candidate.is_file():
             return candidate.resolve()
