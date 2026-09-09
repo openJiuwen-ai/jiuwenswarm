@@ -450,6 +450,7 @@
       "created": "Task created",
       "cancelled": "Task cancelled",
       "unblocked": "Task unblocked",
+      "blocked": "Task paused",
       "updated": "Task status updated"
     },
     "taskDetail": {

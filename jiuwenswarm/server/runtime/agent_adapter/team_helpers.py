@@ -3534,6 +3534,11 @@ async def _consume_monitor_events(
 _WF_PHASE_STATUS_TO_TASK: dict[str, tuple[str, str]] = {
     "planned": ("team.task.created", "pending"),
     "running": ("team.task.claimed", "in_progress"),
+    # paused must leave the running column: the board's visual progress eases
+    # in_progress tasks toward 85% on wall-clock alone, so a paused phase left
+    # in_progress shows a bar that keeps creeping while nothing executes.
+    # blocked = waiting column, zero progress; resume re-claims via "running".
+    "paused": ("team.task.blocked", "blocked"),
     "completed": ("team.task.completed", "completed"),
     "failed": ("team.task.cancelled", "cancelled"),
     "stopped": ("team.task.cancelled", "cancelled"),

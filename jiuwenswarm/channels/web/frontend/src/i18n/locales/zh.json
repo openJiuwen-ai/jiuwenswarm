@@ -438,6 +438,7 @@
       "created": "任务已创建",
       "cancelled": "任务已取消",
       "unblocked": "任务解除阻塞",
+      "blocked": "任务已暂停",
       "updated": "任务状态更新"
     },
     "taskDetail": {

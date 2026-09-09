@@ -5909,6 +5909,30 @@ def test_workflow_updated_to_team_events_planned_phase_creates_task():
     assert ev["event"]["team_id"] == "wf"
 
 
+def test_workflow_updated_to_team_events_paused_phase_blocks_task_then_resume_reclaims():
+    """A paused phase must leave the running column: the task board's visual
+    progress eases in_progress tasks toward 85% on wall-clock alone, so a
+    paused run whose task stays in_progress shows a bar that keeps creeping
+    while nothing executes. paused -> blocked (waiting column, 0 progress);
+    resume -> running re-claims it.
+    """
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
+        "sess-wf", seen_phase, seen_agent, spawned,
+    )
+    out = team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "p1", "name": "p", "status": "paused"}]),
+        "sess-wf", seen_phase, seen_agent, spawned,
+    )
+    assert [(e["event"]["type"], e["event"]["status"]) for e in out] == [("team.task.blocked", "blocked")]
+    out = team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
+        "sess-wf", seen_phase, seen_agent, spawned,
+    )
+    assert [(e["event"]["type"], e["event"]["status"]) for e in out] == [("team.task.claimed", "in_progress")]
+
+
 def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_task():
     seen_phase, seen_agent, spawned = {}, {}, set()
     out = team_helpers._workflow_updated_to_team_events(
