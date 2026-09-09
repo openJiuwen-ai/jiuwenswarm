@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from ..infrastructure.config import get_settings
 from ..routers.application_config_routers import application_config_router
 from ..routers.instance_resource_routers import instance_resource_router
 from ..routers.instance_routers import instance_router
@@ -13,6 +15,10 @@ from ..routers.template_routers import templates_router
 def create_app() -> FastAPI:
     """Gateway 本机配置接收接口（每网关独立 DB，无路径级实例段）。"""
     app = FastAPI(title="Gateway Manager Config Receiver", docs_url="/docs", redoc_url=None)
+    app.add_middleware(
+        ProxyHeadersMiddleware,
+        trusted_hosts=get_settings().gateway_config_forwarded_allow_ips,
+    )
 
     @app.get("/api/health", tags=["System"])
     async def system_health() -> dict[str, str]:

@@ -391,6 +391,46 @@ def test_a2a_credential_replace_requires_https(
     assert secrets.values == {}
 
 
+def test_a2a_credential_replace_accepts_trusted_https_proxy(
+    a2a_receiver: tuple[TestClient, dict[str, Any], _Secrets],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, secrets = a2a_receiver
+    monkeypatch.setenv("GATEWAY_CONFIG_FORWARDED_ALLOW_IPS", "testclient")
+    app_module = import_manager_config_receiver_module("http.app")
+    with TestClient(app_module.create_app(), base_url="http://gateway.test") as client:
+        response = client.post(
+            "/api/v1/a2a-outbound-templates",
+            json=_outbound_payload(),
+            headers={"X-Forwarded-Proto": "https"},
+        )
+    assert response.status_code == 200
+    assert secrets.values == {"a2a/outbound/a2a-weather.api_key": "secret"}
+
+
+def test_a2a_credential_replace_rejects_untrusted_https_proxy_header(
+    a2a_receiver: tuple[TestClient, dict[str, Any], _Secrets],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, secrets = a2a_receiver
+    monkeypatch.setenv("GATEWAY_CONFIG_FORWARDED_ALLOW_IPS", "192.0.2.1")
+    app_module = import_manager_config_receiver_module("http.app")
+    with TestClient(app_module.create_app(), base_url="http://gateway.test") as client:
+        response = client.post(
+            "/api/v1/a2a-outbound-templates",
+            json=_outbound_payload(),
+            headers={"X-Forwarded-Proto": "https"},
+        )
+    assert response.status_code == 400
+    assert secrets.values == {}
+
+
+def test_a2a_receiver_rejects_wildcard_trusted_proxy_config() -> None:
+    config_module = import_manager_config_receiver_module("infrastructure.config")
+    with pytest.raises(ValueError, match="must not trust all hosts"):
+        config_module.Settings(GATEWAY_CONFIG_FORWARDED_ALLOW_IPS="*")
+
+
 def test_a2a_credential_is_restored_when_projection_update_fails(
     a2a_receiver: tuple[TestClient, dict[str, Any], _Secrets],
     monkeypatch: pytest.MonkeyPatch,

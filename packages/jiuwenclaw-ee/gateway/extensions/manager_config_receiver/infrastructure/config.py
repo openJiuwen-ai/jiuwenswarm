@@ -67,6 +67,11 @@ class Settings(BaseSettings):
         default=8775,
         validation_alias="GATEWAY_CONFIG_HTTP_PORT",
     )
+    gateway_config_forwarded_allow_ips: str = Field(
+        default="127.0.0.1",
+        validation_alias="GATEWAY_CONFIG_FORWARDED_ALLOW_IPS",
+        description="允许提供 X-Forwarded-* 的可信反向代理 IP/CIDR 列表",
+    )
     # 对外可被 Manager 访问的地址；HTTPS 通常由反向代理终止。
     gateway_config_public_host: str = Field(
         default="",
@@ -119,6 +124,14 @@ class Settings(BaseSettings):
     # ===================== 核心校验逻辑 =====================
     @model_validator(mode="after")
     def validate_db_fields(self) -> "Settings":
+        trusted_proxies = {
+            value.strip()
+            for value in self.gateway_config_forwarded_allow_ips.split(",")
+            if value.strip()
+        }
+        if "*" in trusted_proxies:
+            raise ValueError("GATEWAY_CONFIG_FORWARDED_ALLOW_IPS must not trust all hosts")
+
         # 如果是 SQLite，不需要校验连接参数
         if is_sqlite(self.gateway_db_type):
             # 如果没传路径，自动设置默认值
