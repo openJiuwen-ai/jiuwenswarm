@@ -1896,13 +1896,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _a2a_ingress_reload(ws, req_id, params, session_id):
         await _send_a2a_snapshot(ws, req_id, lambda: a2a_manager.reload())
 
-    channel.register_method("a2a.ingress.get", _a2a_ingress_get)
-    channel.register_method("a2a.ingress.edit", _a2a_ingress_edit)
-    channel.register_method("a2a.ingress.history", _a2a_ingress_history)
-    channel.register_method("a2a.ingress.update", _a2a_ingress_update)
-    channel.register_method("a2a.ingress.enable", _a2a_ingress_enable)
-    channel.register_method("a2a.ingress.disable", _a2a_ingress_disable)
-    channel.register_method("a2a.ingress.reload", _a2a_ingress_reload)
+    if not is_enterprise():
+        channel.register_method("a2a.ingress.get", _a2a_ingress_get)
+        channel.register_method("a2a.ingress.edit", _a2a_ingress_edit)
+        channel.register_method("a2a.ingress.history", _a2a_ingress_history)
+        channel.register_method("a2a.ingress.update", _a2a_ingress_update)
+        channel.register_method("a2a.ingress.enable", _a2a_ingress_enable)
+        channel.register_method("a2a.ingress.disable", _a2a_ingress_disable)
+        channel.register_method("a2a.ingress.reload", _a2a_ingress_reload)
 
     async def _send_a2a_outbound(ws, req_id, operation) -> None:
         if a2a_manager is None or not a2a_manager.outbound_available:
@@ -1973,7 +1974,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _a2a_outbound_list(ws, req_id, params, session_id):
-        await _send_a2a_outbound(ws, req_id, lambda: a2a_manager.outbound_list())
+        await _send_a2a_outbound(
+            ws,
+            req_id,
+            lambda: a2a_manager.outbound_list(
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                )
+            ),
+        )
 
     async def _a2a_outbound_get(ws, req_id, params, session_id):
         await _send_a2a_outbound(
@@ -2007,7 +2016,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws,
             req_id,
             lambda: a2a_manager.outbound_set_user_enabled(
-                str(params.get("agent_id") or ""), enabled=user_enabled
+                str(params.get("agent_id") or ""),
+                enabled=user_enabled,
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                ),
             ),
         )
 
@@ -2051,7 +2064,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(
             ws,
             req_id,
-            lambda: a2a_manager.outbound_dispatch_get(str(params.get("dispatch_id") or "")),
+            lambda: a2a_manager.outbound_dispatch_get(
+                str(params.get("dispatch_id") or ""),
+                source_session_id=(session_id if is_enterprise() else None),
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                ),
+            ),
         )
 
     async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id):

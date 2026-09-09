@@ -21,7 +21,14 @@ logger = logging.getLogger(__name__)
 # AgentServer's E2A normalization. Local handlers only receive ``params``, so
 # merge ``metadata.routing`` into the handler params copy (not Message.params).
 _LOCAL_ROUTING_IDENTITY_PREFIXES = ("cron.", "skills.enterprise.")
-_LOCAL_ROUTING_IDENTITY_METHODS = frozenset({"models.list", "project.get_sessions", "project.get_cron_sessions"})
+_LOCAL_ROUTING_IDENTITY_METHODS = frozenset({
+    "models.list",
+    "project.get_sessions",
+    "project.get_cron_sessions",
+    "a2a.outbound.list",
+    "a2a.outbound.enabled.update",
+    "a2a.outbound.dispatch.get",
+})
 
 _ENTERPRISE_BLOCKED_EXACT = frozenset({
     "config.set", "config.save_all", "models.replace_all", "models.save",

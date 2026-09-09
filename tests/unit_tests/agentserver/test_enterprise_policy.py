@@ -247,6 +247,102 @@ def test_embedding_slot_is_loaded_separately_from_model_slots() -> None:
     assert TemplateRefSlot.EMBEDDING_MODEL not in MODEL_SLOT_KEYS
 
 
+@pytest.mark.asyncio
+async def test_a2a_policy_slot_loads_by_policy_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.enterprise_config import db_queries
+
+    captured: dict[str, object] = {}
+
+    async def _list_records(
+        table: str,
+        *,
+        filters: dict | None = None,
+        order_by: str = "",
+    ) -> list[dict]:
+        captured.update(table=table, filters=filters, order_by=order_by)
+        return [{"policy_id": "policy-1", "enabled": True}]
+
+    monkeypatch.setattr(db_queries, "list_records", _list_records)
+    result = await db_queries.fetch_template_by_slot(
+        "a2a_access_policy", "policy-1"
+    )
+
+    assert result == {"policy_id": "policy-1", "enabled": True}
+    assert captured["table"] == "a2a_access_policy_template"
+    assert captured["filters"] == {"enabled": True, "policy_id": ["policy-1"]}
+
+
+@pytest.mark.asyncio
+async def test_a2a_policy_load_failure_keeps_other_enterprise_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.server.runtime.enterprise_config import db_queries
+    from jiuwenswarm.server.runtime.enterprise_config.loader import (
+        load_effective_enterprise_config,
+    )
+    from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+
+    async def _list_records(table, *, filters=None, order_by=""):
+        del filters, order_by
+        if table == "instance_agent_resource":
+            return [{"resource_id": "resource-1", "ref_template_id": "agent-1"}]
+        if table == "agent_template":
+            return [
+                {
+                    "template_id": "agent-1",
+                    "enabled": True,
+                    "template_ref": {
+                        "default_model": ["model-1"],
+                        "a2a_access_policy": ["policy-1"],
+                    },
+                }
+            ]
+        return []
+
+    async def _fetch_templates(slot, template_ids):
+        if slot == TemplateRefSlot.A2A_ACCESS_POLICY:
+            raise RuntimeError("policy table unavailable")
+        return [{"template_id": template_ids[0], "model_id": template_ids[0]}]
+
+    monkeypatch.setattr(db_queries, "list_records", _list_records)
+    monkeypatch.setattr(db_queries, "fetch_templates_by_slot", _fetch_templates)
+    request = AgentRequest(
+        request_id="request-1",
+        params={},
+        metadata={"routing": {"bot_id": "resource-1"}},
+    )
+
+    loaded = await load_effective_enterprise_config(
+        request,
+        {TemplateRefSlot.DEFAULT_MODEL, TemplateRefSlot.A2A_ACCESS_POLICY},
+    )
+
+    assert loaded is not None
+    assert loaded.models["default_model"][0]["model_id"] == "model-1"
+    assert loaded.a2a_access_policy is None
+
+
+def test_a2a_policy_slot_requires_one_literal_reference() -> None:
+    from jiuwenswarm.server.runtime.enterprise_config.loader import (
+        _literal_slot_template_id_map,
+    )
+
+    assert _literal_slot_template_id_map(
+        {"a2a_access_policy": ["policy-1"]}
+    ) == {"a2a_access_policy": ["policy-1"]}
+    assert _literal_slot_template_id_map(
+        {"a2a_access_policy": ["policy-1", "policy-2"]}
+    ) == {}
+    assert _literal_slot_template_id_map(
+        {"a2a_access_policy": ["${user::policy}"]}
+    ) == {}
+
+
 def test_image_gen_slot_is_registered_as_model_slot() -> None:
     from jiuwenswarm.server.runtime.enterprise_config.apply_models import (
         SLOT_TO_CONFIG_KEY,

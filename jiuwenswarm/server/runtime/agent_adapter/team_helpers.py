@@ -1799,6 +1799,18 @@ async def process_team_message_stream(
 
     try:
         request_metadata = dict(request.metadata or {})
+        from jiuwenswarm.common.request_identity import apply_routing_metadata
+        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
+
+        group_id, bot_id, user_id = extract_routing_triple(request.metadata, getattr(request, "params", None))
+        routing = {}
+        if group_id:
+            routing["group_id"] = group_id
+        if bot_id:
+            routing["bot_id"] = bot_id
+        if user_id:
+            routing["user_id"] = user_id
+        request_metadata = apply_routing_metadata(request_metadata, routing)
         # V2: 若请求携带 member_name（由 Gateway resolve_member_by_user 反查注入），
         # 在前拼接 $sender，让 OpenJiuwen 识别发言人身份。
         # 规则：

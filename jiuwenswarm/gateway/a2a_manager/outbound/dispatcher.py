@@ -188,6 +188,7 @@ class A2AOutboundDispatcher:
         query: str = "",
         required_skills: list[str] | tuple[str, ...] | None = None,
         limit: int = 5,
+        allowed_agent_ids: frozenset[str] | None = None,
     ) -> dict[str, Any]:
         normalized_query = str(query or "").strip().lower()
         query_terms = self._search_terms(normalized_query)
@@ -199,6 +200,8 @@ class A2AOutboundDispatcher:
         normalized_limit = max(1, min(int(limit), 20))
         matches: list[tuple[int, dict[str, Any]]] = []
         for agent in await self._repository.list_agents():
+            if allowed_agent_ids is not None and agent.agent_id not in allowed_agent_ids:
+                continue
             if not self._callable(agent):
                 continue
             card = agent.agent_card
@@ -272,6 +275,7 @@ class A2AOutboundDispatcher:
         task: str,
         mode: A2AOutboundDispatchMode | str,
         source_session_id: str,
+        source_resource_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
         reason_present = bool(str(reason or "").strip())
@@ -299,6 +303,7 @@ class A2AOutboundDispatcher:
             status=A2AOutboundDispatchStatus.CREATED,
             request_message_id=message_id,
             source_session_id=session_id,
+            source_resource_id=str(source_resource_id or "").strip() or None,
             created_at=stamp,
             updated_at=stamp,
             agent_name=agent.display_name,
@@ -356,12 +361,16 @@ class A2AOutboundDispatcher:
         return result
 
     async def query_dispatch(
-        self, dispatch_id: str, *, source_session_id: str
+        self,
+        dispatch_id: str,
+        *,
+        source_session_id: str,
+        source_resource_id: str | None = None,
     ) -> dict[str, Any]:
         normalized_id = str(dispatch_id or "").strip()
         async with self._query_locks.hold(normalized_id):
             current = await self._require_owned_dispatch(
-                normalized_id, source_session_id
+                normalized_id, source_session_id, source_resource_id
             )
             if current.is_terminal or not current.remote_task_id:
                 return self._public_dispatch(current)
@@ -407,10 +416,16 @@ class A2AOutboundDispatcher:
                 return self._public_dispatch(updated or current)
 
     async def cancel_dispatch(
-        self, dispatch_id: str, *, source_session_id: str
+        self,
+        dispatch_id: str,
+        *,
+        source_session_id: str,
+        source_resource_id: str | None = None,
     ) -> dict[str, Any]:
         async with self._query_locks.hold(str(dispatch_id)):
-            current = await self._require_owned_dispatch(dispatch_id, source_session_id)
+            current = await self._require_owned_dispatch(
+                dispatch_id, source_session_id, source_resource_id
+            )
             if current.is_terminal or not current.remote_task_id:
                 return self._public_dispatch(current)
             agent = await self._repository.get_agent(current.agent_id)
@@ -648,7 +663,7 @@ class A2AOutboundDispatcher:
         if self._client_builder is not None:
             return await self._client_builder(agent, credential)
         target = await self._discovery.validate_network_target(
-            agent.selected_interface.url
+            agent.selected_interface.url, network_policy=agent.network_policy
         )
         http_client = httpx.AsyncClient(
             transport=create_pinned_transport({target.host: target.pinned_address}),
@@ -820,13 +835,21 @@ class A2AOutboundDispatcher:
         )
 
     async def _require_owned_dispatch(
-        self, dispatch_id: str, source_session_id: str
+        self,
+        dispatch_id: str,
+        source_session_id: str,
+        source_resource_id: str | None = None,
     ) -> A2AOutboundDispatch:
         dispatch = await self._repository.get_dispatch(str(dispatch_id or "").strip())
         if dispatch is None:
             raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_NOT_FOUND)
         if dispatch.source_session_id != str(source_session_id or "").strip():
             # Deliberately indistinguishable from a missing ID.
+            raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_NOT_FOUND)
+        expected_resource = str(source_resource_id or "").strip()
+        if getattr(self._repository, "manager_owned", False) and not expected_resource:
+            raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
+        if expected_resource and dispatch.source_resource_id != expected_resource:
             raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_NOT_FOUND)
         return dispatch
 

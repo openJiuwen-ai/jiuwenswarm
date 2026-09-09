@@ -18,6 +18,10 @@ from jiuwenswarm.gateway.a2a_manager import config as a2a_config_module
 from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2ADependencyMissingError,
 )
+from jiuwenswarm.gateway.a2a_manager.outbound import (
+    A2AOutboundError,
+    A2AOutboundErrorCode,
+)
 
 
 class _ChannelManagerProbe:
@@ -910,3 +914,114 @@ async def test_failed_credential_persistence_keeps_saved_and_effective_values():
         await manager.update({"credential": "test-replacement-credential"}, apply=True)
     assert manager._config == original
     assert manager.snapshot().config_revision == 0
+
+
+@pytest.mark.asyncio
+async def test_enterprise_outbound_tools_enforce_resource_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+
+    class _Registry:
+        async def resolve_effective_a2a_agent_ids(self, resource_id):
+            assert resource_id == "resource-1"
+            return frozenset({"agent-1"})
+
+        async def resolve_authorized_a2a_agent_ids(self, resource_id):
+            assert resource_id == "resource-1"
+            return frozenset({"agent-1", "agent-manager", "agent-user"})
+
+        async def list_agents(self):
+            return {
+                "items": [{"agent_id": "agent-1"}, {"agent_id": "agent-2"}],
+                "total": 2,
+            }
+
+        async def get_agent(self, agent_id):
+            return {
+                "agent_id": agent_id,
+                "manager_enabled": agent_id != "agent-manager",
+                "user_enabled": agent_id != "agent-user",
+            }
+
+        async def set_user_enabled(self, agent_id, enabled):
+            return {"agent_id": agent_id, "user_enabled": enabled}
+
+    class _Dispatcher:
+        async def find_agents(self, **kwargs):
+            return kwargs
+
+        async def dispatch(self, **kwargs):
+            return kwargs
+
+        async def query_dispatch(self, dispatch_id, **kwargs):
+            return {"dispatch_id": dispatch_id, **kwargs}
+
+    manager = object.__new__(A2AManager)
+    manager._outbound = _Registry()
+    manager._outbound_dispatcher = _Dispatcher()
+
+    found = await manager.outbound_find_agents(source_resource_id="resource-1")
+    assert found["allowed_agent_ids"] == frozenset({"agent-1"})
+    listed = await manager.outbound_list(source_resource_id="resource-1")
+    assert listed == {"items": [{"agent_id": "agent-1"}], "total": 1}
+    dispatched = await manager.outbound_dispatch_task(
+        agent_id="agent-1",
+        task="work",
+        mode="sync",
+        source_session_id="session-1",
+        source_resource_id="resource-1",
+    )
+    assert dispatched["source_resource_id"] == "resource-1"
+    queried = await manager.outbound_get_dispatch(
+        dispatch_id="dispatch-1",
+        source_session_id="session-1",
+        source_resource_id="resource-1",
+    )
+    assert queried["source_resource_id"] == "resource-1"
+
+    with pytest.raises(A2AOutboundError) as exc_info:
+        await manager.outbound_get_dispatch(
+            dispatch_id="dispatch-1",
+            source_session_id="session-1",
+            source_resource_id="",
+        )
+    assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
+
+    with pytest.raises(A2AOutboundError) as exc_info:
+        await manager.outbound_dispatch_get(
+            "dispatch-1",
+            source_session_id="session-1",
+            source_resource_id=None,
+        )
+    assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
+
+    with pytest.raises(A2AOutboundError) as exc_info:
+        await manager.outbound_dispatch_task(
+            agent_id="agent-2",
+            task="work",
+            mode="sync",
+            source_session_id="session-1",
+            source_resource_id="resource-1",
+        )
+    assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
+
+    for agent_id, expected_code in (
+        ("agent-manager", A2AOutboundErrorCode.AGENT_MANAGER_DISABLED),
+        ("agent-user", A2AOutboundErrorCode.AGENT_USER_DISABLED),
+    ):
+        with pytest.raises(A2AOutboundError) as exc_info:
+            await manager.outbound_dispatch_task(
+                agent_id=agent_id,
+                task="work",
+                mode="sync",
+                source_session_id="session-1",
+                source_resource_id="resource-1",
+            )
+        assert exc_info.value.code is expected_code
+
+    with pytest.raises(A2AOutboundError) as exc_info:
+        await manager.outbound_set_user_enabled(
+            "agent-2", enabled=True, source_resource_id="resource-1"
+        )
+    assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED

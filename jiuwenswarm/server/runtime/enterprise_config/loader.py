@@ -50,6 +50,8 @@ def _apply_slot_entities(
         result.mcp = entities
     elif slot == TemplateRefSlot.PERMISSIONS:
         result.permissions = entities
+    elif slot == TemplateRefSlot.A2A_ACCESS_POLICY:
+        result.a2a_access_policy = entities
 
 
 def _any_requested_slot_loaded(
@@ -69,6 +71,11 @@ def _any_requested_slot_loaded(
             return True
         if slot == TemplateRefSlot.PERMISSIONS and result.permissions:
             return True
+        if (
+            slot == TemplateRefSlot.A2A_ACCESS_POLICY
+            and result.a2a_access_policy is not None
+        ):
+            return True
     return False
 
 
@@ -78,7 +85,12 @@ async def _fetch_slot_entities(
 ) -> list[dict[str, Any]]:
     entities = await db_queries.fetch_templates_by_slot(slot, template_ids)
     requested = {str(tid or "").strip() for tid in template_ids} - {""}
-    found = {str(row.get("template_id") or "").strip() for row in entities} - {""}
+    id_field = (
+        "policy_id"
+        if slot == TemplateRefSlot.A2A_ACCESS_POLICY
+        else "template_id"
+    )
+    found = {str(row.get(id_field) or "").strip() for row in entities} - {""}
     missing = requested - found
     if missing:
         logger.warning(
@@ -109,6 +121,23 @@ async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
         filters={"enabled": True, "template_id": tid},
     )
     return rows[0] if rows else None
+
+
+def _literal_slot_template_id_map(
+    refs: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """A2A 策略仅接受一个字面 policy_id，其余槽位保持原引用。"""
+    slot_template_id_map = dict(refs)
+    policy_refs = slot_template_id_map.get(TemplateRefSlot.A2A_ACCESS_POLICY)
+    if policy_refs is None:
+        return slot_template_id_map
+    if (
+        len(policy_refs) != 1
+        or policy_refs[0].startswith("${")
+        or " or " in policy_refs[0].lower()
+    ):
+        slot_template_id_map.pop(TemplateRefSlot.A2A_ACCESS_POLICY, None)
+    return slot_template_id_map
 
 
 async def load_effective_enterprise_config(
@@ -165,17 +194,27 @@ async def load_effective_enterprise_config(
         return None
 
     merged_refs = normalize_template_ref(agent_template_row.get("template_ref"))
-    slot_template_id_map = {
+    filtered_refs = {
         slot: refs
         for slot, refs in merged_refs.items()
         if slot in load_slots
     }
 
-    if not slot_template_id_map:
+    if not filtered_refs:
         logger.warning(
             "[enterprise_config] agent_template has no template_ref for resource_id=%r slots=%s",
             rid,
             sorted(load_slots),
+        )
+        return None
+
+    slot_template_id_map = _literal_slot_template_id_map(filtered_refs)
+    if not slot_template_id_map:
+        logger.warning(
+            "[enterprise_config] agent template_ref has no valid references "
+            "for resource_id=%r refs=%s",
+            rid,
+            filtered_refs,
         )
         return None
 
@@ -192,7 +231,19 @@ async def load_effective_enterprise_config(
     )
 
     for slot, template_ids in slot_template_id_map.items():
-        entities = await _fetch_slot_entities(slot, template_ids)
+        try:
+            entities = await _fetch_slot_entities(slot, template_ids)
+        except Exception as exc:
+            if slot != TemplateRefSlot.A2A_ACCESS_POLICY:
+                raise
+            logger.warning(
+                "[enterprise_config] A2A policy load failed: resource_id=%r "
+                "template_ids=%s error_type=%s",
+                rid,
+                template_ids,
+                type(exc).__name__,
+            )
+            continue
         if entities:
             _apply_slot_entities(result, slot, entities)
 
@@ -208,10 +259,9 @@ async def load_effective_enterprise_config(
         return None
 
     logger.info(
-        "[enterprise_config] loaded enterprise config by resource_id=%r slots=%s payload=%s",
+        "[enterprise_config] loaded enterprise config by resource_id=%r slots=%s",
         rid,
         sorted(load_slots),
-        result.as_dict(),
     )
     return result
 

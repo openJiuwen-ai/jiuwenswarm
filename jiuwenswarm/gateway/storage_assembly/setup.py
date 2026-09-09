@@ -505,6 +505,15 @@ def create_a2a_outbound_repository(
             runtime_states=create_enterprise_record_repository(
                 store, "a2a_outbound_runtime_state"
             ),
+            policies=create_enterprise_record_repository(
+                store, "a2a_access_policy_template"
+            ),
+            agent_templates=create_enterprise_record_repository(
+                store, "agent_template"
+            ),
+            instance_resources=create_enterprise_record_repository(
+                store, "instance_agent_resource"
+            ),
         )
     return A2AOutboundRepository(store, JsonA2AOutboundRecordCodec())
 

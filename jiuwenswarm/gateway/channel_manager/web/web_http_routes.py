@@ -797,6 +797,19 @@ MAPPED_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *WORKSPACE_ROUTES,
 )
 
+
+def mapped_routes_for_edition(*, enterprise: bool) -> tuple[WebHttpMappedRoute, ...]:
+    if not enterprise:
+        return MAPPED_ROUTES
+    ingress_route_keys = {
+        (route.http_method, route.path) for route in _A2A_INGRESS_ROUTES
+    }
+    return tuple(
+        route
+        for route in MAPPED_ROUTES
+        if (route.http_method, route.path) not in ingress_route_keys
+    )
+
 # Core routes implemented in web_http_app.py (hand-written because of SSE / history collect).
 CORE_ROUTE_CATALOG: tuple[tuple[str, str, str, str], ...] = (
     ("GET", "/health", "", "探活（非 RPC method）"),
@@ -851,8 +864,18 @@ def catalog_entries(
     include_core: bool = True,
     include_settings: bool = True,
     include_workspace: bool = True,
+    routes: Sequence[WebHttpMappedRoute] | None = None,
 ) -> list[dict[str, Any]]:
     """Machine-readable map for GET /api/v1/catalog and docs generation."""
+    route_keys = (
+        None
+        if routes is None
+        else {(route.http_method, route.path) for route in routes}
+    )
+
+    def enabled(route: WebHttpMappedRoute) -> bool:
+        return route_keys is None or (route.http_method, route.path) in route_keys
+
     rows: list[dict[str, Any]] = []
     if include_core:
         for http_method, path, rpc_method, note in CORE_ROUTE_CATALOG:
@@ -865,10 +888,12 @@ def catalog_entries(
             })
     if include_settings:
         for route in SETTINGS_ROUTES:
-            rows.append(_catalog_row_from_route(route, group="settings"))
+            if enabled(route):
+                rows.append(_catalog_row_from_route(route, group="settings"))
     if include_workspace:
         for route in WORKSPACE_ROUTES:
-            rows.append(_catalog_row_from_route(route, group="workspace"))
+            if enabled(route):
+                rows.append(_catalog_row_from_route(route, group="workspace"))
     rows.append({
         "http_method": "POST",
         "path": "/api/v1/harness/packages/actions/import-file",

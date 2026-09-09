@@ -231,6 +231,22 @@ class A2AOutboundRegistry:
         projected = await setter(agent_id, user_enabled)
         return projected.public_dict()
 
+    async def resolve_effective_a2a_agent_ids(
+        self, resource_id: str
+    ) -> frozenset[str] | None:
+        resolver = getattr(self._repository, "resolve_effective_a2a_agent_ids", None)
+        if not callable(resolver):
+            return None
+        return await resolver(resource_id)
+
+    async def resolve_authorized_a2a_agent_ids(
+        self, resource_id: str
+    ) -> frozenset[str] | None:
+        resolver = getattr(self._repository, "resolve_authorized_a2a_agent_ids", None)
+        if not callable(resolver):
+            return None
+        return await resolver(resource_id)
+
     async def edit_agent(self, agent_id: str) -> dict[str, Any]:
         """Read the credential only for an explicit management editing request."""
         self._require_mutable_catalog()

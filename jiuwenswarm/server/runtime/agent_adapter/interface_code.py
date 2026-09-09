@@ -67,7 +67,6 @@ from jiuwenswarm.agents.harness.common.rails import (
     StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_memory_enabled
-from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
 )
@@ -683,7 +682,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # already owns a Code session.  Sub-mode is the reliable profile key:
         # normal/plan are single-Agent, while Team profiles are assembled by
         # the declarative swarm provider and must not register this rail twice.
-        if normalized_sub_mode in {"normal", "plan"} and not is_enterprise():
+        if normalized_sub_mode in {"normal", "plan"}:
             # Append, don't insert at a fixed index, to avoid silent misplacement.
             rail_infos.append(
                 _RailBuildInfo(

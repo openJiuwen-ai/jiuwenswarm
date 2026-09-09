@@ -203,6 +203,36 @@ def a2a_receiver() -> Iterator[tuple[TestClient, dict[str, Any], _Secrets]]:
         clear_enterprise_record_repositories()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_policy", ["yes", {"allow_http": 1}, [], False])
+async def test_invalid_network_policy_does_not_break_enterprise_directory(
+    invalid_policy, caplog, monkeypatch
+) -> None:
+    from jiuwenswarm.gateway.a2a_manager.outbound.enterprise import logger
+
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
+    store = InMemoryPersistentBackend()
+    repos = create_enterprise_record_repositories(store)
+    valid = _projection_record()
+    invalid = {
+        **_projection_record(), "template_id": "invalid-policy-agent",
+        "data": {"network_policy": invalid_policy},
+    }
+    await repos["a2a_outbound_template"].create(valid)
+    await repos["a2a_outbound_template"].create(invalid)
+    projection = EnterpriseA2AProjection(
+        store, templates=repos["a2a_outbound_template"],
+        user_states=repos["a2a_outbound_user_state"],
+        runtime_states=repos["a2a_outbound_runtime_state"],
+    )
+    agents = {view.agent.agent_id: view.agent for view in await projection.list_projected_agents()}
+    assert set(agents) == {"a2a-weather", "invalid-policy-agent"}
+    assert agents["invalid-policy-agent"].network_policy == {}
+    assert "Invalid A2A network_policy template_id=invalid-policy-agent" in caplog.text
+    direct = await projection.get_projected_agent("invalid-policy-agent")
+    assert direct.agent.network_policy == {}
+
+
 def test_a2a_outbound_receiver_crud_and_secret_store(
     a2a_receiver: tuple[TestClient, dict[str, Any], _Secrets],
 ) -> None:
@@ -555,6 +585,18 @@ async def test_enterprise_projection_merges_manager_user_and_runtime_state() -> 
     assert initial.user_enabled is True
     assert initial.effective_enabled is True
     assert initial.agent.enabled is True
+    assert initial.agent.network_policy == {}
+    network_policy = {"allow_http": True, "allow_private_network": True}
+    await repos["a2a_outbound_template"].update(
+        {"template_id": "a2a-weather"}, {"data": {"network_policy": network_policy}}
+    )
+    updated_policy = await projection.get_projected_agent("a2a-weather")
+    assert updated_policy.agent.network_policy == network_policy
+    await repos["a2a_outbound_template"].update(
+        {"template_id": "a2a-weather"}, {"data": {"network_policy": {}}}
+    )
+    revoked_policy = await projection.get_projected_agent("a2a-weather")
+    assert revoked_policy.agent.network_policy == {}
 
     disabled = await projection.set_user_enabled("a2a-weather", False)
     assert disabled.manager_enabled is True
@@ -652,6 +694,18 @@ async def test_enterprise_projection_reuses_dispatch_repository() -> None:
     assert isinstance(dispatch_row["updated_at"], datetime)
     assert isinstance(dispatch_row["accepted_at"], datetime)
     assert isinstance(dispatch_row["finished_at"], datetime)
+
+    await projection.set_user_enabled("a2a-weather", False)
+    restarted = EnterpriseA2AProjection(
+        store,
+        templates=repos["a2a_outbound_template"],
+        user_states=repos["a2a_outbound_user_state"],
+        runtime_states=repos["a2a_outbound_runtime_state"],
+    )
+    restored_after_restart = await restarted.get_projected_agent("a2a-weather")
+    assert restored_after_restart is not None
+    assert restored_after_restart.user_enabled is False
+    assert (await restarted.get_dispatch("dispatch-1")) is not None
 
 
 @pytest.mark.asyncio
@@ -798,3 +852,139 @@ async def test_repository_factory_creates_enterprise_projection(
     assert isinstance(repository, EnterpriseA2AProjection)
     projected = await repository.get_agent("a2a-weather")
     assert projected is not None and projected.display_name == "Weather Agent"
+
+
+@pytest.mark.asyncio
+async def test_enterprise_projection_resolves_policy_manager_and_user_intersection() -> None:
+    store = InMemoryPersistentBackend()
+    repos = create_enterprise_record_repositories(store)
+    weather = _projection_record()
+    calendar = {**_projection_record(), "template_id": "a2a-calendar"}
+    await repos["a2a_outbound_template"].create(weather)
+    await repos["a2a_outbound_template"].create(calendar)
+    await repos["a2a_access_policy_template"].create(
+        {
+            "policy_id": "policy-1",
+            "policy_name": "Allowed",
+            "mode": "allowlist",
+            "member_template_ids": ["a2a-weather", "a2a-calendar"],
+            "enabled": True,
+            "revision": 1,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+    )
+    await repos["agent_template"].create(
+        {
+            "template_id": "agent-template-1",
+            "template_name": "Agent",
+            "template_ref": {"a2a_access_policy": ["policy-1"]},
+            "enabled": True,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+    )
+    await repos["instance_agent_resource"].create(
+        {
+            "resource_id": "resource-1",
+            "resource_name": "Agent",
+            "ref_template_id": "agent-template-1",
+            "enabled": True,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+    )
+    projection = EnterpriseA2AProjection(
+        store,
+        templates=repos["a2a_outbound_template"],
+        user_states=repos["a2a_outbound_user_state"],
+        runtime_states=repos["a2a_outbound_runtime_state"],
+        policies=repos["a2a_access_policy_template"],
+        agent_templates=repos["agent_template"],
+        instance_resources=repos["instance_agent_resource"],
+    )
+
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == {
+        "a2a-weather",
+        "a2a-calendar",
+    }
+    await repos["a2a_access_policy_template"].update(
+        {"policy_id": "policy-1"}, {"member_template_ids": []}
+    )
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == frozenset()
+    await repos["a2a_access_policy_template"].update(
+        {"policy_id": "policy-1"}, {"mode": "denylist"}
+    )
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == {
+        "a2a-weather",
+        "a2a-calendar",
+    }
+    await repos["a2a_access_policy_template"].update(
+        {"policy_id": "policy-1"},
+        {
+            "mode": "allowlist",
+            "member_template_ids": ["a2a-weather", "a2a-calendar"],
+        },
+    )
+    await repos["instance_agent_resource"].update(
+        {"resource_id": "resource-1"}, {"enabled": False}
+    )
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == frozenset()
+    await repos["instance_agent_resource"].update(
+        {"resource_id": "resource-1"},
+        {"enabled": True, "expires_at": datetime(2020, 1, 1, tzinfo=timezone.utc)},
+    )
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == frozenset()
+    await repos["instance_agent_resource"].update(
+        {"resource_id": "resource-1"}, {"expires_at": None}
+    )
+    await repos["a2a_access_policy_template"].update(
+        {"policy_id": "policy-1"}, {"enabled": False}
+    )
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == frozenset()
+    await repos["a2a_access_policy_template"].update(
+        {"policy_id": "policy-1"}, {"enabled": True}
+    )
+    await repos["a2a_access_policy_template"].update(
+        {"policy_id": "policy-1"},
+        {"mode": "denylist", "member_template_ids": ["a2a-weather"]},
+    )
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == {
+        "a2a-calendar"
+    }
+    await repos["a2a_access_policy_template"].update(
+        {"policy_id": "policy-1"},
+        {
+            "mode": "allowlist",
+            "member_template_ids": ["a2a-weather", "a2a-calendar"],
+        },
+    )
+    await projection.set_user_enabled("a2a-calendar", False)
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == {
+        "a2a-weather"
+    }
+    await repos["a2a_outbound_template"].update(
+        {"template_id": "a2a-weather"}, {"enabled": False}
+    )
+    assert await projection.resolve_effective_a2a_agent_ids("resource-1") == frozenset()
+    assert await projection.resolve_authorized_a2a_agent_ids("resource-1") == {
+        "a2a-weather",
+        "a2a-calendar",
+    }
+
+
+@pytest.mark.asyncio
+async def test_enterprise_projection_fails_closed_for_invalid_resource_or_policy() -> None:
+    store = InMemoryPersistentBackend()
+    repos = create_enterprise_record_repositories(store)
+    projection = EnterpriseA2AProjection(
+        store,
+        templates=repos["a2a_outbound_template"],
+        user_states=repos["a2a_outbound_user_state"],
+        runtime_states=repos["a2a_outbound_runtime_state"],
+        policies=repos["a2a_access_policy_template"],
+        agent_templates=repos["agent_template"],
+        instance_resources=repos["instance_agent_resource"],
+    )
+
+    assert await projection.resolve_effective_a2a_agent_ids("missing") == frozenset()
