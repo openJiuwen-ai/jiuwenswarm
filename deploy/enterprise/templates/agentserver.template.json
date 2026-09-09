@@ -49,19 +49,19 @@
         "volumeMounts": [
           {
             "name": "hp-code",
-            "mountPath": "/app/jiuwenswarm"
+            "mountPath": "<<CLAW_POD_CODE_PATH>>"
           },
           {
             "name": "hp-rt-foundation",
-            "mountPath": "/usr/local/lib/python3.11/site-packages/openjiuwen_runtime/foundation"
+            "mountPath": "<<RUNTIME_POD_PKG_PATH>>/foundation"
           },
           {
             "name": "hp-rt-management",
-            "mountPath": "/usr/local/lib/python3.11/site-packages/openjiuwen_runtime/management"
+            "mountPath": "<<RUNTIME_POD_PKG_PATH>>/management"
           },
           {
             "name": "hp-openjiuwen",
-            "mountPath": "/usr/local/lib/python3.11/site-packages/openjiuwen"
+            "mountPath": "<<CORE_POD_PKG_PATH>>"
           },
           {
             "name": "data",
@@ -91,7 +91,7 @@
           },
           {
             "name": "JIUWENBOX_POLICY_PATH",
-            "value": "<<JIUWENBOX_POD_CODE_PATH>>/configs/enterprise-policy.yaml"
+            "value": "<<CLAW_POD_CODE_PATH>>/jiuwenbox/src/jiuwenbox/configs/enterprise-policy.yaml"
           },
           {
             "name": "TZ",
@@ -127,7 +127,7 @@
           },
           {
             "name": "hp-jiuwenbox",
-            "mountPath": "<<JIUWENBOX_POD_CODE_PATH>>"
+            "mountPath": "<<CLAW_POD_CODE_PATH>>/jiuwenbox/src"
           },
           {
             "name": "data",
@@ -205,7 +205,7 @@
           {
             "name": "hp-jiuwenbox",
             "hostPath": {
-              "path": "<<CLAW_CODE_PATH>>/jiuwenbox/src/jiuwenbox",
+              "path": "<<CLAW_CODE_PATH>>/jiuwenbox/src",
               "type": "Directory"
             }
           }
