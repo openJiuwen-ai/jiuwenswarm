@@ -43,6 +43,7 @@ from jiuwenswarm.observability.runtime import (
     shutdown_trajectory_runtime,
     sync_trajectory_runtime,
 )
+from jiuwenswarm.symphony.config import load_symphony_config
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,15 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
     config = get_config()
     cfg = config.get("agent_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
-    evolution_requested = get_skill_evolution_enabled(config)
+    symphony = load_symphony_config(config)
+    symphony_capture_requested = (
+        symphony.enabled
+        and symphony.evolution.backend == "core"
+        and (symphony.evolution.enabled or symphony.flow.enabled)
+    )
+    evolution_requested = (
+        get_skill_evolution_enabled(config) or symphony_capture_requested
+    )
     want_enabled = (
         bool(cfg.get("enabled", False))
         or trajectory_settings.enabled
@@ -115,7 +124,9 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         try:
             sync_trajectory_runtime(trajectory_settings, demand="agent")
         except Exception as exc:
-            logger.warning("[AgentObservability] trajectory runtime stop failed: %s", exc)
+            logger.warning(
+                "[AgentObservability] trajectory runtime stop failed: %s", exc
+            )
         if _agent_observability_active:
             shutdown_agent_observability()
         return
@@ -136,7 +147,9 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         except Exception as exc:
             # The trajectory read store is an optional fan-out. Existing file,
             # OTLP and Langfuse exporters must keep the Agent path available.
-            logger.warning("[AgentObservability] trajectory runtime init failed: %s", exc)
+            logger.warning(
+                "[AgentObservability] trajectory runtime init failed: %s", exc
+            )
         if not was_active:
             if provider_existed:
                 logger.info(
