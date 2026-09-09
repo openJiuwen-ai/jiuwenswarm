@@ -166,7 +166,7 @@ export function RsiDetailHeader({
     await runAction(action);
   }, [confirmAction, runAction]);
 
-  const actions = actionsForStatus(task.status, task.scenario, installed, tree);
+  const actions = actionsForStatus(task.status, task.scenario, installed, tree, task.artifact_type);
   const orderedActions = [...actions];
   const deleteIndex = orderedActions.indexOf('delete');
   if (deleteIndex > 0) {

@@ -9,6 +9,7 @@ import {
   nodeStageSpec,
   presentRsiNode,
   scoreScale,
+  actionsForStatus,
 } from '../node_modules/.cache/rsi-presentation/rsiPresentation.mjs';
 
 const context = (scenario, artifactType, nodes, taskRunning = false) => ({
@@ -144,6 +145,24 @@ test('paper score_overall is rendered and rejected reason is human-readable', ()
   assert.equal(presentation.score, 0.79);
   assert.equal(presentation.parentScore, 0.82);
   assert.deepEqual(nodeScoreLines(rejected)[0], { value: '0.8', label: '分数' });
+});
+
+test('paper tasks can pause but do not expose an unsupported resume action', () => {
+  assert.deepEqual(actionsForStatus('RUNNING', 'ARTIFACT', false, null, 'PAPER'), [
+    'config',
+    'delete',
+    'pause',
+  ]);
+  assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PAPER'), [
+    'config',
+    'delete',
+    'stop',
+  ]);
+  assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PROGRAM'), [
+    'config',
+    'delete',
+    'resume',
+  ]);
 });
 
 test('parallel program candidates get attempt numbering without exposing provider ids', () => {

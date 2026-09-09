@@ -41,6 +41,8 @@ def test_real_factory_registers_paper_provider(tmp_path: Path):
     assert set(adapters) == {"ARTIFACT:PAPER", "ARTIFACT:PROGRAM"}
     assert isinstance(adapters["ARTIFACT:PAPER"].provider, PaperArtifactProviderImpl)
     assert isinstance(adapters["ARTIFACT:PROGRAM"].provider, PuctProgramArtifactProvider)
+    assert adapters["ARTIFACT:PAPER"].supports_pause is True
+    assert adapters["ARTIFACT:PAPER"].supports_resume is False
 
 
 def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):

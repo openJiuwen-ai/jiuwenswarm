@@ -178,13 +178,14 @@ class TestWorkerRunLoop:
         assert result.error_message == "Provider 超时未进入终态"
         assert adapter.terminate_calls == ["rsi-stuck"]
 
-    def test_paper_provider_polling_has_no_iteration_wall_clock_cap(self, ctx):
-        """Paper runs must not be killed by a guessed per-iteration budget."""
+    def test_provider_polling_has_no_default_wall_clock_cap(self, ctx):
+        """Providers must not be killed by an implicit 30-minute watchdog."""
         paper = SimpleNamespace(artifact_type="PAPER", max_iterations=3)
         program = SimpleNamespace(artifact_type="PROGRAM", max_iterations=3)
 
+        assert ctx.worker.provider_poll_timeout is None
         assert ctx.worker._provider_poll_timeout_for(paper) is None  # noqa: SLF001
-        assert ctx.worker._provider_poll_timeout_for(program) == ctx.worker.provider_poll_timeout  # noqa: SLF001
+        assert ctx.worker._provider_poll_timeout_for(program) is None  # noqa: SLF001
 
     async def test_paper_provider_waits_for_terminal_state_without_total_timeout(self, ctx):
         """A long-running paper Provider is allowed to finish normally."""
