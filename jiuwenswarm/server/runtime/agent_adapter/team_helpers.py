@@ -1000,12 +1000,20 @@ def _inject_swarmflow_context(
             lines.append(
                 f'  恢复调用: swarmflow(resume_id="{r.id}", script_path="{r.script_path}")'
             )
+        # stop works on both planes: the tool announces stopped itself when the
+        # controller no longer holds the ticket (cold start), no journal seal.
+        lines.append(f'  停止调用: swarmflow(resume_id="{r.id}", action="stop")')
     # The tree-view buttons are greyed while the team sleeps (SDD-0018 §5.11),
-    # so the leader is the only resume path — it must ask, never decide alone.
-    lines.append(
-        "处理本条消息前，先调用 ask_user 工具询问用户是否恢复上述工作流（选项：恢复 / 暂不恢复）。"
-        "用户选「恢复」再按上列方式恢复；选「暂不恢复」则保持暂停，不要自行恢复。"
-    )
+    # so the leader is the only control path: act on an explicit request,
+    # otherwise ask — coarse first, per-run only on demand, so N runs never
+    # overflow ask_user's 2-4 options per question.
+    lines.extend([
+        "处理规则：",
+        "- 若用户本条消息已明确要求恢复或停止某个（或全部）工作流，直接执行对应调用，不要询问。",
+        "- 否则先调用 ask_user 单题：「已暂停的工作流如何处理？」选项「全部恢复 / 全部停止 / "
+        "逐个选择 / 暂不处理」。选「逐个选择」再按每个工作流各出一题（恢复 / 停止 / 暂不处理）。"
+        "「暂不处理」保持暂停，不要自行恢复。",
+    ])
     lines.append(_ADVISORY_MARK[1])
     return turn.with_text("\n".join(lines) + "\n\n" + turn.text)
 

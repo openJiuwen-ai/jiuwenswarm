@@ -6592,17 +6592,31 @@ def test_inject_swarmflow_context_followup_resume_needs_no_script_path() -> None
 # ---------------------------------------------------------------------------
 
 
-def test_inject_swarmflow_context_instructs_ask_user_before_resume() -> None:
+def test_inject_swarmflow_context_explicit_request_acts_else_asks() -> None:
     """The tree-view buttons are greyed while the team sleeps, so the leader is
-    the only resume path — the advisory must route the decision through
-    ask_user instead of letting the leader resume (or ignore) on its own.
+    the only control path. The advisory must (a) let an explicit user request
+    (resume/stop a named run) act directly, and (b) otherwise route the
+    decision through ask_user: one question first (全部恢复 / 全部停止 /
+    逐个选择 / 暂不处理), then per-run questions only if the user picks
+    逐个选择 — so several paused runs never exceed ask_user's 4-option box.
     """
     turn = _advisory_turn("hi")
-    runs = {"r": WorkflowRunState(id="r", status="paused", script_path="/abs/wf.py")}
+    runs = {
+        "r1": WorkflowRunState(id="r1", status="paused", script_path="/abs/a.py"),
+        "r2": WorkflowRunState(id="r2", status="paused", script_path="/abs/b.py"),
+    }
 
     for cold_start in (True, False):
         injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=cold_start)
-        assert isinstance(injected.text, str)
-        assert "ask_user" in injected.text
-        assert "暂不恢复" in injected.text
-        assert "直接忽略" not in injected.text
+        text = injected.text
+        assert isinstance(text, str)
+        # (a) explicit request → act, no question
+        assert "明确要求" in text and "直接执行" in text
+        # (b) otherwise ask_user, coarse first, per-run only on 逐个选择
+        assert "ask_user" in text
+        for opt in ("全部恢复", "全部停止", "逐个选择", "暂不处理"):
+            assert opt in text
+        assert "直接忽略" not in text
+        # every listed run carries a stop call so "停止" is actionable
+        assert 'swarmflow(resume_id="r1", action="stop")' in text
+        assert 'swarmflow(resume_id="r2", action="stop")' in text
