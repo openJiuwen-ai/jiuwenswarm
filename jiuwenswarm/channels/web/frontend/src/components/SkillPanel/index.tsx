@@ -1842,16 +1842,10 @@ export function SkillPanel({
   const handleCreateFromKnowledge = useCallback(
     async (params: { file?: File | null; link?: string; skillDescription?: string }) => {
       setActionTarget('import_local');
-      const newCount = knowledgeTaskCount + 1;
-      setKnowledgeTaskCount(newCount);
+      setKnowledgeTaskCount((prev) => prev + 1);
+      // 进度由常驻 knowledge banner 展示，避免被广场安装等其它 toast 覆盖。
       setMessage(null);
       setMessageType(null);
-      showMessage(
-        'loading',
-        newCount > 1
-          ? t('skills.messages.knowledgeSkillCreatingCount', { count: newCount })
-          : t('skills.messages.knowledgeSkillCreating'),
-      );
       try {
         let filePath = '';
         let link = '';
@@ -1872,20 +1866,43 @@ export function SkillPanel({
           return;
         }
 
-        const data = await webRequest<{
+        type KnowledgeResult = {
           success: boolean;
           detail?: string;
           message?: string;
-        }>(
-          'skills.create_from_knowledge',
-          withSession({
-            ...(filePath ? { file_path: filePath } : { link }),
-            skill_description: params.skillDescription || '',
-          }),
-          { timeoutMs: 600000 },
-        );
+          code?: string;
+          skill_name?: string;
+          skill?: { name?: string };
+        };
 
+        const doCreate = async () => {
+          const data = await webRequest<KnowledgeResult>(
+            'skills.create_from_knowledge',
+            withSession({
+              ...(filePath ? { file_path: filePath } : { link }),
+              skill_description: params.skillDescription || '',
+            }),
+            // 知识转技能可能较久，给足前端等待窗口（与 Gateway 默认 unary 600s 同量级）。
+            { timeoutMs: 600000 },
+          );
+          return data;
+        };
+
+        let data = await doCreate();
         if (!data.success) {
+          const skillName = data.skill_name || data.skill?.name || '';
+          if (
+            data.code === 'SKILL_ALREADY_EXISTS' ||
+            data.code === 'SKILL_IMPORT_OVERWRITE_REQUIRED'
+          ) {
+            showMessage(
+              'error',
+              skillName
+                ? t('skills.errors.knowledgeSkillExists', { name: skillName })
+                : data.detail || data.message || t('skills.errors.knowledgeSkillExistsGeneric'),
+            );
+            return;
+          }
           throw new Error(data.detail || data.message || t('skills.errors.importFailed'));
         }
 
@@ -1894,16 +1911,34 @@ export function SkillPanel({
       } catch (error) {
         console.error(error);
         const errorMessage = error instanceof Error ? error.message : String(error);
+        const code = (error as { code?: string } | null)?.code;
+        const payload = (error as { payload?: { skill_name?: string; code?: string } } | null)?.payload;
+        const skillName = payload?.skill_name || '';
+        if (
+          code === 'SKILL_ALREADY_EXISTS' ||
+          code === 'SKILL_IMPORT_OVERWRITE_REQUIRED' ||
+          payload?.code === 'SKILL_ALREADY_EXISTS'
+        ) {
+          showMessage(
+            'error',
+            skillName
+              ? t('skills.errors.knowledgeSkillExists', { name: skillName })
+              : errorMessage || t('skills.errors.knowledgeSkillExistsGeneric'),
+          );
+          return;
+        }
         showMessage('error', errorMessage || t('skills.errors.importFailedHint'));
       } finally {
-        const remaining = knowledgeTaskCount - 1;
-        setKnowledgeTaskCount(remaining);
-        if (remaining <= 0) {
-          setActionTarget(null);
-        }
+        setKnowledgeTaskCount((prev) => {
+          const remaining = Math.max(0, prev - 1);
+          if (remaining <= 0) {
+            setActionTarget(null);
+          }
+          return remaining;
+        });
       }
     },
-    [createUploadError, fetchSkills, t, withSession, knowledgeTaskCount],
+    [createUploadError, fetchSkills, t, withSession],
   );
 
   // ── 发布表单校验（与 skillhub 对齐） ──
@@ -2302,10 +2337,29 @@ export function SkillPanel({
 
   return (
     <>
+      {knowledgeTaskCount > 0 && (
+        <div
+          className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4 bg-card border border-border"
+          style={{ width: '564px', height: '40px' }}
+          data-testid="skill-panel-knowledge-progress"
+        >
+          <span className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin flex-shrink-0" />
+          <span className="flex-1 truncate">
+            {knowledgeTaskCount > 1
+              ? t('skills.messages.knowledgeSkillCreatingCount', { count: knowledgeTaskCount })
+              : t('skills.messages.knowledgeSkillCreating')}
+          </span>
+        </div>
+      )}
       {message && messageType === 'success' && (
         <div
-          className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4"
-          style={{ backgroundColor: 'var(--color-feedback-success-toast)', width: '564px', height: '40px' }}
+          className="fixed right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4"
+          style={{
+            backgroundColor: 'var(--color-feedback-success-toast)',
+            width: '564px',
+            height: '40px',
+            top: knowledgeTaskCount > 0 ? '4.5rem' : '1rem',
+          }}
           data-testid="skill-panel-toast"
           data-variant="success"
         >
@@ -2329,8 +2383,13 @@ export function SkillPanel({
       )}
       {message && messageType === 'error' && (
         <div
-          className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4 border border-danger"
-          style={{ backgroundColor: 'var(--color-card, var(--color-bg-card, #fff))', width: '564px', minHeight: '40px' }}
+          className="fixed right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4 border border-danger"
+          style={{
+            backgroundColor: 'var(--color-card, var(--color-bg-card, #fff))',
+            width: '564px',
+            minHeight: '40px',
+            top: knowledgeTaskCount > 0 ? '4.5rem' : '1rem',
+          }}
           data-testid="skill-panel-toast"
           data-variant="error"
         >
@@ -2350,7 +2409,7 @@ export function SkillPanel({
           </button>
         </div>
       )}
-      {message && messageType === 'loading' && (
+      {message && messageType === 'loading' && knowledgeTaskCount <= 0 && (
         <div
           className="fixed top-4 right-4 z-[9999] rounded-[4px] text-sm text-text shadow-lg flex items-center gap-3 px-4 bg-card border border-border"
           style={{ width: '564px', height: '40px' }}

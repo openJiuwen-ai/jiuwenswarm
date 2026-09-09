@@ -2405,6 +2405,8 @@
       "skillNetInstallFailedHint": "SkillNet install failed. Check the skill URL or dependencies.",
       "importFailed": "Import failed",
       "importFailedHint": "Import failed. Check the path or permissions.",
+      "knowledgeSkillExists": "Skill \"{{name}}\" already exists. Use another name or uninstall it first.",
+      "knowledgeSkillExistsGeneric": "A skill with this name already exists. Use another name or uninstall it first.",
       "uploadFailed": "File upload failed. Please try again.",
       "uploadUnsafePath": "The filename contains disallowed characters or uses a reserved system name. Rename the file and upload it again.",
       "uploadInvalidRequest": "The upload request is invalid or missing a file. Select the file again and upload it.",

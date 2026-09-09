@@ -185,6 +185,8 @@ async def test_create_from_knowledge_link_routes_omni(manager: SkillManager) -> 
     assert payload["result_type"] == "followup"
     assert payload["skills"] == ["skill-omni-creation"]
     assert "输出风险等级" in payload["followup_prompt"]
+    assert "禁止写入 workspace/skills" in payload["followup_prompt"]
+    assert "跳过 code-writer" in payload["followup_prompt"]
     assert Path(payload["output_dir"]).is_dir()
 
 
@@ -206,12 +208,109 @@ def test_finalize_create_from_knowledge_installs(
     skill_root = out / "new-skill"
     skill_root.mkdir(parents=True)
     (skill_root / "SKILL.md").write_text(_skill_md("new-skill"), encoding="utf-8")
-    result = manager.finalize_create_from_knowledge(out)
+    result = manager.finalize_create_from_knowledge(out, existing_skill_names=set())
     assert result["success"] is True
     assert result["skill"]["name"] == "new-skill"
     assert result["skill"]["version"] is None
     assert result["skill"]["source"] == "local"
     assert "---" in result["skill"]["content"]
+
+
+def test_finalize_create_from_knowledge_new_this_run_no_conflict(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    """运行前没有同名时，即使目标目录已由本轮写入，也应直接成功。"""
+    dest = manager._skills_dir / "matplotlib_line_plot"
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        _skill_md("matplotlib_line_plot", "from this run"), encoding="utf-8"
+    )
+    result = manager.finalize_create_from_knowledge(
+        dest,
+        workspace_candidates=[dest],
+        existing_skill_names=set(),
+    )
+    assert result["success"] is True
+    assert result["skill"]["name"] == "matplotlib_line_plot"
+
+
+def test_finalize_create_from_knowledge_historical_rejects_without_overwrite(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    existing = manager._skills_dir / "matplotlib_line_plot"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text(
+        _skill_md("matplotlib_line_plot", "old desc"), encoding="utf-8"
+    )
+    out = tmp_path / "gen"
+    skill_root = out / "matplotlib_line_plot"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        _skill_md("matplotlib_line_plot", "new desc"), encoding="utf-8"
+    )
+    result = manager.finalize_create_from_knowledge(
+        out,
+        existing_skill_names={"matplotlib_line_plot"},
+        overwrite=False,
+    )
+    assert result["success"] is False
+    assert result["code"] == ERROR_SKILL_ALREADY_EXISTS
+    assert result["skill_name"] == "matplotlib_line_plot"
+    assert "pending_id" not in result
+    old = (existing / "SKILL.md").read_text(encoding="utf-8")
+    assert "old desc" in old
+
+
+@pytest.mark.asyncio
+async def test_create_from_knowledge_early_rejects_existing_name(
+    manager: SkillManager,
+) -> None:
+    existing = manager._skills_dir / "simple_plot"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text(_skill_md("simple_plot"), encoding="utf-8")
+
+    payload = await manager.handle_skills_create_from_knowledge(
+        {"link": "https://matplotlib.org/stable/gallery/simple_plot.html"}
+    )
+    assert payload["success"] is False
+    assert payload["code"] == ERROR_SKILL_ALREADY_EXISTS
+    assert payload["skill_name"] == "simple_plot"
+    assert payload.get("result_type") != "followup"
+
+
+@pytest.mark.asyncio
+async def test_create_from_knowledge_prompt_lists_occupied_names(
+    manager: SkillManager,
+) -> None:
+    existing = manager._skills_dir / "keep-out"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text(_skill_md("keep-out"), encoding="utf-8")
+
+    payload = await manager.handle_skills_create_from_knowledge(
+        {"link": "https://example.com/guide"}
+    )
+    assert payload["result_type"] == "followup"
+    assert "keep-out" in payload["followup_prompt"]
+    assert "禁止复用" in payload["followup_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_create_from_knowledge_pending_overwrite_skips_followup(
+    manager: SkillManager, tmp_path: Path
+) -> None:
+    existing = manager._skills_dir / "keep-me"
+    existing.mkdir(parents=True)
+    (existing / "SKILL.md").write_text(_skill_md("keep-me", "old"), encoding="utf-8")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "SKILL.md").write_text(_skill_md("keep-me", "new"), encoding="utf-8")
+    pending_id = manager._stash_knowledge_pending(staged)
+
+    payload = await manager.handle_skills_create_from_knowledge(
+        {"pending_id": pending_id, "overwrite": True}
+    )
+    assert payload["success"] is True
+    assert "new" in (existing / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_multipart_import_http_local(manager: SkillManager, monkeypatch: pytest.MonkeyPatch) -> None:
