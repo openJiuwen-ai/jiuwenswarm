@@ -33,6 +33,8 @@ from openjiuwen.agent_teams.rails.team_context import (
 )
 from openjiuwen.harness.rails import ModelAnomalyDetectionRail
 
+from openjiuwen.harness.rails.personal_context import PersonalContextRail
+
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
@@ -56,7 +58,6 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
-from openjiuwen.harness.rails.personal_context import PersonalContextRail
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
