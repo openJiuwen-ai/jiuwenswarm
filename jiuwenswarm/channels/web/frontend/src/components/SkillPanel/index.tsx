@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, HelpCircle, Loader2, Music2, Upload, X } from 'lucide-react';
+import { ArrowLeft, ChevronRight, HelpCircle, Loader2, Music2, Upload, X } from 'lucide-react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
@@ -974,29 +974,49 @@ export function SkillPanel({
   );
 
   const handleMarketplaceCategoryChange = useCallback(
-    (category: (typeof MARKETPLACE_CATEGORIES)[number]) => {
-      if (category === marketplaceCategory) return;
-      // 立即失效在途搜索/推荐，避免迟到响应覆盖新分类结果
+    (nextCategory: (typeof MARKETPLACE_CATEGORIES)[number]) => {
+      if (nextCategory === marketplaceCategory) return;
+
       hubFetchSeqRef.current += 1;
       setSearch('');
       setHubSkills([]);
       setHubLoading(true);
-      setMarketplaceCategory(category);
+      setMarketplaceCategory(nextCategory);
     },
     [marketplaceCategory],
   );
 
+  const searchKeyword = search.trim();
+
+  const handleSearchChange = useCallback(
+    (nextSearch: string) => {
+      const nextKeyword = nextSearch.trim();
+
+      if (activeTab === 'marketplace' && nextKeyword !== search.trim()) {
+        hubFetchSeqRef.current += 1;
+        setHubSkills([]);
+        setHubLoading(true);
+      }
+
+      setSearch(nextSearch);
+    },
+    [activeTab, search],
+  );
+
   useEffect(() => {
     if (activeTab !== 'marketplace') return;
-    const keyword = search.trim();
-    if (keyword) {
-      const timer = setTimeout(() => {
-        fetchOnlineSearch(keyword);
-      }, 500);
-      return () => clearTimeout(timer);
+
+    if (!searchKeyword) {
+      void fetchHubSkills(marketplaceCategory);
+      return;
     }
-    fetchHubSkills(marketplaceCategory);
-  }, [activeTab, marketplaceCategory, search, fetchHubSkills, fetchOnlineSearch]);
+
+    const timer = window.setTimeout(() => {
+      void fetchOnlineSearch(searchKeyword);
+    }, 500);
+
+    return () => window.clearTimeout(timer);
+  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubSkills, fetchOnlineSearch]);
 
   // 按 plugin_type 分组：swarmskill → 精选团队技能，其余 → 精选技能
   const { teamSkills, featuredSkills } = useMemo(() => {
@@ -2362,12 +2382,18 @@ export function SkillPanel({
                     <button
                       type="button"
                       onClick={() => {
+                        // 进入“我的技能”时始终清除其他页面遗留的搜索词
                         if (activeTab !== 'my') {
-                          // 从广场/关系图等切来时同批清空，避免首帧沿用他页关键词；并失效在途广场请求
-                          hubFetchSeqRef.current += 1;
-                          setHubLoading(false);
                           setSearch('');
                         }
+
+                        // 只有从技能广场离开时才需要终止广场请求
+                        if (activeTab === 'marketplace') {
+                          hubFetchSeqRef.current += 1;
+                          setHubLoading(false);
+                          setHubSkills([]);
+                        }
+
                         setActiveTab('my');
                       }}
                       className={activeTab === 'my' ? 'is-active' : ''}
@@ -2431,7 +2457,9 @@ export function SkillPanel({
                     {(activeTab === 'my' || activeTab === 'marketplace') && (
                       <PageToolbarSearch
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
+                        onChange={handleSearchChange}
+                        allowClear
+                        clearLabel={t('common.clear')}
                         placeholder={t('skills.searchPlaceholder')}
                       />
                     )}
@@ -2699,23 +2727,34 @@ export function SkillPanel({
                 </div>
               ) : (
                 /* 默认列表视图 */
-                <>
-                  <div className="page-shell">
-                  <CategoryTabs
-                    items={MARKETPLACE_CATEGORIES.map((cat) => ({
-                      value: cat,
-                      label: t(`skills.marketplaceCategories.${cat}`),
-                    }))}
-                    value={marketplaceCategory}
-                    onChange={handleMarketplaceCategoryChange}
-                  />
-                  </div>
+                <div className="flex flex-1 flex-col min-h-0">
+                  {!searchKeyword ? (
+                    <div className="page-shell">
+                      <CategoryTabs
+                        items={MARKETPLACE_CATEGORIES.map((cat) => ({
+                          value: cat,
+                          label: t(`skills.marketplaceCategories.${cat}`),
+                        }))}
+                        value={marketplaceCategory}
+                        onChange={handleMarketplaceCategoryChange}
+                      />
+                    </div>
+                  ) : null}
 
                   {hubLoading ? (
-                    <div className="page-shell mt-4 text-sm text-text-muted">{t('common.loading')}</div>
+                    <div
+                      className="flex flex-1 min-h-0 items-center justify-center"
+                      role="status"
+                      aria-label={t('common.loading')}
+                      data-testid="skill-panel-hub-list-loading"
+                    >
+                      <Loader2 size={28} className="animate-spin text-text-muted" aria-hidden="true" />
+                    </div>
                   ) : hubSkills.length === 0 ? (
-                    <div className="page-shell mt-4 text-sm text-text-muted">{t('skills.noMatches')}</div>
-                  ) : search.trim() ? (
+                    <div className="page-shell mt-4 text-sm text-text-muted" data-testid="skill-panel-hub-list-empty">
+                      {t('skills.noMatches')}
+                    </div>
+                  ) : searchKeyword ? (
                     /* 搜索结果：全部罗列 */
                     <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
                       <div className="card-grid-auto">
@@ -2748,17 +2787,7 @@ export function SkillPanel({
                                 className="flex items-center gap-0.5 text-sm text-text"
                               >
                                 {t('nav.more')}
-                                <svg
-                                  className="w-4 h-4"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  viewBox="0 0 24 24"
-                                  strokeWidth={2}
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                >
-                                  <path d="m9 18 6-6-6-6" />
-                                </svg>
+                                <ChevronRight size={16} aria-hidden="true" />
                               </button>
                             )}
                           </div>
@@ -2803,7 +2832,7 @@ export function SkillPanel({
                       )}
                     </div>
                   )}
-                </>
+                </div>
               )}
             </>
           ) : null}
