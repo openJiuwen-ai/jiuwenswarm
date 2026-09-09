@@ -5479,17 +5479,21 @@ class AgentWebSocketServer:
         detail_raw_bytes: int | None = None
 
         if workflow_handler is None:
-            # No live handler (runtime not active / torn down by cancel-stop).
-            # The snapshot is a read-only pull and must not depend on runtime
-            # liveness — fall back to the persisted checkpoint so historical /
-            # terminal workflow runs remain queryable after the team session
-            # is cancelled or stopped.
+            # No live handler (runtime not active / torn down by cancel-stop /
+            # process restarted). Fall back to the persisted checkpoint so
+            # historical / terminal runs stay queryable — but serve the same
+            # cold-start view the runtime would build: a run the old process
+            # left ``running`` gets no more events and must read as ``paused``
+            # + ``recovered`` (buttons grey, advisory lists it), not as live.
             try:
                 from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                    _normalize_recovered_runs,
                     restore_workflow_runs,
                 )
 
-                restored = restore_workflow_runs(session_id)
+                restored = _normalize_recovered_runs(
+                    restore_workflow_runs(session_id), session_id,
+                )
                 workflows = (
                     [run.to_workflow_run_dict() for run in restored.values()]
                     if restored
@@ -5732,7 +5736,9 @@ class AgentWebSocketServer:
         Looks up the session's BackgroundTaskController and applies the requested
         control to the run identified by ``run_id`` (accepting ``run_id`` or the
         ``workflow_run_id`` alias). Returns ok=False with a reason when run_id is
-        missing or no matching live run is registered on the controller.
+        missing, the team is asleep (no leader harness to host the run — the
+        tree-view buttons are greyed then), or no matching run
+        is registered on the controller.
         """
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             classify_swarmflow_control_miss,
@@ -5744,12 +5750,22 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         run_id = params.get("run_id") or params.get("workflow_run_id")
 
+        from jiuwenswarm.agents.harness.team import get_team_manager
+
+        tm = get_team_manager(channel_id)
         if not isinstance(run_id, str) or not run_id.strip():
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=channel_id,
                 ok=False,
                 payload={"error": "run_id is required"},
+            )
+        elif not tm.has_stream_task(session_id):
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "team is not running"},
             )
         else:
             run_id = run_id.strip()
@@ -5761,6 +5777,13 @@ class AgentWebSocketServer:
                 acted = await controller.resume(run_id)
             elif action == "stop":
                 acted = await controller.stop(run_id)
+                # 已解栈的 paused run 没有引擎回发的 WORKFLOW_STOPPED，快照会永远停在
+                # paused；由 handler 合成终态 delta（树刷新 + 落盘），不写 journal seal
+                # （丢票不 seal，手动 resume_id 仍可续）。active run 由引擎事件路径更新，
+                # stop_run 对非 paused run 是 no-op。
+                wf_handler = tm.get_workflow_handler(session_id)
+                if wf_handler is not None and await wf_handler.stop_run(run_id):
+                    acted = True
             else:  # pragma: no cover - internal dispatch only
                 acted = False
             if not acted:
