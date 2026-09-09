@@ -49,6 +49,13 @@ symphony:
 
   evolution:
     enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+    flow:
+      enabled: false            # true = 任务结束后蒸馏 skill pack
+      min_edge_support: 1      # 边至少出现几次（调试=1，正式=2-3）
+      min_edge_success_rate: 0.5  # 边成功率阈值（调试=0.5，正式=0.8）
+      min_successes_candidate: 2  # 至少成功几次产出 candidate pack
+      min_successes_verified: 3   # 至少成功几次产出 verified pack
+      min_pack_success_rate_verified: 0.8
 
   orchestration:
     # fast is the default one-shot path; beam enables bidirectional search.
