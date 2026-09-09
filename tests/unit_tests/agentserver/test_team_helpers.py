@@ -374,6 +374,12 @@ class _InactiveTeamRuntimeManagerMixin:
     def get_startup_lock(self, session_id: str) -> asyncio.Lock:
         return self._test_startup_locks.setdefault(session_id, asyncio.Lock())
 
+    def hold_idle(self, session_id: str, marker: dict) -> None:
+        self.__dict__.setdefault("_test_held_idle", {})[session_id] = marker
+
+    def pop_held_idle(self, session_id: str):
+        return self.__dict__.setdefault("_test_held_idle", {}).pop(session_id, None)
+
     @staticmethod
     def is_runtime_active(session_id: str) -> bool:
         _ = session_id
@@ -5334,6 +5340,78 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
     types = [e["event"]["type"] for e in team_events]
     assert "team.task.claimed" in types
     assert "team.member.spawned" in types
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_releases_held_idle_when_last_run_leaves_active(monkeypatch):
+    """team.idle is a one-shot marker. When the idle guard swallows it because
+    a run is active, and a tree-view pause/stop later drains the active set
+    with no leader activity in between, nothing re-emits idle and the lamp
+    stays lit forever. The workflow consumer must release the held marker
+    the moment every run has left the active set.
+    """
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+    broadcasted: list[dict[str, object]] = []
+    paused = WorkflowRunState(id="r", status="paused")
+    event = {"event_type": "workflow.updated", "session_id": "s", "workflow": {"id": "r", "status": "paused"}}
+
+    class _Handler:
+        is_running = True
+        async def events(self):
+            yield event
+        def get_run_states(self):
+            return {"r": paused}
+
+    class _TM:
+        def __init__(self):
+            self.held = {"rid": "req-1", "member_count": 1}
+        def pop_held_idle(self, sid):
+            h, self.held = self.held, None
+            return h
+
+    tm = _TM()
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda cid: tm)
+
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", _Handler())
+
+    status = [e for e in broadcasted if e.get("event_type") == "chat.processing_status"]
+    assert status == [{
+        "event_type": "chat.processing_status", "session_id": "s", "rid": "req-1",
+        "is_processing": False, "is_complete": True, "member_count": 1,
+    }]
+    assert tm.held is None
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_keeps_held_idle_while_a_run_is_active(monkeypatch):
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+    broadcasted: list[dict[str, object]] = []
+    live = WorkflowRunState(id="r", status="running")
+    live.phases = []
+    event = {"event_type": "workflow.updated", "session_id": "s", "workflow": {"id": "r", "status": "running"}}
+
+    class _Handler:
+        is_running = True
+        async def events(self):
+            yield event
+        def get_run_states(self):
+            return {"r": live}
+
+    class _TM:
+        held = {"rid": "req-1", "member_count": 1}
+        def pop_held_idle(self, sid):
+            raise AssertionError("must not release while a run is active")
+
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "_run_lamp_active", lambda run: True)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda cid: _TM())
+
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", _Handler())
+
+    assert not [e for e in broadcasted if e.get("event_type") == "chat.processing_status"]
 
 
 @pytest.mark.anyio

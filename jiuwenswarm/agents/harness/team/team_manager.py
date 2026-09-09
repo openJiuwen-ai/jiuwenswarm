@@ -324,6 +324,7 @@ class TeamManager:
         self._runner_team_agents: dict[str, TeamAgent] = {}
         self._team_monitors: dict[str, TeamMonitorHandler] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
+        self._held_idle: dict[str, dict[str, Any]] = {}
         self._bootstrap_lock = asyncio.Lock()
         self._distributed_switch_lock = asyncio.Lock()
         self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
@@ -696,6 +697,18 @@ class TeamManager:
     def pop_cron_completion(self, session_id: str) -> dict[str, Any] | None:
         """Drop the cron team round completion state for the session."""
         return self._cron_team_completion.pop(session_id, None)
+
+    # team.idle is a one-shot marker from the framework. When the idle guard
+    # swallows it because a swarmflow run is still active, the lamp can only
+    # go out if something re-emits idle — and a tree-view pause/stop that
+    # drains the active set produces no member activity, so nothing does. The
+    # guard parks the swallowed marker here; the workflow consumer releases it
+    # once every run has left the active set.
+    def hold_idle(self, session_id: str, marker: dict[str, Any]) -> None:
+        self._held_idle[session_id] = marker
+
+    def pop_held_idle(self, session_id: str) -> dict[str, Any] | None:
+        return self._held_idle.pop(session_id, None)
 
     def is_runtime_active(self, session_id: str) -> bool:
         """Return whether a Runner-owned runtime is active for the session."""
@@ -2178,6 +2191,7 @@ class TeamManager:
         await self._cancel_team_evolution_watcher(session_id)
 
         stream_task = self._stream_tasks.pop(session_id, None)
+        self._held_idle.pop(session_id, None)
         if stream_task and not stream_task.done():
             stream_task.cancel()
             try:

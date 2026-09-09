@@ -3278,7 +3278,8 @@ async def _consume_stream_with_query(
                 elif parsed.get("event_type") == "team.idle":
                     # A swarmflow workflow may still be running while the leader
                     # is idle; do not end the round until it reaches terminal.
-                    wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
+                    tm = get_team_manager(channel_id)
+                    wf_handler = tm.get_workflow_handler(session_id)
                     if wf_handler is not None and any(
                         _run_lamp_active(run) for run in wf_handler.get_run_states().values()
                     ):
@@ -3288,7 +3289,15 @@ async def _consume_stream_with_query(
                             _resolve_channel_id(channel_id),
                             session_id,
                         )
+                        # Park the marker: a later pause/stop that drains the
+                        # active set must be able to release it (see
+                        # _consume_workflow_events).
+                        tm.hold_idle(
+                            session_id,
+                            {"rid": round_id, "member_count": parsed.get("member_count")},
+                        )
                         continue
+                    tm.pop_held_idle(session_id)
                     # Every member has been at rest for the framework's debounce
                     # window: nothing is producing output any more, even though
                     # the leader stream deliberately stays open in case the team
@@ -3781,6 +3790,32 @@ async def _consume_workflow_events(
 
             # ── 所有通道都广播原始 workflow.updated（供 web 树视图渲染）──
             await _broadcast_event(channel_id, session_id, event)
+
+            # The idle guard may be holding a swallowed team.idle for this
+            # session. If this update took the last run out of the active set
+            # (pause / stop / terminal) nothing else will re-emit idle, so
+            # release it here — same shape the guard would have broadcast.
+            run_states = getattr(workflow_handler, "get_run_states", lambda: {})()
+            if not any(_run_lamp_active(r) for r in run_states.values()):
+                held = get_team_manager(channel_id).pop_held_idle(session_id)
+                if held is not None:
+                    logger.info(
+                        "[TeamHelpers] releasing held team.idle (no active run): "
+                        "channel_id=%s session_id=%s",
+                        _resolve_channel_id(channel_id), session_id,
+                    )
+                    await _broadcast_event(
+                        channel_id,
+                        session_id,
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": session_id,
+                            "rid": held.get("rid"),
+                            "is_processing": False,
+                            "is_complete": True,
+                            "member_count": held.get("member_count"),
+                        },
+                    )
 
             if is_tui:
                 # TUI: 只需原始事件 + 终态检查
