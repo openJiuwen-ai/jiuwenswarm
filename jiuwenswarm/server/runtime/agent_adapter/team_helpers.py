@@ -963,17 +963,35 @@ def _resolve_user_turn(
 _ADVISORY_MARK = ("[swarmflow-advisory]", "[/swarmflow-advisory]")
 
 
+def _advisory_runs(team_manager: Any, session_id: str) -> dict[str, WorkflowRunState]:
+    """Runs the advisory should list: live handler states, else the snapshot.
+
+    A team pause pops the workflow handler with the runtime, so the next
+    chat.send has no handler to ask — but the persisted snapshot still holds
+    the paused runs and is the only ledger left until runtime_ready rebuilds
+    the handler. Without this fallback the leader gets a bare query and guesses.
+    """
+    wf_handler = team_manager.get_workflow_handler(session_id)
+    if wf_handler is not None:
+        return wf_handler.get_run_states()
+    return restore_workflow_runs(session_id) or {}
+
+
 def _inject_swarmflow_context(
     turn: UserTurn,
     runs: dict[str, WorkflowRunState],
     *,
     cold_start: bool,
+    controller: Any,
 ) -> UserTurn:
     """Prepend a resume-advisory prefix to the leader's user turn.
 
     ``cold_start`` lists every non-terminal run; otherwise only paused runs.
-    Returns ``turn`` unchanged when there is nothing to inject or the text is
-    not a plain string (A2UI / InteractiveInput keep their own payload).
+    ``controller`` decides each run's resume plane: a run it still holds a
+    pause ticket for resumes in-process (``action="resume"``); any other goes
+    through the launch plane (``resume_id + script_path``). Returns ``turn``
+    unchanged when there is nothing to inject or the text is not a plain
+    string (A2UI / InteractiveInput keep their own payload).
     """
     eligible = [
         r for r in runs.values()
@@ -988,13 +1006,15 @@ def _inject_swarmflow_context(
     for r in eligible:
         script = r.script_path or r.script or ""
         lines.append(f"- run_id: {r.id}  脚本: {script}")
-        # Two resume planes: in-round the controller still holds
-        # the ticket, so ``action="resume"`` relaunches the cached prefix; after a
-        # cold start the ticket is gone and only the launch plane
-        # (``resume_id + script_path``, args recovered from the journal) works.
+        # Two resume planes, keyed on the ticket — not on the request shape:
+        # a team pause pops the handler so the next chat.send looks like a
+        # cold start, yet the controller still holds the ticket in-process and
+        # ``action="resume"`` relaunches the cached prefix. Only a run with no
+        # ticket (process restart / session switch) needs the launch plane
+        # (``resume_id + script_path``, args recovered from the journal).
         # Handing the leader the wrong one makes it bypass the ticket and start
         # a brand-new run instead of resuming.
-        if not cold_start:
+        if controller.is_paused(r.id):
             lines.append(f'  恢复调用: swarmflow(resume_id="{r.id}", action="resume")')
         elif r.script_path:
             lines.append(
@@ -2601,10 +2621,12 @@ async def _process_team_message_stream(
                 # 暂停后恢复裁决：仅把 paused run 清单前缀注入路由到 leader 的
                 # team-wide 纯文本；member/A2UI/InteractiveInput 保持原路径。
                 # args 由 agent-core 从 journal 自动恢复，提示只含 resume_id+script_path。
-                wf_handler = team_manager.get_workflow_handler(session_id)
-                runs = wf_handler.get_run_states() if wf_handler is not None else {}
+                runs = _advisory_runs(team_manager, session_id)
                 if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
-                    turn = _inject_swarmflow_context(turn.with_text(query), runs, cold_start=False)
+                    turn = _inject_swarmflow_context(
+                        turn.with_text(query), runs, cold_start=False,
+                        controller=get_background_task_controller(session_id),
+                    )
                     query = turn.text if isinstance(turn.text, str) else query
                 followup_payload = _deliverable(turn, query)
                 await _begin_team_round()
@@ -2810,10 +2832,12 @@ async def _process_team_message_stream(
             await _begin_team_round()
             # 冷启动恢复裁决：可恢复 run 清单以文本前缀注入 leader 上下文——非终态
             # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
-            wf_handler = team_manager.get_workflow_handler(session_id)
-            runs = wf_handler.get_run_states() if wf_handler is not None else {}
+            runs = _advisory_runs(team_manager, session_id)
             if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
-                turn = _inject_swarmflow_context(turn.with_text(query), runs, cold_start=True)
+                turn = _inject_swarmflow_context(
+                    turn.with_text(query), runs, cold_start=True,
+                    controller=get_background_task_controller(session_id),
+                )
                 query = turn.text if isinstance(turn.text, str) else query
             try:
                 request_queue = await _start_team_stream_round(

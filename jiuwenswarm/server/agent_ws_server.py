@@ -6626,15 +6626,12 @@ class AgentWebSocketServer:
             elif action == "stop":
                 acted = await controller.stop(run_id)
                 # 已解栈的 paused run 没有引擎回发的 WORKFLOW_STOPPED，快照会永远停在
-                # paused；此处补一个 stopped 终态标记且不写 journal seal（丢票不 seal，
-                # 手动 resume_id 仍可续）。active run 由 WORKFLOW_STOPPED 事件路径自动更新。
+                # paused；由 handler 合成终态 delta（树刷新 + 落盘），不写 journal seal
+                # （丢票不 seal，手动 resume_id 仍可续）。active run 由引擎事件路径更新，
+                # stop_run 对非 paused run 是 no-op。
                 wf_handler = tm.get_workflow_handler(session_id)
-                if wf_handler is not None:
-                    run_state = wf_handler.get_run_states().get(run_id)
-                    if run_state is not None and run_state.status == "paused":
-                        if run_state.finalize_if_running("stopped"):
-                            wf_handler._persist()
-                            acted = True
+                if wf_handler is not None and await wf_handler.stop_run(run_id):
+                    acted = True
             else:  # pragma: no cover - internal dispatch only
                 acted = False
             if not acted:

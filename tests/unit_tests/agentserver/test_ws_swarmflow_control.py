@@ -52,8 +52,13 @@ class _FakeWorkflowHandler:
     def get_run_states(self) -> dict[str, Any]:
         return dict(self._runs)
 
-    def _persist(self) -> None:
+    async def stop_run(self, run_id: str) -> bool:
+        run = self._runs.get(run_id)
+        if run is None or run.status != "paused":
+            return False
+        run.finalize_if_running("stopped")
         self.persist_calls += 1
+        return True
 
 
 def _make_request(

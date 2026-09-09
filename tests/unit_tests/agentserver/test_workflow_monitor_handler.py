@@ -725,3 +725,46 @@ class TestFinalizePendingRunsDisposition:
         runs = handler.get_run_states()
         assert runs["wf_run"].status == "stopped"
         assert runs["wf_paused"].status == "paused"
+
+
+# ---------------------------------------------------------------------------
+# stop_run: tree-view stop on a paused run must reach the frontend
+# ---------------------------------------------------------------------------
+
+
+class TestStopRun:
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_stop_run_emits_terminal_delta_and_persists(monkeypatch) -> None:
+        """A paused run has no engine task left to emit WORKFLOW_STOPPED, so the
+        handler must synthesize it: terminal delta on the event queue (tree
+        refresh) + persisted snapshot. Same path as an engine stop.
+        """
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+        run = WorkflowRunState(status="paused")
+        run.id = "wf_1"
+        handler = WorkflowMonitorHandler(
+            monitor=_FakeTeamMonitor(), session_id="sess-1", initial_runs={"wf_1": run},
+        )
+        persisted: list[int] = []
+        monkeypatch.setattr(handler, "_persist", lambda: persisted.append(1))
+
+        assert await handler.stop_run("wf_1") is True
+
+        assert run.status == "stopped"
+        assert persisted == [1]
+        event = handler._event_queue.get_nowait()
+        assert event["event_type"] == "workflow.updated"
+        assert event["workflow"]["id"] == "wf_1"
+        assert event["workflow"]["status"] == "stopped"
+        # unknown / already terminal → no-op
+        assert await handler.stop_run("wf_1") is False
+        assert await handler.stop_run("nope") is False
+        # active run: the engine announces its own stop while unwinding → no-op
+        live = WorkflowRunState(status="running")
+        live.id = "wf_live"
+        handler._runs["wf_live"] = live
+        assert await handler.stop_run("wf_live") is False
+        assert live.status == "running"
+        assert handler._event_queue.empty()

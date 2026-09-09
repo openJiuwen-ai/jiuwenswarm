@@ -207,6 +207,25 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         """Return a shallow copy of in-memory workflow run states."""
         return dict(self._runs)
 
+    async def stop_run(self, run_id: str) -> bool:
+        """Stamp a paused run ``stopped`` and push the delta like an engine stop.
+
+        A paused run has already unwound, so no WORKFLOW_STOPPED will ever
+        arrive from the engine; the tree-view stop must synthesize it here or
+        the frontend keeps the paused card until a reload. Only paused runs:
+        an active run's stop is announced by the engine itself while it
+        unwinds, and stamping it here too would double-finalize. Returns False
+        when the run is unknown or not paused.
+        """
+        run = self._runs.get(run_id)
+        if run is None or run.status != "paused":
+            return False
+        delta = run.apply(WorkflowProgress(kind="workflow_stopped", run_id=run_id))
+        if delta is not None:
+            await self._event_queue.put(self._build_updated_event(delta))
+        self._persist()
+        return True
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------

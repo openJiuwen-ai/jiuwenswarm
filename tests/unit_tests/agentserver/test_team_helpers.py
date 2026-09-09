@@ -6492,6 +6492,16 @@ def _advisory_turn(text: object) -> Any:
     return UserTurn(text=text, channel="web", language="zh", files={})
 
 
+class _Tickets:
+    """Fake controller: which run_ids still hold a pause ticket in-process."""
+
+    def __init__(self, *run_ids: str) -> None:
+        self._ids = set(run_ids)
+
+    def is_paused(self, run_id: str | None = None) -> bool:
+        return bool(self._ids) if run_id is None else run_id in self._ids
+
+
 def test_inject_swarmflow_context_cold_start_lists_non_terminal_runs() -> None:
     turn = _advisory_turn("继续生成财务报表")
     runs = {
@@ -6501,7 +6511,9 @@ def test_inject_swarmflow_context_cold_start_lists_non_terminal_runs() -> None:
         "run-done": WorkflowRunState(id="run-done", status="completed"),
     }
 
-    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=True)
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=True, controller=_Tickets(),
+    )
 
     assert isinstance(injected, team_helpers.UserTurn)
     assert injected is not turn
@@ -6528,7 +6540,9 @@ def test_inject_swarmflow_context_followup_lists_only_paused_runs() -> None:
         "run-done": WorkflowRunState(id="run-done", status="completed"),
     }
 
-    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=False)
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=False, controller=_Tickets("run-paused"),
+    )
 
     assert isinstance(injected.text, str)
     assert "run-paused" in injected.text
@@ -6548,9 +6562,10 @@ def test_inject_swarmflow_context_no_eligible_runs_returns_same_turn() -> None:
         "b": WorkflowRunState(id="b", status="stopped"),
     }
 
-    assert team_helpers._inject_swarmflow_context(turn, all_terminal, cold_start=True) is turn
-    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=True) is turn
-    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=False) is turn
+    ctl = _Tickets()
+    assert team_helpers._inject_swarmflow_context(turn, all_terminal, cold_start=True, controller=ctl) is turn
+    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=True, controller=ctl) is turn
+    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=False, controller=ctl) is turn
 
 
 def test_inject_swarmflow_context_non_string_text_returns_same_turn() -> None:
@@ -6561,7 +6576,9 @@ def test_inject_swarmflow_context_non_string_text_returns_same_turn() -> None:
         )
     }
 
-    assert team_helpers._inject_swarmflow_context(turn, runs, cold_start=False) is turn
+    assert team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=False, controller=_Tickets("run-paused"),
+    ) is turn
 
 
 def test_inject_swarmflow_context_cold_start_run_without_script_path_has_no_resume_line() -> None:
@@ -6569,7 +6586,9 @@ def test_inject_swarmflow_context_cold_start_run_without_script_path_has_no_resu
     turn = _advisory_turn("hi")
     runs = {"legacy": WorkflowRunState(id="legacy-run", status="paused", script="wf.legacy")}
 
-    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=True)
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=True, controller=_Tickets(),
+    )
 
     assert isinstance(injected.text, str)
     assert "legacy-run" in injected.text
@@ -6582,9 +6601,43 @@ def test_inject_swarmflow_context_followup_resume_needs_no_script_path() -> None
     turn = _advisory_turn("hi")
     runs = {"legacy": WorkflowRunState(id="legacy-run", status="paused", script="wf.legacy")}
 
-    injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=False)
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=False, controller=_Tickets("legacy-run"),
+    )
 
     assert 'swarmflow(resume_id="legacy-run", action="resume")' in injected.text
+
+
+def test_inject_swarmflow_context_first_request_after_pause_uses_ticket_plane() -> None:
+    """A team pause pops the workflow handler, so the next chat.send is a
+    'first request' — but the controller still holds the pause ticket in this
+    process. The template must follow the ticket (action="resume"), not the
+    request shape: the launch plane would start a brand-new run here.
+    """
+    turn = _advisory_turn("继续那个工作流")
+    runs = {"r": WorkflowRunState(id="r", status="paused", script_path="/abs/wf.py")}
+
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=True, controller=_Tickets("r"),
+    )
+
+    assert 'swarmflow(resume_id="r", action="resume")' in injected.text
+    assert "script_path=" not in injected.text
+
+
+def test_advisory_runs_falls_back_to_snapshot_when_handler_is_gone(monkeypatch) -> None:
+    """After a team pause the handler is popped; the persisted snapshot is the
+    only ledger left and must still feed the advisory (else the leader gets a
+    bare query and guesses).
+    """
+    snapshot = {"r": WorkflowRunState(id="r", status="paused")}
+    monkeypatch.setattr(team_helpers, "restore_workflow_runs", lambda sid: snapshot)
+    tm = SimpleNamespace(get_workflow_handler=lambda sid: None)
+    assert team_helpers._advisory_runs(tm, "sess") is snapshot
+
+    live = {"live": WorkflowRunState(id="live", status="running")}
+    tm = SimpleNamespace(get_workflow_handler=lambda sid: SimpleNamespace(get_run_states=lambda: live))
+    assert team_helpers._advisory_runs(tm, "sess") == live
 
 
 # ---------------------------------------------------------------------------
@@ -6607,7 +6660,9 @@ def test_inject_swarmflow_context_explicit_request_acts_else_asks() -> None:
     }
 
     for cold_start in (True, False):
-        injected = team_helpers._inject_swarmflow_context(turn, runs, cold_start=cold_start)
+        injected = team_helpers._inject_swarmflow_context(
+            turn, runs, cold_start=cold_start, controller=_Tickets("r1"),
+        )
         text = injected.text
         assert isinstance(text, str)
         # (a) explicit request → act, no question
