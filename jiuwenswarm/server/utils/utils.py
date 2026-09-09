@@ -4,6 +4,7 @@
 
 from typing import Any, Mapping
 
+from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 
 
@@ -38,4 +39,4 @@ def is_team_params(params: Mapping[str, Any] | None) -> bool:
     if not isinstance(params, Mapping):
         return False
     mode = str(params.get("mode") or "").strip().lower()
-    return bool(params.get("team")) or mode in {"team", "team.plan", "code.team"}
+    return bool(params.get("team")) or is_team_mode(mode)

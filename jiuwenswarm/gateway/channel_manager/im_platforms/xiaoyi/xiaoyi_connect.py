@@ -763,7 +763,9 @@ class XiaoyiChannel(BaseChannel):
         reset_team_session = bool(metadata.get("reset_team_session"))
         terminal_notice = bool(metadata.get("terminal_notice"))
         session_id, task_id = self._extract_platform_receive_info(msg)
-        is_team_mode = mode in {"team", "team.plan", "code.team"}
+        from jiuwenswarm.common.mode_matrix import is_team_mode as _is_team_canonical
+
+        is_team_mode = _is_team_canonical(mode)
         is_team_event = not reset_team_session and (
             event_name.startswith("team.")
             or is_team_mode

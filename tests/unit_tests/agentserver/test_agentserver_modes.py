@@ -67,7 +67,13 @@ def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(raw_mode, e
         ("agent", "code", ("code", "normal", "code.normal")),
         ("code.normal", "work", ("agent", None, "agent")),
         ("code.plan", "code", ("code", "plan", "code.plan")),
-        ("team", "code", ("team", None, "team")),
+        # （WorkModeProfile 注册表）：mode=team + 合法 work_mode 组合出团队
+        # canonical——code→code.team / design→design.team；work 保持历史 ("team", ...)。
+        ("team", "code", ("code", "team", "code.team")),
+        ("team", "design", ("design", "team", "design.team")),
+        ("team", "work", ("team", None, "team")),
+        # team.plan 是 TUI code 集群 plan，不随 work_mode 变化
+        ("team.plan", "design", ("code", "team", "team.plan")),
     ],
 )
 def test_resolve_agent_request_mode_aligns_single_agent_with_work_mode(

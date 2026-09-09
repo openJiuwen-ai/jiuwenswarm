@@ -581,7 +581,9 @@ def _is_restorable_history_record(record: Any) -> bool:
 
     if role == "user":
         mode = record.get("mode", "")
-        if mode in ("team", "team.plan", "code.team"):
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+
+        if is_team_mode(mode):
             channel_id = record.get("channel_id", "")
             # desktop 渠道的用户消息是真实用户输入，必须与 web/tui 同规放行——
             # 否则桌面团队会话重启后用户问题气泡丢失
@@ -820,6 +822,14 @@ def resolve_agent_request_mode(
         canonical_mode = f"team.{sub_mode}" if sub_mode else "team"
         if sub_mode == "plan":
             return "code", "team", canonical_mode
+        if not sub_mode and normalized_work_mode in {"code", "design"}:
+            # Web 桌面团队请求 = mode=team + work_mode：按 WorkModeProfile 注册表
+            # 组合出团队 canonical（code→code.team / design→design.team）。
+            # 无 work_mode 或 work 的历史/默认路径原样返回（"team", None, "team"）。
+            from jiuwenswarm.common.mode_profiles import WORK_MODE_PROFILES
+
+            profile = WORK_MODE_PROFILES[normalized_work_mode]
+            return profile.manager_mode, "team", profile.team_canonical
         return "team", sub_mode, canonical_mode
 
     default_sub_modes = {
@@ -2682,6 +2692,7 @@ class AgentWebSocketServer:
                 params[_SESSION_PREVIOUS_MODE_KEY] = stored_session_mode.strip()
             if isinstance(stored_work_mode, str) and stored_work_mode.strip().lower() in {
                 "code",
+                "design",
                 "work",
             }:
                 runtime_work_mode = stored_work_mode.strip().lower()
@@ -2689,6 +2700,7 @@ class AgentWebSocketServer:
             request_work_mode = params.get("work_mode")
             if isinstance(request_work_mode, str) and request_work_mode.strip().lower() in {
                 "code",
+                "design",
                 "work",
             }:
                 runtime_work_mode = request_work_mode.strip().lower()
@@ -3930,8 +3942,10 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _is_team_metadata_mode(metadata: dict[str, Any]) -> bool:
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+
         mode = str(metadata.get("mode") or "").strip().lower()
-        return mode in {"team", "team.plan", "code.team"}
+        return is_team_mode(mode)
 
     @staticmethod
     def _active_team_session_map() -> dict[str, str]:
@@ -8778,14 +8792,20 @@ class AgentWebSocketServer:
                         "expert_type": "team",
                         "team_template_id": _expert_svc.resolve_expert_group_template_id(),
                     }
-                    canonical_mode = "team"
-                    params["mode"] = "team"
+                    # 团判型按 final_work_mode 查 WorkModeProfile 注册表
+                    # 收敛 canonical（work→team / code→code.team / design→design.team）
+                    from jiuwenswarm.common.mode_profiles import (
+                        team_canonical_for_work_mode,
+                    )
 
-            is_swarm = bool(params.get("is_swarm")) or canonical_mode in {
-                "team",
-                "team.plan",
-                "code.team",
-            }
+                    canonical_mode = team_canonical_for_work_mode(final_work_mode)
+                    params["mode"] = canonical_mode
+
+            from jiuwenswarm.common.mode_matrix import TEAM_CANONICAL_MODES
+
+            is_swarm = (
+                bool(params.get("is_swarm")) or canonical_mode in TEAM_CANONICAL_MODES
+            )
             if not is_swarm:
                 mode, _, canonical_mode = resolve_agent_request_mode(
                     canonical_mode,

@@ -57,13 +57,8 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
+from jiuwenswarm.common.mode_profiles import member_profile_for_canonical
 
-# Modes that route to the code adapter and get the code member profile.
-_CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
-# Modes that route to the design adapter and get the design member profile.
-# design 派生自 code：rails 通过继承 CodeAgentModeRail 复用 plan 兜底，仅
-# system prompt 与 plan 提示词是 design 专属的全新内容。
-_DESIGN_MODES: frozenset[str] = frozenset({"design", "design.normal", "design.plan"})
 logger = logging.getLogger(__name__)
 
 
@@ -192,18 +187,23 @@ _DEFAULT_SUBAGENT_MAX_ITERATIONS = 15
 
 
 def _is_code_mode(mode: str) -> bool:
-    """Return whether *mode* routes to the code member profile."""
-    return mode in _CODE_MODES
+    """Return whether *mode* routes to the code member profile.
+
+    查 WorkModeProfile 注册表（``code.team`` / ``team.plan`` → code），
+    不再维护本地字面量集合。
+    """
+    return member_profile_for_canonical(mode) == "code"
 
 
 def _is_design_mode(mode: str) -> bool:
     """Return whether *mode* routes to the design member profile.
 
-    design 模式派生自 code：复用 code 的 rails/tools 装配（通过
-    ``DesignAgentModeRail(CodeAgentModeRail)`` 继承），但 system prompt 走
-    design 专属的 ``build_design_system_prompt``，对齐 WorkBuddy 设计模式。
+    查 WorkModeProfile 注册表（``design`` / ``design.normal`` / ``design.plan``
+    / ``design.team`` → design）。design 派生自 code：复用 code 的 rails/tools
+    装配（通过 ``DesignAgentModeRail(CodeAgentModeRail)`` 继承），但 system
+    prompt 走 design 专属的 ``build_design_system_prompt``，对齐 WorkBuddy 设计模式。
     """
-    return mode in _DESIGN_MODES
+    return member_profile_for_canonical(mode) == "design"
 
 
 def _resolve_member_skills(config: dict[str, Any], role: str) -> list[str]:

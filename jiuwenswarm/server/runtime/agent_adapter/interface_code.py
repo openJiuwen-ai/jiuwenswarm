@@ -51,6 +51,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_kv_cache_affinity_config,
     parse_int,
 )
+from jiuwenswarm.server.runtime.agent_adapter.assembly_hooks import (
+    AssemblyPoint,
+    run_assembly_hooks,
+)
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     apply_permission_trusted_dirs,
     build_permission_rail,
@@ -555,6 +559,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
 
+        # 装配生命周期点位：实例重建前的扩展状态重置（专家旧 LoadRecord
+        # 在新实例账本里是未知 id，由 expert 扩展丢弃）——code/design 与
+        # deep 骨架同一点位，修复 code 侧历史缺失（重建后专家态残留）。
+        await run_assembly_hooks(AssemblyPoint.BEFORE_INSTANCE_READY, self)
+
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，
         # 主事件循环在初始化的十几秒里保持响应，esc 的 cancel 不再堵队列、后端能尽快停。
         #
@@ -616,7 +625,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         await self._register_mcp_servers_from_config(config_base, tag="code")
         logger.info("[JiuwenSwarmCodeAdapter] 初始化完成: agent_name=%s", self._agent_name)
 
-        await self.load_user_rails()
+        # 装配生命周期点位：create 尾部扩展——packages 恢复 → 专家按 metadata
+        # 重放（仅 session 级子适配器）→ user rails。code/design 接入同一组
+        # hooks 后补齐历史三缺失：专家状态重置（上方 BEFORE_INSTANCE_READY）、
+        # 专家重放、packages 恢复。
+        await run_assembly_hooks(AssemblyPoint.AFTER_INSTANCE_READY, self)
 
     # ─── Rails 构建 ──────────────────────────
 

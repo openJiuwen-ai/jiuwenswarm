@@ -1146,7 +1146,9 @@ class JiuWenSwarm:
         _request_debug = False
         _dbg_mode = params.get("mode")
         _dbg_mode_s = _dbg_mode.strip().lower() if isinstance(_dbg_mode, str) else ""
-        if not (params.get("team") or _dbg_mode_s in {"team", "team.plan", "code.team"}):
+        from jiuwenswarm.common.mode_matrix import is_team_mode as _is_team_canonical
+
+        if not (params.get("team") or _is_team_canonical(_dbg_mode_s)):
             if isinstance(query, str):
                 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
                 query, _request_debug = strip_debug_directive(query)
@@ -2360,8 +2362,10 @@ class JiuWenSwarm:
 
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
         team_flag = request.params.get("team", False) if isinstance(request.params, dict) else False
+        from jiuwenswarm.common.mode_matrix import is_team_mode as _is_team_canonical
+
         is_team_mode = team_flag or (
-            isinstance(mode, str) and mode.strip().lower() in {"team", "team.plan", "code.team"}
+            isinstance(mode, str) and _is_team_canonical(mode.strip().lower())
         )
         is_auto_harness_resume = (
             isinstance(mode, str)

@@ -347,6 +347,68 @@ async def test_unload_team_busy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("work_mode", "expected_mode"),
+    [
+        ("work", "team"),
+        ("code", "code.team"),
+        ("design", "design.team"),
+    ],
+)
+async def test_load_team_canonical_follows_work_mode(
+        server, local_source: Path, metadata_store: dict, team_runtime,
+        work_mode: str, expected_mode: str,
+) -> None:
+    """装团按会话 work_mode 查 WorkModeProfile 注册表收敛 canonical。"""
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": "",
+        "expert_type": "agent",
+        "work_mode": work_mode,
+    }
+    ws = FakeWebSocket()
+    await server._handle_expert_load(
+        ws,
+        _request(ReqMethod.EXPERT_LOAD, {"session_id": "s1", "expert_id": GROUP_ID}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is True
+    assert metadata_store["s1"]["mode"] == expected_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("work_mode", "team_mode", "expected_restore"),
+    [
+        ("work", "team", "agent"),
+        ("code", "code.team", "code.normal"),
+        ("design", "design.team", "design"),
+    ],
+)
+async def test_unload_team_restores_single_canonical_by_work_mode(
+        server, metadata_store: dict, team_runtime,
+        work_mode: str, team_mode: str, expected_restore: str,
+) -> None:
+    """退团按会话 work_mode 恢复单 agent canonical（修 code/design 降级缺陷）。"""
+    metadata_store["s1"] = {
+        "session_id": "s1",
+        "expert_id": GROUP_ID,
+        "expert_type": "team",
+        "team_name": "expert-group-x-s1",
+        "team_template_id": "expert_group",
+        "mode": team_mode,
+        "work_mode": work_mode,
+    }
+    ws = FakeWebSocket()
+    await server._handle_expert_unload(
+        ws, _request(ReqMethod.EXPERT_UNLOAD, {"session_id": "s1"}), asyncio.Lock()
+    )
+    assert ws.sent[0]["ok"] is True
+    assert metadata_store["s1"]["mode"] == expected_restore
+
+
+@pytest.mark.asyncio
 async def test_replay_skips_team_expert(
         metadata_store: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -463,3 +525,42 @@ def test_build_team_name_no_underscore_id() -> None:
     assert build_expert_group_team_name("grp", "plain-session-id-123") == (
         "expert-group-grp-plain-se"
     )
+
+
+@pytest.mark.parametrize(
+    ("metadata_mode", "expected_manager_mode"),
+    [
+        ("agent", "agent"),
+        ("code.normal", "code"),
+        ("code.plan", "code"),
+        ("design", "design"),
+        ("team", "team"),
+        ("code.team", "code"),
+        ("design.team", "design"),
+        ("team.plan", "code"),
+        # 未知值原样透传（保持旧行为）
+        ("mystery.mode", "mystery.mode"),
+    ],
+)
+def test_locate_session_adapter_converts_canonical_to_manager_mode(
+        metadata_mode: str, expected_manager_mode: str
+) -> None:
+    """回归：metadata 存 canonical（code.normal），AgentManager 按 manager mode 注册。
+
+    修复前 code 会话拿 canonical 直查命中失败 → expert.unload 退化为
+    「只清 metadata 不碰活实例」，活实例提示词卸不掉。
+    """
+    from jiuwenswarm.server.runtime.expert.expert_service import ExpertService
+
+    captured: dict = {}
+
+    class _AM:
+        def get_agent_nowait(
+                self, channel_id="", mode=None, project_dir=None, sub_mode=None
+        ):
+            captured["mode"] = mode
+            return None
+
+    svc = ExpertService(agent_manager=_AM(), adapter_resolver=lambda agent: None)
+    svc._locate_session_adapter("desktop", "s1", mode=metadata_mode)
+    assert captured["mode"] == expected_manager_mode

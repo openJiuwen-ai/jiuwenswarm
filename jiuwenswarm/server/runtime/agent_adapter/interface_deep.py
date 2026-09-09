@@ -166,6 +166,10 @@ from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.agents.harness.common.rails.cspl import CsplConfig, CsplSentinelRail
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
+from jiuwenswarm.server.runtime.agent_adapter.assembly_hooks import (
+    AssemblyPoint,
+    run_assembly_hooks,
+)
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
@@ -5841,10 +5845,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
 
-        # 实例重建：旧 LoadRecord 在新实例的 _load_records 账本里是未知 id
-        # （卸载会静默 no-op），必须丢弃；专家由入口 create_instance() 按 metadata 重放
-        self._expert_load_record = None
-        self._current_expert_id = None
+        # 装配生命周期点位：实例重建前的扩展状态重置
+        # （专家旧 LoadRecord 在新实例账本里是未知 id，由 expert 扩展丢弃）
+        await run_assembly_hooks(AssemblyPoint.BEFORE_INSTANCE_READY, self)
 
         await asyncio.sleep(0)
         await self._instance.ensure_initialized()
@@ -5871,17 +5874,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             "[JiuWenSwarmDeepAdapter] 初始化完成: agent_name=%s, mode=%s, sub_mode=%s", self._agent_name, mode, sub_mode
         )
 
-        # 加载已激活的 packages（skills, rails, tools）
-        await self._load_active_packages()
+        # 装配生命周期点位：create 尾部扩展——packages 恢复 → 专家按
+        # metadata 重放（仅 session 级子适配器，root 不装专家）→ user rails。
+        # 扩展实现与执行序见 assembly_hooks.register_builtin_assembly_extensions。
         await asyncio.sleep(0)
-
-        # 专家（仅 session 级子适配器）：按 session metadata 重放，
-        # 保证驱逐重建/首次装配后人设不丢（root 不装专家）
-        if self._is_session_scoped_adapter and self._parent_session_id:
-            await self._replay_expert_from_metadata()
-
-        # 动态加载用户自定义的 Rail 扩展
-        await self.load_user_rails()
+        await run_assembly_hooks(AssemblyPoint.AFTER_INSTANCE_READY, self)
 
     def _schedule_project_gitignore_agent_history(self, project_dir: str | None) -> None:
         """后台执行 .gitignore housekeeping，绝不阻塞实例创建.
@@ -6196,8 +6193,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         finally:
             self._restore_omitted_reload_fields(deep_cfg, omitted_fields)
         if "system_prompt" not in omitted_fields:
+            # 装配生命周期点位：prompt 重建后扩展重挂（专家按当前绑定重挂）
             self._install_structured_static_prompt_sections()
-            await self._reapply_expert_after_prompt_rebuild()
+            await run_assembly_hooks(AssemblyPoint.AFTER_PROMPT_REBUILD, self)
         self._commit_reload_fingerprints(reload_fingerprints)
         self._sync_active_evolution_review_agent_after_reload()
 
@@ -9611,7 +9609,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         # 专家团 mode 防御：已绑定专家团的会话只接受 team 系 mode，
         # 显式报错、不静默改道（避免干扰 code.*/plan 组合语义）。
-        if mode not in ("team", "team.plan", "code.team"):
+        from jiuwenswarm.common.mode_matrix import is_team_mode as _is_team_canonical
+
+        if not _is_team_canonical(mode):
             from jiuwenswarm.server.runtime.session.session_metadata import (
                 get_session_metadata,
             )
@@ -9633,7 +9633,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 return
 
         # Team 模式处理
-        if mode in ("team", "team.plan", "code.team"):
+        if _is_team_canonical(mode):
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import process_team_message_stream
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(

@@ -1165,7 +1165,9 @@ def remove_team_mode_session_dirs_at_startup() -> None:
         if not isinstance(raw, dict):
             continue
         mode = str(raw.get("mode") or "").strip().lower()
-        if mode not in {"team", "team.plan", "code.team"}:
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+
+        if not is_team_mode(mode):
             continue
         if not bool(raw.get("temporary_team_session") or raw.get("team_temporary")):
             continue

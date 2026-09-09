@@ -50,12 +50,12 @@ def test_web_composition_plan_flag(mode, work_mode, expected_plan):
     assert resolved.is_team is False
 
 
-@pytest.mark.parametrize("work_mode", ["work", "code"])
-def test_web_team_is_not_composable(work_mode):
-    """集群不参与组合：``work_mode`` 不得改变集群的 Adapter 选型。
+@pytest.mark.parametrize("work_mode", ["work"])
+def test_web_team_work_mode_unchanged(work_mode):
+    """work 桶的集群请求保持历史解析（逐字节不变）。
 
-    Web 集群必须与改造前完全一致——``team`` 走历史解析，manager_mode 保持
-    ``team``（即 DeepAdapter），不会因为 ``work_mode=code`` 变成 ``code.team``。
+    mode=team + code/design work_mode 才组合出 code.team/design.team；
+    work 桶（及无 work_mode 的历史客户端）行为与改造前完全一致。
     """
     resolved = _resolve({"mode": "team", "work_mode": work_mode})
 
@@ -65,6 +65,22 @@ def test_web_team_is_not_composable(work_mode):
         None,
         "team",
     )
+    assert resolved.is_team is True
+
+
+@pytest.mark.parametrize(
+    ("work_mode", "expected"),
+    [
+        ("code", ("code", "team", "code.team")),
+        ("design", ("design", "team", "design.team")),
+    ],
+)
+def test_web_team_composes_with_code_design_work_mode(work_mode, expected):
+    """Web 集群 mode=team + code/design work_mode → 注册表组合团队 canonical。"""
+    resolved = _resolve({"mode": "team", "work_mode": work_mode})
+
+    assert resolved.from_web_composition is False
+    assert (resolved.manager_mode, resolved.sub_mode, resolved.canonical_mode) == expected
     assert resolved.is_team is True
 
 

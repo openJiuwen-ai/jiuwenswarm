@@ -467,7 +467,7 @@ async def _run_interactive_loop(
     # chat.final but the team keeps working (creating workflows, delegating
     # to members, etc.). Only chat.processing_status(is_processing=False)
     # or team.error should terminate the CLI stream.
-    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team")
+    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team", "design.team")
     # When the team leader replies with text but creates no tasks (e.g. a
     # simple greeting), the server's team-completion logic never fires
     # (is_team_completed() returns None for zero tasks), so the stream
@@ -938,7 +938,7 @@ async def _run_jsonl_loop(
     renderer: JsonlRenderer,
     request: dict,
 ) -> int:
-    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team")
+    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team", "design.team")
     await client.send_request(request)
     while True:
         data = await client.recv()
@@ -973,7 +973,7 @@ async def _run_json_loop(
     renderer: JsonRenderer,
     request: dict,
 ) -> int:
-    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team")
+    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team", "design.team")
     await client.send_request(request)
     has_error = False
     while True:
@@ -1085,7 +1085,7 @@ def run_chat(args: argparse.Namespace) -> int:
     if error is not None:
         return error
 
-    is_team_mode = args.mode in ("team", "team.plan", "code.team")
+    is_team_mode = args.mode in ("team", "team.plan", "code.team", "design.team")
     supports_user_interaction = False
 
     if args.prompt:

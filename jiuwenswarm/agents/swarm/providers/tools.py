@@ -101,9 +101,6 @@ IMAGE_GEN = "swarm.image_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
 SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
-_CODE_MODES = frozenset({"code.team", "team.plan"})
-# design 派生自 code：技能发现逻辑与 code 一致（扫用户运行时技能目录）。
-_DESIGN_MODES = frozenset({"design", "design.normal", "design.plan"})
 
 # xiaoyi phone tool objects, gated by ``channels.xiaoyi.phone_tools_enabled``.
 _XIAOYI_PHONE_TOOLS = (
@@ -217,7 +214,11 @@ def _list_skill_dirs_for_context(ctx: SwarmBuildContext) -> list[str]:
 
 def visible_skill_names_for_list_skill(ctx: SwarmBuildContext) -> set[str]:
     """Return the skill names that the matching SkillUseRail would expose."""
-    if ctx.mode in _CODE_MODES or ctx.mode in _DESIGN_MODES:
+    from jiuwenswarm.common.mode_profiles import member_profile_for_canonical
+
+    # code/design 成员 profile（注册表查表，含 design.team）：
+    # 技能发现逻辑与 code 一致（扫用户运行时技能目录）。
+    if member_profile_for_canonical(ctx.mode) in ("code", "design"):
         from jiuwenswarm.common.utils import get_agent_skills_dir
         from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
