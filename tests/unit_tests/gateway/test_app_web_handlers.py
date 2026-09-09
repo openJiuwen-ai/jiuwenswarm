@@ -158,6 +158,32 @@ async def test_vendors_fetch_models_applies_alibaba_allowlist(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_vendors_fetch_models_applies_baidu_token_plan_allowlist(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *args, **kwargs: _FakeModelsResponse(
+            ["ernie-5.1", "glm-5.2", "deepseek-v4-flash", "unrelated-model"]
+        ),
+    )
+
+    await channel.methods["vendors.fetch_models"](
+        object(),
+        "req-fetch-baidu-models",
+        {"vendor_key": "baidu", "plan": "token_plan", "api_key": "secret"},
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"] == {
+        "models": ["glm-5.2", "deepseek-v4-flash"],
+        "source": "remote",
+    }
+
+
+@pytest.mark.asyncio
 async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(monkeypatch):
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))

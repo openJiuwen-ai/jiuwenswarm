@@ -72,6 +72,22 @@ def test_modelarts_presets_use_current_v2_model_ids() -> None:
     assert "pangu-large" not in custom_api.model_options
 
 
+def test_baidu_token_plan_uses_shared_models_endpoint() -> None:
+    preset = get_preset("baidu", PlanKind.TOKEN_PLAN)
+
+    assert preset is not None
+    assert preset.api_base == "https://qianfan.baidubce.com/v2/tokenplan/personal"
+    assert preset.models_endpoint == "https://qianfan.baidubce.com/v2/models"
+    assert preset.default_model == "glm-5.2"
+    assert preset.model_options == (
+        "glm-5.2",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "kimi-k2.6",
+    )
+    assert "ernie-5.1" not in preset.model_options
+
+
 def test_alibaba_custom_api_uses_curated_verified_model_allowlist() -> None:
     preset = get_preset("alibaba", PlanKind.CUSTOM_API)
 
