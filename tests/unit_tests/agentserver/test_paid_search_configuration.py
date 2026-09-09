@@ -4,7 +4,7 @@
 
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 from weakref import WeakSet
 
 import pytest
@@ -43,18 +43,18 @@ def test_reload_refreshes_provider_metadata_and_removes_disabled_tool(monkeypatc
     monkeypatch.setattr(interface_deep, "register_tool", lambda tool, owner: registered.update({tool.card.name: tool}))
     monkeypatch.setattr(interface_deep, "unregister_tool", lambda tool: registered.pop(tool.card.name, None))
 
-    adapter._sync_paid_search_tool_for_runtime()
+    adapter.refresh_paid_search_tool_for_runtime()
     assert adapter._paid_search_tool is None
     monkeypatch.setenv("BOCHA_API_KEY", "test-key")
-    adapter._sync_paid_search_tool_for_runtime()
+    adapter.refresh_paid_search_tool_for_runtime()
     first = adapter._paid_search_tool
     assert cards["paid_search"].input_params["properties"]["provider"]["enum"] == ["auto", "bocha"]
 
-    adapter._sync_paid_search_tool_for_runtime()
+    adapter.refresh_paid_search_tool_for_runtime()
     assert adapter._paid_search_tool is first
     monkeypatch.setenv("BOCHA_API_KEY", " \t ")
     monkeypatch.setenv("SERPER_API_KEY", "test-key")
-    adapter._sync_paid_search_tool_for_runtime()
+    adapter.refresh_paid_search_tool_for_runtime()
     assert adapter._paid_search_tool is not first
     assert adapter._paid_search_tool.card.id == first.card.id
     assert cards["paid_search"].input_params["properties"]["provider"]["enum"] == ["auto", "serper"]
@@ -63,21 +63,34 @@ def test_reload_refreshes_provider_metadata_and_removes_disabled_tool(monkeypatc
     assert registered["paid_search"] is adapter._paid_search_tool
 
     monkeypatch.setenv("SERPER_API_KEY", "")
-    adapter._sync_paid_search_tool_for_runtime()
+    adapter.refresh_paid_search_tool_for_runtime()
     assert not adapter._paid_search_registered
     assert adapter._paid_search_tool is None
     assert adapter._tool_cards == []
     assert cards == registered == {}
 
 
+@pytest.mark.parametrize("adapter_class", [JiuWenSwarmDeepAdapter, JiuwenSwarmCodeAdapter])
+def test_paid_search_refresh_skips_uninitialized_runtime(adapter_class):
+    adapter = object.__new__(adapter_class)
+    adapter._instance = None
+    adapter._sync_paid_search_tool_for_runtime = MagicMock()
+
+    adapter.refresh_paid_search_tool_for_runtime()
+
+    adapter._sync_paid_search_tool_for_runtime.assert_not_called()
+    assert adapter._instance is None
+
+
 def test_code_mode_with_paid_search_disabled_stays_disabled(monkeypatch):
     adapter = object.__new__(JiuwenSwarmCodeAdapter)
+    adapter._instance = object()
     adapter._paid_search_tool = None
     adapter._paid_search_registered = False
     adapter._active_code_config = lambda: {"modes": {"code": {"tools": []}}}
     adapter._tool_owner_id = lambda: "test-owner"
     monkeypatch.setenv("BOCHA_API_KEY", "test-key")
-    adapter._sync_paid_search_tool_for_runtime()
+    adapter.refresh_paid_search_tool_for_runtime()
     assert adapter._paid_search_tool is None
     assert not adapter._paid_search_registered
 
@@ -202,15 +215,36 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scopes", [None, {"search"}])
+@pytest.mark.parametrize("scopes", [None, set(), {"search"}, {"search", "model"}])
 async def test_search_reload_updates_active_sessions_before_lazy_full_reload(scopes):
     root = object.__new__(JiuWenSwarmDeepAdapter)
     root._is_session_scoped_adapter = False
-    live = SimpleNamespace(_instance=object(), _sync_paid_search_tool_for_runtime=MagicMock())
-    idle = SimpleNamespace(_instance=None, _sync_paid_search_tool_for_runtime=MagicMock())
-    root._session_adapters = {"live": live, "idle": idle}
-    root._mark_session_adapters_stale_for_reload = MagicMock()
+    calls = MagicMock()
+    root._session_adapters = {
+        "first": SimpleNamespace(refresh_paid_search_tool_for_runtime=calls.refresh_first),
+        "second": SimpleNamespace(refresh_paid_search_tool_for_runtime=calls.refresh_second),
+    }
+    root._mark_session_adapters_stale_for_reload = calls.mark_stale
     await root._fan_out_reload_to_session_adapters({}, {}, None, scopes)
-    live._sync_paid_search_tool_for_runtime.assert_called_once()
-    idle._sync_paid_search_tool_for_runtime.assert_not_called()
+    assert calls.mock_calls == [
+        call.refresh_first(),
+        call.refresh_second(),
+        call.mark_stale({}, {}, scopes),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scopes", [{"model"}, {"multimodal"}])
+async def test_unrelated_reload_does_not_refresh_session_paid_search(scopes):
+    root = object.__new__(JiuWenSwarmDeepAdapter)
+    root._is_session_scoped_adapter = False
+    refresh = MagicMock()
+    root._session_adapters = {
+        "session": SimpleNamespace(refresh_paid_search_tool_for_runtime=refresh),
+    }
+    root._mark_session_adapters_stale_for_reload = MagicMock()
+
+    await root._fan_out_reload_to_session_adapters({}, {}, None, scopes)
+
+    refresh.assert_not_called()
     root._mark_session_adapters_stale_for_reload.assert_called_once_with({}, {}, scopes)

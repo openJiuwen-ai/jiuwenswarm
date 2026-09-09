@@ -5144,6 +5144,11 @@ class JiuWenSwarmDeepAdapter:
         self._paid_search_tool = None
         self._paid_search_registered = False
 
+    def refresh_paid_search_tool_for_runtime(self) -> None:
+        """Refresh paid search on a live adapter without creating its runtime."""
+        if self._instance is not None:
+            self._sync_paid_search_tool_for_runtime()
+
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid-search tool registration after config reload."""
         self._invalidate_stale_paid_search_tool()
@@ -8562,8 +8567,7 @@ class JiuWenSwarmDeepAdapter:
                 # Refresh the small tool surface now, including running sessions;
                 # the full agent/model reload remains lazy at the request boundary.
                 for _, adapter in self._iter_session_adapters_for_reload(None):
-                    if adapter._instance is not None:
-                        adapter._sync_paid_search_tool_for_runtime()
+                    adapter.refresh_paid_search_tool_for_runtime()
             self._mark_session_adapters_stale_for_reload(
                 config_base,
                 env_overrides,

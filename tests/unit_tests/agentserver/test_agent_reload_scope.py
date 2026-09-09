@@ -63,6 +63,9 @@ class FakeAgent:
     def persist_skill_retrieval_session_profile(self) -> None:
         """Match the child adapter's public profile persistence hook."""
 
+    def refresh_paid_search_tool_for_runtime(self) -> None:
+        """Match the child adapter's public paid-search refresh hook."""
+
 
 class FailingReloadAgent(FakeAgent):
     async def reload_agent_config(self, *args, **kwargs):
