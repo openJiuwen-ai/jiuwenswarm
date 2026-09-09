@@ -5129,8 +5129,24 @@ class JiuWenSwarmDeepAdapter:
             warn_label="generate_visual tool",
         )
 
+    def _invalidate_stale_paid_search_tool(self) -> None:
+        """Re-register paid search when its configured-provider metadata changes."""
+        if self._paid_search_tool is None or not self._paid_search_registered:
+            return
+        current = self._paid_search_tool.card
+        updated = WebPaidSearchTool(
+            language=self._resolve_runtime_language(), agent_id=self._tool_owner_id()
+        ).card
+        if current.description == updated.description and current.input_params == updated.input_params:
+            return
+        self._remove_registered_tools([self._paid_search_tool])
+        self._prune_tool_cards({current.name})
+        self._paid_search_tool = None
+        self._paid_search_registered = False
+
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid-search tool registration after config reload."""
+        self._invalidate_stale_paid_search_tool()
         # The owner id, not ``card.id``; see ``_sync_multimodal_tools_for_runtime``.
         agent_id = self._tool_owner_id()
         tools, self._paid_search_registered = self._sync_tool_group(
@@ -8542,6 +8558,12 @@ class JiuWenSwarmDeepAdapter:
         if self._is_session_scoped_adapter:
             return
         if not target_sid:
+            if not reload_scopes or "search" in reload_scopes:
+                # Refresh the small tool surface now, including running sessions;
+                # the full agent/model reload remains lazy at the request boundary.
+                for _, adapter in self._iter_session_adapters_for_reload(None):
+                    if adapter._instance is not None:
+                        adapter._sync_paid_search_tool_for_runtime()
             self._mark_session_adapters_stale_for_reload(
                 config_base,
                 env_overrides,

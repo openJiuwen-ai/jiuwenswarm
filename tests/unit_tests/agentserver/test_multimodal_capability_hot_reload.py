@@ -97,6 +97,40 @@ def test_multimodal_switch_hot_reload_registers_and_removes_vision_tools(
     assert native_config.enable_read_image_multimodal is None
 
 
+def test_multimodal_reload_preserves_video_and_visual_generation_groups(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._video_gen_model_config = {"api_key": "test-key"}
+    adapter._visual_gen_model_config = {"api_key": "test-key"}
+    sync_groups = MagicMock(
+        side_effect=lambda **kwargs: (kwargs["current_tools"], kwargs["enabled"])
+    )
+    monkeypatch.setattr(adapter, "_sync_tool_group", sync_groups)
+    monkeypatch.setattr(adapter, "_iter_runtime_audio_tools", lambda _agent_id: [])
+
+    adapter._sync_multimodal_tools_for_runtime()
+
+    groups = {
+        call.kwargs["warn_label"]: call.kwargs
+        for call in sync_groups.call_args_list
+    }
+    assert [tool.card.name for tool in groups["generate_video tools"]["current_tools"]] == [
+        "generate_video", "check_video_status",
+    ]
+    assert [tool.card.name for tool in groups["generate_visual tool"]["current_tools"]] == [
+        "generate_visual",
+    ]
+    assert adapter._video_gen_tool_registered is True
+    assert adapter._visual_gen_tool_registered is True
+
+    adapter._video_gen_model_config = None
+    adapter._visual_gen_model_config = None
+    adapter._sync_multimodal_tools_for_runtime()
+    assert adapter._video_gen_tool_registered is False
+    assert adapter._visual_gen_tool_registered is False
+
+
 def test_native_image_auto_uses_probe_cache_independently_of_vision_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

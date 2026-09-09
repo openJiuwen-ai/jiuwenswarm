@@ -127,6 +127,9 @@ logger = logging.getLogger(__name__)
 
 
 _WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
+_SEARCH_RELOAD_ENV_KEYS = {
+    "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
+}
 _MODEL_RELOAD_ENV_KEYS = {
     "MODEL_PROVIDER",
     "MODEL_NAME",
@@ -188,6 +191,8 @@ class _ConfigChangeSet:
             scopes.add("model")
         if _MULTIMODAL_RELOAD_ENV_KEYS & set(self.env_updates):
             scopes.add("multimodal")
+        if _SEARCH_RELOAD_ENV_KEYS & set(self.env_updates):
+            scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
             if key_text == "skill_retrieval_index_recommendation_shown":
