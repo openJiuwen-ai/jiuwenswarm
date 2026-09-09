@@ -99,3 +99,28 @@ def test_alibaba_custom_api_uses_curated_verified_model_allowlist() -> None:
     } <= set(preset.model_options)
     assert "qwen-turbo-0919" not in preset.model_options
     assert all("/" not in model_id for model_id in preset.model_options)
+
+
+def test_only_zhipu_anthropic_is_disabled() -> None:
+    payload = to_frontend_payload()
+
+    for plan in (PlanKind.CODING_PLAN, PlanKind.CUSTOM_API):
+        zhipu = get_preset("zhipu", plan)
+        assert zhipu is not None
+        assert zhipu.anthropic_base is None
+
+        frontend_zhipu = next(
+            item for item in payload[plan.value] if item["vendor_key"] == "zhipu"
+        )
+        assert frontend_zhipu["supports_anthropic"] is False
+        assert frontend_zhipu["anthropic_base"] is None
+
+    # Other vendors that support Anthropic must remain available.
+    for vendor, plan in (
+        ("alibaba", PlanKind.CODING_PLAN),
+        ("alibaba", PlanKind.CUSTOM_API),
+        ("minimax", PlanKind.CUSTOM_API),
+    ):
+        preset = get_preset(vendor, plan)
+        assert preset is not None
+        assert preset.anthropic_base
