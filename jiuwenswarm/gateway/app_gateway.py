@@ -1647,14 +1647,13 @@ async def _run_with_telemetry(
         ):
             gateway_storage_ctx = await setup_gateway_storage_repositories(full_cfg)
             if gateway_storage_ctx is not None:
-                if not is_enterprise():
-                    from jiuwenswarm.gateway.storage_assembly import (
-                        create_a2a_outbound_repository,
-                    )
+                from jiuwenswarm.gateway.storage_assembly import (
+                    create_a2a_outbound_repository,
+                )
 
-                    a2a_outbound_repository = create_a2a_outbound_repository(
-                        await gateway_storage_ctx.persistent()
-                    )
+                a2a_outbound_repository = create_a2a_outbound_repository(
+                    await gateway_storage_ctx.persistent()
+                )
                 wired: list[str] = []
                 if is_session_map_repository_enabled(full_cfg):
                     wired.append("session_map")

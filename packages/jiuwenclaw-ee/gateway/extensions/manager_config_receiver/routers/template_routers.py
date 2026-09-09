@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from ..core.template.a2a_access_policy_template import A2AAccessPolicyTemplateService
+from ..core.template.a2a_outbound_template import A2AOutboundTemplateService
 from ..core.template.agent_template import AgentTemplateService
 from ..core.template.embedding_template import EmbeddingTemplateService
 from ..core.template.extension_config_template import ExtensionConfigTemplateService
@@ -18,16 +20,20 @@ from ..core.template.skill_prebuilt_template import SkillPrebuiltTemplateService
 from ..schemas.common_schemas import ResponseModel
 from ..schemas.sync_schemas import SyncEnvelopeOnlyBody, make_sync_body
 from ..schemas.template_schemas import (
+    A2AAccessPolicyTemplateCreateRequest,
+    A2AAccessPolicyTemplateUpdateRequest,
+    A2AOutboundTemplateCreateRequest,
+    A2AOutboundTemplateUpdateRequest,
     AgentTemplateCreateRequest,
     AgentTemplateUpdateRequest,
     EmbeddingTemplateCreateRequest,
     EmbeddingTemplateUpdateRequest,
     ExtensionConfigTemplateCreateRequest,
     ExtensionConfigTemplateUpdateRequest,
-    ModelTemplateCreateRequest,
-    ModelTemplateUpdateRequest,
     McpTemplateCreateRequest,
     McpTemplateUpdateRequest,
+    ModelTemplateCreateRequest,
+    ModelTemplateUpdateRequest,
     PermissionsTemplateCreateRequest,
     PermissionsTemplateUpdateRequest,
     SkillPrebuiltTemplateCreateRequest,
@@ -47,6 +53,22 @@ def _http_exc(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
 
 
+def _require_secure_a2a_credential_transport(
+    request: Request,
+    tag: str,
+    business: dict[str, Any],
+) -> None:
+    credential = business.get("credential")
+    # G.CTL.03: if 内布尔条件不超过 3 个，isinstance 判断前置
+    if tag != "a2a_outbound" or not isinstance(credential, dict):
+        return
+    if credential.get("operation") == "replace" and request.url.scheme.lower() != "https":
+        raise HTTPException(
+            status_code=400,
+            detail="A2A credentials may only be synchronized over HTTPS",
+        )
+
+
 def _add_template_crud(
     path: str,
     svc_factory: _ServiceFactory,
@@ -62,6 +84,7 @@ def _add_template_crud(
         body: Any,
     ):
         sync = await build_sync_context(body, request.method)
+        _require_secure_a2a_credential_transport(request, tag, sync.business)
         try:
             result = await svc_factory().create(
                 sync.business
@@ -79,6 +102,7 @@ def _add_template_crud(
         body: Any,
     ):
         sync = await build_sync_context(body, request.method)
+        _require_secure_a2a_credential_transport(request, tag, sync.business)
         try:
             await svc_factory().update(
                 template_id, sync.business
@@ -128,6 +152,20 @@ def _add_template_crud(
     )
 
 
+_add_template_crud(
+    "/a2a-outbound-templates",
+    A2AOutboundTemplateService,
+    "a2a_outbound",
+    A2AOutboundTemplateCreateRequest,
+    A2AOutboundTemplateUpdateRequest,
+)
+_add_template_crud(
+    "/a2a-access-policies",
+    A2AAccessPolicyTemplateService,
+    "a2a_access_policy",
+    A2AAccessPolicyTemplateCreateRequest,
+    A2AAccessPolicyTemplateUpdateRequest,
+)
 _add_template_crud(
     "/model-templates",
     ModelTemplateService,

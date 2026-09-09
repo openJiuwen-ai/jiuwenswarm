@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import re
-from typing import Annotated, Any
-from urllib.parse import urlparse
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from urllib.parse import unquote, urlparse, urlsplit
 
 from croniter import croniter
 from pydantic import (
@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    field_validator,
     model_validator,
 )
 
@@ -76,6 +77,34 @@ OptionalSkillSourceUrl = Annotated[
     str | None,
     BeforeValidator(_optional_skill_source_url),
 ]
+
+
+def _validate_a2a_card_path(value: str) -> str:
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        raise ValueError("must be an absolute same-origin path")
+    parsed = urlsplit(value)
+    decoded = unquote(parsed.path)
+    # G.CTL.03: if 内布尔条件不超过 3 个
+    if parsed.scheme or parsed.netloc or parsed.query:
+        raise ValueError("must not contain a scheme, host, query, or fragment")
+    if parsed.fragment:
+        raise ValueError("must not contain a scheme, host, query, or fragment")
+    if decoded.startswith("//") or "\\" in decoded or ".." in decoded.split("/"):
+        raise ValueError("must remain a same-origin path")
+    return value
+
+
+A2ASourceUrl = Annotated[
+    str,
+    Field(min_length=1, max_length=2048),
+    AfterValidator(_validate_http_url),
+]
+A2ACardPath = Annotated[
+    str,
+    Field(min_length=1, max_length=512),
+    AfterValidator(_validate_a2a_card_path),
+]
+TemplateId = Annotated[str, Field(min_length=1, max_length=100)]
 
 
 class HookConfig(BaseModel):
@@ -280,3 +309,112 @@ class AgentTemplateCreateRequest(AgentTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     template_ref: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class A2ACredentialOperation(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    operation: Literal["keep", "replace", "clear"]
+    value: str | None = Field(default=None, max_length=4096)
+
+    @model_validator(mode="after")
+    def _validate_operation(self) -> A2ACredentialOperation:
+        if self.operation == "replace":
+            if not self.value:
+                raise ValueError("credential.value is required for replace")
+            if self.value.startswith("ENC:v1:"):
+                raise ValueError("encrypted credential envelopes are not supported")
+        elif self.value is not None:
+            raise ValueError("credential.value is only valid for replace")
+        return self
+
+
+class A2AOutboundTemplateUpdateRequest(SafeTextMixin):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    template_name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    a2a_tags: list[str] | None = None
+    source_url: A2ASourceUrl | None = None
+    card_path: A2ACardPath | None = None
+    agent_card: dict[str, Any] | None = None
+    card_fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
+    card_revision: int | None = Field(default=None, ge=1)
+    selected_interface: dict[str, Any] | None = None
+    connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    sync_wait_seconds: float | None = Field(default=None, gt=0)
+    enabled: bool | None = None
+    credential: A2ACredentialOperation | None = None
+    data: dict[str, Any] | None = None
+    updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_card_and_interface(self) -> A2AOutboundTemplateUpdateRequest:
+        if self.agent_card is not None and not str(self.agent_card.get("name") or "").strip():
+            raise ValueError("agent_card.name is required")
+        if self.selected_interface is not None:
+            protocol_binding = str(
+                self.selected_interface.get("protocol_binding") or ""
+            ).strip()
+            protocol_version = str(
+                self.selected_interface.get("protocol_version") or ""
+            ).strip()
+            if not protocol_binding:
+                raise ValueError("selected_interface.protocol_binding is required")
+            if not protocol_version:
+                raise ValueError("selected_interface.protocol_version is required")
+            interface_url = str(self.selected_interface.get("url") or "").strip()
+            if not interface_url:
+                raise ValueError("selected_interface.url is required")
+            _validate_http_url(interface_url)
+        return self
+
+
+class A2AOutboundTemplateCreateRequest(A2AOutboundTemplateUpdateRequest):
+    template_id: TemplateId
+    template_name: str = Field(..., min_length=1, max_length=128)
+    source_url: A2ASourceUrl
+    card_path: A2ACardPath
+    agent_card: dict[str, Any]
+    card_fingerprint: str = Field(..., min_length=1, max_length=128)
+    card_revision: int = Field(..., ge=1)
+    selected_interface: dict[str, Any]
+    connect_timeout_seconds: float = Field(..., gt=0)
+    sync_wait_seconds: float = Field(..., gt=0)
+    enabled: bool
+    credential: A2ACredentialOperation
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def _require_bootstrap_credential(self) -> A2AOutboundTemplateCreateRequest:
+        if self.credential.operation == "keep":
+            raise ValueError("credential keep is not valid for A2A Agent upsert")
+        return self
+
+
+class A2AAccessPolicyTemplateUpdateRequest(SafeTextMixin):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    policy_name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    mode: Literal["allowlist", "denylist"] | None = None
+    member_template_ids: list[TemplateId] | None = None
+    enabled: bool | None = None
+    revision: int | None = Field(default=None, ge=1)
+    data: dict[str, Any] | None = None
+    updated_at: datetime | None = None
+
+    @field_validator("member_template_ids")
+    @classmethod
+    def _deduplicate_members(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else list(dict.fromkeys(value))
+
+
+class A2AAccessPolicyTemplateCreateRequest(A2AAccessPolicyTemplateUpdateRequest):
+    policy_id: TemplateId
+    policy_name: str = Field(..., min_length=1, max_length=128)
+    mode: Literal["allowlist", "denylist"]
+    member_template_ids: list[TemplateId] = Field(default_factory=list)
+    enabled: bool
+    revision: int = Field(..., ge=1)
+    updated_at: datetime

@@ -569,6 +569,7 @@
     },
     "title": "A2A Control Center",
     "subtitle": "Manage the A2A service exposed by JiuwenSwarm.",
+    "enterpriseSubtitle": "View administrator-assigned A2A Agents and manage your enabled state and processing history.",
     "tabs": {
       "ariaLabel": "A2A Control Center pages",
       "config": "Ingress Configuration",
@@ -636,6 +637,8 @@
       "list": {
         "title": "Registered Agents",
         "description": "Manage availability, connection settings, and Agent Card updates.",
+        "enterpriseDescription": "Agent configuration is managed by administrators. You can choose which available Agents to enable.",
+        "enterpriseEmpty": "No A2A Agents have been assigned to this instance by an administrator",
         "empty": "No third-party Agents are registered"
       },
       "fields": {
@@ -658,6 +661,8 @@
       "registered": "The third-party Agent is registered and can now participate in outbound calls when enabled and available.",
       "enabled": "Enabled",
       "disabled": "Disabled",
+      "managerDisabled": "Disabled by administrator",
+      "userToggle": "Toggle personal enabled state",
       "enable": "Enable",
       "disable": "Disable",
       "refresh": "Refresh Card",
@@ -719,6 +724,7 @@
         "contextId": "Context ID",
         "mode": "Mode",
         "agentId": "Agent ID",
+        "agent": "Agent",
         "dispatchId": "Dispatch ID",
         "remoteTaskId": "Remote task ID",
         "startedAt": "Started",

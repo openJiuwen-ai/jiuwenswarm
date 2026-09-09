@@ -93,6 +93,7 @@ export type A2AOutboundDispatchStatus =
 export interface A2AOutboundDispatchRecord {
   dispatch_id: string;
   agent_id: string;
+  agent_name: string;
   mode: 'sync' | 'async';
   status: A2AOutboundDispatchStatus;
   remote_task_id: string | null;
@@ -260,6 +261,7 @@ export function normalizeA2AOutboundDispatchHistory(value: unknown): A2AOutbound
     items.push({
       dispatch_id: dispatchId,
       agent_id: agentId,
+      agent_name: asString(item.agent_name).trim() || agentId,
       mode: mode as 'sync' | 'async',
       status,
       remote_task_id: typeof item.remote_task_id === 'string' ? item.remote_task_id : null,

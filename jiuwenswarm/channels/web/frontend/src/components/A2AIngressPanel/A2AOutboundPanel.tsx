@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, Plus, Power, RefreshCw, Search, Server, Trash2, X } from 'lucide-react';
+import { isEnterprise } from '../../edition';
 import type { WebError } from '../../types/websocket';
 import { Switch } from '../Switch';
 import { A2AOutboundCredentialInput } from './A2AOutboundCredentialInput';
@@ -33,6 +34,7 @@ const errorMessage = (error: unknown): string => (error as WebError)?.message ||
 
 export function A2AOutboundPanel({ isConnected, request, headerActionsContainer }: Props) {
   const { t, i18n } = useTranslation();
+  const enterpriseMode = isEnterprise();
   const [url, setUrl] = useState('');
   const [discovery, setDiscovery] = useState<A2AOutboundDiscovery | null>(null);
   const [discoveryDrawerOpen, setDiscoveryDrawerOpen] = useState(false);
@@ -68,19 +70,23 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
     if (!isConnected) return;
     const generation = generationRef.current.next();
     try {
-      const [payload, rawSettings] = await Promise.all([request('a2a.outbound.list'), request('a2a.outbound.settings.get')]);
+      const [payload, rawSettings] = enterpriseMode
+        ? [await request('a2a.outbound.list'), null]
+        : await Promise.all([request('a2a.outbound.list'), request('a2a.outbound.settings.get')]);
       if (!generationRef.current.accepts(generation)) return;
       const next = normalizeA2AOutboundList(payload);
-      const settings = normalizeA2AOutboundSettings(rawSettings);
-      if (!next || !settings) throw new Error(t('a2aIngress.outbound.errors.invalidResponse'));
+      const settings = enterpriseMode ? null : normalizeA2AOutboundSettings(rawSettings);
+      if (!next || (!enterpriseMode && !settings)) throw new Error(t('a2aIngress.outbound.errors.invalidResponse'));
       setAgents(next);
-      setAllowLoopbackHttp(settings.allow_loopback_http);
-      setSavedAllowLoopbackHttp(settings.allow_loopback_http);
+      if (settings) {
+        setAllowLoopbackHttp(settings.allow_loopback_http);
+        setSavedAllowLoopbackHttp(settings.allow_loopback_http);
+      }
       setError(null);
     } catch (nextError) {
       if (generationRef.current.accepts(generation)) setError(errorMessage(nextError));
     }
-  }, [isConnected, request, t]);
+  }, [enterpriseMode, isConnected, request, t]);
 
   useEffect(() => {
     void refresh();
@@ -192,7 +198,11 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
     generationRef.current.next();
     try {
       let payload: unknown;
-      if (operation === 'toggle') payload = await request('a2a.outbound.update', { agent_id: agent.agent_id, enabled: !agent.enabled });
+      if (operation === 'toggle') {
+        payload = enterpriseMode
+          ? await request('a2a.outbound.enabled.update', { agent_id: agent.agent_id, user_enabled: !agent.user_enabled })
+          : await request('a2a.outbound.update', { agent_id: agent.agent_id, enabled: !agent.enabled });
+      }
       else if (operation === 'refresh') payload = await request('a2a.outbound.refresh', { agent_id: agent.agent_id });
       else if (operation === 'confirm' || operation === 'reject')
         payload = await request('a2a.outbound.confirm_revision', { agent_id: agent.agent_id, accept: operation === 'confirm' });
@@ -276,7 +286,7 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 pr-1">
-      {headerActionsContainer &&
+      {!enterpriseMode && headerActionsContainer &&
         createPortal(
           <button
             type="button"
@@ -305,7 +315,7 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
         </Notice>
       )}
 
-      {discoveryDrawerOpen && (
+      {!enterpriseMode && discoveryDrawerOpen && (
         <div className="fixed inset-0 z-[1400] flex justify-end bg-overlay-cron-drawer" onClick={closeDiscoveryDrawer}>
           <section
             role="dialog"
@@ -462,7 +472,9 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
               <h3 className="text-sm font-semibold text-text">{t('a2aIngress.outbound.list.title')}</h3>
               <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-text-muted">{agents.length}</span>
             </div>
-            <p className="mt-1 text-xs text-text-muted">{t('a2aIngress.outbound.list.description')}</p>
+            <p className="mt-1 text-xs text-text-muted">
+              {t(enterpriseMode ? 'a2aIngress.outbound.list.enterpriseDescription' : 'a2aIngress.outbound.list.description')}
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button type="button" className="btn secondary" onClick={() => void refresh()} disabled={!isConnected || !!busy}>
@@ -472,7 +484,9 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
           </div>
         </div>
         {agents.length === 0 ? (
-          <div className="grid min-h-0 flex-1 place-items-center px-4 py-12 text-center text-sm text-text-muted">{t('a2aIngress.outbound.list.empty')}</div>
+          <div className="grid min-h-0 flex-1 place-items-center px-4 py-12 text-center text-sm text-text-muted">
+            {t(enterpriseMode ? 'a2aIngress.outbound.list.enterpriseEmpty' : 'a2aIngress.outbound.list.empty')}
+          </div>
         ) : (
           <div className="grid min-h-0 flex-1 content-start gap-3 overflow-auto p-4">
             {agents.map(agent => {
@@ -492,29 +506,35 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                             {t(`a2aIngress.outbound.availability.${agent.availability}`)}
                           </span>
                           <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-text-muted">
-                            {agent.enabled ? t('a2aIngress.outbound.enabled') : t('a2aIngress.outbound.disabled')}
+                            {enterpriseMode && !agent.manager_enabled
+                              ? t('a2aIngress.outbound.managerDisabled')
+                              : agent.effective_enabled
+                                ? t('a2aIngress.outbound.enabled')
+                                : t('a2aIngress.outbound.disabled')}
                           </span>
                         </div>
                         <div className="mt-1 break-all font-mono text-xs text-text-muted">{agent.selected_interface.url}</div>
                       </div>
                     </div>
-                    <div className="mt-4 grid gap-3 rounded-lg border border-border bg-secondary/20 p-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className={`mt-4 grid gap-3 rounded-lg border border-border bg-secondary/20 p-3 sm:grid-cols-2 ${enterpriseMode ? 'xl:grid-cols-3' : 'xl:grid-cols-4'}`}>
                       <Value
                         label={t('a2aIngress.outbound.fields.protocol')}
                         value={`${agent.selected_interface.protocol_binding} ${agent.selected_interface.protocol_version}`}
                       />
                       <Value label={t('a2aIngress.outbound.fields.revision')} value={String(agent.card_revision)} />
-                      <Value
-                        label={t('a2aIngress.outbound.fields.credentialState')}
-                        value={agent.has_credential ? t('a2aIngress.outbound.configured') : t('a2aIngress.outbound.notConfigured')}
-                      />
+                      {!enterpriseMode && (
+                        <Value
+                          label={t('a2aIngress.outbound.fields.credentialState')}
+                          value={agent.has_credential ? t('a2aIngress.outbound.configured') : t('a2aIngress.outbound.notConfigured')}
+                        />
+                      )}
                       <Value
                         label={t('a2aIngress.outbound.fields.lastChecked')}
                         value={agent.last_checked_at ? formatTime(agent.last_checked_at, i18n.language) : '-'}
                       />
                     </div>
                     {agent.last_error_summary && <p className="mt-3 rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">{agent.last_error_summary}</p>}
-                    <div className="mt-4 border-t border-border pt-3">
+                    {!enterpriseMode && <div className="mt-4 border-t border-border pt-3">
                       <button
                         type="button"
                         className="flex w-full items-center justify-between gap-3 text-left text-sm font-medium text-text-muted hover:text-text"
@@ -575,8 +595,8 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                           </div>
                         </div>
                       )}
-                    </div>
-                    {agent.availability === 'review_required' && (
+                    </div>}
+                    {!enterpriseMode && agent.availability === 'review_required' && (
                       <div className="mt-4 rounded-lg border border-warn/30 bg-warn/10 p-3 text-sm">
                         <p>{t('a2aIngress.outbound.reviewRequired')}</p>
                         <PendingDiff agent={agent} label={t('a2aIngress.outbound.endpointChange')} />
@@ -591,25 +611,41 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                       </div>
                     )}
                   </div>
-                  <div className="flex flex-wrap justify-end gap-2 border-t border-border bg-secondary/10 px-4 py-3">
-                    <button
-                      type="button"
-                      className="btn secondary"
-                      onClick={() => void operate(agent, 'toggle')}
-                      disabled={!!busy || agent.availability === 'review_required'}
-                    >
-                      <Power size={16} />
-                      {agent.enabled ? t('a2aIngress.outbound.disable') : t('a2aIngress.outbound.enable')}
-                    </button>
-                    <button type="button" className="btn secondary" onClick={() => void operate(agent, 'refresh')} disabled={!!busy}>
-                      <RefreshCw size={16} />
-                      {t('a2aIngress.outbound.refresh')}
-                    </button>
-                    <button type="button" className="btn secondary text-danger" onClick={() => void operate(agent, 'delete')} disabled={!!busy}>
-                      <Trash2 size={16} />
-                      {t('common.delete')}
-                    </button>
-                  </div>
+                  {enterpriseMode ? (
+                    <div className="flex items-center justify-end gap-3 border-t border-border bg-secondary/10 px-4 py-3">
+                      <span className="text-sm text-text-muted">
+                        {agent.manager_enabled
+                          ? t(agent.user_enabled ? 'a2aIngress.outbound.disable' : 'a2aIngress.outbound.enable')
+                          : t('a2aIngress.outbound.managerDisabled')}
+                      </span>
+                      <Switch
+                        checked={agent.user_enabled}
+                        onChange={() => void operate(agent, 'toggle')}
+                        disabled={!isConnected || !!busy || !agent.manager_enabled}
+                        title={agent.manager_enabled ? t('a2aIngress.outbound.userToggle') : t('a2aIngress.outbound.managerDisabled')}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap justify-end gap-2 border-t border-border bg-secondary/10 px-4 py-3">
+                      <button
+                        type="button"
+                        className="btn secondary"
+                        onClick={() => void operate(agent, 'toggle')}
+                        disabled={!!busy || agent.availability === 'review_required'}
+                      >
+                        <Power size={16} />
+                        {agent.enabled ? t('a2aIngress.outbound.disable') : t('a2aIngress.outbound.enable')}
+                      </button>
+                      <button type="button" className="btn secondary" onClick={() => void operate(agent, 'refresh')} disabled={!!busy}>
+                        <RefreshCw size={16} />
+                        {t('a2aIngress.outbound.refresh')}
+                      </button>
+                      <button type="button" className="btn secondary text-danger" onClick={() => void operate(agent, 'delete')} disabled={!!busy}>
+                        <Trash2 size={16} />
+                        {t('common.delete')}
+                      </button>
+                    </div>
+                  )}
                 </article>
               );
             })}

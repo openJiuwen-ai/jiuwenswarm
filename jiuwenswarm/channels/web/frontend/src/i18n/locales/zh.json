@@ -570,6 +570,7 @@
     },
     "title": "A2A 调度中心",
     "subtitle": "管理 JiuwenSwarm 对外提供的 A2A 服务。",
+    "enterpriseSubtitle": "查看管理员分配的 A2A Agent，并管理个人启用状态和处理历史。",
     "tabs": { "ariaLabel": "A2A 调度中心页面", "config": "入站配置", "outbound": "出站配置", "history": "处理历史" },
     "enable": "启用服务",
     "enabling": "启用中...",
@@ -629,6 +630,8 @@
       "list": {
         "title": "已注册 Agent",
         "description": "管理第三方 Agent 的可用状态、连接配置和 Card 更新。",
+        "enterpriseDescription": "管理员统一维护 Agent 配置；你可以决定启用哪些可用 Agent。",
+        "enterpriseEmpty": "管理员尚未向当前实例下发 A2A Agent",
         "empty": "暂无已注册的第三方 Agent"
       },
       "fields": {
@@ -651,6 +654,8 @@
       "registered": "第三方 Agent 已注册，现在可按启用和可用状态参与出站调用。",
       "enabled": "已启用",
       "disabled": "已停用",
+      "managerDisabled": "管理员已停用",
+      "userToggle": "切换个人启用状态",
       "enable": "启用",
       "disable": "停用",
       "refresh": "刷新 Card",
@@ -709,6 +714,7 @@
         "contextId": "上下文 ID",
         "mode": "模式",
         "agentId": "Agent ID",
+        "agent": "Agent",
         "dispatchId": "派发 ID",
         "remoteTaskId": "远端任务 ID",
         "startedAt": "开始时间",

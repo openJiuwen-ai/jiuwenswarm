@@ -15,6 +15,7 @@ from ...infrastructure.repository_access import (
     require_enterprise_repository,
     require_logging_repository,
 )
+from ..template.a2a_outbound_template import A2AOutboundTemplateService
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,11 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "skill_prebuilt_template",
     "mcp_template",
     "permissions_template",
+    "a2a_outbound_template",
+    "a2a_access_policy_template",
+    "a2a_outbound_user_state",
+    "a2a_outbound_runtime_state",
+    "a2a_outbound_dispatch",
     "agent_template",
     "instance_agent_resource",
     "log_masking_rule",
@@ -59,7 +65,22 @@ async def _purge_cron_job_table() -> int:
 
 
 async def _purge_enterprise_table(table: str) -> int:
+    if table == "a2a_outbound_template":
+        return await _purge_a2a_outbound_templates()
     return await _purge_enterprise_repository(require_enterprise_repository(table))
+
+
+async def _purge_a2a_outbound_templates() -> int:
+    repo = require_enterprise_repository("a2a_outbound_template")
+    service = A2AOutboundTemplateService()
+    deleted = 0
+    for row in await repo.list(limit=_LIST_ALL_CAP):
+        template_id = str(row.get("template_id") or "").strip()
+        if not template_id:
+            continue
+        await service.delete(template_id)
+        deleted += 1
+    return deleted
 
 
 async def _purge_enterprise_repository(repo: EnterpriseRecordRepository) -> int:

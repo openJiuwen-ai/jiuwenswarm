@@ -1992,6 +1992,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws, req_id, lambda: a2a_manager.outbound_update(agent_id, payload)
         )
 
+    async def _a2a_outbound_enabled_update(ws, req_id, params, session_id):
+        user_enabled = params.get("user_enabled")
+        if not isinstance(user_enabled, bool):
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="user_enabled must be a boolean",
+                code="A2A_OUTBOUND_STORE_INVALID",
+            )
+            return
+        await _send_a2a_outbound(
+            ws,
+            req_id,
+            lambda: a2a_manager.outbound_set_user_enabled(
+                str(params.get("agent_id") or ""), enabled=user_enabled
+            ),
+        )
+
     async def _a2a_outbound_refresh(ws, req_id, params, session_id):
         await _send_a2a_outbound(
             ws, req_id, lambda: a2a_manager.outbound_refresh(str(params.get("agent_id") or ""))
@@ -2062,6 +2081,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("a2a.outbound.get", _a2a_outbound_get)
     channel.register_method("a2a.outbound.edit", _a2a_outbound_edit)
     channel.register_method("a2a.outbound.update", _a2a_outbound_update)
+    channel.register_method("a2a.outbound.enabled.update", _a2a_outbound_enabled_update)
     channel.register_method("a2a.outbound.refresh", _a2a_outbound_refresh)
     channel.register_method(
         "a2a.outbound.confirm_revision", _a2a_outbound_confirm_revision

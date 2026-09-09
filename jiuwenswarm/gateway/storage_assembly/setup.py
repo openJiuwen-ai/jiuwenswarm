@@ -486,12 +486,26 @@ def create_session_map_repository(store: PersistentStore):
 def create_a2a_outbound_repository(
     store: PersistentStore,
 ):
-    """Create the personal-edition JSON-backed outbound Repository."""
+    """Create the edition-specific outbound Repository."""
     from jiuwenswarm.gateway.a2a_manager.outbound import (
         A2AOutboundRepository,
+        EnterpriseA2AProjection,
         JsonA2AOutboundRecordCodec,
     )
 
+    if is_enterprise():
+        return EnterpriseA2AProjection(
+            store,
+            templates=create_enterprise_record_repository(
+                store, "a2a_outbound_template"
+            ),
+            user_states=create_enterprise_record_repository(
+                store, "a2a_outbound_user_state"
+            ),
+            runtime_states=create_enterprise_record_repository(
+                store, "a2a_outbound_runtime_state"
+            ),
+        )
     return A2AOutboundRepository(store, JsonA2AOutboundRecordCodec())
 
 

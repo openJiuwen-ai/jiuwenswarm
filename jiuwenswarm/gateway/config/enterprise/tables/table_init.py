@@ -8,6 +8,11 @@ from __future__ import annotations
 from openjiuwen_runtime.foundation.db.handler import DBHandler
 from openjiuwen_runtime.foundation.db.table_def import TableDefinition
 
+from .a2a_models import (
+    A2A_OUTBOUND_DISPATCH_TABLE_DEF,
+    A2A_OUTBOUND_RUNTIME_STATE_TABLE_DEF,
+    A2A_OUTBOUND_USER_STATE_TABLE_DEF,
+)
 from .application_config_models import (
     LOG_MASKING_RULE_TABLE_DEF,
     LOGGING_CONFIG_TABLE_DEF,
@@ -23,6 +28,8 @@ from .key_models import (
 )
 from .instance_resource_models import INSTANCE_AGENT_RESOURCE_TABLE_DEF
 from .template_models import (
+    A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF,
+    A2A_OUTBOUND_TEMPLATE_TABLE_DEF,
     AGENT_TEMPLATE_TABLE_DEF,
     EMBEDDING_TEMPLATE_TABLE_DEF,
     EXTENSION_CONFIG_TEMPLATE_TABLE_DEF,
@@ -43,6 +50,11 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     MCP_TEMPLATE_TABLE_DEF,
     PERMISSIONS_TEMPLATE_TABLE_DEF,
     AGENT_TEMPLATE_TABLE_DEF,
+    A2A_OUTBOUND_TEMPLATE_TABLE_DEF,
+    A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF,
+    A2A_OUTBOUND_USER_STATE_TABLE_DEF,
+    A2A_OUTBOUND_RUNTIME_STATE_TABLE_DEF,
+    A2A_OUTBOUND_DISPATCH_TABLE_DEF,
     INSTANCE_AGENT_RESOURCE_TABLE_DEF,
     LOG_MASKING_RULE_TABLE_DEF,
     LOGGING_CONFIG_TABLE_DEF,

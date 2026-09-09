@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, Power, RefreshCw, RotateCw, X } from 'lucide-react';
+import { isEnterprise } from '../../edition';
 import type { WebError } from '../../types/websocket';
 import { A2AOutboundPanel } from './A2AOutboundPanel';
 import { A2AIngressSecurityFields } from './A2AIngressSecurityFields';
@@ -46,7 +47,8 @@ function errorMessage(error: unknown): string {
 
 export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) {
   const { t, i18n } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'config' | 'outbound' | 'history'>('config');
+  const enterpriseMode = isEnterprise();
+  const [activeTab, setActiveTab] = useState<'config' | 'outbound' | 'history'>(enterpriseMode ? 'outbound' : 'config');
   const [snapshot, setSnapshot] = useState<A2AIngressSnapshot | null>(null);
   const [draft, setDraft] = useState<A2AIngressDraft | null>(null);
   const [loading, setLoading] = useState(false);
@@ -57,7 +59,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
   const [history, setHistory] = useState<A2AIngressRequestRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const [historyDirection, setHistoryDirection] = useState<'ingress' | 'outbound'>('ingress');
+  const [historyDirection, setHistoryDirection] = useState<'ingress' | 'outbound'>(enterpriseMode ? 'outbound' : 'ingress');
   const [outboundHistory, setOutboundHistory] = useState<A2AOutboundDispatchRecord[]>([]);
   const [outboundHistoryLoading, setOutboundHistoryLoading] = useState(false);
   const [outboundHistoryError, setOutboundHistoryError] = useState<string | null>(null);
@@ -86,7 +88,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
 
   const refresh = useCallback(
     async (showLoading = true) => {
-      if (!isConnected) return;
+      if (enterpriseMode || !isConnected) return;
       const responseGeneration = ++responseGenerationRef.current;
       if (showLoading) setLoading(true);
       try {
@@ -102,21 +104,21 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
         if (showLoading && shouldAcceptA2AIngressResponse(responseGeneration, responseGenerationRef.current)) setLoading(false);
       }
     },
-    [acceptSnapshot, isConnected, request],
+    [acceptSnapshot, enterpriseMode, isConnected, request],
   );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
   useEffect(() => {
-    if (loading || operation || isDirty || !isA2AIngressTransitioning(snapshot?.state)) return;
+    if (enterpriseMode || loading || operation || isDirty || !isA2AIngressTransitioning(snapshot?.state)) return;
     const timer = window.setInterval(() => void refresh(false), 1200);
     return () => window.clearInterval(timer);
-  }, [refresh, snapshot?.state, loading, operation, isDirty]);
+  }, [enterpriseMode, refresh, snapshot?.state, loading, operation, isDirty]);
 
   const refreshHistory = useCallback(
     async (showLoading = true) => {
-      if (!isConnected) return;
+      if (enterpriseMode || !isConnected) return;
       const responseGeneration = ++historyResponseGenerationRef.current;
       if (showLoading) setHistoryLoading(true);
       try {
@@ -133,7 +135,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
         if (showLoading && shouldAcceptA2AIngressResponse(responseGeneration, historyResponseGenerationRef.current)) setHistoryLoading(false);
       }
     },
-    [isConnected, request, t],
+    [enterpriseMode, isConnected, request, t],
   );
 
   const refreshOutboundHistory = useCallback(
@@ -160,11 +162,11 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
 
   useEffect(() => {
     if (activeTab !== 'history' || !isConnected) return;
-    const refreshActiveHistory = historyDirection === 'ingress' ? refreshHistory : refreshOutboundHistory;
+    const refreshActiveHistory = enterpriseMode || historyDirection === 'outbound' ? refreshOutboundHistory : refreshHistory;
     void refreshActiveHistory();
     const timer = window.setInterval(() => void refreshActiveHistory(false), 2000);
     return () => window.clearInterval(timer);
-  }, [activeTab, historyDirection, isConnected, refreshHistory, refreshOutboundHistory]);
+  }, [activeTab, enterpriseMode, historyDirection, isConnected, refreshHistory, refreshOutboundHistory]);
 
   useEffect(
     () => () => {
@@ -253,8 +255,8 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
   const serviceEnabled = snapshot?.enabled === true;
   const lifecycleOperation = serviceEnabled ? 'disable' : 'enable';
   const canToggleService = serviceEnabled ? canDisable : canEnable;
-  const activeHistoryLoading = historyDirection === 'ingress' ? historyLoading : outboundHistoryLoading;
-  const refreshActiveHistory = historyDirection === 'ingress' ? refreshHistory : refreshOutboundHistory;
+  const activeHistoryLoading = enterpriseMode || historyDirection === 'outbound' ? outboundHistoryLoading : historyLoading;
+  const refreshActiveHistory = enterpriseMode || historyDirection === 'outbound' ? refreshOutboundHistory : refreshHistory;
 
   return (
     <div className="flex-1 min-h-0">
@@ -262,7 +264,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
         <div className="mb-1 flex shrink-0 flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold">{t('a2aIngress.title')}</h2>
-            <p className="text-sm text-text-muted mt-1">{t('a2aIngress.subtitle')}</p>
+            <p className="text-sm text-text-muted mt-1">{t(enterpriseMode ? 'a2aIngress.enterpriseSubtitle' : 'a2aIngress.subtitle')}</p>
           </div>
           {activeTab === 'config' ? (
             <div className="flex flex-wrap items-center gap-2">
@@ -311,7 +313,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
           ) : null}
         </div>
         <div className="app-subtabs shrink-0" role="tablist" aria-label={t('a2aIngress.tabs.ariaLabel')}>
-          {(['config', 'outbound', 'history'] as const).map(tab => (
+          {(enterpriseMode ? (['outbound', 'history'] as const) : (['config', 'outbound', 'history'] as const)).map(tab => (
             <button
               key={tab}
               type="button"
@@ -484,24 +486,26 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
                     <h3 className="text-sm font-semibold text-text">{t(`a2aIngress.history.${historyDirection}.title`)}</h3>
                     <p className="mt-1 text-xs text-text-muted">{t(`a2aIngress.history.${historyDirection}.description`)}</p>
                   </div>
-                  <div
-                    className="ml-auto inline-flex shrink-0 rounded-lg border border-border bg-secondary/50 p-1"
-                    role="tablist"
-                    aria-label={t('a2aIngress.history.tabs.ariaLabel')}
-                  >
-                    {(['ingress', 'outbound'] as const).map(direction => (
-                      <button
-                        key={direction}
-                        type="button"
-                        role="tab"
-                        aria-selected={historyDirection === direction}
-                        className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${historyDirection === direction ? 'bg-bg text-accent shadow-sm' : 'text-text-muted hover:bg-bg/60 hover:text-text'}`}
-                        onClick={() => setHistoryDirection(direction)}
-                      >
-                        {t(`a2aIngress.history.tabs.${direction}`)}
-                      </button>
-                    ))}
-                  </div>
+                  {!enterpriseMode && (
+                    <div
+                      className="ml-auto inline-flex shrink-0 rounded-lg border border-border bg-secondary/50 p-1"
+                      role="tablist"
+                      aria-label={t('a2aIngress.history.tabs.ariaLabel')}
+                    >
+                      {(['ingress', 'outbound'] as const).map(direction => (
+                        <button
+                          key={direction}
+                          type="button"
+                          role="tab"
+                          aria-selected={historyDirection === direction}
+                          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${historyDirection === direction ? 'bg-bg text-accent shadow-sm' : 'text-text-muted hover:bg-bg/60 hover:text-text'}`}
+                          onClick={() => setHistoryDirection(direction)}
+                        >
+                          {t(`a2aIngress.history.tabs.${direction}`)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               {historyDirection === 'ingress' ? (
@@ -589,7 +593,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
                       <tr>
                         <th className="px-4 py-3 font-medium">{t('a2aIngress.history.columns.status')}</th>
                         <th className="px-4 py-3 font-medium">{t('a2aIngress.history.columns.mode')}</th>
-                        <th className="px-4 py-3 font-medium">{t('a2aIngress.history.columns.agentId')}</th>
+                        <th className="px-4 py-3 font-medium">{t('a2aIngress.history.columns.agent')}</th>
                         <th className="px-4 py-3 font-medium">{t('a2aIngress.history.columns.dispatchId')}</th>
                         <th className="px-4 py-3 font-medium">{t('a2aIngress.history.columns.remoteTaskId')}</th>
                         <th className="px-4 py-3 font-medium">{t('a2aIngress.history.columns.startedAt')}</th>
@@ -608,7 +612,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
                           <td className="px-4 py-3">{t(`a2aIngress.history.outbound.modes.${item.mode}`)}</td>
                           <td className="max-w-48 px-4 py-3 font-mono text-xs">
                             <CopyableHistoryValue
-                              value={item.agent_id}
+                              value={item.agent_name}
                               copied={copiedHistoryCell === `outbound:${item.dispatch_id}:agent`}
                               onCopy={() => void copyHistoryValue(`outbound:${item.dispatch_id}:agent`, item.agent_id)}
                               copyLabel={t('a2aIngress.history.copy')}
