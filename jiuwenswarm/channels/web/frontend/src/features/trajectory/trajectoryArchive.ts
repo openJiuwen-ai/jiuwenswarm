@@ -9,7 +9,7 @@ import {
   applyTrajectoryDetailRecords,
   recordIdentity,
   type TrajectoryRecordVersion,
-  type TrajectoryTraceBucket,
+  type TrajectoryChainBucket,
 } from './trajectoryWindow';
 
 export const TRAJECTORY_ARCHIVE_FORMAT = 'openjiuwen.trajectory.archive';
@@ -150,7 +150,7 @@ function decodeRawJson(record: TrajectoryArchiveRecord): unknown {
 }
 
 export function trajectoryArchiveView(archive: TrajectoryArchive): TrajectoryArchiveView {
-  const buckets = new Map<string, TrajectoryTraceBucket>();
+  const buckets = new Map<string, TrajectoryChainBucket>();
   let invalidRecordSeen = false;
   const rawDataByRecordId = new Map<string, unknown>();
   for (const [index, record] of archive.records.entries()) {
@@ -163,7 +163,7 @@ export function trajectoryArchiveView(archive: TrajectoryArchive): TrajectoryArc
     const applied = applyTrajectoryDetailRecords(current, {
       schema_version: 1,
       session_id: archive.session_id,
-      trace_id: record.trace_id,
+      subject_id: 'main',
       revision: Math.max(current?.revision ?? 0, index + 1),
       reset: false,
       records: [detailRecord],

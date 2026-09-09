@@ -80,7 +80,7 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.match(panelSource, /active=\{active && selected\}/);
   assert.match(panelSource, /deferredPublishRef\.current = true/);
   assert.match(panelSource, /setPublishedWindow\(\{/);
-  assert.match(panelSource, /page\.items\.reduce\(\(count, summary\) => count \+ summary\.span_count, 0\)/);
+  assert.match(panelSource, /page\.items\.reduce\(\(count, summary\) => count \+ summary\.record_count, 0\)/);
   assert.match(panelSource, /role="progressbar"/);
   assert.match(panelSource, /initialLoadProgress\.loaded \/ initialLoadProgress\.total/);
   assert.match(panelSource, /error\.code === 'UNSUPPORTED_SESSION_MODE'/);
