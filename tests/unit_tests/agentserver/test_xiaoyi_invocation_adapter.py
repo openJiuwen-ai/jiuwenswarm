@@ -227,3 +227,22 @@ def test_xiaoyi_invocation_headers_not_claimed_by_desktop_exporter() -> None:
 
     assert headers["x-hag-trace-id"] == "sess-x&19&ea5d&0"
 
+
+def test_xiaoyi_bare_conversation_id_session_pins_trace() -> None:
+    """V3：新方案下 xiaoyi 会话 session_id = 裸 conversationId，显式 interaction_id
+    时 trace 核心段首段即 conversationId，全链路一致。"""
+    conversation_id = "1788936453184"
+    request = AgentRequest(
+        request_id="req-1",
+        channel_id="xiaoyi",
+        session_id=conversation_id,
+        metadata={"interaction_id": "inter-1"},
+    )
+
+    trace = build_xiaoyi_trace_context(request)
+
+    assert trace is not None
+    assert trace.trace_id == f"{conversation_id}&inter-1"
+    assert trace.conversation_id == conversation_id
+    assert trace.interaction_id == "inter-1"
+

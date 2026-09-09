@@ -998,6 +998,249 @@ async def test_handle_tui_explicit_session_create_is_idempotent_and_bypasses_pre
 
 
 @pytest.mark.asyncio
+async def test_handle_xiaoyi_session_create_accepts_bare_conversation_id(
+    monkeypatch, tmp_path
+):
+    """xiaoyi external：沿用上层 conversationId 作 session_id（裸值），不绑真实项目。"""
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
+    _METADATA_CACHE.clear()
+    server = AgentWebSocketServerHarness()
+    fake_manager = FakeAgentManager(session_id="must-not-be-used")
+    server.set_agent_manager_for_test(fake_manager)
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    patch_session_roots(monkeypatch, sessions_root)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.project_store.resolve_session_project_binding",
+        lambda project_id, resolved_dir: (project_id, resolved_dir, None, None),
+    )
+
+    request = AgentRequest(
+        request_id="req-xiaoyi-create",
+        channel_id="xiaoyi",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={
+            "session_id": "1788936453184",
+            "create_token": "create-xiaoyi-001",
+            "mode": "agent",
+        },
+    )
+
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+
+    # external 路径不走 prewarm claim
+    assert fake_manager.claim_session_calls == []
+    metadata = json.loads(
+        (sessions_root / "1788936453184" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["session_id"] == "1788936453184"
+    assert metadata["channel_id"] == "xiaoyi"
+    # D2=A：保持 default/work，不绑真实代码项目
+    assert metadata["project_id"] == "default"
+    assert metadata["work_mode"] == "work"
+    assert fake_ws.sent[0]["ok"] is True
+    assert fake_ws.sent[0]["payload"]["session_id"] == "1788936453184"
+    assert fake_ws.sent[0]["payload"]["prewarm_status"] == "bypassed"
+    assert fake_ws.sent[0]["payload"]["created"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_xiaoyi_session_create_reuses_existing_same_channel(
+    monkeypatch, tmp_path
+):
+    """A1：session_id 已存在且归属 xiaoyi → 复用，不报错、不覆盖既有 metadata。"""
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
+    _METADATA_CACHE.clear()
+    server = AgentWebSocketServerHarness()
+    fake_manager = FakeAgentManager(session_id="must-not-be-used")
+    server.set_agent_manager_for_test(fake_manager)
+    sessions_root = tmp_path / "sessions"
+    session_dir = sessions_root / "1788936453184"
+    session_dir.mkdir(parents=True)
+    workspace = tmp_path / "phone-workspace"
+    workspace.mkdir()
+    (session_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "session_id": "1788936453184",
+                "channel_id": "xiaoyi",
+                "project_id": "default",
+                "project_dir": str(workspace),
+                "work_mode": "work",
+                "mode": "agent",
+                "title": "手机首句原文",
+                "last_message_at": 100.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    patch_session_roots(monkeypatch, sessions_root)
+
+    request = AgentRequest(
+        request_id="req-xiaoyi-reuse",
+        channel_id="xiaoyi",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={"session_id": "1788936453184", "create_token": "create-xiaoyi-reuse"},
+    )
+    fake_ws = FakeWebSocket()
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+
+    assert fake_manager.claim_session_calls == []
+    assert fake_ws.sent[0]["ok"] is True
+    assert fake_ws.sent[0]["payload"]["session_id"] == "1788936453184"
+    assert fake_ws.sent[0]["payload"]["created"] is False
+    # 既有 metadata 未被覆盖（title / 工作空间路径保留）
+    metadata = json.loads((session_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["title"] == "手机首句原文"
+    assert metadata["project_dir"] == str(workspace)
+
+
+@pytest.mark.asyncio
+async def test_handle_xiaoyi_session_create_reuses_numeric_dir_after_desktop_touch(
+    monkeypatch, tmp_path
+):
+    """数字目录名即 conversationId；channel_id 被桌面写成 desktop 仍复用，不报错。"""
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
+    _METADATA_CACHE.clear()
+    server = AgentWebSocketServerHarness()
+    fake_manager = FakeAgentManager(session_id="must-not-be-used")
+    server.set_agent_manager_for_test(fake_manager)
+    sessions_root = tmp_path / "sessions"
+    session_id = "1788999000111"
+    session_dir = sessions_root / session_id
+    session_dir.mkdir(parents=True)
+    workspace = tmp_path / "phone-workspace"
+    workspace.mkdir()
+    (session_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "session_id": session_id,
+                "channel_id": "desktop",
+                "project_id": "default",
+                "project_dir": str(workspace),
+                "work_mode": "work",
+                "mode": "agent",
+                "title": "手机首句原文",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    patch_session_roots(monkeypatch, sessions_root)
+
+    request = AgentRequest(
+        request_id="req-xiaoyi-flipped",
+        channel_id="xiaoyi",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={"session_id": session_id, "create_token": "create-xiaoyi-flipped"},
+    )
+    fake_ws = FakeWebSocket()
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+
+    assert fake_ws.sent[0]["ok"] is True
+    assert fake_ws.sent[0]["payload"]["session_id"] == session_id
+    assert fake_ws.sent[0]["payload"]["created"] is False
+    metadata = json.loads((session_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["title"] == "手机首句原文"
+    assert metadata["project_dir"] == str(workspace)
+
+
+@pytest.mark.asyncio
+async def test_handle_xiaoyi_session_create_rejects_desktop_prefixed_id(
+    monkeypatch, tmp_path
+):
+    """xiaoyi 不得占用 desktop_* 命名空间。"""
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_CACHE
+    _METADATA_CACHE.clear()
+    server = AgentWebSocketServerHarness()
+    fake_manager = FakeAgentManager(session_id="must-not-be-used")
+    server.set_agent_manager_for_test(fake_manager)
+    sessions_root = tmp_path / "sessions"
+    conflict_id = "desktop_1a061727c1f_65690918081e"
+    session_dir = sessions_root / conflict_id
+    session_dir.mkdir(parents=True)
+    (session_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "session_id": conflict_id,
+                "channel_id": "desktop",
+                "project_id": "default",
+                "work_mode": "work",
+                "mode": "agent",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    patch_session_roots(monkeypatch, sessions_root)
+
+    request = AgentRequest(
+        request_id="req-xiaoyi-conflict",
+        channel_id="xiaoyi",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={"session_id": conflict_id, "create_token": "create-xiaoyi-conflict"},
+    )
+    fake_ws = FakeWebSocket()
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+
+    assert fake_ws.sent[0]["ok"] is False
+    assert "already owned by another channel" in fake_ws.sent[0]["payload"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_handle_a2a_session_create_still_rejects_explicit_session_id(
+    monkeypatch, tmp_path
+):
+    """a2a/ssh 不在本次改动：显式 session_id 仍被拒。"""
+    server = AgentWebSocketServerHarness()
+    fake_manager = FakeAgentManager(session_id="unused")
+    server.set_agent_manager_for_test(fake_manager)
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    patch_session_roots(monkeypatch, tmp_path / "sessions")
+
+    request = AgentRequest(
+        request_id="req-a2a-reject",
+        channel_id="a2a",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={"session_id": "a2a_external_001", "create_token": "create-a2a-001"},
+    )
+    fake_ws = FakeWebSocket()
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+
+    assert fake_manager.claim_session_calls == []
+    assert fake_ws.sent[0]["ok"] is False
+    assert fake_ws.sent[0]["payload"]["error"] == (
+        "session.create no longer accepts session_id; use session.switch to restore"
+    )
+
+
+@pytest.mark.asyncio
 async def test_cancelled_tui_explicit_create_waiter_does_not_release_owner_lock(
     monkeypatch, tmp_path
 ):

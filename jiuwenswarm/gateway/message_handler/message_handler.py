@@ -663,10 +663,13 @@ class MessageHandler(ABC):
         self,
         msg: "Message",
         state: ChannelControlState,
+        *,
+        external_session_id: str | None = None,
     ) -> str:
         """Allocate and persist a real AgentServer-owned session for a channel."""
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 
         channel_type = self._resolve_control_channel_type(msg)
         mode = state.mode.value
@@ -676,6 +679,15 @@ class MessageHandler(ABC):
             "mode": mode,
             "is_swarm": ChannelMode.is_team_mode(mode),
         }
+        # xiaoyi external：沿用上层 conversationId 作 AgentServer session_id（裸值）。
+        # 仅 xiaoyi 且 id 合法时透传；非法 id 回退 AgentServer 自分配。重启后同 id
+        # 的 session.create 复用已有目录（目录名即 conversationId）。
+        if (
+            channel_type == "xiaoyi"
+            and external_session_id
+            and is_valid_session_id(external_session_id)
+        ):
+            create_params["session_id"] = external_session_id
         for name in ("project_id", "work_mode", "model_name"):
             if params.get(name) is not None:
                 create_params[name] = params[name]
@@ -750,7 +762,9 @@ class MessageHandler(ABC):
                         except ValueError:
                             mode = ChannelMode.AGENT
                         resolved = await self._allocate_channel_session(
-                            msg, ChannelControlState(mode=mode)
+                            msg,
+                            ChannelControlState(mode=mode),
+                            external_session_id=external_id,
                         )
                         self._external_session_aliases[key] = resolved
                         logger.info(
