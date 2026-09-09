@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+import yaml
 
 from jiuwenswarm.common.np_transport import (
     PipeError,
@@ -44,6 +45,9 @@ class ExpertSummary:
     available: bool
     unavailable_reason: str = ""
     tags: list[str] = field(default_factory=list)
+    # 按 manifest.skills 的调用顺序返回；name/description 直接取各 SKILL.md
+    # frontmatter，前端不得根据目录名另起展示名。
+    skills: list[dict[str, str]] = field(default_factory=list)
     type: str = "agent"  # "agent" | "team"（专家团）
     metadata: dict[str, Any] = field(default_factory=dict)
     avatar_url: str = ""  # 仓库下发的头像绝对地址（<img> 直连）；空 = 无头像
@@ -201,6 +205,48 @@ def validate_expert_package(package_dir: Path) -> list[str]:
     return warnings
 
 
+def _read_expert_skill_summaries(
+    package_dir: Path,
+    manifest: dict[str, Any],
+) -> list[dict[str, str]]:
+    """读取专家内嵌 Skill 的原始展示信息，顺序与 manifest 完全一致。"""
+    summaries: list[dict[str, str]] = []
+    for entry in manifest.get("skills") or []:
+        if not isinstance(entry, dict):
+            continue
+        relative_dir = str(entry.get("dir") or "").strip()
+        if not relative_dir:
+            continue
+        skill_dir = package_dir / relative_dir
+        skill_md = skill_dir / "SKILL.md"
+        name = skill_dir.name
+        description = ""
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+            if text.startswith("---"):
+                closing = text.find("\n---", 3)
+                if closing >= 0:
+                    metadata = yaml.safe_load(text[3:closing])
+                    if isinstance(metadata, dict):
+                        raw_name = metadata.get("name")
+                        raw_description = metadata.get("description")
+                        if isinstance(raw_name, str) and raw_name.strip():
+                            name = raw_name.strip()
+                        if isinstance(raw_description, str):
+                            description = raw_description.strip()
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            # 包已通过结构校验；展示元数据异常时仍保留目录名，不能让列表整体不可用。
+            pass
+        summaries.append(
+            {
+                "name": name,
+                "description": description,
+                "dir": relative_dir,
+            }
+        )
+    return summaries
+
+
 class HttpRepoExpertPackageSource:
     """调简易包仓库 API 的实现。
 
@@ -264,6 +310,7 @@ class HttpRepoExpertPackageSource:
                 available=bool(item.get("available", False)),
                 unavailable_reason=str(item.get("unavailable_reason", "")),
                 tags=list(item.get("tags") or []),
+                skills=[dict(s) for s in item.get("skills") or [] if isinstance(s, dict)],
                 type=str(item.get("type", "agent")),
                 metadata=dict(item.get("metadata") or {}),
                 avatar_url=str(item.get("avatar_url") or ""),
@@ -358,6 +405,7 @@ class LocalDirExpertPackageSource:
         card: dict[str, Any] = {}
         group: dict[str, str] = {}
         members: list[dict[str, str]] = []
+        skills: list[dict[str, str]] = []
         pkg_type = "agent"
         try:
             validate_expert_package(package_dir)
@@ -378,6 +426,7 @@ class LocalDirExpertPackageSource:
             else:
                 card = manifest.get("agentCard") or {}
                 metadata = manifest.get("metadata") or {}
+                skills = _read_expert_skill_summaries(package_dir, manifest)
         except (InvalidExpertPackage, json.JSONDecodeError) as exc:
             reason = str(exc)
         return ExpertSummary(
@@ -388,6 +437,7 @@ class LocalDirExpertPackageSource:
             available=not reason,
             unavailable_reason=reason,
             tags=list(metadata.get("tags") or []),
+            skills=skills,
             type=pkg_type,
             metadata=metadata,
             members=members,

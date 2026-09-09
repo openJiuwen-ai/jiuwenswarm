@@ -8,7 +8,7 @@ import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo
 import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
-import { AgentPanel } from './components/AgentPanel/index';
+import { BetaExpertManagementPanel } from './components/BetaExpertManagementPanel';
 import { TeamPanel } from './components/TeamPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
@@ -24,6 +24,7 @@ import {
   type ShareImageSnapshot,
 } from './features/shareImageExport';
 import type { CodeReviewTarget } from './features/code-mode/types';
+import type { BetaExpertCatalogItem } from './features/betaExpertCatalog';
 
 import { FEATURE_APP_UPDATER_UI } from './featureFlags';
 import {
@@ -2053,6 +2054,28 @@ function AppContent() {
     void handleRestoreSession(target.session_id, target.mode, target);
   }, [enterNewConversation, handleRestoreSession, mode]);
 
+  const handleUseExpert = useCallback(async (
+    expert: BetaExpertCatalogItem,
+    prompt?: string,
+  ) => {
+    const created = await request<{ session_id?: string }>('session.create', {
+      create_token: generateUuidV4(),
+      expert_id: expert.id,
+      mode: 'agent',
+      is_swarm: false,
+      title: expert.name,
+      work_mode: 'work',
+    });
+    const newSessionId = created?.session_id?.trim();
+    if (!newSessionId) throw new Error('专家会话创建失败：后端未返回 session_id');
+    setActiveNav('chat');
+    await handleRestoreSession(newSessionId, 'agent');
+    if (prompt) {
+      useChatStore.getState().setInputValue(newSessionId, prompt);
+      requestComposerFocus();
+    }
+  }, [handleRestoreSession, request, requestComposerFocus]);
+
   const handleTeamSessionsDeleted = useCallback(async (sessionIds: string[]) => {
     const deletedSessionIds = new Set(sessionIds);
     const sessionState = useSessionStore.getState();
@@ -2394,7 +2417,7 @@ function AppContent() {
         )}
         {activeNav === 'agents' && (
           <div className="app-section">
-            <AgentPanel sessionId={sessionId} />
+            <BetaExpertManagementPanel onUseExpert={handleUseExpert} />
           </div>
         )}
         {activeNav === 'teams' && (
