@@ -702,7 +702,7 @@ async def test_pending_hub_equipment_show_uses_remote_detail(
 
 
 @pytest.mark.asyncio
-async def test_pending_hub_expert_files_are_not_previewable_by_uuid_or_package_name(
+async def test_pending_hub_expert_files_are_previewable_by_uuid_or_package_name(
     monkeypatch: pytest.MonkeyPatch, extension_workspace: Path
 ) -> None:
     asset_id = "expert-asset-uuid"
@@ -720,10 +720,10 @@ async def test_pending_hub_expert_files_are_not_previewable_by_uuid_or_package_n
     assert ok is False
 
     for identifier in (asset_id, package_name):
-        with pytest.raises(ValueError, match="not installed"):
-            catalog.list_agent_template_files(identifier)
-        with pytest.raises(ValueError, match="not installed"):
-            catalog.read_agent_template_file(identifier, "manifest.json")
+        tree = catalog.list_agent_template_files(identifier)
+        assert any(entry["path"] == "manifest.json" for entry in tree)
+        preview = catalog.read_agent_template_file(identifier, "manifest.json")
+        assert preview["path"] == "manifest.json"
 
 
 @pytest.mark.asyncio
@@ -750,7 +750,7 @@ async def test_installed_hub_expert_files_resolve_by_uuid_and_package_name(
         assert preview["path"] == "manifest.json"
 
 
-def test_hub_expert_files_reject_missing_marketplace_entry(
+def test_hub_expert_files_preview_without_marketplace_entry(
     extension_workspace: Path,
 ) -> None:
     asset_id = "expert-asset-uuid"
@@ -779,10 +779,10 @@ def test_hub_expert_files_reject_missing_marketplace_entry(
     )
 
     for identifier in (asset_id, package_name):
-        with pytest.raises(ValueError, match="not installed"):
-            catalog.list_agent_template_files(identifier)
-        with pytest.raises(ValueError, match="not installed"):
-            catalog.read_agent_template_file(identifier, "manifest.json")
+        tree = catalog.list_agent_template_files(identifier)
+        assert any(entry["path"] == "manifest.json" for entry in tree)
+        preview = catalog.read_agent_template_file(identifier, "manifest.json")
+        assert preview["path"] == "manifest.json"
 
 
 @pytest.mark.asyncio

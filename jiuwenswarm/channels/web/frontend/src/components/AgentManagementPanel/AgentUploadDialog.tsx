@@ -9,7 +9,7 @@ import {
   selectLocalFiles,
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
-import { isAgentUploadFilename } from '../../features/agentManagement';
+import { isAgentUploadFilename, mapLocalPackageImportError } from '../../features/agentManagement';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
 
 type AgentUploadDialogProps = {
@@ -149,6 +149,14 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
     }
   };
 
+  const displayError = error
+    ? mapLocalPackageImportError(error, t, {
+        readme: 'agentManagement.states.uploadMissingReadme',
+        manifest: 'agentManagement.states.uploadMissingManifest',
+        persona: 'agentManagement.states.uploadMissingPersona',
+      })
+    : pickerError;
+
   return createPortal(
     <div
       className="agent-management-selection-overlay"
@@ -239,7 +247,7 @@ export function AgentUploadDialog({ error, onCancel, onConfirm }: AgentUploadDia
             </>
           )}
         </div>
-        {error || pickerError ? <p className="agent-management-upload-dialog__error" role="alert">{error || pickerError}</p> : null}
+        {displayError ? <p className="agent-management-upload-dialog__error" role="alert">{displayError}</p> : null}
 
         <footer>
           <button type="button" className="agent-management-button agent-management-button--secondary" onClick={onCancel} disabled={submitting}>

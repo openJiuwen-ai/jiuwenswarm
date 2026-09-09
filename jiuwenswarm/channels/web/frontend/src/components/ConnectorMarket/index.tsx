@@ -86,6 +86,7 @@ export function ConnectorMarketPanel({
     return kind;
   });
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const loadPluginList = usePluginPackageStore((s) => s.loadList);
@@ -211,7 +212,10 @@ export function ConnectorMarketPanel({
           // 本次需求取代。不传这个 prop（理论上不会发生，App.tsx 恒传）才退化成提示未接入，跟
           // onUse/handleUseNotWired 同款可选 prop 兜底处理。
           onCreateWithSkill={onCreateViaChat ?? (() => window.alert(t('connectorMarket.create.withSkillNotWired')))}
-          onCreateWithUpload={() => setUploadModalOpen(true)}
+          onCreateWithUpload={() => {
+            setUploadError(null);
+            setUploadModalOpen(true);
+          }}
           onRegisterCustomMcp={() => setView({ name: 'register-mcp' })}
         />
       )}
@@ -283,16 +287,24 @@ export function ConnectorMarketPanel({
 
       {uploadModalOpen && (
         <UploadFileCreateModal
-          onCancel={() => setUploadModalOpen(false)}
+          error={uploadError}
+          onCancel={() => {
+            setUploadModalOpen(false);
+            setUploadError(null);
+          }}
           onConfirm={async (filePath) => {
             // 截图接口里的 session_id 用户明确要求先不带（2026-08-20），见 pluginPackagesApi.ts
-            // importLocal 注释。失败不在这里重复处理——pluginError 已经通过上面的 useEffect
-            // 统一弹红色 Toast，弹窗本身保持打开方便用户重试。
-            const ok = await importPluginLocal({ path: filePath });
-            if (ok) {
+            // importLocal 注释。失败在弹窗内展示映射后的中文，与专家上传对齐；不走 store.error
+            // Toast，避免和弹窗重复、也避免 Toast 一闪而过用户只看到英文原文。
+            setUploadError(null);
+            const result = await importPluginLocal({ path: filePath });
+            if (result.ok) {
               setUploadModalOpen(false);
+              setUploadError(null);
               setSuccessToast(t('connectorMarket.upload.importSuccess'));
+              return;
             }
+            setUploadError(result.error);
           }}
         />
       )}

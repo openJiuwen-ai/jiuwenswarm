@@ -2024,30 +2024,25 @@ def resolve_equipment_runtime_id(kind: str, identifier: Any) -> str:
     return record.package_id if record is not None else package_id
 
 
-def _installed_agent_template_runtime_id(identifier: Any) -> str:
-    package_id = resolve_equipment_runtime_id(_AGENT_TEMPLATE_KIND, identifier)
-    record = _hub_install_state_store(_AGENT_TEMPLATE_KIND).get(identifier)
-    if record is None:
-        record = _hub_install_state_store(
-            _AGENT_TEMPLATE_KIND
-        ).get_by_package_id(package_id)
-    if record is not None:
-        marketplace = _marketplace_index(read_agent_template_marketplace_entries())
-        entry = marketplace.get(record.package_id)
-        if entry is None or entry.get("installed") is not True:
-            raise ValueError(f"agent_template not installed: {record.package_id}")
-    return package_id
+def _agent_template_preview_dir(name: str) -> Path:
+    """Resolve an expert package dir for file preview, including uninstalled shelf items."""
+    package_id = resolve_equipment_runtime_id(_AGENT_TEMPLATE_KIND, name)
+    resolved = _resolve_agent_template_definition_dir(package_id)
+    if resolved is None:
+        raise ValueError(f"agent_template package not found: {package_id}")
+    pkg_dir, _ = resolved
+    return pkg_dir
 
 
 def list_agent_template_files(name: str) -> list[dict]:
     """Return the previewable file tree for one agent_template package."""
-    pkg_dir = resolve_agent_template_dir(_installed_agent_template_runtime_id(name))
+    pkg_dir = _agent_template_preview_dir(name)
     return _build_file_tree(pkg_dir, pkg_dir)
 
 
 def read_agent_template_file(name: str, rel_path: str) -> dict:
     """Read one previewable file from an agent_template package."""
-    pkg_dir = resolve_agent_template_dir(_installed_agent_template_runtime_id(name))
+    pkg_dir = _agent_template_preview_dir(name)
     rel = str(rel_path or "").strip().replace("\\", "/")
     if not _is_previewable_file(rel):
         raise ValueError(f"file not previewable: {rel}")
@@ -2463,6 +2458,38 @@ def _package_id_from_manifest(
     return _reject_package_name(raw.strip(), kind_label)
 
 
+def _require_import_readme(pkg_root: Path, kind_label: str) -> None:
+    """Reject an imported package that lacks README.md before it is copied to local/."""
+    if not (pkg_root / "README.md").is_file():
+        raise ValueError(f"{kind_label} package missing README.md")
+
+
+def _validate_agent_template_import_layout(pkg_root: Path, manifest: dict) -> None:
+    """Reject an imported expert package that lacks persona markdown."""
+    persona = manifest.get("persona")
+    if not isinstance(persona, dict) or "dir" not in persona:
+        raise ValueError(
+            'agent_template package missing persona (expected {"dir": "./persona"})'
+        )
+    raw_dir = persona.get("dir")
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+        raise ValueError("agent_template package missing persona.dir")
+    rel = raw_dir.strip().replace("\\", "/")
+    posix = PurePosixPath(rel)
+    if posix.is_absolute() or ".." in rel.split("/") or PureWindowsPath(raw_dir).is_absolute():
+        raise ValueError("agent_template package persona dir escapes package root")
+    pkg_root_resolved = pkg_root.resolve()
+    persona_dir = (pkg_root / rel).resolve()
+    if persona_dir == pkg_root_resolved or not persona_dir.is_relative_to(pkg_root_resolved):
+        raise ValueError("agent_template package persona dir escapes package root")
+    if not persona_dir.is_dir():
+        raise ValueError(f"agent_template package persona dir not found: {raw_dir}")
+    if not any(path.is_file() for path in persona_dir.rglob("*.md")):
+        raise ValueError(
+            f"agent_template package persona dir has no markdown files: {raw_dir}"
+        )
+
+
 def _commit_imported_package(
     pkg_root: Path, *, kind: str, kind_label: str, package_type: str
 ) -> dict:
@@ -2476,6 +2503,10 @@ def _commit_imported_package(
     package_id = _package_id_from_manifest(
         manifest, package_type=package_type, kind_label=kind_label
     )
+    if kind in (_AGENT_TEMPLATE_KIND, _PLUGIN_PACKAGE_KIND):
+        _require_import_readme(pkg_root, kind_label)
+    if kind == _AGENT_TEMPLATE_KIND:
+        _validate_agent_template_import_layout(pkg_root, manifest)
     if kind == _AGENT_GROUP_KIND:
         from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
 

@@ -2226,6 +2226,9 @@
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
+      "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
+      "uploadMissingReadme": "The Expert package is missing README.md.",
+      "uploadMissingPersona": "The Expert package is missing the persona directory, or it contains no .md files.",
       "newVersion": "This Expert has a new version available",
       "teamUnavailable": "Team Expert management is not available yet",
       "featureUnavailable": "This feature is outside this milestone",
@@ -3074,7 +3077,9 @@
       "hint": "Supports .zip and .tar files; once extracted, the folder must include manifest.json and README.md, and the .json file must declare packageType.",
       "dropHint": "Click or drag a file here",
       "invalidType": "Only .zip / .tar files are supported",
-      "importSuccess": "Plugin imported successfully"
+      "importSuccess": "Plugin imported successfully",
+      "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
+      "missingReadme": "The plugin package is missing README.md."
     },
     "common": {
       "back": "Back",

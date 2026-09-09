@@ -9,8 +9,8 @@ import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMar
 import { useConnectorStore } from '../../stores/connectorStore';
 import {
   AgentInstallPendingError,
-  AgentManagementError,
   createAgentManagementClient,
+  extractRpcErrorMessage,
   type AgentCatalogItem,
   type AgentDraft,
   type AgentManagementClient,
@@ -51,7 +51,19 @@ const EMPTY_DRAFT: AgentDraft = {
 };
 
 function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+  if (error && typeof error === 'object' && 'payload' in error) {
+    const payload = (error as { payload?: unknown }).payload;
+    if (payload && typeof payload === 'object') {
+      const apiError = (payload as { error?: unknown }).error;
+      if (typeof apiError === 'string' && apiError.trim()) {
+        return apiError.trim();
+      }
+    }
+  }
+  return fallback;
 }
 
 function getFriendlyErrorMessage(
@@ -75,7 +87,7 @@ function getFriendlyErrorMessage(
     return translate('agentManagement.states.agentUnavailable');
   }
   if (
-    /^agent_template package (?:missing\/corrupt manifest\.json|wrong package_type|conflict):/i.test(normalizedMessage)
+    /^agent_template package (?:wrong package_type|conflict):/i.test(normalizedMessage)
   ) {
     return translate('agentManagement.states.agentDefinitionUnavailable');
   }
@@ -107,10 +119,7 @@ function getFriendlyErrorMessage(
   }
   const connector = /^connector not connected:\s*(.+)$/i.exec(normalizedMessage)?.[1];
   if (connector) return translate('agentManagement.states.connectorUnavailableNamed', { connector });
-  if (error instanceof AgentManagementError) {
-    return fallback;
-  }
-  return message;
+  return fallback;
 }
 
 function deriveAgentId(name: string): string {
@@ -310,8 +319,7 @@ export function AgentManagementPanel({
 
   const handleTabChange = (tab: 'content' | 'files') => {
     setDetailTab(tab);
-    const canPreviewFiles = state.detail?.source === 'local' || state.detail?.installed === true;
-    if (tab === 'files' && canPreviewFiles && selectedId && state.filesStatus === 'idle') {
+    if (tab === 'files' && selectedId && state.filesStatus === 'idle') {
       void loadFiles(selectedId).then((files) => {
         const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
         if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
@@ -548,7 +556,7 @@ export function AgentManagementPanel({
         actionNoticeTimerRef.current = null;
       }, 3000);
     } catch (error) {
-      setUploadError(formatActionError(error, t('agentManagement.states.uploadError')));
+      setUploadError(extractRpcErrorMessage(error, t('agentManagement.states.uploadError')));
     }
   };
 

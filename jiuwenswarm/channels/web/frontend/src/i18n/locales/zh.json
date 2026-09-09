@@ -2215,6 +2215,9 @@
       "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
       "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
       "uploadError": "上传并导入专家失败，请检查文件后重试",
+      "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
+      "uploadMissingReadme": "专家包缺少 README.md 文件",
+      "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
       "newVersion": "该专家有新版本，可更新",
       "teamUnavailable": "团队专家管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
@@ -3056,7 +3059,9 @@
       "hint": "支持.zip和.tar文件，解压后的文件夹需要至少包含 manifest.json 文件和 README.md，.json 文件需包含 packageType 声明包类型。",
       "dropHint": "点击或拖动文件到此处",
       "invalidType": "仅支持 .zip / .tar 文件",
-      "importSuccess": "插件导入成功"
+      "importSuccess": "插件导入成功",
+      "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
+      "missingReadme": "插件包缺少 README.md 文件"
     },
     "common": {
       "back": "返回",
