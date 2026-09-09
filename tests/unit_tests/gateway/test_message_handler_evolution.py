@@ -1073,9 +1073,18 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
 
 
 @pytest.mark.asyncio
-async def test_forward_loop_supplement_forwards_new_input_to_interrupt() -> None:
-    """AgentServer needs the text marker to discard a superseded ask_user round."""
+@pytest.mark.parametrize("interrupt_success", [True, False])
+async def test_forward_loop_supplement_forwards_new_input_to_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_success: bool,
+) -> None:
+    """Forward the text marker, but start new work only after successful cleanup."""
     handler = _TestMessageHandler.create()
+    monkeypatch.setattr(_FakeAgentClient, "response_payload", {
+        "event_type": "chat.interrupt_result",
+        "message": "cleanup complete" if interrupt_success else "cleanup failed",
+        "success": interrupt_success,
+    })
     await handler.start_forwarding()
     try:
         supplement_msg = Message(
@@ -1106,6 +1115,16 @@ async def test_forward_loop_supplement_forwards_new_input_to_interrupt() -> None
         interrupt_request = _FakeAgentClient.sent_requests[0]
         assert interrupt_request.params["intent"] == "supplement"
         assert interrupt_request.params["new_input"] == "再执行一次"
+
+        notification = await handler.consume_robot_messages(timeout=2)
+        assert notification is not None
+        assert notification.payload["event_type"] == "chat.interrupt_result"
+        assert notification.payload["success"] is interrupt_success
+        if not interrupt_success:
+            assert notification.payload["message"] == "cleanup failed"
+            assert _FakeAgentClient.sent_stream_requests == []
+            assert handler.user_message_queue_empty()
+            return
 
         deadline = asyncio.get_running_loop().time() + 2.0
         while (

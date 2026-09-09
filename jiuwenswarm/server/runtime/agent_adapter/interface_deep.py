@@ -567,6 +567,7 @@ _REQUIRED_AGENT_RAIL_ATTR_NAMES = frozenset(
     }
 )
 
+
 def _resolve_agent_composition_scope(mode: str, sub_mode: str | None) -> str:
     """Resolve one closed construction scope from Host-owned instance facts."""
     normalized_mode = str(mode or "").strip().lower()
@@ -2747,7 +2748,8 @@ class JiuWenSwarmDeepAdapter:
         permission_delta = adapter._has_permission_config_delta(  # pylint: disable=protected-access
             config_base
         )
-        smart_lifecycle = adapter._uses_smart_permission_lifecycle(config_base)
+        # The router and session adapter share this class's lifecycle contract.
+        smart_lifecycle = adapter._uses_smart_permission_lifecycle(config_base)  # pylint: disable=protected-access
         if smart_lifecycle and not host_external_input:
             # Ordinary lookup is also used by approval resumes, internal
             # dispatches and structured control APIs. Only a Host-verified
@@ -2829,8 +2831,9 @@ class JiuWenSwarmDeepAdapter:
         """Drop only an isolated, fully cleaned child; old references stay closed."""
         if (
             self._session_adapters.get(session_id) is not adapter
-            or not adapter._permission_state.permission_isolated
-            or not adapter._permission_state.permission_cleanup_complete
+            # Same-class session state is inspected under router coordination.
+            or not adapter._permission_state.permission_isolated  # pylint: disable=protected-access
+            or not adapter._permission_state.permission_cleanup_complete  # pylint: disable=protected-access
         ):
             return
         self._drop_session_adapter_cache_entry(
@@ -2867,7 +2870,11 @@ class JiuWenSwarmDeepAdapter:
                     reload_scopes=reload_scopes,
                 )
             except Exception as exc:
-                if adapter._uses_smart_permission_lifecycle(config_base) or adapter._permission_state.permission_isolated:
+                # This router owns the same-class child's reload and eviction.
+                if (
+                    adapter._uses_smart_permission_lifecycle(config_base)  # pylint: disable=protected-access
+                    or adapter._permission_state.permission_isolated  # pylint: disable=protected-access
+                ):
                     await self._evict_failed_permission_session_adapter(session_id, adapter)
                     raise
                 if (
@@ -2997,12 +3004,13 @@ class JiuWenSwarmDeepAdapter:
                 self._session_adapter_reload_failures.pop(sid, None)
                 remove_lock_after_release = True
             else:
-                if adapter._permission_state.permission_isolated:
+                # Keep same-class cleanup state private to the adapter lifecycle.
+                if adapter._permission_state.permission_isolated:  # pylint: disable=protected-access
                     # Ordinary cleanup tolerates stop failures. An isolated
                     # Smart owner must retain its cache entry until strict
                     # cleanup succeeds, including when eviction comes from TTL.
-                    await adapter._isolate_permission_instance()
-                    if not adapter._permission_state.permission_cleanup_complete:
+                    await adapter._isolate_permission_instance()  # pylint: disable=protected-access
+                    if not adapter._permission_state.permission_cleanup_complete:  # pylint: disable=protected-access
                         return False
                 else:
                     has_live_permission_owner = getattr(
@@ -3098,7 +3106,8 @@ class JiuWenSwarmDeepAdapter:
         smart_lifecycle = self._coordinates_smart_permission_lifecycle(
             get_config(), request.session_id,
         ) or (
-            cached is not None and cached._enable_auto_permission
+            # Consult the installed mode of this same-class cached session.
+            cached is not None and cached._enable_auto_permission  # pylint: disable=protected-access
         )
         if smart_lifecycle and (
             self._is_interrupt_resume_dispatch(request.params)
@@ -3160,10 +3169,14 @@ class JiuWenSwarmDeepAdapter:
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._session_adapters.get(sid)
-            if existing is not None and existing._permission_state.permission_isolated:
-                if not existing._permission_state.permission_cleanup_complete:
-                    await existing._isolate_permission_instance()
-                if not existing._permission_state.permission_cleanup_complete:
+            # Same-class child cleanup remains serialized by this session lock.
+            if (
+                existing is not None
+                and existing._permission_state.permission_isolated  # pylint: disable=protected-access
+            ):
+                if not existing._permission_state.permission_cleanup_complete:  # pylint: disable=protected-access
+                    await existing._isolate_permission_instance()  # pylint: disable=protected-access
+                if not existing._permission_state.permission_cleanup_complete:  # pylint: disable=protected-access
                     raise RuntimeError("permission_session_cleanup_pending")
                 self._drop_session_adapter_cache_entry(
                     sid, remove_lock=False, remove_runtime_state=False,
@@ -4302,7 +4315,11 @@ class JiuWenSwarmDeepAdapter:
             if smart and isinstance(rail, JiuSwarmStreamEventRail):
                 rail = _GeneralPurposeStreamRail()
             elif smart and isinstance(rail, StructuredAskUserRail):
-                rail = _GeneralPurposeAskUserRail(language=rail._language, strict_continuation_contract=False)
+                # Preserve the configured language; the rail has no public getter.
+                rail = _GeneralPurposeAskUserRail(
+                    language=rail._language,  # pylint: disable=protected-access
+                    strict_continuation_contract=False,
+                )
             candidates.append(rail)
         if not self._filesystem_rail_enabled_for_profile():
             candidates = [rail for rail in candidates if not isinstance(rail, SysOperationRail)]
@@ -7508,7 +7525,8 @@ class JiuWenSwarmDeepAdapter:
             rail = None
         return rail
 
-    def _build_stream_event_rail(self) -> JiuSwarmStreamEventRail | None:
+    @staticmethod
+    def _build_stream_event_rail() -> JiuSwarmStreamEventRail | None:
         """Build JiuSwarmStreamEventRail."""
         try:
             stream_event_rail = JiuSwarmStreamEventRail()
@@ -8566,7 +8584,8 @@ class JiuWenSwarmDeepAdapter:
             and isinstance(permissions, dict)
             and is_auto_permission_enabled(permissions)
         ) or any(
-            adapter._uses_smart_permission_lifecycle(config_base)
+            # The router coordinates lifecycle decisions of same-class children.
+            adapter._uses_smart_permission_lifecycle(config_base)  # pylint: disable=protected-access
             for _, adapter in self._iter_session_adapters_for_reload(target_sid)
         )
 
@@ -8592,8 +8611,10 @@ class JiuWenSwarmDeepAdapter:
         )
 
     def _permission_group_types(self) -> tuple[type, ...]:
-        return (*self._permission_rail_types(), RootPermissionQueueRail, RootContextRail,
-                RootPermissionCompletionRail, JiuSwarmStreamEventRail, StructuredAskUserRail)
+        return self._permission_rail_types() + (
+            RootPermissionQueueRail, RootContextRail, RootPermissionCompletionRail,
+            JiuSwarmStreamEventRail, StructuredAskUserRail,
+        )
 
     def _capture_permission_version(self) -> tuple[str, dict[str, Any], dict[str, Any]]:
         """Capture D from the storage owner, including overlay-only changes."""
@@ -8674,10 +8695,17 @@ class JiuWenSwarmDeepAdapter:
         if smart and (permission is None or permission.sys_operation is not self._sys_operation):
             raise RuntimeError("permission_registered_owner_mismatch")
         stream = expected["_stream_event_rail"]
-        if stream is None or stream._root_permission_queue is not (self._root_permission_queue if smart else None):
+        # Assembly must verify the exact installed queue; no public getter exists.
+        if (
+            stream is None
+            or stream._root_permission_queue is not (  # pylint: disable=protected-access
+                self._root_permission_queue if smart else None
+            )
+        ):
             raise RuntimeError("permission_stream_rail_unavailable")
         ask = expected["_ask_user_rail"]
-        if ask is None or ask._strict_continuation_contract is not smart:
+        # The rail exposes a setter only; verify its installed value without mutation.
+        if ask is None or ask._strict_continuation_contract is not smart:  # pylint: disable=protected-access
             raise RuntimeError("permission_ask_rail_unavailable")
 
     async def _isolate_permission_instance(self) -> None:
@@ -8702,7 +8730,7 @@ class JiuWenSwarmDeepAdapter:
                     failures.append(exc)
             # A failed SDK registration can leave callbacks before adding the
             # rail to its list. Clear both existing callback owners as well.
-            managers = [instance._agent_callback_manager]
+            managers = [instance.agent_callback_manager]
             if instance.react_agent is not None:
                 managers.append(instance.react_agent.agent_callback_manager)
             for manager in managers:
@@ -8746,7 +8774,8 @@ class JiuWenSwarmDeepAdapter:
                 epoch, global_layer, effective = snapshot or self._capture_permission_version()
                 smart = is_auto_permission_enabled(global_layer)
                 workspace_root = (
-                    self._require_permission_workspace_binding().runtime_workspace_root if smart else self._workspace_dir
+                    self._require_permission_workspace_binding().runtime_workspace_root
+                    if smart else self._workspace_dir
                 )
                 candidate_config = {**config_base, "permissions": global_layer}
                 expected = self._build_session_permission_group(
@@ -8800,7 +8829,10 @@ class JiuWenSwarmDeepAdapter:
         if self._permission_state.permission_isolated:
             raise RuntimeError("permission_session_isolated")
         current_config = get_config()
-        if not self._permission_state.permission_update_in_progress and not self._uses_smart_permission_lifecycle(current_config):
+        if (
+            not self._permission_state.permission_update_in_progress
+            and not self._uses_smart_permission_lifecycle(current_config)
+        ):
             yield
             return
         sid = self._session_adapter_key(self._parent_session_id)
@@ -9673,14 +9705,12 @@ class JiuWenSwarmDeepAdapter:
         # path builds the initial BM25 snapshot after all pending rails.
         await self._instance.ensure_initialized()
         if self._enable_auto_permission:
-            expected = {
-                name: getattr(self, name)
-                for name in (
-                    "_permission_rail", "_root_permission_queue_rail",
-                    "_root_context_rail", "_root_permission_completion_rail",
-                    "_stream_event_rail", "_ask_user_rail",
-                )
-            }
+            permission_group_names = (
+                "_permission_rail", "_root_permission_queue_rail",
+                "_root_context_rail", "_root_permission_completion_rail",
+                "_stream_event_rail", "_ask_user_rail",
+            )
+            expected = {name: getattr(self, name) for name in permission_group_names}
             self._verify_permission_group(expected, smart=True)
             self._permission_state.permission_epoch = (
                 self._permission_state.pending_permission_epoch
@@ -9825,7 +9855,10 @@ class JiuWenSwarmDeepAdapter:
                 for _, adapter in self._iter_session_adapters_for_reload(None):
                     adapter.refresh_paid_search_tool_for_runtime()
         smart_targets = self._coordinates_smart_permission_lifecycle(config_base, target_sid)
-        if not target_sid or (smart_targets and (permission_delta or reload_scopes == {"permissions"})):
+        mark_all_stale = not target_sid
+        if target_sid and smart_targets:
+            mark_all_stale = permission_delta or reload_scopes == {"permissions"}
+        if mark_all_stale:
             self._mark_session_adapters_stale_for_reload(
                 config_base,
                 env_overrides,

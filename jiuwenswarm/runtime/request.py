@@ -403,6 +403,7 @@ async def prepare_chat_turn(
     canonical_mode = (
         request.params.get("mode") if isinstance(request.params, dict) else None
     )
+
     def admit_request() -> str | None:
         nonlocal session_metadata
         if sync_metadata:

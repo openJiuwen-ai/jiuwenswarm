@@ -16,6 +16,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key imp
 ROOT_PERMISSION_ANSWER_KEY = "_jiuwenswarm_root_permission_answer"
 ROOT_PERMISSION_HANDOFF_KEY = "_jiuwenswarm_root_permission_handoff"
 
+
 @dataclass(slots=True)
 class RootPermissionDispatchHandoff:
     lock: asyncio.Lock
@@ -24,6 +25,7 @@ class RootPermissionDispatchHandoff:
     accepted: bool = False
     closed: bool = False
     superseded_answer: RootPermissionAnswer | None = None
+
 
 class RootPermissionDispatch:
     def __init__(self, queue: RootPermissionQueue) -> None:
@@ -174,7 +176,8 @@ class RootPermissionDispatch:
             handoff.closed = True
             self.handoff = None
 
-    def prepare(self, inputs: dict[str, Any], handoff: RootPermissionDispatchHandoff) -> dict[str, Any]:
+    @staticmethod
+    def prepare(inputs: dict[str, Any], handoff: RootPermissionDispatchHandoff) -> dict[str, Any]:
         answer = inputs.get(ROOT_PERMISSION_ANSWER_KEY)
         if answer is not None and not isinstance(answer, RootPermissionAnswer):
             raise RootPermissionQueueError("permission_queue_answer_invalid")

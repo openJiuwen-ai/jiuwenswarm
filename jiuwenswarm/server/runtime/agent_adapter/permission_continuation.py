@@ -23,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key imp
 
 logger = logging.getLogger(__name__)
 
+
 async def discard_permission_continuation(
     instance: Any,
     target_sid: str,

@@ -1760,9 +1760,9 @@ class AgentManager:
                     owner = self.get_agent_for_session_nowait(channel_id, session_id)
                     if owner is None:
                         raise RootPermissionQueueError("permission_resume_owner_missing")
+                new_task_without_owner = not has_auto_owner and not permission_resume
                 if (
-                    not has_auto_owner
-                    and not permission_resume
+                    new_task_without_owner
                     and session_id
                     and declared_before_admission is not None
                 ):
