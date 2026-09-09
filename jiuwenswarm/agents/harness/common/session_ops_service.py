@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session.session_history import (
     get_read_history_path,
@@ -781,6 +782,7 @@ def _build_context_messages_from_history(
     """
     from openjiuwen.core.foundation.llm.schema.message import (
         OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+        OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL,
         OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
         UserMessage,
@@ -829,12 +831,40 @@ def _build_context_messages_from_history(
         # ── User message ──
         if role == "user":
             if content.strip():
-                source_kind = str(record.get("channel_id") or "history").strip()
+                internal_session_message = (
+                    record.get("message_origin") == SESSION_MESSAGE_ORIGIN
+                )
+                if internal_session_message:
+                    from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
+                        render_cross_session_history_content,
+                    )
+
+                    cross_session = record.get("cross_session")
+                    cross_session = (
+                        dict(cross_session)
+                        if isinstance(cross_session, dict)
+                        else {}
+                    )
+                    language = str(cross_session.get("language") or "zh").strip()
+                    content = render_cross_session_history_content(
+                        content,
+                        cross_session,
+                        language=language,
+                    )
+                source_kind = (
+                    "agent_session"
+                    if internal_session_message
+                    else str(record.get("channel_id") or "history").strip()
+                )
                 context_messages.append(UserMessage(
                     content=content,
                     metadata={
                         OPENJIUWEN_MESSAGE_ORIGIN_METADATA:
-                            OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+                            (
+                                OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL
+                                if internal_session_message
+                                else OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER
+                            ),
                         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
                     },
                 ))

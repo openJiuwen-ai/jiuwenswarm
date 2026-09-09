@@ -174,6 +174,12 @@ class SessionArchiveService:
                 return await self._session(session_id, action, channel_id, project_id)
         return await self._session(session_id, action, channel_id, project_id)
 
+    def _session_message_service(self):
+        """Return the Runtime-attached mailbox, or None when messaging is off."""
+
+        service = getattr(self.runtime, "session_message_service", None)
+        return service if service is not None else None
+
     async def _session(
         self, session_id: str, action: str, channel_id: str, project_id: str
     ) -> dict:
@@ -222,6 +228,10 @@ class SessionArchiveService:
             operation = lc.begin("session", session_id, action, block_execution=action != "archive")
             operation = lc.claim_operation("session", session_id, self._owner_id)
             lc.update("session", session_id, project_id=project_id)
+            mailbox = self._session_message_service() if action == "delete" else None
+            if mailbox is not None:
+                # 删除屏障先于 stop 生效：阻止信箱新执行并取消目标消费者。
+                await mailbox.begin_target_delete(session_id)
             try:
                 if action == "delete":
                     lc.update(
@@ -251,6 +261,9 @@ class SessionArchiveService:
                             result.error_code or "DELETE_FAILED",
                             result.error_message or "delete failed",
                         )
+                    if mailbox is not None:
+                        # queued/running/waiting_user/unknown 统一记 cancelled 并清正文。
+                        await mailbox.on_target_deleted(session_id)
                     payload = dict(session_id=session_id, ok=True, project_id=project_id)
                     lc.complete("session", session_id, deleted=True, result=payload)
                     return payload
@@ -324,6 +337,16 @@ class SessionArchiveService:
                 )
                 return payload
             except Exception as exc:
+                if mailbox is not None:
+                    # 删除失败：解除屏障并恢复该目标的信箱队列消费。
+                    try:
+                        await mailbox.abort_target_delete(session_id)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "session.delete failed to resume mailbox consumer: "
+                            "session_id=%s",
+                            session_id,
+                        )
                 lc.update(
                     "session",
                     session_id,
