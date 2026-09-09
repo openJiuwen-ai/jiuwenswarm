@@ -222,11 +222,11 @@ async def test_http_list_detail_and_raw_preserve_contract(tmp_path: Path) -> Non
         metadata_loader=_metadata_loader(),
     )
 
-    list_response = await service.list_traces("session-1", limit=30, cursor=None)
+    list_response = await service.list_subjects("session-1", after_revision=0)
     list_payload = _response_json(list_response)
-    detail_response = await service.get_trace(
+    detail_response = await service.get_subject(
         "session-1",
-        _TRACE_ID,
+        "main",
         since_revision=0,
         limit=1000,
     )
@@ -235,14 +235,15 @@ async def test_http_list_detail_and_raw_preserve_contract(tmp_path: Path) -> Non
 
     assert list_response.status_code == 200
     assert list_response.headers["cache-control"] == "no-store"
-    assert list_payload["items"][0]["start_time_unix_nano"] == "100"
-    assert list_payload["items"][0]["end_time_unix_nano"] == "200"
-    assert isinstance(list_payload["revision_cursor"], str)
-    assert list_payload["revision_cursor"]
+    assert list_payload["items"][0]["subject_id"] == "main"
+    assert list_payload["items"][0]["first_start_time_unix_nano"] == "100"
+    assert list_payload["items"][0]["record_count"] == 1
+    assert isinstance(list_payload["watermark"], int)
+    assert list_payload["watermark"] > 0
     assert isinstance(list_payload["store_epoch"], str)
     assert list_payload["store_epoch"]
     assert detail_response.status_code == 200
-    assert detail_payload["trace_id"] == _TRACE_ID
+    assert detail_payload["subject_id"] == "main"
     detail_record = detail_payload["records"][0]
     assert detail_record["record_id"] == f"{_TRACE_ID}:{_SPAN_ID}"
     assert detail_record["record_revision"] == 1
@@ -267,29 +268,24 @@ async def test_http_revision_feed_reports_late_trace_change(tmp_path: Path) -> N
         reader=AsyncTrajectoryReader(database_path),
         metadata_loader=_metadata_loader(),
     )
-    list_response = await service.list_traces("session-1", limit=30, cursor=None)
-    revision_cursor = _response_json(list_response)["revision_cursor"]
+    list_response = await service.list_subjects("session-1", after_revision=0)
+    revision_cursor = _response_json(list_response)["watermark"]
     _append_late_span(database_path)
 
-    revision_response = await service.list_revisions(
+    revision_response = await service.list_subjects(
         "session-1",
-        after_revision=revision_cursor,
-        limit=100,
+        after_revision=revision_cursor
     )
     payload = _response_json(revision_response)
 
     assert revision_response.status_code == 200
     assert revision_response.headers["cache-control"] == "no-store"
     assert payload["session_id"] == "session-1"
-    assert payload["items"][0]["trace_id"] == _TRACE_ID
-    assert payload["items"][0]["span_count"] == 2
-    assert payload["items"][0]["start_time_unix_nano"] == "100"
-    assert payload["items"][0]["end_time_unix_nano"] == "300"
-    assert payload["has_more"] is False
-    assert payload["reset"] is False
+    assert payload["items"][0]["subject_id"] == "main"
+    assert payload["items"][0]["record_count"] == 2
+    assert payload["items"][0]["first_start_time_unix_nano"] == "100"
     assert payload["store_epoch"] == _response_json(list_response)["store_epoch"]
-    assert payload["next_cursor"] == payload["watermark"]
-    assert payload["next_cursor"] != revision_cursor
+    assert payload["watermark"] > revision_cursor
     test_logger.info("HTTP revision feed exposed a late update to an old trace")
 
 
@@ -372,14 +368,14 @@ async def test_http_archive_exports_all_current_records_beyond_list_window(
     )
 
     list_payload = _response_json(
-        await service.list_traces("session-1", limit=30, cursor=None)
+        await service.list_subjects("session-1", after_revision=0)
     )
     response = await service.export_archive("session-1")
     payload = _response_json(response)
 
     assert result.inserted == 105
-    assert len(list_payload["items"]) == 30
-    assert list_payload["next_cursor"] is not None
+    assert len(list_payload["items"]) == 1
+    assert list_payload["items"][0]["record_count"] == 106
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["content-disposition"] == (
@@ -596,7 +592,7 @@ async def test_http_revision_feed_exposes_epoch_reset_after_retention(
         metadata_loader=_metadata_loader(),
     )
     baseline_payload = _response_json(
-        await service.list_traces("session-1", limit=30, cursor=None)
+        await service.list_subjects("session-1", after_revision=0)
     )
 
     store = TrajectoryStore(database_path, retention_days=1)
@@ -606,19 +602,17 @@ async def test_http_revision_feed_exposes_epoch_reset_after_retention(
     finally:
         store.close()
 
-    response = await service.list_revisions(
+    response = await service.list_subjects(
         "session-1",
-        after_revision=baseline_payload["revision_cursor"],
-        limit=100,
+        after_revision=baseline_payload["watermark"]
     )
     payload = _response_json(response)
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert payload["items"] == []
-    assert payload["reset"] is True
+    # A rotated epoch is the reset signal now that cursors are plain integers.
     assert payload["store_epoch"] != baseline_payload["store_epoch"]
-    assert payload["next_cursor"] == payload["watermark"]
     test_logger.info("HTTP revision response exposed retention as an epoch reset")
 
 
@@ -631,16 +625,12 @@ async def test_http_revision_feed_rejects_invalid_cursor(tmp_path: Path) -> None
         metadata_loader=_metadata_loader(),
     )
 
-    response = await service.list_revisions(
-        "session-1",
-        after_revision="not-a-cursor",
-        limit=100,
-    )
+    response = await service.list_subjects("session-1", after_revision=-1)
 
     assert response.status_code == 400
     assert response.headers["cache-control"] == "no-store"
     assert _response_json(response)["code"] == "BAD_REQUEST"
-    test_logger.info("invalid revision cursors failed with the stable error envelope")
+    test_logger.info("out-of-range revisions failed with the stable error envelope")
 
 
 @pytest.mark.asyncio
@@ -656,16 +646,10 @@ async def test_http_forbids_auto_harness_sessions(tmp_path: Path) -> None:
         metadata_loader=_metadata_loader("auto_harness.plan"),
     )
 
-    harness_response = await harness_service.list_traces(
-        "session-1",
-        limit=30,
-        cursor=None,
-    )
-    harness_plan_response = await harness_plan_service.list_traces(
-        "session-1",
-        limit=30,
-        cursor=None,
-    )
+    harness_response = await harness_service.list_subjects(
+        "session-1", after_revision=0)
+    harness_plan_response = await harness_plan_service.list_subjects(
+        "session-1", after_revision=0)
 
     assert harness_response.status_code == 403
     assert harness_response.headers["cache-control"] == "no-store"
@@ -695,7 +679,7 @@ async def test_http_accepts_team_sessions_with_team_name(tmp_path: Path) -> None
         reader=AsyncTrajectoryReader(database_path),
         metadata_loader=_team_metadata,
     )
-    response = await team_service.list_traces("session-1", limit=30, cursor=None)
+    response = await team_service.list_subjects("session-1", after_revision=0)
     assert response.status_code == 200
     payload = _response_json(response)
     assert payload["session_id"] == "session-1"
@@ -725,7 +709,7 @@ async def test_http_accepts_new_single_agent_canonical_modes(
         metadata_loader=_metadata_loader(mode),
     )
 
-    response = await service.list_traces("session-1", limit=30, cursor=None)
+    response = await service.list_subjects("session-1", after_revision=0)
 
     assert response.status_code == 200
     assert len(_response_json(response)["items"]) == 1
@@ -749,7 +733,7 @@ async def test_http_rejects_legacy_single_agent_mode_names(
         metadata_loader=_metadata_loader(mode),
     )
 
-    response = await service.list_traces("session-1", limit=30, cursor=None)
+    response = await service.list_subjects("session-1", after_revision=0)
 
     assert response.status_code == 403
     assert _response_json(response)["code"] == "UNSUPPORTED_SESSION_MODE"
@@ -771,8 +755,8 @@ async def test_http_fails_closed_for_unknown_or_missing_session_mode(
         metadata_loader=lambda _session_id: {"session_id": "session-1"},
     )
 
-    unknown_response = await unknown.list_traces("session-1", limit=30, cursor=None)
-    missing_response = await missing.list_traces("session-1", limit=30, cursor=None)
+    unknown_response = await unknown.list_subjects("session-1", after_revision=0)
+    missing_response = await missing.list_subjects("session-1", after_revision=0)
 
     assert unknown_response.status_code == 403
     assert missing_response.status_code == 403
@@ -808,8 +792,8 @@ async def test_http_reports_disabled_and_invalid_session(tmp_path: Path) -> None
         metadata_loader=_metadata_loader(),
     )
 
-    disabled_response = await disabled.list_traces("session-1", limit=30, cursor=None)
-    invalid_response = await enabled.list_traces("../session", limit=30, cursor=None)
+    disabled_response = await disabled.list_subjects("session-1", after_revision=0)
+    invalid_response = await enabled.list_subjects("../session", after_revision=0)
 
     assert disabled_response.status_code == 503
     assert disabled_response.headers["cache-control"] == "no-store"
@@ -838,9 +822,9 @@ async def test_http_follows_a_runtime_settings_toggle(
     # No pinned snapshot: this is how the gateway mounts the service.
     service = TrajectoryHttpService(metadata_loader=_metadata_loader())
 
-    disabled_response = await service.list_traces("session-1", limit=30, cursor=None)
+    disabled_response = await service.list_subjects("session-1", after_revision=0)
     live["settings"] = _settings(store_root)
-    enabled_response = await service.list_traces("session-1", limit=30, cursor=None)
+    enabled_response = await service.list_subjects("session-1", after_revision=0)
 
     assert disabled_response.status_code == 503
     assert _response_json(disabled_response)["code"] == "TRAJECTORY_DISABLED"
@@ -857,13 +841,13 @@ async def test_http_empty_database_returns_an_empty_list(tmp_path: Path) -> None
         metadata_loader=_metadata_loader(),
     )
 
-    response = await service.list_traces("session-1", limit=30, cursor=None)
+    response = await service.list_subjects("session-1", after_revision=0)
     payload = _response_json(response)
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert payload["items"] == []
-    assert payload["next_cursor"] is None
+    assert payload["watermark"] == 0
     assert database_path.exists() is False
     test_logger.info("missing trajectory database remained a successful empty state")
 
@@ -879,10 +863,12 @@ def test_attach_trajectory_routes_registers_all_paths(tmp_path: Path) -> None:
     )
     paths = {getattr(route, "path", None) for route in app.router.routes}
 
-    assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces" in paths
-    assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/revisions" in paths
+    assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects" in paths
     assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/archive" in paths
-    assert f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces/{{trace_id}}" in paths
+    assert (
+        f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects/{{subject_id}}/records"
+        in paths
+    )
     assert (
         f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces/{{trace_id}}/spans/{{span_id}}/raw"
         in paths
@@ -943,18 +929,18 @@ async def test_route_query_validation_keeps_no_store_header(tmp_path: Path) -> N
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         list_response = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces?limit=invalid",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects?after_revision=invalid",
         )
         detail_response = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces/{_TRACE_ID}"
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records"
             "?since_revision=invalid",
         )
         huge_limit_response = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
-            params={"limit": "9" * 5000},
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
+            params={"after_revision": "9" * 5000},
         )
         huge_revision_response = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces/{_TRACE_ID}",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records",
             params={"since_revision": "9" * 5000},
         )
 
@@ -965,7 +951,7 @@ async def test_route_query_validation_keeps_no_store_header(tmp_path: Path) -> N
     assert huge_limit_response.status_code == 400
     assert huge_limit_response.headers["cache-control"] == "no-store"
     assert huge_limit_response.json() == {
-        "error": "limit must be an integer",
+        "error": "after_revision must be an integer",
         "code": "BAD_REQUEST",
     }
     assert huge_revision_response.status_code == 400
@@ -997,13 +983,13 @@ async def test_framework_trajectory_errors_are_json_and_non_cacheable(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         not_found = await client.get(f"{TRAJECTORY_API_PREFIX}/missing")
         method_not_allowed = await client.post(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces"
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
         )
         validation_error = await client.get(
             f"{TRAJECTORY_API_PREFIX}/validation-probe"
         )
         trace_not_found = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces/{_TRACE_ID}"
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records"
         )
 
     assert not_found.status_code == 404
@@ -1027,7 +1013,7 @@ async def test_framework_trajectory_errors_are_json_and_non_cacheable(
     assert trace_not_found.status_code == 404
     assert trace_not_found.headers["cache-control"] == "no-store"
     assert trace_not_found.json() == {
-        "error": "trace not found",
+        "error": "subject not found",
         "code": "NOT_FOUND",
     }
     test_logger.info("framework 404, 405, and 422 responses used the HTTP envelope")
@@ -1050,22 +1036,22 @@ async def test_routes_reuse_webchannel_origin_gate(
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         rejected = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
             headers={"Origin": "https://evil.example"},
         )
         allowed = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
             headers={"Origin": "https://trusted.example"},
         )
         same_origin_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
             headers={
                 "Host": "trusted.example",
                 "Sec-Fetch-Site": "same-origin",
             },
         )
         spoofed_host_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
             headers={
                 "Host": "evil.example",
                 "Sec-Fetch-Site": "same-origin",
@@ -1073,14 +1059,14 @@ async def test_routes_reuse_webchannel_origin_gate(
             },
         )
         cross_site_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
             headers={
                 "Host": "trusted.example",
                 "Sec-Fetch-Site": "cross-site",
             },
         )
         cross_site_with_allowed_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
             headers={
                 "Host": "trusted.example",
                 "Origin": "https://trusted.example",
@@ -1088,7 +1074,7 @@ async def test_routes_reuse_webchannel_origin_gate(
             },
         )
         allowed_referer_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces",
+            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
             headers={
                 "Host": "trusted.example",
                 "Referer": "https://trusted.example/app",
@@ -1146,26 +1132,22 @@ async def test_http_internal_failures_return_stable_generic_messages(tmp_path: P
         ),
     )
 
-    query_response = await query_service.list_traces(
-        "session-1",
-        limit=30,
-        cursor=None,
-    )
+    query_response = await query_service.list_subjects(
+        "session-1", after_revision=0)
     valid_revision_cursor = _response_json(
         await TrajectoryHttpService(
             _settings(tmp_path / "baseline.sqlite3"),
             metadata_loader=_metadata_loader(),
-        ).list_traces("session-1", limit=30, cursor=None)
-    )["revision_cursor"]
-    revision_response = await query_service.list_revisions(
+        ).list_subjects("session-1", after_revision=0)
+    )["watermark"]
+    revision_response = await query_service.list_subjects(
         "session-1",
-        after_revision=valid_revision_cursor,
-        limit=100,
+        after_revision=valid_revision_cursor
     )
     archive_response = await query_service.export_archive("session-1")
-    detail_response = await query_service.get_trace(
+    detail_response = await query_service.get_subject(
         "session-1",
-        _TRACE_ID,
+        "main",
         since_revision=0,
         limit=1000,
     )
@@ -1174,11 +1156,8 @@ async def test_http_internal_failures_return_stable_generic_messages(tmp_path: P
         _TRACE_ID,
         _SPAN_ID,
     )
-    metadata_response = await metadata_service.list_traces(
-        "session-1",
-        limit=30,
-        cursor=None,
-    )
+    metadata_response = await metadata_service.list_subjects(
+        "session-1", after_revision=0)
 
     for response in (
         query_response,
@@ -1199,37 +1178,6 @@ async def test_http_internal_failures_return_stable_generic_messages(tmp_path: P
         "code": "SESSION_LOOKUP_FAILED",
     }
     test_logger.info("internal exception details remained server-side")
-
-
-@pytest.mark.asyncio
-async def test_http_rejects_noncanonical_and_oversized_cursors(tmp_path: Path) -> None:
-    service = TrajectoryHttpService(
-        _settings(tmp_path / "trajectory.sqlite3"),
-        metadata_loader=_metadata_loader(),
-    )
-
-    responses = [
-        await service.list_traces("session-1", limit=30, cursor="e30!!!"),
-        await service.list_traces("session-1", limit=30, cursor="e30="),
-        await service.list_traces("session-1", limit=30, cursor="A" * 513),
-        await service.list_traces("session-1", limit=30, cursor="e30"),
-        await service.list_revisions(
-            "session-1",
-            after_revision="e30!!!",
-            limit=100,
-        ),
-        await service.list_revisions(
-            "session-1",
-            after_revision="e30",
-            limit=100,
-        ),
-    ]
-
-    for response in responses:
-        assert response.status_code == 400
-        assert response.headers["cache-control"] == "no-store"
-        assert _response_json(response)["code"] == "BAD_REQUEST"
-    test_logger.info("noncanonical cursor text was rejected before SQLite decoding")
 
 
 def test_web_proxy_preserves_canonical_outer_host_without_loopback(
@@ -1283,7 +1231,7 @@ def test_web_proxy_preserves_canonical_outer_host_without_loopback(
     handler.headers.add_header("X-JiuwenSwarm-Original-Host", "evil.example")
     handler.headers.add_header("Connection", "keep-alive")
     handler.command = "GET"
-    handler.path = f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces"
+    handler.path = f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
     handler.api_target = "http://127.0.0.1:19090"
     handler.rfile = io.BytesIO()
     handler.wfile = io.BytesIO()
@@ -1357,7 +1305,7 @@ def test_real_web_proxy_preserves_outer_host_and_guards_all_trajectory_reads(
 
     with _serve_asgi(app) as gateway_port:
         with _serve_web_proxy(gateway_port, tmp_path) as proxy_port:
-            list_path = f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces"
+            list_path = f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
             status, headers, body = _proxy_get(
                 proxy_port,
                 list_path,
@@ -1368,12 +1316,12 @@ def test_real_web_proxy_preserves_outer_host_and_guards_all_trajectory_reads(
             )
             assert status == 200
             assert headers["cache-control"] == "no-store"
-            revision_cursor = json.loads(body)["revision_cursor"]
+            revision_cursor = json.loads(body)["watermark"]
             paths = (
                 list_path,
-                f"{TRAJECTORY_API_PREFIX}/sessions/session-1/revisions"
-                f"?after_revision={quote(revision_cursor, safe='')}",
-                f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces/{_TRACE_ID}",
+                f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
+                f"?after_revision={revision_cursor}",
+                f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records",
                 f"{TRAJECTORY_API_PREFIX}/sessions/session-1/traces/{_TRACE_ID}"
                 f"/spans/{_SPAN_ID}/raw",
             )

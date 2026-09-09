@@ -1233,6 +1233,59 @@ class AsyncTrajectoryReader:
                 await connection.close()
         return _cumulative_request_usage(tuple(facts.values())), store_epoch
 
+    async def get_session_archive_records(
+        self,
+        session_id: str,
+    ) -> tuple[list[dict[str, Any]], str, int]:
+        """Read every current record for one session from one SQLite snapshot."""
+        connection = await self._connect(session_id)
+        if connection is None:
+            return [], _ABSENT_STORE_EPOCH, 0
+        try:
+            await connection.execute("BEGIN")
+            store_epoch = await _read_store_epoch(connection)
+            revision = await _session_revision_watermark(connection, session_id)
+            query = f"""
+                WITH {_ELIGIBLE_TRACES_CTE}
+                SELECT current.trace_id AS trace_id,
+                       current.span_id AS span_id,
+                       current.parent_span_id AS parent_span_id,
+                       current.session_id AS session_id,
+                       current.request_id AS request_id,
+                       current.run_id AS run_id,
+                       current.agent_mode AS agent_mode,
+                       current.lifecycle AS lifecycle,
+                       current.record_revision AS record_revision,
+                       current.change_seq AS change_seq,
+                       current.start_time_unix_nano AS start_time_unix_nano,
+                       current.observed_time_unix_nano AS observed_time_unix_nano,
+                       current.end_time_unix_nano AS end_time_unix_nano,
+                       current.schema_version AS schema_version,
+                       current.source AS source,
+                       current.created_at AS created_at,
+                       {_CURRENT_RAW_JSON} AS raw_json,
+                       current.raw_sha256 AS raw_sha256,
+                       current.update_kind AS update_kind
+                FROM trajectory_current_records AS current
+                {_CURRENT_ARCHIVE_JOIN}
+                INNER JOIN eligible_traces
+                    ON eligible_traces.trace_id = current.trace_id
+                WHERE current.session_id = ?
+                ORDER BY current.start_time_unix_nano ASC,
+                         current.trace_id ASC,
+                         current.span_id ASC
+            """
+            params: tuple[Any, ...] = (
+                *_trajectory_scope_params(),
+                session_id,
+            )
+            async with connection.execute(query, params) as statement:
+                rows = await statement.fetchall()
+        finally:
+            await connection.rollback()
+            await connection.close()
+        return [_archive_record_from_row(row) for row in rows], store_epoch, revision
+
     async def list_subjects(
         self,
         session_id: str,
