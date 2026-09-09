@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -24,6 +24,7 @@ class _SessionAdmissionState:
     team_user_active: bool = False
     heartbeat_run_id: str | None = None
     heartbeat_blocked: bool = False
+    pending_interrupt_ids: set[str] = field(default_factory=set)
 
 
 class SessionRunAdmission:
@@ -66,6 +67,33 @@ class SessionRunAdmission:
         if state is None or state.heartbeat_run_id is None:
             return False
         return state.heartbeat_run_id != str(exclude_run_id or "")
+
+    def has_pending_interaction(self, session_id: str) -> bool:
+        state = self._states.get(session_id)
+        return bool(state and state.pending_interrupt_ids)
+
+    async def mark_interaction_pending(
+        self, session_id: str, request_id: str
+    ) -> None:
+        """Keep automated turns out while a tool interrupt awaits its answer."""
+        async with self._condition:
+            state = self._state(session_id)
+            state.pending_interrupt_ids.add(str(request_id or ""))
+
+    async def clear_interaction_pending(
+        self, session_id: str, request_id: str | None = None
+    ) -> None:
+        """Clear the matching answered interrupt, or all interrupts on teardown."""
+        async with self._condition:
+            state = self._states.get(session_id)
+            if state is None:
+                return
+            if request_id is None:
+                state.pending_interrupt_ids.clear()
+            else:
+                state.pending_interrupt_ids.discard(str(request_id or ""))
+            self._drop_idle_state(session_id, state)
+            self._condition.notify_all()
 
     async def block_heartbeats(self, session_id: str) -> str | None:
         """Prevent new Heartbeats while a Session deletion is prepared."""
@@ -186,7 +214,11 @@ class SessionRunAdmission:
                 state.team_user_submissions or state.team_user_active
             )
             user_has_work = direct_user_work or team_user_work
-            session_has_work = user_has_work or state.heartbeat_run_id is not None
+            session_has_work = (
+                user_has_work
+                or state.heartbeat_run_id is not None
+                or bool(state.pending_interrupt_ids)
+            )
             if state.heartbeat_blocked or session_has_work:
                 return False
             state.heartbeat_run_id = run_id
@@ -209,7 +241,11 @@ class SessionRunAdmission:
             state.team_user_submissions or state.team_user_active
         )
         user_has_work = direct_user_work or team_user_work
-        session_has_work = user_has_work or state.heartbeat_run_id is not None
+        session_has_work = (
+            user_has_work
+            or state.heartbeat_run_id is not None
+            or bool(state.pending_interrupt_ids)
+        )
         if not session_has_work and not state.heartbeat_blocked:
             self._states.pop(session_id, None)
 
@@ -253,7 +289,7 @@ class HeartbeatExecutionService:
         ) or self._admission.is_heartbeat_active(
             session_id,
             exclude_run_id=exclude_run_id,
-        )
+        ) or self._admission.has_pending_interaction(session_id)
 
     def has_active_run(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)

@@ -2535,6 +2535,16 @@ class AgentWebSocketServer:
                             )
                             async with send_lock:
                                 await send_wire_payload(ws, wire)
+                if (
+                    intent in ("cancel", "supplement")
+                    and cancel_response is not None
+                    and cancel_response.ok
+                    and not (
+                        isinstance(cancel_response.payload, dict)
+                        and cancel_response.payload.get("success") is False
+                    )
+                ):
+                    await self._clear_pending_interaction(sid)
                 return
             await self._ensure_auto_team_binding_for_chat(request)
             if request.is_stream:
@@ -3589,6 +3599,26 @@ class AgentWebSocketServer:
             return False
         return not bool(is_user_active(request.session_id or "default"))
 
+    async def _mark_pending_interaction(
+        self, session_id: str, request_id: str
+    ) -> None:
+        admission = getattr(
+            getattr(self, "_heartbeat_runtime", None), "admission", None
+        )
+        marker = getattr(admission, "mark_interaction_pending", None)
+        if callable(marker):
+            await marker(session_id, request_id)
+
+    async def _clear_pending_interaction(
+        self, session_id: str, request_id: str | None = None
+    ) -> None:
+        admission = getattr(
+            getattr(self, "_heartbeat_runtime", None), "admission", None
+        )
+        clearer = getattr(admission, "clear_interaction_pending", None)
+        if callable(clearer):
+            await clearer(session_id, request_id)
+
     async def _handle_unary(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
@@ -3610,10 +3640,16 @@ class AgentWebSocketServer:
             and not is_team_params(request.params)
         )
         session_id = request.session_id or "default"
-        if admitted and is_interrupt_resume_payload(request.params):
+        interrupt_resume = is_interrupt_resume_payload(request.params)
+        if admitted and interrupt_resume:
             admitted = self._should_admit_interrupt_resume(request)
         if admitted:
             await self._heartbeat_runtime.admission.begin_user(session_id)
+        if interrupt_resume:
+            await self._clear_pending_interaction(
+                session_id,
+                str((request.params or {}).get("request_id") or ""),
+            )
         try:
             await self._handle_unary_impl(ws, request, send_lock)
             kvc_task_succeeded = True
@@ -3698,6 +3734,16 @@ class AgentWebSocketServer:
         if getattr(resp, "agent_ref", None) is None:
             resp.agent_ref = request.agent_ref
 
+        payload = getattr(resp, "payload", None)
+        if (
+            isinstance(payload, dict)
+            and payload.get("event_type") == "chat.ask_user_question"
+        ):
+            await self._mark_pending_interaction(
+                request.session_id or "default",
+                str(payload.get("request_id") or ""),
+            )
+
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -3728,10 +3774,16 @@ class AgentWebSocketServer:
             and not is_team_params(request.params)
         )
         session_id = request.session_id or "default"
-        if admitted and is_interrupt_resume_payload(request.params):
+        interrupt_resume = is_interrupt_resume_payload(request.params)
+        if admitted and interrupt_resume:
             admitted = self._should_admit_interrupt_resume(request)
         if admitted:
             await self._heartbeat_runtime.admission.begin_user(session_id)
+        if interrupt_resume:
+            await self._clear_pending_interaction(
+                session_id,
+                str((request.params or {}).get("request_id") or ""),
+            )
         admission_released = False
 
         async def _release_admission_once() -> None:
@@ -3903,6 +3955,14 @@ class AgentWebSocketServer:
                 # content. Preserve the prompt on every start frame so clients
                 # never replace this run's visible user turn with an empty one.
                 payload = chunk.payload
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.ask_user_question"
+                ):
+                    await self._mark_pending_interaction(
+                        request.session_id or "default",
+                        str(payload.get("request_id") or ""),
+                    )
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -4013,6 +4073,15 @@ class AgentWebSocketServer:
         try:
             async for chunk in response_stream:
                 chunk_count += 1
+                payload = getattr(chunk, "payload", None)
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.ask_user_question"
+                ):
+                    await self._mark_pending_interaction(
+                        session_id,
+                        str(payload.get("request_id") or ""),
+                    )
                 # 通知 keepalive 有真实 chunk 发送，重置空闲计时。
                 keepalive.notify_activity(terminal=chunk.is_complete)
                 # V2: chunk 回带请求侧 agent_ref，供 gateway 3 元组精确路由
