@@ -40,6 +40,21 @@ An earlier version of the same task counted reads on the *container* instead of 
 
 **`error` is a channel, not a formality.** Whatever you write there reaches the next mutation prompt as `${feedback}` — up to 4 000 characters, room for an eval summary, timing rows and a profile — and it is the one place per-candidate, task-specific diagnosis can steer the search. Write it for valid candidates too; that is how the next one learns what to keep.
 
+**When the candidate raised, `error` must say *where*, not only *what* — and the probe refuses the folder if it does not.** A candidate is hundreds of lines; `TypeError('solve returned None')` points at none of them, so the repair step can only tear the whole program down and rewrite it, and a rewrite usually does not run. Use a trimmed `traceback.format_exc()`, which carries a file and a line:
+
+```python
+import traceback
+try:
+    answer = solve(case)
+except Exception:                       # noqa: BLE001 - the candidate is what is judged
+    finish(False, {}, f"solve failed on case {case!r}:\n"
+                      + traceback.format_exc(limit=3)[-1200:])
+```
+
+Measured, before the rule existed: five candidates crashed in one run, the repair pass fired four times and landed once, and two of the five were the same one-line bug found from scratch each time. Measured, after: a folder whose evaluator wrote `"solve failed on x=-0.368: TypeError('solve returned None (expected a float)')"` was refused at `PROBE_REFUSED` with *the scoring says what a bad candidate raised but not where* — no model calls spent.
+
+**A semantic failure needs no line**, and the probe does not ask for one: "round trip does not match", "budget exhausted on 3 of 6", "a point was assigned a centroid that is not its nearest". The rule is about the exception path. So do not `raise` your own `TypeError` to report a shape problem you detected yourself — say it in words and write `valid: false`; raising turns a clean semantic message into an exception whose traceback points at your evaluator rather than at the candidate.
+
 ### A program that is not Python
 
 Neither side has to be Python. The candidate is whatever file `seed/` contains, and the evaluator is whatever the card says to run.

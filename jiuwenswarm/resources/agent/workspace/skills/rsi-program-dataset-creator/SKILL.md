@@ -1,6 +1,6 @@
 ---
-name: program-evolution-design
-description: 'Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on "make this code faster", "search for a better implementation", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.'
+name: rsi-program-dataset-creator
+description: Use for program evolution — improving a working program by repeated search against a measured score, rather than by one edit. Covers both halves: deciding what is measured and how a candidate program is scored, and writing that decision into the task folder the run reads (`task.json`, `seed/`, `run/scorecard.json`, every parameter set). Triggers on "make this code faster", "search for a better implementation", staging or debugging a task folder, writing a scorecard or an evaluator, and on a `PROBE_REFUSED`, `SEARCH_FAILED` or `ARTIFACT_BUNDLE_INCOMPLETE` a run came back with.
 metadata:
   version: 3.0.0
 ---
@@ -78,37 +78,53 @@ But "simplest" means simplest *of the right kind*: the seed has to contain the m
 
 ## Step 2 — The environment the run will use
 
-**Do this first.** Both the evaluator and every candidate run in one interpreter, and if what they import is not there, nothing in the rest of this file matters: the run is refused before a single model call.
+**Do this first.** If what the seed imports is not there, nothing in the rest of this file matters: the folder is refused before a single model call — sometimes before the run is even created.
 
-Candidates run on **this machine**, in an interpreter you can reach and prepare. Preparing it is a step you do here, by hand, before the run: `packages` in the card cannot do it for you — a list a model wrote is not allowed to install itself onto someone's computer, and any entry in it refuses the run with the `pip install` line for you to run yourself.
+**Two interpreters have to have it, not one.**
 
-### Find the interpreter, and do not guess it
+* **The candidate runtime** — where the evaluator and every candidate actually run. It is whatever `python` resolves to on `PATH` for the process running the provider, **not** the virtualenv the provider itself is installed in. Those are routinely different: measured on one machine, the provider ran from a project `.venv` on 3.12 while candidates ran on `/opt/anaconda3/bin/python`, 3.9.
+* **The provider's own interpreter** — the virtualenv the server runs from. The pre-flight AST gate, the one that reads your seed the moment the folder is selected, decides "is this import installed" with `importlib.util.find_spec` **in its own process**. It has no way to reach the candidate runtime at that point, so a package that is present for candidates and absent from the server's venv is refused with a message that names the wrong environment:
 
-It is whatever `python` resolves to on `PATH` for the process running the provider — **not the virtualenv the provider itself is installed in**. Those are routinely different, and installing into the wrong one looks exactly like installing into the right one:
+  ```
+  import 'scipy.special' is not installed in the candidate runtime
+  ```
+
+  Measured: `scipy` 1.13.1 in the candidate runtime, no `scipy` at all in the server's venv, folder refused at selection time. The message points at the runtime that is fine.
+
+Preparing both is a step you do here, by hand: `packages` in the card cannot do it for you — a list a model wrote is not allowed to install itself onto someone's computer, and any entry in it refuses the run with the `pip install` line for you to run yourself.
+
+### Find both, and do not guess either
 
 ```bash
-python -c "import sys; print(sys.executable, sys.version.split()[0])"
+# the candidate runtime
+python -c "import sys; print('candidates:', sys.executable, sys.version.split()[0])"
+# the provider's own — the venv the server was started from
+<server-venv>/bin/python -c "import sys; print('provider:', sys.executable, sys.version.split()[0])"
 ```
 
-Measured on one machine: the provider ran from a project `.venv` on 3.12, and candidates ran on `/opt/anaconda3/bin/python`, 3.9. A `pip install` into the venv would have changed nothing, and the refusal would have repeated word for word.
+Installing into the wrong one looks exactly like installing into the right one, and the refusal repeats word for word.
 
-### Install what the task needs, into that one
+### Install what the seed imports, into both
 
 ```bash
-python -m pip install scikit-learn "xgboost==2.1.0"
+python -m pip install scikit-learn "xgboost==2.1.0"            # candidate runtime
+<server-venv>/bin/python -m pip install scikit-learn xgboost    # provider, so the gate can see them
 ```
 
-Then confirm it from the same place the run will ask, and keep the versions — `statement` should name what you *verified*, never what you tried to install:
+Then confirm from both, and keep the candidate runtime's versions — `statement` should name what you *verified there*, never what you tried to install:
 
 ```bash
 python -c "import sklearn, xgboost; print(sklearn.__version__, xgboost.__version__)"
+<server-venv>/bin/python -c "import importlib.util as u; print(all(u.find_spec(m) for m in ('sklearn', 'xgboost')))"
 ```
+
+The provider only ever asks whether the name resolves, so its copy need not match the candidate runtime's version — but it has to exist, or the folder is refused before the run.
 
 **Say what you changed about the machine.** Installing into someone's interpreter is a side effect that outlives the run, and bootstrapping `pip` into a virtualenv that deliberately had none (`python -m ensurepip`) is a larger one. Do it when the task needs it, and report it in one line with the folder — the reader is the person who has to live with that interpreter.
 
 **Everything your evaluator imports counts too, not just what candidates import.** The evaluator runs in the same interpreter — if it does `import numpy` to build cases, numpy has to be there. An evaluator that needs nothing outside the standard library is one fewer thing to arrange, and is worth preferring when the task allows it.
 
-**A Python candidate may also import `numpy`, `pandas`, `scipy` and `sklearn` without asking**: the AST gate admits them, so the engine probes for them before the run and refuses if they are missing. Have those four, or expect that refusal. (They are not probed when the entrypoint is not Python — see "A program that is not Python".)
+**A Python candidate may also import `numpy`, `pandas`, `scipy` and `sklearn` without asking**: the AST gate admits them, so the engine probes for them in the candidate runtime before the run and refuses if they are missing. Have those four in both interpreters, or expect that refusal. (They are not probed when the entrypoint is not Python — see "A program that is not Python".)
 
 ### If the program is not Python
 
@@ -246,7 +262,7 @@ out   = os.environ["SCIENCE_AGENT_RESULT"]      # write one JSON object here, no
 json.dump({"valid": True, "metrics": {"score": 0.83}, "error": ""}, open(out, "w"))
 ```
 
-Five rules that decide whether the run works at all, each expanded in the reference file: the docstring is the contract the model sees and must not carry the answer key; write to the result file, not stdout; use the shards you are given; survive a broken candidate — including one that returns `None` instead of raising; and measure the work rather than a proxy for it, because a proxy is what the search will find its way around.
+Six rules that decide whether the run works at all, each expanded in the reference file: the docstring is the contract the model sees and must not carry the answer key; write to the result file, not stdout; use the shards you are given; survive a broken candidate — including one that returns `None` instead of raising; **when a candidate raised, report `error` as a trimmed `traceback.format_exc()` so it carries a file and a line — the probe refuses a folder whose exception message says only what went wrong and not where**; and measure the work rather than a proxy for it, because a proxy is what the search will find its way around.
 
 ## Step 7 — `run/prompts/` and `reply_format`
 
@@ -254,7 +270,7 @@ Prompt wording is optional and the built-ins are complete; `reply_format` defaul
 
 ## Before handing it over
 
-Run the checker. It checks the shape, the key set against the template, and the numbers' floors; it never imports the seed and never runs the evaluator.
+Run the checker. It checks the shape, the key set against the template, and the numbers' floors; it never imports the seed and never runs the evaluator. Lines it prints as `warning:` are smells it cannot prove — read them, do not ignore them.
 
 ```bash
 python scripts/check_folder.py <task-folder>
@@ -264,17 +280,19 @@ Then, in the order they would fail:
 
 1. Step 2 is done: the interpreter that will run candidates imports everything your evaluator and your seed need, checked from that interpreter rather than from yours.
 2. The check above prints `ok`.
-3. Your evaluator runs against your seed, once, and writes the result file. You are checking that what you wrote executes — a typo, a missing import, a file never written. **You are checking the ruler, not looking for the answer**: do not go hunting for a candidate that beats the seed. That is the search's entire job, done by hand, at the cost of the turn — and succeeding is worse than failing, because you then either throw the answer away or seed it, and a strong seed spends the search space before the search begins. A seed that no obvious variation beats is a good seed, not a problem to solve first. **Do not score a damaged copy yourself**: the discrimination probe does exactly that, on the real shards, in the interpreter the run uses, and reports both numbers when the run starts. If your own number and the probe's disagree, the probe's is the one that is true — it measured the real thing.
-4. Every seed file the evaluator names exists under `seed/`, and the folder is its own directory named for the task — `nearest-centroid/`, not the project root you happened to be working in. The name is part of the deliverable: it is what the caller picks from a list.
-5. Hand over the folder's path as `artifact_path`. Nothing else travels with it; a caller that must fill in `max_iterations` takes it from `task.json`, where it equals the card's.
-6. **Read the baseline number the probe reports, not just whether it passed.** It refuses a start at or above the solved threshold, and also one whose headroom is small next to the damage signal — but a start that clears both can still be a bad one. Anything near either bound means the scoring has little room, whatever the probe said. Aim for 0.3–0.7.
+3. Your evaluator's failure path writes a traceback, not just a sentence: feed it a candidate that raises (one line, `def solve(x): raise ValueError("boom")`) and check the `error` it writes carries a file and a line. This is what the probe refuses folders for.
+4. Your evaluator runs against your seed, once, and writes the result file. You are checking that what you wrote executes — a typo, a missing import, a file never written. **You are checking the ruler, not looking for the answer**: do not go hunting for a candidate that beats the seed. That is the search's entire job, done by hand, at the cost of the turn — and succeeding is worse than failing, because you then either throw the answer away or seed it, and a strong seed spends the search space before the search begins. A seed that no obvious variation beats is a good seed, not a problem to solve first. **Do not score a damaged copy yourself**: the discrimination probe does exactly that, on the real shards, in the interpreter the run uses, and reports both numbers when the run starts. If your own number and the probe's disagree, the probe's is the one that is true — it measured the real thing.
+5. Every seed file the evaluator names exists under `seed/`, and the folder is its own directory named for the task — `nearest-centroid/`, not the project root you happened to be working in. The name is part of the deliverable: it is what the caller picks from a list.
+6. Hand over the folder's path as `artifact_path`. Nothing else travels with it; a caller that must fill in `max_iterations` takes it from `task.json`, where it equals the card's.
+7. **Read the baseline number the probe reports, not just whether it passed.** It refuses a start at or above the solved threshold, and also one whose headroom is small next to the damage signal — but a start that clears both can still be a bad one. Anything near either bound means the scoring has little room, whatever the probe said. Aim for 0.3–0.7.
 
 ## When a run comes back refused
 
 | `error_code` | what it means |
 |---|---|
 | `ARTIFACT_BUNDLE_INCOMPLETE` | the path is a folder with one half of the layout — the message names which of `seed/` and `run/scorecard.json` is missing. |
-| `PROBE_REFUSED` | the scoring cannot separate the seed from a damaged copy, or the seed does not run, or the interpreter is missing something the card asked for. The message names which. |
+| `PROBE_REFUSED` | the scoring cannot separate the seed from a damaged copy, or the seed does not run, or your `error` reports an exception without saying where it happened (write a trimmed `traceback.format_exc()` — Step 6), or the interpreter is missing something the card asked for. The message names which. |
+| `import 'x' is not installed in the candidate runtime` (at folder selection, before any run) | the pre-flight gate asked its *own* interpreter, not the candidate runtime — see Step 2. Install `x` into the server's venv as well, and check both the way Step 2 does. |
 | `SEARCH_FAILED` | the engine refused the configuration (a `measure.kind` other than `custom_script` or a card mixing kinds, unknown normalisation, unknown `reply_format`, `gateShards` below 4, an empty `script`, a missing candidate runtime, an unknown `mode`), no expansion produced a candidate that ran, or the search loop itself stopped on an error — the message says which, and for the last one carries the error. |
 | `MODELCONFIG` | no model instance was injected — an AgentServer wiring problem, not yours. |
 | `EXECUTIONUNAVAILABLE` | no way to run candidates was configured, and none could be built. |

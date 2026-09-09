@@ -68,5 +68,16 @@ if mut.is_file() and "${reply_format}" not in mut.read_text(): problems.append("
 source = root / card.get("evaluator_file", "evaluate.py")
 if source.is_file() and source.read_text() != card.get("script"):
     problems.append(f"{source.name} differs from the card's script: re-assemble the card")
+# Runtime behaviour this script cannot test, only smell: the probe refuses a
+# folder whose `error` reports an exception without saying where it happened.
+warnings = []
+script = str(card.get("script", ""))
+if str(card.get("evaluator_file", "")).endswith(".py") and "except" in script and "traceback" not in script:
+    warnings.append("script catches exceptions but never imports traceback: if the damaged copy "
+                    "the probe runs raises, `error` will say what and not where, and the folder is "
+                    "refused (PROBE_REFUSED). Write a trimmed traceback.format_exc().")
+
 print("\n".join(problems) or f"ok: {root} is complete")
+for w in warnings:
+    print(f"warning: {w}")
 sys.exit(1 if problems else 0)
