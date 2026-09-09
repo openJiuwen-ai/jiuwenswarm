@@ -112,7 +112,7 @@ def test_agent_rebuild_reregisters_cron_tools() -> None:
     }
 
 
-@pytest.mark.parametrize("session_id", ["heartbeat_1", "cron_job_7"])
+@pytest.mark.parametrize("session_id", ["heartbeat_1", "cron_job_7", "__cron___18f2c1_ab12cd34"])
 def test_scheduler_driven_sessions_get_no_cron_tools(session_id: str) -> None:
     """Heartbeat and cron sessions drive the scheduler; they must not carry the tools."""
     adapter, counters = _make_adapter()
@@ -133,3 +133,31 @@ def test_empty_build_result_is_not_cached_as_registered() -> None:
 
     assert adapter._cron_tools_registered_language is None
     assert adapter._instance.ability_manager.cards == []
+
+
+def test_cron_execution_session_strips_residual_cron_tools() -> None:
+    """Tools registered by a normal session must not leak into a cron run.
+
+    The agent instance is shared across sessions; without the strip, a cron
+    execution session would inherit cron_create_job from a previous normal
+    turn and re-create schedules from task text like "每天 9 点…"。
+    """
+    adapter, counters = _make_adapter()
+    adapter._ensure_cron_tools_registered("sess_a")
+    assert {card.name for card in adapter._instance.ability_manager.cards} == {
+        "cron",
+        "cron_list_jobs",
+    }
+
+    adapter._ensure_cron_tools_registered("__cron___18f2c1_ab12cd34")
+
+    assert adapter._instance.ability_manager.cards == []
+    assert adapter._cron_tools_registered_language is None
+
+    # A later normal session must re-register through the regular path.
+    adapter._ensure_cron_tools_registered("sess_a")
+    assert counters["build"] == 2
+    assert {card.name for card in adapter._instance.ability_manager.cards} == {
+        "cron",
+        "cron_list_jobs",
+    }

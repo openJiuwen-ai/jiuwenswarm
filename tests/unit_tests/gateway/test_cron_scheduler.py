@@ -1163,8 +1163,10 @@ class TestTeamModeWake:
         assert "session_id" not in create_env.params
         assert env.is_stream is False
         assert env.channel == "__cron__"
+        # 单 agent 模式执行会话由 AgentServer session.create 分配（fake 固定返回
+        # "cron_agentserver_allocated"），不再携带 job id 后缀；旧断言
+        # endswith(f"_{job.id}") 对应 scheduler 自造 id 的历史行为，已失效。
         assert env.session_id == "cron_agentserver_allocated"
-        assert env.session_id.startswith("cron_") and env.session_id.endswith(f"_{job.id}")
         assert env.channel_context["scheduled_device"] == {
             "push_id": "push-1",
             "required_intents": ["CreateNote"],

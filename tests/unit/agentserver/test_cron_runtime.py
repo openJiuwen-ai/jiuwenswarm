@@ -1164,3 +1164,62 @@ class TestExtractLegacyParamsKindCronClearsDeleteAfterRun:
         out = _extract_legacy_params(payload, context=context, require_schedule=False)
 
         assert out["delete_after_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_create_job_rejected_inside_cron_run() -> None:
+    """调度执行现场禁止再建新任务（防任务翻倍兜底）。
+
+    scheduler._run_agent 会在 request metadata 下发 {"cron": {"job_id",
+    "run_id"}}；处于调度执行中的会话调 create_job 必须直接拒绝，
+    避免"每天/每周…"任务描述被模型再建一遍调度。
+    """
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    context = SimpleNamespace(
+        channel_id="web",
+        session_id="__cron___18f2c1_ab12cd34",
+        metadata={
+            "request_id": "req-123",
+            "cron": {"job_id": "job-9", "run_id": "run-9"},
+            "targets": "web",
+        },
+    )
+
+    with pytest.raises(ValueError, match="调度执行现场"):
+        await backend.create_job(
+            {
+                "name": "daily",
+                "cron_expr": "0 9 * * *",
+                "timezone": "Asia/Shanghai",
+                "description": "每天提醒喝水",
+            },
+            context=context,
+        )
+
+    assert cron_tools.create_payloads == []
+    assert cron_tools.routes == []
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_create_job_allowed_without_cron_metadata() -> None:
+    """普通对话（metadata 无 cron 字段）不受兜底防线影响。"""
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    context = SimpleNamespace(
+        channel_id="web",
+        session_id="sess-1",
+        metadata={"request_id": "req-123"},
+    )
+
+    await backend.create_job(
+        {
+            "name": "daily",
+            "cron_expr": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "description": "hello",
+        },
+        context=context,
+    )
+
+    assert len(cron_tools.create_payloads) == 1

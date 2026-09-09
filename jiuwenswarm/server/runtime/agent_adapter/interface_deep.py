@@ -6499,7 +6499,13 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             session_id: Session the current turn belongs to. Heartbeat and cron
                 sessions drive the scheduler themselves and get no cron tools.
         """
-        if session_id is not None and session_id.startswith(("heartbeat", "cron")):
+        if session_id is not None and session_id.startswith(("heartbeat", "cron", "__cron__")):
+            # 单 agent 模式的 cron 执行会话 id 形如 "__cron___{ts}_{hex}"（warm pool
+            # 以 channel_id="__cron__" 作前缀生成，见 agent_warm_pool._new_session_id），
+            # 此前只判 "cron" 前缀会漏掉它。且 agent 实例跨会话共享：普通会话注册过的
+            # cron 工具须在此主动摘除，否则执行中的模型仍能调 cron_create_job，
+            # 把任务描述里"每天/每周…"等字样再建一遍定时任务。
+            self._remove_registered_cron_tools()
             return
         language = self._resolve_runtime_language()
         registered_names = {
@@ -6530,6 +6536,31 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
         except Exception as exc:
             logger.error("[JiuWenSwarmDeepAdapter] 定时工具注册失败: %s", exc)
+
+    def _remove_registered_cron_tools(self) -> None:
+        """摘除共享 agent 实例上已注册的 cron 工具。
+
+        调度器自驱会话（heartbeat / "cron_" / "__cron__" 前缀）不携带 cron 工具；
+        agent 实例跨会话复用，普通会话注册的工具会残留到 cron 执行现场，必须
+        主动移除。注册指纹同步复位，让后续普通会话走常规路径重新注册。
+        """
+        try:
+            registered = [
+                existing
+                for existing in (self._instance.ability_manager.list() or [])
+                if getattr(existing, "name", "") in _CRON_TOOL_NAMES
+            ]
+            if not registered:
+                return
+            for existing in registered:
+                self._instance.ability_manager.remove(existing.name)
+            self._cron_tools_registered_language = None
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] %d cron tools removed for scheduler-owned session",
+                len(registered),
+            )
+        except Exception as exc:
+            logger.error("[JiuWenSwarmDeepAdapter] 定时工具移除失败: %s", exc)
 
     async def _update_session_tools(
         self,
