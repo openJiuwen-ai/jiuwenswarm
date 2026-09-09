@@ -124,6 +124,9 @@ async function mountConnection(context, sessionIds) {
   const socket = dom.sockets[0];
   return {
     runtime: (sessionId = sessionIds[0]) => useChatStore.getState().getRuntime(sessionId),
+    receive(event, payload) {
+      act(() => socket.receive(event, payload));
+    },
     delta(sessionId, content) {
       act(() => socket.receive('chat.delta', { session_id: sessionId, content }));
     },
@@ -181,6 +184,61 @@ test('tool call within the batch interval preserves the entire previous segment 
     assert.equal(runtime.messages[1].isStreaming, true);
     connection.tick(16);
     assert.deepEqual(connection.runtime().messages.map((message) => message.content), [fullContent, '下一段正文。']);
+  } finally {
+    await connection.dispose();
+  }
+});
+
+test('closing the last teammate preserves team data and accepts its replacement in the same turn', async (context) => {
+  const sessionId = 'team-member-replacement';
+  const connection = await mountConnection(context, [sessionId]);
+  const store = useSessionStore.getState();
+  const member = (type, memberId) => connection.receive('team.member', {
+    session_id: sessionId,
+    event: { type: `team.member.${type}`, member_id: memberId, status: 'ready', role: 'teammate' },
+  });
+  try {
+    store.setMode(sessionId, 'team');
+    member('spawned', 'member-a');
+    const tasks = [{ task_id: 'existing-task', team_name: 'test-team', title: 'Keep task', status: 'completed' }];
+    store.setTeamTasks(sessionId, tasks);
+    member('shutdown', 'member-a');
+    assert.deepEqual(store.getRuntime(sessionId).teamMembers, []);
+    assert.deepEqual(store.getRuntime(sessionId).teamTasks, tasks, 'member shutdown must not erase team tasks');
+
+    connection.receive('team.task', {
+      session_id: sessionId,
+      event: { type: 'team.task.created', task_id: 'next-task', team_name: 'test-team', title: 'Next task', status: 'pending' },
+    });
+    assert.ok(store.getRuntime(sessionId).teamTasks.some((task) => task.task_id === 'next-task'));
+    member('registered', 'member-b');
+    member('spawned', 'member-b');
+    member('restarted', 'member-b');
+    assert.deepEqual(store.getRuntime(sessionId).teamMembers.map((item) => item.member_id), ['member-b']);
+  } finally {
+    await connection.dispose();
+  }
+});
+
+test('closing one teammate preserves other members and ignores duplicate shutdown notifications', async (context) => {
+  const sessionId = 'team-member-shutdown';
+  const connection = await mountConnection(context, [sessionId]);
+  const store = useSessionStore.getState();
+  try {
+    store.setMode(sessionId, 'team');
+    for (const memberId of ['member-a', 'member-b']) {
+      connection.receive('team.member', {
+        session_id: sessionId,
+        event: { type: 'team.member.spawned', member_id: memberId, status: 'ready' },
+      });
+    }
+    for (let i = 0; i < 2; i++) {
+      connection.receive('team.member', {
+        session_id: sessionId,
+        event: { type: 'team.member.shutdown', member_id: 'member-a' },
+      });
+    }
+    assert.deepEqual(store.getRuntime(sessionId).teamMembers.map((item) => item.member_id), ['member-b']);
   } finally {
     await connection.dispose();
   }

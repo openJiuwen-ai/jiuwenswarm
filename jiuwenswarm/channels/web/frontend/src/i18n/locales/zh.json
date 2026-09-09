@@ -3054,10 +3054,10 @@
     }
   },
   "subagent": {
-    "title": "Subagents",
-    "compactTitle": "Subagents（{{count}}）",
+    "title": "子智能体",
+    "compactTitle": "子智能体（{{count}}）",
     "activeListTitle": "当前活跃 {{count}}",
-    "expand": "展开 Subagents",
+    "expand": "展开子智能体",
     "selectWithStatus": "选择 {{name}}，状态：{{status}}",
     "running": "运行中",
     "idle": "待机中",
@@ -3068,7 +3068,7 @@
     "activityTitle": "活动",
     "activityEmpty": "暂无活动",
     "historyLoading": "正在恢复历史…",
-    "empty": "暂无 Subagent",
+    "empty": "暂无子智能体",
     "activity": {
       "thinking": "思考",
       "toolCall": "工具调用",
