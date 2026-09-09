@@ -8171,6 +8171,9 @@ class JiuWenSwarmDeepAdapter:
         ]
         configured_subagents, should_add_general_agent = self._build_configured_subagents(model, config, config_base)
         # Hot reload uses configure(); factory inject does not run again.
+        # Disabled tools are enforced by DisabledToolsRail on parent + inherited
+        # onto general-purpose (stock agent-core copies non-SubagentRail rails);
+        # do not pass disabled_tools= here — older openjiuwen factory rejects it.
         configured_subagents = _inject_general_purpose_subagent(
             configured_subagents,
             add_general_purpose_agent=should_add_general_agent,
