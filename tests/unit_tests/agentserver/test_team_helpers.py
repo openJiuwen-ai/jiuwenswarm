@@ -380,6 +380,15 @@ class _InactiveTeamRuntimeManagerMixin:
     def pop_held_idle(self, session_id: str):
         return self.__dict__.setdefault("_test_held_idle", {}).pop(session_id, None)
 
+    def get_background_task_controller(self, session_id: str):
+        # Real TeamManager owns the per-session controller; the helpers reach it
+        # through get_team_manager(), so a patched manager must serve one too.
+        from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+
+        return self.__dict__.setdefault("_test_controllers", {}).setdefault(
+            session_id, BackgroundTaskController()
+        )
+
     @staticmethod
     def is_runtime_active(session_id: str) -> bool:
         _ = session_id

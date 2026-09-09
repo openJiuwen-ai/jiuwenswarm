@@ -143,9 +143,7 @@ def _new_team_event_queue() -> asyncio.Queue:
 
 def get_background_task_controller(session_id: str) -> BackgroundTaskController:
     """Return the session's BackgroundTaskController (owned by TeamManager)."""
-    from jiuwenswarm.agents.harness.team import get_team_manager
-
-    return get_team_manager().get_background_task_controller(session_id)
+    return get_team_manager(None).get_background_task_controller(session_id)
 
 
 def classify_swarmflow_control_miss(
@@ -990,6 +988,24 @@ def _resolve_user_turn(
 
 # 历史渲染过滤锚点：advisory 文本进历史时按此标记剔除（渲染层/摘要层各自过滤）。
 _ADVISORY_MARK = ("[swarmflow-advisory]", "[/swarmflow-advisory]")
+
+
+def _should_inject_swarmflow_advisory(
+    swarmflow_config: dict[str, Any], query: Any, runs: dict[str, WorkflowRunState],
+) -> bool:
+    """Whether the leader's turn gets the paused-run advisory prefix.
+
+    Only swarmflow-enabled sessions, only a plain-text query (A2UI /
+    InteractiveInput keep their own payload), only when there is something to
+    list, and only when the text is addressed to the team — a member-addressed
+    message is delivered by the message system, never seen by the leader.
+    """
+    return bool(
+        swarmflow_config.get("enable_swarmflow")
+        and isinstance(query, str)
+        and runs
+        and not _is_member_addressed(query)
+    )
 
 
 def _advisory_runs(team_manager: Any, session_id: str) -> dict[str, WorkflowRunState]:
@@ -2651,7 +2667,7 @@ async def _process_team_message_stream(
                 # team-wide 纯文本；member/A2UI/InteractiveInput 保持原路径。
                 # args 由 agent-core 从 journal 自动恢复，提示只含 resume_id+script_path。
                 runs = _advisory_runs(team_manager, session_id)
-                if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
+                if _should_inject_swarmflow_advisory(swarmflow_config, query, runs):
                     turn = _inject_swarmflow_context(
                         turn.with_text(query), runs, cold_start=False,
                         controller=get_background_task_controller(session_id),
@@ -2862,7 +2878,7 @@ async def _process_team_message_stream(
             # 冷启动恢复裁决：可恢复 run 清单以文本前缀注入 leader 上下文——非终态
             # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
             runs = _advisory_runs(team_manager, session_id)
-            if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
+            if _should_inject_swarmflow_advisory(swarmflow_config, query, runs):
                 turn = _inject_swarmflow_context(
                     turn.with_text(query), runs, cold_start=True,
                     controller=get_background_task_controller(session_id),
