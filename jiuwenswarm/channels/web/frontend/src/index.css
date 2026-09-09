@@ -454,7 +454,7 @@ body.workspace-resize-active iframe {
     min-height: 0;
     overflow: hidden;
     background: var(--color-surface-card);
-    padding-top: 64px;
+    padding-top: 32px;
     padding-bottom: 24px;
   }
 
@@ -476,8 +476,8 @@ body.workspace-resize-active iframe {
 
   /* 滚动列/详情滚动体的内层限宽：滚动容器两侧已各让出 8px 滚动条槽，
      故在 100% 基础上扣 96-16=80px，与 .page-shell（100%-96px）内容线严格对齐 */
-  .page-scroll > *,
-  .detail-body > * {
+  .page-scroll>*,
+  .detail-body>* {
     width: min(1400px, calc(100% - 80px));
     margin-right: auto;
     margin-left: auto;
