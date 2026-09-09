@@ -25,6 +25,11 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime import (
+    SessionProvisionCommitTiming,
+    SessionProvisionState,
+    SessionSwitchResult,
+)
 from jiuwenswarm.observability.session_delete import trajectory_session_accepts_records
 from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStoreError
 
@@ -2474,26 +2479,49 @@ async def test_handle_session_switch_delegates_product_lifecycle(
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     prepare_calls = []
-    kvc_calls = []
+    commit_calls = []
+    prepared = types.SimpleNamespace(
+        state=SessionProvisionState.PREPARED,
+        result=SessionSwitchResult(
+            channel_id="web",
+            session_id="sess_002",
+            mode=resolved_mode,
+        ),
+    )
 
-    async def _prepare_session_switch(**kwargs):
-        prepare_calls.append(kwargs)
-        return is_team, resolved_mode, object(), None, object()
+    async def _start():
+        return None
 
-    async def _dispatch_kvc(**kwargs):
-        kvc_calls.append(kwargs)
+    async def _prepare_session_switch(provision_input):
+        prepare_calls.append(provision_input)
+        return prepared
+
+    async def _commit_session_provision(
+        prepared_input,
+        *,
+        timing,
+        context,
+    ):
+        commit_calls.append((prepared_input, timing, context))
+        prepared_input.state = SessionProvisionState.COMMITTED
+        return prepared_input.result
+
+    async def _abort_session_provision(prepared_input):
+        prepared_input.state = SessionProvisionState.ABORTED
+
+    runtime = types.SimpleNamespace(
+        start=_start,
+        prepare_session_switch=_prepare_session_switch,
+        commit_session_provision=_commit_session_provision,
+        abort_session_provision=_abort_session_provision,
+    )
 
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
-    monkeypatch.setattr(
-        server,
-        "_prepare_session_switch_owner",
-        _prepare_session_switch,
-    )
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", _dispatch_kvc)
+    monkeypatch.setattr(server, "_execution_runtime", lambda: runtime)
 
     request = AgentRequest(
         request_id="req-session-switch",
@@ -2512,15 +2540,12 @@ async def test_handle_session_switch_delegates_product_lifecycle(
         asyncio.Lock(),
     )
 
-    assert prepare_calls == [
-        {
-            "channel_id": "web",
-            "target_session_id": "sess_002",
-            "previous_session_id": "sess_001",
-            "params": request.params,
-            "reason": "session.switch: ",
-        }
-    ]
+    assert len(prepare_calls) == 1
+    assert prepare_calls[0].channel_id == "web"
+    assert prepare_calls[0].target_session_id == "sess_002"
+    assert prepare_calls[0].previous_session_id == "sess_001"
+    assert prepare_calls[0].mode == mode
+    assert prepare_calls[0].team_hint is False
     assert fake_ws.sent[-1] == {
         "response_id": "req-session-switch",
         "payload": {
@@ -2530,10 +2555,12 @@ async def test_handle_session_switch_delegates_product_lifecycle(
         },
         "ok": True,
     }
-    await asyncio.sleep(0)
-    assert len(kvc_calls) == 1
-    assert kvc_calls[0]["target_session_id"] == "sess_002"
-    assert kvc_calls[0]["previous_session_id"] == "sess_001"
+    assert len(commit_calls) == 1
+    assert commit_calls[0][0] is prepared
+    assert commit_calls[0][1] is (
+        SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
+    )
+    assert commit_calls[0][2].foreground_scope_id == f"ws:{id(fake_ws)}"
 
 
 @pytest.mark.asyncio
@@ -2543,25 +2570,51 @@ async def test_handle_session_switch_records_foreground_before_ack(monkeypatch):
     fake_ws = FakeWebSocket()
     kvc_started = asyncio.Event()
     kvc_release = asyncio.Event()
+    prepared = types.SimpleNamespace(
+        state=SessionProvisionState.PREPARED,
+        result=SessionSwitchResult(
+            channel_id="web",
+            session_id="sess_002",
+            mode="agent.plan",
+        ),
+    )
 
-    async def _prepare_session_switch(**_kwargs):
-        return False, "agent.plan", object(), None, object()
+    async def _start():
+        return None
 
-    async def _slow_kvc(**_kwargs):
+    async def _prepare_session_switch(_provision_input):
+        return prepared
+
+    async def _commit_session_provision(
+        prepared_input,
+        *,
+        timing,
+        context,
+    ):
+        assert timing is SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
+        assert context.foreground_scope_id == f"ws:{id(fake_ws)}"
+        prepared_input.state = SessionProvisionState.COMMITTING
         kvc_started.set()
         await kvc_release.wait()
+        prepared_input.state = SessionProvisionState.COMMITTED
+        return prepared_input.result
+
+    async def _abort_session_provision(prepared_input):
+        prepared_input.state = SessionProvisionState.ABORTED
+
+    runtime = types.SimpleNamespace(
+        start=_start,
+        prepare_session_switch=_prepare_session_switch,
+        commit_session_provision=_commit_session_provision,
+        abort_session_provision=_abort_session_provision,
+    )
 
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
-    monkeypatch.setattr(
-        server,
-        "_prepare_session_switch_owner",
-        _prepare_session_switch,
-    )
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", _slow_kvc)
+    monkeypatch.setattr(server, "_execution_runtime", lambda: runtime)
 
     request = AgentRequest(
         request_id="req-session-switch-async-kvc",
@@ -2663,9 +2716,12 @@ async def test_handle_session_switch_serializes_reentrant_requests(monkeypatch):
     active_prepares = 0
     max_active_prepares = 0
 
-    async def _prepare_session_switch(**kwargs):
+    async def _start():
+        return None
+
+    async def _prepare_session_switch(provision_input):
         nonlocal active_prepares, max_active_prepares
-        target_session_id = kwargs["target_session_id"]
+        target_session_id = provision_input.target_session_id
         prepare_order.append(target_session_id)
         active_prepares += 1
         max_active_prepares = max(max_active_prepares, active_prepares)
@@ -2673,18 +2729,42 @@ async def test_handle_session_switch_serializes_reentrant_requests(monkeypatch):
             first_prepare_started.set()
             await release_first_prepare.wait()
         active_prepares -= 1
-        return False, "agent.plan", None, None, None
+        return types.SimpleNamespace(
+            state=SessionProvisionState.PREPARED,
+            result=SessionSwitchResult(
+                channel_id=provision_input.channel_id,
+                session_id=target_session_id,
+                mode="agent.plan",
+            ),
+        )
+
+    async def _commit_session_provision(
+        prepared_input,
+        *,
+        timing,
+        context,
+    ):
+        assert timing is SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
+        assert context.foreground_scope_id == f"ws:{id(fake_ws)}"
+        prepared_input.state = SessionProvisionState.COMMITTED
+        return prepared_input.result
+
+    async def _abort_session_provision(prepared_input):
+        prepared_input.state = SessionProvisionState.ABORTED
+
+    runtime = types.SimpleNamespace(
+        start=_start,
+        prepare_session_switch=_prepare_session_switch,
+        commit_session_provision=_commit_session_provision,
+        abort_session_provision=_abort_session_provision,
+    )
 
     monkeypatch.setattr(
         agent_ws_server_module,
         "encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
-    monkeypatch.setattr(
-        server,
-        "_prepare_session_switch_owner",
-        _prepare_session_switch,
-    )
+    monkeypatch.setattr(server, "_execution_runtime", lambda: runtime)
 
     first_request = AgentRequest(
         request_id="req-session-switch-first",

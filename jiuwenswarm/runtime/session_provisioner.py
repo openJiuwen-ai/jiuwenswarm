@@ -206,7 +206,8 @@ class SessionProvisionCommitContext:
     ``foreground_scope_id`` can carry a Server-owned view scope without
     exposing how it was derived.  It is not Session identity.  The contract
     pins it only while a failed/cancelled commit remains retryable and clears
-    it after successful finalization.
+    it after terminal finalization, whether the commit succeeds or propagates
+    an operation-declared terminal failure/cancellation.
     """
 
     foreground_scope_id: str | None = None
@@ -220,15 +221,18 @@ class PreparedSessionProvision(Generic[_ResultT]):
     Any foreground scope is supplied only inside an opaque commit context; the
     Runtime never derives or interprets a connection/view identity and keeps
     the opaque scope only while a failed commit remains retryable.
-    Finalizers must be retry-safe because an exception or cancellation leaves
+    Finalizers are retryable by default: an exception or cancellation leaves
     the lease in ``COMMITTING`` or ``ABORTING`` for the same decision to be
-    retried.  Once either finalizer starts, the opposite decision is rejected
-    even if that finalizer fails partway through.  Commit retries must use the
-    same normalized context as the first attempt.
+    retried.  An operation whose commit attempt is explicitly terminal keeps
+    the original exception but completes the lease after its commit hook has
+    started; this models an established operation that cannot be rolled back.
+    Once either finalizer starts, the opposite decision is rejected.  Commit
+    retries must use the same normalized context as the first attempt.
     """
 
     __slots__ = (
         "_abort_hook",
+        "_commit_attempt_is_terminal",
         "_commit_context",
         "_commit_hook",
         "_commit_timing",
@@ -248,6 +252,7 @@ class PreparedSessionProvision(Generic[_ResultT]):
             Callable[[SessionProvisionCommitContext], Awaitable[None]] | None
         ) = None,
         abort_hook: Callable[[], Awaitable[None]] | None = None,
+        commit_attempt_is_terminal: bool = False,
     ) -> None:
         self._owner_token = owner_token
         self._result = result
@@ -255,6 +260,7 @@ class PreparedSessionProvision(Generic[_ResultT]):
         self._commit_context: SessionProvisionCommitContext | None = None
         self._commit_hook = commit_hook
         self._abort_hook = abort_hook
+        self._commit_attempt_is_terminal = commit_attempt_is_terminal
         self._state = SessionProvisionState.PREPARED
         self._finalize_lock = asyncio.Lock()
 
@@ -312,7 +318,15 @@ class PreparedSessionProvision(Generic[_ResultT]):
                     "session provision commit context does not match first attempt"
                 )
             if self._commit_hook is not None:
-                await self._commit_hook(self._commit_context or context)
+                try:
+                    await self._commit_hook(self._commit_context or context)
+                except BaseException:
+                    if self._commit_attempt_is_terminal:
+                        self._state = SessionProvisionState.COMMITTED
+                        self._commit_context = None
+                        self._commit_hook = None
+                        self._abort_hook = None
+                    raise
             self._state = SessionProvisionState.COMMITTED
             self._commit_context = None
             self._commit_hook = None
@@ -476,6 +490,107 @@ class RuntimeSessionProvisioner:
         """Replace the optional lifecycle participant owned by the host."""
         self._delete_lifecycle = lifecycle
 
+    async def prepare_session_switch(
+        self,
+        provision_input: SessionSwitchInput,
+    ) -> PreparedSessionProvision[SessionSwitchResult]:
+        """Prepare one product Session switch without transport state.
+
+        Team ownership is prepared immediately.  The optional foreground/KVC
+        transition is retained as a Runtime-owned commit hook so callers can
+        apply it at the required before-result delivery boundary.
+        """
+        channel_id = str(provision_input.channel_id or "").strip() or "default"
+        target_session_id = str(
+            provision_input.target_session_id or ""
+        ).strip()
+        previous_session_id = str(
+            provision_input.previous_session_id or ""
+        ).strip()
+        if not target_session_id:
+            raise SessionProvisionError(
+                "session_id is required",
+                code="BAD_REQUEST",
+            )
+
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from jiuwenswarm.runtime.request import resolve_agent_request_mode
+
+        _, _, resolved_mode = resolve_agent_request_mode(provision_input.mode)
+        target_is_team = provision_input.team_hint or is_team_mode(
+            provision_input.mode
+        )
+        switch_context = None
+        dispatch_signals = None
+        switch_params = {
+            "mode": provision_input.mode,
+            "previous_mode": provision_input.previous_mode,
+            "team": provision_input.team_hint,
+        }
+        try:
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                dispatch_session_switch_signals,
+                resolve_session_switch_context,
+            )
+
+            switch_context = resolve_session_switch_context(
+                target_session_id=target_session_id,
+                previous_session_id=previous_session_id,
+                params=switch_params,
+            )
+            target_is_team = switch_context.target_is_team
+            resolved_mode = switch_context.resolved_mode
+            dispatch_signals = dispatch_session_switch_signals
+        except Exception as exc:
+            logger.warning(
+                "Session switch KVC context unavailable; preserving product "
+                "lifecycle: target_session_id=%s error=%s",
+                target_session_id,
+                exc,
+            )
+
+        previous_is_team = bool(
+            switch_context and switch_context.previous_is_team
+        )
+        if target_is_team or previous_is_team:
+            from jiuwenswarm.agents.harness.team import get_team_manager
+
+            team_manager = get_team_manager(channel_id)
+            await team_manager.prepare_session_switch(
+                target_session_id,
+                previous_session_id=(
+                    previous_session_id if previous_is_team else None
+                ),
+                reason="session.switch: ",
+            )
+
+        async def commit_switch(
+            context: SessionProvisionCommitContext,
+        ) -> None:
+            if switch_context is None or dispatch_signals is None:
+                return
+            await dispatch_signals(
+                context=switch_context,
+                channel_id=channel_id,
+                target_session_id=target_session_id,
+                previous_session_id=previous_session_id,
+                view_id=context.foreground_scope_id or "default-view",
+            )
+
+        result = SessionSwitchResult(
+            channel_id=channel_id,
+            session_id=target_session_id,
+            mode=resolved_mode,
+        )
+        return self._stage_session_provision(
+            result,
+            commit_timing=(
+                SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
+            ),
+            commit_hook=commit_switch,
+            commit_attempt_is_terminal=True,
+        )
+
     async def prepare_session_fork(
         self,
         provision_input: SessionForkInput,
@@ -574,14 +689,15 @@ class RuntimeSessionProvisioner:
             Callable[[SessionProvisionCommitContext], Awaitable[None]] | None
         ) = None,
         abort_hook: Callable[[], Awaitable[None]] | None = None,
+        commit_attempt_is_terminal: bool = False,
     ) -> PreparedSessionProvision[_ResultT]:
         """Build an owned lease after an operation-specific prepare succeeds.
 
         This factory is intentionally private.  Future ``prepare_session_*``
         methods register Runtime-owned finalizers here; transports receive only
         the opaque lease and cannot inject executable callbacks.  A finalizer
-        must be idempotent and retry-safe because failures leave the lease in
-        a retryable finalizing state.
+        must be idempotent and retry-safe unless the operation explicitly
+        models an irreversible, terminal commit attempt.
         """
         return PreparedSessionProvision(
             owner_token=self._provision_owner_token,
@@ -589,6 +705,7 @@ class RuntimeSessionProvisioner:
             commit_timing=commit_timing,
             commit_hook=commit_hook,
             abort_hook=abort_hook,
+            commit_attempt_is_terminal=commit_attempt_is_terminal,
         )
 
     async def commit_session_provision(

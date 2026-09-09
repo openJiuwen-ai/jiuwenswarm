@@ -24,6 +24,8 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionProvisionCommitTiming,
     SessionProvisionResult,
     SessionProvisionState,
+    SessionSwitchInput,
+    SessionSwitchResult,
 )
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
@@ -384,6 +386,26 @@ class AgentRuntime:
         prepared: PreparedSessionProvision[SessionForkResult] | None = None
         try:
             prepared = await self._session_provisioner.prepare_session_fork(
+                provision_input
+            )
+            return prepared
+        finally:
+            self._session_provision_prepares -= 1
+            if prepared is not None:
+                self._pending_session_provisions.add(prepared)
+
+    async def prepare_session_switch(
+        self,
+        provision_input: SessionSwitchInput,
+    ) -> PreparedSessionProvision[SessionSwitchResult]:
+        """Prepare a transport-neutral Session switch on this Runtime."""
+        async with self._lifecycle_lock:
+            self._require_started()
+            self._session_provision_prepares += 1
+
+        prepared: PreparedSessionProvision[SessionSwitchResult] | None = None
+        try:
+            prepared = await self._session_provisioner.prepare_session_switch(
                 provision_input
             )
             return prepared

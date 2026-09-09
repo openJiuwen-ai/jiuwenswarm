@@ -60,9 +60,11 @@ from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_C
 from jiuwenswarm.runtime import (
     AgentRuntime,
     SessionForkInput,
+    SessionProvisionCommitContext,
     SessionProvisionCommitTiming,
     SessionProvisionError,
     SessionProvisionState,
+    SessionSwitchInput,
 )
 from jiuwenswarm.server.runtime.agent_warm_pool import WarmClaim
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
@@ -3763,7 +3765,7 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Switch product sessions without deleting recoverable session state."""
+        """Translate ``session.switch`` between WebSocket wire and Runtime."""
         params = request.params if isinstance(request.params, dict) else {}
         target = str(params.get("session_id") or request.session_id or "").strip()
         previous_session_id = str(params.get("previous_session_id") or "").strip()
@@ -3789,49 +3791,71 @@ class AgentWebSocketServer:
             _session_switch_locks[lock_key] = switch_lock
 
         async with switch_lock:
-            (
-                _,
-                resolved_mode,
-                context,
-                team_manager,
-                dispatch_signals,
-            ) = await self._prepare_session_switch_owner(
-                channel_id=channel_id,
-                target_session_id=target,
-                previous_session_id=previous_session_id,
-                params=params,
-                reason="session.switch: ",
+            runtime = self._execution_runtime()
+            prepared = None
+            commit_context = SessionProvisionCommitContext(
+                foreground_scope_id=str(
+                    params.get("view_id") or f"ws:{id(ws)}"
+                )
             )
-            kvc_args: dict[str, Any] | None = None
-            if context is not None and dispatch_signals is not None:
-                kvc_args = {
-                    "channel_id": channel_id,
-                    "target_session_id": target,
-                    "previous_session_id": previous_session_id,
-                    "context": context,
-                    "dispatch_signals": dispatch_signals,
-                    "view_id": str(params.get("view_id") or f"ws:{id(ws)}"),
-                }
-                # This now records only in-memory foreground facts and
-                # dispatches any eligible action in the background.  Apply it
-                # before ack so an immediate chat.send cannot observe the new
-                # Session as background.
-                await self._dispatch_session_switch_kvc(**kvc_args)
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={
-                    "session_id": target,
-                    "mode": resolved_mode,
-                    "switched": True,
-                },
-                metadata=request.metadata,
-            )
+            try:
+                await runtime.start()
+                prepared = await runtime.prepare_session_switch(
+                    SessionSwitchInput(
+                        channel_id=channel_id,
+                        target_session_id=target,
+                        previous_session_id=previous_session_id,
+                        mode=params.get("mode", "agent.plan"),
+                        previous_mode=params.get("previous_mode"),
+                        team_hint=bool(params.get("team")),
+                    )
+                )
+                result = await runtime.commit_session_provision(
+                    prepared,
+                    timing=(
+                        SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
+                    ),
+                    context=commit_context,
+                )
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={
+                        "session_id": result.session_id,
+                        "mode": result.mode,
+                        "switched": result.switched,
+                    },
+                    metadata=request.metadata,
+                )
 
-            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-            async with send_lock:
-                await send_wire_payload(ws, wire)
+                wire = encode_agent_response_for_wire(
+                    resp,
+                    response_id=request.request_id,
+                )
+                async with send_lock:
+                    await send_wire_payload(ws, wire)
+            finally:
+                primary_error = sys.exception()
+                if (
+                    prepared is not None
+                    and prepared.state is SessionProvisionState.PREPARED
+                ):
+                    try:
+                        await runtime.abort_session_provision(prepared)
+                    except asyncio.CancelledError:
+                        if primary_error is None:
+                            raise
+                        logger.warning(
+                            "[AgentServer] session.switch abort was cancelled "
+                            "while preserving %s",
+                            type(primary_error).__name__,
+                        )
+                    except Exception as abort_exc:  # noqa: BLE001
+                        logger.warning(
+                            "[AgentServer] session.switch abort failed: %s",
+                            abort_exc,
+                        )
 
 
     async def _find_team_session_ids(self, team_name: str) -> list[str]:
