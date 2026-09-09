@@ -80,3 +80,13 @@
 /jiuwenswarm/agents/harness/common/rails/skill_retrieval_prompt_rail.py @CodehubTTG
 /jiuwenswarm/agents/harness/common/tools/skill_toolkits.py @CodehubTTG
 /jiuwenswarm/agents/harness/common/tools/skill_retrieval_toolkits.py @CodehubTTG
+
+
+/jiuwenswarm/agents/harness/code/ @NickFuryXXX
+/jiuwenswarm/agents/harness/team/ @liutao_1998
+/jiuwenswarm/server/runtime/agent_adapter/evolution_version.py @xinyang_bali
+/jiuwenswarm/server/runtime/agent_adapter/evolution_slash.py @xinyang_bali
+/jiuwenswarm/server/runtime/agent_adapter/evolution_helpers.py @xinyang_bali
+/jiuwenswarm/agents/harness/agent_observability.py @xinyang_bali
+/jiuwenswarm/agents/harness/observability_runtime.py @xinyang_bali
+/jiuwenswarm/agents/swarm/providers/evolution_rails.py @xinyang_bali
