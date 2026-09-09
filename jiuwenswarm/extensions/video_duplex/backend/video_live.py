@@ -23,6 +23,10 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
 )
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import qwen_omni_tools
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
+from jiuwenswarm.server.runtime.session.session_metadata import (
+    get_session_metadata,
+    update_session_metadata,
+)
 _ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _LOG_WRITE_LOCK = threading.Lock()
 
@@ -54,6 +58,9 @@ _REALTIME_TELEMETRY_FIELDS = {
     "audio_level", "speech_threshold", "cancel_event_sent",
     "replacing_pending_prompt", "instruction_chars", "frame_time_range",
     "audio_sequence", "image_sequence", "error_type", "raw_event",
+    "speech_probability",
+    "queued_count", "result_kind", "brief_chars",
+    "latency_ms", "inference_ms", "wait_ms", "dropped_chunks",
 }
 
 
@@ -486,6 +493,8 @@ def register_video_live_handler(
         extra: dict[str, Any] | None = None
         if kind == "assistant":
             event_type = "chat.final"
+            if params.get("presentation") == "tool_result":
+                extra = {"presentation": "tool_result"}
         elif kind == "reasoning":
             event_type = "chat.reasoning"
             extra = {
@@ -523,6 +532,22 @@ def register_video_live_handler(
             extra = {"tool_result": tool_result}
             content = ""
 
+        previous_title: str | None = None
+        if role == "user" and content.strip():
+            # Refresh before history writes so a rename by AgentServer is respected.
+            metadata = get_session_metadata(visible_session_id, cache_bust=True)
+            previous_title = str(metadata.get("title") or "")
+            if previous_title == "Full-duplex conversation":
+                # Older plugin versions persisted this placeholder as a real title.
+                # Reuse Jiuwen's auto-title policy when that conversation resumes.
+                update_session_metadata(
+                    session_id=visible_session_id,
+                    clear_title=True,
+                    user_content=content,
+                    touch_last_message_at=False,
+                    sync_write=True,
+                )
+
         append_history_record(
             session_id=visible_session_id,
             request_id=f"video-duplex-{event_id}",
@@ -534,6 +559,15 @@ def register_video_live_handler(
             extra=extra,
             mode="agent",
         )
+        if previous_title is not None:
+            title = str(get_session_metadata(visible_session_id).get("title") or "")
+            if title and title != previous_title:
+                # The native listener updates both the header and workspace sidebar.
+                await channel.send_event(ws, "session.updated", {
+                    "session_id": visible_session_id,
+                    "title": title,
+                    "display_title": title,
+                })
         await channel.send_response(
             ws,
             req_id,

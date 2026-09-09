@@ -49,7 +49,8 @@ export function TaskFullDuplexAction({
       stopTaskFullDuplex();
       return;
     }
-    const readySessionId = await ensureSession('Full-duplex conversation');
+    // Leave the title empty so Jiuwen can name it from the first real user turn.
+    const readySessionId = await ensureSession('');
     if (!readySessionId) return;
     await startTaskFullDuplex(readySessionId);
   }, [ensureSession, state]);

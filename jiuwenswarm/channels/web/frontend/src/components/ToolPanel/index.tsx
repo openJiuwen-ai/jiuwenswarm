@@ -40,6 +40,7 @@ import { SubagentStatusIcon } from '../subagent/SubagentStatusIcon';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
 import { useMinWidth } from '../../hooks/useResponsive';
 import './ToolPanel.css';
+import { applicationTasksToTeamTasks, EMPTY_APPLICATION_TASKS, useApplicationTaskStore } from '../../applicationPlugins/taskProgressStore';
 
 /** 规划/性能模式下把 TodoItem 降级映射为 TeamTask，复用 TaskPlanningPanel 紧凑态样式 */
 function todoItemToTeamTask(todo: TodoItem): TeamTask {
@@ -272,7 +273,27 @@ export function ToolPanel({
       <CodeReviewPanel project={codeProject} sessionId={sessionId} target={codeReviewTarget} diffWatch={codeGitDiffWatch} isProcessing={isProcessing} />
     ) : undefined;
   const todoTeamTasks = useMemo(() => todos.map(todoItemToTeamTask), [todos]);
-  const todoCompletedTasks = useMemo(() => todos.filter(t => t.status === 'completed').length, [todos]);
+  const applicationTasks = useApplicationTaskStore((s) => s.sessions[activeSessionId ?? ''] ?? EMPTY_APPLICATION_TASKS);
+  const applicationPlanningTasks = useMemo(
+    () => applicationTasksToTeamTasks(applicationTasks, {
+      queued: t('chat.applicationTasks.queued'),
+      running: t('chat.applicationTasks.running'),
+      completed: t('chat.applicationTasks.completed'),
+      failed: t('chat.applicationTasks.failed'),
+    }),
+    [applicationTasks, t],
+  );
+  const planningTasks = useMemo(
+    () => [...applicationPlanningTasks, ...todoTeamTasks], [applicationPlanningTasks, todoTeamTasks],
+  );
+  const teamPlanningTasks = useMemo(
+    () => [...applicationPlanningTasks, ...teamTasks], [applicationPlanningTasks, teamTasks],
+  );
+  const teamPlanningProgress = useMemo(
+    () => [...applicationPlanningTasks, ...progressTasks], [applicationPlanningTasks, progressTasks],
+  );
+  const applicationCompleted = applicationPlanningTasks.filter((task) => task.status === 'completed').length;
+  const todoCompletedTasks = planningTasks.filter((task) => task.status === 'completed').length;
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
   const floatingPanelRef = useRef<HTMLDivElement>(null);
@@ -459,19 +480,19 @@ export function ToolPanel({
               isTeam ? (
                 <TaskPlanningPanel
                   variant="expanded"
-                  tasks={teamTasks}
-                  progressTasks={progressTasks}
+                  tasks={teamPlanningTasks}
+                  progressTasks={teamPlanningProgress}
                   now={now}
                   members={teamMembers}
-                  totalTasks={teamTotalTasks}
-                  completedTasks={teamCompletedTasks}
+                  totalTasks={teamTotalTasks + applicationPlanningTasks.length}
+                  completedTasks={teamCompletedTasks + applicationCompleted}
                 />
               ) : (
                 <TaskPlanningPanel
                   variant="expanded"
-                  tasks={todoTeamTasks}
+                  tasks={planningTasks}
                   members={teamMembers}
-                  totalTasks={todos.length}
+                  totalTasks={planningTasks.length}
                   completedTasks={todoCompletedTasks}
                   hideAssignee
                   emptyIllustration={emptyPlanningIcon}
@@ -488,14 +509,14 @@ export function ToolPanel({
   const isTeam = mode === 'team';
   const planningProps = isTeam
     ? {
-        tasks: teamTasks,
-        totalTasks: teamTotalTasks,
-        completedTasks: teamCompletedTasks,
+        tasks: teamPlanningTasks,
+        totalTasks: teamTotalTasks + applicationPlanningTasks.length,
+        completedTasks: teamCompletedTasks + applicationCompleted,
         expanded: teamPlanningExpanded,
       }
     : {
-        tasks: todoTeamTasks,
-        totalTasks: todos.length,
+        tasks: planningTasks,
+        totalTasks: planningTasks.length,
         completedTasks: todoCompletedTasks,
         expanded: planningExpanded,
       };

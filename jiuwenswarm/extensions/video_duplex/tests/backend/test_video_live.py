@@ -227,6 +227,25 @@ async def test_full_duplex_history_rejects_new_session_placeholder(monkeypatch) 
     assert channel.responses[-1][1]["code"] == "SESSION_NOT_READY"
 
 
+@pytest.mark.asyncio
+async def test_full_duplex_tool_answer_persists_its_presentation(monkeypatch) -> None:
+    channel = _video_channel()
+    records = []
+    monkeypatch.setattr(video_live, "append_history_record", lambda **record: records.append(record))
+    for presentation in ("tool_result", "unknown", None):
+        await channel.handlers["video.conversation.append"](
+            object(), "history-request",
+            {"session_id": "visible-session", "event_id": f"event-{presentation}",
+             "kind": "assistant", "content": "```cpp\nint main() {}\n```",
+             "presentation": presentation},
+            "transport-session",
+        )
+    assert records[0]["extra"] == {"presentation": "tool_result"}
+    assert records[0]["content"] == "```cpp\nint main() {}\n```"
+    assert records[0]["event_type"] == "chat.final"
+    assert all(record["extra"] is None for record in records[1:])
+
+
 def test_tts_config_does_not_guess_other_endpoints(monkeypatch) -> None:
     for name in ("TTS_API_BASE", "TTS_API_KEY", "TTS_MODEL_NAME", "TTS_VOICE"):
         monkeypatch.delenv(name, raising=False)
@@ -1411,7 +1430,7 @@ async def test_joyai_delegation_starts_async_search_and_reuses_running_job(
     )
     second = channel.responses[-1][1]["payload"]
 
-    assert first["search_job"]["status"] == "running"
+    assert first["search_job"]["status"] == "queued"
     assert first["search_job"]["query"] == "JD.com current stock price"
     assert second["search_job"]["id"] == first["search_job"]["id"]
     assert second["search_job"]["reused"] is True
@@ -1461,6 +1480,13 @@ async def test_realtime_telemetry_rejects_unscoped_events() -> None:
             "_append_realtime_telemetry",
             {"event": "barge_in_confirmed", "level": 1800, "secret": "discard"},
             {"event": "barge_in_confirmed", "level": 1800},
+        ),
+        (
+            "_append_realtime_session_log",
+            {"event": "realtime_user_turn_started", "source": "silero-v5",
+             "speech_probability": 0.94, "speech_ms": 256, "secret": "discard"},
+            {"event": "realtime_user_turn_started", "source": "silero-v5",
+             "speech_probability": 0.94, "speech_ms": 256},
         ),
         (
             "_append_realtime_telemetry",
@@ -1516,6 +1542,48 @@ async def test_realtime_telemetry_routes_sanitized_events(
 
     assert channel.responses[-1][1]["payload"] == {"logged": True}
     assert expected.items() <= captured[0].items()
+    assert "secret" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_qwen_vad_recovery_diagnostics_include_processing_latency(monkeypatch) -> None:
+    channel = _video_channel()
+    captured = []
+    monkeypatch.setattr(video_live, "_append_realtime_telemetry", captured.append)
+    params = {
+        "event": "qwen_vad_resync",
+        "reason": "audio_backlog",
+        "dropped_chunks": 4,
+        "latency_ms": 620,
+        "inference_ms": 25,
+        "wait_ms": 595,
+    }
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "vad-recovery-telemetry", params, "session"
+    )
+    assert channel.responses[-1][1]["payload"] == {"logged": True}
+    assert params.items() <= captured[0].items()
+
+
+@pytest.mark.asyncio
+async def test_qwen_tool_wait_diagnostics_preserve_task_and_queue_reason(monkeypatch) -> None:
+    channel = _video_channel()
+    captured = []
+    monkeypatch.setattr(video_live, "_append_realtime_telemetry", captured.append)
+    params = {
+        "event": "qwen_tool_result_waiting",
+        "job_id": "earlier-task",
+        "reason": "user_speaking",
+        "queued_count": 2,
+        "secret": "discard",
+    }
+    await channel.handlers["video.realtime.telemetry"](
+        object(), "tool-wait-telemetry", params, "session"
+    )
+    assert channel.responses[-1][1]["payload"] == {"logged": True}
+    assert captured[0]["job_id"] == "earlier-task"
+    assert captured[0]["reason"] == "user_speaking"
+    assert captured[0]["queued_count"] == 2
     assert "secret" not in captured[0]
 
 
@@ -1984,6 +2052,7 @@ async def test_video_search_uses_full_core_agent_rpc(monkeypatch) -> None:
     progress_events = [
         payload for event, payload in channel.events if event == "video.search.progress"
     ]
+    assert progress_events.pop(0)["progress"]["stage"] == "started"
     assert [item["progress"]["stage"] for item in progress_events] == [
         "reasoning",
         "tool_call",

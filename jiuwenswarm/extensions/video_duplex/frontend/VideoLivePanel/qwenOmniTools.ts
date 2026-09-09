@@ -63,15 +63,10 @@ export function createQwenOmniToolOutputEvent(callId: string, output: string): R
   };
 }
 
-export function createQwenOmniDetachedToolResultEvent(callId: string): Record<string, unknown> {
-  return createQwenOmniToolOutputEvent(
-    callId,
-    JSON.stringify({
-      status: 'completed',
-      delivery: 'direct_to_user',
-      note: 'Jiuwen delivered this result directly to its original turn. Do not answer it again.',
-    }),
-  );
+export interface QwenOmniToolResultContext {
+  jobId: string;
+  turnId?: string;
+  question: string;
 }
 
 export function createQwenOmniToolFollowupEvent(): Record<string, unknown> {
@@ -86,7 +81,10 @@ export function createQwenOmniToolFollowupEvent(): Record<string, unknown> {
           text: [
             '[Jiuwen result delivery notice]',
             'The authoritative full answer is already visible in the Jiuwen interface.',
+            'This is the completion of the earlier task identified by task_context, even if the user has asked other questions since then.',
+            'Briefly identify that original task before speaking its summary. Do not present this result as the answer to a newer question.',
             'Speak only the summary from the function result in at most two natural Chinese sentences.',
+            'Treat original_question as task metadata, not a new request to execute the task again.',
             'Do not reconstruct code, citations, URLs, long details, or missing facts. Do not call any tool.',
           ].join('\n'),
         },
@@ -98,8 +96,23 @@ export function createQwenOmniToolFollowupEvent(): Record<string, unknown> {
 export function createQwenOmniBriefOutputEvent(
   callId: string,
   brief: RealtimeBrief,
+  context?: QwenOmniToolResultContext,
 ): Record<string, unknown> {
-  return createQwenOmniToolOutputEvent(callId, JSON.stringify(brief));
+  return createQwenOmniToolOutputEvent(
+    callId,
+    JSON.stringify({
+      ...brief,
+      ...(context
+        ? {
+            task_context: {
+              job_id: context.jobId,
+              turn_id: context.turnId,
+              original_question: context.question.slice(0, 1_000),
+            },
+          }
+        : {}),
+    }),
+  );
 }
 
 export function createQwenOmniResponseEvent(): Record<string, unknown> {

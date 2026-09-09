@@ -1,6 +1,5 @@
 import {
   createQwenOmniCancelResponseEvent,
-  createQwenOmniDetachedToolResultEvent,
   createQwenOmniFinishSessionEvent,
   createQwenOmniSessionUpdate,
   createQwenOmniTextTurnEvents,
@@ -11,6 +10,7 @@ import {
 } from './qwenOmniProtocol.js';
 import { getWsBase } from '../../../../channels/web/frontend/src/utils/env.js';
 import type { RealtimeBrief } from './types.js';
+import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
 
 export interface RealtimeDuplexConfig {
   url: string;
@@ -34,8 +34,6 @@ export interface RealtimeDuplexCallbacks {
   onError: (message: string) => void;
   onDiagnostic?: (event: Record<string, unknown>) => void;
   onToolResultDispatched?: (jobId: string) => void;
-  isToolTurnCurrent?: (turnId: string) => boolean;
-  onStaleToolResult?: (toolResult: RealtimeToolResult) => void;
   onFunctionCall?: (call: QwenOmniFunctionCall) => void;
 }
 
@@ -64,8 +62,7 @@ const INPUT_RATE = 16_000;
 const OUTPUT_RATE = 24_000;
 const SEND_INTERVAL_MS = 200;
 const USER_TURN_SILENCE_MS = 1_200;
-const REALTIME_CLIENT_BUILD = 'qwen-turn-isolation-v1';
-const LISTENING_SPEECH_MS = 240;
+const REALTIME_CLIENT_BUILD = 'qwen-silero-recovery-v2';
 const INITIAL_PLAYBACK_BUFFER_MS = 400;
 
 function readableError(value: unknown): string {
@@ -125,6 +122,7 @@ export class RealtimeDuplexSession {
   private sessionReady = false;
   private responseId: string | null = null;
   private pendingToolResults: RealtimeToolResult[] = [];
+  private toolResultWaitKey = '';
   private acceptedToolResultIds = new Set<string>();
   private acceptedFunctionCallIds = new Set<string>();
   private pendingToolResponseJobId: string | null = null;
@@ -134,7 +132,12 @@ export class RealtimeDuplexSession {
   private playbackOperation: Promise<void> = Promise.resolve();
   private playbackGeneration = 0;
   private queuedDrainResponseId: string | null = null;
-  private noiseFloor = 120;
+  private vad: SileroVad | null = null;
+  private lifecycle = 0;
+  private rejectedCandidateMs = 0;
+  private interruptedResponseIds = new Set<string>();
+  private lastSpeechDetectionAt = 0;
+  private lastSpeechLevel = 0;
   private userSpeechMs = 0;
   private userSilenceMs = 0;
   private userActivityActive = false;
@@ -150,7 +153,39 @@ export class RealtimeDuplexSession {
   ) {}
 
   async start(): Promise<void> {
+    const lifecycle = ++this.lifecycle;
     this.callbacks.onState('connecting');
+    this.emitDiagnostic('qwen_vad_loading', { model: 'silero-v5' });
+    const { SileroVad } = await import('../../../../channels/web/frontend/src/utils/speechDetection/sileroVad');
+    if (lifecycle !== this.lifecycle) return;
+    const vad = new SileroVad(
+      (detection) => this.handleSpeechDetection(detection),
+      (message) => {
+        this.userActivityActive = false;
+        this.turnHasUserActivity = false;
+        this.activeUserTurnId = null;
+        this.emitDiagnostic('qwen_vad_error', { message });
+        this.callbacks.onError(`本地人声检测暂不可用：${message}。`);
+      },
+      (event, details) => {
+        if (event === 'qwen_vad_resync') {
+          this.userActivityActive = false;
+          this.turnHasUserActivity = false;
+          this.activeUserTurnId = null;
+        }
+        this.emitDiagnostic(event, details);
+      },
+    );
+    this.vad = vad;
+    try {
+      await vad.start();
+    } catch (error) {
+      vad.stop();
+      this.emitDiagnostic('qwen_vad_error', { message: String(error) });
+      throw error;
+    }
+    if (lifecycle !== this.lifecycle) return;
+    this.emitDiagnostic('qwen_vad_ready', { model: 'silero-v5' });
     this.playbackContext = new AudioContext({ sampleRate: OUTPUT_RATE });
     await this.playbackContext.audioWorklet.addModule(new URL('./duplex-playback.js', import.meta.url));
     this.playbackNode = new AudioWorkletNode(this.playbackContext, 'jiuwen-duplex-playback');
@@ -192,28 +227,7 @@ export class RealtimeDuplexSession {
       while (this.pendingSamples > maxPending && this.pending.length > 1) {
         this.pendingSamples -= this.pending.shift()?.length || 0;
       }
-      const level = this.rms(pcm);
-      const frameMs = (pcm.length * 1_000) / INPUT_RATE;
-      const threshold = Math.max(350, this.noiseFloor * 2.5);
-      if (level > threshold) {
-        this.userSpeechMs += frameMs;
-        this.userSilenceMs = 0;
-        if (!this.userActivityActive && this.userSpeechMs >= LISTENING_SPEECH_MS) {
-          this.userActivityActive = true;
-          this.turnHasUserActivity = true;
-          this.activeUserTurnId = this.newTurnId('voice');
-          this.interruptQwenResponse(this.activeUserTurnId, this.userSpeechMs, level, threshold);
-          this.emitDiagnostic('realtime_user_turn_started', {
-            turn_id: this.activeUserTurnId,
-            speech_ms: Math.round(this.userSpeechMs),
-          });
-        }
-      } else {
-        this.userSilenceMs += frameMs;
-        if (!this.userActivityActive) this.userSpeechMs = 0;
-        if (this.userSilenceMs >= USER_TURN_SILENCE_MS) this.userActivityActive = false;
-      }
-      this.observeNoise(pcm);
+      this.vad?.push(pcm);
     };
     const silent = this.captureContext.createGain();
     silent.gain.value = 0;
@@ -229,6 +243,9 @@ export class RealtimeDuplexSession {
   }
 
   stop(): void {
+    this.lifecycle += 1;
+    this.vad?.stop();
+    this.vad = null;
     if (this.sendTimer !== null) window.clearInterval(this.sendTimer);
     this.sendTimer = null;
     if (this.assistantTranscript) this.finishAssistantText();
@@ -244,6 +261,7 @@ export class RealtimeDuplexSession {
     this.pending = [];
     this.pendingSamples = 0;
     this.pendingToolResults = [];
+    this.toolResultWaitKey = '';
     this.acceptedToolResultIds.clear();
     this.acceptedFunctionCallIds.clear();
     this.pendingToolResponseJobId = null;
@@ -254,6 +272,8 @@ export class RealtimeDuplexSession {
     this.userSpeechMs = 0;
     this.userSilenceMs = 0;
     this.userActivityActive = false;
+    this.turnHasUserActivity = false;
+    this.interruptedResponseIds.clear();
     this.qwenMedia.reset();
     this.playbackGeneration += 1;
     this.playbackOperation = Promise.resolve();
@@ -291,10 +311,7 @@ export class RealtimeDuplexSession {
       brief_chars: summary.length,
     });
     this.dispatchQueuedToolResult();
-    if (this.acceptedToolResultIds.size > 32) {
-      const oldest = this.acceptedToolResultIds.values().next().value;
-      if (oldest) this.acceptedToolResultIds.delete(oldest);
-    }
+    // Keep job IDs for the entire live session so delayed polls cannot replay an old result.
     return true;
   }
 
@@ -390,6 +407,7 @@ export class RealtimeDuplexSession {
       };
       socket.onclose = ({ code, reason }) => {
         if (this.socket !== socket) return;
+        if (this.assistantTranscript) this.finishAssistantText();
         this.emitDiagnostic('realtime_websocket_closed', {
           code,
           message: reason,
@@ -434,17 +452,37 @@ export class RealtimeDuplexSession {
     }
   }
 
-  private rms(pcm: Int16Array): number {
-    let energy = 0;
-    for (let index = 0; index < pcm.length; index += 8) energy += pcm[index] * pcm[index];
-    return Math.sqrt(energy / Math.ceil(pcm.length / 8));
-  }
-
-  private observeNoise(pcm: Int16Array): void {
-    const level = this.rms(pcm);
-    if (level > this.noiseFloor * 3) return;
-    const weight = level < this.noiseFloor ? 0.05 : 0.005;
-    this.noiseFloor = Math.max(50, this.noiseFloor * (1 - weight) + level * weight);
+  private handleSpeechDetection(detection: SpeechDetection): void {
+    this.lastSpeechDetectionAt = performance.now();
+    this.lastSpeechLevel = detection.level;
+    this.userSpeechMs = detection.speechMs;
+    this.userSilenceMs = detection.silenceMs;
+    this.userActivityActive = detection.state === 'started' || detection.state === 'active';
+    if (detection.state === 'candidate') this.rejectedCandidateMs = detection.speechMs;
+    if (detection.state === 'idle' && this.rejectedCandidateMs) {
+      this.emitDiagnostic('qwen_vad_candidate_rejected', {
+        speech_ms: this.rejectedCandidateMs,
+        speech_probability: detection.probability,
+        noise_floor: Math.round(detection.noiseFloor),
+      });
+      this.rejectedCandidateMs = 0;
+    }
+    if (detection.state !== 'started') {
+      this.interruptWhileUserSpeaking();
+      return;
+    }
+    this.rejectedCandidateMs = 0;
+    this.turnHasUserActivity = true;
+    this.activeUserTurnId = this.newTurnId('voice');
+    this.interruptQwenResponse(this.activeUserTurnId, detection.speechMs, detection.level, 80);
+    this.emitDiagnostic('realtime_user_turn_started', {
+      turn_id: this.activeUserTurnId,
+      source: 'silero-v5',
+      speech_ms: detection.speechMs,
+      speech_probability: detection.probability,
+      noise_floor: Math.round(detection.noiseFloor),
+      audio_level: Math.round(detection.level),
+    });
   }
 
   private sendAudio(pcm: Int16Array, includeVideo: boolean): void {
@@ -455,22 +493,32 @@ export class RealtimeDuplexSession {
   }
 
   private dispatchQueuedToolResult(): void {
-    if (this.responseActive || this.userActivityActive || this.turnHasUserActivity) return;
+    if (!this.pendingToolResults.length) {
+      this.toolResultWaitKey = '';
+      return;
+    }
+    const reason = this.socket?.readyState !== WebSocket.OPEN || !this.sessionReady
+      ? 'connection_not_ready'
+      : this.userActivityActive || this.turnHasUserActivity
+        ? 'user_speaking'
+        : this.responseActive ? 'response_generating' : '';
+    if (reason) {
+      const jobId = this.pendingToolResults[0].jobId;
+      const waitKey = `${jobId}:${reason}`;
+      if (waitKey !== this.toolResultWaitKey) {
+        this.toolResultWaitKey = waitKey;
+        this.emitDiagnostic('qwen_tool_result_waiting', {
+          job_id: jobId,
+          reason,
+          queued_count: this.pendingToolResults.length,
+        });
+      }
+      return;
+    }
+    this.toolResultWaitKey = '';
     while (this.pendingToolResults.length > 0) {
       const toolResult = this.pendingToolResults.shift();
       if (!toolResult) return;
-      const isCurrent = !toolResult.turnId || this.callbacks.isToolTurnCurrent?.(toolResult.turnId) !== false;
-      if (!isCurrent) {
-        this.send(createQwenOmniDetachedToolResultEvent(toolResult.callId || ''));
-        this.emitDiagnostic('stale_tool_result_delivered_directly', {
-          job_id: toolResult.jobId,
-          turn_id: toolResult.turnId,
-          call_id: toolResult.callId,
-        });
-        this.callbacks.onToolResultDispatched?.(toolResult.jobId);
-        this.callbacks.onStaleToolResult?.(toolResult);
-        continue;
-      }
       this.emitDiagnostic('search_result_dispatched', {
         job_id: toolResult.jobId,
         turn_id: toolResult.turnId,
@@ -479,13 +527,18 @@ export class RealtimeDuplexSession {
       if (!toolResult.callId) continue;
       this.pendingToolResponseJobId = toolResult.jobId;
       this.responseActive = true;
-      createQwenOmniToolResultEvents(toolResult.callId, toolResult.brief).forEach((event) =>
+      createQwenOmniToolResultEvents(toolResult.callId, toolResult.brief, {
+        jobId: toolResult.jobId,
+        turnId: toolResult.turnId,
+        question: toolResult.question,
+      }).forEach((event) =>
         this.send(event),
       );
       this.emitDiagnostic('qwen_tool_result_returned', {
         job_id: toolResult.jobId,
         turn_id: toolResult.turnId,
         call_id: toolResult.callId,
+        question: toolResult.question,
       });
       return;
     }
@@ -520,6 +573,8 @@ export class RealtimeDuplexSession {
     } else if (type === 'session.created') {
       this.callbacks.onState('listening');
     } else if (type === 'response.created') {
+      // Some providers start the tool-call response before ending its spoken acknowledgement.
+      if (this.assistantTranscript) this.finishAssistantText();
       this.responseId = eventResponseId || this.newTurnId('response');
       if (this.pendingToolResponseJobId) {
         this.responseToolJobIds.set(this.responseId, this.pendingToolResponseJobId);
@@ -530,11 +585,9 @@ export class RealtimeDuplexSession {
         }
       }
       this.responseActive = true;
-      this.userSpeechMs = 0;
-      this.userSilenceMs = 0;
-      this.userActivityActive = false;
+      // Only VAD ends user speech. A model response must not re-arm interruption.
       this.assistantTranscript = '';
-      this.callbacks.onState('speaking');
+      if (!this.interruptWhileUserSpeaking()) this.callbacks.onState('speaking');
     } else if (type === 'response.text.delta') {
       this.beginOfficialTurn(eventResponseId);
       const delta = String(event.delta || '');
@@ -549,6 +602,11 @@ export class RealtimeDuplexSession {
       this.assistantTranscript = String(event.text || this.assistantTranscript);
       this.finishAssistantText();
     } else if (type === 'audio.cancelled' || type === 'response.audio.cancelled' || type === 'response.cancelled') {
+      this.emitDiagnostic('qwen_response_cancelled', {
+        response_id: eventResponseId,
+        source: eventResponseId && this.interruptedResponseIds.has(eventResponseId) ? 'local_vad' : 'provider',
+        raw_event: rawEvent || JSON.stringify(event),
+      });
       if (!eventResponseId || eventResponseId === this.responseId) {
         if (this.assistantTranscript) this.finishAssistantText();
         this.responseActive = false;
@@ -566,6 +624,7 @@ export class RealtimeDuplexSession {
     } else if (type === 'response.audio.done' || type === 'response.output_audio.done' || type === 'response.done') {
       const affectsActive = !eventResponseId || eventResponseId === this.responseId;
       if (type === 'response.done' && affectsActive) {
+        if (this.assistantTranscript) this.finishAssistantText();
         this.responseActive = false;
       }
       if (affectsActive) this.enqueuePlaybackDrain(eventResponseId || this.responseId);
@@ -584,6 +643,8 @@ export class RealtimeDuplexSession {
     } else if (type === 'response.audio_transcript.done' || type === 'response.output_audio_transcript.done') {
       this.assistantTranscript = String(event.transcript || this.assistantTranscript);
       this.finishAssistantText();
+    } else if (type === 'input_audio_buffer.speech_started' || type === 'input_audio_buffer.speech_stopped') {
+      this.emitDiagnostic('qwen_provider_vad', { source: type, raw_event: rawEvent || JSON.stringify(event) });
     } else if (type === 'conversation.item.input_audio_transcription.delta') {
       this.callbacks.onUserText(`${String(event.delta || event.text || '')}${String(event.stash || '')}`, false);
     } else if (type === 'conversation.item.input_audio_transcription.completed') {
@@ -594,6 +655,7 @@ export class RealtimeDuplexSession {
       });
       this.callbacks.onUserText(transcript, true);
     } else if (type === 'error') {
+      if (this.assistantTranscript) this.finishAssistantText();
       const media = this.qwenMedia.snapshot();
       const error = event.error;
       const errorRecord = error && typeof error === 'object'
@@ -615,6 +677,13 @@ export class RealtimeDuplexSession {
   private interruptQwenResponse(turnId: string, speechMs: number, level: number, threshold: number): boolean {
     if (!this.responseActive && !this.assistantPlaying) return false;
     const interruptedResponseId = this.responseId;
+    if (interruptedResponseId && this.interruptedResponseIds.has(interruptedResponseId)) return false;
+    if (interruptedResponseId) {
+      this.interruptedResponseIds.add(interruptedResponseId);
+      if (this.interruptedResponseIds.size > 64) {
+        this.interruptedResponseIds.delete(this.interruptedResponseIds.values().next().value!);
+      }
+    }
     const cancelEventSent = this.responseActive;
     if (cancelEventSent) this.send(createQwenOmniCancelResponseEvent());
     this.playbackGeneration += 1;
@@ -634,6 +703,7 @@ export class RealtimeDuplexSession {
       audio_level: Math.round(level),
       speech_threshold: Math.round(threshold),
       cancel_event_sent: cancelEventSent,
+      source: 'silero-v5',
     });
     this.callbacks.onState('listening');
     return true;
@@ -668,12 +738,36 @@ export class RealtimeDuplexSession {
     return responseId ? this.responseToolJobIds.get(responseId) : undefined;
   }
 
+  private userIsSpeakingNow(): boolean {
+    // Exclude VAD's end-of-utterance hangover and stale detections after a worker stall.
+    return this.userActivityActive && this.userSilenceMs < 160 && performance.now() - this.lastSpeechDetectionAt < 500;
+  }
+
+  private interruptWhileUserSpeaking(): boolean {
+    if (!this.userIsSpeakingNow() || !this.activeUserTurnId) return false;
+    return this.interruptQwenResponse(this.activeUserTurnId, this.userSpeechMs, this.lastSpeechLevel, 80);
+  }
+
   private enqueueAudioDelta(event: Record<string, unknown>, encoded: string, responseId: string | null): void {
+    if (responseId && this.interruptedResponseIds.has(responseId)) return;
+    if (this.userIsSpeakingNow()) {
+      this.interruptWhileUserSpeaking();
+      if (responseId) this.interruptedResponseIds.add(responseId);
+      this.emitDiagnostic('qwen_audio_blocked_during_speech', { response_id: responseId });
+      return;
+    }
     const generation = this.playbackGeneration;
     this.playbackOperation = this.playbackOperation
       .then(() => this.decodeOutputAudio(event, encoded))
       .then((output) => {
         if (generation !== this.playbackGeneration || !output || !this.playbackNode) return;
+        if (responseId && this.interruptedResponseIds.has(responseId)) return;
+        if (this.userIsSpeakingNow()) {
+          this.interruptWhileUserSpeaking();
+          if (responseId) this.interruptedResponseIds.add(responseId);
+          this.emitDiagnostic('qwen_audio_blocked_during_speech', { response_id: responseId });
+          return;
+        }
         this.assistantPlaying = true;
         this.playbackNode.port.postMessage(
           {

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { ApplicationPluginTaskRuntimeProps } from '../../../channels/web/frontend/src/applicationPlugins/types';
 import { useTaskFullDuplexEnabled } from '../../../channels/web/frontend/src/features/taskFullDuplex/featureFlag';
 import { webRequest } from '../../../channels/web/frontend/src/services/webClient';
+import { useApplicationTaskStore } from '../../../channels/web/frontend/src/applicationPlugins/taskProgressStore';
 import { VideoLivePanel, type VideoLivePanelHandle } from './VideoLivePanel';
 import type { SearchJobPayload, SearchProgressEntry } from './VideoLivePanel/types';
 import {
@@ -67,6 +68,9 @@ export function TaskFullDuplexRuntime({
   const runtimeSessionIdRef = useRef<string | null>(null);
   const previousSessionIdRef = useRef(sessionId);
   const processedCoreProgressRef = useRef<Map<string, Set<number>>>(new Map());
+  const jobSessionsRef = useRef(new Map<string, { sessionId: string; searchSessionId: string }>());
+  const pendingJobsRef = useRef(new Set<string>());
+  const pollingJobsRef = useRef(new Set<string>());
   const coreToolIdsRef = useRef<Map<string, Map<string, string>>>(new Map());
   const persistedAssistantStreamsRef = useRef<Set<string>>(new Set());
   const pendingReasoningRef = useRef<{
@@ -182,15 +186,40 @@ export function TaskFullDuplexRuntime({
   }, []);
 
   const handleCoreAgentProgress = useCallback(
-    (event: 'started' | 'progress' | 'completed' | 'failed', payload: SearchJobPayload) => {
-      const targetSessionId = runtimeSessionIdRef.current || sessionId;
+    (event: 'started' | 'progress' | 'completed' | 'failed', payload: SearchJobPayload, progressOnly = false) => {
       const jobId = payload.job_id?.trim();
+      const targetSessionId = (jobId ? jobSessionsRef.current.get(jobId)?.sessionId : null)
+        || runtimeSessionIdRef.current || sessionId;
       if (!targetSessionId || !jobId) return;
+      jobSessionsRef.current.set(jobId, {
+        sessionId: targetSessionId,
+        searchSessionId: payload.search_session_id || jobSessionsRef.current.get(jobId)?.searchSessionId || '',
+      });
       const entries = payload.progress_history?.length
         ? payload.progress_history
         : payload.progress
           ? [payload.progress]
           : [];
+      const latest = entries.reduce<SearchProgressEntry | undefined>(
+        (last, entry) => !last || entry.sequence > last.sequence ? entry : last, undefined,
+      );
+      const plan = [...entries].reverse().find((entry) => entry.todos)?.todos;
+      const status = payload.status || (event === 'completed' || event === 'failed' ? event : 'running');
+      const previousTask = useApplicationTaskStore.getState().sessions[targetSessionId]?.find((task) => task.id === jobId);
+      useApplicationTaskStore.getState().upsert(targetSessionId, {
+        id: jobId,
+        pluginId: 'video-duplex',
+        title: payload.question?.trim() || payload.query?.trim() || previousTask?.title || 'Jiuwen Core Agent',
+        status,
+        sequence: latest?.sequence || 0,
+        detail: payload.error || [latest?.title, latest?.detail].filter(Boolean).join('\n'),
+        createdAt: (entries[0]?.timestamp || Date.now() / 1000) * 1000,
+        steps: plan,
+      });
+      const currentTask = useApplicationTaskStore.getState().sessions[targetSessionId]?.find((task) => task.id === jobId);
+      if (currentTask?.status === 'completed' || currentTask?.status === 'failed') pendingJobsRef.current.delete(jobId);
+      else pendingJobsRef.current.add(jobId);
+      if (progressOnly) return;
       const processed = processedCoreProgressRef.current.get(jobId) || new Set<number>();
       processedCoreProgressRef.current.set(jobId, processed);
       const toolIds = coreToolIdsRef.current.get(jobId) || new Map<string, string>();
@@ -261,6 +290,26 @@ export function TaskFullDuplexRuntime({
     ],
   );
 
+  // Keep progress recoverable after stopping media or switching the visible session.
+  // Result delivery remains owned by VideoLivePanel; these requests only update progress.
+  useEffect(() => {
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      for (const jobId of pendingJobsRef.current) {
+        if (pollingJobsRef.current.has(jobId)) continue;
+        const owner = jobSessionsRef.current.get(jobId);
+        if (!owner) continue;
+        pollingJobsRef.current.add(jobId);
+        void webRequest<SearchJobPayload>('video.search.status', {
+          job_id: jobId, search_session_id: owner.searchSessionId,
+        }, { timeoutMs: 5000 }).then((payload) => {
+          if (!disposed) handleCoreAgentProgress('progress', payload, true);
+        }).catch(() => undefined).finally(() => pollingJobsRef.current.delete(jobId));
+      }
+    }, 3000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [handleCoreAgentProgress]);
+
   const setPanelRef = useCallback((panel: VideoLivePanelHandle | null) => {
     panelRef.current = panel;
     registerTaskFullDuplexController(panel, (targetSessionId) => {
@@ -300,13 +349,14 @@ export function TaskFullDuplexRuntime({
     <VideoLivePanel
       ref={setPanelRef}
       headless
-      onConversationItem={(role, text) => {
+      onConversationItem={(role, text, presentation) => {
         const targetSessionId = runtimeSessionIdRef.current || sessionId;
         if (!targetSessionId) return;
-        onConversationItem(targetSessionId, role, text);
+        onConversationItem(targetSessionId, role, text, presentation);
         persistTimelineEvent(targetSessionId, {
           kind: role,
           content: text,
+          presentation,
           timestamp: Date.now() / 1_000,
         });
       }}

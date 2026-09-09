@@ -82,7 +82,7 @@ export interface VideoLivePanelHandle {
 
 interface VideoLivePanelProps {
   headless?: boolean;
-  onConversationItem?: (role: 'user' | 'assistant', text: string) => void;
+  onConversationItem?: (role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => void;
   onAssistantStream?: (update: { streamId: string; content: string; final: boolean }) => void;
   onRuntimeState?: (state: 'idle' | 'starting' | 'active') => void;
   onError?: (message: string) => void;
@@ -176,14 +176,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     }
   };
 
-  const appendChat = (role: ChatContextItem['role'], text: string) => {
+  const appendChat = (role: ChatContextItem['role'], text: string, presentation?: 'tool_result') => {
     const normalized = text.trim();
     if (!normalized) return;
     if (!headless) {
-      const item = { id: ++chatSequenceRef.current, role, text: normalized };
-      setChatHistory((current) => [...current, item].slice(-12));
+      const item = { id: ++chatSequenceRef.current, role, text: normalized, presentation };
+      setChatHistory((current) => [...current, item]);
     }
-    if (role === 'user' || role === 'assistant') onConversationItem?.(role, normalized);
+    if (role === 'user' || role === 'assistant') onConversationItem?.(role, normalized, presentation);
   };
 
   const commitAssistantAnswer = (text: string, toolJobId?: string) => {
@@ -219,7 +219,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       turnId: job?.turn_id?.trim() || fallbackTurnId || existing?.turnId,
       question: job?.question?.trim() || '',
       query: job?.query?.trim() || '',
-      status: 'running',
+      status: existing?.status === 'running' ? 'running' : job?.status === 'queued' ? 'waiting' : 'running',
       toolCallId: job?.tool_call_id?.trim() || existing?.toolCallId,
     });
     setSearchStatus('');
@@ -318,7 +318,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           response_mode: 'brief',
           source: 'fallback',
         };
-    appendChat('assistant', result);
+    appendChat('assistant', result, 'tool_result');
     const queued =
       duplexRef.current?.enqueueToolResult({
         jobId: payload.job_id,
@@ -338,7 +338,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       toolCallId: callId,
     });
     if (queued) {
-      setSearchStatus(`${payload.engine || 'Jiuwen Core Agent'}完成，正在播报摘要…`);
+      setSearchStatus(`${payload.engine || 'Jiuwen Core Agent'}完成，摘要已加入播报队列…`);
     } else {
       reportRealtimeEvent('search_result_queue_failed', {
         job_id: payload.job_id,
@@ -357,7 +357,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     const turnId = payload.turn_id?.trim() || existing?.turnId;
     const error = payload.error?.trim() || 'Jiuwen Core Agent failed';
     const failureText = `Jiuwen Core Agent 未能完成任务：${error}`;
-    appendChat('assistant', failureText);
+    appendChat('assistant', failureText, 'tool_result');
     if (callId) {
       duplexRef.current?.enqueueToolResult({
         jobId: payload.job_id,
@@ -399,7 +399,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         turnId: payload.turn_id?.trim(),
         question: payload.question?.trim() || '',
         query: payload.query?.trim() || '',
-        status: 'running',
+        status: payload.status === 'queued' ? 'waiting' : 'running',
         toolCallId: payload.tool_call_id?.trim(),
       });
       setSearchStatus('');
@@ -408,6 +408,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       if (!belongsToCurrentSession(payload)) return;
       updateSearchProgress(payload);
       onCoreAgentProgress?.('progress', payload);
+      const job = payload.job_id ? searchJobsRef.current.get(payload.job_id) : undefined;
+      if (job?.status === 'waiting' && payload.status === 'running') job.status = 'running';
     });
     const unsubscribeCompleted = webClient.on<SearchJobPayload>('video.search.completed', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
@@ -423,7 +425,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
     const pollTimer = window.setInterval(() => {
       searchJobsRef.current.forEach((job) => {
-        if (job.status !== 'running' || pollingSearchJobsRef.current.has(job.id)) return;
+        if (!['running', 'waiting'].includes(job.status) || pollingSearchJobsRef.current.has(job.id)) return;
         pollingSearchJobsRef.current.add(job.id);
         void webRequest<SearchJobPayload>(
           'video.search.status',
@@ -435,6 +437,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         )
           .then((payload) => {
             updateSearchProgress(payload);
+            if (payload.status === 'queued' || payload.status === 'running') {
+              onCoreAgentProgress?.('progress', payload);
+            }
             if (payload.status === 'completed') {
               onCoreAgentProgress?.('completed', payload);
               acceptCompletedSearch(payload);
@@ -800,14 +805,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               return frame?.data_url.split(',', 2)[1] || null;
             },
             onAssistantText: (text, final, toolJobId, responseId) => {
-              const visibleText = cleanAssistantText(text);
-              if (toolJobId) {
-                if (final) {
-                  searchJobsRef.current.delete(toolJobId);
-                  setSearchStatus('');
-                  if (!headless) setStreamingAnswer('');
-                }
-                return;
+              const visibleText = text.trim();
+              if (final && toolJobId) {
+                searchJobsRef.current.delete(toolJobId);
+                setSearchStatus('');
               }
               if (headless && onAssistantStream && responseId) {
                 onAssistantStream({
@@ -815,15 +816,19 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   content: visibleText,
                   final,
                 });
-                if (final) {
-                  if (toolJobId) {
-                    searchJobsRef.current.delete(toolJobId);
-                    setSearchStatus('');
-                  }
-                }
                 return;
               }
               if (!visibleText) return;
+              if (!headless && responseId) {
+                const id = ++chatSequenceRef.current;
+                setChatHistory((current) => {
+                  const existing = current.find((item) => item.responseId === responseId);
+                  return existing
+                    ? current.map((item) => item === existing ? { ...item, text: visibleText } : item)
+                    : [...current, { id, role: 'assistant', text: visibleText, responseId }];
+                });
+                return;
+              }
               if (!final) {
                 setStreamingAnswer(visibleText);
               } else {
@@ -860,19 +865,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             onToolResultDispatched: () => {
               setSearchStatus('');
             },
-            isToolTurnCurrent: (turnId) => {
-              const latestTurnId = latestUserInstructionRef.current.turnId;
-              return !turnId || !latestTurnId || turnId === latestTurnId;
-            },
-            onStaleToolResult: (toolResult) => {
-              reportRealtimeEvent('stale_tool_result_displayed', {
-                job_id: toolResult.jobId,
-                turn_id: toolResult.turnId,
-                current_turn_id: latestUserInstructionRef.current.turnId,
-              });
-              searchJobsRef.current.delete(toolResult.jobId);
-              setSearchStatus('');
-            },
             onFunctionCall: (call) => {
               const latestInstruction = latestUserInstructionRef.current;
               const originalInstruction = latestInstruction.text.trim() || call.task;
@@ -905,7 +897,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 })
                 .catch((toolError) => {
                   const message = toolError instanceof Error ? toolError.message : 'Jiuwen Core Agent request failed';
-                  appendChat('assistant', `Jiuwen Core Agent 未能启动任务：${message}`);
+                  appendChat('assistant', `Jiuwen Core Agent 未能启动任务：${message}`, 'tool_result');
                   const queued = session.enqueueToolResult({
                     jobId: `qwen-tool-error-${call.callId}`,
                     question: originalInstruction,
@@ -1190,8 +1182,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             {chatHistory.length > 0 || streamingAnswer ? (
               <div className="video-live__chat-history" ref={chatHistoryRef}>
                 {chatHistory.map((item) => (
-                  <div className={`video-live__chat-item is-${item.role}`} key={item.id}>
-                    <strong>{item.role === 'user' ? '你' : item.role === 'tool' ? '九问搜索' : '助手'}</strong>
+                  <div className={`video-live__chat-item is-${item.role}${item.presentation === 'tool_result' ? ' is-core-result' : ''}`} key={item.id}>
+                    <strong>{item.presentation === 'tool_result' ? '工具结果 · Jiuwen Core Agent' : item.role === 'user' ? '你' : item.role === 'tool' ? '九问搜索' : '助手'}</strong>
                     <p>{item.role === 'tool' ? '九问搜索 Agent 搜索完成' : item.text}</p>
                   </div>
                 ))}
@@ -1223,7 +1215,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   onClick={() => setIsSearchProgressExpanded((expanded) => !expanded)}
                 >
                   <span className="video-live__search-progress-icon">
-                    {visibleSearchProgress.status === 'running' ? (
+                    {visibleSearchProgress.status === 'running' || visibleSearchProgress.status === 'queued' ? (
                       <LoaderCircle className="video-live__spinner" aria-hidden />
                     ) : visibleSearchProgress.status === 'completed' ? (
                       <CheckCircle2 aria-hidden />

@@ -4,6 +4,65 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 
 import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
+import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs';
+
+test('confirmed speech interrupts each response once, including responses that start mid-utterance', () => {
+  const { session, sent } = createSession();
+  const gate = new SpeechGate();
+  const feed = (probability, count, level = 1000) => {
+    for (let i = 0; i < count; i++) session.handleSpeechDetection(gate.process(probability, level));
+  };
+  session.handleEvent({ type: 'response.created', response: { id: 'first' } });
+  feed(0.1, 40, 15000);
+  feed(0.99, 3);
+  feed(0.1, 12);
+  assert.equal(sent.length, 0);
+  feed(0.95, 8);
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 1);
+  session.handleEvent({ type: 'response.created', response: { id: 'second' } });
+  assert.equal(session.userActivityActive, true);
+  feed(0.95, 25);
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 2);
+  feed(0.1, 40);
+  session.handleEvent({ type: 'response.created', response: { id: 'third' } });
+  feed(0.95, 8);
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 3);
+});
+
+test('audio arriving during ongoing speech is blocked, but speech hangover permits the next answer', async () => {
+  const { session, posted } = createSession();
+  const gate = new SpeechGate();
+  for (let i = 0; i < 8; i++) session.handleSpeechDetection(gate.process(0.95, 1000));
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'late-audio', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.ok(posted.every((message) => message.type !== 'audio'));
+  for (let i = 0; i < 10; i++) session.handleSpeechDetection(gate.process(0.1, 20));
+  assert.equal(session.userActivityActive, true); // the VAD's 640ms hangover has not expired
+  session.handleEvent({ type: 'response.created', response: { id: 'after-speech' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'after-speech', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.equal(posted.filter((message) => message.type === 'audio').length, 1);
+});
+
+test('a stale speaking flag after a worker stall does not cancel a new answer', () => {
+  const { session, sent } = createSession();
+  session.userActivityActive = true;
+  session.activeUserTurnId = 'old-voice';
+  session.lastSpeechDetectionAt = performance.now() - 600;
+  session.handleEvent({ type: 'response.created', response: { id: 'fresh-answer' } });
+  assert.deepEqual(sent, []);
+});
+
+test('cancelled response late audio is discarded while its text remains visible', async () => {
+  const { session, posted, assistantTexts } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'interrupted' } });
+  session.interruptQwenResponse('voice-test', 256, 1000, 80);
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'interrupted', delta: btoa('aa') });
+  session.handleEvent({ type: 'response.text.done', response_id: 'interrupted', text: '已经返回的文字' });
+  await session.playbackOperation;
+  assert.ok(posted.every((message) => message.type !== 'audio'));
+  assert.equal(assistantTexts.at(-1).text, '已经返回的文字');
+});
 
 function realtimeBrief(summary, resultKind = 'generic') {
   return {
@@ -235,6 +294,40 @@ test('function calls are emitted once with parsed arguments', () => {
   assert.equal(diagnostics.at(-1).event, 'qwen_tool_call_received');
 });
 
+test('Qwen acknowledgement survives a new tool-call response without transcript.done', () => {
+  const { session, assistantTexts } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'ack' } });
+  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'ack', delta: '我来处理。' });
+  session.handleEvent({ type: 'response.created', response: { id: 'delegate' } });
+  assert.deepEqual(assistantTexts.at(-1), {
+    text: '我来处理。', final: true, toolJobId: undefined, responseId: 'ack',
+  });
+});
+
+test('Qwen tool receipt remains visible and response.done finalizes it', () => {
+  const { session, assistantTexts } = createSession();
+  session.enqueueToolResult({
+    jobId: 'code-job', question: '请生成代码', callId: 'code-call',
+    brief: realtimeBrief('代码已显示在界面中。', 'code'),
+  });
+  session.handleEvent({ type: 'response.created', response: { id: 'receipt' } });
+  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'receipt', delta: '代码已显示在界面中。' });
+  session.handleEvent({ type: 'response.done', response: { id: 'receipt' } });
+  assert.deepEqual(assistantTexts.at(-1), {
+    text: '代码已显示在界面中。', final: true, toolJobId: 'code-job', responseId: 'receipt',
+  });
+});
+
+test('Qwen provider error preserves the received partial answer', () => {
+  const { session, assistantTexts } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'partial' } });
+  session.handleEvent({ type: 'response.text.delta', response_id: 'partial', delta: '已经生成的部分' });
+  session.handleEvent({ type: 'error', error: { code: 'COMMON_ERROR', message: 'model repeat output happened' } });
+  assert.deepEqual(assistantTexts.at(-1), {
+    text: '已经生成的部分', final: true, toolJobId: undefined, responseId: 'partial',
+  });
+});
+
 test('delegate calls accept query aliases and object arguments from Qwen', () => {
   const { session, functionCalls } = createSession();
 
@@ -304,12 +397,9 @@ test('tool results wait for active generation but dispatch during queued audio p
   assert.equal(assistantTexts.at(-1).toolJobId, 'search-weather');
 });
 
-test('a stale tool result is delivered directly without starting another Qwen response', () => {
-  const staleToolResults = [];
-  const { session, sent, dispatchedToolResults, diagnostics } = createSession(null, {
-    isToolTurnCurrent: (turnId) => turnId === 'turn-current',
-    onStaleToolResult: (toolResult) => staleToolResults.push(toolResult),
-  });
+test('an earlier task still gets a spoken follow-up after a newer question', () => {
+  const { session, sent, dispatchedToolResults, diagnostics } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'new-question' } });
 
   assert.equal(
     session.enqueueToolResult({
@@ -322,17 +412,79 @@ test('a stale tool result is delivered directly without starting another Qwen re
     true,
   );
 
+  assert.deepEqual(sent, []);
+  assert.equal(diagnostics.at(-1).event, 'qwen_tool_result_waiting');
+  session.handleEvent({ type: 'response.done', response_id: 'new-question' });
   assert.deepEqual(dispatchedToolResults, ['old-file-task']);
-  assert.equal(staleToolResults.length, 1);
-  assert.equal(staleToolResults[0].brief.summary, '旧文件任务已完成。');
   assert.deepEqual(
     sent.map((event) => event.type),
-    ['conversation.item.create'],
+    ['conversation.item.create', 'conversation.item.create', 'response.create'],
   );
   assert.equal(sent[0].item.type, 'function_call_output');
-  assert.doesNotMatch(sent[0].item.output, /旧文件的完整内容/);
-  assert.equal(session.responseActive, false);
-  assert.equal(diagnostics.at(-1).event, 'stale_tool_result_delivered_directly');
+  const output = JSON.parse(sent[0].item.output);
+  assert.equal(output.summary, '旧文件任务已完成。');
+  assert.deepEqual(output.task_context, {
+    job_id: 'old-file-task', turn_id: 'turn-old', original_question: '打开旧文件',
+  });
+  assert.match(sent[1].item.content[0].text, /even if the user has asked other questions/);
+  assert.doesNotMatch(sent[0].item.output, /Do not answer it again/);
+  assert.equal(session.responseActive, true);
+  assert.equal(diagnostics.at(-1).event, 'qwen_tool_result_returned');
+});
+
+test('each task waits for user speech to finish and is sent exactly once in completion order', () => {
+  const { session, sent, diagnostics } = createSession();
+  session.userActivityActive = true;
+  const first = {
+    jobId: 'first-async-task', turnId: 'old-turn', question: '打开复习提纲',
+    brief: realtimeBrief('复习提纲已打开。'), callId: 'call-first-async',
+  };
+  const second = {
+    jobId: 'second-async-task', turnId: 'another-turn', question: '解释差分约束',
+    brief: realtimeBrief('差分约束的解题思路已整理。'), callId: 'call-second-async',
+  };
+  assert.equal(session.enqueueToolResult(first), true);
+  assert.equal(session.enqueueToolResult(second), true);
+  assert.equal(session.enqueueToolResult(first), false);
+  assert.deepEqual(sent, []);
+  assert.equal(diagnostics.at(-1).event, 'search_result_queued');
+  session.dispatchQueuedToolResult();
+  session.dispatchQueuedToolResult();
+  assert.equal(diagnostics.filter((event) => event.event === 'qwen_tool_result_waiting').length, 1);
+  session.userActivityActive = false;
+  session.dispatchQueuedToolResult();
+  assert.equal(sent[0].item.call_id, 'call-first-async');
+  session.handleEvent({ type: 'response.created', response: { id: 'first-receipt' } });
+  session.handleEvent({ type: 'response.done', response_id: 'first-receipt' });
+  assert.equal(sent[3].item.call_id, 'call-second-async');
+  assert.equal(JSON.parse(sent[3].item.output).task_context.original_question, '解释差分约束');
+  assert.equal(session.enqueueToolResult(first), false);
+});
+
+test('task deduplication lasts for the entire session rather than just the last 32 results', () => {
+  const { session } = createSession();
+  session.responseActive = true;
+  const task = (index) => ({
+    jobId: `job-${index}`, question: `任务${index}`, brief: realtimeBrief('完成'), callId: `call-${index}`,
+  });
+  for (let index = 0; index < 40; index++) assert.equal(session.enqueueToolResult(task(index)), true);
+  assert.equal(session.enqueueToolResult(task(0)), false);
+  assert.equal(session.pendingToolResults.length, 40);
+});
+
+test('a disconnected socket does not consume a queued tool result', () => {
+  const { session, sent, diagnostics } = createSession();
+  session.socket.readyState = 3;
+  session.enqueueToolResult({
+    jobId: 'waiting-for-connection', question: '查看文档', brief: realtimeBrief('已查看'), callId: 'call-wait',
+  });
+  assert.equal(session.pendingToolResults.length, 1);
+  assert.equal(diagnostics.at(-1).reason, 'connection_not_ready');
+  assert.deepEqual(sent, []);
+  session.socket.readyState = 1;
+  session.dispatchQueuedToolResult();
+  assert.equal(session.pendingToolResults.length, 0);
+  assert.equal(sent.at(-1).type, 'response.create');
 });
 
 test('tool responses retain their own job id after another result is queued', () => {

@@ -625,6 +625,7 @@
     }
   },
   "chat": {
+    "toolResultLabel": "Tool result",
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
@@ -729,6 +730,12 @@
     "extensionManageMcps": "Manage My Connectors",
     "extensionMore": "More",
     "recentTasks": "Progress",
+    "applicationTasks": {
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
     "contextCompressionCommandRunning": "Compressing context",
     "teamPause": "Pause",
     "teamPauseHint": "After pausing a team, send the next message to continue",

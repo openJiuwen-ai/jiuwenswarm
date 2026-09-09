@@ -2,6 +2,8 @@ export interface ChatContextItem {
   id: number;
   role: 'user' | 'assistant' | 'tool';
   text: string;
+  presentation?: 'tool_result';
+  responseId?: string;
 }
 
 export interface RealtimeBrief {
@@ -23,7 +25,7 @@ export interface SearchJobPayload {
   realtime_brief?: RealtimeBrief;
   error?: string;
   engine?: string;
-  status?: 'running' | 'completed' | 'failed';
+  status?: 'queued' | 'running' | 'completed' | 'failed';
   latency_ms?: number;
   progress?: SearchProgressEntry;
   progress_history?: SearchProgressEntry[];
@@ -36,7 +38,8 @@ export interface SearchProgressEntry {
   stage: string;
   title: string;
   detail?: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  todos?: Array<{ id: string; content: string; status: string }>;
   sequence: number;
   elapsed_ms?: number;
   timestamp?: number;
@@ -55,7 +58,7 @@ export interface SearchProgressEntry {
 export interface SearchProgressJob {
   id: string;
   query: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'queued' | 'running' | 'completed' | 'failed';
   latencyMs?: number;
   progress: SearchProgressEntry[];
 }
@@ -66,7 +69,8 @@ export interface SearchJobState {
   turnId?: string;
   question: string;
   query: string;
-  status: 'running' | 'queued' | 'failed';
+  // waiting = backend execution queue; queued = completed result awaiting playback.
+  status: 'waiting' | 'running' | 'queued' | 'failed';
   toolCallId?: string;
 }
 

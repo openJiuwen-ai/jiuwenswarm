@@ -1,5 +1,4 @@
 import {
-  createQwenOmniDetachedToolResultEvent,
   createQwenOmniBriefOutputEvent,
   createQwenOmniResponseEvent,
   createQwenOmniToolFollowupEvent,
@@ -7,10 +6,10 @@ import {
   QWEN_OMNI_TOOL_INSTRUCTIONS,
 } from './qwenOmniTools.js';
 import type { RealtimeBrief } from './types.js';
+import type { QwenOmniToolResultContext } from './qwenOmniTools.js';
 
 export type { QwenOmniFunctionCall } from './qwenOmniTools.js';
 export { parseQwenOmniFunctionCall };
-export { createQwenOmniDetachedToolResultEvent };
 
 const QWEN_MAX_BASE64_IMAGE_BYTES = 256 * 1024;
 const QWEN_SESSION_INSTRUCTIONS = [
@@ -80,9 +79,10 @@ export function createQwenOmniTextTurnEvents(text: string): Array<Record<string,
 export function createQwenOmniToolResultEvents(
   callId: string,
   brief: RealtimeBrief,
+  context?: QwenOmniToolResultContext,
 ): Array<Record<string, unknown>> {
   return [
-    createQwenOmniBriefOutputEvent(callId, brief),
+    createQwenOmniBriefOutputEvent(callId, brief, context),
     createQwenOmniToolFollowupEvent(),
     createQwenOmniResponseEvent(),
   ];

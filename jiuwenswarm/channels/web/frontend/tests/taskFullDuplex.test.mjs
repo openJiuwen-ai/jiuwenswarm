@@ -68,8 +68,6 @@ test('task full-duplex assistant output reuses the native streaming message life
   assert.match(chatPanel, /stopStreaming\(sid, messageId\)/);
   assert.match(runtime, /onAssistantStream=\{\(update\)/);
   assert.match(panel, /headless && onAssistantStream && responseId/);
-  assert.match(panel, /isToolTurnCurrent/);
-  assert.match(panel, /onStaleToolResult/);
   assert.match(panel, /turnId: payload\.turn_id/);
   assert.match(panel, /if \(!headless\) \{\s*const item = \{ id: \+\+chatSequenceRef\.current/);
   assert.doesNotMatch(panel, /streamingAnswerRef/);

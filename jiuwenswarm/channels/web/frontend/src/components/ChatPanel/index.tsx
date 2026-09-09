@@ -956,13 +956,15 @@ export const ChatPanel = React.memo(function ChatPanel({
   const [bubbleVisible, setBubbleVisible] = useState(false);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
   const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
-  const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string) => {
+  const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
     const content = text.trim();
     if (!content) return;
     useChatStore.getState().addMessage(sid, {
       id: `full-duplex-${generateUuidV4()}`,
       role,
       content,
+      presentation,
+      keepExpanded: role === 'assistant',
       timestamp: new Date().toISOString(),
     });
   }, []);
@@ -982,6 +984,7 @@ export const ChatPanel = React.memo(function ChatPanel({
           id: messageId,
           role: 'assistant',
           content,
+          keepExpanded: true,
           timestamp: new Date().toISOString(),
           isStreaming: !update.final,
           ...(update.final ? { completedAt: new Date().toISOString() } : {}),
@@ -994,6 +997,7 @@ export const ChatPanel = React.memo(function ChatPanel({
 
       chatStore.updateMessage(sid, messageId, {
         ...(content ? { content } : {}),
+        keepExpanded: true,
         isStreaming: !update.final,
         ...(update.final ? { completedAt: new Date().toISOString() } : {}),
       });

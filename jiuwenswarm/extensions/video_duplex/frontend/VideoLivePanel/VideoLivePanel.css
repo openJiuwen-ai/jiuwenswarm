@@ -398,6 +398,18 @@
   font-size: 12px;
 }
 
+.video-live__chat-item.is-core-result {
+  padding: 12px 16px;
+  border: 1px solid var(--color-action-primary);
+  border-left-width: 4px;
+  border-radius: 12px;
+  background: var(--color-action-primary-subtle);
+}
+
+.video-live__chat-item.is-core-result strong {
+  color: var(--color-action-primary);
+}
+
 .video-live__chat-item p {
   margin: 0;
   white-space: pre-wrap;

@@ -285,6 +285,12 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
             "title": "执行计划已更新",
             "detail": f"{completed}/{len(todos)} 项已完成",
             "status": "running",
+            "todos": [
+                {"id": str(item.get("id") or index),
+                 "content": str(item.get("content") or item.get("activeForm") or ""),
+                 "status": str(item.get("status") or "pending")}
+                for index, item in enumerate(todos) if isinstance(item, dict)
+            ],
         }
     if event_type == "chat.delta" and str(payload.get("content") or "").strip():
         return {"stage": "answer", "title": "正在整理执行结果", "status": "running"}
@@ -480,7 +486,7 @@ class VideoSearchManager:
                 active_sessions = {
                     str(job.get("search_session_id") or "")
                     for job in self._jobs.values()
-                    if job.get("status") == "running"
+                    if job.get("status") in {"queued", "running"}
                 }
                 for candidate in list(self._session_states):
                     if candidate not in active_sessions:
@@ -579,9 +585,9 @@ class VideoSearchManager:
             })
 
         start_progress = {
-            "stage": "started",
-            "title": "Core Agent 已开始处理",
-            "status": "running",
+            "stage": "queued",
+            "title": "等待 Core Agent 执行",
+            "status": "queued",
             "sequence": 1,
             "elapsed_ms": 0,
             "timestamp": time.time(),
@@ -589,12 +595,12 @@ class VideoSearchManager:
         progress_history.append(start_progress)
         self._jobs[job_id] = {
             **base_payload,
-            "status": "running",
+            "status": "queued",
             "progress_history": list(progress_history),
         }
         await self._send_event(ws, "video.search.started", {
             **base_payload,
-            "status": "running",
+            "status": "queued",
             "progress_history": list(progress_history),
         })
         await asyncio.to_thread(self._log_event, {"stage": "search_started", **base_payload})
@@ -603,6 +609,11 @@ class VideoSearchManager:
             core_session_id = str(session_state["core_session_id"])
             async with self._session_lock(search_session_id):
                 async with self._semaphore:
+                    await emit_progress({
+                        "stage": "started",
+                        "title": "Core Agent 已开始处理",
+                        "status": "running",
+                    })
                     delegation_context = list(session_state["delegation_context"])
                     core_result = await execute_core_agent(
                         self._agent_client,
@@ -703,7 +714,7 @@ class VideoSearchManager:
         job_id = uuid.uuid4().hex
         search_job = {
             "id": job_id,
-            "status": "running",
+            "status": "queued",
             "question": question,
             "query": query,
             "search_session_id": search_session_id,
@@ -712,7 +723,11 @@ class VideoSearchManager:
             **({"turn_id": turn_id} if turn_id else {}),
         }
         if len(self._jobs) >= self._max_cached_jobs:
-            self._jobs.pop(next(iter(self._jobs)))
+            # An active queued job must remain recoverable through the status API.
+            oldest_terminal = next((key for key, job in self._jobs.items()
+                                    if job.get("status") in {"completed", "failed"}), None)
+            if oldest_terminal:
+                self._jobs.pop(oldest_terminal)
         self._jobs[job_id] = {"job_id": job_id, **search_job}
         task = asyncio.create_task(self._run_job(
             ws,
@@ -738,7 +753,7 @@ class VideoSearchManager:
             return None
         for job in reversed(list(self._jobs.values())):
             if (
-                job.get("status") == "running"
+                job.get("status") in {"queued", "running"}
                 and job.get("search_session_id") == search_session_id
                 and _normalized_task(str(job.get("query") or "")) == normalized_query
             ):
