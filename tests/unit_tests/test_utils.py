@@ -302,7 +302,7 @@ def test_prepare_workspace_does_not_copy_legacy_heartbeat_template(
     assert not (workspace_dir / "agent" / "workspace" / "HEARTBEAT.md").exists()
 
 
-def test_prepare_workspace_copies_program_evolution_design(
+def test_prepare_workspace_copies_rsi_program_dataset_creator(
     tmp_path: Path,
 ) -> None:
     """Initial workspace preparation includes the new built-in skill."""
@@ -319,22 +319,22 @@ def test_prepare_workspace_copies_program_evolution_design(
         / "agent"
         / "workspace"
         / "skills"
-        / "program-evolution-design"
+        / "rsi-program-dataset-creator"
         / "SKILL.md"
     ).is_file()
 
 
-def test_ensure_default_builtin_skills_installs_program_evolution_design(
+def test_ensure_default_builtin_skills_installs_rsi_program_dataset_creator(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     """New built-in skills are copied into an existing workspace on startup."""
     builtin_dir = tmp_path / "builtin-skills"
     user_skills_dir = tmp_path / "user-skills"
-    source_skill = builtin_dir / "program-evolution-design"
+    source_skill = builtin_dir / "rsi-program-dataset-creator"
     source_skill.mkdir(parents=True)
     (source_skill / "SKILL.md").write_text(
-        "---\nname: program-evolution-design\ndescription: test\n---\n",
+        "---\nname: rsi-program-dataset-creator\ndescription: test\n---\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
@@ -342,7 +342,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
 
     utils.ensure_default_builtin_skills()
 
-    installed_skill = user_skills_dir / "program-evolution-design"
+    installed_skill = user_skills_dir / "rsi-program-dataset-creator"
     assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == (
         source_skill / "SKILL.md"
     ).read_text(encoding="utf-8")
@@ -350,7 +350,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
         (user_skills_dir / "skills_state.json").read_text(encoding="utf-8")
     )
     assert any(
-        item.get("name") == "program-evolution-design"
+        item.get("name") == "rsi-program-dataset-creator"
         and item.get("source") == "builtin"
         for item in state["installed_plugins"]
     )

@@ -737,7 +737,7 @@ def _install_default_builtin_skills(
     - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
     - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
     - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
-    - program-evolution-design: 程序演进任务设计与评测编排
+    - rsi-program-dataset-creator: RSI 程序优化数据集创建助手
 
     Args:
         builtin_dir: 内置技能目录路径
@@ -752,7 +752,7 @@ def _install_default_builtin_skills(
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
-        "program-evolution-design",
+        "rsi-program-dataset-creator",
         "agent-creator",
         "plugin-creator"
     ]
@@ -821,7 +821,7 @@ def ensure_default_builtin_skills() -> None:
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
-        "program-evolution-design",
+        "rsi-program-dataset-creator",
     ]
 
     user_skills_dir.mkdir(parents=True, exist_ok=True)
