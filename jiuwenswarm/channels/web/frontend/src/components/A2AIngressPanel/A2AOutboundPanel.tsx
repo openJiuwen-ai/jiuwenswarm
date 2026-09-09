@@ -488,7 +488,7 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
             {t(enterpriseMode ? 'a2aIngress.outbound.list.enterpriseEmpty' : 'a2aIngress.outbound.list.empty')}
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 content-start gap-3 overflow-auto p-4">
+          <div className="grid min-h-0 flex-1 auto-rows-max content-start gap-3 overflow-auto p-4">
             {agents.map(agent => {
               const isEditing = editing?.agentId === agent.agent_id;
               const settingsPanelId = `a2a-agent-settings-${agent.agent_id}`;

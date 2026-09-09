@@ -1416,6 +1416,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
         request_id="req-team-stream",
         channel_id="web",
         metadata=None,
+        params={"bot_id": "cron-resource"},
     )
     inputs = {"query": "/evolve_list demo-skill"}
 
@@ -1444,6 +1445,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
     assert captured_spec
     assert captured_context[0]["config_base"] == {"models": {"defaults": []}}
     assert captured_context[0]["sessions_root"] == tmp_path / "tenant-sessions"
+    assert captured_context[0]["request_metadata"]["routing"]["bot_id"] == "cron-resource"
 
 
 @pytest.mark.anyio

@@ -13,7 +13,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from jiuwenswarm.common.e2a.constants import (
+    E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
+    E2A_WIRE_SERVER_PUSH_KEY,
+)
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
@@ -134,6 +137,8 @@ class HttpSseAgentServerClient(AgentServerClient):
         self._running = False
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._push_task: asyncio.Task[None] | None = None
+        self._push_ready = asyncio.Event()
+        self._push_handlers: set[asyncio.Task[None]] = set()
         self._stream_lock = asyncio.Lock()
         self._cancelled_request_ids: set[str] = set()
         self._inflight_stream_ids: set[str] = set()
@@ -156,6 +161,20 @@ class HttpSseAgentServerClient(AgentServerClient):
     @property
     def server_ready(self) -> bool:
         return self._server_ready
+
+    async def wait_push_ready(self) -> None:
+        """Wait for server-side subscriber registration, not just HTTP headers."""
+        await asyncio.wait_for(self._push_ready.wait(), timeout=_CONNECT_TIMEOUT_SECONDS)
+
+    async def _handle_push(
+        self,
+        handler: Callable[[dict[str, Any]], Awaitable[None]],
+        frame: dict[str, Any],
+    ) -> None:
+        try:
+            await handler(frame)
+        except Exception:
+            logger.exception("[HttpSseAgentServerClient] server_push 处理失败")
 
     def _ensure_http(self) -> httpx.AsyncClient:
         if self._http is None:
@@ -211,6 +230,7 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def disconnect(self) -> None:
         self._running = False
         self._server_ready = False
+        self._push_ready.clear()
         task = self._push_task
         self._push_task = None
         if task is not None:
@@ -219,6 +239,11 @@ class HttpSseAgentServerClient(AgentServerClient):
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        handlers = list(self._push_handlers)
+        for handler_task in handlers:
+            handler_task.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+        self._push_handlers.clear()
         if self._owns_http and self._http is not None:
             await self._http.aclose()
             self._http = None
@@ -389,6 +414,9 @@ class HttpSseAgentServerClient(AgentServerClient):
                 ) as response:
                     response.raise_for_status()
                     async for frame in iter_sse_data_frames(response):
+                        if frame.get("event_type") == "gateway.push_ready":
+                            self._push_ready.set()
+                            continue
                         meta = frame.get("metadata")
                         if not (isinstance(meta, dict) and meta.get(E2A_WIRE_SERVER_PUSH_KEY)):
                             continue
@@ -403,10 +431,13 @@ class HttpSseAgentServerClient(AgentServerClient):
                         handler = self._on_server_push
                         if handler is None:
                             continue
-                        try:
-                            await handler(frame)
-                        except Exception:
-                            logger.exception("[HttpSseAgentServerClient] server_push 处理失败")
+                        if frame.get("response_kind") != E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST:
+                            await self._handle_push(handler, frame)
+                            continue
+                        # Keep reading cancellation RPCs while a sync dispatch runs.
+                        task = asyncio.create_task(self._handle_push(handler, frame))
+                        self._push_handlers.add(task)
+                        task.add_done_callback(self._push_handlers.discard)
             except Exception as exc:  # noqa: BLE001
                 if not self._running:
                     return
@@ -422,6 +453,8 @@ class HttpSseAgentServerClient(AgentServerClient):
                     "[HttpSseAgentServerClient] events/stream 结束，%.0fs 后重连",
                     _PUSH_RETRY_SECONDS,
                 )
+            finally:
+                self._push_ready.clear()
             await asyncio.sleep(_PUSH_RETRY_SECONDS)
 
 

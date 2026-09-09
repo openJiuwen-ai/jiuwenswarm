@@ -122,7 +122,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
       const responseGeneration = ++historyResponseGenerationRef.current;
       if (showLoading) setHistoryLoading(true);
       try {
-        const payload = await request('a2a.ingress.history', { limit: 200 });
+        const payload = await request('a2a.ingress.history', { limit: 100 });
         if (!shouldAcceptA2AIngressResponse(responseGeneration, historyResponseGenerationRef.current)) return;
         const next = normalizeA2AIngressHistory(payload);
         if (!next) throw new Error(t('a2aIngress.errors.invalidHistoryResponse'));
@@ -144,7 +144,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
       const responseGeneration = ++outboundHistoryResponseGenerationRef.current;
       if (showLoading) setOutboundHistoryLoading(true);
       try {
-        const payload = await request('a2a.outbound.dispatch.list', { limit: 200 });
+        const payload = await request('a2a.outbound.dispatch.list', { limit: 100 });
         if (!shouldAcceptA2AIngressResponse(responseGeneration, outboundHistoryResponseGenerationRef.current)) return;
         const next = normalizeA2AOutboundDispatchHistory(payload);
         if (!next) throw new Error(t('a2aIngress.errors.invalidHistoryResponse'));

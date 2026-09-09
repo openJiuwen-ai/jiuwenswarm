@@ -105,15 +105,25 @@ def _runtime_route() -> tuple[str, str]:
     )
 
 
+def _runtime_resource_id() -> str:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        get_runtime_tool_resource_id,
+    )
+
+    return str(get_runtime_tool_resource_id() or "").strip()
+
+
 class A2AOutboundToolkit:
     def __init__(
         self,
         backend: A2AOutboundToolBackend,
         *,
         runtime_route: Callable[[], tuple[str, str]] = _runtime_route,
+        runtime_resource_id: Callable[[], str] = _runtime_resource_id,
     ) -> None:
         self._backend = backend
         self._runtime_route = runtime_route
+        self._runtime_resource_id = runtime_resource_id
 
     async def find_agents(
         self,
@@ -152,7 +162,7 @@ class A2AOutboundToolkit:
             return _error(A2AOutboundErrorCode.MANAGER_UNAVAILABLE)
         return await self._backend.call(
             method,
-            params,
+            {**params, "resource_id": self._runtime_resource_id()},
             session_id=session_id,
             channel_id=channel_id,
         )

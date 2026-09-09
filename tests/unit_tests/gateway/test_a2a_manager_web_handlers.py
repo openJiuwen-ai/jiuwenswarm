@@ -405,6 +405,40 @@ async def test_a2a_outbound_user_enabled_requires_boolean():
 
 
 @pytest.mark.asyncio
+async def test_enterprise_dispatch_get_passes_trusted_resource_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    channel = _WebChannelProbe()
+    calls = []
+
+    class _Manager:
+        outbound_available = True
+
+        async def outbound_dispatch_get(self, dispatch_id, **kwargs):
+            calls.append((dispatch_id, kwargs))
+            return {"dispatch_id": dispatch_id}
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=_Manager()))
+    await channel.methods["a2a.outbound.dispatch.get"](
+        object(),
+        "dispatch-get",
+        {"dispatch_id": "dispatch-1", "bot_id": "resource-1"},
+        "session-1",
+    )
+
+    assert calls == [
+        (
+            "dispatch-1",
+            {
+                "source_session_id": "session-1",
+                "source_resource_id": "resource-1",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "params", [{"agent_id": "agent-1"}, {"agent_id": "agent-1", "accept": "false"}]
 )

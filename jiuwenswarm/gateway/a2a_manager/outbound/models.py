@@ -212,8 +212,14 @@ class A2AOutboundAgent:
     pending_revision: dict[str, Any] | None = None
     created_at: str = ""
     updated_at: str = ""
+    network_policy: dict[str, bool] | None = None
 
     def validate(self) -> "A2AOutboundAgent":
+        if self.network_policy is not None and (
+            not isinstance(self.network_policy, dict)
+            or any(type(value) is not bool for value in self.network_policy.values())
+        ):
+            raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
         for name in (
             "agent_id",
             "display_name",
@@ -266,6 +272,7 @@ class A2AOutboundAgent:
                 card_fingerprint=str(record.get("card_fingerprint") or "").strip(),
                 card_revision=int(record.get("card_revision") or 0),
                 agent_card=dict(record.get("agent_card") or {}),
+                network_policy=record.get("network_policy"),
                 selected_interface=A2ACompatibleInterface.from_dict(
                     dict(record.get("selected_interface") or {})
                 ),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -15,6 +16,8 @@ from jiuwenswarm.gateway.storage.protocols.persistent import PersistentStore
 from .errors import A2AOutboundError, A2AOutboundErrorCode, safe_error_summary
 from .models import A2AOutboundAgent, A2AOutboundAvailability, A2AOutboundDispatch
 from .repository import A2AOutboundRepository, JsonA2AOutboundRecordCodec
+
+logger = logging.getLogger(__name__)
 
 _DISPATCH_DATETIME_FIELDS = (
     "accepted_at",
@@ -104,11 +107,92 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
         templates: EnterpriseRecordRepository,
         user_states: EnterpriseRecordRepository,
         runtime_states: EnterpriseRecordRepository,
+        policies: EnterpriseRecordRepository | None = None,
+        agent_templates: EnterpriseRecordRepository | None = None,
+        instance_resources: EnterpriseRecordRepository | None = None,
     ) -> None:
         super().__init__(store, _EnterpriseA2AOutboundRecordCodec())
         self._templates = templates
         self._user_states = user_states
         self._runtime_states = runtime_states
+        self._policies = policies
+        self._agent_templates = agent_templates
+        self._instance_resources = instance_resources
+
+    async def resolve_effective_a2a_agent_ids(
+        self, resource_id: str
+    ) -> frozenset[str]:
+        """Resolve the current policy/manager/user intersection for one resource."""
+        allowed, projected = await self._resolve_policy_scope(resource_id)
+        return frozenset(
+            item.agent.agent_id
+            for item in projected
+            if item.agent.agent_id in allowed
+            and item.manager_enabled
+            and item.user_enabled
+        )
+
+    async def resolve_authorized_a2a_agent_ids(
+        self, resource_id: str
+    ) -> frozenset[str]:
+        """Resolve the policy-authorized catalog before local enablement state."""
+        allowed, _ = await self._resolve_policy_scope(resource_id)
+        return allowed
+
+    async def _resolve_policy_scope(
+        self, resource_id: str
+    ) -> tuple[frozenset[str], list[EnterpriseA2AAgentView]]:
+        if not all((self._policies, self._agent_templates, self._instance_resources)):
+            return frozenset(), []
+        resource = await self._instance_resources.get(
+            resource_id=str(resource_id or "").strip()
+        )
+        if resource is None or not bool(resource.get("enabled")):
+            return frozenset(), []
+        expires_at = _to_datetime(resource.get("expires_at"))
+        if expires_at is not None and expires_at <= _utc_now():
+            return frozenset(), []
+
+        template_id = str(resource.get("ref_template_id") or "").strip()
+        agent_template = await self._agent_templates.get(template_id=template_id)
+        if agent_template is None or not bool(agent_template.get("enabled")):
+            return frozenset(), []
+        template_ref = agent_template.get("template_ref")
+        refs = (
+            template_ref.get("a2a_access_policy")
+            if isinstance(template_ref, dict)
+            else None
+        )
+        if not isinstance(refs, list) or len(refs) != 1:
+            return frozenset(), []
+        policy_id = str(refs[0] or "").strip()
+        if not policy_id or policy_id.startswith("${") or " or " in policy_id.lower():
+            return frozenset(), []
+        policy = await self._policies.get(policy_id=policy_id)
+        if policy is None or not bool(policy.get("enabled")):
+            return frozenset(), []
+
+        members = {
+            str(item).strip()
+            for item in (policy.get("member_template_ids") or [])
+            if str(item).strip()
+        }
+        projected = await self.list_projected_agents()
+        mode = str(policy.get("mode") or "").strip().lower()
+        if mode == "allowlist":
+            policy_allowed = members
+        elif mode == "denylist":
+            policy_allowed = {item.agent.agent_id for item in projected} - members
+        else:
+            return frozenset(), projected
+        return (
+            frozenset(
+                item.agent.agent_id
+                for item in projected
+                if item.agent.agent_id in policy_allowed
+            ),
+            projected,
+        )
 
     @staticmethod
     def _project(
@@ -121,6 +205,17 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
             True if user_state is None else bool(user_state.get("user_enabled"))
         )
         runtime = runtime_state or {}
+        network_policy = (template.get("data") or {}).get("network_policy")
+        if network_policy is None:
+            network_policy = {}
+        elif not isinstance(network_policy, dict) or any(
+            type(value) is not bool for value in network_policy.values()
+        ):
+            logger.warning(
+                "Invalid A2A network_policy template_id=%s; using strict defaults",
+                template.get("template_id"),
+            )
+            network_policy = {}
         availability = str(
             runtime.get("availability") or A2AOutboundAvailability.AVAILABLE.value
         )
@@ -133,6 +228,7 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
                 "card_fingerprint": template.get("card_fingerprint"),
                 "card_revision": template.get("card_revision"),
                 "agent_card": template.get("agent_card"),
+                "network_policy": network_policy,
                 "selected_interface": template.get("selected_interface"),
                 "enabled": manager_enabled and user_enabled,
                 "availability": availability,

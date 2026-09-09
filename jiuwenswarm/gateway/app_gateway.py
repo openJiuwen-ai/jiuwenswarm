@@ -80,6 +80,22 @@ def _uses_external_agent_config() -> bool:
     return bool(os.getenv("GATEWAY_RUNTIME_MANAGER_URL", "").strip())
 
 
+def _load_gateway_a2a_ingress_config():
+    from jiuwenswarm.gateway.a2a_manager import (
+        A2AIngressConfig,
+        load_a2a_ingress_config_safely,
+    )
+
+    if is_enterprise():
+        return A2AIngressConfig(), None
+    return load_a2a_ingress_config_safely()
+
+
+async def _start_gateway_a2a_ingress(a2a_manager: Any) -> None:
+    if not is_enterprise():
+        await a2a_manager.start_from_config()
+
+
 # Keep gateway idle-finalize fallback aligned with ACP channel default.
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _AGENT_PREWARM_EXCLUDED_CHANNELS = frozenset({"acp", "a2a"})
@@ -1521,7 +1537,7 @@ async def _run_with_telemetry(
     web_path: str,
     telemetry_lifecycle,
 ) -> bool:
-    from jiuwenswarm.gateway.a2a_manager import A2AManager, load_a2a_ingress_config_safely
+    from jiuwenswarm.gateway.a2a_manager import A2AManager
     from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, \
         DingTalkConfig
     from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
@@ -2032,7 +2048,7 @@ async def _run_with_telemetry(
     web_channel.git_watcher_registry = _git_watcher_registry
     _git_watcher_registry.set_channel(web_channel)
 
-    a2a_config, a2a_config_error = load_a2a_ingress_config_safely()
+    a2a_config, a2a_config_error = _load_gateway_a2a_ingress_config()
     if a2a_config_error is not None:
         logger.error("a2a.ingress configuration is invalid; ingress remains disabled: %s", a2a_config_error)
     a2a_manager = A2AManager(
@@ -2152,7 +2168,7 @@ async def _run_with_telemetry(
             binding.install(gateway_server)
     gateway_server.on_message(acp_inbound_server.handle_message)
 
-    await a2a_manager.start_from_config()
+    await _start_gateway_a2a_ingress(a2a_manager)
 
     feishu_channel = None
     feishu_task = None

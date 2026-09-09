@@ -618,6 +618,12 @@ _CRON_TOOL_BOUND: ContextVar[bool] = ContextVar(
     "cron_tool_bound",
     default=False,
 )
+_RUNTIME_TOOL_RESOURCE_ID: ContextVar[str] = ContextVar(
+    "runtime_tool_resource_id", default=""
+)
+_RUNTIME_TOOL_A2A_POLICY_ID: ContextVar[str] = ContextVar(
+    "runtime_tool_a2a_policy_id", default=""
+)
 
 _LLM_TRACE_SESSION_ID: ContextVar[str] = ContextVar(
     "llm_trace_session_id",
@@ -671,6 +677,8 @@ class _RuntimeCronContextTokens:
     shell: Token[str | None] | None
     deepresearch: _DeepResearchRouteContextToken | None
     send_file: Token | None = None
+    resource_id: Token[str] | None = None
+    a2a_policy_id: Token[str] | None = None
 
 
 def get_runtime_tool_session_id() -> str | None:
@@ -686,6 +694,16 @@ def get_runtime_tool_channel_id() -> str:
 def get_runtime_tool_metadata() -> dict[str, Any] | None:
     """Request metadata bound for the current agent tool invocation (ContextVar)."""
     return _CRON_TOOL_METADATA.get()
+
+
+def get_runtime_tool_resource_id() -> str:
+    """Manager-owned resource id for the current tool invocation."""
+    return _RUNTIME_TOOL_RESOURCE_ID.get()
+
+
+def get_runtime_tool_a2a_policy_id() -> str:
+    """A2A policy selected by the current enterprise Agent template."""
+    return _RUNTIME_TOOL_A2A_POLICY_ID.get()
 
 logger = logging.getLogger(__name__)
 
@@ -7690,9 +7708,23 @@ class JiuWenSwarmDeepAdapter:
             return None
 
     def _build_a2a_outbound_toolkit_rail(self) -> A2AOutboundToolkitRail | None:
-        if is_enterprise():
-            return None
-        return A2AOutboundToolkitRail(runtime_route=self._get_a2a_outbound_tool_route)
+        return A2AOutboundToolkitRail(
+            runtime_route=self._get_a2a_outbound_tool_route,
+            runtime_resource_id=self._get_a2a_outbound_tool_resource_id,
+        )
+
+    def _get_a2a_outbound_tool_resource_id(self) -> str:
+        """Resolve resource identity from the same source as the A2A route."""
+        if str(get_runtime_tool_session_id() or "").strip():
+            return str(get_runtime_tool_resource_id() or "").strip()
+        route = self._current_request_route
+        if str(route.get("session_id") or "").strip():
+            return str(route.get("resource_id") or "").strip()
+        from jiuwenswarm.common.request_identity import web_routing_identity
+
+        return str(
+            web_routing_identity(self._runtime_cron_tool_context.metadata).get("bot_id") or ""
+        ).strip()
 
     def _get_a2a_outbound_tool_route(self) -> tuple[str, str]:
         """Return an adapter-owned route that survives DeepAgent task boundaries."""
@@ -8025,13 +8057,14 @@ class JiuWenSwarmDeepAdapter:
             3 if self._filesystem_rail_enabled_for_profile() else 2,
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
         )
-        rail_infos.insert(
-            4 if self._filesystem_rail_enabled_for_profile() else 3,
-            _RailBuildInfo(
-                "_a2a_outbound_toolkit_rail",
-                self._build_a2a_outbound_toolkit_rail,
-            ),
-        )
+        if mode not in {"team", "team.plan", "code.team"}:
+            rail_infos.insert(
+                4 if self._filesystem_rail_enabled_for_profile() else 3,
+                _RailBuildInfo(
+                    "_a2a_outbound_toolkit_rail",
+                    self._build_a2a_outbound_toolkit_rail,
+                ),
+            )
         rail_infos.insert(
             5 if self._filesystem_rail_enabled_for_profile() else 4,
             _RailBuildInfo(
@@ -9605,6 +9638,21 @@ class JiuWenSwarmDeepAdapter:
         metadata_token = _CRON_TOOL_METADATA.set(normalized_metadata)
         mode_token = _CRON_TOOL_MODE.set(normalized_mode)
         bound_token = _CRON_TOOL_BOUND.set(True)
+        resource_id = str(routing.get("bot_id") or "").strip()
+        policy_id = ""
+        enterprise_config = getattr(self, "_enterprise_config", None)
+        if (
+            enterprise_config is not None
+            and str(getattr(enterprise_config, "resource_id", "") or "").strip()
+            == resource_id
+        ):
+            policy_refs = getattr(enterprise_config, "template_ref", {}).get(
+                "a2a_access_policy", []
+            )
+            if isinstance(policy_refs, list) and len(policy_refs) == 1:
+                policy_id = str(policy_refs[0] or "").strip()
+        resource_token = _RUNTIME_TOOL_RESOURCE_ID.set(resource_id)
+        policy_token = _RUNTIME_TOOL_A2A_POLICY_ID.set(policy_id)
         shell_token = set_shell_session_id(session_id)
 
         # 绑定 send_file 专用路由 ContextVar（与 skill_turbo / test 仓对齐）。
@@ -9655,6 +9703,8 @@ class JiuWenSwarmDeepAdapter:
                     shell=shell_token,
                     deepresearch=None,
                     send_file=send_file_token,
+                    resource_id=resource_token,
+                    a2a_policy_id=policy_token,
                 ),
                 suppress_errors=True,
             )
@@ -9668,6 +9718,8 @@ class JiuWenSwarmDeepAdapter:
             shell=shell_token,
             deepresearch=_DeepResearchRouteContextToken(deepresearch_token),
             send_file=send_file_token,
+            resource_id=resource_token,
+            a2a_policy_id=policy_token,
         )
 
     @staticmethod
@@ -9742,6 +9794,8 @@ class JiuWenSwarmDeepAdapter:
             _reset("send_file", reset_send_file_request_context)
         _reset("shell", reset_shell_session_id)
         _reset("bound", _CRON_TOOL_BOUND.reset)
+        _reset("a2a_policy_id", _RUNTIME_TOOL_A2A_POLICY_ID.reset)
+        _reset("resource_id", _RUNTIME_TOOL_RESOURCE_ID.reset)
         _reset("mode", _CRON_TOOL_MODE.reset)
         _reset("metadata", _CRON_TOOL_METADATA.reset)
         _reset("session", _CRON_TOOL_SESSION_ID.reset)
@@ -16133,10 +16187,13 @@ class JiuWenSwarmDeepAdapter:
             getattr(self, "_model", None) and getattr(self._model, "model_config", None)
             and getattr(self._model.model_config, "model_name", "") or ""
         )
+        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
+
         self._current_request_route = {
             "session_id": session_id,
             "request_id": request.request_id or "",
             "channel_id": request.channel_id or "",
+            "resource_id": extract_routing_triple(request.metadata, request.params)[1] or "",
             "output_dir": self._deepresearch_artifact_output_dir(
                 request.params.get("project_dir")
                 if isinstance(request.params, dict)
@@ -16829,10 +16886,13 @@ class JiuWenSwarmDeepAdapter:
             getattr(self, "_model", None) and getattr(self._model, "model_config", None)
             and getattr(self._model.model_config, "model_name", "") or ""
         )
+        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
+
         self._current_request_route = {
             "session_id": session_id,
             "request_id": rid or "",
             "channel_id": cid or "",
+            "resource_id": extract_routing_triple(request.metadata, request.params)[1] or "",
             "output_dir": self._deepresearch_artifact_output_dir(
                 request.params.get("project_dir")
                 if isinstance(request.params, dict)
@@ -16844,6 +16904,19 @@ class JiuWenSwarmDeepAdapter:
         if mode in ("team", "team.plan", "code.team"):
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import process_team_message_stream
 
+            team_context_tokens = self._bind_runtime_cron_context(
+                channel_id=request.channel_id,
+                session_id=request.session_id,
+                metadata=request.metadata,
+                request_id=request.request_id,
+                mode=mode,
+                project_dir=(
+                    request.params.get("project_dir")
+                    if isinstance(request.params, dict)
+                    else None
+                ),
+                params=request.params if isinstance(request.params, dict) else None,
+            )
             set_perf_summary_context(
                 getattr(self, "_request_summary_rail", None),
                 channel_id=request.channel_id or "",
@@ -16918,6 +16991,10 @@ class JiuWenSwarmDeepAdapter:
                     getattr(self, "_request_summary_rail", None),
                     session_id=session_id,
                     request_id=request.request_id,
+                )
+                self._reset_runtime_cron_context(
+                    team_context_tokens,
+                    suppress_errors=True,
                 )
                 _LLM_TRACE_SESSION_ID.reset(token_trace_sid)
                 _LLM_TRACE_REQUEST_ID.reset(token_trace_rid)

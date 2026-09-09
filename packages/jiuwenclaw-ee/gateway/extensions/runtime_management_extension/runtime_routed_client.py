@@ -184,13 +184,55 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._touch_interval_seconds = max(0.0, float(touch_interval_seconds))
         self._route_attempts = max(1, int(route_attempts))
         self._connected = False
-        # 企业版 HTTP 半双工：响应走 POST+SSE，AgentServer→Gateway 的主动 push
-        # （cron.response / 文件下载 / evolution 等）必须额外订阅
-        # GET /api/v1/events/stream。此处按 Pod（base_url）懒建订阅，对齐个人版
-        # WebSocketAgentServerClient 天然具备的双向 push 能力。
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
-        self._push_clients: dict[str, HttpSseAgentServerClient] = {}
-        self._push_lock = asyncio.Lock()
+        self._pod_clients: dict[str, HttpSseAgentServerClient] = {}
+        self._pod_connect_lock = asyncio.Lock()
+        self._rpc_origins: dict[tuple[str, str], str] = {}
+
+    def set_server_push_handler(
+        self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
+    ) -> None:
+        self._on_server_push = handler
+
+    async def _handle_pod_push(self, base_url: str, wire: dict[str, Any]) -> None:
+        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+
+        handler = self._on_server_push
+        if handler is None:
+            return
+        chunk = parse_agent_server_wire_chunk(wire)
+        payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+        rpc = payload.get("jsonrpc", payload)
+        key = None
+        if isinstance(rpc, dict) and rpc.get("id") is not None and rpc.get("method"):
+            key = (str(wire.get("session_id") or ""), str(rpc["id"]))
+            self._rpc_origins[key] = base_url
+        try:
+            await handler(wire)
+        except BaseException:
+            if key is not None:
+                self._rpc_origins.pop(key, None)
+            raise
+
+    async def _ensure_pod_push(self, base_url: str) -> None:
+        if self._on_server_push is None:
+            return
+        async with self._pod_connect_lock:
+            self._ensure_connected()
+            client = self._pod_clients.get(base_url)
+            if client is None:
+                client = HttpSseAgentServerClient()
+                client.set_server_push_handler(
+                    lambda wire: self._handle_pod_push(base_url, wire)
+                )
+                try:
+                    await client.connect(base_url)
+                    await client.wait_push_ready()
+                except BaseException:
+                    await client.disconnect()
+                    raise
+                self._pod_clients[base_url] = client
+        await client.wait_push_ready()
 
     async def connect(self, uri: str) -> None:
         _ = uri
@@ -203,73 +245,27 @@ class RuntimeRoutedAgentClient(AgentServerClient):
 
     async def disconnect(self) -> None:
         self._connected = False
+        async with self._pod_connect_lock:
+            clients = list(self._pod_clients.values())
+            self._pod_clients.clear()
+        results = await asyncio.gather(
+            *(client.disconnect() for client in clients),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("Failed to disconnect routed push client: %s", result)
+        self._rpc_origins.clear()
         if self._owns_http:
             try:
                 await self._http.disconnect()
-            except Exception:
-                logger.exception("[RuntimeRouted] 断开 HTTP 连接失败")
-        push_clients = list(self._push_clients.values())
-        self._push_clients.clear()
-        for client in push_clients:
-            try:
-                await client.disconnect()
-            except Exception:
-                logger.exception("[RuntimeRouted] 断开 push 订阅失败")
+            except Exception as exc:
+                logger.warning("Failed to disconnect HTTP client: %s", exc)
         if self._owns_route:
             try:
                 await self._route.aclose()
-            except Exception:
-                logger.exception("[RuntimeRouted] 关闭 route 失败")
-
-    def set_server_push_handler(
-        self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
-    ) -> None:
-        """注册 AgentServer 主动推送（server_push）回调。
-
-        与个人版 ``WebSocketAgentServerClient.set_server_push_handler`` 语义一致，
-        供 ``MessageHandler`` 注入 ``_handle_agent_server_push``。企业版经 HTTP/SSE
-        通信，push 由每个 Pod 的 ``HttpSseAgentServerClient`` 单独订阅，故此处把
-        回调记录并同步到已建立的订阅客户端上。
-        """
-        self._on_server_push = handler
-        for client in self._push_clients.values():
-            client.set_server_push_handler(handler)
-
-    async def _ensure_push_subscription(self, base_url: str) -> None:
-        """懒建立到指定 AgentServer Pod 的 push（``GET /api/v1/events/stream``）订阅。
-
-        个人版 WS 天然双向，push 走同一条连接；企业版 HTTP 半双工，响应走
-        POST+SSE，push 必须额外订阅。首次 route 到某 Pod 时为其建一个专用
-        ``HttpSseAgentServerClient`` 订阅并复用；未注册回调或 Pod 已订阅则跳过。
-        订阅失败不阻断业务请求（route 已成功，下次请求会重试）。
-        """
-        if self._on_server_push is None:
-            return
-        base_url = (base_url or "").strip().rstrip("/")
-        if not base_url or base_url in self._push_clients:
-            return
-        async with self._push_lock:
-            if base_url in self._push_clients:
-                return
-            push_client = HttpSseAgentServerClient()
-            try:
-                await push_client.connect(base_url)
-                push_client.set_server_push_handler(self._on_server_push)
-            except Exception:
-                logger.exception(
-                    "[RuntimeRouted] 建立 push 订阅失败，跳过: base_url=%s",
-                    base_url,
-                )
-                try:
-                    await push_client.disconnect()
-                except Exception:
-                    logger.exception(
-                        "[RuntimeRouted] 断开失败的 push 订阅时出错: base_url=%s",
-                        base_url,
-                    )
-                return
-            self._push_clients[base_url] = push_client
-            logger.info("[RuntimeRouted] 已建立 push 订阅: base_url=%s", base_url)
+            except Exception as exc:
+                logger.warning("Failed to close route client: %s", exc)
 
     def _ensure_connected(self) -> None:
         if not self._connected:
@@ -285,6 +281,16 @@ class RuntimeRoutedAgentClient(AgentServerClient):
 
     async def send_request(self, envelope: E2AEnvelope) -> AgentResponse:
         self._ensure_connected()
+        if envelope.method == "acp.tool_response":
+            params = envelope.params or {}
+            key = (
+                str(envelope.session_id or params.get("session_id") or ""),
+                str(params.get("jsonrpc_id") or ""),
+            )
+            base_url = self._rpc_origins.pop(key, None)
+            if base_url is None:
+                raise RuntimeError("Reverse RPC origin Pod is unavailable")
+            return await self._http.send_request(envelope, base_url=base_url)
         if _is_heartbeat_envelope(envelope):
             return self._heartbeat_response(envelope)
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
@@ -300,8 +306,8 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             request_id=request_id,
             user_id=user_id,
         )
-        await self._ensure_push_subscription(base_url)
         try:
+            await self._ensure_pod_push(base_url)
             result = await self._http.send_request(envelope, base_url=base_url)
         except Exception as exc:
             if not _is_http_retryable(exc):
@@ -318,7 +324,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 request_id=uuid.uuid4().hex,
                 user_id=user_id,
             )
-            await self._ensure_push_subscription(base_url)
+            await self._ensure_pod_push(base_url)
             result = await self._http.send_request(envelope, base_url=base_url)
         await self._touch_quiet(session_id, route_id)
         return result
@@ -351,7 +357,6 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             request_id=request_id,
             user_id=user_id,
         )
-        await self._ensure_push_subscription(base_url)
         yielded = 0
         try:
             async for chunk in self._stream_with_touch(
@@ -374,7 +379,6 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 request_id=uuid.uuid4().hex,
                 user_id=user_id,
             )
-            await self._ensure_push_subscription(base_url)
             async for chunk in self._stream_with_touch(
                 envelope, base_url=base_url, session_id=session_id, route_id=route_id
             ):
@@ -391,6 +395,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         route_id: str,
     ) -> AsyncIterator[AgentResponseChunk]:
         last_touch = time.monotonic()
+        await self._ensure_pod_push(base_url)
         async for chunk in self._http.send_request_stream(envelope, base_url=base_url):
             now = time.monotonic()
             if (

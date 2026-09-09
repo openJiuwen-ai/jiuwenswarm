@@ -20,6 +20,7 @@ class TemplateRefSlot(StrEnum):
     EXTENSION_CONFIG = "extension_config"
     MCP = "mcp"
     PERMISSIONS = "permissions"
+    A2A_ACCESS_POLICY = "a2a_access_policy"
 
 
 SLOT_ENTITY_TABLE: dict[TemplateRefSlot, str] = {
@@ -33,6 +34,7 @@ SLOT_ENTITY_TABLE: dict[TemplateRefSlot, str] = {
     TemplateRefSlot.EXTENSION_CONFIG: "extension_config_template",
     TemplateRefSlot.MCP: "mcp_template",
     TemplateRefSlot.PERMISSIONS: "permissions_template",
+    TemplateRefSlot.A2A_ACCESS_POLICY: "a2a_access_policy_template",
 }
 
 MODEL_SLOT_KEYS = frozenset({
@@ -50,6 +52,7 @@ DEFAULT_AGENT_LOAD_SLOTS = frozenset({
     TemplateRefSlot.EXTENSION_CONFIG,
     TemplateRefSlot.MCP,
     TemplateRefSlot.PERMISSIONS,
+    TemplateRefSlot.A2A_ACCESS_POLICY,
 })
 
 
@@ -113,6 +116,7 @@ class EffectiveEnterpriseConfig:
     extension_config: list[dict[str, Any]] | None = None
     mcp: list[dict[str, Any]] | None = None
     permissions: list[dict[str, Any]] | None = None
+    a2a_access_policy: list[dict[str, Any]] | None = None
     service_id: str | None = None
     send_file_allowed: bool = True
     debug: dict[str, Any] = field(default_factory=dict)
@@ -131,6 +135,7 @@ class EffectiveEnterpriseConfig:
             "extension_config": self.extension_config,
             "mcp": self.mcp,
             "permissions": self.permissions,
+            "a2a_access_policy": self.a2a_access_policy,
             "service_id": self.service_id,
             "send_file_allowed": self.send_file_allowed,
             "debug": dict(self.debug),

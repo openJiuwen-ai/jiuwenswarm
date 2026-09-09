@@ -477,6 +477,48 @@ async def test_discovery_blocks_private_and_plain_http_targets() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("address,scheme,policy,allowed", [
+    ("192.168.1.27", "http", {"allow_http": True, "allow_private_network": True}, True),
+    ("192.168.1.27", "http", {"allow_private_network": True}, False),
+    ("192.168.1.27", "http", {"allow_http": True}, False),
+    ("10.0.0.8", "https", {"allow_private_network": True}, True),
+    ("127.0.0.1", "http", {"allow_http": True, "allow_private_network": True}, False),
+    ("127.0.0.1", "http", {"allow_http": True, "allow_loopback": True}, True),
+    ("93.184.216.34", "https", {}, True),
+    ("93.184.216.34", "http", {"allow_http": True}, False),
+    ("93.184.216.34", "http", {"allow_http": True, "allow_public_http": True}, True),
+    ("169.254.169.254", "http", {"allow_http": True, "allow_private_network": True}, False),
+    ("0.0.0.0", "https", {"allow_private_network": True}, False),
+    ("2001:4860:4860::8888", "https", {}, True),
+    ("2001:4860:4860::8888", "http", {}, False),
+    ("fc00::1", "https", {"allow_private_network": True}, False),
+    ("::ffff:192.168.1.1", "https", {"allow_private_network": True}, False),
+    ("::1", "http", {"allow_http": True, "allow_loopback": True}, True),
+    (["2001:4860:4860::8888", "93.184.216.34"], "https", {}, True),
+    (["93.184.216.34", "192.168.1.27"], "https", {"allow_private_network": True}, False),
+    (["2001:4860:4860::8888", "192.168.1.27"], "https", {"allow_private_network": True}, False),
+])
+async def test_enterprise_network_policy(address, scheme, policy, allowed):
+    addresses = address if isinstance(address, list) else [address]
+
+    async def resolver(host, port):
+        return addresses
+
+    service = A2AOutboundDiscoveryService(address_resolver=resolver, allow_loopback_http=True)
+    if allowed:
+        target = await service.validate_network_target(
+            f"{scheme}://weather.example.com/a2a", network_policy=policy
+        )
+        assert target.pinned_address == addresses[0]
+    else:
+        with pytest.raises(A2AOutboundError) as error:
+            await service.validate_network_target(
+                f"{scheme}://weather.example.com/a2a", network_policy=policy
+            )
+        assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
+
+
+@pytest.mark.asyncio
 async def test_network_validation_accepts_case_insensitive_https_scheme() -> None:
     async def public_resolver(host: str, port: int) -> list[str]:
         return ["93.184.216.34"]

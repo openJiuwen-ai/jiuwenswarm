@@ -2341,7 +2341,7 @@ function AppContent() {
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${isTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${activeNav === 'a2aingress' ? 'content--a2a' : ''} ${isTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
         {configError && (
           <div className="card mb-4">
             <div className="text-sm text-text-muted">
@@ -2538,7 +2538,7 @@ function AppContent() {
           </div>
         )}
         {activeNav === 'a2aingress' && (
-          <div className="app-section">
+          <div className="app-section min-h-0">
             <A2AIngressPanel isConnected={isConnected} request={request} />
           </div>
         )}

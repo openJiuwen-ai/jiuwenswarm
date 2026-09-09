@@ -48,7 +48,6 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
 )
-from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.agents.harness.team.rails.team_skill_storage_policy_rail import (
     TeamSkillStoragePolicyRail,
 )
@@ -181,11 +180,12 @@ def _build_a2a_outbound_toolkit_rail(
     context: SwarmBuildContext,
 ) -> A2AOutboundToolkitRail | None:
     """Build the shared A2A rail with a route stable across member tasks."""
-    if is_enterprise():
-        return None
     inp = A2AOutboundToolkitInput.resolve(params, context)
     session_id = str(inp.session_id or "").strip()
     channel = str(inp.channel or "default").strip() or "default"
+    from jiuwenswarm.common.request_identity import web_routing_identity
+
+    resource_id = str(web_routing_identity(context.request_metadata).get("bot_id") or "").strip()
 
     def _runtime_route() -> tuple[str, str]:
         from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -199,7 +199,19 @@ def _build_a2a_outbound_toolkit_rail(
             return live_session, live_channel or channel
         return session_id, channel
 
-    return A2AOutboundToolkitRail(runtime_route=_runtime_route)
+    def _runtime_resource_id() -> str:
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+            get_runtime_tool_resource_id,
+            get_runtime_tool_session_id,
+        )
+
+        if str(get_runtime_tool_session_id() or "").strip():
+            return str(get_runtime_tool_resource_id() or "").strip()
+        return resource_id
+
+    return A2AOutboundToolkitRail(
+        runtime_route=_runtime_route, runtime_resource_id=_runtime_resource_id
+    )
 
 
 class DisabledToolsInput(ConstructionInput):

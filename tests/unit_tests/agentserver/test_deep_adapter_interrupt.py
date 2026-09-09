@@ -95,6 +95,92 @@ def test_a2a_tool_route_survives_background_task_context(
     assert adapter._get_a2a_outbound_tool_route() == ("web-session", "web")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name, params", [
+    ("a2a_find_agents", {"query": ""}),
+    ("a2a_dispatch_task", {"agent_id": "weather", "task": "weather", "mode": "sync"}),
+    ("a2a_get_dispatch", {"dispatch_id": "dispatch-1"}),
+])
+async def test_a2a_resource_survives_preexisting_runner_task(tool_name, params):
+    """A runner created before request binding must use its adapter's identity."""
+    ready = asyncio.Event()
+    adapters = [_make_adapter(_current_request_route={}) for _ in range(2)]
+
+    async def invoke(adapter):
+        await ready.wait()
+        tools = {}
+
+        async def call(method, payload, **route):
+            return {"params": payload, **route}
+
+        rail = adapter._build_a2a_outbound_toolkit_rail()
+        rail._backend_provider = lambda: SimpleNamespace(ready=True, call=call)
+        rail.init(SimpleNamespace(
+            ability_manager=SimpleNamespace(add_ability=lambda card, tool: tools.update({card.name: tool})),
+            system_prompt_builder=None,
+        ))
+        return await tools[tool_name].invoke(params)
+
+    runners = [
+        asyncio.create_task(invoke(adapter), context=contextvars.Context())
+        for adapter in adapters
+    ]
+    for index, adapter in enumerate(adapters):
+        adapter._current_request_route = {
+            "session_id": f"session-{index}", "channel_id": "web",
+            "resource_id": f"bot-{index}",
+        }
+    ready.set()
+    results = await asyncio.gather(*runners)
+    for index, result in enumerate(results):
+        assert result["session_id"] == f"session-{index}"
+        assert result["params"]["resource_id"] == f"bot-{index}"
+
+
+def test_a2a_bound_identity_does_not_borrow_snapshot_resource():
+    adapter = _make_adapter(_current_request_route={
+        "session_id": "old-session", "resource_id": "old-bot",
+    })
+
+    def check():
+        interface_deep._CRON_TOOL_SESSION_ID.set("new-session")
+        interface_deep._RUNTIME_TOOL_RESOURCE_ID.set("")
+        assert adapter._get_a2a_outbound_tool_resource_id() == ""
+        interface_deep._RUNTIME_TOOL_RESOURCE_ID.set("new-bot")
+        assert adapter._get_a2a_outbound_tool_resource_id() == "new-bot"
+
+    contextvars.Context().run(check)
+
+
+def test_a2a_snapshot_missing_resource_does_not_borrow_cron_identity():
+    adapter = _make_adapter(
+        _current_request_route={"session_id": "new-session"},
+        _runtime_cron_tool_context=SimpleNamespace(metadata={"routing": {"bot_id": "old-bot"}}),
+    )
+    assert contextvars.Context().run(adapter._get_a2a_outbound_tool_resource_id) == ""
+
+
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+def test_deep_team_modes_leave_a2a_rail_to_swarm_provider(mode: str) -> None:
+    adapter = _make_adapter(
+        _model=None,
+        _config_cache={},
+        _filesystem_rail=None,
+        _skill_protocol_prompt_rail=None,
+        _task_execution_rail=None,
+    )
+    adapter._filesystem_rail_enabled_for_profile = lambda: False
+    adapter._skill_include_tools_for_profile = lambda: True
+    adapter._task_execution_rail_enabled = lambda: False
+    adapter._instantiate_rails = lambda rail_infos, _config: rail_infos
+
+    rail_infos = adapter._build_agent_rails({}, {}, mode=mode)
+
+    assert "_a2a_outbound_toolkit_rail" not in {
+        info.attr_name for info in rail_infos
+    }
+
+
 def _make_message_adapter(monkeypatch: pytest.MonkeyPatch) -> JiuWenSwarmDeepAdapter:
     adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = SimpleNamespace(get_context_usage=lambda **_kwargs: {})
@@ -104,6 +190,89 @@ def _make_message_adapter(monkeypatch: pytest.MonkeyPatch) -> JiuWenSwarmDeepAda
     monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: None)
     monkeypatch.setattr(adapter, "_apply_model_to_react_agent", lambda _model: None)
     return adapter
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params_only", [False, True])
+async def test_team_stream_binds_a2a_resource_context(
+    monkeypatch: pytest.MonkeyPatch, params_only: bool,
+) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+    from jiuwenswarm.server.runtime import tenant_agent_pool
+
+    adapter = _make_message_adapter(monkeypatch)
+    adapter._deepresearch_rewrite_tx_uncertain = False
+    adapter._config_cache = {}
+    adapter._config_base_cache = {}
+    adapter._runtime_prompt_rail = None
+    adapter._project_dir = None
+    adapter._workspace_dir = None
+    monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", lambda _inputs: None)
+    monkeypatch.setattr(adapter, "_try_skill_turbo_resume", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter, "_arm_skill_turbo_interrupt_recovery_hint", AsyncMock())
+    monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: None)
+    monkeypatch.setattr(
+        adapter, "_prepare_multimodal_image_inputs", lambda _request, inputs: inputs
+    )
+    monkeypatch.setattr(adapter, "_native_image_input_enabled", lambda *_args: False)
+    monkeypatch.setattr(
+        adapter,
+        "_prepare_react_image_tool_prompt",
+        lambda _request, inputs, **_kwargs: inputs,
+    )
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "zh")
+    monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda _session: "web")
+    monkeypatch.setattr(adapter, "_write_runtime_state", lambda **_kwargs: None)
+    monkeypatch.setattr(interface_deep, "set_perf_summary_context", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(interface_deep, "finalize_perf_summary_request", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(interface_deep, "clear_perf_summary_context", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(interface_deep, "resolve_tenant_sessions_dir", lambda _key: Path("."))
+    monkeypatch.setattr(interface_deep, "evolution_slash_command_name", lambda _query: None)
+    monkeypatch.setattr(
+        tenant_agent_pool.TenantAgentPool,
+        "extract_ids",
+        staticmethod(lambda _request: ("agent", "service", "workspace")),
+    )
+
+    async def _team_stream(*_args, **_kwargs):
+        assert interface_deep.get_runtime_tool_resource_id() == "resource-1"
+        assert contextvars.Context().run(adapter._get_a2a_outbound_tool_resource_id) == "resource-1"
+        yield SimpleNamespace(payload={"event_type": "chat.delta"})
+
+    monkeypatch.setattr(team_helpers, "process_team_message_stream", _team_stream)
+    request = AgentRequest(
+        request_id="request-team",
+        channel_id="web",
+        session_id="session-team",
+        is_stream=True,
+        params={"query": "delegate", "mode": "team", "bot_id": "resource-1" if params_only else "untrusted"},
+        metadata={} if params_only else {"routing": {"bot_id": "resource-1"}},
+    )
+
+    chunks = [
+        chunk
+        async for chunk in adapter.process_message_stream_impl(
+            request, {"query": "delegate"}
+        )
+    ]
+
+    assert len(chunks) == 1
+    assert interface_deep.get_runtime_tool_resource_id() == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params_only", [False, True])
+async def test_nonstream_entry_captures_a2a_resource_snapshot(monkeypatch, params_only):
+    adapter = _make_message_adapter(monkeypatch)
+    monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: "")
+    monkeypatch.setattr(adapter, "_handle_slash_command", AsyncMock(return_value={"result_type": "goal_control"}))
+    request = AgentRequest(
+        request_id="snapshot-request", channel_id="web", session_id="snapshot-session",
+        params={"query": "test", "mode": "agent", "bot_id": "resource-1" if params_only else "untrusted"},
+        metadata={} if params_only else {"routing": {"bot_id": "resource-1"}},
+    )
+    await adapter.process_message_impl(request, {"query": "test"})
+    assert contextvars.Context().run(adapter._get_a2a_outbound_tool_resource_id) == "resource-1"
 
 
 def _route_test_request(*, stream: bool = False) -> AgentRequest:
@@ -653,6 +822,33 @@ def test_runtime_route_binds_current_session_workspace(tmp_path: Path) -> None:
         assert dt._get_effective_request_output_dir() == session_workspace.resolve()
     finally:
         adapter._reset_runtime_cron_context(tokens)
+
+
+def test_runtime_route_binds_and_resets_enterprise_a2a_identity() -> None:
+    enterprise = SimpleNamespace(
+        resource_id="resource-1",
+        template_ref={"a2a_access_policy": ["policy-1"]},
+    )
+    adapter = _make_adapter(
+        _enterprise_config=enterprise,
+        _env_service_id="service-1",
+        _env_agent_id="agent-1",
+    )
+    tokens = adapter._bind_runtime_cron_context(
+        channel_id="web",
+        session_id="session-1",
+        metadata={"routing": {"bot_id": "resource-1"}},
+        request_id="request-1",
+        mode="agent",
+    )
+    try:
+        assert interface_deep.get_runtime_tool_resource_id() == "resource-1"
+        assert interface_deep.get_runtime_tool_a2a_policy_id() == "policy-1"
+    finally:
+        adapter._reset_runtime_cron_context(tokens)
+
+    assert interface_deep.get_runtime_tool_resource_id() == ""
+    assert interface_deep.get_runtime_tool_a2a_policy_id() == ""
 
 
 def test_deepresearch_tool_context_keeps_session_workspace_snapshot(
