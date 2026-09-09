@@ -106,7 +106,6 @@ declare -A DEPLOY_VARS=(
     ["IS_MOUNT_MANAGER_WEB_CODE"]="false"
     ["CLAW_POD_CODE_PATH"]="/app/jiuwenswarm"
     ["RUNTIME_POD_CODE_PATH"]="/app/agent-runtime"
-    ["JIUWENBOX_POD_CODE_PATH"]="/app/src/jiuwenbox"
     ["CORE_POD_PKG_PATH"]="/usr/local/lib/python3.11/site-packages/openjiuwen"
     ["RUNTIME_POD_PKG_PATH"]="/usr/local/lib/python3.11/site-packages/openjiuwen_runtime"
     ["CLAW_MOUNT_TYPE"]="pvc"

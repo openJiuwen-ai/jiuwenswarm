@@ -8,6 +8,5 @@
 **/node_modules
 htmlcov
 coverage.xml
-unit_test_report.html
 logs
 **/logs

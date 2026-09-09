@@ -4,9 +4,10 @@ FROM ${BASE_IMAGE}
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
 RUN useradd --create-home --shell /bin/bash app
-WORKDIR /app
+WORKDIR /app/jiuwenswarm/jiuwenbox
 
-COPY jiuwenbox/pyproject.toml ./
+COPY jiuwenbox/pyproject.toml ./pyproject.toml
+COPY jiuwenbox/README.md ./README.md
 COPY jiuwenbox/src ./src
 
 RUN uv pip install --system --break-system-packages \
