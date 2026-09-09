@@ -1608,19 +1608,24 @@ class SkillTurboExecutor:
         return None, current_tool_call_id
 
     def _next_tool_call_id(self, tool_name: str, kwargs: dict[str, Any]) -> str:
-        """生成确定性 tool_call_id：基于 (tool_name, canonical_args, call_index) 哈希。
+        """生成 tool_call_id：基于 (request_id, tool_name, canonical_args, call_index) 哈希。
 
+        - request_id：当前请求 id（``_request_id_var``），使不同会话/请求对相同
+          ask_user 参数生成不同 id，避免跨会话卡片 request_id 碰撞导致作答串台。
+          resume 重放时 request_id 会变，精确匹配失效，由
+          ``_consume_pending_resume_input`` 的 idx 回退命中（与「重放时非确定性
+          ask_user 参数」同一既有路径）。
         - canonical_args：``json.dumps(sort_keys, default=str)`` 后取 sha1[:8]
         - call_index：本次执行内同 (name, args) 的第几次调用（从 0 起算）
-
-        重放时只要 plan_code+inputs 一致，相同顺序的同名同参调用必然得到同样的 id；
-        与 ``PermissionInterruptRail`` 的 ``user_inputs[tool_call_id]`` 对应即可命中。
         """
+        request_id = str(_request_id_var.get() or "")
         try:
             args_canonical = json.dumps(kwargs, sort_keys=True, default=str)
         except (TypeError, ValueError):
             args_canonical = repr(sorted(kwargs.items()))
-        args_hash = hashlib.sha1(args_canonical.encode("utf-8")).hexdigest()[:8]
+        args_hash = hashlib.sha1(
+            f"{request_id}|{args_canonical}".encode("utf-8")
+        ).hexdigest()[:8]
         key = f"{tool_name}|{args_hash}"
         idx = self._tool_call_counter.get(key, 0)
         self._tool_call_counter[key] = idx + 1

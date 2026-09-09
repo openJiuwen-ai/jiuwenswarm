@@ -11941,12 +11941,18 @@ class JiuWenSwarmDeepAdapter:
                     yield summary_chunk
 
             async def _clear_resume_ctx() -> None:
-                await _skill_turbo_clear_resume_ctx(session)
+                # session 已被 mark_resume_in_flight post_run 过（_post_run_done=True），
+                # 直接再 post_run 是 no-op，update_state(None) 不会落盘。新请求 pre_run
+                # 会从 checkpointer 读回残留 ctx，触发 skill_acceleration_exec 重复执行。
+                # 用独立 session 重新 pre_run+clear+post_run 保证清除一定持久化。
+                sid = request.session_id or "default"
                 try:
-                    await session.post_run()
+                    await self._clear_skill_turbo_resume_ctx_via_isolated_session(sid)
                 except Exception:
                     logger.debug(
-                        "[JiuWenSwarmDeepAdapter] skill_turbo resume_stream post_run failed",
+                        "[JiuWenSwarmDeepAdapter] skill_turbo resume clear via "
+                        "isolated session failed session_id=%s",
+                        sid,
                         exc_info=True,
                     )
 
