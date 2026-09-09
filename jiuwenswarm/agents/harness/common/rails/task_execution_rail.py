@@ -57,6 +57,38 @@ def get_current_task_id() -> str | None:
     return _ACTIVE_TASK_ID.get()
 
 
+_SERIAL_TODO_DONE_STATUSES = frozenset({"completed", "cancelled"})
+
+
+def overlay_serial_todo_statuses(
+    items: list[dict[str, Any]],
+    *,
+    done_statuses: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Hide out-of-order completed/in_progress rows from a UI snapshot.
+
+    RelayClaw treats only the last visible row as live and hides pending.
+    Showing a later completed item while an earlier one is still open
+    looks like the list is out of order. Shared by TaskExecutionRail
+    (task.update) and StreamEventRail (todo.updated).
+    """
+    done = done_statuses if done_statuses is not None else _SERIAL_TODO_DONE_STATUSES
+    overlay: list[dict[str, Any]] = []
+    found_open = False
+    for item in items:
+        copied = dict(item)
+        status = str(copied.get("status", "pending")).lower()
+        if status in done:
+            if found_open and status == "completed":
+                copied["status"] = "pending"
+        elif found_open:
+            copied["status"] = "pending"
+        else:
+            found_open = True
+        overlay.append(copied)
+    return overlay
+
+
 # 图像产物扩展名白名单
 _IMAGE_ARTIFACT_EXTENSIONS = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
@@ -1424,6 +1456,9 @@ class TaskExecutionRail(DeepAgentRail):
         _ACTIVE_TASK_ID.set(None)
         if isinstance(ctx.inputs, InvokeInputs):
             await self._init_task_tracking(ctx.session)
+            # 跨请求时实例上的 deferred 已被清空；从磁盘快照重建，
+            # 否则前缀完成后无法补发后项的 task.start/task.complete。
+            self._rebuild_serial_todo_deferred()
             has_active_tasks = any(
                 t.get("status") in ("pending", "in_progress")
                 for t in self._todo_map.values()
@@ -1921,26 +1956,36 @@ class TaskExecutionRail(DeepAgentRail):
         self,
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Hide out-of-order completed/in_progress rows from the UI snapshot.
+        """Hide out-of-order completed/in_progress rows from the UI snapshot."""
+        return overlay_serial_todo_statuses(
+            items, done_statuses=self._TODO_DONE_STATUSES
+        )
 
-        RelayClaw treats only the last visible row as live and hides pending.
-        Showing a later completed item while an earlier one is still open
-        looks like the list is out of order.
+    def _rebuild_serial_todo_deferred(self) -> None:
+        """Restore deferred start/complete from disk after a new invoke.
+
+        ``before_invoke`` clears in-memory deferred sets. Later items that
+        were already completed (or opened) while an earlier item is still
+        open must be re-queued so ``_flush_serial_todo_transitions`` can
+        emit ``task.start`` / ``task.complete`` in list order.
         """
-        overlay: list[dict[str, Any]] = []
-        found_open = False
-        for item in items:
-            copied = dict(item)
-            status = str(copied.get("status", "pending")).lower()
-            if status in self._TODO_DONE_STATUSES:
-                if found_open and status == "completed":
-                    copied["status"] = "pending"
-            elif found_open:
-                copied["status"] = "pending"
-            else:
-                found_open = True
-            overlay.append(copied)
-        return overlay
+        self._todo_complete_deferred = set()
+        self._todo_start_deferred = set()
+        for task_id, task in self._iter_todos_by_index(self._todo_map):
+            if not self._has_earlier_incomplete(task_id, self._todo_map):
+                continue
+            status = str(task.get("status", "")).lower()
+            if status == "completed":
+                self._todo_complete_deferred.add(task_id)
+            elif status == "in_progress":
+                self._todo_start_deferred.add(task_id)
+        if self._todo_start_deferred or self._todo_complete_deferred:
+            logger.info(
+                "[TaskExecutionRail] rebuilt serial deferred: "
+                "start=%s complete=%s",
+                sorted(self._todo_start_deferred),
+                sorted(self._todo_complete_deferred),
+            )
 
     # ------------------------------------------------------------------
     # State transition detection + event emission
