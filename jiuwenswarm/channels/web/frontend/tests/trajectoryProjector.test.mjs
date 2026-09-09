@@ -2530,3 +2530,49 @@ test('a resumed tool rejoins the step the interrupt paused', () => {
   assert.equal(snapshot.turns.length, 1);
   assert.deepEqual(snapshot.turns[0].groups.map(group => group.title), ['Step 4']);
 });
+
+test('schema-v2 rebuilds a window from a delta-only commit', () => {
+  // Only the baseline states a complete window; every later commit carries its
+  // change alone and the reader applies it onto the chain it already holds.
+  const one = contextMessage('one', 'user', 'one');
+  const two = contextMessage('two', 'user', 'two');
+  const baseline = v2Record({
+    eventId: 'event-1',
+    sequence: 1,
+    payload: contextCommit('window-1', null, [one], []),
+  });
+  const deltaOnly = v2Record({
+    eventId: 'event-2',
+    sequence: 2,
+    payload: contextCommit('window-2', 'window-1', undefined, [
+      { op: 'insert', message_id: 'two', index: 1, message: two },
+    ]),
+  });
+
+  const projected = projectOtelTrajectory([baseline, deltaOnly], {
+    v2Reducer: createTrajectoryV2Reducer(),
+  });
+
+  assert.deepEqual(cellsOf(projected).map(cell => cell.text), ['one', 'two']);
+  assert.deepEqual(projected.diagnostics ?? [], []);
+});
+
+test('schema-v2 reports a delta-only commit whose base was never read', () => {
+  // Without a stated window and without the base it applies onto, the chain is
+  // broken here and the commit cannot be rendered.
+  const two = contextMessage('two', 'user', 'two');
+  const orphan = v2Record({
+    eventId: 'event-2',
+    sequence: 2,
+    payload: contextCommit('window-2', 'never-read', undefined, [
+      { op: 'insert', message_id: 'two', index: 0, message: two },
+    ]),
+  });
+
+  const projected = projectOtelTrajectory([orphan], {
+    v2Reducer: createTrajectoryV2Reducer(),
+  });
+
+  assert.deepEqual(cellsOf(projected).map(cell => cell.text), []);
+  assert.ok((projected.diagnostics ?? []).some(item => item.code === 'v2.missing_base_window'));
+});
