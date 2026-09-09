@@ -152,6 +152,40 @@ class TestXiaoyiBillingClient:
         await _drain_report_tasks()
         assert post.calls[-1]["payload"]["conversationStatus"] == "FAILED"
 
+    async def test_new_query_strips_workspace_directive(self, monkeypatch) -> None:
+        """渠道层 with_workspace_directive 拼入的 <claw_workspace> 尾段不进计费 query
+        （受限档/完全访问档两种文案同剥离）。"""
+        post = _RecordingPost()
+        monkeypatch.setattr(billing_client, "_post_once", post)
+
+        restricted = (
+            "整理桌面文件"
+            '\n\n<claw_workspace>{"path": "D:/hcj_data/proj"}</claw_workspace>\n'
+            "【工作空间】当前项目目录是 `D:/hcj_data/proj`。除非用户明确指定其他位置，"
+            "否则所有新建与写入文件必须落在该目录下（可用相对路径）。"
+        )
+        full_access = (
+            "整理桌面文件"
+            '\n\n<claw_workspace>{"path": "D:/hcj_data/proj"}</claw_workspace>\n'
+            "【工作空间】当前项目目录是 `D:/hcj_data/proj`。除非用户明确指定其他位置，"
+            "新建与写入文件请落在该目录下（可用相对路径）。"
+        )
+        assert billing_client.report_new(restricted, "sess-1&abcd1234") is True
+        assert billing_client.report_new(full_access, "sess-2&efgh5678") is True
+        await _drain_report_tasks()
+
+        assert post.calls[0]["payload"]["query"] == "整理桌面文件"
+        assert post.calls[1]["payload"]["query"] == "整理桌面文件"
+
+    async def test_new_query_without_injection_untouched(self, monkeypatch) -> None:
+        """无注入段的 query 原样透传（不误伤用户正文）。"""
+        post = _RecordingPost()
+        monkeypatch.setattr(billing_client, "_post_once", post)
+
+        assert billing_client.report_new("帮我写周报", "sess-1&abcd1234") is True
+        await _drain_report_tasks()
+        assert post.calls[0]["payload"]["query"] == "帮我写周报"
+
     async def test_new_deduplicated_per_core(self, monkeypatch) -> None:
         """HITL 续跑同 core：NEW 只发一次。"""
         post = _RecordingPost()

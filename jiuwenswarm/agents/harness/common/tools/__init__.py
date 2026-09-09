@@ -21,6 +21,9 @@ from .send_file_to_user import (
 from .send_html_card import (
     SendHtmlCardToolkit,
 )
+from .xiaoyi_append_reference import (
+    XiaoyiAppendReferenceToolkit,
+)
 from .skill_toolkits import (
     SkillToolkit,
 )
@@ -67,6 +70,7 @@ __all__ = [
     "is_group_chat_mode",
     "SendFileToolkit",
     "SendHtmlCardToolkit",
+    "XiaoyiAppendReferenceToolkit",
     "SkillToolkit",
     "is_skill_retrieval_enabled",
     "SkillRetrievalToolkit",

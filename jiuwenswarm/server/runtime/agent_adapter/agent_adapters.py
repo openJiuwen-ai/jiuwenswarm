@@ -143,7 +143,11 @@ def create_adapter(sdk: str | None = None, *, mode: str = "agent") -> AgentAdapt
     sdk_name = sdk or resolve_sdk_choice()
 
     if sdk_name == "harness":
-        if mode in ("code", "design"):
+        # adapter 选型查 WorkModeProfile 注册表（code/design → CodeAdapter，
+        # agent/team → DeepAdapter；新 manager mode 由注册表 adapter_kind 驱动）
+        from jiuwenswarm.common.mode_profiles import adapter_kind_for_manager_mode
+
+        if adapter_kind_for_manager_mode(mode) == "code":
             from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
             return JiuwenSwarmCodeAdapter()
         from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter

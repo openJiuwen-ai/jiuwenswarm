@@ -31,10 +31,12 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
 
 class DesignPromptPriority(IntEnum):
     SAFETY = 13
-    INTRO = 14
+    # Runtime Tool Usage Rules has priority 30; mode-local static guidance
+    # follows it so the captured prompt order is stable across agent-core builds.
+    TONE_AND_STYLE = 31
+    INTRO = 32
     SYSTEM = 11
-    CORE_CAPABILITIES = 19
-    TONE_AND_STYLE = 45
+    CORE_CAPABILITIES = 33
 
 
 # ─── Intro ────────────────────────────────────────
@@ -49,7 +51,7 @@ def _design_intro_prompt() -> PromptSection:
         "posters, brand systems, illustrations, songs, and short videos. Use the "
         "instructions below and the tools available to you to assist the user.\n"
         "\n"
-        "**IMPORTANT**: Act like an experienced designer working alongside the user. "
+        "IMPORTANT: Act like an experienced designer working alongside the user. "
         "The user raises requirements and makes decisions; you do the hands-on "
         "work and proactively offer design suggestions.\n"
     )
@@ -79,37 +81,14 @@ def _design_core_capabilities_prompt() -> PromptSection:
     content = (
         "# Core capabilities\n"
         "\n"
-        "## 1. PPT Design (v1 primary capability)\n"
+        "1. PPT Design: Deliver a .pptx file based on the user's need to create "
+        "or modify a presentation.\n"
         "\n"
-        "When the user wants to create or modify a presentation — triggers "
-        "include \"创建 PPT\", \"做幻灯片\", \"生成演示文稿\", \"make slides\", "
-        "\"create a deck\", \"product intro PPT\", \"work report PPT\", etc.\n"
+        "2. Video Design: Deliver a video file based on the user's need to "
+        "generate a video, short film, product demo, feed ad, or animation clip.\n"
         "\n"
-        "**Boundary with other tasks**: If the user explicitly requires a "
-        "PowerPoint .pptx file as the deliverable, this is a PPT design task — "
-        "use the `ppt-creation` skill. Do NOT confuse this with code-development "
-        "tasks; if the user asks for code, politely decline and steer back to "
-        "design.\n"
-        "\n"
-        "## 2. Video Design\n"
-        "\n"
-        "When the user wants a video, short film, product demo, feed ad, or "
-        "animation clip — triggers include \"生成视频\", \"做短视频\", \"产品演示"
-        "视频\", \"信息流广告\", \"宣传片\", \"动画短片\", \"make a video\".\n"
-        "\n"
-        "**Forbidden**: delivering only a storyboard / 分镜 markdown as the "
-        "final result. A storyboard may be used internally to write the "
-        "prompt, but the user-facing deliverable is the video file.\n"
-        "\n"
-        "## 3. Song Design\n"
-        "\n"
-        "When the user wants a song, jingle, BGM, or vocal track — triggers "
-        "include \"写歌\", \"做一首歌\", \"生成音乐\", \"配乐\", \"make a song\", "
-        "\"compose music\".\n"
-        "\n"
-        "**Forbidden**: delivering only a lyrics markdown / LRC as the final "
-        "result. Lyrics text may be shown for confirmation, but the "
-        "user-facing deliverable is the audio file.\n"
+        "3. Song Design: Deliver an audio file based on the user's need to "
+        "create a song, jingle, BGM, or vocal track.\n"
     )
     return PromptSection(
         name="design_core_capabilities",
@@ -184,13 +163,19 @@ def build_design_system_prompt() -> str:
     """
     builder = SystemPromptBuilder(language="en")
 
-    for generator in _DESIGN_SECTION_GENERATORS:
-        builder.add_section(generator())
+    for section in build_design_system_prompt_sections():
+        builder.add_section(section)
 
     return builder.build()
 
 
+def build_design_system_prompt_sections() -> tuple[PromptSection, ...]:
+    """Return Design's static sections for registration on the runtime builder."""
+    return tuple(generator() for generator in _DESIGN_SECTION_GENERATORS)
+
+
 __all__ = [
     "DesignPromptPriority",
+    "build_design_system_prompt_sections",
     "build_design_system_prompt",
 ]

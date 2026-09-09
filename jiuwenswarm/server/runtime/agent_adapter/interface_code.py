@@ -33,7 +33,6 @@ from openjiuwen.harness.rails import (
     SysOperationRail,
     LspRail
 )
-from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.lsp import InitializeOptions
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
@@ -52,6 +51,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_kv_cache_affinity_config,
     parse_int,
 )
+from jiuwenswarm.server.runtime.agent_adapter.assembly_hooks import (
+    AssemblyPoint,
+    run_assembly_hooks,
+)
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     apply_permission_trusted_dirs,
     build_permission_rail,
@@ -62,15 +65,18 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
 )
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
+    build_code_system_prompt_sections,
 )
 from jiuwenswarm.agents.harness.design.prompt.design_prompt_builder import (
     build_design_system_prompt,
+    build_design_system_prompt_sections,
 )
 from jiuwenswarm.agents.harness.code.rails import (
     CodeTaskPlanningRail,
     PlanApprovalInterruptRail,
 )
 from jiuwenswarm.agents.harness.common.rails import (
+    OrderedContextAssembleRail,
     ProjectMemoryRail,
     StructuredAskUserRail,
     ToolUsagePromptRail,
@@ -440,6 +446,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raw = "cn"
         return resolve_language(raw)
 
+    def _build_static_system_prompt_sections(self):  # type: ignore[override]
+        """Return the active Code or Design profile as real prompt sections."""
+        if self._static_prompt_profile == "design":
+            return build_design_system_prompt_sections()
+        return build_code_system_prompt_sections()
+
     # ─── 初始化 ──────────────────────────────
 
     async def create_instance(self, config: dict[str, Any] | None = None, *,
@@ -462,6 +474,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._session_instance_config = dict(config or {}) if isinstance(config, dict) else None
         self._session_instance_mode = mode
         self._session_instance_sub_mode = sub_mode
+        self._static_prompt_profile = "design" if mode == "design" else "code"
 
         await self.set_checkpoint()
 
@@ -546,6 +559,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
 
+        # 装配生命周期点位：实例重建前的扩展状态重置（专家旧 LoadRecord
+        # 在新实例账本里是未知 id，由 expert 扩展丢弃）——code/design 与
+        # deep 骨架同一点位，修复 code 侧历史缺失（重建后专家态残留）。
+        await run_assembly_hooks(AssemblyPoint.BEFORE_INSTANCE_READY, self)
+
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，
         # 主事件循环在初始化的十几秒里保持响应，esc 的 cancel 不再堵队列、后端能尽快停。
         #
@@ -570,6 +588,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             None,
             lambda: asyncio.run(self._instance.ensure_initialized()),
         )
+        self._install_structured_static_prompt_sections()
         # 修正 .agent_history 写入路径：openjiuwen 文件工具默认将
         # .agent_history 写到 Workspace.root_path（即项目目录），
         # 这里覆写为 agent 系统 workspace，避免污染用户项目目录。
@@ -606,7 +625,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         await self._register_mcp_servers_from_config(config_base, tag="code")
         logger.info("[JiuwenSwarmCodeAdapter] 初始化完成: agent_name=%s", self._agent_name)
 
-        await self.load_user_rails()
+        # 装配生命周期点位：create 尾部扩展——packages 恢复 → 专家按 metadata
+        # 重放（仅 session 级子适配器）→ user rails。code/design 接入同一组
+        # hooks 后补齐历史三缺失：专家状态重置（上方 BEFORE_INSTANCE_READY）、
+        # 专家重放、packages 恢复。
+        await run_assembly_hooks(AssemblyPoint.AFTER_INSTANCE_READY, self)
 
     # ─── Rails 构建 ──────────────────────────
 
@@ -930,7 +953,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_context_assemble_rail(self) -> Any:
         """构建 ContextEngineeringRail."""
-        return ContextAssembleRail()
+        return OrderedContextAssembleRail()
 
     @staticmethod
     def _build_tool_usage_prompt_rail() -> ToolUsagePromptRail:

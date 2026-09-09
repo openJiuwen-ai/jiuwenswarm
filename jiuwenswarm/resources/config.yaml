@@ -576,7 +576,7 @@ react:
       keep_recent_messages: 4
     # 连续相同 reasoning+工具集 / 相同工具入参时，折叠重复轮次；超阈值后兜底中止
     reasoning_tool_loop_compact_config:
-      enabled: true                        # 是否启用循环压缩
+      enabled: false                        # 是否启用循环压缩
       consecutive_threshold: 3             # reasoning+工具名连续相同几轮触发压缩
       tool_args_consecutive_threshold: 5   # 工具名+入参连续相同几轮触发压缩（与 reasoning 无关）
       reasoning_min_chars: 4               # reasoning 低于此长度（strip 后）的轮次不参与匹配

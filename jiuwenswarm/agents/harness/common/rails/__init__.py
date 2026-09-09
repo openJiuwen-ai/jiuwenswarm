@@ -26,6 +26,7 @@ from jiuwenswarm.agents.harness.common.rails.invocation_context_rail import (
     InvocationContextRail,
 )
 from jiuwenswarm.agents.harness.common.rails.tool_usage_prompt_rail import (
+    OrderedContextAssembleRail,
     ToolUsagePromptRail,
 )
 
@@ -41,6 +42,7 @@ __all__ = [
     "RuntimePromptRail",
     "SymphonyOrchestrationRail",
     "ToolUsagePromptRail",
+    "OrderedContextAssembleRail",
     "MemberSkillToolkitRail",
     "StructuredAskUserRail",
 ]

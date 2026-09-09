@@ -15,6 +15,7 @@ class ReqMethod(Enum):
     REVERSE_RPC_RESPONSE = "reverse_rpc.response"
 
     CHAT_SEND = "chat.send"
+    CHAT_CAPACITY = "chat.capacity"
     CHAT_RESUME = "chat.resume"
     CHAT_CANCEL = "chat.interrupt"
     CHAT_ANSWER = "chat.user_answer"
@@ -27,8 +28,6 @@ class ReqMethod(Enum):
     COMMAND_COMPACT = "command.compact"
     COMMAND_COMPACT_PARTIAL = "command.compact_partial"
     COMMAND_CONTEXT = "command.context"
-    # 模型信息只读查询：按模型名解析上下文窗口上限
-    MODEL_CONTEXT_WINDOW = "model.context_window"
     COMMAND_RECAP = "command.recap"
     COMMAND_DIFF = "command.diff"
     COMMAND_SIMPLIFY = "command.simplify"
@@ -252,6 +251,7 @@ class EventType(Enum):
     CHAT_MEDIA = "chat.media"
     CHAT_FILE = "chat.file"
     CHAT_HTML_CARD = "chat.html_card"
+    CHAT_REFERENCE = "chat.reference"
     CHAT_TOOL_CALL = "chat.tool_call"
     CHAT_TOOL_UPDATE = "chat.tool_update"
     CHAT_TOOL_RESULT = "chat.tool_result"

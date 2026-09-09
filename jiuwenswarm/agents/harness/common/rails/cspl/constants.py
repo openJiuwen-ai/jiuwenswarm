@@ -47,6 +47,7 @@ OUTPUT_SCAN_TOOLS = frozenset({
     "message",
     "send_file_to_user",
     "send_html_card",
+    "xiaoyi_append_reference",
     "pdf",
 })
 
@@ -64,6 +65,7 @@ MESSAGE_TOOLS = frozenset({
     "message",
     "send_file_to_user",
     "send_html_card",
+    "xiaoyi_append_reference",
 })
 
 # OpenClaw / sandbox aliases → canonical command behavior in scanners.py.

@@ -49,6 +49,10 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.format
     should_send_as_status_update,
     should_send_as_text,
 )
+from jiuwenswarm.common.xiaoyi_reference import (
+    build_a2a_reference_items,
+    coerce_references,
+)
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.a2a_vars import (
     extract_model_name,
 )
@@ -763,7 +767,9 @@ class XiaoyiChannel(BaseChannel):
         reset_team_session = bool(metadata.get("reset_team_session"))
         terminal_notice = bool(metadata.get("terminal_notice"))
         session_id, task_id = self._extract_platform_receive_info(msg)
-        is_team_mode = mode in {"team", "team.plan", "code.team"}
+        from jiuwenswarm.common.mode_matrix import is_team_mode as _is_team_canonical
+
+        is_team_mode = _is_team_canonical(mode)
         is_team_event = not reset_team_session and (
             event_name.startswith("team.")
             or is_team_mode
@@ -994,6 +1000,30 @@ class XiaoyiChannel(BaseChannel):
                                 await self._send_file_response(session_id, task_id, file_info, url_key)
                             except Exception as e:
                                 logger.warning(f"XiaoyiChannel 发送文件响应失败 ({url_key}): {e}")
+            return
+
+        # Handle chat.reference（手机参考来源卡片；须在 non_user_visible SKIPPED 之前）
+        if msg.event_type == EventType.CHAT_REFERENCE:
+            payload = msg.payload if isinstance(msg.payload, dict) else {}
+            refs = coerce_references(payload.get("references"))
+            if refs:
+                message_id = str(msg.id or task_id or "")
+                a2a_items = build_a2a_reference_items(refs)
+                for url_key, ws in self._ws_connections.items():
+                    if ws:
+                        try:
+                            await self._send_reference_response(
+                                session_id, task_id, message_id, a2a_items, url_key
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "XiaoyiChannel 发送引用来源失败 (%s): %s", url_key, e
+                            )
+            else:
+                logger.warning(
+                    "XiaoyiChannel chat.reference 缺少 references，跳过 session_id=%s",
+                    session_id,
+                )
             return
 
         # Handle chat.html_card event（与 chat.file 同理：两种 mode 都要处理）
@@ -3510,6 +3540,55 @@ class XiaoyiChannel(BaseChannel):
                 return
         except Exception as e:
             logger.error(f"XiaoyiChannel 发送文件响应失败: {e}")
+
+    async def _send_reference_response(
+        self,
+        session_id: str,
+        task_id: str,
+        message_id: str,
+        reference_items: list[dict[str, Any]],
+        url_key: str,
+    ) -> None:
+        """发送参考来源卡片（对齐 OpenClaw sendReference / data.reference）。"""
+        try:
+            rpc_id = message_id or task_id
+            payload = {
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "result": {
+                    "taskId": task_id,
+                    "kind": "artifact-update",
+                    "append": False,
+                    "lastChunk": True,
+                    "final": False,
+                    "artifact": {
+                        "artifactId": str(uuid.uuid4()),
+                        "parts": [
+                            {
+                                "kind": "data",
+                                "data": {"reference": {"items": reference_items}},
+                            }
+                        ],
+                    },
+                },
+            }
+            response = {
+                "msgType": "agent_response",
+                "agentId": self.config.agent_id,
+                "sessionId": session_id,
+                "taskId": task_id,
+                "msgDetail": json.dumps(payload, ensure_ascii=False),
+            }
+            logger.info(
+                "[A2A_REFERENCE] Sending reference session_id=%s task_id=%s items=%s",
+                session_id,
+                task_id,
+                len(reference_items),
+            )
+            await self._safe_ws_send(url_key, response)
+        except Exception as e:
+            logger.error("XiaoyiChannel 发送引用来源失败: %s", e)
+            raise
 
     async def _send_html_card_response(
         self,

@@ -23,12 +23,14 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from jiuwenswarm.common.work_mode import SUPPORTED_WORK_MODES
+from jiuwenswarm.common.mode_profiles import team_canonical_modes
 
 # Web 组合模式只覆盖单 agent。其余取值一律按历史完整模式处理。
 #
-# 集群刻意不在这里：Plan 只对单 agent 开放，而集群的 Adapter 选型沿用历史规则
-# （``team`` → DeepAdapter），不随 ``work_mode`` 变化。把 ``team`` 交给
-# legacy 分支，Web 集群的行为就与改造前逐字节一致。
+# 集群走 legacy 分支，但 legacy 解析器（``resolve_agent_request_mode``）
+# 对 ``team`` + 合法 ``work_mode``（code/design）按 WorkModeProfile 注册表组合出
+# ``code.team`` / ``design.team``；work 桶与无 work_mode 的历史客户端
+# （TUI/CLI/IM/cron 发送 ``code.team`` / ``team.plan`` 等完整模式串）逐字节不变。
 WEB_BASE_AGENT: str = "agent"
 WEB_PLAN_AGENT: str = "agent.plan"
 
@@ -37,9 +39,10 @@ WEB_COMPOSABLE_MODES: frozenset[str] = frozenset(
 )
 
 # 所有表示"集群"的 canonical 模式。``team.plan`` 是 TUI 的 code 集群 plan。
-TEAM_CANONICAL_MODES: frozenset[str] = frozenset(
-    {"team", "team.plan", "code.team"}
-)
+# 由 WorkModeProfile 注册表派生（work→team / code→code.team / design→design.team
+# + 历史 team.plan）——新增 work_mode 的团 canonical 自动进入本集合，
+# 下游 is_swarm 白名单不再各自维护字面量。
+TEAM_CANONICAL_MODES: frozenset[str] = team_canonical_modes()
 
 # 所有表示"正处于 plan"的 canonical 模式。
 PLAN_CANONICAL_MODES: frozenset[str] = frozenset(

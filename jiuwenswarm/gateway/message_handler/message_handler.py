@@ -140,17 +140,14 @@ class ChannelMode(str, Enum):
 
     @classmethod
     def is_team_mode(cls, mode: str) -> bool:
-        """Return True if *mode* resolves to any team variant (case-insensitive)."""
-        return mode.strip().lower() in {cls.TEAM.value, cls.CODE_TEAM.value, cls.TEAM_PLAN.value}
+        """Return True if *mode* resolves to any team variant (case-insensitive).
 
-    @classmethod
-    def is_team_mode(cls, mode: str) -> bool:
-        """Return whether a mode uses the persistent Team stream."""
-        return str(mode or "").strip().lower() in {
-            cls.TEAM.value,
-            cls.CODE_TEAM.value,
-            "team.plan",
-        }
+        集群 canonical 集合单源在 mode_matrix（由 WorkModeProfile 注册表派生，
+        含 design.team）；此处委托，不再各自维护字面量。
+        """
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+
+        return is_team_mode(mode)
 
 
 @dataclass

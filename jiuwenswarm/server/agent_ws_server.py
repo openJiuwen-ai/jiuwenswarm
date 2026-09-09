@@ -581,7 +581,9 @@ def _is_restorable_history_record(record: Any) -> bool:
 
     if role == "user":
         mode = record.get("mode", "")
-        if mode in ("team", "team.plan", "code.team"):
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+
+        if is_team_mode(mode):
             channel_id = record.get("channel_id", "")
             # desktop 渠道的用户消息是真实用户输入，必须与 web/tui 同规放行——
             # 否则桌面团队会话重启后用户问题气泡丢失
@@ -820,6 +822,14 @@ def resolve_agent_request_mode(
         canonical_mode = f"team.{sub_mode}" if sub_mode else "team"
         if sub_mode == "plan":
             return "code", "team", canonical_mode
+        if not sub_mode and normalized_work_mode in {"code", "design"}:
+            # Web 桌面团队请求 = mode=team + work_mode：按 WorkModeProfile 注册表
+            # 组合出团队 canonical（code→code.team / design→design.team）。
+            # 无 work_mode 或 work 的历史/默认路径原样返回（"team", None, "team"）。
+            from jiuwenswarm.common.mode_profiles import WORK_MODE_PROFILES
+
+            profile = WORK_MODE_PROFILES[normalized_work_mode]
+            return profile.manager_mode, "team", profile.team_canonical
         return "team", sub_mode, canonical_mode
 
     default_sub_modes = {
@@ -1899,7 +1909,13 @@ class AgentWebSocketServer:
                 await self._handle_reverse_rpc_response(ws, request, send_lock)
                 return
 
-            await self._trigger_before_chat_request_hook(request)
+            if request.req_method == ReqMethod.CHAT_CAPACITY:
+                await self._handle_chat_capacity(ws, request, send_lock)
+                return
+
+            defer_admission_preparation = self._should_defer_admission_preparation(request)
+            if not defer_admission_preparation:
+                await self._trigger_before_chat_request_hook(request)
 
             if request.req_method == ReqMethod.SESSION_LIST:
                 await self._handle_session_list(ws, request, send_lock)
@@ -1991,9 +2007,6 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.COMMAND_CONTEXT:
                 await self._handle_command_context(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.MODEL_CONTEXT_WINDOW:
-                await self._handle_model_context_window(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.COMMAND_RECAP:
                 await self._handle_command_recap(ws, request, send_lock)
@@ -2208,10 +2221,17 @@ class AgentWebSocketServer:
                             async with send_lock:
                                 await send_wire_payload(ws, wire)
                 return
-            await self._ensure_auto_team_binding_for_chat(request)
             if request.is_stream:
-                await self._handle_stream(ws, request, send_lock)
+                if not defer_admission_preparation:
+                    await self._ensure_auto_team_binding_for_chat(request)
+                await self._handle_stream(
+                    ws,
+                    request,
+                    send_lock,
+                    defer_admission_preparation=defer_admission_preparation,
+                )
             else:
+                await self._ensure_auto_team_binding_for_chat(request)
                 await self._handle_unary(ws, request, send_lock)
         except asyncio.CancelledError:
             # 流式任务被 interrupt 取消，正常退出无需报错
@@ -2275,6 +2295,16 @@ class AgentWebSocketServer:
             ReqMethod.CHAT_SEND,
             ReqMethod.CHAT_RESUME,
             ReqMethod.CHAT_ANSWER,
+        )
+
+    @staticmethod
+    def _should_defer_admission_preparation(request: AgentRequest) -> bool:
+        """准入 ACK 请求先确认，再执行可能耗时的聊天前置处理。"""
+        return (
+            request.is_stream
+            and request.req_method == ReqMethod.CHAT_SEND
+            and str(request.channel_id or "").strip().lower() == "desktop"
+            and (request.metadata or {}).get("require_admission_ack") is True
         )
 
     @staticmethod
@@ -2681,6 +2711,7 @@ class AgentWebSocketServer:
                 params[_SESSION_PREVIOUS_MODE_KEY] = stored_session_mode.strip()
             if isinstance(stored_work_mode, str) and stored_work_mode.strip().lower() in {
                 "code",
+                "design",
                 "work",
             }:
                 runtime_work_mode = stored_work_mode.strip().lower()
@@ -2688,6 +2719,7 @@ class AgentWebSocketServer:
             request_work_mode = params.get("work_mode")
             if isinstance(request_work_mode, str) and request_work_mode.strip().lower() in {
                 "code",
+                "design",
                 "work",
             }:
                 runtime_work_mode = request_work_mode.strip().lower()
@@ -3055,7 +3087,12 @@ class AgentWebSocketServer:
 
 
     async def _handle_stream(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+        *,
+        defer_admission_preparation: bool = False,
     ) -> None:
         desktop_stream_admitted = self._begin_desktop_chat_stream(request)
         if desktop_stream_admitted is False:
@@ -3070,6 +3107,20 @@ class AgentWebSocketServer:
             and hasattr(manager, "end_foreground_chat")
         )
         try:
+            if desktop_stream_admitted is True and (request.metadata or {}).get("require_admission_ack") is True:
+                accepted = AgentResponseChunk(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    payload={"event_type": "chat.accepted"},
+                    is_complete=False,
+                    agent_ref=request.agent_ref,
+                )
+                wire = encode_agent_chunk_for_wire(accepted, response_id=request.request_id, sequence=0)
+                async with send_lock:
+                    await send_wire_payload(ws, wire)
+            if defer_admission_preparation:
+                await self._trigger_before_chat_request_hook(request)
+                await self._ensure_auto_team_binding_for_chat(request)
             if foreground:
                 await manager.begin_foreground_chat()
             try:
@@ -3095,10 +3146,7 @@ class AgentWebSocketServer:
             active = {}
             self._active_desktop_chat_streams = active
 
-        if (
-            session_id not in active
-            and len(active) >= _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS
-        ):
+        if not self._desktop_chat_capacity(session_id)["allowed"]:
             return False
         active[session_id] = active.get(session_id, 0) + 1
         return True
@@ -3120,27 +3168,41 @@ class AgentWebSocketServer:
         else:
             active.pop(session_id, None)
 
-    @staticmethod
-    async def _send_desktop_session_limit_message(
-        ws: Any,
-        request: AgentRequest,
-        send_lock: asyncio.Lock,
-    ) -> None:
-        chunk = AgentResponseChunk(
+    def _desktop_chat_capacity(self, session_id: str | None) -> dict[str, Any]:
+        """Read the same counter used by admission without reserving a slot."""
+        active = getattr(self, "_active_desktop_chat_streams", {})
+        sid = str(session_id or "").strip()
+        return {
+            "allowed": sid in active or len(active) < _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS,
+            "activeSessions": len(active),
+            "limit": _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS,
+        }
+
+    async def _handle_chat_capacity(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        response = AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
+            payload=self._desktop_chat_capacity(request.session_id),
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _send_desktop_session_limit_message(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock,
+    ) -> None:
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
             payload={
-                "event_type": "chat.final",
-                "content": _DESKTOP_SESSION_LIMIT_MESSAGE,
+                "code": "DESKTOP_SESSION_LIMIT",
+                "error": _DESKTOP_SESSION_LIMIT_MESSAGE,
+                **self._desktop_chat_capacity(request.session_id),
             },
-            is_complete=True,
             agent_ref=request.agent_ref,
         )
-        wire = encode_agent_chunk_for_wire(
-            chunk,
-            response_id=request.request_id,
-            sequence=0,
-        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
         logger.info(
@@ -3202,7 +3264,12 @@ class AgentWebSocketServer:
                 if restored_plan:
                     await self._push_plan_mode_exited(request)
 
-        chunk_count = 0
+        # The opt-in admission acknowledgment already used sequence 0.
+        chunk_count = int(
+            str(request.channel_id or "").strip().lower() == "desktop"
+            and request.req_method == ReqMethod.CHAT_SEND
+            and (request.metadata or {}).get("require_admission_ack") is True
+        )
         # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
         heartbeat_event = asyncio.Event()
         heartbeat_task: asyncio.Task | None = None
@@ -3902,8 +3969,10 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _is_team_metadata_mode(metadata: dict[str, Any]) -> bool:
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+
         mode = str(metadata.get("mode") or "").strip().lower()
-        return mode in {"team", "team.plan", "code.team"}
+        return is_team_mode(mode)
 
     @staticmethod
     def _active_team_session_map() -> dict[str, str]:
@@ -5850,72 +5919,6 @@ class AgentWebSocketServer:
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] command.context failed: %s", e)
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(e)},
-            )
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    async def _handle_model_context_window(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """model.context_window：按模型名解析上下文窗口上限（只读，不碰会话运行时）。
-
-        与压缩判定构造性同源——直接调 agent-core 的 resolve_context_max
-        （显式配置 > 自定义表 > 内置表 > OpenRouter 缓存 > 兜底 200000），
-        环面显示的上限与压缩触发的上限恒为同一值。
-        """
-        try:
-            params = request.params or {}
-            model_name = str(params.get("model_name") or "").strip()
-            from openjiuwen.core.context_engine.context.context_utils import (
-                DEFAULT_CONTEXT_MAX_TOKENS,
-                MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
-                ContextUtils,
-            )
-
-            react_cfg = get_config().get("react", {}) or {}
-            cec = react_cfg.get("context_engine_config") or {}
-            raw_explicit = cec.get("context_window_tokens")
-            try:
-                explicit = int(raw_explicit) if raw_explicit not in (None, "") else None
-            except (TypeError, ValueError):
-                explicit = None
-            raw_table = cec.get("model_context_window_tokens")
-            custom_table = raw_table if isinstance(raw_table, dict) else None
-
-            resolved = ContextUtils.resolve_context_max(
-                model_name=model_name,
-                fallback_context_window_tokens=explicit,
-                model_context_window_tokens=custom_table,
-            )
-            # source 判定（与 resolve_context_max 优先级逐级对齐）
-            match = ContextUtils._get_positive_int_by_model_name
-            if isinstance(explicit, int) and explicit > 0:
-                source = "explicit"
-            elif custom_table and match(custom_table, model_name) is not None:
-                source = "custom_table"
-            elif match(MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS, model_name) is not None:
-                source = "builtin"
-            elif resolved == DEFAULT_CONTEXT_MAX_TOKENS:
-                source = "default"
-            else:
-                source = "openrouter"
-
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={
-                    "model_name": model_name,
-                    "context_window_tokens": resolved,
-                    "source": source,
-                },
-            )
-        except Exception as e:
-            logger.exception("[AgentWebSocketServer] model.context_window failed: %s", e)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -8816,14 +8819,20 @@ class AgentWebSocketServer:
                         "expert_type": "team",
                         "team_template_id": _expert_svc.resolve_expert_group_template_id(),
                     }
-                    canonical_mode = "team"
-                    params["mode"] = "team"
+                    # 团判型按 final_work_mode 查 WorkModeProfile 注册表
+                    # 收敛 canonical（work→team / code→code.team / design→design.team）
+                    from jiuwenswarm.common.mode_profiles import (
+                        team_canonical_for_work_mode,
+                    )
 
-            is_swarm = bool(params.get("is_swarm")) or canonical_mode in {
-                "team",
-                "team.plan",
-                "code.team",
-            }
+                    canonical_mode = team_canonical_for_work_mode(final_work_mode)
+                    params["mode"] = canonical_mode
+
+            from jiuwenswarm.common.mode_matrix import TEAM_CANONICAL_MODES
+
+            is_swarm = (
+                bool(params.get("is_swarm")) or canonical_mode in TEAM_CANONICAL_MODES
+            )
             if not is_swarm:
                 mode, _, canonical_mode = resolve_agent_request_mode(
                     canonical_mode,

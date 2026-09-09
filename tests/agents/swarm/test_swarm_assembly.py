@@ -155,6 +155,7 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         registry.CRON_TOOLS,
         registry.SEND_FILE,
         registry.SEND_HTML_CARD,
+        registry.APPEND_REFERENCE,
     }
 )
 
@@ -1520,6 +1521,7 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.CRON_TOOLS,
         registry.SEND_FILE,
         registry.SEND_HTML_CARD,
+        registry.APPEND_REFERENCE,
     }
 
 

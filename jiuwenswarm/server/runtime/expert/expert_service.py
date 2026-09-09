@@ -439,6 +439,12 @@ class ExpertService:
 
         team_name = build_expert_group_team_name(expert_id, session_id)
         team_template_id = resolve_expert_group_template_id()
+        # 装团收敛：按会话 work_mode 查 WorkModeProfile 注册表得团队
+        # canonical——work→team / code→code.team / design→design.team，
+        # 不再写死 "team"（code/design 会话装团不再被拍平为 work profile）。
+        from jiuwenswarm.common.mode_profiles import team_canonical_for_work_mode
+
+        team_canonical = team_canonical_for_work_mode(metadata.get("work_mode"))
         update_session_metadata(
             session_id=session_id,
             expert_id=expert_id,
@@ -450,7 +456,7 @@ class ExpertService:
             last_expert_id=expert_id,
             team_name=team_name,
             team_template_id=team_template_id,
-            mode="team",
+            mode=team_canonical,
             sync=True,
         )
         logger.info(
@@ -562,7 +568,7 @@ class ExpertService:
             metadata: dict[str, Any],
             previous_expert_id: str,
     ) -> ExpertOpResult:
-        """退出专家团：停 team 运行时、清绑定字段、mode 回 agent。"""
+        """退出专家团：停 team 运行时、清绑定字段、mode 按 work_mode 恢复单 agent canonical。"""
         from jiuwenswarm.server.runtime.session.session_metadata import (
             update_session_metadata,
         )
@@ -580,13 +586,19 @@ class ExpertService:
         stopped = await self._stop_team_runtime(session_id, reason="expert.unload")
         # 显式退团：级联清理 team DB（换团不清——换回同团依赖 DB 现场存活）
         cleanup_expert_group_team_db(str(metadata.get("team_name") or ""))
+        # 退团恢复：按会话 work_mode 查注册表回该模式的单 agent canonical
+        # （work→agent / code→code.normal / design→design），修掉"写死回 agent
+        # 致 code/design 会话退团降级为 work"的缺陷。
+        from jiuwenswarm.common.mode_profiles import single_canonical_for_work_mode
+
+        restore_mode = single_canonical_for_work_mode(metadata.get("work_mode"))
         update_session_metadata(
             session_id=session_id,
             expert_id="",
             expert_type="agent",
             team_name="",
             team_template_id="",
-            mode="agent",
+            mode=restore_mode,
             # last_expert_id 不写（保留卸载前的团 id）——归档成员面板的 roster 解析源
             sync=True,
         )
@@ -647,10 +659,18 @@ class ExpertService:
         mode/project_dir 必须取自该会话的 metadata（与 chat 路径同一套定位键）：
         同一 channel 下不同 project_dir 会存在多个 root，只按 channel 定位会拿错
         root——表现为「装载/卸载返回成功但实际会话没变化」。
+
+        注意 metadata 里的 mode 是 canonical（如 ``code.normal``），而
+        AgentManager 按 **manager mode**（``code``）注册实例——直接拿 canonical
+        查会命中失败、退化为「只清 metadata 不碰活实例」。
+        这里统一先做 canonical → manager 换算（查 WorkModeProfile 注册表）。
         """
+        from jiuwenswarm.common.mode_profiles import manager_mode_for_canonical
+
+        manager_mode = manager_mode_for_canonical(mode) or mode
         agent = self._agent_manager.get_agent_nowait(
             channel_id=channel_id or "default",
-            mode=mode or None,
+            mode=manager_mode or None,
             project_dir=project_dir or None,
         )
         if agent is None:

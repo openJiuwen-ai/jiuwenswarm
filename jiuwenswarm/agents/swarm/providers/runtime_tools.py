@@ -18,6 +18,8 @@ Covered runtime tools:
   the presence of a request id / channel id.
 * ``send_html_card`` — H5 HTML card toolkit, gated by
   ``send_html_card_allowed`` (xiaoyi defaults to enabled, others disabled).
+* ``xiaoyi_append_reference`` — phone citation cards, gated by
+  ``append_reference_allowed`` (xiaoyi defaults to enabled, others disabled).
 """
 
 from __future__ import annotations
@@ -37,6 +39,9 @@ from openjiuwen.agent_teams.harness.manifest import (
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
 from jiuwenswarm.agents.harness.common.tools.send_html_card import SendHtmlCardToolkit
+from jiuwenswarm.agents.harness.common.tools.xiaoyi_append_reference import (
+    XiaoyiAppendReferenceToolkit,
+)
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
 logger = logging.getLogger(__name__)
@@ -45,6 +50,7 @@ logger = logging.getLogger(__name__)
 CRON_TOOLS = "swarm.cron_tools"
 SEND_FILE = "swarm.send_file"
 SEND_HTML_CARD = "swarm.send_html_card"
+APPEND_REFERENCE = "swarm.append_reference"
 
 
 class CronToolsInput(ConstructionInput):
@@ -303,11 +309,96 @@ def build_send_html_card_tools(params: dict[str, Any], ctx: SwarmBuildContext) -
         return []
 
 
+def _is_append_reference_enabled(config: dict[str, Any] | None, channel_id: str) -> bool:
+    """Resolve whether citation cards are allowed for *channel_id*.
+
+    Reads ``channels.<channel_id>.append_reference_allowed``; when unset, the
+    ``xiaoyi`` channel defaults to enabled and all other channels default to
+    disabled.
+    """
+    allowed = None
+    if isinstance(config, dict):
+        allowed = (
+            config.get("channels", {}).get(str(channel_id), {}).get("append_reference_allowed")
+        )
+    if allowed is None:
+        return channel_id == "xiaoyi"
+    return bool(allowed)
+
+
+class AppendReferenceInput(ConstructionInput):
+    """Construction inputs for the xiaoyi_append_reference toolkit."""
+
+    channels_config: dict[str, Any] = param_field(
+        default_factory=dict,
+        description="Per-channel config (append_reference_allowed switch lives here).",
+    )
+    request_id: str | None = context_field(
+        attr="request_id",
+        description="Originating request id (required; skipped when absent).",
+    )
+    channel_id: str | None = context_field(
+        attr="channel_id",
+        description="Raw channel id (required; skipped when absent).",
+    )
+    session_id: str | None = context_field(
+        attr="session_id", description="Active session id."
+    )
+    request_metadata: dict[str, Any] | None = context_field(
+        attr="request_metadata",
+        description="Request metadata mapping.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=APPEND_REFERENCE,
+    description="The xiaoyi_append_reference toolkit, gated by the channel's "
+    "append_reference_allowed config and the presence of a request/channel id.",
+    input_model=AppendReferenceInput,
+)
+def build_append_reference_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the ``xiaoyi_append_reference`` toolkit from the config source."""
+    inp = AppendReferenceInput.resolve(params, ctx)
+    if not inp.request_id or not inp.channel_id:
+        logger.info("[swarm.append_reference] skipped: missing request_id or channel_id")
+        return []
+
+    if not _is_append_reference_enabled({"channels": inp.channels_config}, inp.channel_id):
+        logger.info(
+            "[swarm.append_reference] skipped: append_reference_allowed=False for channel=%s",
+            inp.channel_id,
+        )
+        return []
+
+    try:
+        toolkit = XiaoyiAppendReferenceToolkit(
+            request_id=inp.request_id,
+            session_id=inp.session_id,
+            channel_id=inp.channel_id,
+            metadata=inp.request_metadata,
+        )
+        tools = list(toolkit.get_tools())
+        logger.info(
+            "[swarm.append_reference] built %d reference tools for channel=%s",
+            len(tools),
+            inp.channel_id,
+        )
+        return tools
+    except Exception as exc:
+        logger.warning(
+            "[swarm.append_reference] reference tool construction failed: %s", exc
+        )
+        return []
+
+
 __all__ = [
     "CRON_TOOLS",
     "SEND_FILE",
     "SEND_HTML_CARD",
+    "APPEND_REFERENCE",
     "build_cron_tools",
     "build_send_file_tools",
     "build_send_html_card_tools",
+    "build_append_reference_tools",
 ]

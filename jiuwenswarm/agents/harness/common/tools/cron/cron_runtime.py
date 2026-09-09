@@ -107,6 +107,27 @@ class _CronToolsCronBackend(CronToolBackend):
         *,
         context: CronToolContext | None = None,
     ) -> dict[str, Any]:
+        # 兜底防线：当前请求若由调度器发起（scheduler._run_agent 会把
+        # {"cron": {"job_id", "run_id"}} 放进 request metadata，经
+        # _bind_runtime_cron_context 写入工具上下文），说明这是定时任务的执行
+        # 现场。任务描述常含"每天/每周…"等字样，模型若还能调到 cron_create_job
+        # （注册守卫失效或历史消息残留调用）会把调度再建一遍，这里直接拒绝，
+        # 把模型引回"完成当前任务内容"。
+        metadata = getattr(context, "metadata", None) if context is not None else None
+        cron_meta = metadata.get("cron") if isinstance(metadata, dict) else None
+        if isinstance(cron_meta, dict) and (cron_meta.get("job_id") or cron_meta.get("run_id")):
+            job_id = str(cron_meta.get("job_id") or "")
+            run_id = str(cron_meta.get("run_id") or "")
+            logger.warning(
+                "[CronRuntimeBridge] create_job rejected inside cron run: job_id=%s run_id=%s",
+                job_id,
+                run_id,
+            )
+            raise ValueError(
+                f"当前请求是定时任务的调度执行现场 (job_id={job_id}, run_id={run_id})，"
+                "禁止在执行过程中创建新的定时任务：该调度已存在，请直接完成当前任务内容；"
+                "如需创建新的定时任务，请让用户在普通对话中发起。"
+            )
         request_id = None
         if context and isinstance(context.metadata, dict):
             request_id = context.metadata.get("request_id")

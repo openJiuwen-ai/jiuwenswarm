@@ -210,6 +210,7 @@ def test_device_cron_model_round_trip() -> None:
         targets="xiaoyi",
         required_device_intents=["CreateNote"],
         xiaoyi_push_id="push-1",
+        wake_offset_seconds=300,
     )
 
     restored = CronJob.from_dict(job.to_dict())
