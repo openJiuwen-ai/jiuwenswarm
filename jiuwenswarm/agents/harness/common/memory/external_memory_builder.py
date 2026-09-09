@@ -30,6 +30,7 @@ def build_external_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     workspace_dir: str = ".",
     session_id: str = "__default__",
+    request_metadata: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """Build an ExternalMemoryRail from config, or None if disabled/failed."""
     try:
@@ -48,7 +49,10 @@ def build_external_memory_rail(
         if provider_name == "celia":
             celia_source_config = dict(config or {})
             celia_source_config["__celia_workspace_dir"] = workspace_dir
-            return _build_celia_rail(celia_source_config, ext_cfg, session_id=session_id)
+            return _build_celia_rail(
+                celia_source_config, ext_cfg, session_id=session_id,
+                request_metadata=request_metadata,
+            )
         if provider_name == "openjiuwen":
             provider = _build_openjiuwen_provider(ext_cfg, config)
         elif provider_name == "mem0":
@@ -91,6 +95,7 @@ def _build_celia_rail(
     ext_cfg: Dict[str, Any],
     *,
     session_id: str,
+    request_metadata: Optional[Dict[str, Any]] = None,
 ):
     from .celia.config import build_celia_config
     from .celia.provider import CeliaMemoryProvider
@@ -106,14 +111,10 @@ def _build_celia_rail(
         user_id=ext_cfg.get("user_id", celia_config.user_id),
         scope_id=ext_cfg.get("scope_id", celia_config.scope_id),
         session_id=session_id,
+        request_metadata=request_metadata,
     )
-    if not provider.is_available():
-        issues = celia_config.preflight_issues()
-        logger.warning(
-            "[ExternalMemoryBuilder] Celia unavailable: %s",
-            "; ".join(issues) if issues else "unknown preflight failure",
-        )
-        return None
+    # Mount prompt and tools even when the backend cannot start. Optional
+    # preflight belongs to provider initialization, whose failures the rail handles.
     return CeliaMemoryRail(
         provider,
         user_id=ext_cfg.get("user_id", celia_config.user_id),
