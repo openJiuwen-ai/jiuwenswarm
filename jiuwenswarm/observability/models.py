@@ -24,6 +24,10 @@ class OtlpSpanRecordLike(Protocol):
     run_id: str | None
     agent_mode: str | None
     schema_version: str
+    execution_subject_id: str | None
+    execution_subject_display_name: str | None
+    execution_subject_kind: str | None
+    execution_subject_parent_id: str | None
 
 
 class OtlpSpanSnapshotRecordLike(Protocol):
@@ -43,6 +47,10 @@ class OtlpSpanSnapshotRecordLike(Protocol):
     run_id: str | None
     agent_mode: str | None
     schema_version: str
+    execution_subject_id: str | None
+    execution_subject_display_name: str | None
+    execution_subject_kind: str | None
+    execution_subject_parent_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +71,14 @@ class TraceRecordData:
     schema_version: str
     source: str
     created_at: int
+    # The execution subject owns the canonical trajectory chain: Agent Core
+    # keys its context windows by (session_id, subject_id), and the viewer
+    # groups and replays by the same pair. Persisting it as a column is what
+    # lets a reader follow one chain without parsing every payload.
+    execution_subject_id: str = "main"
+    execution_subject_display_name: str | None = None
+    execution_subject_kind: str | None = None
+    execution_subject_parent_id: str | None = None
     lifecycle: str = "final"
     record_revision: int = 1
     observed_time_unix_nano: int = 0
@@ -120,6 +136,16 @@ class TraceRecordData:
             schema_version=str(record.schema_version or "1"),
             source=source_value,
             created_at=int(created_at if created_at is not None else time.time()),
+            execution_subject_id=_subject_id(record),
+            execution_subject_display_name=_normalize_text(
+                getattr(record, "execution_subject_display_name", None)
+            ),
+            execution_subject_kind=_normalize_text(
+                getattr(record, "execution_subject_kind", None)
+            ),
+            execution_subject_parent_id=_normalize_text(
+                getattr(record, "execution_subject_parent_id", None)
+            ),
             lifecycle="final",
             record_revision=max(1, int(getattr(record, "record_revision", 1))),
             observed_time_unix_nano=max(
@@ -177,6 +203,16 @@ class TraceRecordData:
             schema_version=str(record.schema_version or "1"),
             source=source_value,
             created_at=int(created_at if created_at is not None else time.time()),
+            execution_subject_id=_subject_id(record),
+            execution_subject_display_name=_normalize_text(
+                getattr(record, "execution_subject_display_name", None)
+            ),
+            execution_subject_kind=_normalize_text(
+                getattr(record, "execution_subject_kind", None)
+            ),
+            execution_subject_parent_id=_normalize_text(
+                getattr(record, "execution_subject_parent_id", None)
+            ),
             # ``running`` is the current storage contract.  Accept the earlier
             # ``provisional`` alias additively, but normalize it before the
             # restart recovery and finalization state machine sees the record.
@@ -230,6 +266,15 @@ def _normalize_text(value: str | None, *, lowercase: bool = False) -> str | None
     if not normalized:
         return None
     return normalized.lower() if lowercase else normalized
+
+
+def _subject_id(record: object) -> str:
+    """Return the execution subject owning one record.
+
+    A record without an explicit subject belongs to the main agent, which is
+    the same default Agent Core stamps and the viewer groups under.
+    """
+    return _normalize_text(getattr(record, "execution_subject_id", None)) or "main"
 
 
 __all__ = [

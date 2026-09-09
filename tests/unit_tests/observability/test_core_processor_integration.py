@@ -64,9 +64,9 @@ async def _wait_for_record(
     minimum_revision: int,
 ) -> dict[str, Any]:
     for _attempt in range(100):
-        detail = await reader.get_trace_records(
+        detail = await reader.get_subject_records(
             session_id,
-            trace_id,
+            "main",
             since_revision=0,
             limit=1000,
         )
@@ -141,9 +141,9 @@ async def test_core_processor_delivers_child_then_complete_root_without_reencodi
         provider.shutdown()
 
     reader = AsyncTrajectoryReader(database_path)
-    detail = await reader.get_trace_records(
+    detail = await reader.get_subject_records(
         session_id,
-        trace_id,
+        "main",
         since_revision=0,
         limit=1000,
     )

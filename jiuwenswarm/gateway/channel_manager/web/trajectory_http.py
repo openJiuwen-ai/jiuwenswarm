@@ -106,41 +106,28 @@ class TrajectoryHttpService:
             self._reader_database_path = database_path
         return reader
 
-    async def list_traces(
+    async def list_subjects(
         self,
         session_id: str,
         *,
-        limit: int,
-        cursor: str | None,
+        after_revision: int,
     ) -> Response:
-        """Build the paginated trace-list response for one single-Agent session."""
+        """List the execution subjects that own a chain in one session."""
         settings = self.settings
         error = self._validate_access(session_id, settings)
         if error is not None:
             return error
-        if not 1 <= limit <= 100:
-            return _error_response(
-                "limit must be between 1 and 100",
-                "BAD_REQUEST",
-                400,
-            )
-        if cursor is not None and not _is_valid_cursor_text(cursor):
-            return _error_response("invalid trajectory cursor", "BAD_REQUEST", 400)
+        if after_revision < 0:
+            return _error_response("after_revision must be >= 0", "BAD_REQUEST", 400)
+        if after_revision > _MAX_SQLITE_INTEGER:
+            return _error_response("after_revision is too large", "BAD_REQUEST", 400)
         try:
-            (
-                items,
-                next_cursor,
-                revision_cursor,
-                store_epoch,
-            ) = await self._reader_for(settings).list_traces_with_revision_cursor(
+            items, store_epoch, watermark = await self._reader_for(settings).list_subjects(
                 session_id,
-                limit=limit,
-                cursor=cursor,
+                after_revision=after_revision,
             )
-        except TrajectoryCursorError:
-            return _error_response("invalid trajectory cursor", "BAD_REQUEST", 400)
         except Exception:
-            logger.exception("Trajectory trace-list query failed: session_id=%s", session_id)
+            logger.exception("Trajectory subject listing failed: session_id=%s", session_id)
             return _error_response(
                 "trajectory query failed",
                 "TRAJECTORY_QUERY_FAILED",
@@ -150,9 +137,8 @@ class TrajectoryHttpService:
             {
                 "schema_version": 1,
                 "session_id": session_id,
-                "items": [_http_trace_summary(item) for item in items],
-                "next_cursor": next_cursor,
-                "revision_cursor": revision_cursor,
+                "items": items,
+                "watermark": watermark,
                 "store_epoch": store_epoch,
             }
         )
@@ -224,88 +210,22 @@ class TrajectoryHttpService:
             "items": items,
         })
 
-    async def list_revisions(
+    async def get_subject(
         self,
         session_id: str,
-        *,
-        after_revision: str,
-        limit: int,
-    ) -> Response:
-        """Build one stable page of trace summaries changed since a cursor."""
-        settings = self.settings
-        error = self._validate_access(session_id, settings)
-        if error is not None:
-            return error
-        if not 1 <= limit <= 100:
-            return _error_response(
-                "limit must be between 1 and 100",
-                "BAD_REQUEST",
-                400,
-            )
-        if not _is_valid_cursor_text(after_revision):
-            return _error_response(
-                "invalid trajectory revision cursor",
-                "BAD_REQUEST",
-                400,
-            )
-        try:
-            (
-                items,
-                next_cursor,
-                watermark,
-                has_more,
-                reset,
-                store_epoch,
-            ) = await self._reader_for(settings).list_trace_revisions(
-                session_id,
-                after_revision=after_revision,
-                limit=limit,
-            )
-        except TrajectoryCursorError:
-            return _error_response(
-                "invalid trajectory revision cursor",
-                "BAD_REQUEST",
-                400,
-            )
-        except Exception:
-            logger.exception(
-                "Trajectory revision query failed: session_id=%s",
-                session_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        return _json_response(
-            {
-                "schema_version": 1,
-                "session_id": session_id,
-                "items": [_http_trace_summary(item) for item in items],
-                "next_cursor": next_cursor,
-                "watermark": watermark,
-                "has_more": has_more,
-                "reset": reset,
-                "store_epoch": store_epoch,
-            }
-        )
-
-    async def get_trace(
-        self,
-        session_id: str,
-        trace_id: str,
+        subject_id: str,
         *,
         since_revision: int,
         limit: int,
     ) -> Response:
-        """Build a complete or incremental trace-detail response."""
+        """Build one page of an execution subject's chain, in commit order."""
         settings = self.settings
         error = self._validate_access(session_id, settings)
         if error is not None:
             return error
-        normalized_trace_id = str(trace_id or "").strip().lower()
-        if _TRACE_ID_PATTERN.fullmatch(normalized_trace_id) is None:
-            return _error_response("invalid trace_id", "BAD_REQUEST", 400)
+        normalized_subject_id = str(subject_id or "").strip()
+        if not normalized_subject_id or len(normalized_subject_id) > 256:
+            return _error_response("invalid subject_id", "BAD_REQUEST", 400)
         if since_revision < 0:
             return _error_response("since_revision must be >= 0", "BAD_REQUEST", 400)
         if since_revision > _MAX_SQLITE_INTEGER:
@@ -317,18 +237,18 @@ class TrajectoryHttpService:
                 400,
             )
         try:
-            result = await self._reader_for(settings).get_trace_records(
+            result = await self._reader_for(settings).get_subject_records(
                 session_id,
-                normalized_trace_id,
+                normalized_subject_id,
                 since_revision=since_revision,
                 limit=limit,
                 max_bytes=settings.detail_max_bytes,
             )
         except Exception:
             logger.exception(
-                "Trajectory trace-detail query failed: session_id=%s trace_id=%s",
+                "Trajectory subject-detail query failed: session_id=%s subject_id=%s",
                 session_id,
-                normalized_trace_id,
+                normalized_subject_id,
             )
             return _error_response(
                 "trajectory query failed",
@@ -336,12 +256,12 @@ class TrajectoryHttpService:
                 500,
             )
         if result is None:
-            return _error_response("trace not found", "NOT_FOUND", 404)
+            return _error_response("subject not found", "NOT_FOUND", 404)
         return _json_response(
             {
                 "schema_version": 1,
                 "session_id": session_id,
-                "trace_id": normalized_trace_id,
+                "subject_id": normalized_subject_id,
                 **result,
             }
         )
@@ -510,48 +430,22 @@ def attach_trajectory_routes(
             return _error_response("invalid trajectory request", "BAD_REQUEST", 400)
         response.headers["Cache-Control"] = "no-store"
         return response
-
-    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces")
-    async def list_trajectory_traces(
+    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects")
+    async def list_trajectory_subjects(
         session_id: str,
         request: Request,
-        limit: str = Query(default="30"),
-        cursor: str | None = Query(default=None),
+        after_revision: str = Query(default="0"),
     ) -> Response:
-        """List trajectory traces for one session."""
+        """List the execution subjects that own a chain in one session."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        parsed_limit = _parse_integer_query(limit)
-        if parsed_limit is None:
-            return _error_response("limit must be an integer", "BAD_REQUEST", 400)
-        return await service.list_traces(
-            session_id,
-            limit=parsed_limit,
-            cursor=cursor,
-        )
+        parsed_after = _parse_integer_query(after_revision)
+        if parsed_after is None:
+            return _error_response("after_revision must be an integer", "BAD_REQUEST", 400)
+        return await service.list_subjects(session_id, after_revision=parsed_after)
 
-    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/revisions")
-    async def list_trajectory_revisions(
-        session_id: str,
-        request: Request,
-        after_revision: str = Query(default=""),
-        limit: str = Query(default="100"),
-    ) -> Response:
-        """List trace summaries changed after an opaque polling cursor."""
-        request.state.trajectory_route_handled = True
-        origin_error = _validate_http_origin(request)
-        if origin_error is not None:
-            return origin_error
-        parsed_limit = _parse_integer_query(limit)
-        if parsed_limit is None:
-            return _error_response("limit must be an integer", "BAD_REQUEST", 400)
-        return await service.list_revisions(
-            session_id,
-            after_revision=after_revision,
-            limit=parsed_limit,
-        )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/archive")
     async def export_trajectory_archive(
@@ -577,15 +471,17 @@ def attach_trajectory_routes(
             return origin_error
         return await service.get_session_usage(session_id)
 
-    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces/{{trace_id}}")
-    async def get_trajectory_trace(
+    @app.get(
+        f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects/{{subject_id}}/records"
+    )
+    async def get_trajectory_subject_records(
         session_id: str,
-        trace_id: str,
+        subject_id: str,
         request: Request,
         since_revision: str = Query(default="0"),
         limit: str = Query(default="1000"),
     ) -> Response:
-        """Read complete or incremental trajectory records."""
+        """Read one page of an execution subject's chain, in commit order."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
@@ -600,9 +496,9 @@ def attach_trajectory_routes(
             )
         if parsed_limit is None:
             return _error_response("limit must be an integer", "BAD_REQUEST", 400)
-        return await service.get_trace(
+        return await service.get_subject(
             session_id,
-            trace_id,
+            subject_id,
             since_revision=parsed_since_revision,
             limit=parsed_limit,
         )
@@ -636,14 +532,6 @@ def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
     )
 
 
-def _http_trace_summary(item: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        **item,
-        "start_time_unix_nano": str(item["start_time_unix_nano"]),
-        "end_time_unix_nano": str(item["end_time_unix_nano"]),
-    }
-
-
 def _parse_integer_query(value: str) -> int | None:
     normalized = str(value or "").strip()
     if not normalized or len(normalized) > _MAX_INTEGER_QUERY_CHARS:
@@ -655,28 +543,6 @@ def _parse_integer_query(value: str) -> int | None:
     except (ValueError, OverflowError):
         return None
     return parsed if parsed <= _MAX_SQLITE_INTEGER else None
-
-
-def _is_valid_cursor_text(value: str) -> bool:
-    """Accept only canonical unpadded base64url before touching the reader."""
-    normalized = str(value or "")
-    if normalized != normalized.strip() or not 0 < len(normalized) <= _MAX_CURSOR_LENGTH:
-        return False
-    if not normalized.isascii() or len(normalized) % 4 == 1:
-        return False
-    if _CURSOR_PATTERN.fullmatch(normalized) is None:
-        return False
-    padding = "=" * (-len(normalized) % 4)
-    try:
-        decoded = base64.b64decode(
-            f"{normalized}{padding}".encode("ascii"),
-            altchars=b"-_",
-            validate=True,
-        )
-    except ValueError:
-        return False
-    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
-    return canonical == normalized
 
 
 def _is_malformed_raw_host(raw_host: str) -> bool:

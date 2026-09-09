@@ -130,18 +130,22 @@ async def test_router_writes_and_reads_each_session_database(
     assert first_path.is_file()
     assert second_path.is_file()
     reader = AsyncTrajectoryReader(root, session_scoped=True)
-    first_items, _cursor = await reader.list_traces(
-        "session-a",
-        limit=10,
-        cursor=None,
+    first_items, _epoch, _cursor = await reader.list_subjects("session-a")
+    second_items, _epoch, _cursor = await reader.list_subjects("session-b")
+    # Each session owns its own database, so each side sees exactly one chain
+    # and that chain holds only its own session's record.
+    assert [item["subject_id"] for item in first_items] == ["main"]
+    assert [item["subject_id"] for item in second_items] == ["main"]
+    assert [item["record_count"] for item in first_items] == [1]
+    assert [item["record_count"] for item in second_items] == [1]
+    first_chain = await reader.get_subject_records(
+        "session-a", "main", since_revision=0, limit=10
     )
-    second_items, _cursor = await reader.list_traces(
-        "session-b",
-        limit=10,
-        cursor=None,
+    second_chain = await reader.get_subject_records(
+        "session-b", "main", since_revision=0, limit=10
     )
-    assert [item["trace_id"] for item in first_items] == [first_trace]
-    assert [item["trace_id"] for item in second_items] == [second_trace]
+    assert [record["trace_id"] for record in first_chain["records"]] == [first_trace]
+    assert [record["trace_id"] for record in second_chain["records"]] == [second_trace]
     assert router.stats().queued == 0
     test_logger.info("router drained two sessions into independently readable files")
 
@@ -162,9 +166,9 @@ async def test_router_holds_sessionless_child_until_owned_root_arrives(
     assert router.close(timeout=5) is True
 
     reader = AsyncTrajectoryReader(root, session_scoped=True)
-    detail = await reader.get_trace_records(
+    detail = await reader.get_subject_records(
         "session-owner",
-        trace_id,
+        "main",
         since_revision=0,
         limit=10,
     )
