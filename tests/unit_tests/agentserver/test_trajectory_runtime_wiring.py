@@ -24,6 +24,7 @@ from jiuwenswarm.observability import runtime as trajectory_runtime
 @pytest.fixture(autouse=True)
 def reset_observability_demands():
     """Isolate the process-wide observability state around each test."""
+
     def _reset():
         trajectory_runtime.shutdown_trajectory_runtime()
         observability_demand.reset_observability_demands()
@@ -45,6 +46,39 @@ def test_agent_evolution_enables_observability_without_manual_switch(monkeypatch
         lambda: {
             "react": {"evolution": {"skill_evolution": True}},
             "agent_observability": {"enabled": False},
+        },
+    )
+    monkeypatch.setattr(
+        agent_observability,
+        "acquire_observability",
+        lambda config: acquired.append(config) or False,
+    )
+
+    agent_observability.sync_agent_observability()
+
+    assert len(acquired) == 1
+    assert agent_observability._agent_observability_active is True
+
+
+@pytest.mark.parametrize(
+    "symphony",
+    (
+        {"enabled": True, "evolution": {"enabled": True}},
+        {"enabled": True, "flow": {"enabled": True}},
+    ),
+)
+def test_agent_symphony_capture_enables_observability_without_manual_switch(
+    monkeypatch,
+    symphony,
+):
+    acquired = []
+    monkeypatch.setattr(
+        agent_observability,
+        "get_config",
+        lambda: {
+            "react": {"evolution": {"skill_evolution": False}},
+            "agent_observability": {"enabled": False},
+            "symphony": symphony,
         },
     )
     monkeypatch.setattr(
