@@ -55,7 +55,7 @@ async def test_read_file_stays_empty_when_tool_and_bash_are_empty(
 ) -> None:
     node = _Node(read_payload="")
 
-    async def fake_run_bash(_node: Any, command: str, **_kwargs: Any) -> BashResult:
+    async def fake_run_bash(_node: Any, _command: str, **_kwargs: Any) -> BashResult:
         return BashResult(exit_code=1, stdout="", stderr="missing", raw="")
 
     monkeypatch.setattr(
@@ -217,7 +217,7 @@ async def test_write_file_succeeds_when_tool_reports_success() -> None:
         def has_tool(self, name: str) -> bool:
             return name == "write_file"
 
-        async def call_tool(self, name: str, **kwargs: Any) -> Any:
+        async def call_tool(self, _name: str, **kwargs: Any) -> Any:
             assert kwargs["file_path"].endswith("outline.md")
             assert "封面" in kwargs["content"]
             return SimpleNamespace(success=True, data={"file_path": kwargs["file_path"]})
