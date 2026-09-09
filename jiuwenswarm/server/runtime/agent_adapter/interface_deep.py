@@ -3004,7 +3004,27 @@ class JiuWenSwarmDeepAdapter:
             return adapter
 
 
+    def _has_live_root_permission_owner(self, session_id: str | None = None) -> bool:
+        root_session_id = self._resolve_interrupt_session_id(session_id) if session_id is not None else None
+        return self._permission_dispatch.has_live(root_session_id)
 
+    def _has_permission_config_delta(self, config_base: dict[str, Any]) -> bool:
+        """Return whether the candidate changes the installed permission config."""
+
+        current_base = self._config_base_cache
+        current_permissions = (
+            current_base.get("permissions")
+            if isinstance(current_base, dict)
+            else {}
+        )
+        candidate_permissions = config_base.get("permissions")
+        current_snapshot = (
+            current_permissions if isinstance(current_permissions, dict) else {}
+        )
+        candidate_snapshot = (
+            candidate_permissions if isinstance(candidate_permissions, dict) else {}
+        )
+        return current_snapshot != candidate_snapshot
 
     @staticmethod
     def _get_a2x_config(config_base: dict[str, Any]) -> dict[str, Any]:
@@ -7663,8 +7683,35 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    def _auto_permission_capability_enabled(self) -> bool:
+        """Only a session-owned Deep runtime may install Smart permission rails."""
+        return self._is_session_scoped_adapter and self._auto_permission_profile_supported()
 
+    def _auto_permission_profile_supported(self) -> bool:
+        """Keep profile eligibility separate from the router's execution ownership."""
+        return (
+            not self._is_code_agent
+            and not is_cron_execution_session(self._parent_session_id)
+            and _resolve_agent_composition_scope(
+                self._session_instance_mode,
+                self._session_instance_sub_mode,
+            )
+            == "single_agent"
+        )
 
+    def _auto_permission_enabled_for_config(
+        self,
+        permission_config: Any,
+        *,
+        composition_scope: str,
+    ) -> bool:
+        """Resolve Auto activation from config and the immutable profile capability."""
+        return bool(
+            isinstance(permission_config, dict)
+            and is_auto_permission_enabled(permission_config)
+            and composition_scope == "single_agent"
+            and self._auto_permission_capability_enabled()
+        )
 
 
     def _build_agent_rails(
@@ -7938,6 +7985,327 @@ class JiuWenSwarmDeepAdapter:
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
 
+    @staticmethod
+    def _permission_rail_types() -> tuple[type, type]:
+        from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import (
+            AutoPermissionInterruptRail,
+        )
+        from openjiuwen.harness.rails.security.tool_security_rail import (
+            PermissionInterruptRail,
+        )
+
+        return PermissionInterruptRail, AutoPermissionInterruptRail
+
+    def _uses_smart_permission_lifecycle(self, config_base: dict[str, Any]) -> bool:
+        return self._auto_permission_capability_enabled() and (
+            self._enable_auto_permission
+            or self._auto_permission_enabled_for_config(
+                config_base.get("permissions"), composition_scope="single_agent",
+            )
+        )
+
+    def _coordinates_smart_permission_lifecycle(
+        self, config_base: dict[str, Any], target_sid: str | None = None,
+    ) -> bool:
+        """A router publishes D for children without acquiring their capability."""
+        if self._is_session_scoped_adapter:
+            return False
+        permissions = config_base.get("permissions")
+        return (
+            self._auto_permission_profile_supported()
+            and isinstance(permissions, dict)
+            and is_auto_permission_enabled(permissions)
+        ) or any(
+            adapter._uses_smart_permission_lifecycle(config_base)
+            for _, adapter in self._iter_session_adapters_for_reload(target_sid)
+        )
+
+
+    def _permission_group_types(self) -> tuple[type, ...]:
+        return (*self._permission_rail_types(), RootPermissionQueueRail, RootContextRail,
+                RootPermissionCompletionRail, JiuSwarmStreamEventRail, StructuredAskUserRail)
+
+    def _capture_permission_version(self) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """Capture D from the storage owner, including overlay-only changes."""
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+            capture_permission_layers,
+        )
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+            compose_host_effective_permissions,
+        )
+
+        sid = self._session_adapter_key(self._parent_session_id)
+        global_layer, user, session, _ = capture_permission_layers(sid)
+        layers = [resolve_env_vars(layer) for layer in (global_layer, user, session)]
+        effective = compose_host_effective_permissions(
+            global_permissions=layers[0], user_permissions=layers[1],
+            session_permissions=layers[2], session_id=sid,
+        )
+        epoch = self._stable_reload_fingerprint({
+            "session_id": sid,
+            "workspace": str(
+                self._require_permission_workspace_binding().runtime_workspace_root
+                if is_auto_permission_enabled(layers[0]) and self._auto_permission_capability_enabled()
+                else self._permission_workspace_root
+            ),
+            "layers": layers,
+        })
+        return epoch, layers[0], effective
+
+    def _permission_work_pending(self, session_id: str) -> bool:
+        """Keep callbacks, interrupted turns and background children on E."""
+        if self._has_live_root_permission_owner(session_id):
+            return True
+        if self._active_session_ids.get(session_id, 0):
+            return True
+        current = asyncio.current_task()
+        if any(
+            task is not current and not task.done()
+            for task in self._session_agent_tasks.get(session_id, ())
+        ):
+            return True
+        instance = self._instance
+        if instance is None:
+            return False
+        if instance.is_invoke_active or instance.active_round is not None:
+            return True
+        loop_session = getattr(instance, "loop_session", None)
+        if loop_session is not None:
+            state = loop_session.get_state(INTERRUPTION_KEY)
+            if getattr(state, "interrupted_tools", None):
+                return True
+        # The pinned SDK exposes status via controls but has no non-creating
+        # control lookup. Inspect its existing registry without hydrating one.
+        controls = getattr(instance, "_subagent_controls", {})
+        for control in controls.values():
+            if any(
+                not control.get_status(item.subagent_id).is_final()
+                for item in control.list_live()
+            ):
+                return True
+        return False
+
+    def _verify_permission_group(self, expected: dict[str, Any], *, smart: bool) -> None:
+        """Check the SDK graph, not just adapter fields or a configure list."""
+        instance = self._instance
+        actual = instance.find_rails_by_type(self._permission_group_types())
+        wanted = [rail for rail in expected.values() if rail is not None]
+        if len(actual) != len(wanted) or any(
+            sum(rail is item for rail in actual) != 1
+            or not instance.is_registered_rail(item)
+            for item in wanted
+        ):
+            raise RuntimeError("permission_registered_graph_mismatch")
+        permission = expected["_permission_rail"]
+        if permission is not None and (
+            isinstance(permission, self._permission_rail_types()[1]) is not smart
+        ):
+            raise RuntimeError("permission_registered_type_mismatch")
+        if smart and (permission is None or permission.sys_operation is not self._sys_operation):
+            raise RuntimeError("permission_registered_owner_mismatch")
+        stream = expected["_stream_event_rail"]
+        if stream is None or stream._root_permission_queue is not (self._root_permission_queue if smart else None):
+            raise RuntimeError("permission_stream_rail_unavailable")
+        ask = expected["_ask_user_rail"]
+        if ask is None or ask._strict_continuation_contract is not smart:
+            raise RuntimeError("permission_ask_rail_unavailable")
+
+    async def _isolate_permission_instance(self) -> None:
+        """Close old borrowed Host references before any fallible cleanup."""
+        self._permission_state.begin_permission_isolation()
+        failures: list[BaseException] = []
+        instance = self._instance
+        if instance is not None:
+            try:
+                await instance.stop()
+            except BaseException as exc:
+                failures.append(exc)
+            rails = [*instance.configured_rails(), *self._permission_state.permission_cleanup_candidates]
+            seen: set[int] = set()
+            for rail in rails:
+                if id(rail) in seen:
+                    continue
+                seen.add(id(rail))
+                try:
+                    await instance.unregister_rail(rail)
+                except BaseException as exc:
+                    failures.append(exc)
+            # A failed SDK registration can leave callbacks before adding the
+            # rail to its list. Clear both existing callback owners as well.
+            managers = [instance._agent_callback_manager]
+            if instance.react_agent is not None:
+                managers.append(instance.react_agent.agent_callback_manager)
+            for manager in managers:
+                try:
+                    await manager.clear()
+                except BaseException as exc:
+                    failures.append(exc)
+        try:
+            if instance is None and self._tool_cards:
+                # Tool discovery precedes create_deep_agent. Reuse the SDK's
+                # owner-qualified teardown if Smart preparation fails there.
+                from openjiuwen.core.single_agent.ability_manager import AbilityManager
+
+                pending_tools = AbilityManager(owner_id=self._tool_owner_id())
+                pending_tools.add(self._tool_cards)
+                pending_tools.teardown_tools()
+            await self.cleanup()
+            if instance is not None:
+                # The ordinary cleanup deliberately logs tool teardown errors;
+                # a failed Smart replacement must not claim that cleanup passed.
+                instance.ability_manager.teardown_tools()
+                if instance.configured_rails():
+                    raise RuntimeError("permission_cleanup_rails_remaining")
+        except BaseException as exc:
+            failures.append(exc)
+        self._permission_state.permission_cleanup_complete = not failures
+        if failures:
+            logger.error("[JiuWenSwarmDeepAdapter] isolated permission cleanup incomplete: %s", failures)
+        else:
+            self._permission_state.permission_cleanup_candidates = []
+
+    async def _replace_permission_group(
+        self, config_base: dict[str, Any], *, snapshot: tuple[str, dict, dict] | None = None,
+    ) -> None:
+        """Replace under session admission; callers must have settled old work."""
+        touched = False
+        try:
+            if not self._enable_auto_permission and self._uses_smart_permission_lifecycle(config_base):
+                self._prepare_permission_workspace_binding()
+            for _ in range(3):
+                epoch, global_layer, effective = snapshot or self._capture_permission_version()
+                smart = is_auto_permission_enabled(global_layer)
+                workspace_root = (
+                    self._require_permission_workspace_binding().runtime_workspace_root if smart else self._workspace_dir
+                )
+                candidate_config = {**config_base, "permissions": global_layer}
+                expected = self._build_session_permission_group(
+                    candidate_config, smart=smart, installed_permissions=effective if smart else None,
+                    model_name=self._default_model_name, workspace_root=workspace_root,
+                )
+                if global_layer.get("enabled") and expected["_permission_rail"] is None:
+                    raise RuntimeError("permission_rail_candidate_unavailable")
+                subagents, gp_snapshot = self._prepare_general_purpose_permission_update(expected, smart=smart)
+                # No live mutation has occurred if candidate construction raises.
+                old = self._instance.find_rails_by_type(self._permission_group_types())
+                self._permission_state.permission_cleanup_candidates = [
+                    *old, *(rail for rail in expected.values() if rail is not None),
+                ]
+                touched = True
+                for rail in old:
+                    await self._instance.unregister_rail(rail)
+                for rail in expected.values():
+                    if rail is not None:
+                        await self._instance.register_rail(rail)
+                await self._instance.ensure_initialized()
+                self._verify_permission_group(expected, smart=smart)
+                latest = self._capture_permission_version()
+                if latest[0] != epoch:
+                    snapshot = latest
+                    continue
+                # Admission remains closed through validation and publication.
+                for attr, rail in expected.items():
+                    setattr(self, attr, rail)
+                self._instance.deep_config.subagents = subagents
+                self._general_purpose_rail_snapshot = gp_snapshot
+                self._config_base_cache = {**self._config_base_cache, "permissions": global_layer}
+                self._enable_auto_permission = smart
+                if smart:
+                    self._permission_workspace_root = workspace_root
+                self._permission_state.permission_epoch = epoch if smart else None
+                self._permission_state.permission_cleanup_candidates = []
+                return
+            raise RuntimeError("permission_policy_not_stable")
+        except BaseException:
+            if touched:
+                await self._isolate_permission_instance()
+            raise
+
+    @asynccontextmanager
+    async def _permission_request_admission(self, request: AgentRequest, inputs: dict[str, Any]):
+        """Guard cached child references at the last supported Host execution entry."""
+        if not self._is_session_scoped_adapter:
+            yield
+            return
+        if self._permission_state.permission_isolated:
+            raise RuntimeError("permission_session_isolated")
+        current_config = get_config()
+        if not self._permission_state.permission_update_in_progress and not self._uses_smart_permission_lifecycle(current_config):
+            yield
+            return
+        sid = self._session_adapter_key(self._parent_session_id)
+        lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        resume = isinstance(inputs.get("query"), InteractiveInput)
+
+        async def admit() -> None:
+            async with lock:
+                if self._permission_state.permission_isolated:
+                    raise RuntimeError("permission_session_isolated")
+                smart_lifecycle = self._uses_smart_permission_lifecycle(get_config())
+                if smart_lifecycle:
+                    if self._session_adapter_key(request.session_id) != sid:
+                        raise RootPermissionQueueError("auto_permission_session_owner_mismatch")
+                    self._validate_auto_permission_workspace_request(request, activating=True)
+                if smart_lifecycle and resume and not self._enable_auto_permission:
+                    # A pending manual answer may finish on E while D becomes
+                    # Smart, but a stale answer must not start another turn on E.
+                    query = inputs["query"]
+                    loop_session = getattr(self._instance, "loop_session", None)
+                    if self._deep_agent_loop_session_id() != sid or query.raw_inputs is not None:
+                        raise RootPermissionQueueError("interaction_resume_state_missing")
+                    state = loop_session.get_state(INTERRUPTION_KEY)
+                    interrupted = getattr(state, "interrupted_tools", None)
+                    if not isinstance(interrupted, Mapping) or not query.user_inputs:
+                        raise RootPermissionQueueError("interaction_resume_state_missing")
+                    pending_ids = set()
+                    for entry in interrupted.values():
+                        requests = getattr(entry, "interrupt_requests", None)
+                        if not isinstance(requests, Mapping):
+                            raise RootPermissionQueueError("interaction_resume_state_invalid")
+                        pending_ids.update(requests)
+                    # Manual SDK batches may answer a nonempty subset. Do not
+                    # impose Smart's single-card or structured-ask contract.
+                    if not set(query.user_inputs).issubset(pending_ids):
+                        raise RootPermissionQueueError("interaction_resume_identity_mismatch")
+                if smart_lifecycle and not resume:
+                    preparing_smart = (
+                        is_auto_permission_enabled(get_config().get("permissions", {}))
+                        and not self._enable_auto_permission
+                        and self._permission_state.permission_epoch is None
+                    )
+                    if preparing_smart and self._permission_work_pending(sid):
+                        # This Smart transition already rejects below: its new
+                        # epoch cannot equal None. Check before allocating the
+                        # candidate root; manual-only calls/answers never enter.
+                        raise RuntimeError("permission_session_busy:retry_after_settlement")
+                    if preparing_smart:
+                        if not self._is_host_permission_update_input(request):
+                            raise RuntimeError("permission_update_requires_external_input")
+                        self._prepare_permission_workspace_binding()
+                    snapshot = self._capture_permission_version()
+                    if snapshot[0] != self._permission_state.permission_epoch:
+                        if self._permission_work_pending(sid):
+                            raise RuntimeError("permission_session_busy:retry_after_settlement")
+                        if not self._is_host_permission_update_input(request):
+                            raise RuntimeError("permission_update_requires_external_input")
+                        self._permission_state.permission_update_in_progress = True
+                        try:
+                            await self._replace_permission_group(current_config, snapshot=snapshot)
+                        finally:
+                            self._permission_state.permission_update_in_progress = False
+                self._mark_session_active(sid)
+
+        builder = self._permissions_external_input_context_builder
+        if not resume and self._is_host_permission_update_input(request) and builder is not None:
+            async with builder(admit)():
+                pass
+        else:
+            await admit()
+        try:
+            yield
+        finally:
+            self._unmark_session_active(sid)
+
     async def _ensure_permission_rail_live_registered(self) -> None:
         """Issue #4059: keep ``_permission_rail`` on the running instance's
         execution chain after a hot reload.
@@ -7957,6 +8325,11 @@ class JiuWenSwarmDeepAdapter:
         On ``register_rail()`` failure it logs a warning without clearing
         ``_permission_rail`` so the next reload retries the same registration.
         """
+        config_base = getattr(self, "_config_base_cache", None)
+        if config_base and self._uses_smart_permission_lifecycle(config_base):
+            # Smart reloads publish a complete PermissionRailGroup atomically;
+            # this helper owns only the legacy single-rail configure path.
+            return
         if getattr(self, "_is_cron_execution", False):
             return
         rail = getattr(self, "_permission_rail", None)
@@ -7979,6 +8352,7 @@ class JiuWenSwarmDeepAdapter:
         logger.info(
             "[JiuWenSwarmDeepAdapter] _permission_rail live-registered on hot-reload"
         )
+
     def _get_current_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any] | None = None
     ) -> list[Any]:
@@ -10715,6 +11089,12 @@ class JiuWenSwarmDeepAdapter:
 
 
 
+    @staticmethod
+    def _supports_root_context(
+        params: dict[str, Any],
+        runtime_mode: str,
+    ) -> bool:
+        return not is_team_params(params) and runtime_mode != "auto_harness"
 
     @staticmethod
     def _structured_goal_op_from_request(
