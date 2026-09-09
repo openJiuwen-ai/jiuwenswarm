@@ -8,6 +8,7 @@ import json
 import logging
 import mimetypes
 import os
+import secrets
 import shlex
 import shutil
 import signal
@@ -22,6 +23,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
+from urllib.parse import quote
 
 from logging.handlers import RotatingFileHandler
 
@@ -397,9 +399,16 @@ def _build_child_env(
     name: str,
     ports: dict[str, int],
     startup_diagnostics_dir: Path | None = None,
+    desktop_token: str = "",
 ) -> dict[str, str]:
     env = os.environ.copy()
     env[DESKTOP_ENV_FLAG] = "1"
+    # 桌面锁定: 仅 web 静态服务的对话页面入口需要校验 token,
+    # 其他子进程不注入, API/WS 保持原有访问规则。
+    if desktop_token and name == "web":
+        env["JIUWENSWARM_DESKTOP_TOKEN"] = desktop_token
+    else:
+        env.pop("JIUWENSWARM_DESKTOP_TOKEN", None)
     env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
     # Desktop now starts Gateway directly, so preserve the original launcher
     # command here instead of relying on jiuwenswarm.app to add it. The
@@ -443,10 +452,11 @@ def _start_process(
     command: list[str],
     ports: dict[str, int],
     startup_diagnostics_dir: Path | None = None,
+    desktop_token: str = "",
 ) -> subprocess.Popen[bytes]:
     logger.info("[desktop] starting %s: %s", name, command)
     kwargs: dict[str, object] = {
-        "env": _build_child_env(name, ports, startup_diagnostics_dir),
+        "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
@@ -779,6 +789,10 @@ class DesktopRuntime:
         self.ports = dict(ports)
         self.frontend_port = int(ports["frontend"])
         self.backend_port = int(ports["web"])
+        # 桌面锁定: 每次启动生成 token, 仅注入 web 子进程;
+        # 窗口首次导航 URL 携带 ?dt=<token> 换取 HttpOnly Cookie 后凭 Cookie
+        # 访问, 浏览器直接打开对话页面时返回 403。
+        self.desktop_token = secrets.token_urlsafe(32)
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
         self.window = None
         self._lock = threading.Lock()
@@ -813,6 +827,15 @@ class DesktopRuntime:
 
     @property
     def frontend_url(self) -> str:
+        # 带 ?dt=<token>: web 静态服务据此下发 HttpOnly Cookie 引导桌面会话。
+        return (
+            f"http://{self.frontend_host}:{self.frontend_port}"
+            f"/?dt={quote(self.desktop_token, safe='')}"
+        )
+
+    @property
+    def frontend_display_url(self) -> str:
+        """不含 token 的展示用 URL (日志等场景, 避免泄露 token)。"""
         return f"http://{self.frontend_host}:{self.frontend_port}"
 
     @staticmethod
@@ -895,6 +918,7 @@ class DesktopRuntime:
             command,
             self.ports,
             startup_diagnostics_dir=self._startup_diagnostics_dir,
+            desktop_token=self.desktop_token,
         )
         with self._lock:
             shutting_down = self._is_shutting_down
@@ -1088,7 +1112,7 @@ class DesktopRuntime:
             name="desktop-backend-pair-watch",
             daemon=True,
         ).start()
-        logger.info("[desktop] services ready: %s", self.frontend_url)
+        logger.info("[desktop] services ready: %s", self.frontend_display_url)
 
     def _run_doctor_after_failure(self) -> dict[str, object] | None:
         if not getattr(sys, "frozen", False):

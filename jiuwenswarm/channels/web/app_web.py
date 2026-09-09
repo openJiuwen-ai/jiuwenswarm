@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hmac
 import http.client
 import json
 import logging
@@ -27,7 +28,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import ParseResult, quote, unquote, urlparse
+from urllib.parse import ParseResult, parse_qs, quote, unquote, urlencode, urlparse
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early
@@ -276,6 +277,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     # 仅一体机场景为 True; 普通部署为 False。前端据此决定是否显示登出按钮。
     remote_mode = False
     ws_disable_compress = False
+
+    # --- 桌面对话页面限制: 启动 token + HttpOnly Cookie ---
+    # 仅保护 SPA 文档入口; 静态资源/API/WS 保持原有访问规则。
+    # 桌面窗口首次导航经 ?dt=<token> 换取 HttpOnly Cookie。
+    # 源码 web 模式不设置该值, 行为与之前完全一致。
+    desktop_token = ""
+    # Cookie 名按端口区分: 同 host 多桌面实例(端口偏移)互不覆盖。
+    desktop_cookie_name = "__wsdt"
+    _DESKTOP_TOKEN_QUERY_PARAM = "dt"
 
     # --- /auth-api cookie-based auth bridge ---
     # access_token 实测 TTL 15min(900s), refresh_token 实测 7d(604800s)。
@@ -1016,6 +1026,81 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _send_desktop_forbidden(self) -> None:
+        """桌面锁定: 拒绝未认证请求的 403 提示页。"""
+        body = (
+            "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>禁止访问</title></head>"
+            "<body style=\"font-family:system-ui,sans-serif;background:#0f172a;"
+            "color:#e2e8f0;display:flex;align-items:center;justify-content:center;"
+            "height:100vh;margin:0\">"
+            "<div style=\"text-align:center\">"
+            "<h1 style=\"font-size:22px;font-weight:600\">禁止访问</h1>"
+            "<p style=\"color:#94a3b8;margin-top:12px\">"
+            "此服务仅限桌面端访问，请使用桌面应用打开。</p>"
+            "</div></body></html>"
+        ).encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _check_desktop_access(self) -> bool:
+        """桌面锁定校验。返回 True 表示请求已被响应(403/302), 调用方应终止处理。
+
+        - 源码 web 模式 (desktop_token 为空) 恒返回 False, 不做任何校验;
+        - 首次导航携带匹配的 ?dt=<token>: 下发 HttpOnly Cookie 并 302 到
+          去掉 dt 的干净 URL (token 不留在地址栏/前端路由里);
+        - 仅在返回 SPA 文档时调用; 无有效 Cookie 的页面访问返回 403。
+        """
+        if not self.desktop_token:
+            return False
+
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        values = query.get(self._DESKTOP_TOKEN_QUERY_PARAM, [])
+        if values:
+            provided = str(values[0])
+            # bytes 比较: compare_digest 的 str 形式要求 ASCII-only,
+            # 恶意非 ASCII 输入会抛 TypeError 导致连接崩溃。
+            if provided and hmac.compare_digest(
+                provided.encode("utf-8"), self.desktop_token.encode("utf-8")
+            ):
+                remaining = {
+                    key: val
+                    for key, val in query.items()
+                    if key != self._DESKTOP_TOKEN_QUERY_PARAM
+                }
+                location = parsed.path or "/"
+                if remaining:
+                    location += "?" + urlencode(remaining, doseq=True)
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{self.desktop_cookie_name}="
+                    f"{quote(self.desktop_token, safe='')}; "
+                    "Path=/; HttpOnly; SameSite=Lax",
+                )
+                self.end_headers()
+            else:
+                self._send_desktop_forbidden()
+            return True
+
+        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
+        if cookie_token and hmac.compare_digest(
+            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
+        ):
+            return False
+
+        self._send_desktop_forbidden()
+        return True
+
     def _dispatch_proxy(self) -> bool:
         if self._is_auth_api_route():
             # /auth-api/* 优先, 反代到 control-panel (IAM), 走 cookie 桥接
@@ -1626,8 +1711,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         Gateway），由 AgentServer 校验 upload token 并落盘注入目录。
         AgentServer 不可达 → 503 可重试错误（方案 §8 禁止本地 fallback）。
         """
-        from urllib.parse import parse_qs
-
         query = parse_qs(parsed.query)
         token = (query.get("token") or [""])[0]
         if not token:
@@ -1912,10 +1995,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.info("%s - %s", self.address_string(), format % args)
+        self.logger.info("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
 
     def log_error(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.error("%s - %s", self.address_string(), format % args)
+        self.logger.error("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
+
+    def _redact_desktop_token(self, message: str) -> str:
+        message = re.sub(r"([?&]dt=)[^&\s\"#]*", r"\1[REDACTED]", message)
+        if self.desktop_token:
+            message = message.replace(quote(self.desktop_token, safe=""), "[REDACTED]")
+            message = message.replace(self.desktop_token, "[REDACTED]")
+        return message
 
     def send_head(self):
         parsed = urlparse(self.path)
@@ -1925,6 +2015,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         base_dir = Path(self.directory or os.getcwd()).resolve()
         target = (base_dir / rel_path).resolve()
         in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+
+        # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
+        # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。
+        spa_index = (base_dir / "index.html").resolve()
+        serves_spa = not (in_base and target.exists()) or target == spa_index
+        if in_base and target.is_dir():
+            serves_spa = (target / "index.html").resolve() == spa_index
+        if serves_spa and self._check_desktop_access():
+            return None
 
         if in_base and target.exists():
             return super().send_head()
@@ -2083,6 +2182,13 @@ def main() -> None:
         help="Disable websocket compression for easier ws req/res/event debug logging.",
     )
     parser.add_argument(
+        "--desktop-token",
+        default=None,
+        metavar="TOKEN",
+        help="Desktop lock token: enable desktop-only access control "
+        "(default: JIUWENSWARM_DESKTOP_TOKEN env, empty = disabled).",
+    )
+    parser.add_argument(
         "--name",
         metavar="<name>",
         help="Start a named instance from instances.yaml.",
@@ -2126,6 +2232,15 @@ def main() -> None:
     _ConfiguredHandler.iam_target = iam_target
     _ConfiguredHandler.remote_mode = remote_mode
     _ConfiguredHandler.ws_disable_compress = args.ws_disable_compress
+    # 桌面锁定: 桌面端经 JIUWENSWARM_DESKTOP_TOKEN env 注入一次性 token;
+    # 源码 web 模式为空 = 不启用, 浏览器访问行为与之前完全一致。
+    desktop_token = (
+        args.desktop_token
+        if args.desktop_token is not None
+        else os.getenv("JIUWENSWARM_DESKTOP_TOKEN", "")
+    ).strip()
+    _ConfiguredHandler.desktop_token = desktop_token
+    _ConfiguredHandler.desktop_cookie_name = f"__wsdt{args.port}"
     _ConfiguredHandler.project_root = project_root
     _ConfiguredHandler.workspace_root = workspace_root
     _ConfiguredHandler.agent_teams_root = agent_teams_root
@@ -2160,6 +2275,10 @@ def main() -> None:
         logger.info("[jiuwenswarm-web] /auth-api -> %s", iam_target)
         logger.info("[jiuwenswarm-web] all-in-one (remote) mode: %s", remote_mode)
         logger.info("[jiuwenswarm-web] ws disable compress: %s", args.ws_disable_compress)
+        logger.info(
+            "[jiuwenswarm-web] desktop lock: %s",
+            "enabled" if desktop_token else "disabled",
+        )
         logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
 
         _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()
