@@ -83,7 +83,7 @@ export function createQwenOmniToolResultEvents(
 ): Array<Record<string, unknown>> {
   return [
     createQwenOmniBriefOutputEvent(callId, brief, context),
-    createQwenOmniToolFollowupEvent(),
+    createQwenOmniToolFollowupEvent(brief, context),
     createQwenOmniResponseEvent(),
   ];
 }
