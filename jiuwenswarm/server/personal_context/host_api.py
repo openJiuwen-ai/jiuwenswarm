@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from copy import deepcopy
-import json
 import os
 from pathlib import Path
 import stat
@@ -423,8 +422,6 @@ async def _validate_repository_pat(provider: str, secret: str) -> dict[str, str]
                     "Authorization": f"Bearer {secret}",
                 },
             )
-    except asyncio.CancelledError:
-        raise
     except httpx.TimeoutException:
         _raise_host_error("repository provider credential validation timed out")
     except httpx.HTTPError:
@@ -453,23 +450,17 @@ async def _validate_repository_pat(provider: str, secret: str) -> dict[str, str]
         )
     try:
         payload = response.json()
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (ValueError, TypeError):
         _raise_host_error("repository provider credential response is invalid")
     if not isinstance(payload, dict):
         _raise_host_error("repository provider credential response is invalid")
     login = payload.get("login") or payload.get("username")
     display_name = payload.get("name") or payload.get("display_name") or login
-    if (
-        not isinstance(login, str)
-        or not login.strip()
-        or len(login) > 256
-        or any(ord(character) < 32 for character in login)
-        or not isinstance(display_name, str)
-        or not display_name.strip()
-        or len(display_name) > 256
-        or any(ord(character) < 32 for character in display_name)
-    ):
+    if not isinstance(login, str) or not isinstance(display_name, str):
         _raise_host_error("repository provider account response is invalid")
+    for value in (login, display_name):
+        if not value.strip() or len(value) > 256 or any(ord(character) < 32 for character in value):
+            _raise_host_error("repository provider account response is invalid")
     return {"login": login.strip(), "display_name": display_name.strip()}
 
 
@@ -479,8 +470,6 @@ async def _validate_repository_pat_for_write(
 ) -> dict[str, str]:
     try:
         return await _validate_repository_pat(provider, secret)
-    except asyncio.CancelledError:
-        raise
     except Exception as exc:
         raise _as_host_error(
             exc,
@@ -1090,10 +1079,9 @@ class PersonalContextHostAPI:
             not isinstance(service_id, str) or not service_id.strip()
         ):
             _raise_host_error("service_id must be a non-empty string")
-        if run_id is not None and (
-            service_id is None or not isinstance(run_id, str) or not run_id.strip()
-        ):
-            _raise_host_error("run_id requires service_id and a non-empty string")
+        if run_id is not None:
+            if service_id is None or not isinstance(run_id, str) or not run_id.strip():
+                _raise_host_error("run_id requires service_id and a non-empty string")
         normalized_id = service_id.strip() if service_id is not None else None
         async with self._operation_lock:
             return await self._personal_context.get_fetch_run_status(
