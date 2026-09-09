@@ -13,6 +13,8 @@ import type {
   TrajectorySubjectRecordsResponse,
   TrajectorySubjectSummary,
 } from './trajectoryClient';
+import { emptyStreamFrameState } from './trajectoryFrames';
+import type { StreamFrameState } from './trajectoryFrames';
 
 export interface TrajectoryChainBucket {
   revision: number;
@@ -32,6 +34,13 @@ export interface TrajectoryWindowState {
   storeEpoch: string | null;
   /** Highest change_seq the listing has reported, and the next poll's floor. */
   watermark: number;
+  /**
+   * Frames accumulated for the spans still writing their answer, plus how far
+   * along the session's frame stream this reader has read. Frames advance on
+   * their own watermark because a streaming span emits many of them without
+   * rewriting its record.
+   */
+  frames: StreamFrameState;
   listWindowInitialized: boolean;
   rawSelection: string;
 }
@@ -136,6 +145,7 @@ export function createTrajectoryWindowState(): TrajectoryWindowState {
     buckets: new Map<string, TrajectoryChainBucket>(),
     storeEpoch: null,
     watermark: 0,
+    frames: emptyStreamFrameState,
     listWindowInitialized: false,
     rawSelection: '',
   };
@@ -158,6 +168,7 @@ export function resetTrajectoryWindowState(state: TrajectoryWindowState): void {
   state.buckets = new Map<string, TrajectoryChainBucket>();
   state.storeEpoch = null;
   state.watermark = 0;
+  state.frames = emptyStreamFrameState;
   state.listWindowInitialized = false;
   state.rawSelection = '';
 }

@@ -27,12 +27,17 @@ import {
   getTrajectoryRawRecord,
   getTrajectoryArchive,
   getTrajectorySessionUsage,
+  getTrajectoryStreamFrames,
   getTrajectorySubjectRecords,
   listTrajectorySubjects,
   TrajectoryApiError,
   type TrajectoryDetailRecord,
   type TrajectorySubjectSummary,
 } from './trajectoryClient';
+import {
+  applyStreamFrames,
+  withStreamFrames,
+} from './trajectoryFrames';
 import {
   exitTrajectoryReplay,
   parseTrajectoryArchive,
@@ -74,6 +79,9 @@ import './client/theme.css';
 const DETAIL_LIMIT = 1000;
 const DETAIL_CONCURRENCY = 6;
 const LIVE_HINT_PULL_INTERVAL_MS = 80;
+// A reader returning after a long disconnect walks forward a page at a time.
+// The cap bounds one refresh; whatever is left is picked up by the next.
+const MAX_FRAME_CATCH_UP_PAGES = 20;
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 
 /** Upstream project the trajectory renderer is adapted from (MIT; see NOTICE.md). */
@@ -330,9 +338,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       return;
     }
     deferredPublishRef.current = false;
-    const nextRecords = [...windowStateRef.current.buckets.values()].flatMap(bucket => (
-      [...bucket.records.values()]
-    ));
+    // A span still writing its answer states nothing about it yet, so the
+    // frames it has produced stand in until its own record supersedes them.
+    const nextRecords = withStreamFrames(
+      [...windowStateRef.current.buckets.values()].flatMap(bucket => (
+        [...bucket.records.values()]
+      )),
+      windowStateRef.current.frames,
+    ) as OtlpExportTraceServiceRequest[];
     const nextRawRecords = [...windowStateRef.current.buckets.values()].flatMap(bucket => (
       [...bucket.rawRecords.values()]
     ));
@@ -363,6 +376,38 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     )));
     if (sameTrajectoryUsageMap(sessionCumulativeUsageRef.current, nextUsage)) return;
     sessionCumulativeUsageRef.current = nextUsage;
+    subjectViewCacheRef.current.clear();
+    publish(generation);
+  }, [publish, sessionId]);
+
+  const catchUpStreamFrames = useCallback(async (
+    signal: AbortSignal,
+    generation: number,
+  ) => {
+    // Walk forward from the cursor this reader holds until it is level with
+    // the store. A reader that was disconnected closes the whole gap here
+    // rather than waiting for the answer to finish.
+    let pagesLeft = MAX_FRAME_CATCH_UP_PAGES;
+    let changed = false;
+    while (pagesLeft > 0) {
+      pagesLeft -= 1;
+      const expectedEpoch = windowStateRef.current.storeEpoch;
+      const page = await getTrajectoryStreamFrames(sessionId, {
+        signal,
+        sinceFrameSeq: windowStateRef.current.frames.frameSeq,
+      });
+      if (signal.aborted
+        || !operationCoordinatorRef.current.isCurrent(generation)
+        || windowStateRef.current.storeEpoch !== expectedEpoch) return;
+      if (page.frames.length === 0 && !page.reset) break;
+      windowStateRef.current.frames = applyStreamFrames(
+        windowStateRef.current.frames,
+        page,
+      );
+      changed = true;
+      if (!page.has_more) break;
+    }
+    if (!changed) return;
     subjectViewCacheRef.current.clear();
     publish(generation);
   }, [publish, sessionId]);
@@ -554,6 +599,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         if (signal.aborted || !coordinator.isCurrent(generation)) return;
         windowStateRef.current.listWindowInitialized = true;
         windowStateRef.current.watermark = subjectWindow.watermark;
+        await catchUpStreamFrames(signal, generation);
+        if (signal.aborted || !coordinator.isCurrent(generation)) return;
         setError(null);
       } catch (refreshError) {
         if (!signal.aborted) setError(errorMessage(refreshError, chinese));

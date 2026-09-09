@@ -63,6 +63,31 @@ export interface TrajectoryDetailRecord {
   projection_omitted?: 'record_too_large';
 }
 
+/** One increment of a model's answer, as stored outside the span. */
+export interface TrajectoryStreamFrame {
+  frame_seq: number;
+  trace_id: string;
+  span_id: string;
+  subject_id: string;
+  sequence: number;
+  kind: string;
+  timestamp_unix_nano: number;
+  text?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  arguments_delta?: string;
+}
+
+export interface TrajectoryStreamFramesResponse {
+  schema_version: 1;
+  session_id: string;
+  frame_seq: number;
+  reset: boolean;
+  frames: TrajectoryStreamFrame[];
+  has_more: boolean;
+  next_since_frame_seq: number;
+}
+
 export interface TrajectorySubjectRecordsResponse {
   schema_version: 1;
   session_id: string;
@@ -369,6 +394,85 @@ export async function getTrajectorySubjectRecords(
     ...(Number.isSafeInteger(payload.max_projected_raw_bytes)
       ? { max_projected_raw_bytes: Number(payload.max_projected_raw_bytes) }
       : {}),
+  };
+}
+
+export async function getTrajectoryStreamFrames(
+  sessionId: string,
+  options: {
+    signal?: AbortSignal;
+    sinceFrameSeq?: number;
+    limit?: number;
+  } = {},
+): Promise<TrajectoryStreamFramesResponse> {
+  const query = new URLSearchParams({
+    since_frame_seq: String(options.sinceFrameSeq ?? 0),
+    limit: String(options.limit ?? 500),
+  });
+  const response = await fetch(trajectoryUrl(
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/stream-frames?${query.toString()}`,
+  ), {
+    cache: 'no-store',
+    signal: options.signal,
+  });
+  const payload = await readResponse(response);
+  if (!object(payload)
+    || payload.schema_version !== 1
+    || payload.session_id !== sessionId
+    || !Number.isSafeInteger(payload.frame_seq)
+    || typeof payload.reset !== 'boolean'
+    || !Array.isArray(payload.frames)
+    || typeof payload.has_more !== 'boolean'
+    || !Number.isSafeInteger(payload.next_since_frame_seq)) {
+    throw new TrajectoryApiError('Trajectory frame response is invalid', 502, 'INVALID_RESPONSE');
+  }
+  const frames: TrajectoryStreamFrame[] = payload.frames.map((candidate) => {
+    if (!object(candidate)
+      || !Number.isSafeInteger(candidate.frame_seq)
+      || !Number.isSafeInteger(candidate.sequence)
+      || typeof candidate.kind !== 'string'
+      || typeof candidate.trace_id !== 'string'
+      || !/^[0-9a-f]{32}$/.test(candidate.trace_id)
+      || typeof candidate.span_id !== 'string'
+      || !/^[0-9a-f]{16}$/.test(candidate.span_id)
+      || typeof candidate.subject_id !== 'string') {
+      throw new TrajectoryApiError('Trajectory frame is invalid', 502, 'INVALID_RESPONSE');
+    }
+    // Text is taken exactly as stored. Trimming it here would glue the
+    // answer's words together once the frames are concatenated.
+    const text = typeof candidate.text === 'string' ? candidate.text : undefined;
+    const toolCallId = typeof candidate.tool_call_id === 'string'
+      ? candidate.tool_call_id
+      : undefined;
+    const toolName = typeof candidate.tool_name === 'string' ? candidate.tool_name : undefined;
+    const argumentsDelta = typeof candidate.arguments_delta === 'string'
+      ? candidate.arguments_delta
+      : undefined;
+    const timestamp = Number.isSafeInteger(candidate.timestamp_unix_nano)
+      ? Number(candidate.timestamp_unix_nano)
+      : 0;
+    return {
+      frame_seq: Number(candidate.frame_seq),
+      trace_id: candidate.trace_id,
+      span_id: candidate.span_id,
+      subject_id: candidate.subject_id,
+      sequence: Number(candidate.sequence),
+      kind: candidate.kind,
+      timestamp_unix_nano: timestamp,
+      ...(text === undefined ? {} : { text }),
+      ...(toolCallId === undefined ? {} : { tool_call_id: toolCallId }),
+      ...(toolName === undefined ? {} : { tool_name: toolName }),
+      ...(argumentsDelta === undefined ? {} : { arguments_delta: argumentsDelta }),
+    };
+  });
+  return {
+    schema_version: 1,
+    session_id: sessionId,
+    frame_seq: Number(payload.frame_seq),
+    reset: payload.reset,
+    frames,
+    has_more: payload.has_more,
+    next_since_frame_seq: Number(payload.next_since_frame_seq),
   };
 }
 
