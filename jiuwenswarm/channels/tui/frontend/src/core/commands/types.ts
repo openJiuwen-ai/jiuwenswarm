@@ -143,7 +143,7 @@ export interface CommandContext {
   /** HandoffPort 预检：校验托管标记、动作退出码和目标能力。 */
   checkHandoff?: (target: HandoffTarget) => HandoffCheckResult;
   /** HandoffPort 请求：二次校验后调用统一顶层关闭路径，输出 handoff JSON 到 stdout。 */
-  requestHandoff?: (target: HandoffTarget, switchContent: string) => Promise<void>;
+  requestHandoff?: (target: HandoffTarget, switchContent: string, cmd?: string) => Promise<void>;
   /** TaskLifecyclePort：统一任务快照；/switch 用于判断是否需要询问中断。 */
   hasServerTask?: () => boolean;
   /** TaskLifecyclePort：等待型取消；只供 /switch 等生命周期动作使用。 */
