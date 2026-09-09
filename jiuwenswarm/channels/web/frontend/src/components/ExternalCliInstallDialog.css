@@ -3,7 +3,9 @@
 .external-cli-install-dialog {
   display: flex;
   flex-direction: column;
-  width: min(640px, calc(100vw - 32px));
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   max-height: min(760px, calc(100vh - 32px));
 }
 
@@ -36,11 +38,14 @@
 
 .external-cli-install-dialog__body {
   display: grid;
+  min-width: 0;
   gap: 14px;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
 .external-cli-install-dialog__task {
+  min-width: 0;
   padding: 16px;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
@@ -135,6 +140,7 @@
 
 .external-cli-install-dialog__activity {
   display: grid;
+  min-width: 0;
   gap: 4px;
   margin-top: 10px;
   color: var(--color-text-secondary);
@@ -143,9 +149,19 @@
 }
 
 .external-cli-install-dialog__activity code {
+  min-width: 0;
+  max-width: 100%;
   overflow-wrap: anywhere;
+  word-break: break-word;
   color: var(--color-text-primary);
   font-family: inherit;
+}
+
+.external-cli-install-dialog__artifact,
+.external-cli-install-dialog__error,
+.external-cli-install-dialog__retry {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .external-cli-install-dialog__footer {

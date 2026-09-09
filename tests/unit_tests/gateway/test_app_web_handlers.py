@@ -2525,6 +2525,14 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
     assert result["path"] == str(script_path)
 
 
+def test_detect_external_cli_agent_reports_directory_path(tmp_path) -> None:
+    result = _detect_external_cli_agent("claude", str(tmp_path))
+
+    assert result["status"] == "unsupported"
+    assert result["reason"] == "directory"
+    assert result["message"] == f"{tmp_path} is a directory"
+
+
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     raw = {
         "symphony": {

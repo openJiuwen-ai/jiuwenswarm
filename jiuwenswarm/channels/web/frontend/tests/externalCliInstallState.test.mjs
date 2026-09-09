@@ -149,6 +149,7 @@ test('restoring install status after refresh does not open the global progress d
 
 test('the install dialog shows indeterminate activity for web installs without fake percentages', () => {
   const dialogSource = readFileSync(new URL('../src/components/ExternalCliInstallDialog.tsx', import.meta.url), 'utf8');
+  const dialogStyles = readFileSync(new URL('../src/components/ExternalCliInstallDialog.css', import.meta.url), 'utf8');
 
   assert.match(dialogSource, /const installerActivity = status\.progress_kind === 'installer_activity'/);
   assert.match(dialogSource, /installerActivity \|\| status\.phase === 'downloading'/);
@@ -157,4 +158,56 @@ test('the install dialog shows indeterminate activity for web installs without f
   assert.match(dialogSource, /external-cli-install-dialog__progress--indeterminate/);
   assert.match(dialogSource, /status\.status === 'running' && installerActivity && latestLog/);
   assert.match(dialogSource, /config\.externalCli\.installActivity/);
+  assert.match(dialogStyles, /\.external-cli-install-dialog \{[\s\S]*?width: 100%/);
+  assert.match(dialogStyles, /\.external-cli-install-dialog__body \{[\s\S]*?overflow-x: hidden/);
+  assert.match(dialogStyles, /\.external-cli-install-dialog__activity code \{[\s\S]*?overflow-wrap: anywhere/);
+});
+
+test('typing or pasting an external CLI path triggers a debounced detection', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(sectionSource, /const EXTERNAL_CLI_AUTO_DETECT_DELAY_MS = 400/);
+  assert.match(sectionSource, /changeCliPath\(cliAgent, cliPathKey, event\.target\.value\)/);
+  assert.match(sectionSource, /void detect\('claude', claudeCliPath\)/);
+  assert.match(sectionSource, /void detect\('codex', codexCliPath\)/);
+  assert.match(sectionSource, /detectRequestIdsRef\.current\[cliAgent\] !== requestId/);
+  assert.match(sectionSource, /delete next\[cliAgent\]/);
+});
+
+test('saving a disabled external CLI clears its stale detected path without a refresh', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(sectionSource, /updates\[useBuiltinKey\] = enabled && useBuiltin \? 'true' : 'false'/);
+  assert.match(sectionSource, /updates\[cliPathKey\] = enabled && !useBuiltin \? cliPath : ''/);
+  assert.match(sectionSource, /const observedCliPathsRef = useRef/);
+  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = currentPaths\[cliAgent\]/);
+  assert.match(sectionSource, /clearDetectResult\(cliAgent\)/);
+});
+
+test('an existing directory is reported as an invalid CLI executable path', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+  const zhLocale = readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8');
+  const enLocale = readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8');
+
+  assert.match(sectionSource, /result\.reason === 'directory'/);
+  assert.match(sectionSource, /config\.externalCli\.directoryPath/);
+  assert.match(zhLocale, /"directoryPath": "所填路径是一个目录/);
+  assert.match(enLocale, /"directoryPath": "The entered path is a directory/);
+});
+
+test('the detection hint distinguishes PATH lookup from executable validation', () => {
+  const zhLocale = readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8');
+  const enLocale = readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8');
+
+  assert.match(zhLocale, /"detectHint": "未填写路径时从系统 PATH 查找；填写路径后检测指定的 CLI 可执行文件/);
+  assert.match(enLocale, /"detectHint": "Leave the path empty to search the system PATH/);
 });
