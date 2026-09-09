@@ -37,7 +37,7 @@ _PREWARM_ON_VALUES = frozenset({"1", "true", "yes", "on"})
 _PREWARM_OFF_VALUES = frozenset({"0", "false", "no", "off"})
 
 
-def _prewarm_enabled_by_env() -> bool:
+def prewarm_enabled_by_env() -> bool:
     """Return whether background session prewarming is switched on.
 
     Returns:
@@ -128,7 +128,7 @@ class AgentWarmPool:
         enabled: bool | None = None,
     ) -> None:
         self._manager = manager
-        self._enabled = _prewarm_enabled_by_env() if enabled is None else bool(enabled)
+        self._enabled = prewarm_enabled_by_env() if enabled is None else bool(enabled)
         self._boot_id = uuid.uuid4().hex
         self._sequence = 0
         self._revision = WarmRevision(self._boot_id, "", 0)
@@ -460,6 +460,8 @@ class AgentWarmPool:
 
     async def begin_foreground(self) -> None:
         """Preempt speculative preparation while a real chat is active."""
+        if not self._enabled:
+            return
         cancelled = 0
         async with self._lock:
             self._foreground_count += 1
@@ -481,6 +483,8 @@ class AgentWarmPool:
 
     async def end_foreground(self) -> None:
         """Resume lazy background preparation after the final chat completes."""
+        if not self._enabled:
+            return
         async with self._lock:
             self._foreground_count = max(0, self._foreground_count - 1)
             if self._foreground_count == 0:
