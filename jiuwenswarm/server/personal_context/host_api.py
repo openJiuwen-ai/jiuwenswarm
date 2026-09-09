@@ -459,7 +459,11 @@ async def _validate_repository_pat(provider: str, secret: str) -> dict[str, str]
     if not isinstance(login, str) or not isinstance(display_name, str):
         _raise_host_error("repository provider account response is invalid")
     for value in (login, display_name):
-        if not value.strip() or len(value) > 256 or any(ord(character) < 32 for character in value):
+        if (
+            not value.strip()
+            or len(value) > 256
+            or any(ord(character) < 32 for character in value)
+        ):
             _raise_host_error("repository provider account response is invalid")
     return {"login": login.strip(), "display_name": display_name.strip()}
 
@@ -491,7 +495,8 @@ class PersonalContextHostAPI:
 
     def _refresh_embedding_configuration(self) -> None:
         model_name, base_url, api_key = _global_embedding_values()
-        self._personal_context._set_embedding_configuration(
+        # Merged Core exposes this Host-owned seam as a protected method.
+        self._personal_context._set_embedding_configuration(  # pylint: disable=protected-access
             model_name=model_name,
             base_url=base_url,
             api_key=api_key,
