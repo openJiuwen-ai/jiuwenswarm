@@ -66,6 +66,8 @@ spec:
                       values:
                         - <<AGENT_RUNTIME_NAME>>
                 topologyKey: "kubernetes.io/hostname"
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: agent-runtime
           image: <<AGENT_RUNTIME_IMAGE>>

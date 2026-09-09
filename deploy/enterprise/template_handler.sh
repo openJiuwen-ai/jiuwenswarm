@@ -115,18 +115,6 @@ mount_core_pkg() {
         "${DEPLOY_VARS["CORE_POD_PKG_PATH"]}"
 }
 
-# User Web 挂载代码时先构建静态资源，再走与产品镜像相同的入口。
-# Vite dev HTML 使用根路径资源，不能完整经由 Manager Web 的 /chat 子路径代理。
-run_web_mounted() {
-    local file="$1"
-    [ -z "${DEPLOY_VARS["CLAW_POD_CODE_PATH"]:-}" ] && return
-    local root="${DEPLOY_VARS["CLAW_POD_CODE_PATH"]}"
-    local workdir="${root}/jiuwenswarm/channels/web/frontend"
-
-    yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].command = ["/bin/sh", "-c"]' -i "${file}"
-    yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].args = ["cd '"${workdir}"' && npm run build && cd '"${root}"' && exec jiuwenswarm-start web"]' -i "${file}"
-}
-
 enable_dev_mode_if_needed() {
     [ "${DEPLOY_VARS["MODE"]}" != "dev" ] && return
 
@@ -140,9 +128,6 @@ enable_dev_mode_if_needed() {
         web)
             [ "${DEPLOY_VARS["IS_MOUNT_WEB_CODE"]}" != "true" ] && return
             mount_claw_code "${file}"
-            mount_runtime_pkg "${file}"
-            mount_core_pkg "${file}"
-            run_web_mounted "${file}"
             ;;
         manager-server | runtime | identity)
             mount_runtime_code "${file}"
@@ -162,8 +147,6 @@ enable_dev_mode_if_needed() {
     yq eval 'select(.kind == "Deployment").spec.template.spec.nodeName = "'"${DEPLOY_VARS["CURRENT_NODE_NAME"]}"'"' -i "${file}"
     yq eval 'select(.kind == "Deployment").spec.template.spec.securityContext.fsGroup = 0' -i "${file}"
     yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].securityContext = {
-        "allowPrivilegeEscalation": true,
-        "runAsNonRoot": false,
         "runAsUser": 0,
         "runAsGroup": 0
     }' -i "${file}"

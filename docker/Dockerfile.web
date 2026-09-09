@@ -1,15 +1,30 @@
-ARG BASE_IMAGE
-ARG IMAGE_VERSION
-FROM ${BASE_IMAGE}:${IMAGE_VERSION}
+ARG NODE_IMAGE=node:20-alpine
+ARG NGINX_IMAGE=nginx:1.27-alpine
+
+# ---------- 阶段1:前端构建 ----------
+FROM ${NODE_IMAGE} AS web-builder
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
-
-WORKDIR /app/jiuwenswarm/jiuwenswarm/channels/web/frontend
 ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+
+WORKDIR /build/jiuwenswarm/channels/web/frontend
+COPY jiuwenswarm/channels/web/frontend/package.json \
+     jiuwenswarm/channels/web/frontend/package-lock.json ./
 RUN npm install
+
+COPY jiuwenswarm/channels/web/frontend/ ./
+COPY jiuwenswarm/scripts/ /build/jiuwenswarm/scripts/
+COPY jiuwenswarm/resources/ /build/jiuwenswarm/resources/
 RUN npm run build
 
-WORKDIR /app/jiuwenswarm
+# ---------- 阶段2:nginx 运行 ----------
+FROM ${NGINX_IMAGE}
+
+COPY docker/web.nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
+RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh \
+    && mkdir -p /etc/nginx/optional-upstreams
+COPY --from=web-builder /build/jiuwenswarm/channels/web/frontend/dist \
+     /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
 
 EXPOSE 5173
-CMD ["jiuwenswarm-start", "web"]

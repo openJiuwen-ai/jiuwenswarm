@@ -22,6 +22,7 @@ from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
@@ -606,6 +607,15 @@ class AgentWebSocketServer:
           产品起不来, 也无从修复)。
         """
         try:
+            # 企业级:沙箱由 agentserver Pod 内的 jiuwenbox 容器提供
+            # (K8s 启动,external),不走 internal 子进程拉起;config.yaml 为
+            # 部署工具下发的只读挂载,也不做回写
+            if is_enterprise():
+                logger.info(
+                    "[sandbox_lifecycle] enterprise: sandbox 由 jiuwenbox "
+                    "sidecar 提供, skipping internal jiuwenbox auto-start"
+                )
+                return
             # 非 Linux/Windows 平台直接跳过 auto-start: jiuwenbox 依赖平台专属
             # 内核能力 (Linux: bwrap/Landlock/命名空间; Windows: win_setup 用户
             # 创建 + WFP + ACL), 其它平台 (macOS 等) 起不来; 即便 spawn 成功后续

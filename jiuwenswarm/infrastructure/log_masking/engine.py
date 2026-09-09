@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.infrastructure.config import settings
 
 import logging
 import os
@@ -480,6 +481,10 @@ class LogMaskingEngine:
 
     def sanitize(self, text: str) -> str:
         if not text:
+            return text
+        # 总开关(LOG_MASK_ENABLED):false 时日志脱敏整体关闭,
+        # 消息/identity/兜底层所有路径原样输出
+        if not settings.log_masking_enabled:
             return text
         if len(text) > _MAX_SANITIZE_TEXT_LEN:
             text = text[:_MAX_SANITIZE_TEXT_LEN]
