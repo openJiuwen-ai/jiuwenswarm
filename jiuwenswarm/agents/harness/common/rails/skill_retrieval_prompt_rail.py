@@ -29,7 +29,6 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
 
 _LEGACY_LIST_SKILL_TOOL_NAMES = frozenset({"list_skill", "list_skills"})
 _SKILL_INDEX_TOOL_NAME = "skill_index"
-_RUNTIME_SKILL_ATTACHMENT_SECTION = "skills.runtime_changes"
 _SYMPHONY_RUNTIME_TOOL_NAMES = frozenset(
     {
         "skill_index",
@@ -184,7 +183,6 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         self._hide_legacy_list_skill()
         self._filter_legacy_list_skill_from_model_inputs(ctx)
         self._hide_native_skills_section()
-        await self._clear_runtime_skill_attachment(ctx)
         try:
             snapshot = self._prompt_snapshot()
         except Exception:
@@ -295,17 +293,6 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             return
         if isinstance(result, str):
             inputs.tool_result = f"{result}\n\n{reminder}" if result else reminder
-
-    async def _clear_runtime_skill_attachment(
-        self,
-        ctx: AgentCallbackContext,
-    ) -> None:
-        manager = self.attachment_manager
-        if manager is None:
-            return
-        writer = manager.bind_context(ctx)
-        if writer.session_id:
-            await writer.clear_section(_RUNTIME_SKILL_ATTACHMENT_SECTION)
 
     def _hide_legacy_list_skill(self) -> None:
         ability_manager = getattr(self._agent, "ability_manager", None)
