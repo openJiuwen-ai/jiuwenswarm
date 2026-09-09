@@ -1847,8 +1847,11 @@ async def _run_with_telemetry(
     message_handler.set_channel_manager(channel_manager)
     updater_service = UpdaterService()
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
+    prewarm_sync_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
+        if is_enterprise():
+            return
         try:
             prewarm_channels = {
                 channel
@@ -1880,6 +1883,8 @@ async def _run_with_telemetry(
         name: str, *, delay_seconds: float = 1.0
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
+        if is_enterprise():
+            return
         nonlocal prewarm_sync_debounce_task
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
@@ -2786,10 +2791,11 @@ async def _run_with_telemetry(
         "agent-prewarm-sync-after-startup",
         delay_seconds=3.0,
     )
-    prewarm_sync_task = asyncio.create_task(
-        _periodic_agent_prewarm_sync(),
-        name="agent-prewarm-periodic-sync",
-    )
+    if not is_enterprise():
+        prewarm_sync_task = asyncio.create_task(
+            _periodic_agent_prewarm_sync(),
+            name="agent-prewarm-periodic-sync",
+        )
 
     await channel_manager.start_dispatch()
 
@@ -2889,11 +2895,12 @@ async def _run_with_telemetry(
                 await prewarm_sync_debounce_task
             except asyncio.CancelledError:
                 pass
-        prewarm_sync_task.cancel()
-        try:
-            await prewarm_sync_task
-        except asyncio.CancelledError:
-            pass
+        if prewarm_sync_task is not None:
+            prewarm_sync_task.cancel()
+            try:
+                await prewarm_sync_task
+            except asyncio.CancelledError:
+                pass
         await a2a_manager.stop()
         if gateway_server_task is not None:
             gateway_server_task.cancel()

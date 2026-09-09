@@ -9,8 +9,6 @@ import {
   PROJECT_SESSION_PAGE_SIZE,
   useWorkspaceStore,
   useCronStore,
-  filterJobsForProject,
-  type SidebarCronJob,
 } from '../../stores';
 import type { ProjectInfo, Session } from '../../types';
 import {
@@ -63,6 +61,13 @@ export type NewConversationOptions = {
 
 function isDefaultProject(project: ProjectInfo): boolean {
   return project.is_default || project.project_id === 'default' || project.project_id === 'default_code';
+}
+
+/** 定时器会话组：按会话的 cron_id 聚合而来，与定时任务列表解耦（删 job 后组仍保留）。 */
+interface CronSessionGroup {
+  cronId: string;
+  name: string;
+  sessions: Session[];
 }
 
 interface ConversationSidebarProps {
@@ -791,9 +796,8 @@ export function ConversationSidebar({
   const loadCronJobs = useCronStore((s) => s.loadJobs);
   const expandedCronGroups = useCronStore((s) => s.expandedCronGroups);
   const toggleCronGroup = useCronStore((s) => s.toggleCronGroup);
-  const cronSessions = useCronStore((s) => s.cronSessions);
-  const cronSessionsLoading = useCronStore((s) => s.cronSessionsLoading);
-  const loadCronSessions = useCronStore((s) => s.loadCronSessions);
+  const projectCronSessions = useCronStore((s) => s.projectCronSessions);
+  const loadProjectCronSessions = useCronStore((s) => s.loadProjectCronSessions);
   const unreadCronJobs = useCronStore((s) => s.unreadCronJobs);
   const clearCronJobUnread = useCronStore((s) => s.clearCronJobUnread);
 
@@ -815,15 +819,39 @@ export function ConversationSidebar({
     return unsubscribe;
   }, [loadCronJobs]);
 
-  // 按项目归属定时任务
-  const jobsByProject = useMemo(() => {
-    const map = new Map<string, SidebarCronJob[]>();
+  // 定时器会话组：按项目，把全部 cron 会话按 cron_id 聚合；组名优先取存活的定时任务名，
+  // 任务已删除则用兜底文案。会话组不再依赖 cron.job.list（删 job 后组仍保留）。
+  const cronGroupsByProject = useMemo(() => {
+    const map = new Map<string, CronSessionGroup[]>();
     for (const project of projects) {
-      const jobs = filterJobsForProject(cronJobs, project.project_id);
-      if (jobs.length > 0) map.set(project.project_id, jobs);
+      const sessions = projectCronSessions[project.project_id] || [];
+      const byCron = new Map<string, Session[]>();
+      for (const session of sessions) {
+        const cronId = (session.cron_id || '').trim();
+        if (!cronId) continue;
+        const list = byCron.get(cronId);
+        if (list) list.push(session);
+        else byCron.set(cronId, [session]);
+      }
+      if (byCron.size === 0) continue;
+      const groups: CronSessionGroup[] = [];
+      for (const [cronId, groupSessions] of byCron.entries()) {
+        const job = cronJobs.find((j) => j.id === cronId);
+        const sorted = sortSessionsForSidebar(groupSessions);
+        // 组名优先取存活的定时任务名；删了 job 后用组内最新一条会话的标题，
+        // 避免所有已删任务都叫同一个「已删除的定时任务」。
+        const name = job?.name || getSessionTitle(sorted[0], t('multiSession.untitled'));
+        groups.push({
+          cronId,
+          name,
+          sessions: sorted,
+        });
+      }
+      groups.sort((a, b) => getSessionActivityAt(b.sessions[0]) - getSessionActivityAt(a.sessions[0]));
+      map.set(project.project_id, groups);
     }
     return map;
-  }, [cronJobs, projects]);
+  }, [projectCronSessions, cronJobs, projects, t]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setRelativeTimeNow(Date.now()), RELATIVE_TIME_REFRESH_MS);
@@ -869,6 +897,15 @@ export function ConversationSidebar({
       }
     }
   }, [expandedProjectIds, loadProjectSessions, projectIdSnapshot]);
+
+  // 拉每个项目的全部 cron 会话，供会话组按 cron_id 聚合（不依赖 job 列表）。
+  useEffect(() => {
+    for (const projectId of projectIdSnapshot.split('\0')) {
+      if (projectId && (expandedProjectIds[projectId] ?? true)) {
+        void loadProjectCronSessions(projectId);
+      }
+    }
+  }, [expandedProjectIds, loadProjectCronSessions, projectIdSnapshot]);
 
   const projectByDir = useMemo(() => {
     const byDir = new Map<string, ProjectInfo>();
@@ -929,26 +966,18 @@ export function ConversationSidebar({
     } catch (error) {
       setPinError(error instanceof Error ? error.message : String(error));
     } finally {
-      // 置顶/取消置顶后刷新所有展开的定时任务触发列表，保证触发会话实时回归/移除
-      for (const [groupId, isOpen] of Object.entries(expandedCronGroups)) {
-        if (!isOpen) continue;
-        const cronId = groupId.startsWith('cron-') ? groupId.slice(5) : groupId;
-        const job = cronJobs.find((j) => j.id === cronId);
-        if (!job) continue;
-        void loadCronSessions(job.project_id || 'default', cronId);
+      // 置顶/取消置顶后刷新 cron 会话组，保证置顶会话实时回归/移除
+      for (const projectId of projectIdSnapshot.split('\0')) {
+        if (projectId) void loadProjectCronSessions(projectId);
       }
     }
   }
 
   async function handleRenameSession(sessionId: string, title: string) {
     await renameSession(sessionId, title);
-    // 重命名后刷新所有展开的定时任务触发列表，保证标题立即更新
-    for (const [groupId, isOpen] of Object.entries(expandedCronGroups)) {
-      if (!isOpen) continue;
-      const cronId = groupId.startsWith('cron-') ? groupId.slice(5) : groupId;
-      const job = cronJobs.find((j) => j.id === cronId);
-      if (!job) continue;
-      void loadCronSessions(job.project_id || 'default', cronId);
+    // 重命名后刷新 cron 会话组，保证标题立即更新
+    for (const projectId of projectIdSnapshot.split('\0')) {
+      if (projectId) void loadProjectCronSessions(projectId);
     }
   }
 
@@ -1057,35 +1086,29 @@ export function ConversationSidebar({
     );
   }
 
-  function renderCronJob(job: SidebarCronJob, projectId: string, nested = false) {
-    const cronGroupId = `cron-${job.id}`;
+  function renderCronGroup(group: CronSessionGroup, nested = false) {
+    const cronGroupId = `cron-${group.cronId}`;
     const cronExpanded = expandedCronGroups[cronGroupId] ?? false;
-    const triggerSessions = cronSessions[job.id] || [];
-    const isCronSessionsLoading = cronSessionsLoading[job.id] ?? false;
-    const isCronUnread = Boolean(unreadCronJobs[job.id]);
+    const triggerSessions = group.sessions;
+    const isCronUnread = Boolean(unreadCronJobs[group.cronId]);
     return (
-      <div key={`cron-wrapper-${job.id}`} className={`conversation-sidebar__session-wrapper${nested ? ' conversation-sidebar__session-wrapper--nested' : ''}`}>
+      <div key={`cron-wrapper-${group.cronId}`} className={`conversation-sidebar__session-wrapper${nested ? ' conversation-sidebar__session-wrapper--nested' : ''}`}>
         <div
           className={`conversation-sidebar__cron-row${cronExpanded ? ' is-expanded' : ''}`}
           onClick={() => {
             toggleCronGroup(cronGroupId);
-            if (isCronUnread) clearCronJobUnread(job.id);
-            if (!cronExpanded) {
-              void loadCronSessions(projectId, job.id);
-            }
+            if (isCronUnread) clearCronJobUnread(group.cronId);
           }}
-          title={job.name}
+          title={group.name}
         >
           <CronIcon className="conversation-sidebar__cron-row-icon" aria-hidden />
-          <span className="conversation-sidebar__cron-row-name">{job.name}</span>
+          <span className="conversation-sidebar__cron-row-name">{group.name}</span>
           {isCronUnread && <span className="conversation-list-item__status-dot" aria-hidden="true" />}
           {cronExpanded ? <CollapseIcon className="conversation-sidebar__cron-row-chevron" aria-hidden /> : <ArrowRightIcon className="conversation-sidebar__cron-row-chevron" aria-hidden />}
         </div>
         {cronExpanded ? (
           <div className="conversation-sidebar__cron-sessions">
-            {isCronSessionsLoading ? (
-              <div className="conversation-sidebar__cron-sessions-loading">{t('common.loading')}</div>
-            ) : triggerSessions.length > 0 ? (
+            {triggerSessions.length > 0 ? (
               triggerSessions.map((ts) => (
                 <ConversationListItem
                   key={ts.session_id}
@@ -1096,7 +1119,7 @@ export function ConversationSidebar({
                   unread={unreadSessions.has(ts.session_id)}
                   now={relativeTimeNow}
                   onSelect={() => {
-                    clearCronJobUnread(job.id);
+                    clearCronJobUnread(group.cronId);
                     onSelect(ts);
                   }}
                   onDelete={() => onDelete(ts)}
@@ -1190,9 +1213,9 @@ export function ConversationSidebar({
         />
         {expanded ? (
           <div className="conversation-sidebar__group-list">
-            {(jobsByProject.get(project.project_id) || []).map((job) => renderCronJob(job, project.project_id, true))}
+            {(cronGroupsByProject.get(project.project_id) || []).map((group) => renderCronGroup(group, true))}
             {sessionsForProject.length > 0 ? sessionsForProject.map((session) => renderSession(session, { nested: true, projectMenu: true })) : (
-              (jobsByProject.get(project.project_id) || []).length === 0 ? <div className="conversation-sidebar__empty">{t('multiSession.project.noConversations')}</div> : null
+              (cronGroupsByProject.get(project.project_id) || []).length === 0 ? <div className="conversation-sidebar__empty">{t('multiSession.project.noConversations')}</div> : null
             )}
             {renderSessionPagination(project.project_id, true)}
           </div>
@@ -1364,9 +1387,9 @@ export function ConversationSidebar({
             </button>
           </div>
           <div className="conversation-sidebar__group-list">
-            {defaultProject ? (jobsByProject.get(defaultProject.project_id) || []).map((job) => renderCronJob(job, defaultProject.project_id)) : null}
+            {defaultProject ? (cronGroupsByProject.get(defaultProject.project_id) || []).map((group) => renderCronGroup(group)) : null}
             {conversationSessions.length > 0 ? conversationSessions.map((session) => renderSession(session)) : (
-              (!defaultProject || (jobsByProject.get(defaultProject.project_id) || []).length === 0) ? <div className="conversation-sidebar__empty">{t('multiSession.project.noConversations')}</div> : null
+              (!defaultProject || (cronGroupsByProject.get(defaultProject.project_id) || []).length === 0) ? <div className="conversation-sidebar__empty">{t('multiSession.project.noConversations')}</div> : null
             )}
             {defaultProject ? renderSessionPagination(defaultProject.project_id, false) : null}
           </div>

@@ -64,6 +64,10 @@ interface CronState {
   toggleCronGroup: (groupId: string) => void;
   loadCronSessions: (projectId: string, cronId: string) => Promise<void>;
   isCronGroupExpanded: (groupId: string) => boolean;
+  // projectId → 该 project 下全部 cron 会话（cron_id 非空），会话组按此聚合（不再依赖 job 列表）
+  projectCronSessions: Record<string, Session[]>;
+  projectCronSessionsLoading: Record<string, boolean>;
+  loadProjectCronSessions: (projectId: string) => Promise<void>;
 }
 
 // 将未读状态持久化到 localStorage，用 queueMicrotask 延迟到当前同步热路径之后执行，
@@ -87,6 +91,8 @@ export const useCronStore = create<CronState>((set, get) => ({
   cronSessions: {},
   cronSessionsLoading: {},
   lastRunSessionId: {},
+  projectCronSessions: {},
+  projectCronSessionsLoading: {},
   setLastRunSessionId: (jobId, sessionId) =>
     set((s) => ({ lastRunSessionId: { ...s.lastRunSessionId, [jobId]: sessionId } })),
   pendingActiveHistoryRefresh: null,
@@ -206,6 +212,27 @@ export const useCronStore = create<CronState>((set, get) => ({
     } catch {
       set((state) => ({
         cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
+      }));
+    }
+  },
+
+  loadProjectCronSessions: async (projectId: string) => {
+    set((state) => ({
+      projectCronSessionsLoading: { ...state.projectCronSessionsLoading, [projectId]: true },
+    }));
+    try {
+      // 不带 cron_id：拉该 project 下全部 cron 会话（cron_id 非空），供会话组聚合。
+      const payload = await projectRegistryClient.getCronSessions(projectId);
+      set((state) => ({
+        projectCronSessions: {
+          ...state.projectCronSessions,
+          [projectId]: payload.sessions || [],
+        },
+        projectCronSessionsLoading: { ...state.projectCronSessionsLoading, [projectId]: false },
+      }));
+    } catch {
+      set((state) => ({
+        projectCronSessionsLoading: { ...state.projectCronSessionsLoading, [projectId]: false },
       }));
     }
   },
