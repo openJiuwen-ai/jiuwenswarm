@@ -528,55 +528,89 @@ Body = { **business } 或 {}
 
 ---
 
-## 7. 预置Skill模板（`skill_whitelist_template` / `skill-whitelist-templates`）
+## 7. 预置Skill模板（`skill_prebuilt_template` / `skill-prebuilt-templates`）
 
-### 7.0 表结构（`skill_whitelist_template`）
+企业预置技能安装为**双模式**（按字段推断，不另传 `mode`）：
+
+| 模式 | 定位 | 说明 |
+|------|------|------|
+| `provider`（推荐） | 齐 `source_id` + `skill_id` + `version_id` | AgentServer 走 SPI：`get_artifact` → `download_artifact` → `verify_artifact`。摘要以 Provider `ArtifactDescriptor` 为准，**不读**模板 `data.sha256`。若同时带 `package_url`，URL **不作**安装入口。 |
+| `url`（兼容） | 合法 `package_url`（且走不成 provider） | AgentServer `install_skill_sync(package_url, checksum=data.sha256?)`。可选 `data.sha256`（64 位小写 hex）。 |
+
+Gateway **只存期望态**，不下载、不验签、不写 workspace。写接口 `200` 只表示模板已保存；真正安装在 AgentServer reconcile。账本 `source_type=prebuilt`；用户不可卸载。
+
+`source_id` 未在本机 SourceRegistry 绑定 → reconcile `source_not_found`，**不得**因模板另有 URL 而回退到 `url`。两者字段都不满足 → 该项失败（`failed[]`），不得静默跳过。
+
+HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普通日志中。
+
+**Manager 触发**：预置 Skill 模板变更推送（`push_template_to_gateway`，kind=`skill_prebuilt_templates`）/ 全量 bootstrap。须先于引用它的 Agent 模板推送。
+
+### 7.0 表结构（`skill_prebuilt_template`）
 
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
 | `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识。 |
+| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识；策略 / Agent `template_ref.skill_prebuilt` 引用本字段。 |
 | `template_name` | VARCHAR(128) | 是 | 模板名称。 |
 | `description` | VARCHAR(512) | 否 | 用途说明。 |
-| `skill_id` | VARCHAR(512) | 是 | Skill 路径标识，如 `search/weather`。 |
-| `skill_version` | VARCHAR(64) | 是 | 语义化版本。 |
-| `skill_source` | VARCHAR(2048) | 是 | 制品源 URL（须为合法 http(s)）。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 是否启用。 |
-| `data` | JSON | 否 | 扩展字段。 |
+| `skill_id` | VARCHAR(512) | 是 | 远端/本地定位 ID；两种模式均使用。 |
+| `package_url` | VARCHAR(2048) | 条件 | **仅 url 路径**：合法 `http(s)://` 且含主机。 |
+| `source_id` | VARCHAR(64) | 条件 | **仅 provider 路径**：已绑定来源 ID，建议 `^[a-z0-9][a-z0-9-]{0,63}$`。 |
+| `version_id` | VARCHAR(128) | 条件 | **仅 provider 路径**：精确制品版本 ID。 |
+| `enabled` | BOOLEAN DEFAULT true | 是 | `false` 时不下发到租户预置清单。 |
+| `data` | JSON | 否 | 扩展袋。url 路径可用 `data.sha256`；**禁止**在 `data` 内放 `source_id` / `skill_id` / `version_id` / `package_url`。 |
 | `created_at` | DATETIME(3) | 是 | 创建时间。 |
 | `updated_at` | DATETIME(3) | 是 | 更新时间。 |
 
+落库校验：合并后必须能推断 provider 或 url 之一。`data.sha256` 若提供须为 64 位小写 hex。
+
 ### 7.1 创建 / Upsert 预置Skill模板
 
-- **接口名称**：创建 预置Skill模板
+- **接口名称**：创建预置Skill模板
 - **请求方法**：`POST`
-- **请求路径**：`/api/v1/skill-whitelist-templates`
+- **请求路径**：`/api/v1/skill-prebuilt-templates`
 - **请求参数**（Body）：
 
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `template_id` | string | 是 | 业务 ID |
-| `template_name` | string | 是 | 名称 |
-| `skill_id` | string | 是 | Skill ID |
-| `skill_version` | string | 是 | 版本（创建落库必填） |
-| `skill_source` | string | 是 | 合法 http(s) URL（须含主机；创建落库必填） |
-| `description` | string | 否 | 描述 |
+| `template_id` | string | 是 | 业务 ID，≤100 |
+| `template_name` | string | 是 | 名称，≤128 |
+| `skill_id` | string | 是 | Skill ID，≤512 |
+| `source_id` | string | 条件 | provider：来源 ID，≤64 |
+| `version_id` | string | 条件 | provider：制品版本 ID，≤128 |
+| `package_url` | string | 条件 | url：合法 http(s) URL，≤2048 |
+| `description` | string | 否 | 描述，≤512 |
 | `enabled` | bool | 否 | 启用；默认 `true` |
-| `data` | object | 否 | 扩展 |
+| `data` | object | 否 | 扩展；url 可用 `sha256` |
 
 - **返回参数**：`data.template_id`
-- **请求示例**（演示数据 W1「销售组-天气 Skill」）：
+
+- **请求示例（provider）**：
 
 ```json
 {
-  "template_id": "w1000001-0000-4000-8000-0000000000w1",
-  "template_name": "销售组-天气 Skill",
-  "description": "允许 search/weather",
-  "skill_id": "search/weather",
-  "skill_version": "1.2.0",
-  "skill_source": "https://skillhub.example.com/",
+  "template_id": "sp100001-0000-4000-8000-00000000pdf",
+  "template_name": "预置 PDF 解析",
+  "description": "销售组强制预置",
   "enabled": true,
-  "data": { "demo": "w1" }
+  "skill_id": "skill_pdf_parser",
+  "source_id": "customer-hub",
+  "version_id": "ver-abc123"
+}
+```
+
+- **请求示例（url）**：
+
+```json
+{
+  "template_id": "sp100001-0000-4000-8000-0000000wthr",
+  "template_name": "天气 Skill（URL）",
+  "enabled": true,
+  "skill_id": "search/weather",
+  "package_url": "https://artifacts.example.com/skills/weather-1.0.0.zip",
+  "data": {
+    "sha256": "f3a1b2c4d5e6f7890abcdef1234567890abcdef1234567890abcdef123456789"
+  }
 }
 ```
 
@@ -586,24 +620,28 @@ Body = { **business } 或 {}
 {
   "code": 200,
   "message": "success",
-  "data": { "template_id": "w1000001-0000-4000-8000-0000000000w1" }
+  "data": { "template_id": "sp100001-0000-4000-8000-00000000pdf" }
 }
 ```
 
-### 7.2 更新 预置Skill模板
+无法推断安装路径时 HTTP `400`，`detail` 形如 `invalid_template: cannot infer install path from fields`。provider 缺 `source_id` / `version_id`，或 url 的 `package_url` 非法，同为 400。
 
-- **接口名称**：更新 预置Skill模板
+### 7.2 更新预置Skill模板
+
+- **接口名称**：更新预置Skill模板
 - **请求方法**：`PATCH`
-- **请求路径**：`/api/v1/skill-whitelist-templates/{template_id}`
+- **请求路径**：`/api/v1/skill-prebuilt-templates/{template_id}`
 - **路径参数**：`template_id`
-- **请求参数**：可选业务字段
+- **请求参数**：可选业务字段。Gateway 与库内行**合并后再校验**；合并后必须仍能推断 provider 或 url，否则 400，不得写入残缺期望态。
+  - 更换 SPI 制品版本：至少更新 `version_id`。
+  - 从 url 切到 provider：带齐 `source_id` + `version_id`。
+  - 从 provider 切回 url：提供合法 `package_url`，并清空 `source_id` / `version_id`。
 - **返回参数**：`data` 为 `null`
-- **请求示例**：
+- **请求示例**（更换 SPI 版本）：
 
 ```json
 {
-  "skill_version": "1.2.1",
-  "enabled": true
+  "version_id": "ver-def456"
 }
 ```
 
@@ -617,11 +655,13 @@ Body = { **business } 或 {}
 }
 ```
 
-### 7.3 删除 预置Skill模板
+`template_id` 不存在 → HTTP `404`。
 
-- **接口名称**：删除 预置Skill模板
+### 7.3 删除预置Skill模板
+
+- **接口名称**：删除预置Skill模板
 - **请求方法**：`DELETE`
-- **请求路径**：`/api/v1/skill-whitelist-templates/{template_id}`
+- **请求路径**：`/api/v1/skill-prebuilt-templates/{template_id}`
 - **路径参数**：`template_id`
 - **请求参数**：`{}`
 - **返回参数**：`data` 为 `null`
@@ -641,11 +681,204 @@ Body = { **business } 或 {}
 }
 ```
 
+删除后，依赖该模板的策略下次生效不再下发该项；AgentServer reconcile **只移除不再期望的 prebuilt**，不删 user 技能。
+
 ---
 
-## 8. Agent 模板（`agent_template` / `agent-templates`）
+## 8. 安全护栏模板（`permissions_template` / `permissions-templates`）
 
-### 8.0 表结构（`agent_template`）
+判定只在 **AgentServer**。Gateway 只存期望态：写接口 `200` 表示模板已落库，不代表节点已按该策略拦截。
+
+未绑定、模板行 `enabled=false`、或 `body` 无效时，运行时回落 Gateway 本地 `config.yaml::permissions`。
+
+`template_ref.permissions` 为**单值槽位**：绑了多条时，AgentServer 只取第一个**启用**模板的 `body`。
+
+**Manager 触发**：安全护栏模板变更推送（`push_template_to_gateway`，kind=`permissions_templates`）/ 全量 bootstrap。须先于引用它的 Agent 模板推送。
+
+### 8.0 表结构（`permissions_template`）
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
+| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识；策略 / Agent `template_ref.permissions` 引用本字段。 |
+| `template_name` | VARCHAR(128) | 是 | 模板名称。 |
+| `description` | VARCHAR(512) | 否 | 说明，不参与判定。 |
+| `enabled` | BOOLEAN DEFAULT true | 是 | 模板行开关；`false` 时不下发，等价未引用。 |
+| `body` | JSON | 是 | 完整权限策略，结构与 `config.yaml::permissions` 一致；见下表。 |
+| `data` | JSON | 否 | 扩展袋，运行时不参与判定。 |
+| `created_at` | DATETIME(3) | 是 | 创建时间。 |
+| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+
+两个开关不要混：行上 `enabled` 控制是否下发；`body.enabled` 是权限引擎总开关（`false` 时工具调用基本放行，内置高危规则仍可能 DENY）。
+
+**`body` 字段**（Gateway **不**校验内部语义，只要求是 JSON object；无效 body 运行时回落 yaml）：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `enabled` | bool | 否 | 权限引擎总开关。Manager 新建多为 `true`。 |
+| `permission_mode` | string | 否 | `normal`（默认）或 `strict`；把 `rules[].severity` 映射为 allow / ask / deny。 |
+| `defaults` | object | 否 | 未列明工具的默认动作；UI 通常只编 `defaults["*"]`（`allow` / `ask` / `deny`）。无 `defaults` 时引擎回落 `ask`。 |
+| `tools` | object | 否 | 键为工具名，值为 `allow` / `ask` / `deny`。`deny` 立即拒绝，不再看 rules。 |
+| `rules` | array | 否 | 参数级规则，见 **rule 对象**。 |
+| `file_guard` | object | 否 | 路径防护，见 **file_guard 对象**。 |
+
+**`rule` 对象**：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `id` | string | 否 | 规则 ID。 |
+| `tools` | string[] | 是 | 适用工具；须同一类（shell / path），空或跨类则运行时跳过该条。 |
+| `pattern` | string | 是 | 命令模式。通配如 `ls *`；`re:` 开头为正则。 |
+| `severity` | string | 否 | `LOW` / `MEDIUM` / `HIGH` / `CRITICAL`，经 `permission_mode` 映射。 |
+| `action` | string | 否 | 显式 `allow` / `ask` / `deny`；有则优先于 severity 映射。 |
+| `description` | string | 否 | 说明。 |
+
+**`file_guard` 对象**：
+
+| 字段名 | 类型 | 说明 |
+|--------|------|------|
+| `enabled` | bool | `false` 时整层路径防护关，不影响 tools/rules。 |
+| `defaults` | object | 未命中 workspace / paths 时的 `read` / `write` / `exec`（`allow` / `ask` / `deny`）。 |
+| `workspace` | object | Agent workspace **内**三轴；配置里不写死路径。 |
+| `paths` | array | 额外路径规则：`path`、`match`（`prefix` 缺省 / `glob`）、以及该路径三轴。 |
+
+`permission_mode` 映射：`normal` 下 LOW/MEDIUM→allow、HIGH/CRITICAL→ask；`strict` 下 MEDIUM→ask、CRITICAL→deny。未知 severity 按 HIGH。
+
+### 8.1 创建 / Upsert 安全护栏模板
+
+- **接口名称**：创建安全护栏模板
+- **请求方法**：`POST`
+- **请求路径**：`/api/v1/permissions-templates`
+- **请求参数**（Body）：
+
+| 字段名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| `template_id` | string | 是 | 业务 ID，≤100 |
+| `template_name` | string | 是 | 名称，≤128 |
+| `body` | object | 是 | 完整 permissions 段；缺省或非 object → 400 |
+| `description` | string | 否 | 描述，≤512 |
+| `enabled` | bool | 否 | 模板行开关；默认 `true` |
+| `data` | object | 否 | 扩展 |
+
+- **返回参数**：`data.template_id`
+- **请求示例**：
+
+```json
+{
+  "template_id": "p1000001-0000-4000-8000-00000000perm",
+  "template_name": "默认安全护栏",
+  "description": "销售组工具权限",
+  "enabled": true,
+  "body": {
+    "enabled": true,
+    "permission_mode": "normal",
+    "defaults": { "*": "allow" },
+    "tools": {
+      "bash": "ask",
+      "write_file": "allow"
+    },
+    "rules": [
+      {
+        "id": "shell_allow_ls",
+        "tools": ["bash", "mcp_exec_command", "create_terminal"],
+        "pattern": "ls *",
+        "severity": "LOW"
+      }
+    ],
+    "file_guard": {
+      "enabled": true,
+      "defaults": { "read": "ask", "write": "ask", "exec": "ask" },
+      "workspace": { "read": "allow", "write": "allow", "exec": "allow" },
+      "paths": []
+    }
+  }
+}
+```
+
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": { "template_id": "p1000001-0000-4000-8000-00000000perm" }
+}
+```
+
+创建缺 `body` 时 HTTP `400`，`detail` 为 `permissions_templates.create requires body object`。
+
+### 8.2 更新安全护栏模板
+
+- **接口名称**：更新安全护栏模板
+- **请求方法**：`PATCH`
+- **请求路径**：`/api/v1/permissions-templates/{template_id}`
+- **路径参数**：`template_id`
+- **请求参数**：可选业务字段（`template_name` / `description` / `enabled` / `body` / `data`）；至少一项。未传 `body` 则保留库内原 body。
+- **返回参数**：`data` 为 `null`
+- **请求示例**：
+
+```json
+{
+  "enabled": true,
+  "body": {
+    "enabled": true,
+    "permission_mode": "strict",
+    "defaults": { "*": "ask" },
+    "tools": { "bash": "ask" },
+    "rules": [],
+    "file_guard": {
+      "enabled": true,
+      "defaults": { "read": "ask", "write": "ask", "exec": "ask" },
+      "workspace": { "read": "allow", "write": "allow", "exec": "allow" },
+      "paths": []
+    }
+  }
+}
+```
+
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": null
+}
+```
+
+`template_id` 不存在 → HTTP `404`。
+
+### 8.3 删除安全护栏模板
+
+- **接口名称**：删除安全护栏模板
+- **请求方法**：`DELETE`
+- **请求路径**：`/api/v1/permissions-templates/{template_id}`
+- **路径参数**：`template_id`
+- **请求参数**：`{}`
+- **返回参数**：`data` 为 `null`
+- **请求示例**：
+
+```json
+{}
+```
+
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": null
+}
+```
+
+删除后，依赖该模板的策略下次生效不再下发该项。
+
+---
+
+## 9. Agent 模板（`agent_template` / `agent-templates`）
+
+### 9.0 表结构（`agent_template`）
 
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
@@ -669,13 +902,13 @@ Body = { **business } 或 {}
 | `audio_model` | `model_template` | 音频模型 |
 | `vision_model` | `model_template` | 视觉模型 |
 | `embedding_model` | `embedding_template` | Embedding |
-| `skill_whitelist` | `skill_whitelist_template` | 预置Skill |
+| `skill_prebuilt` | `skill_prebuilt_template` | 预置Skill（可多条；见 §7） |
 | `extension_config` | `extension_config_template` | 扩展配置 |
-| `permissions` | `permissions_template` | 安全护栏 / Permissions |
+| `permissions` | `permissions_template` | 安全护栏 / Permissions（**单值**；见 §8） |
 
 值为 `template_id` 字符串数组。空槽位键在规范化时省略。Manager 推送 Agent 模板前会先推送其引用的子模板。`service_config` 仅下发 Runtime，不出现在本 Gateway 接口中。
 
-### 8.1 创建 / Upsert Agent 模板
+### 9.1 创建 / Upsert Agent 模板
 
 - **接口名称**：创建 Agent 模板
 - **请求方法**：`POST`
@@ -699,7 +932,7 @@ Body = { **business } 或 {}
 {
   "template_id": "aa000001-0000-4000-8000-00000000sale",
   "template_name": "销售组 Agent 模板",
-  "description": "销售通道：M2/B2/W1+W2/E1+E2",
+  "description": "销售通道：M2/B2/预置Skill/E1+E2",
   "agent_tags": ["sales", "demo"],
   "template_ref": {
     "default_model": ["a1000001-0000-4000-8000-0000000000m2"],
@@ -707,9 +940,12 @@ Body = { **business } 或 {}
     "video_model": ["a1000001-0000-4000-8000-0000000000m1"],
     "audio_model": ["a1000001-0000-4000-8000-0000000000m1"],
     "embedding_model": ["b1000001-0000-4000-8000-0000000000b2"],
-    "skill_whitelist": [
-      "w1000001-0000-4000-8000-0000000000w1",
-      "w1000001-0000-4000-8000-0000000000w2"
+    "skill_prebuilt": [
+      "sp100001-0000-4000-8000-00000000pdf",
+      "sp100001-0000-4000-8000-0000000wthr"
+    ],
+    "permissions": [
+      "p1000001-0000-4000-8000-00000000perm"
     ],
     "extension_config": [
       "e1000001-0000-4000-8000-0000000000e1",
@@ -731,7 +967,7 @@ Body = { **business } 或 {}
 }
 ```
 
-### 8.2 更新 Agent 模板
+### 9.2 更新 Agent 模板
 
 - **接口名称**：更新 Agent 模板
 - **请求方法**：`PATCH`
@@ -758,7 +994,7 @@ Body = { **business } 或 {}
 }
 ```
 
-### 8.3 删除 Agent 模板
+### 9.3 删除 Agent 模板
 
 - **接口名称**：删除 Agent 模板
 - **请求方法**：`DELETE`
@@ -784,9 +1020,9 @@ Body = { **business } 或 {}
 
 ---
 
-## 9. 实例 Agent 资源（`instance_agent_resource` / `instance-agent-resources`）
+## 10. 实例 Agent 资源（`instance_agent_resource` / `instance-agent-resources`）
 
-### 9.0 表结构（Gateway：`instance_agent_resource`）
+### 10.0 表结构（Gateway：`instance_agent_resource`）
 
 与 Manager 表字段对齐。`resource_id` 唯一，一行一个实例 Agent；多条件 OR 写在 `match_expr` JSON 中。
 
@@ -805,7 +1041,7 @@ Body = { **business } 或 {}
 | `created_at` | DATETIME(3) | 是 | 创建时间。 |
 | `updated_at` | DATETIME(3) | 是 | 更新时间。 |
 
-### 9.1 Upsert 实例 Agent 资源
+### 10.1 Upsert 实例 Agent 资源
 
 - **接口名称**：Upsert 实例 Agent 资源
 - **请求方法**：`POST`
@@ -853,7 +1089,7 @@ Body = { **business } 或 {}
 }
 ```
 
-### 9.2 删除实例 Agent 资源
+### 10.2 删除实例 Agent 资源
 
 - **接口名称**：删除实例 Agent 资源
 - **请求方法**：`DELETE`
@@ -879,9 +1115,9 @@ Body = { **business } 或 {}
 
 ---
 
-## 10. 应用配置 — Logging（`logging_config`）
+## 11. 应用配置 — Logging（`logging_config`）
 
-### 10.0 表结构（`logging_config`）
+### 11.0 表结构（`logging_config`）
 
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
@@ -895,7 +1131,7 @@ Body = { **business } 或 {}
 | `created_at` | DATETIME(3) | 是 | 创建时间。 |
 | `updated_at` | DATETIME(3) | 是 | 更新时间。 |
 
-### 10.1 Upsert Logging 配置
+### 11.1 Upsert Logging 配置
 
 - **接口名称**：Upsert Logging 配置
 - **请求方法**：`PUT`
@@ -942,7 +1178,7 @@ Body = { **business } 或 {}
 }
 ```
 
-### 10.2 删除 Logging 配置
+### 11.2 删除 Logging 配置
 
 - **接口名称**：删除 Logging 配置
 - **请求方法**：`DELETE`
@@ -967,9 +1203,9 @@ Body = { **business } 或 {}
 
 ---
 
-## 11. 应用配置 — 日志脱敏规则（`log_masking_rule`）
+## 12. 应用配置 — 日志脱敏规则（`log_masking_rule`）
 
-### 11.0 表结构（`log_masking_rule`）
+### 12.0 表结构（`log_masking_rule`）
 
 | 字段名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
@@ -987,7 +1223,7 @@ Body = { **business } 或 {}
 | `created_at` | DATETIME(3) | 是 | 创建时间。 |
 | `updated_at` | DATETIME(3) | 是 | 更新时间。 |
 
-### 11.1 创建日志脱敏规则
+### 12.1 创建日志脱敏规则
 
 - **接口名称**：创建日志脱敏规则
 - **请求方法**：`POST`
@@ -1037,7 +1273,7 @@ Body = { **business } 或 {}
 }
 ```
 
-### 11.2 更新日志脱敏规则
+### 12.2 更新日志脱敏规则
 
 - **接口名称**：更新日志脱敏规则
 - **请求方法**：`PATCH`
@@ -1066,7 +1302,7 @@ Body = { **business } 或 {}
 }
 ```
 
-### 11.3 删除日志脱敏规则
+### 12.3 删除日志脱敏规则
 
 - **接口名称**：删除日志脱敏规则
 - **请求方法**：`DELETE`
@@ -1092,11 +1328,11 @@ Body = { **business } 或 {}
 
 ---
 
-## 12. 实例数据生命周期
+## 13. 实例数据生命周期
 
 无独立业务表；`purge` 会清理本 Gateway 上已同步的模板 / 资源 / 应用配置等表（含 channel / cron / Manager 公钥等；不可逆）。
 
-### 12.1 清理实例配置数据
+### 13.1 清理实例配置数据
 
 - **接口名称**：实例数据生命周期（purge）
 - **请求方法**：`POST`
@@ -1127,7 +1363,8 @@ Body = { **business } 或 {}
       "model_template": 3,
       "embedding_template": 3,
       "extension_config_template": 2,
-      "skill_whitelist_template": 2,
+      "skill_prebuilt_template": 2,
+      "permissions_template": 1,
       "agent_template": 3,
       "instance_agent_resource": 3,
       "log_masking_rule": 1,
@@ -1139,7 +1376,7 @@ Body = { **business } 或 {}
 
 ---
 
-## 13. Manager 侧调用映射（速查）
+## 14. Manager 侧调用映射（速查）
 
 | Gateway 能力 | Manager 代码位置 |
 |--------------|------------------|
@@ -1147,6 +1384,8 @@ Body = { **business } 或 {}
 | Endpoint 解析 | `manager_config_push/endpoint.py` |
 | 探活 | `core/instance/config_host_probe.py`、`schedulers/heartbeat_scanner.py` |
 | 模板推送 | `core/template/push_template_to_gateway.py` |
+| 预置 Skill 模板 | `core/template/skill_prebuilt_template.py` → `/api/v1/skill-prebuilt-templates` |
+| 安全护栏模板 | `core/template/permissions_template.py` → `/api/v1/permissions-templates` |
 | Agent 模板/资源推送 | `core/template/push_agent_template_to_gateway.py` |
 | Agent 资源业务 | `core/instance_resource/instance_agent_resource_service.py` |
 | 应用配置 | `core/application_config/*.py` |
@@ -1155,7 +1394,7 @@ Body = { **business } 或 {}
 
 ---
 
-## 14. 源码索引
+## 15. 源码索引
 
 | 侧 | 路径 |
 |----|------|
@@ -1171,14 +1410,14 @@ Gateway OpenAPI：`{gateway_config_host}/docs`。
 
 ---
 
-## 15. 与旧 Gateway 接口的差异
+## 16. 与旧 Gateway 接口的差异
 
 > 旧实现：`jiuwenswarm/.../packages/jiuwenclaw-ee/gateway/extensions/manager_ws_client`  
-> 新实现：`manager_config_receiver`（本文档 §1–§14 所描述的 HTTP Config Receiver）
+> 新实现：`manager_config_receiver`（本文档 §1–§15 所描述的 HTTP Config Receiver）
 
 旧链路是 **Gateway 作为 WebSocket 客户端连上 Manager**，由 Manager 下发 `config.push` 帧；新链路是 **Manager 作为 HTTP 客户端主动调用** Gateway 的 `gateway_config_host`。业务落库语义大体对齐，但传输、寻址、操作编码与能力边界均已切换。
 
-### 15.1 架构与连接模型
+### 16.1 架构与连接模型
 
 | 维度 | 旧（`manager_ws_client`） | 新（本文档 HTTP） |
 |------|---------------------------|-------------------|
@@ -1190,7 +1429,7 @@ Gateway OpenAPI：`{gateway_config_host}/docs`。
 | 结果回传 | Gateway → Manager：`config.ack`（含 `revision` / `success_flag` / `result`） | 同一次 HTTP 响应的统一包络 `{ code, message, data }` |
 | Manager 客户端 | 旧 `manager_ws_server` 推帧 | `manager_config_push.client.gateway_request` |
 
-### 15.2 报文形态对比
+### 16.2 报文形态对比
 
 **旧：`config.push` 帧（示意）**
 
@@ -1232,7 +1471,7 @@ Content-Type: application/json
 - **HTTP 方法 + 路径** 代替 `op` + config key；Body 直接是业务字段（不再包一层 `template` / `updates`，应用配置类也不再要求 `op`）。
 - 当前 Manager HTTP 客户端按明文 JSON 推送；旧链路的帧签名 / DEK 信封不在本 HTTP 协议内复用。
 
-### 15.3 操作编码：`op` → HTTP 方法
+### 16.3 操作编码：`op` → HTTP 方法
 
 | 旧 `op`（payload 内） | 新 HTTP | 说明 |
 |----------------------|---------|------|
@@ -1241,9 +1480,9 @@ Content-Type: application/json
 | `upsert` | `PUT /api/v1/...` | logging 等单文档配置 |
 | `delete` | `DELETE /api/v1/...` 或 `.../{id}` | 无业务字段时 Body `{}` |
 | `sync` | **无对等单接口** | 旧版全量对账（upsert 全集 + 删差集）；新版由 Manager 上线引导时多次 REST 推送，或 `POST /api/v1/instance-data-lifecycle`（`purge`）清理 |
-| `activate` / `deactivate`（仅 channel） | **本 Receiver 未提供** | 见 §15.5 |
+| `activate` / `deactivate`（仅 channel） | **本 Receiver 未提供** | 见 §16.5 |
 
-### 15.4 能力映射速查
+### 16.4 能力映射速查
 
 | 旧 `config` key | 旧入口 | 新 HTTP 路径（本文档） |
 |-----------------|--------|------------------------|
@@ -1251,21 +1490,21 @@ Content-Type: application/json
 | `model_templates` | `apply_model_template` | `/api/v1/model-templates` |
 | `embedding_templates` | `apply_embedding_template` | `/api/v1/embedding-templates` |
 | `extension_config_templates` | `apply_extension_config_template` | `/api/v1/extension-config-templates` |
-| `skill_whitelist_templates` | `apply_skill_whitelist_template` | `/api/v1/skill-whitelist-templates` |
+| `skill_whitelist_templates` | `apply_skill_whitelist_template` | `/api/v1/skill-prebuilt-templates`（**改为** `skill_prebuilt_template` CRUD，见 §7） |
+| `permissions_config`（旧实例级） | 旧 WS 应用配置 | `/api/v1/permissions-templates`（**改为** `permissions_template` CRUD，见 §8） |
 | `logging_config` | `apply_logging_config` | `/api/v1/logging` |
 | `log_masking_rule` | `apply_log_masking_rule` | `/api/v1/log-masking-rules` |
 | `instance_data_lifecycle` | `apply_instance_data_lifecycle` | `/api/v1/instance-data-lifecycle` |
 | — | 无 | `/api/v1/agent-templates`（**新增**） |
 | — | 无 | `/api/v1/instance-agent-resources`（**新增**） |
 
-### 15.5 旧有、本文档未覆盖的能力
+### 16.5 旧有、本文档未覆盖的能力
 
 下列 key 仍存在于旧 `manager_ws_client` 路由中，**不在**本 Config Receiver HTTP 文档范围内（去向以当前产品设计为准：策略/映射可能仍在 Manager 侧编排，或改由 Runtime 通道下发）：
 
 | 旧 `config` key | 旧行为摘要 |
 |-----------------|------------|
 | `task_memory_config` | Task Memory 应用配置（前端未交付，暂未纳入本文档） |
-| `permissions_config` | Permissions 应用配置（旧 WS）；与 Agent `template_ref.permissions` 引用的 `permissions_template` 不同，后者 CRUD 未纳入本文档接口章节 |
 | `memory_config` | Memory 应用配置（前端未交付，暂未纳入本文档） |
 | `channel_config` | Channel 配置 create / activate / deactivate / delete |
 | `service_config_templates` | 服务配置模板 CRUD / sync（Agent 模板说明中：`service_config` 仅下发 Runtime） |
@@ -1276,7 +1515,7 @@ Content-Type: application/json
 
 > Manager 推送代码里仍可能出现 `service_config_templates` → `/api/v1/service-config-templates` 的路径常量；若 Gateway Receiver 未实现该路由，则不属于本文档已交付接口。
 
-### 15.6 数据模型与实例隔离
+### 16.6 数据模型与实例隔离
 
 | 维度 | 旧 | 新 |
 |------|----|----|
@@ -1284,7 +1523,7 @@ Content-Type: application/json
 | push 校验 | `assert_jiuwenclaw_id_matches`：帧内 id 须与已注册 id 一致 | HTTP 无帧内 id；Manager 用 `jiuwenclaw_id` 查 endpoint 后再请求 |
 | 全量清理 | `instance_data_lifecycle.op=purge`，按 id 扫多表（含策略/channel 等） | `POST /api/v1/instance-data-lifecycle`，`op` 默认 `purge`；清理本机已同步表（模板/资源/应用配置/channel/cron/公钥等），响应 `data.purged` 仅含删到行的表 |
 
-### 15.7 安全与副作用
+### 16.7 安全与副作用
 
 | 项 | 旧 | 新 |
 |----|----|----|
@@ -1292,10 +1531,12 @@ Content-Type: application/json
 | 机密性 | 可选 hybrid 解 DEK + 敏感字段 ENC | Body 明文 JSON（密钥等仍可能出现在模板字段中，需靠网络隔离或后续加固） |
 | Runtime 热更新 | 部分写成功后触发 `enterprise_config_update`（`runtime_management`） | 由 Receiver / Runtime 侧实现决定；**不**再走 WS `config.push` 后的统一钩子 |
 
-### 15.8 迁移时注意点
+### 16.8 迁移时注意点
 
 1. **不要把旧 `op` JSON 原样 POST**：须改成对应 REST 方法与路径；模板 create 的 Body 是资源字段本身，不是 `{ "op":"create", "template":{...} }`。
 2. **无 `sync` 单接口**：上线全量对齐改为 Manager 按资源逐条（或批量多次）HTTP 推送；删实例仍用 lifecycle `purge`。
 3. **探活方向反转**：运维/排障看 Manager 对 `gateway_config_host` 的 health，而不是 Gateway 是否连上 Manager WS。
 4. **Agent 模板与实例 Agent 资源** 为 HTTP 阶段新增能力，旧 WS 路由中无对应 key。
-5. **策略 / Channel / 部分 service 模板** 若业务仍需要，需确认是否改走 Runtime 配置通道或其他接口，不能假设旧 `config.push` key 在本 Receiver 上仍可用。
+5. **安全护栏** 不再走旧 `permissions_config` 应用配置；改为 `POST/PATCH/DELETE /api/v1/permissions-templates`，由 Agent `template_ref.permissions` 引用（§8）。
+6. **预置 Skill** 不再走 `/skill-whitelist-templates`（`skill_id` + `skill_version` + `skill_source`）；改为 `/skill-prebuilt-templates` 双模式（provider / url），槽位 `skill_prebuilt`（§7）。
+7. **策略 / Channel / 部分 service 模板** 若业务仍需要，需确认是否改走 Runtime 配置通道或其他接口，不能假设旧 `config.push` key 在本 Receiver 上仍可用。

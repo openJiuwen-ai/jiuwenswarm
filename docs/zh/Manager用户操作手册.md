@@ -12,9 +12,9 @@
 Claw Manager 是 JiuwenClaw 的**企业级管理面**，用于：
 
 - 纳管与监控 JiuwenClaw **实例**（Gateway / AgentServer 组网状态）
-- 维护可复用的**全局配置模板**（模型、Embedding、预置 Skill、扩展钩子、服务资源配置等）
+- 维护可复用的**全局配置模板**（模型、Embedding、预置 Skill、扩展钩子、安全护栏、服务资源配置等）
 - 为每个实例配置**策略**（默认模板映射 / 全局兜底 / 服务层 / Agent 层），经 WebSocket 下发到 Gateway 生效
-- 对实例做**运行时配置**（Channel、日志脱敏、日志级别、权限等）
+- 对实例做**运行时配置**（Channel、日志脱敏、日志级别等）
 
 配置变更由 Manager 写入管理库，并通过 Manager WebSocket 以 `config.push` 同步到 Gateway；Gateway 落库后，AgentServer 按请求解析生效配置。未命中企业策略时，组件回退使用本地 `config.yaml` / 环境变量。
 
@@ -28,6 +28,7 @@ Claw Manager 是 JiuwenClaw 的**企业级管理面**，用于：
 | **全局配置** | Embedding 模板 | 向量模型模板 |
 | **全局配置** | 扩展配置模板 | 钩子 / 自定义扩展 |
 | **全局配置** | 预置Skill | Agent 可调用的预置 Skill |
+| **全局配置** | 安全护栏 | 工具调用权限策略（allow / ask / deny） |
 | **全局配置** | 服务配置模板 | AgentServer容器与会话参数 |
 
 
@@ -291,6 +292,95 @@ Claw Manager 是 JiuwenClaw 的**企业级管理面**，用于：
 
 > 注意：最小空闲服务数不能大于最大服务数；CPU / 内存须符合 K8s 数量格式（如 `500m`、`512Mi`）。
 
+### 5.6 安全护栏模板
+
+位置：**全局配置 → 安全护栏**
+
+配置 Agent 工具调用前的权限策略（允许 / 询问 / 拒绝）。策略中通过 `permissions` 槽位引用（**单值**，一条模板）。AgentServer 在执行工具前按模板 `body` 判定；未绑定、模板禁用或 body 无效时，回落 Gateway 本地 `config.yaml::permissions`。
+
+两个开关含义不同：
+
+| 开关 | 位置 | 作用 |
+|------|------|------|
+| 模板启用 | 列表页开关 / `enabled` | `false` 时该模板不下发生效，等价未引用 |
+| 启用权限管控 | `body.enabled` | `false` 时权限引擎对工具调用基本放行（内置危险命令仍可能拒绝） |
+
+**模板元数据**
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| 模板名称 | 是 | 自定义名称，如「默认安全护栏」 |
+| 模板描述 | 否 | 用途说明 |
+| body | 是 | 完整权限策略，结构与 `config.yaml::permissions` 一致，按下方四个分区编辑 |
+
+保存后 Manager 按表单重写 `body`。高级键（如 `approval_overrides`、`command_intent`、`skill_authorization`）不要指望在本页长期保留——需要这些能力时走 yaml / API，或避免用本页覆盖。
+
+#### 基础设置
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| 启用权限管控 (`enabled`) | 否 | 策略总开关，默认开启 |
+| 权限模式 (`permission_mode`) | 否 | `normal`（默认）或 `strict`，决定规则 `severity` 如何变成动作，见下表 |
+| 未列明工具的默认动作 (`defaults.*`) | 否 | 工具未在「工具权限」中单独配置、且未命中规则时使用：`allow` / `ask` / `deny`，默认 `allow` |
+
+**severity 映射：**
+
+| severity | normal | strict |
+|----------|--------|--------|
+| LOW | allow | allow |
+| MEDIUM | allow | ask |
+| HIGH | ask | ask |
+| CRITICAL | ask | deny |
+
+生产环境若要把高危命令直接拒绝，选 `strict`，或在规则上写死 `action: deny`（API / yaml；当前表单只编 severity）。
+
+#### 工具权限 (`tools`)
+
+按工具名配置整工具级动作，优先级高于规则。工具级 `deny` 会立即拒绝，不再看规则。
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| 工具名称 | 是 | 工具标识，如 `bash`、`write_file`、`mcp_exec_command` |
+| 动作 | 是 | `allow` 直接执行；`ask` 询问用户；`deny` 拒绝 |
+
+建议：`bash` / `mcp_exec_command` / `create_terminal` 用 `ask`，再用规则放行只读命令；`write_file` 等路径工具可用 `allow`，敏感路径交给「文件路径」。
+
+#### 规则 (`rules`)
+
+参数级规则，主要匹配 Shell 命令文本（`bash`、`mcp_exec_command`、`create_terminal`）。
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| 规则 ID | 是 | 唯一标识，如 `shell_allow_ls` |
+| 匹配模式 | 是 | 通配如 `ls *`；正则以 `re:` 开头，匹配整条命令 |
+| 适用工具 | 否 | 逗号分隔。须属同一类（shell / path），否则该条被跳过 |
+| 严重级别 | 是 | `LOW` / `MEDIUM` / `HIGH` / `CRITICAL`，经权限模式映射为动作 |
+
+包内还有一份内置高危规则（删除、提权、下载执行等）。内置 DENY 不能被本页规则或用户「总是允许」覆盖。
+
+#### 文件路径 (`file_guard`)
+
+以 JSON 编辑，按路径的读 / 写 / 执行三轴判定，再与工具/规则结果取更严者（`deny` > `ask` > `allow`）。
+
+| 字段 | 说明 |
+|------|------|
+| `enabled` | `false` 时关闭整层路径防护，不影响工具权限和规则 |
+| `defaults` | 未命中 workspace / paths 时三轴的默认动作，通常均为 `ask` |
+| `workspace` | 运行时 Agent 工作区内的三轴策略（路径不写死在配置里） |
+| `paths` | 额外路径规则：`path` + `match`（`prefix` 或缺省 = 最长前缀，`glob`）+ `read` / `write` / `exec` |
+
+推荐起点：workspace 内放行；工作区外默认询问；对 `**/.env*`、`**/.ssh/**` 等敏感路径单独收紧。
+
+旧字段 `external_directory`、`file_guard.global`、`trusted_exec_directory` 仅兼容读取，不要再新写。
+
+**怎么用（绑定）：**
+
+1. 在本页新建模板并启用权限管控。  
+2. 打开目标实例 → **实例策略**，在全局兜底或某条服务 / Agent 策略的 `template_ref` 中选择该安全护栏（槽位 `permissions`）。  
+3. 用真实对话触发 `bash` / 写文件：`ask` 应弹出确认，`deny` 应拒绝，workspace 内读写在默认 file_guard 下应放行。
+
+同一实例可按群组 / 机器人引用不同护栏；未命中策略时回落 yaml。
+
 ---
 
 ## 6. 实例策略
@@ -340,6 +430,7 @@ Claw Manager 是 JiuwenClaw 的**企业级管理面**，用于：
 | Embedding 模型 (`embedding_model`) | 5.2 Embedding 模板 |
 | 扩展配置 (`extension_config`) | 5.3 扩展配置模板 |
 | 预置 Skill (`skill_prebuilt`) | 5.4 预置 Skill 模板 |
+| 安全护栏 (`permissions`) | 5.6 安全护栏模板（单值） |
 | 服务配置 (`service_config`) | 5.5 服务配置模板 |
 
 引用方式支持**直接选模板**，或**用户 / 群组 / 机器人映射**（结合「默认模板映射」表解析，详见 6.5）。
@@ -432,7 +523,7 @@ Claw Manager 是 JiuwenClaw 的**企业级管理面**，用于：
 | 策略描述 | 否 | 用途说明 |
 | 作用域类型 | 是 | `用户` / `群组` / `机器人` |
 | 作用域 ID | 是 | 对应的用户 ID、群组 ID 或机器人 ID |
-| 模板类型 | 是 | 槽位键，如 `default_model`、`skill_prebuilt`、`extension_config`、`service_config` 等 |
+| 模板类型 | 是 | 槽位键，如 `default_model`、`skill_prebuilt`、`extension_config`、`permissions`、`service_config` 等 |
 | 模板 | 是 | 目标模板 |
 | 优先级 | 是 | 数值越大越优先，同优先级修改时间越新越优先|
 
@@ -535,59 +626,11 @@ JSON 内容会下发到 Gateway。以飞书通道为例，常用字段如下：
 | AgentServer 日志 (`agent_server`) | AgentServer 组件日志级别 |
 | 汇总日志 (`full`) | `full.log` 汇总输出级别 |
 
-### 7.4 权限配置
+### 7.4 权限配置（已迁出）
 
-位置：实例配置 → **权限配置** Tab
+实例配置页**不再提供**权限 Tab。实例级 `permissions_config` 已废弃。
 
-![权限配置](assets/manager/权限配置.png)
-
-集中管理 Gateway 权限管控。保存后由 Manager 下发；点击**删除下发配置**后，Gateway 回退到本地 `config.yaml`。
-
-页面按分区配置：
-
-**基础设置**
-
-| 字段 | 说明 |
-|------|------|
-| 启用权限管控 | 总开关，关闭后不执行权限拦截 |
-| 未列明工具的默认动作 | 对「工具权限」中未单独配置的工具生效：`allow` / `ask` / `deny` |
-| 拒绝提示文案 | 工具被拒绝时展示给用户的说明（可选） |
-
-**工具权限**
-
-按工具名配置整工具级动作，优先级高于 Shell 规则。
-
-| 字段 | 说明 |
-|------|------|
-| 工具名称 | 工具标识（如 `bash`、`read_file`） |
-| 动作 | `allow` / `ask` / `deny` |
-
-**Shell 规则**
-
-仅匹配 Shell 命令文本。
-
-| 字段 | 说明 |
-|------|------|
-| 规则 ID | 规则唯一标识 |
-| 匹配模式 | 命令文本匹配模式 |
-| 动作 | `allow` / `deny` |
-| 描述 | 规则说明（可选） |
-
-**文件路径**
-
-| 字段 | 说明 |
-|------|------|
-| Workspace 内默认放行读写 | 是否默认允许读写 Workspace 内文件 |
-| Global 白名单 (JSON) | 全局路径白名单 |
-| 可信执行目录 (JSON 数组) | 允许执行的目录列表 |
-| Tool Bindings (JSON) | 工具与路径绑定规则 |
-
-**高级**
-
-| 字段 | 说明 |
-|------|------|
-| 启用命令意图抽取 | 是否开启命令意图识别 |
-| 超时（秒） | 命令意图抽取超时时间 |
+请到 **全局配置 → 安全护栏** 维护策略，再通过实例策略 `template_ref.permissions` 绑定到 Agent（见 5.6）。未绑定模板时，Gateway / AgentServer 回落本地 `config.yaml::permissions`。
 
 ---
 
@@ -603,6 +646,7 @@ JSON 内容会下发到 Gateway。以飞书通道为例，常用字段如下：
 | 模型路由 | 用目标 user/group/bot 发对话 | 命中对应模型（可对比 API 日志或回复特征） |
 | Embedding | 触发记忆写入 / 检索 | 使用步骤 ③ 配置的 Embedding 端点 |
 | 预置 Skill | 调用允许 / 禁止的 Skill | 预置列表内可用，列表外被拒绝 |
+| 安全护栏 | 触发 `bash` / 写敏感路径 | `ask` 弹出确认，`deny` 拒绝，未绑定则回落 yaml |
 | 服务池 | 观察 AgentServer 扩缩 | 符合服务配置模板的池参数 |
 | 实例配置（若已配） | 调整日志级别后观察日志 | Gateway 热更新生效 |
 
@@ -624,6 +668,12 @@ JSON 内容会下发到 Gateway。以飞书通道为例，常用字段如下：
 1. 步骤 ③：新建预置 Skill 模板，填入允许使用的 Skill 列表。  
 2. 步骤 ④：在**全局兜底**策略的 `template_ref` 中配置 `skill_prebuilt` 槽位，引用该模板。  
 3. 步骤 ⑥：分别调用预置列表内 / 外的 Skill，确认列表内可用、列表外被拒绝。
+
+**全实例统一安全护栏**
+
+1. 步骤 ③：在**安全护栏**新建模板，开启权限管控；将 `bash` 设为 `ask`，workspace 内文件按需放行。  
+2. 步骤 ④：在**全局兜底**（或指定服务 / Agent 策略）的 `template_ref` 中配置 `permissions` 槽位。  
+3. 步骤 ⑥：发一条会执行命令的对话，确认弹出审批；改规则 / 关掉模板行后再试，确认回落或策略切换符合预期。
 
 **临时调高 Gateway 日志级别排查问题**
 
