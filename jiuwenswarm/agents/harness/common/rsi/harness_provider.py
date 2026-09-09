@@ -674,11 +674,13 @@ class HarnessProvider:
         refs: list[ArtifactRef] = []
         if "epoch_checkpoints" in state:
             for event in _epoch_events(state):
+                if event.node.node_id == "h0" or event.node.type == "ROOT" or not event.node.adopted:
+                    continue
                 path = str(event.node.extra.get("artifact_path", "") or "")
                 if path:
                     refs.append(ArtifactRef(
                         artifact_id=event.node.node_id, node_id=event.node.node_id,
-                        name=Path(path).name, kind="harness_refs", path=path, sha256=None, download_url=None,
+                        name=event.node.node_id, kind="harness_refs", path=path, sha256=None, download_url=None,
                     ))
             return refs
         for index, gate in enumerate(_gates(state), start=1):

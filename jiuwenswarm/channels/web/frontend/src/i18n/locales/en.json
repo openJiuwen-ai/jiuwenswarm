@@ -3205,7 +3205,7 @@
       "testerModelLabel": "Tester model",
       "datasetLabel": "Evaluation dataset file",
       "datasetPlaceholder": "Select a local evaluation dataset JSON file",
-      "datasetTip": "Select one JSON file (for example, suites/train_suite.json).",
+      "datasetTip": "Select one evaluation JSON file; the top level is a cases array. Each case contains case_id and input, with optional assets and reference.",
       "datasetFieldTipTitle": "Dataset field format",
       "browse": "Browse",
       "maxIterationsLabel": "Max iterations",

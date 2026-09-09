@@ -20,33 +20,15 @@ import { pluginPackagesApi } from '../../../services/pluginPackagesApi';
 import { localizedText, type PluginPackageSummary } from '../../../types/pluginPackage';
 
 const RSI_DATASET_FIELD_SCHEMA = `{
-  "dataset_id": "string",
-  "source": "string",
-  "split": "string",
   "cases": [
     {
       "case_id": "string",
-      "source": "string",
-      "task_type": "string",
-      "difficulty": "string",
-      "dimension": "string",
       "input": "string",
+      "assets": ["string"],
       "reference": {
-        "answer": "string | number | boolean | object | array | null",
-        "required_behaviors": [
-          {
-            "id": "string",
-            "description": "string",
-            "weight": "number"
-          }
-        ],
-        "forbidden_behaviors": [
-          {
-            "id": "string",
-            "description": "string",
-            "penalty": "number"
-          }
-        ]
+        "answer": "string",
+        "rubric": ["string"],
+        "files": ["string"]
       }
     }
   ]

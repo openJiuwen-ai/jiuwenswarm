@@ -3183,7 +3183,7 @@
       "testerModelLabel": "测试模型",
       "datasetLabel": "评测集文件",
       "datasetPlaceholder": "请选择本地评测集 JSON 文件",
-      "datasetTip": "请选择单个评测 JSON 文件（如 suites/train_suite.json）",
+      "datasetTip": "请选择单个评测 JSON 文件；顶层为 cases 数组，每题包含 case_id、input，可选 assets 与 reference",
       "datasetFieldTipTitle": "评测集字段格式",
       "browse": "浏览",
       "maxIterationsLabel": "最大迭代轮次",

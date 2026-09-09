@@ -120,6 +120,15 @@ class RsiEventConsumer:
                     )
                     if artifact_id:
                         node.snapshot_artifact_id = artifact_id
+                        try:
+                            snapshot = self.artifact_service.locate(self.task_id, artifact_id)
+                        except Exception:
+                            snapshot = None
+                        if snapshot is not None:
+                            node.extra = {
+                                **(node.extra or {}),
+                                "artifact_path": snapshot.path,
+                            }
                         self.projector.persist_node_update(self.task_id, node)
                 self._last_pushed_node_ids.add(node.node_id)
                 if self._on_tree_delta is not None:

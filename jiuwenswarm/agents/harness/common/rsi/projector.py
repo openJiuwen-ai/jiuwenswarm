@@ -493,7 +493,6 @@ def _normalize_provider_node_id(task_id: str | None, node_id: str) -> str:
     if task_id and node_id in {
         f"artifact:{task_id}:root",
         f"artifact:{task_id}:node:0",
-        "h0",
     }:
         return _ROOT
     return node_id

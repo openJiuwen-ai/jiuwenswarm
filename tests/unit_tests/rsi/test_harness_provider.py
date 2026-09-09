@@ -254,7 +254,8 @@ async def test_epoch_push_query_recovery_and_plugin_artifacts_are_consistent(tmp
     assert provider.read_state(task_id).best_node_id == "epoch-001"
     assert provider.read_report(task_id).best_node_id == "epoch-001"
     assert provider._result_from_state(task_id).final_node_id == "epoch-001"
-    assert {item.node_id for item in provider.read_report(task_id).artifact_index} == {"h0", "epoch-001"}
+    # h0 is the Harness root reference, not a downloadable epoch artifact.
+    assert {item.node_id for item in provider.read_report(task_id).artifact_index} == {"epoch-001"}
     snapshot = artifacts.locate(task_id, "Aepoch-001")
     with zipfile.ZipFile(snapshot.path) as archive:
         assert "PRIMARY_candidate/skills/verification/SKILL.md" in archive.namelist()
