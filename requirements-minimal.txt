@@ -7,7 +7,8 @@
 # 注意：
 # - 此文件排除了渠道适配器（飞书、钉钉、Telegram 等）
 # - 排除了向量存储（chromadb, pymilvus, sqlite-vec）
-# - 排除了重型文档处理（tree-sitter, pdfplumber）
+# - 排除了重型文档处理（tree-sitter）；pdfplumber 为 OfficeAce 导出/预览链所需，
+#   纯 Python wheel（py3-none-any）无鸿蒙编译问题，已预置于 wheels/ 并列入下方依赖（2026-09-08）
 # - 排除了测试依赖（pytest 系列）
 #
 # 如需本地 openjiuwen，设置环境变量：
@@ -55,6 +56,23 @@ python-docx>=1.2.0
 pyyaml>=6.0
 fastapi>=0.115
 mcp>=1.27.2,<2
+
+# ============================================================
+# Office 文档处理与 markdown 渲染（OfficeAce 导出/预览链）
+# ============================================================
+# 纯 Python wheel（py3-none-any），均已预置于 wheels/ 目录；
+# 版本与 OfficeAce augment_hnp_deps.py 注入链验证过的版本一致，勿随意升级。
+# - python-pptx / XlsxWriter：PPT、Excel 生成
+# - pdfplumber / pdfminer.six：PDF 解析（提取文本/表格）
+# - linkify-it-py / mdit-py-plugins / uc-micro-py：markdown-it-py 生态配套，
+#   markdown_it 开 linkify/插件选项时按需 import
+python-pptx==1.0.2
+XlsxWriter==3.2.9
+pdfplumber==0.11.6
+pdfminer.six==20250327
+linkify-it-py==2.1.0
+mdit-py-plugins==0.6.1
+uc-micro-py==2.0.0
 
 # ============================================================
 # 时间和调度
