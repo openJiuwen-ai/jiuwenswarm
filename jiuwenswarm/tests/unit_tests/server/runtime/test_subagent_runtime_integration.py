@@ -9,6 +9,7 @@ from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
     SUBAGENT_UPDATED_EVENT_TYPE,
 )
+from openjiuwen.harness.tools.subagent.subagent_tools import build_subagent_tools
 
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
@@ -43,6 +44,21 @@ class TestSubagentRuntimeConfig:
             ),
         )
         assert disabled_rail.enable_subagent_runtime is False
+
+
+def test_sdk_runtime_tool_set_is_exact_and_unique() -> None:
+    tools = build_subagent_tools(SimpleNamespace())
+    names = [tool.card.name for tool in tools]
+
+    assert names == [
+        "subagent_spawn",
+        "subagent_wait",
+        "subagent_list",
+        "subagent_send_input",
+        "subagent_close",
+        "subagent_resume",
+    ]
+    assert len(names) == len(set(names))
 
 
 def _map_subagent_updated_chunk(chunk_type: str, payload: dict) -> dict | None:

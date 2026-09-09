@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -101,12 +101,16 @@ def test_single_agent_adapters_mount_heartbeat_rail(
     mode: str,
 ) -> None:
     adapter = adapter_cls()
+    adapter._sys_operation = MagicMock()
     heartbeat_service = object()
     adapter.set_heartbeat_service(heartbeat_service)
     declared_rails = []
 
     def instantiate_heartbeat_only(rail_infos, _config_base):
         declared_rails.extend(rail_infos)
+        for info in rail_infos:
+            if info.attr_name == "_stream_event_rail":
+                info.build_func(**info.params)
         return [
             info.build_func(**info.params)
             for info in rail_infos
@@ -118,6 +122,7 @@ def test_single_agent_adapters_mount_heartbeat_rail(
         "_instantiate_rails",
         instantiate_heartbeat_only,
     )
+    monkeypatch.setattr(adapter, "_validate_required_agent_rails", MagicMock())
 
     rails = adapter._build_agent_rails({}, {"models": {}}, mode=mode)
 
