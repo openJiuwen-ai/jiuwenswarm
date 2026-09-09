@@ -465,6 +465,13 @@ function AgentNode({
     })();
   }, [agent, runId, sessionId, ensureAgentDetail]);
 
+  // 刷新页面等场景会清空 pendingQuestions（后端 chat.ask_user_question 只在状态
+  // 首次跳转时推一次，无快照回放）——节点挂载时若已处于 waiting_for_human，按
+  // 当前状态补一次弹窗，语义等同用户手动点击该行。
+  useEffect(() => {
+    handleAgentClick();
+  }, [agent.status]);
+
   return (
     <div>
       <div
