@@ -216,6 +216,10 @@ class WorkflowRunState(BaseModel):
     # Absolute path of the script driving this run, set from the workflow_started
     # event for advisory cold-start context; distinct from ``script`` above.
     script_path: Optional[str] = None
+    # Disk-restored after a cold start with no live controller handle; the
+    # frontend greys this run's control buttons until a launch-plane relaunch
+    # (leader advisory) brings it back (SDD-0018 §5.11).
+    recovered: bool = False
     result: Optional[str] = None
     error: Optional[str] = None
     logs: list[str] = []
@@ -876,6 +880,8 @@ class WorkflowRunState(BaseModel):
         self.summary = progress.description or ""
         self.script_path = progress.script_path
         self.status = "running"
+        was_recovered = self.recovered
+        self.recovered = False
         if self.started_at is None:
             self.started_at = self._now_iso()
 
@@ -925,6 +931,10 @@ class WorkflowRunState(BaseModel):
             self.workflow_budget = progress.workflow_budget
 
         delta = self._build_top_level_delta()
+        # The frontend's incremental merge keeps any field the delta omits, so
+        # the recovered clear must ride THIS started delta to re-enable buttons.
+        if was_recovered:
+            delta["recovered"] = False
         # Carry the relaunch kind on THIS started delta only, so the frontend can
         # distinguish "replace the whole phase tree" (relaunch) from "continue
         # merging" (resume / fresh). Not persisted on the run state.

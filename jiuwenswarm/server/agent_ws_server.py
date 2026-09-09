@@ -13,8 +13,6 @@ import math
 import os
 import shutil
 import sys
-import time
-import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
@@ -6562,45 +6560,6 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    def _wake_team_for_swarmflow(self, request: AgentRequest) -> bool:
-        """Wake a paused team without giving the leader anything to do.
-
-        Drives a ``chat.send`` with an empty query through the execution
-        runtime in the background: the team runtime rebuilds (RESUME_FROM_PAUSE),
-        ``team.runtime_ready`` restarts the workflow handler and applies the
-        parked resume, and the leader — with no message to answer — goes
-        straight to idle (agent-core refuses to fabricate a round for an
-        empty input). Mechanical: no leader round, no LLM. Chunks are drained
-        and discarded; the frontend sees the run through the normal
-        ``workflow.updated`` broadcasts.
-        """
-        session_id = request.session_id or ""
-        wake = AgentRequest(
-            request_id=f"swarmflow-wake-{uuid.uuid4().hex[:8]}",
-            channel_id=request.channel_id or "web",
-            session_id=session_id,
-            chat_id=request.chat_id,
-            req_method=ReqMethod.CHAT_SEND,
-            params={"query": ""},
-            is_stream=True,
-            timestamp=time.time(),
-            metadata=dict(request.metadata or {}),
-            user_id=request.user_id,
-        )
-
-        async def _drain() -> None:
-            try:
-                async for _event in self._execution_runtime().stream(wake, trigger_hook=False):
-                    pass
-            except Exception as exc:
-                logger.warning(
-                    "[SWARMFLOW] wake stream failed: session_id=%s error=%s", session_id, exc,
-                )
-
-        asyncio.create_task(_drain())
-        logger.info("[SWARMFLOW] wake team for parked resume: session_id=%s", session_id)
-        return True
-
     async def _handle_swarmflow_pause(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Handle swarmflow.pause RPC — pause a live swarmflow run by run_id."""
         await self._run_swarmflow_control(ws, request, send_lock, action="pause")
@@ -6626,7 +6585,9 @@ class AgentWebSocketServer:
         Looks up the session's BackgroundTaskController and applies the requested
         control to the run identified by ``run_id`` (accepting ``run_id`` or the
         ``workflow_run_id`` alias). Returns ok=False with a reason when run_id is
-        missing or no matching live run is registered on the controller.
+        missing, the team is asleep (no leader harness to host the run — the
+        tree-view buttons are greyed then, SDD-0018 §5.11), or no matching run
+        is registered on the controller.
         """
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             get_background_task_controller,
@@ -6637,6 +6598,9 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         run_id = params.get("run_id") or params.get("workflow_run_id")
 
+        from jiuwenswarm.agents.harness.team import get_team_manager
+
+        tm = get_team_manager(channel_id)
         if not isinstance(run_id, str) or not run_id.strip():
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -6644,28 +6608,19 @@ class AgentWebSocketServer:
                 ok=False,
                 payload={"error": "run_id is required"},
             )
+        elif not tm.has_stream_task(session_id):
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "team is not running"},
+            )
         else:
             run_id = run_id.strip()
             controller = get_background_task_controller(session_id)
             status = {"pause": "paused", "resume": "resumed", "stop": "stopped"}.get(action, "")
-            from jiuwenswarm.agents.harness.team import get_team_manager
-
-            tm = get_team_manager(channel_id)
-            team_awake = tm.has_stream_task(session_id)
             if action == "pause":
                 acted = await controller.pause(run_id)
-            elif action == "resume" and not team_awake:
-                # The team is asleep: no live leader harness to host the resumed
-                # coroutine, no workflow handler to consume its events. Park the
-                # request in session metadata and wake the runtime with an
-                # empty turn (no leader round, no LLM); the runtime_ready hook
-                # applies it once the handler and launcher are up (SDD-0018 §4.6).
-                from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-                    persist_pending_swarmflow_resume,
-                )
-
-                persist_pending_swarmflow_resume(session_id, [run_id])
-                acted = self._wake_team_for_swarmflow(request)
             elif action == "resume":
                 acted = await controller.resume(run_id)
             elif action == "stop":
@@ -6680,14 +6635,6 @@ class AgentWebSocketServer:
                         if run_state.finalize_if_running("stopped"):
                             wf_handler._persist()
                             acted = True
-                else:
-                    # Team asleep: the handler is gone, so the persisted
-                    # snapshot is the only ledger that survives until it wakes.
-                    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-                        mark_run_stopped_in_snapshot,
-                    )
-
-                    acted = mark_run_stopped_in_snapshot(session_id, run_id) or acted
             else:  # pragma: no cover - internal dispatch only
                 acted = False
             if not acted:

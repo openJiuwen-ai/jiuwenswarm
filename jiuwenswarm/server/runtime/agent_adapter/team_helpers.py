@@ -753,125 +753,28 @@ def restore_workflow_runs(session_id: str) -> dict[str, WorkflowRunState] | None
     }
 
 
-# Tree-view "resume" pressed while the team is asleep (SDD-0018 §4.6). The
-# controller can relaunch, but the leader NativeHarness that must host the
-# resumed coroutine only exists once the team is awake — so the button parks
-# the request here and the runtime_ready hook applies it. Same shape as
-# agent-core's ``pending_resume`` (leader-round interruption recovery), kept in
-# the embedder's own ledger.
-_PENDING_SWARMFLOW_RESUME_KEY = "pending_swarmflow_resume"
-
-
-def persist_pending_swarmflow_resume(session_id: str, run_ids: list[str]) -> None:
-    """Append ``run_ids`` to the session's pending swarmflow resume list (deduped)."""
-    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata, _enqueue_write
-    metadata = _read_metadata(session_id, cache_bust=True)
-    if not metadata.get("session_id"):
-        logger.warning(
-            "[TeamHelpers] skipping pending_swarmflow_resume persist: failed to read "
-            "session metadata (session_id=%s)",
-            session_id,
-        )
-        return
-    pending = [rid for rid in (metadata.get(_PENDING_SWARMFLOW_RESUME_KEY) or []) if isinstance(rid, str)]
-    for rid in run_ids:
-        if rid not in pending:
-            pending.append(rid)
-    metadata[_PENDING_SWARMFLOW_RESUME_KEY] = pending
-    _enqueue_write(session_id, metadata)
-
-
-def pop_pending_swarmflow_resume(session_id: str) -> list[str]:
-    """Return and clear the pending swarmflow resume list (empty when none)."""
-    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata, _enqueue_write
-    metadata = _read_metadata(session_id, cache_bust=True)
-    pending = [rid for rid in (metadata.get(_PENDING_SWARMFLOW_RESUME_KEY) or []) if isinstance(rid, str)]
-    if pending and metadata.get("session_id"):
-        metadata[_PENDING_SWARMFLOW_RESUME_KEY] = []
-        _enqueue_write(session_id, metadata)
-    return pending
-
-
-def mark_run_stopped_in_snapshot(session_id: str, run_id: str) -> bool:
-    """Stamp a non-terminal run ``stopped`` straight in the persisted snapshot.
-
-    Used when the team is asleep: the workflow handler is torn down with it, so
-    there is nobody to turn a controller.stop into the stopped card. No journal
-    seal (SDD-0018 §5.10 plan B). Returns False when the run is unknown or
-    already terminal.
-    """
-    runs = restore_workflow_runs(session_id)
-    if not runs:
-        return False
-    run = runs.get(run_id)
-    if run is None or not run.finalize_if_running("stopped"):
-        return False
-    persist_workflow_runs(runs, session_id)
-    return True
-
-
-async def apply_pending_swarmflow_resume(session_id: str) -> None:
-    """Relaunch every parked resume request now that the team is awake.
-
-    Two planes, tried in order (SDD-0018 §5.4): the controller ticket (same
-    inputs, cached prefix, incremental tree) when the run was paused in this
-    process; otherwise the launch plane through the live launcher
-    (``resume_id + script_path`` — args come back from the journal, the tree is
-    rebuilt from the cold snapshot anyway). Mechanical either way: no leader
-    round, no LLM.
-    """
-    pending = pop_pending_swarmflow_resume(session_id)
-    if not pending:
-        return
-    controller = get_background_task_controller(session_id)
-    runs = None
-    for run_id in pending:
-        try:
-            if await controller.resume(run_id):
-                logger.info("[TeamHelpers] pending swarmflow resume via ticket: session_id=%s run_id=%s", session_id, run_id)
-                continue
-            launcher = getattr(controller, "_launcher", None)
-            if runs is None:
-                runs = restore_workflow_runs(session_id) or {}
-            run = runs.get(run_id)
-            script_path = getattr(run, "script_path", None) if run is not None else None
-            if launcher is None or not script_path:
-                logger.warning(
-                    "[TeamHelpers] pending swarmflow resume dropped: session_id=%s run_id=%s "
-                    "launcher=%s script_path=%s",
-                    session_id, run_id, launcher is not None, bool(script_path),
-                )
-                continue
-            out = await launcher.invoke({"resume_id": run_id, "script_path": script_path})
-            logger.info(
-                "[TeamHelpers] pending swarmflow resume via launch plane: session_id=%s run_id=%s ok=%s",
-                session_id, run_id, getattr(out, "success", None),
-            )
-        except Exception as exc:
-            logger.warning(
-                "[TeamHelpers] pending swarmflow resume failed: session_id=%s run_id=%s error=%s",
-                session_id, run_id, exc,
-            )
-
-
 def _normalize_recovered_runs(
     runs: dict[str, WorkflowRunState] | None, session_id: str,
 ) -> dict[str, WorkflowRunState] | None:
     """Normalize disk-restored runs after cold start.
 
     A crash leaves runs ``running`` in the snapshot although no events will
-    ever arrive; park every non-terminal run to ``paused`` so it neither holds
-    the idle lamp nor lies as stopped. Control buttons stay usable: the
-    tree-view resume parks a request and wakes the team, and the launch plane
-    (``resume_id + script_path``) takes over when the controller ticket is gone.
+    ever arrive; park every non-terminal run to ``paused`` and mark it
+    ``recovered`` — the controller registries are empty after a restart, so
+    the tree-view buttons are greyed and only the leader (launch plane via
+    advisory) can resume it (SDD-0018 §5.11).
     """
     if not runs:
         return runs
     changed = False
     for run in runs.values():
-        if not run.is_terminal and run.status != "paused":
-            run.status = "paused"
-            changed = True
+        if not run.is_terminal:
+            if run.status != "paused":
+                run.status = "paused"
+                changed = True
+            if not run.recovered:
+                run.recovered = True
+                changed = True
     if changed:
         persist_workflow_runs(runs, session_id)
     return runs
@@ -1080,7 +983,7 @@ def _inject_swarmflow_context(
         return turn
     lines = [
         _ADVISORY_MARK[0],
-        f"当前有 {len(eligible)} 个 swarmflow 工作流处于可恢复状态（已暂停）：",
+        f"当前有 {len(eligible)} 个 swarmflow 工作流处于已暂停状态：",
     ]
     for r in eligible:
         script = r.script_path or r.script or ""
@@ -1097,7 +1000,12 @@ def _inject_swarmflow_context(
             lines.append(
                 f'  恢复调用: swarmflow(resume_id="{r.id}", script_path="{r.script_path}")'
             )
-    lines.append("以上信息仅在你认为需要恢复工作流时使用；与当前任务无关请直接忽略。")
+    # The tree-view buttons are greyed while the team sleeps (SDD-0018 §5.11),
+    # so the leader is the only resume path — it must ask, never decide alone.
+    lines.append(
+        "处理本条消息前，先调用 ask_user 工具询问用户是否恢复上述工作流（选项：恢复 / 暂不恢复）。"
+        "用户选「恢复」再按上列方式恢复；选「暂不恢复」则保持暂停，不要自行恢复。"
+    )
     lines.append(_ADVISORY_MARK[1])
     return turn.with_text("\n".join(lines) + "\n\n" + turn.text)
 
@@ -3259,10 +3167,6 @@ async def _consume_stream_with_query(
                         hide_dm=hide_dm,
                         enable_swarmflow=bool(getattr(team_spec, "enable_swarmflow", False)),
                     )
-                    # Handler is up and the launcher is the live cycle's tool:
-                    # apply any tree-view resume parked while the team slept.
-                    if bool(getattr(team_spec, "enable_swarmflow", False)):
-                        await apply_pending_swarmflow_resume(session_id)
                     ensure_team_evolution_watcher(
                         channel_id,
                         session_id,

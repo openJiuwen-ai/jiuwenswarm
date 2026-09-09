@@ -1252,3 +1252,36 @@ def test_pause_if_running_returns_false_when_already_paused():
     assert state.is_terminal is False
 
 
+
+# ---------------------------------------------------------------------------
+# SDD-0018 §5.11: recovered — cold-start per-run button greying marker
+# ---------------------------------------------------------------------------
+
+def test_model_validate_keeps_recovered_true():
+    """model_validate preserves a persisted recovered=True marker."""
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    assert state.recovered is True
+
+
+def test_model_validate_without_recovered_defaults_false():
+    """Fresh states default recovered=False (not a disk-restored run)."""
+    state = WorkflowRunState.model_validate({"id": "r1"})
+    assert state.recovered is False
+
+
+def test_workflow_started_clears_recovered_and_delta_carries_it():
+    """A relaunched run has a live controller handle again: the marker is cleared
+    and the clear rides the started delta (the frontend merge keeps omitted fields).
+    """
+    state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.recovered is False
+    assert delta is not None and delta.get("recovered") is False
+
+
+def test_workflow_started_delta_omits_recovered_when_never_set():
+    """A non-recovered run's started delta omits recovered (no noise)."""
+    state = WorkflowRunState()
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert delta is not None
+    assert "recovered" not in delta

@@ -3239,6 +3239,7 @@
     "layoutGraph": "Flow Graph",
     "pauseResumeHint": "Pause / Resume",
     "stopHint": "Stop",
+    "controlsDisabledHint": "The team is not running, so this workflow can't be controlled directly. Send a message and the leader will ask whether to resume it.",
     "sessionBudget": "Session budget (team-wide, never resets)",
     "runBudget": "Run budget (META.workflow_token_limit)",
     "sessionBudgetShort": "Session",

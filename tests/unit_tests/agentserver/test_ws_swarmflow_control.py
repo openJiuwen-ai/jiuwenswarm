@@ -216,60 +216,19 @@ class TestHandleSwarmflowControl:
         assert run.status == "stopped"
         assert handler.persist_calls == 1
 
-    async def test_resume_while_team_asleep_parks_request_and_wakes(self) -> None:
-        """Team asleep: resume must not hit the controller (no live harness).
-
-        It parks the run_id in session metadata and wakes the runtime with an
-        empty turn; runtime_ready applies the parked resume once the handler and
-        launcher are back (SDD-0018 §4.6). Mechanical: no leader round.
+    async def test_control_while_team_asleep_is_rejected(self) -> None:
+        """Team asleep: no leader harness can host the run, so every control
+        is refused without touching the controller (the tree-view buttons are
+        greyed then; resume goes through the leader's ask_user, SDD-0018 §5.11).
         """
-        from unittest.mock import patch
-
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-        parked: list[tuple[str, list[str]]] = []
-        woken: list[str] = []
         asleep = SimpleNamespace(
             has_stream_task=lambda sid: False, get_workflow_handler=lambda sid: None,
         )
-        with patch(
-            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.persist_pending_swarmflow_resume",
-            side_effect=lambda sid, ids: parked.append((sid, ids)),
-        ), patch.object(
-            AgentWebSocketServer, "_wake_team_for_swarmflow",
-            side_effect=lambda req: woken.append(req.session_id) or True,
-        ):
-            resp, ctl = await self._invoke(
-                ReqMethod.SWARMFLOW_RESUME, params={"run_id": "wf_1"}, team_manager=asleep,
-            )
-
-        assert resp["ok"] is True
-        assert ctl.calls == []  # never touched the controller
-        assert parked == [("sess-1", ["wf_1"])]
-        assert woken == ["sess-1"]
-
-    async def test_stop_while_team_asleep_edits_snapshot_directly(self) -> None:
-        """Team asleep: no handler, so the persisted snapshot is stamped directly."""
-        from unittest.mock import patch
-
-        stamped: list[tuple[str, str]] = []
-        asleep = SimpleNamespace(
-            has_stream_task=lambda sid: False, get_workflow_handler=lambda sid: None,
-        )
-        with patch(
-            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.mark_run_stopped_in_snapshot",
-            side_effect=lambda sid, rid: stamped.append((sid, rid)) or True,
-        ):
-            resp, ctl = await self._invoke(
-                ReqMethod.SWARMFLOW_STOP,
-                controller=_FakeController(acted=False),  # ticket already gone (cold)
-                params={"run_id": "wf_1"},
-                team_manager=asleep,
-            )
-
-        assert resp["ok"] is True
-        assert ctl.calls == [("stop", "wf_1")]
-        assert stamped == [("sess-1", "wf_1")]
+        for method in (ReqMethod.SWARMFLOW_PAUSE, ReqMethod.SWARMFLOW_RESUME, ReqMethod.SWARMFLOW_STOP):
+            resp, ctl = await self._invoke(method, params={"run_id": "wf_1"}, team_manager=asleep)
+            assert resp["ok"] is False
+            assert resp["payload"].get("error") == "team is not running"
+            assert ctl.calls == []
 
     async def test_controller_false_returns_not_found(self) -> None:
         resp, controller = await self._invoke(
