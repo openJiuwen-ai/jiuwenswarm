@@ -1721,8 +1721,6 @@ class DesktopRuntime:
     };
   }
   window.dispatchEvent(new CustomEvent('jiuwen-desktop-ready'));
-  if (window.__JIUWEN_DESKTOP_DND__) return;
-  window.__JIUWEN_DESKTOP_DND__ = true;
   function hasFiles(dt) {
     if (!dt || !dt.types) return false;
     try {
@@ -1731,25 +1729,68 @@ class DesktopRuntime:
       return false;
     }
   }
-  function accept(e) {
-    if (!hasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
-    window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
+  // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
+  // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
+  // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
+  // that originated inside the renderer with 'chromium/x-drag-id'; OS file drags
+  // from Explorer never carry it. App drag sources also set an explicit marker.
+  function isInternalDrag(dt) {
+    if (!dt || !dt.types) return false;
+    try {
+      var t = Array.from(dt.types);
+      if (t.indexOf('application/x-jiuwen-internal-drag') !== -1) return true;
+      return t.indexOf('chromium/x-drag-id') !== -1;
+    } catch (err) {
+      return false;
+    }
   }
-  function endDrag() {
-    window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:false}}));
+  // NB: the frontend (localFilePicker.ts installDesktopFileDragAccept) uses the
+  // same __JIUWEN_DESKTOP_DND__ flag as its own guard and usually sets it before
+  // this script runs, so this block must stay skip-safe (the frontend installs
+  // equivalent window listeners) and must NOT gate the document blockers below.
+  if (!window.__JIUWEN_DESKTOP_DND__) {
+    window.__JIUWEN_DESKTOP_DND__ = true;
+    function accept(e) {
+      if (!hasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
+    }
+    function endDrag() {
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:false}}));
+    }
+    // Capture: ensure preventDefault early. Bubble on window: win over React dropEffect=none.
+    window.addEventListener('dragenter', accept, true);
+    window.addEventListener('dragover', accept, true);
+    window.addEventListener('dragenter', accept, false);
+    window.addEventListener('dragover', accept, false);
+    window.addEventListener('drop', function (e) {
+      if (!hasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      endDrag();
+    }, true);
   }
-  // Capture: ensure preventDefault early. Bubble on window: win over React dropEffect=none.
-  window.addEventListener('dragenter', accept, true);
-  window.addEventListener('dragover', accept, true);
-  window.addEventListener('dragenter', accept, false);
-  window.addEventListener('dragover', accept, false);
-  window.addEventListener('drop', function (e) {
-    if (!hasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    endDrag();
-  }, true);
+  // App-internal HTML5 drags (e.g. queue reorder) carry no OS files. pywebview's
+  // document bridge deep-serializes the page DOM per event and stalls WebView2;
+  // these document listeners run before the bridge's (mark precedes bind), so
+  // stopImmediatePropagation keeps non-file drags off the serialization path.
+  // Separate guard: must still be installed when the frontend already claimed
+  // __JIUWEN_DESKTOP_DND__.
+  if (!window.__JIUWEN_DESKTOP_DND_BLOCK__) {
+    window.__JIUWEN_DESKTOP_DND_BLOCK__ = true;
+    function blockInternalDrag(e) {
+      if (!isInternalDrag(e.dataTransfer)) return;
+      e.stopImmediatePropagation();
+    }
+    document.addEventListener('dragenter', blockInternalDrag, false);
+    document.addEventListener('dragover', blockInternalDrag, false);
+    document.addEventListener('drop', function (e) {
+      if (!isInternalDrag(e.dataTransfer)) return;
+      e.stopImmediatePropagation();
+      // Preserve the anti-navigation default prevention the bridge used to give.
+      e.preventDefault();
+    }, false);
+  }
 })();
 """
         )

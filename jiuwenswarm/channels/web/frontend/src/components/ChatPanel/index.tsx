@@ -245,6 +245,21 @@ function AgentActivityCard({
     }
   }, [taskQueue.length]);
 
+  // While a queue reorder drag is active, preventDefault any dragover/drop that
+  // lands outside the queue card so the page doesn't navigate to the drag image.
+  useEffect(() => {
+    if (dragIndex === null) return undefined;
+    const preventDefault = (event: DragEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('dragover', preventDefault, true);
+    window.addEventListener('drop', preventDefault, true);
+    return () => {
+      window.removeEventListener('dragover', preventDefault, true);
+      window.removeEventListener('drop', preventDefault, true);
+    };
+  }, [dragIndex]);
+
   if (!isAgentMode || taskQueue.length === 0) {
     return null;
   }
@@ -295,16 +310,33 @@ function AgentActivityCard({
     onSendTask?.(content, mediaItems);
   };
 
-  const handleDragStart = (index: number) => {
+  const handleDragStart = (e: React.DragEvent, index: number) => {
+    try {
+      // Explicit marker so the desktop shell can tell this app-internal drag
+      // apart from an OS file drag (see desktop_app.py _mark_desktop_shell).
+      e.dataTransfer.setData('application/x-jiuwen-internal-drag', '1');
+      e.dataTransfer.setData('text/plain', String(index));
+      e.dataTransfer.effectAllowed = 'move';
+    } catch (_err) {
+      // ignore
+    }
     setDragIndex(index);
   };
 
   const handleDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.dataTransfer.dropEffect = 'move';
+    } catch (_err) {
+      // ignore
+    }
     setDragOverIndex(index);
   };
 
-  const handleDrop = (index: number) => {
+  const handleDrop = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.stopPropagation();
     if (dragIndex === null || dragIndex === index) {
       setDragIndex(null);
       setDragOverIndex(null);
@@ -398,23 +430,31 @@ function AgentActivityCard({
                   background: dragOverIndex === index ? 'var(--color-surface-hover)' : 'transparent',
                 }}
                 onDragOver={(e) => handleDragOver(e, index)}
-                onDrop={() => handleDrop(index)}
+                onDrop={(e) => handleDrop(e, index)}
                 onDragEnd={handleDragEnd}
               >
                 <div
                   className="team-event-group-row__main"
                   style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}
                 >
-                  {/* 拖动图标：所有任务可拖，悬浮显示 */}
-                  <img
-                    src={moveIcon}
-                    alt=""
+                  {/* 拖动图标：所有任务可拖，悬浮显示。draggable 放在 span 上而非
+                      <img> 上——以图片元素为拖拽源时 Chromium 会往 dataTransfer 里
+                      塞 Files/uri-list 假信号，桌面壳会误判成 OS 文件拖入。 */}
+                  <span
                     draggable
-                    onDragStart={() => handleDragStart(index)}
+                    onDragStart={(e) => handleDragStart(e, index)}
                     className="queue-drag-handle"
                     data-testid="chat-panel-task-queue-item-drag"
                     title={t('chat.dragTask')}
-                  />
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <img
+                      src={moveIcon}
+                      alt=""
+                      draggable={false}
+                      style={{ width: '100%', height: '100%' }}
+                    />
+                  </span>
                   <div className="team-event-group-row__avatar" style={{ display: 'flex', alignItems: 'center' }}>
                     <img src={lineUpIcon} alt="" className="w-4 h-4" />
                   </div>
