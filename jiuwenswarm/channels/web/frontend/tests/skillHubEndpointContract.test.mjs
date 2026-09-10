@@ -14,7 +14,7 @@ function sourceBetween(start, end) {
 
 test('Skill Hub marketplace and installation rely on the server-configured Hub', () => {
   const marketplaceSource = sourceBetween(
-    'const fetchHubSkills = useCallback',
+    'const fetchHubRecommendByType = useCallback',
     'const fetchOnlineSearch = useCallback',
   );
   const installationSource = sourceBetween(
@@ -23,9 +23,15 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
   );
 
   assert.match(marketplaceSource, /['"]skills\.swarmskillshub\.recommend['"]/);
-  assert.match(marketplaceSource, /top_k: 50/);
+  assert.match(marketplaceSource, /HUB_HOME_TOP_K/);
+  assert.match(marketplaceSource, /HUB_MORE_TOP_K/);
+  assert.match(marketplaceSource, /plugin_type:\s*pluginType/);
+  assert.match(marketplaceSource, /['"]swarmskill['"]/);
+  assert.match(marketplaceSource, /['"]skill['"]/);
+  assert.match(skillPanelSource, /const HUB_HOME_TOP_K = 6/);
+  assert.match(skillPanelSource, /const HUB_MORE_TOP_K = 30/);
   assert.match(marketplaceSource, /category_id: category/);
-  assert.match(installationSource, /['"]skills\.teamskillshub\.install['"]/);
+  assert.match(installationSource, /['"]skills\.online_search\.install['"]/);
   assert.doesNotMatch(marketplaceSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
   assert.doesNotMatch(installationSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
 });

@@ -296,6 +296,45 @@ const MARKETPLACE_CATEGORIES = [
   'finance-wealth',
 ] as const;
 
+/** 技能广场首页：团队 / 普通技能各拉取条数 */
+const HUB_HOME_TOP_K = 6;
+/** 技能广场「更多」专页：单类型最多拉取条数 */
+const HUB_MORE_TOP_K = 30;
+
+type HubRecommendSkill = {
+  asset_id: string;
+  name: string;
+  display_name?: string;
+  summary?: string;
+  short_desc?: string;
+  version?: string;
+  latest_version?: string;
+  plugin_type?: string;
+  tags?: string[];
+  publisher_name?: string;
+  install_count?: number;
+  like_count?: number;
+  view_count?: number;
+  icon_uri?: string;
+};
+
+function mapRecommendSkill(s: HubRecommendSkill): MarketplacePluginItem {
+  return {
+    asset_id: s.asset_id,
+    name: s.name,
+    display_name: s.display_name || s.name,
+    short_desc: s.short_desc || s.summary || '',
+    publisher_name: s.publisher_name || '',
+    install_count: s.install_count ?? 0,
+    like_count: s.like_count ?? 0,
+    view_count: s.view_count ?? 0,
+    plugin_type: s.plugin_type || null,
+    tags: s.tags || null,
+    latest_version: s.latest_version || s.version || null,
+    icon_uri: s.icon_uri || null,
+  };
+}
+
 /**
  * 将技能内容中的图片路径转换为 /file-api/raw-file 可访问的 URL。
  * 处理两种情况：
@@ -571,8 +610,22 @@ export function SkillPanel({
   >('all');
   const [skills, setSkills] = useState<SkillItem[]>([]);
   const [plugins, setPlugins] = useState<InstalledPluginItem[]>([]);
+  /** 搜索结果（online_search） */
   const [hubSkills, setHubSkills] = useState<MarketplacePluginItem[]>([]);
+  /** 首页推荐：团队 / 普通技能各最多 HUB_HOME_TOP_K */
+  const [hubTeamHome, setHubTeamHome] = useState<MarketplacePluginItem[]>([]);
+  const [hubSkillHome, setHubSkillHome] = useState<MarketplacePluginItem[]>([]);
+  /** 「更多」专页：单类型最多 HUB_MORE_TOP_K */
+  const [hubTeamMore, setHubTeamMore] = useState<MarketplacePluginItem[]>([]);
+  const [hubSkillMore, setHubSkillMore] = useState<MarketplacePluginItem[]>([]);
   const [hubLoading, setHubLoading] = useState(false);
+  const [hubMoreLoading, setHubMoreLoading] = useState(false);
+  /** 更多列表已加载的分类 + 类型，避免同分类重复请求 */
+  const [hubMoreLoadedFor, setHubMoreLoadedFor] = useState<{
+    category: string;
+    team: boolean;
+    skill: boolean;
+  } | null>(null);
   const [search, setSearch] = useState('');
   const prevIsActiveRef = useRef(isActive);
   const mountedRef = useRef(false);
@@ -735,7 +788,9 @@ export function SkillPanel({
   const [selectedHubSkill, setSelectedHubSkill] = useState<MarketplacePluginItem | null>(null);
   const [hubDetail, setHubDetail] = useState<HubSkillDetail | null>(null);
   const [hubDetailState, setHubDetailState] = useState<LoadState>('idle');
-  const [marketplaceSubView, setMarketplaceSubView] = useState<'list' | 'team' | 'detail'>('list');
+  const [marketplaceSubView, setMarketplaceSubView] = useState<'list' | 'team' | 'skill' | 'detail'>('list');
+  /** 更多专页请求序号，与首页/搜索 seq 分离 */
+  const hubMoreFetchSeqRef = useRef(0);
   const [publishVersionDesc, setPublishVersionDesc] = useState('');
   const [publishForce, setPublishForce] = useState(false);
   const [publishFieldErrors, setPublishFieldErrors] = useState<Record<string, string>>({});
@@ -826,55 +881,104 @@ export function SkillPanel({
     });
   }, [filteredSkills]);
 
-  const fetchHubSkills = useCallback(
+  const fetchHubRecommendByType = useCallback(
+    async (category: string, pluginType: 'swarmskill' | 'skill', topK: number) => {
+      const params = withSession({
+        top_k: topK,
+        plugin_type: pluginType,
+        ...(category !== 'all' ? { category_id: category } : {}),
+      });
+      const data = await webRequest<{
+        success: boolean;
+        skills?: HubRecommendSkill[];
+        detail?: string;
+      }>('skills.swarmskillshub.recommend', params, { timeoutMs: 30000 });
+      if (!data.success) throw new Error(data.detail || 'Recommend failed');
+      return (data.skills || []).map(mapRecommendSkill);
+    },
+    [withSession],
+  );
+
+  const fetchHubHomeSkills = useCallback(
     async (category: string) => {
       const seq = ++hubFetchSeqRef.current;
       setHubLoading(true);
+      setHubTeamMore([]);
+      setHubSkillMore([]);
+      setHubMoreLoadedFor(null);
       try {
-        // Hub 地址由后端统一配置，确保推荐列表与安装使用同一个 Hub。
-        const params = withSession({
-          top_k: 50,
-          ...(category !== 'all' ? { category_id: category } : {}),
-        });
-        const data = await webRequest<{
-          success: boolean;
-          skills?: Array<{
-            asset_id: string;
-            name: string;
-            display_name?: string;
-            summary?: string;
-            version?: string;
-            plugin_type?: string;
-            tags?: string[];
-          }>;
-          detail?: string;
-        }>('skills.swarmskillshub.recommend', params, { timeoutMs: 30000 });
+        const [teamResult, skillResult] = await Promise.allSettled([
+          fetchHubRecommendByType(category, 'swarmskill', HUB_HOME_TOP_K),
+          fetchHubRecommendByType(category, 'skill', HUB_HOME_TOP_K),
+        ]);
+        if (seq !== hubFetchSeqRef.current) return;
 
-        if (!data.success) throw new Error(data.detail || 'Recommend failed');
-        if (seq !== hubFetchSeqRef.current) return;
-        const items: MarketplacePluginItem[] = (data.skills || []).map((s) => ({
-          asset_id: s.asset_id,
-          name: s.name,
-          display_name: s.display_name || s.name,
-          short_desc: s.summary || '',
-          publisher_name: '',
-          install_count: 0,
-          like_count: 0,
-          view_count: 0,
-          plugin_type: s.plugin_type || null,
-          tags: s.tags || null,
-          latest_version: s.version || null,
-        }));
-        setHubSkills(items);
-      } catch (error) {
-        console.error('Failed to fetch SkillHub recommend:', error);
-        if (seq !== hubFetchSeqRef.current) return;
-        setHubSkills([]);
+        if (teamResult.status === 'fulfilled') {
+          setHubTeamHome(teamResult.value);
+        } else {
+          console.error('Failed to fetch team SkillHub recommend:', teamResult.reason);
+          setHubTeamHome([]);
+        }
+
+        if (skillResult.status === 'fulfilled') {
+          setHubSkillHome(skillResult.value);
+        } else {
+          console.error('Failed to fetch skill SkillHub recommend:', skillResult.reason);
+          setHubSkillHome([]);
+        }
       } finally {
         if (seq === hubFetchSeqRef.current) setHubLoading(false);
       }
     },
-    [withSession],
+    [fetchHubRecommendByType],
+  );
+
+  const fetchHubMoreSkills = useCallback(
+    async (kind: 'swarmskill' | 'skill', category: string) => {
+      const seq = ++hubMoreFetchSeqRef.current;
+      setHubMoreLoading(true);
+      try {
+        const items = await fetchHubRecommendByType(category, kind, HUB_MORE_TOP_K);
+        if (seq !== hubMoreFetchSeqRef.current) return;
+        if (kind === 'swarmskill') {
+          setHubTeamMore(items);
+          setHubMoreLoadedFor((prev) =>
+            prev && prev.category === category
+              ? { ...prev, team: true }
+              : { category, team: true, skill: false },
+          );
+        } else {
+          setHubSkillMore(items);
+          setHubMoreLoadedFor((prev) =>
+            prev && prev.category === category
+              ? { ...prev, skill: true }
+              : { category, team: false, skill: true },
+          );
+        }
+      } catch (error) {
+        console.error(`Failed to fetch more ${kind} SkillHub recommend:`, error);
+        if (seq !== hubMoreFetchSeqRef.current) return;
+        if (kind === 'swarmskill') setHubTeamMore([]);
+        else setHubSkillMore([]);
+      } finally {
+        if (seq === hubMoreFetchSeqRef.current) setHubMoreLoading(false);
+      }
+    },
+    [fetchHubRecommendByType],
+  );
+
+  const openHubMore = useCallback(
+    (kind: 'swarmskill' | 'skill') => {
+      setMarketplaceSubView(kind === 'swarmskill' ? 'team' : 'skill');
+      const needFetch =
+        !hubMoreLoadedFor ||
+        hubMoreLoadedFor.category !== marketplaceCategory ||
+        (kind === 'swarmskill' ? !hubMoreLoadedFor.team : !hubMoreLoadedFor.skill);
+      if (needFetch) {
+        void fetchHubMoreSkills(kind, marketplaceCategory);
+      }
+    },
+    [fetchHubMoreSkills, hubMoreLoadedFor, marketplaceCategory],
   );
 
   const fetchOnlineSearch = useCallback(
@@ -971,9 +1075,17 @@ export function SkillPanel({
       if (nextCategory === marketplaceCategory) return;
 
       hubFetchSeqRef.current += 1;
+      hubMoreFetchSeqRef.current += 1;
       setSearch('');
       setHubSkills([]);
+      setHubTeamHome([]);
+      setHubSkillHome([]);
+      setHubTeamMore([]);
+      setHubSkillMore([]);
+      setHubMoreLoadedFor(null);
       setHubLoading(true);
+      setHubMoreLoading(false);
+      setMarketplaceSubView('list');
       setMarketplaceCategory(nextCategory);
     },
     [marketplaceCategory],
@@ -1000,7 +1112,7 @@ export function SkillPanel({
     if (activeTab !== 'marketplace') return;
 
     if (!searchKeyword) {
-      void fetchHubSkills(marketplaceCategory);
+      void fetchHubHomeSkills(marketplaceCategory);
       return;
     }
 
@@ -1009,23 +1121,7 @@ export function SkillPanel({
     }, 500);
 
     return () => window.clearTimeout(timer);
-  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubSkills, fetchOnlineSearch]);
-
-  // 按 plugin_type 分组：swarmskill → 精选团队技能，其余 → 精选技能
-  const { teamSkills, featuredSkills } = useMemo(() => {
-    const team: MarketplacePluginItem[] = [];
-    const featured: MarketplacePluginItem[] = [];
-    for (const skill of hubSkills) {
-      if (skill.plugin_type === 'swarmskill') {
-        team.push(skill);
-      } else {
-        featured.push(skill);
-      }
-    }
-    return { teamSkills: team, featuredSkills: featured };
-  }, [hubSkills]);
-
-  const visibleTeamSkills = teamSkills.slice(0, 3);
+  }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch]);
 
   const fetchSkills = useCallback(async (refreshMarketplaces = false) => {
     setListState('loading');
@@ -2557,8 +2653,16 @@ export function SkillPanel({
                           // 只有从技能广场离开时才需要终止广场请求
                           if (activeTab === 'marketplace') {
                             hubFetchSeqRef.current += 1;
+                            hubMoreFetchSeqRef.current += 1;
                             setHubLoading(false);
+                            setHubMoreLoading(false);
                             setHubSkills([]);
+                            setHubTeamHome([]);
+                            setHubSkillHome([]);
+                            setHubTeamMore([]);
+                            setHubSkillMore([]);
+                            setHubMoreLoadedFor(null);
+                            setMarketplaceSubView('list');
                           }
 
                           setActiveTab('my');
@@ -2925,15 +3029,25 @@ export function SkillPanel({
                     </div>
                   </div>
                 </div>
-              ) : marketplaceSubView === 'team' ? (
-                /* 精选团队技能专页 */
-                <div data-testid="skill-panel-team-skills-page" className="mt-4 flex-1 flex flex-col min-h-0">
-                  {/* 返回按钮 */}
+              ) : marketplaceSubView === 'team' || marketplaceSubView === 'skill' ? (
+                /* 精选团队 / 精选技能「更多」专页 */
+                <div
+                  data-testid={
+                    marketplaceSubView === 'team'
+                      ? 'skill-panel-team-skills-page'
+                      : 'skill-panel-featured-skills-page'
+                  }
+                  className="mt-4 flex-1 flex flex-col min-h-0"
+                >
                   <button
                     type="button"
                     className="detail-back"
                     onClick={() => setMarketplaceSubView('list')}
-                    data-testid="skill-panel-team-skills-back-btn"
+                    data-testid={
+                      marketplaceSubView === 'team'
+                        ? 'skill-panel-team-skills-back-btn'
+                        : 'skill-panel-featured-skills-back-btn'
+                    }
                   >
                     <BackIcon aria-hidden="true" />
                     {t('agentManagement.actions.back')}
@@ -2942,26 +3056,47 @@ export function SkillPanel({
                   <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
                     <div className="flex items-center justify-between mb-3">
                       <span
-                        data-testid="skill-panel-team-skills-title"
+                        data-testid={
+                          marketplaceSubView === 'team'
+                            ? 'skill-panel-team-skills-title'
+                            : 'skill-panel-featured-skills-more-title'
+                        }
                         className="font-bold text-text-strong"
                         style={{ fontSize: '16px' }}
                       >
-                        {t('skills.featuredTeamSkills')}
+                        {marketplaceSubView === 'team'
+                          ? t('skills.featuredTeamSkills')
+                          : t('skills.featuredSkills')}
                       </span>
                     </div>
-                    <div className="card-grid-auto">
-                      {teamSkills.map((skill) => (
-                        <HubSkillCard
-                          key={skill.asset_id}
-                          skill={skill}
-                          onSelect={() => {
-                            setSelectedHubSkill(skill);
-                            fetchHubSkillDetail(skill);
-                          }}
-                          action={renderHubSkillAction(skill)}
-                        />
-                      ))}
-                    </div>
+                    {hubMoreLoading ? (
+                      <div
+                        className="flex flex-1 min-h-[200px] items-center justify-center"
+                        role="status"
+                        aria-label={t('common.loading')}
+                        data-testid="skill-panel-hub-more-loading"
+                      >
+                        <Loader2 size={28} className="animate-spin text-text-muted" aria-hidden="true" />
+                      </div>
+                    ) : (marketplaceSubView === 'team' ? hubTeamMore : hubSkillMore).length === 0 ? (
+                      <div className="text-sm text-text-muted" data-testid="skill-panel-hub-more-empty">
+                        {t('skills.noMatches')}
+                      </div>
+                    ) : (
+                      <div className="card-grid-auto">
+                        {(marketplaceSubView === 'team' ? hubTeamMore : hubSkillMore).map((skill) => (
+                          <HubSkillCard
+                            key={skill.asset_id}
+                            skill={skill}
+                            onSelect={() => {
+                              setSelectedHubSkill(skill);
+                              fetchHubSkillDetail(skill);
+                            }}
+                            action={renderHubSkillAction(skill)}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -2989,32 +3124,37 @@ export function SkillPanel({
                     >
                       <Loader2 size={28} className="animate-spin text-text-muted" aria-hidden="true" />
                     </div>
-                  ) : hubSkills.length === 0 ? (
+                  ) : searchKeyword ? (
+                    hubSkills.length === 0 ? (
+                      <div className="page-shell mt-4 text-sm text-text-muted" data-testid="skill-panel-hub-list-empty">
+                        {t('skills.noMatches')}
+                      </div>
+                    ) : (
+                      /* 搜索结果：全部罗列 */
+                      <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
+                        <div className="card-grid-auto">
+                          {hubSkills.map((skill) => (
+                            <HubSkillCard
+                              key={skill.asset_id}
+                              skill={skill}
+                              onSelect={() => {
+                                setSelectedHubSkill(skill);
+                                fetchHubSkillDetail(skill);
+                              }}
+                              action={renderHubSkillAction(skill)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  ) : hubTeamHome.length === 0 && hubSkillHome.length === 0 ? (
                     <div className="page-shell mt-4 text-sm text-text-muted" data-testid="skill-panel-hub-list-empty">
                       {t('skills.noMatches')}
                     </div>
-                  ) : searchKeyword ? (
-                    /* 搜索结果：全部罗列 */
-                    <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
-                      <div className="card-grid-auto">
-                        {hubSkills.map((skill) => (
-                          <HubSkillCard
-                            key={skill.asset_id}
-                            skill={skill}
-                            onSelect={() => {
-                              setSelectedHubSkill(skill);
-                              fetchHubSkillDetail(skill);
-                            }}
-                            action={renderHubSkillAction(skill)}
-                          />
-                        ))}
-                      </div>
-                    </div>
                   ) : (
-                    /* 无搜索词：按 plugin_type 分组展示 */
+                    /* 无搜索词：首页各展示最多 6 条 + 更多 */
                     <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
-                      {/* 精选团队技能（最多一行，右侧"更多"） */}
-                      {teamSkills.length > 0 && (
+                      {hubTeamHome.length > 0 && (
                         <>
                           <div className="flex items-center justify-between mb-3">
                             <span
@@ -3024,19 +3164,18 @@ export function SkillPanel({
                             >
                               {t('skills.featuredTeamSkills')}
                             </span>
-                            {teamSkills.length > 3 && (
-                              <button
-                                onClick={() => setMarketplaceSubView('team')}
-                                className="flex items-center gap-0.5 text-sm text-text"
-                                data-testid="skill-panel-team-skills-more-btn"
-                              >
-                                {t('nav.more')}
-                                <ChevronRight size={16} aria-hidden="true" />
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => openHubMore('swarmskill')}
+                              className="flex items-center gap-0.5 text-sm text-text"
+                              data-testid="skill-panel-team-skills-more-btn"
+                            >
+                              {t('nav.more')}
+                              <ChevronRight size={16} aria-hidden="true" />
+                            </button>
                           </div>
                           <div className="card-grid-auto mb-6">
-                            {visibleTeamSkills.map((skill) => (
+                            {hubTeamHome.map((skill) => (
                               <HubSkillCard
                                 key={skill.asset_id}
                                 skill={skill}
@@ -3051,16 +3190,24 @@ export function SkillPanel({
                         </>
                       )}
 
-                      {/* 精选技能（全部罗列） */}
-                      {featuredSkills.length > 0 && (
+                      {hubSkillHome.length > 0 && (
                         <>
                           <div className="flex items-center justify-between mb-3">
                             <span className="font-bold text-text-strong" style={{ fontSize: '16px' }}>
                               {t('skills.featuredSkills')}
                             </span>
+                            <button
+                              type="button"
+                              onClick={() => openHubMore('skill')}
+                              className="flex items-center gap-0.5 text-sm text-text"
+                              data-testid="skill-panel-featured-skills-more-btn"
+                            >
+                              {t('nav.more')}
+                              <ChevronRight size={16} aria-hidden="true" />
+                            </button>
                           </div>
                           <div className="card-grid-auto">
-                            {featuredSkills.map((skill) => (
+                            {hubSkillHome.map((skill) => (
                               <HubSkillCard
                                 key={skill.asset_id}
                                 skill={skill}
