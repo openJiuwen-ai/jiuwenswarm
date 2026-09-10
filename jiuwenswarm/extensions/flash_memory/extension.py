@@ -33,6 +33,9 @@ _MEMORY_NAME_REPLACEMENTS = (
 
 
 def _is_enabled() -> bool:
+    raw = os.getenv("FLASH_ENABLED", "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
     raw = os.getenv("FLASH_MEMORY_ENABLED", "").strip().lower()
     return raw in ("1", "true", "yes", "on")
 

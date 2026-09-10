@@ -24,6 +24,9 @@ _PATCH_APPLIED = False
 
 def _is_enabled() -> bool:
     """FLASH_TODO_ENABLED env > react.todo.unified config."""
+    raw = os.getenv("FLASH_ENABLED", "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
     raw = os.getenv("FLASH_TODO_ENABLED", "").strip().lower()
     if raw:
         return raw in ("1", "true", "yes", "on")
