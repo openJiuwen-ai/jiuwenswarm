@@ -118,8 +118,6 @@ interface RsiNodeStageSpec {
   score: number | null;
   candidateIndex: number | null;
   totalCandidates: number | null;
-  reusedCaseCount: number | null;
-  evaluatedCaseCount: number | null;
 }
 
 export function nodeStageSpec(node: RsiTreeNode): RsiNodeStageSpec | null {
@@ -142,8 +140,6 @@ export function nodeStageSpec(node: RsiTreeNode): RsiNodeStageSpec | null {
     score: firstNumber(stage?.score),
     candidateIndex: firstNumber(stage?.candidate_index, stage?.candidateIndex),
     totalCandidates: firstNumber(stage?.total_candidates, stage?.totalCandidates),
-    reusedCaseCount: firstNumber(stage?.reused_case_count),
-    evaluatedCaseCount: firstNumber(stage?.evaluated_case_count),
   };
 }
 
@@ -157,7 +153,7 @@ export function nodeStageLabel(node: RsiTreeNode): string | null {
   if (
     namedStage &&
     id &&
-    (id.startsWith('evaluate.case.') || id.startsWith('analyze.') || id === 'generate.candidate' || id === 'source.reuse')
+    (id.startsWith('evaluate.case.') || id.startsWith('analyze.') || id === 'generate.candidate')
   ) {
     return clampText(namedStage, 40);
   }
@@ -216,14 +212,6 @@ export function nodeStageLocalizedLabel(
 ): string | null {
   const spec = nodeStageSpec(node);
   if (!spec) return null;
-  if (spec.id === 'source.reuse') {
-    return t?.('rsi.stage.sourceReuse', {
-      count: spec.reusedCaseCount ?? 0,
-      total: spec.totalCases ?? 0,
-      evaluated: spec.evaluatedCaseCount ?? 0,
-      defaultValue: spec.name ?? '',
-    }) || spec.name;
-  }
   if (spec.id.startsWith('evaluate.case.')) {
     const statusMap: Record<string, string> = {
       passed: 'casePassed',
@@ -470,13 +458,7 @@ function failureLabel(
     return '生成失败';
   }
   if (lifecycle === 'rejected') {
-    if (node.extra?.iteration_unit === 'epoch') return '本轮未保留 Harness 改动';
-    if (
-      node.failure_class === 'rejected_by_score' &&
-      score != null &&
-      parentScore != null &&
-      score <= parentScore
-    ) return '得分未超过父节点';
+    if (score != null && parentScore != null) return '得分未超过父节点';
     return '未达到采纳条件';
   }
   if (lifecycle === 'pruned') return '搜索空间已剪枝';

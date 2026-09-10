@@ -53,7 +53,7 @@ test('RSI install refreshes the shared extension list only after backend success
     await act(async () => root.render(React.createElement(RsiDetailHeader, props)));
     await act(async () => document.querySelector('[data-testid="rsi-action-install"]').click());
     assert.deepEqual(calls, [
-      ['install', 'plugin-1'], ['installed', 'task-1'], ['refresh', 'local', { silent: true }],
+      ['install', 'plugin-1'], ['installed', 'task-1'], ['refresh', 'mine', { silent: true }],
     ]);
     calls.length = 0;
     globalThis.rsiInstallProbe.install = async () => { throw new Error('activation failed'); };
