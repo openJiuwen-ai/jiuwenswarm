@@ -2,6 +2,21 @@ import type { Question, UserAnswer, UserAnswerStatus } from '../../types';
 
 const CUSTOM_INPUT_OPTION_LABELS = new Set(['Other', '其他']);
 
+/** Validate explicit choices without replacing a cleared selection with a default. */
+export function isIncompleteAskUserPage(
+  question: Question,
+  state: { selected: string[]; custom: string; customActive: boolean; skippedNoSelection?: boolean },
+): boolean {
+  if (state.skippedNoSelection) return false;
+  if (state.customActive) return !state.custom.trim();
+  return Boolean(
+    question.multi_select &&
+      question.options?.some(option => option.label !== 'Other') &&
+      state.selected.length === 0 &&
+      !state.custom.trim(),
+  );
+}
+
 /** Return whether a normalized AskUser answer contains actual user input. */
 export function hasAskUserInput(answer: UserAnswer): boolean {
   const hasSelectedOption = answer.selected_options.some(option => {

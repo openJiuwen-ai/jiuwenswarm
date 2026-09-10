@@ -2642,6 +2642,8 @@
     "confirm": "确定",
     "customOption": "自定义",
     "customPlaceholder": "没有合适的选项？输入您的答案...",
+    "customRequired": "请填写自定义内容。",
+    "selectionRequired": "请至少选择一项，或填写自定义内容。",
     "skippedSummary": "已跳过"
   },
   "qaSummary": {
