@@ -24,6 +24,19 @@ def _optional_string(payload: dict[str, Any], key: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _optional_icon_uri(payload: dict[str, Any]) -> str:
+    """Accept Hub icon fields under the common catalog aliases."""
+    for key in ("icon_uri", "icon_url", "icon", "avatar"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            nested = _optional_string(value, "uri") or _optional_string(value, "url")
+            if nested:
+                return nested
+    return ""
+
+
 def _string_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...]:
     value = payload.get(key)
     if not isinstance(value, list):
@@ -69,7 +82,7 @@ class HubCatalogItem:
             short_description=_optional_string(payload, "short_desc"),
             latest_version=latest,
             public_latest_version=public_latest,
-            icon_uri=_optional_string(payload, "icon_uri"),
+            icon_uri=_optional_icon_uri(payload),
             tags=_string_tuple(payload, "tags"),
             publisher_id=_optional_string(payload, "publisher_id"),
             publisher_name=_optional_string(payload, "publisher_name"),
@@ -106,7 +119,7 @@ class HubVersionDetail:
             display_name=_optional_string(payload, "display_name") or name,
             short_description=_optional_string(payload, "short_desc"),
             detail_description=_optional_string(payload, "detail_desc"),
-            icon_uri=_optional_string(payload, "icon_uri"),
+            icon_uri=_optional_icon_uri(payload),
             tags=_string_tuple(payload, "tags"),
             publisher_id=_optional_string(payload, "publisher_id"),
             publisher_name=_optional_string(payload, "publisher_name"),

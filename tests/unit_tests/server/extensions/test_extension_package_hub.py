@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -104,12 +106,7 @@ class FakeDownloader:
         self.calls = 0
         self.connectors = connectors
 
-    async def download_and_extract(
-        self, artifact: HubResolvedDownload, destination: Path
-    ) -> None:
-        self.calls += 1
-        package_root = destination / artifact.package_name
-        package_root.mkdir(parents=True)
+    def _manifest(self, artifact: HubResolvedDownload) -> dict:
         package_type = artifact.kind
         manifest = {
             "package_type": package_type,
@@ -122,9 +119,24 @@ class FakeDownloader:
             manifest["name"] = artifact.package_name
         else:
             manifest["id"] = artifact.package_name
-        (package_root / "manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        return manifest
+
+    async def download_bytes(self, artifact: HubResolvedDownload) -> bytes:
+        self.calls += 1
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(
+                f"{artifact.package_name}/manifest.json",
+                json.dumps(self._manifest(artifact)),
+            )
+        return buffer.getvalue()
+
+    async def download_and_extract(
+        self, artifact: HubResolvedDownload, destination: Path
+    ) -> None:
+        body = await self.download_bytes(artifact)
+        with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+            archive.extractall(destination)
 
 
 class CamelCaseManifestDownloader(FakeDownloader):
@@ -500,6 +512,54 @@ async def test_remote_show_has_metadata_but_no_local_capabilities(
 
 
 @pytest.mark.asyncio
+async def test_remote_show_keeps_empty_avatar_when_hub_icon_missing(
+    extension_workspace: Path,
+) -> None:
+    asset_id = "expert-asset-uuid"
+    package_name = "sales-expert"
+    hub = FakeHubAssetPort(
+        replace(
+            _item(asset_id, "agent_template", package_name=package_name),
+            icon_uri="",
+        )
+    )
+    downloader = FakeDownloader()
+
+    card = await catalog.show_agent_template_with_hub(
+        asset_id, hub_port=hub, downloader=downloader
+    )
+
+    assert card is not None
+    assert card["avatar"] == ""
+    assert downloader.calls == 0
+    assert catalog.list_agent_templates() == []
+
+
+@pytest.mark.asyncio
+async def test_hub_list_keeps_empty_avatar_when_icon_missing(
+    extension_workspace: Path,
+) -> None:
+    asset_id = "expert-asset-uuid"
+    package_name = "sales-expert"
+    hub = FakeHubAssetPort(
+        replace(
+            _item(asset_id, "agent_template", package_name=package_name),
+            icon_uri="",
+        )
+    )
+    downloader = FakeDownloader()
+
+    cards = await catalog.list_agent_templates_with_hub(
+        {}, hub_port=hub, downloader=downloader
+    )
+    card = next(item for item in cards if item["id"] == asset_id)
+
+    assert card["avatar"] == ""
+    assert downloader.calls == 0
+    assert catalog.list_agent_templates() == []
+
+
+@pytest.mark.asyncio
 async def test_unpublished_hub_asset_cannot_be_shown_or_installed(
     extension_workspace: Path,
 ) -> None:
@@ -783,6 +843,112 @@ def test_hub_expert_files_preview_without_marketplace_entry(
         assert any(entry["path"] == "manifest.json" for entry in tree)
         preview = catalog.read_agent_template_file(identifier, "manifest.json")
         assert preview["path"] == "manifest.json"
+
+
+@pytest.mark.asyncio
+async def test_remote_hub_expert_files_preview_without_installing(
+    extension_workspace: Path,
+) -> None:
+    asset_id = "expert-asset-uuid"
+    package_name = "sales-expert"
+    hub = FakeHubAssetPort(
+        _item(asset_id, "agent_template", package_name=package_name)
+    )
+    downloader = FakeDownloader()
+
+    tree = await catalog.list_agent_template_files_with_hub(
+        asset_id, hub_port=hub, downloader=downloader
+    )
+    preview = await catalog.read_agent_template_file_with_hub(
+        asset_id, "manifest.json", hub_port=hub, downloader=downloader
+    )
+
+    assert any(entry["path"] == "manifest.json" for entry in tree)
+    assert preview["path"] == "manifest.json"
+    assert downloader.calls == 1
+    assert hub.artifact_calls == 1
+    assert catalog.list_agent_templates() == []
+    local = extension_workspace / "plugins" / "agent_templates" / "local"
+    assert not local.exists() or not any(local.iterdir())
+    hub_preview = extension_workspace / "plugins" / "agent_templates" / "hub_preview"
+    assert not hub_preview.exists()
+
+
+@pytest.mark.asyncio
+async def test_remote_hub_expert_zip_preview_lists_nested_previewable_files(
+    extension_workspace: Path,
+) -> None:
+    class NestedPreviewDownloader(FakeDownloader):
+        async def download_bytes(self, artifact: HubResolvedDownload) -> bytes:
+            self.calls += 1
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr(
+                    f"{artifact.package_name}/manifest.json",
+                    json.dumps(self._manifest(artifact)),
+                )
+                archive.writestr(
+                    f"{artifact.package_name}/persona/sales.md",
+                    "# persona\n",
+                )
+                archive.writestr(
+                    f"{artifact.package_name}/tools/secret.bin",
+                    b"\x00\x01",
+                )
+            return buffer.getvalue()
+
+    asset_id = "expert-asset-uuid"
+    hub = FakeHubAssetPort(
+        _item(asset_id, "agent_template", package_name="sales-expert")
+    )
+    downloader = NestedPreviewDownloader()
+
+    tree = await catalog.list_agent_template_files_with_hub(
+        asset_id, hub_port=hub, downloader=downloader
+    )
+    preview = await catalog.read_agent_template_file_with_hub(
+        asset_id, "persona/sales.md", hub_port=hub, downloader=downloader
+    )
+
+    assert any(entry["path"] == "manifest.json" for entry in tree)
+    persona = next(entry for entry in tree if entry["path"] == "persona/")
+    assert any(child["path"] == "persona/sales.md" for child in persona["children"])
+    assert preview["content"].startswith("# persona")
+    assert downloader.calls == 1
+    assert not (
+        extension_workspace / "plugins" / "agent_templates" / "hub_preview"
+    ).exists()
+
+
+@pytest.mark.asyncio
+async def test_local_expert_file_preview_does_not_query_hub(
+    extension_workspace: Path,
+) -> None:
+    package = (
+        extension_workspace
+        / "plugins"
+        / "agent_templates"
+        / "local"
+        / "sales-expert"
+    )
+    package.mkdir(parents=True)
+    (package / "manifest.json").write_text(
+        json.dumps({"package_type": "agent_template", "name": "sales-expert"}),
+        encoding="utf-8",
+    )
+    hub = PortOnlyHub()
+    downloader = FakeDownloader()
+
+    tree = await catalog.list_agent_template_files_with_hub(
+        "sales-expert", hub_port=hub, downloader=downloader
+    )
+    preview = await catalog.read_agent_template_file_with_hub(
+        "sales-expert", "manifest.json", hub_port=hub, downloader=downloader
+    )
+
+    assert any(entry["path"] == "manifest.json" for entry in tree)
+    assert preview["content"]
+    assert downloader.calls == 0
 
 
 @pytest.mark.asyncio
