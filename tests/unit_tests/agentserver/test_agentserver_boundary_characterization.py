@@ -54,6 +54,23 @@ class EmptyConnectionWebSocket(RecordingWebSocket):
         self.sent.append(frame)
 
 
+class BlockingConnectionWebSocket(EmptyConnectionWebSocket):
+    def __init__(self, trace: list[str], port: int) -> None:
+        super().__init__(trace)
+        self.remote_address = ("127.0.0.1", port)
+        self.ack_sent = asyncio.Event()
+        self.close_requested = asyncio.Event()
+
+    async def __anext__(self) -> str:
+        await self.close_requested.wait()
+        raise StopAsyncIteration
+
+    async def send(self, payload: str) -> None:
+        await super().send(payload)
+        if self.sent[-1].get("event") == "connection.ack":
+            self.ack_sent.set()
+
+
 class OneMessageConnectionWebSocket(EmptyConnectionWebSocket):
     def __init__(
         self,
@@ -945,6 +962,65 @@ async def test_physical_disconnect_keeps_ack_only_and_cleanup_order(
     assert server._current_ws is None
     assert server._current_send_lock is None
     assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_stale_gateway_disconnect_keeps_new_push_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace: list[str] = []
+    server, _, runtime = make_server(trace, agent=None)
+    server._current_ws = None
+    server._current_send_lock = None
+    server._acp_client_capabilities_by_ws = {}
+    server._session_stream_tasks = {"new-session": object()}
+    server._heartbeat_runtime = SimpleNamespace(
+        protocol_version="heartbeat-test-v1",
+        is_available=True,
+        execution=SimpleNamespace(active_session_ids=lambda: ()),
+    )
+
+    async def cancel_runtime(*_args: Any, **_kwargs: Any) -> None:
+        trace.append("runtime.cancel")
+
+    async def cancel_team(*_args: Any, **_kwargs: Any) -> None:
+        trace.append("team.cancel")
+
+    async def stop_scheduler(*_args: Any, **_kwargs: Any) -> None:
+        trace.append("scheduler.stop")
+
+    monkeypatch.setattr(runtime, "cancel_all_inflight_work", cancel_runtime)
+    monkeypatch.setattr(runtime, "cancel_all_team_stream_tasks", cancel_team)
+    monkeypatch.setattr(server, "_stop_scheduler", stop_scheduler)
+
+    old_ws = BlockingConnectionWebSocket(trace, 19001)
+    new_ws = BlockingConnectionWebSocket(trace, 19002)
+    old_handler = asyncio.create_task(server._connection_handler(old_ws))
+    await old_ws.ack_sent.wait()
+    new_handler = asyncio.create_task(server._connection_handler(new_ws))
+    await new_ws.ack_sent.wait()
+
+    try:
+        old_ws.close_requested.set()
+        await old_handler
+
+        assert server._current_ws is new_ws
+        assert "runtime.cancel" not in trace
+        assert "team.cancel" not in trace
+        assert "scheduler.stop" not in trace
+        assert "new-session" in server._session_stream_tasks
+        assert await server.send_push({"channel_id": "web"}) is True
+        assert len(new_ws.sent) == 2
+    finally:
+        new_ws.close_requested.set()
+        await new_handler
+
+    assert server._current_ws is None
+    assert server._current_send_lock is None
+    assert server._session_stream_tasks == {}
+    assert trace.count("runtime.cancel") == 1
+    assert trace.count("team.cancel") == 1
+    assert trace.count("scheduler.stop") == 1
 
 
 @pytest.mark.asyncio
