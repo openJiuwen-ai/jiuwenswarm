@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Protocol
 
 from openjiuwen.core.foundation.llm import Model
@@ -18,7 +17,7 @@ from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_
 from jiuwenswarm.gateway.routing.interaction_context import PendingInteraction
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.gateway.message_handler.command_parser.slash_command import CONTROL_MESSAGE_TEXTS
-from jiuwenswarm.common.utils import get_deepagent_user_md_path, logger
+from jiuwenswarm.common.utils import logger
 SYSTEM_PROMPT_TEMPLATE = """
 你是{principal_name}的数字分身，活跃在即时通讯群聊中。当群里有其他用户发送与{principal_name}相关的消息时，你的任务是改写这条消息，使其更清晰、更完整，以便后续帮助{principal_name}生成恰当的回复。
 
@@ -140,14 +139,8 @@ class IMConversationProcessor:
     def __init__(
         self,
         *,
-        user_profile_path: Path | None = None,
         model_name: str | None = None,
     ) -> None:
-        self._user_profile_path = (
-            user_profile_path
-            if user_profile_path is not None
-            else get_deepagent_user_md_path()
-        )
         self._model_name, self._model_client_raw, self._model_config_raw = self._load_model_config(model_name)
         self._llm: Model | None = None
 
@@ -353,11 +346,6 @@ class IMConversationProcessor:
         else:
             prompt_parts.append("暂无历史消息\n")
 
-        prompt_parts.append("=== 用户画像 ===")
-        user_profile = self._load_user_profile()
-        prompt_parts.append(user_profile if user_profile else "暂无用户画像信息")
-        prompt_parts.append("")
-
         if pending_context:
             prompt_parts.append("=== 待回答的追问 ===")
             prompt_parts.append(pending_context)
@@ -372,15 +360,6 @@ class IMConversationProcessor:
         prompt_parts.append("")
 
         return "\n".join(prompt_parts)
-
-    def _load_user_profile(self) -> str:
-        try:
-            if not self._user_profile_path.exists():
-                return ""
-            return self._user_profile_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            logger.warning("[IMConversationProcessor] 读取 USER.md 失败: %s", exc)
-            return ""
 
     def _ensure_llm(self) -> Model | None:
         if self._llm is not None:

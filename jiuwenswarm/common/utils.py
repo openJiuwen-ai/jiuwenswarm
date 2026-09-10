@@ -18,7 +18,6 @@ Runtime layout:
   - IDENTITY.md
   - SOUL.md
   - HEARTBEAT.md
-  - USER.md
 - <root>/agent/sessions
 - <root>/agent/workspace/agent-data.json
 - <root>/agent/.checkpoint
@@ -887,13 +886,6 @@ def _migrate_legacy_workspace(
     new_memory.mkdir(parents=True, exist_ok=True)
 
     if old_memory.exists():
-        # 4.1 Migrate USER.md to workspace root (not in memory/)
-        old_user = old_memory / "USER.md"
-        new_user = new_workspace / "USER.md"
-        if old_user.exists() and not new_user.exists():
-            shutil.copy2(old_user, new_user)
-            logger.info("Migrated USER.md from memory/ to workspace root")
-
         # 4.2 Create daily_memory directory
         daily_memory = new_memory / "daily_memory"
         daily_memory.mkdir(parents=True, exist_ok=True)
@@ -904,7 +896,7 @@ def _migrate_legacy_workspace(
 
         for item in old_memory.iterdir():
             if item.name == "USER.md":
-                continue  # Already handled above
+                continue  # Retired workspace user profile
             if item.name == "MEMORY.md":
                 dest = new_memory / "MEMORY.md"
                 if not dest.exists():
@@ -1123,8 +1115,6 @@ def prepare_workspace(
     celia_preserved_paths: list[Path] = []
     if overwrite:
         durable_relatives = [
-            Path("agent/workspace/USER.md"),
-            Path("agent/workspace/MEMORY.md"),
             Path("agent/workspace/memory/celia_memory"),
         ]
         if any((workspace_dir / relative).exists() for relative in durable_relatives):
@@ -1397,10 +1387,10 @@ def prepare_workspace(
                 shutil.copy2(source, target)
         celia_preserve.cleanup()
 
-    # Initialize memory UI files while preserving existing user contents.
-    from jiuwenswarm.common.celia_setup import initialize_celia_workspace
+    # Initialize the Xiaoyi memory switch without creating local memory files.
+    from jiuwenswarm.agents.harness.common.memory.celia.runtime_state import ensure_runtime_state
 
-    initialize_celia_workspace(deepagent_workspace)
+    ensure_runtime_state()
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(
@@ -1791,15 +1781,6 @@ def get_deepagent_identity_md_path() -> Path:
         Path to IDENTITY.md: ~/.jiuwenswarm/agent/workspace/IDENTITY.md
     """
     return get_agent_workspace_dir() / "IDENTITY.md"
-
-
-def get_deepagent_user_md_path() -> Path:
-    """Get the DeepAgent USER.md file path.
-
-    Returns:
-        Path to USER.md: ~/.jiuwenswarm/agent/workspace/USER.md
-    """
-    return get_agent_workspace_dir() / "USER.md"
 
 
 def get_builtin_skills_dir() -> Path:

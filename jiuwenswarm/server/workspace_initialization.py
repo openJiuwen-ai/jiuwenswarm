@@ -10,7 +10,6 @@ _REQUIRED_WORKSPACE_FILES = (
     "IDENTITY.md",
     "SOUL.md",
     "HEARTBEAT.md",
-    "USER.md",
 )
 
 

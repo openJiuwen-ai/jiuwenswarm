@@ -19,10 +19,10 @@ memory:
 
 GaussPD 服务继续使用部署环境已有的 `mcp.servers` 配置，其服务名称为 `gausspdmcp`。自动摘要读取和对话入库由现有 GaussPD 接入负责；Swarm 的提示词 Rail 不再重复执行。现有扩展 Hook、参数处理、连接管理及工具白名单保持原有流程。
 
-配置模板已移除旧 Celia 私有客户端参数，仅保留小艺记忆开关使用的 `celia.runtime_state_path`。小艺的状态文件、记忆查询和历史展示继续保留；初始化不再创建旧客户端的二进制目录、数据库或日志，已有用户数据仍受保护。
+配置模板已移除旧 Celia 私有客户端参数，仅保留小艺记忆开关使用的 `celia.runtime_state_path`。小艺 `MemoryQuery` 仅保留 `MemoryStateGet` / `MemoryStateSet`；`UserMdQuery`、`MemoryMdQuery` 和 `MemoryHistory` 已移除。工作区根目录的 `USER.md`、`MEMORY.md` 及 `.memory.log` 不再创建或读取，旧标记区同步模块已删除。代码记忆的项目索引与内置记忆目录继续沿用各自实现。
 
 ## 验证
 
-测试使用真实 DeepAgent 和 MCP 工具执行器，验证模型仅收到已注册的 GaussPD 工具、参数 schema 与服务端一致、工具能够执行，以及移除提示词 Rail 后 MCP 工具仍然可用。同时覆盖各模式挂载、流式请求、模式切换和 MCP 缺失场景，以及小艺记忆开关、展示和强制初始化时的数据保留。
+测试使用真实 DeepAgent 和 MCP 工具执行器，验证模型仅收到已注册的 GaussPD 工具、参数 schema 与服务端一致、工具能够执行，以及移除提示词 Rail 后 MCP 工具仍然可用。同时覆盖各模式挂载、流式请求、模式切换和 MCP 缺失场景，以及小艺记忆开关、已移除查询的错误响应和初始化不再创建旧记忆文件。
 
 实际 GaussPD 数据库和自动记忆效果仍需部署环境联调。

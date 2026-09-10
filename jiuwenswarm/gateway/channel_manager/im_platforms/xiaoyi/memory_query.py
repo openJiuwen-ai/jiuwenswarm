@@ -1,18 +1,15 @@
-"""Xiaoyi ``AgentEvent.MemoryQuery`` compatibility bridge."""
+"""Xiaoyi ``AgentEvent.MemoryQuery`` memory state commands."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.agents.harness.common.memory.celia.runtime_state import (
     read_memory_state,
     set_memory_state,
 )
-from jiuwenswarm.agents.harness.common.memory.celia.workspace_sync import read_memory_history
 
 
 @dataclass(frozen=True)
@@ -87,34 +84,10 @@ def extract_memory_query(message: dict[str, Any]) -> MemoryQueryContext | None:
     )
 
 
-def _read_md(path: Path) -> dict[str, str]:
-    try:
-        return {"fileDetail": path.read_text(encoding="utf-8")}
-    except OSError:
-        return {"fileDetail": ""}
-
-
-def _history_buckets(history_path: Path) -> list[dict[str, list[dict[str, str]]]]:
-    grouped: dict[str, list[dict[str, str]]] = {}
-    for item in read_memory_history(history_path):
-        timestamp = str(item["timestamp"])
-        try:
-            parsed = datetime.fromisoformat(timestamp)
-            date, clock = parsed.strftime("%Y-%m-%d"), parsed.strftime("%H:%M")
-        except ValueError:
-            date, clock = timestamp[:10], timestamp[11:16]
-        grouped.setdefault(date, []).append(
-            {"fileName": str(item["fileName"]), "detail": str(item["detail"]), "time": clock}
-        )
-    return [{date: grouped[date]} for date in sorted(grouped, reverse=True)]
-
-
 def handle_memory_query(
     context: MemoryQueryContext,
     *,
-    workspace_dir: Path,
     runtime_state_path: str = "",
-    history_path: Path | None = None,
 ) -> dict[str, Any]:
     action = context.action
     if action == "MemoryStateSet":
@@ -125,12 +98,6 @@ def handle_memory_query(
         return {"code": 0}
     if action == "MemoryStateGet":
         return {"memoryState": read_memory_state(runtime_state_path)}
-    if action == "UserMdQuery":
-        return _read_md(workspace_dir / "USER.md")
-    if action == "MemoryMdQuery":
-        return _read_md(workspace_dir / "MEMORY.md")
-    if action == "MemoryHistory":
-        return _history_buckets(history_path or (Path.home() / ".openclaw" / ".memory.log"))
     return {"error": f"Unknown action: {action}"}
 
 

@@ -1,10 +1,9 @@
-"""Tests for Xiaoyi memory state, workspace files and UI responses."""
+"""Tests for Xiaoyi memory state and command responses."""
 
 from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,14 +15,6 @@ from jiuwenswarm.agents.harness.common.memory.celia.runtime_state import (
     read_runtime_values,
     set_memory_state,
     update_runtime_info,
-)
-from jiuwenswarm.agents.harness.common.memory.celia.workspace_sync import (
-    OVERVIEW_MARKER,
-    SCENES_MARKER,
-    read_memory_history,
-    safe_write_marker,
-    select_fixed_scenes,
-    sync_workspace_files,
 )
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.memory_query import (
     extract_memory_query,
@@ -90,13 +81,8 @@ def test_memory_query_extracts_direct_and_wrapped_a2a():
     assert context.message_id == "msg"
 
 
-def test_memory_query_five_actions_and_wire_shape(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "USER.md").write_text("user detail", encoding="utf-8")
-    (workspace / "MEMORY.md").write_text("memory detail", encoding="utf-8")
+def test_memory_state_query_wire_shape(tmp_path):
     runtime = tmp_path / ".xiaoyiruntime"
-    history = tmp_path / ".memory.log"
     base = {"jsonrpc": "2.0", "id": "m", "params": {"sessionId": "c", "id": "t"}}
 
     def context(action, params=None):
@@ -107,102 +93,56 @@ def test_memory_query_five_actions_and_wire_shape(tmp_path):
         }
         return extract_memory_query(message)
 
-    assert handle_memory_query(context("MemoryStateSet", {"memoryState": True}), workspace_dir=workspace, runtime_state_path=str(runtime)) == {"code": 0}
-    answer = handle_memory_query(context("MemoryStateGet"), workspace_dir=workspace, runtime_state_path=str(runtime))
+    assert handle_memory_query(context("MemoryStateSet", {"memoryState": True}), runtime_state_path=str(runtime)) == {"code": 0}
+    answer = handle_memory_query(context("MemoryStateGet"), runtime_state_path=str(runtime))
     assert memory_query_command("MemoryStateGet", answer) == {
         "header": {"namespace": "AgentEvent", "name": "MemoryQuery"},
         "payload": {"action": "MemoryStateGet", "ans": {"memoryState": True}},
     }
-    assert handle_memory_query(context("UserMdQuery"), workspace_dir=workspace)["fileDetail"] == "user detail"
-    assert handle_memory_query(context("MemoryMdQuery"), workspace_dir=workspace)["fileDetail"] == "memory detail"
-    assert handle_memory_query(context("MemoryHistory"), workspace_dir=workspace, history_path=history) == []
 
 
 @pytest.mark.asyncio
-async def test_memory_query_artifact_response_is_final():
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("action", ["MemoryStateGet", "MemoryStateSet", "UserMdQuery", "MemoryMdQuery", "MemoryHistory"])
+async def test_memory_query_artifact_response_is_final(tmp_path, monkeypatch, wrapped, action):
+    runtime = tmp_path / ".xiaoyiruntime"
+    set_memory_state(True, str(runtime))
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.memory_query.configured_runtime_state_path",
+        lambda: str(runtime),
+    )
     sent = []
 
     async def safe_send(url_key, wrapper):
         sent.append((url_key, wrapper))
 
-    channel = SimpleNamespace(
-        config=SimpleNamespace(agent_id="agent"),
-        _ws_connections={"ws": object()},
-        _safe_ws_send=safe_send,
-    )
-    command = memory_query_command("MemoryStateGet", {"memoryState": False})
-    assert await XiaoyiChannel.send_xiaoyi_phone_tools_command(
-        channel, "session", "task", "message", command, final=True
-    )
+    channel = XiaoyiChannel.__new__(XiaoyiChannel)
+    channel.config = SimpleNamespace(agent_id="agent")
+    channel._ws_connections = {"ws": object()}
+    channel._safe_ws_send = safe_send
+    message = {
+        "jsonrpc": "2.0", "id": "message",
+        "params": {"sessionId": "session", "id": "task", "command": {
+            "header": {"namespace": "AgentEvent", "name": "MemoryQuery"},
+            "payload": {"action": action, "params": {"memoryState": False}},
+        }},
+    }
+    if wrapped:
+        message = {"sessionId": "session", "taskId": "task", "msgDetail": json.dumps(message)}
+    await channel._handle_raw_message(json.dumps(message))
+    answer = {"error": f"Unknown action: {action}"}
+    if action == "MemoryStateGet":
+        answer = {"memoryState": True}
+    elif action == "MemoryStateSet":
+        answer = {"code": 0}
+    command = memory_query_command(action, answer)
+    assert read_memory_state(str(runtime)) is (action != "MemoryStateSet")
+    assert len(sent) == 1
     payload = json.loads(sent[0][1]["msgDetail"])
     assert payload["id"] == "message"
     assert payload["result"]["kind"] == "artifact-update"
     assert payload["result"]["final"] is True
     assert payload["result"]["artifact"]["parts"][0]["data"]["commands"] == [command]
-
-
-def test_fixed_scenes_are_scene_only_preset_plus_dynamic_top_ten():
-    entries = [
-        {"id": "memtype", "type": "memtype", "factCount": 999},
-        {"id": "preset", "type": "scene", "is_preset": True, "factCount": 0},
-        *({"id": f"s{i}", "type": "scene", "factCount": i} for i in range(15)),
-    ]
-    selected = select_fixed_scenes({"entries": entries})
-    assert selected[0]["id"] == "preset"
-    assert [item["id"] for item in selected[1:]] == [f"s{i}" for i in range(14, 4, -1)]
-    assert all(item["id"] != "memtype" for item in selected)
-
-
-def test_marker_sync_preserves_user_content_is_idempotent_and_repairs(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    user_md = workspace / "USER.md"
-    memory_md = workspace / "MEMORY.md"
-    user_md.write_text("# User authored\n", encoding="utf-8")
-    memory_md.write_text("# Keep me\n", encoding="utf-8")
-    history = tmp_path / ".memory.log"
-    l0 = {"global_summary": "## User Profile\n- likes tea"}
-    l1 = {"entries": [{"id": "food", "path": "scene/food", "type": "scene", "summary": "likes noodles", "factCount": 3}]}
-    sync_workspace_files(workspace, l0, l1, history)
-    first = user_md.read_text(encoding="utf-8")
-    assert "# User authored" in first and OVERVIEW_MARKER in first
-    assert "# Keep me" in memory_md.read_text(encoding="utf-8") and SCENES_MARKER in memory_md.read_text(encoding="utf-8")
-    history_first = history.read_text(encoding="utf-8")
-    sync_workspace_files(workspace, l0, l1, history)
-    assert user_md.read_text(encoding="utf-8") == first
-    assert history.read_text(encoding="utf-8") == history_first
-
-    user_md.write_text(first + f"\n<!-- {OVERVIEW_MARKER}_BEGIN h=bad -->\nbroken", encoding="utf-8")
-    safe_write_marker(user_md, OVERVIEW_MARKER, "new", 4096, history)
-    assert user_md.read_text(encoding="utf-8").count(f"{OVERVIEW_MARKER}_BEGIN") == 1
-    assert list(workspace.glob("USER.md.celia-rescue.*"))
-
-
-def test_failed_fixed_fetch_keeps_existing_marker(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    user_md = workspace / "USER.md"
-    memory_md = workspace / "MEMORY.md"
-    safe_write_marker(user_md, OVERVIEW_MARKER, "old overview", 4096)
-    safe_write_marker(memory_md, SCENES_MARKER, "old scenes", 6144)
-    overview, scenes = sync_workspace_files(
-        workspace, None, None, tmp_path / ".memory.log", sync_l0=False, sync_l1=False
-    )
-    assert overview == "old overview"
-    assert scenes == "old scenes"
-
-
-def test_memory_history_returns_seven_days_and_prunes_thirty(tmp_path):
-    history = tmp_path / ".memory.log"
-    now = datetime(2026, 7, 15, 12, tzinfo=timezone.utc)
-    recent = now - timedelta(days=6)
-    old = now - timedelta(days=31)
-    history.write_text(
-        f"{recent.isoformat()}|user.md|recent\n{old.isoformat()}|memory.md|old\n",
-        encoding="utf-8",
-    )
-    assert [item["detail"] for item in read_memory_history(history, now)] == ["recent"]
-    assert "old" not in history.read_text(encoding="utf-8")
 
 
 def test_workspace_init_preserves_memory_state_without_creating_legacy_backend(tmp_path, monkeypatch):
@@ -212,28 +152,22 @@ def test_workspace_init_preserves_memory_state_without_creating_legacy_backend(t
     monkeypatch.setattr(Path, "home", lambda: home)
     prepare_workspace(overwrite=False, workspace_dir=data)
     assert not (data / "celia" / "bin").exists()
-    assert (data / "agent" / "workspace" / "USER.md").is_file()
-    assert (data / "agent" / "workspace" / "MEMORY.md").is_file()
+    assert not (data / "agent" / "workspace" / "USER.md").exists()
+    assert not (data / "agent" / "workspace" / "MEMORY.md").exists()
     assert not (data / "agent" / "workspace" / "memory" / "celia_memory").exists()
     assert (home / ".openclaw" / ".xiaoyiruntime").read_text(encoding="utf-8") == "MEMORYSTATE=false\n"
-    assert (home / ".openclaw" / ".memory.log").is_file()
+    assert not (home / ".openclaw" / ".memory.log").exists()
     assert not (home / ".openclaw" / "logs" / "Celia_memory.log").exists()
 
-    user_md = data / "agent" / "workspace" / "USER.md"
-    memory_md = data / "agent" / "workspace" / "MEMORY.md"
     db = data / "agent" / "workspace" / "memory" / "celia_memory" / "celia_memory.db"
-    user_md.write_text("user marker data", encoding="utf-8")
-    memory_md.write_text("memory marker data", encoding="utf-8")
     # A previous installation's data must survive forced reinitialization.
     db.parent.mkdir(parents=True)
     db.write_bytes(b"existing-db")
     state = home / ".openclaw" / ".xiaoyiruntime"
-    history = home / ".openclaw" / ".memory.log"
     state.write_text("MEMORYSTATE=true\nCUSTOM=value\n", encoding="utf-8")
-    history.write_text("existing history", encoding="utf-8")
     prepare_workspace(overwrite=True, workspace_dir=data)
-    assert user_md.read_text(encoding="utf-8") == "user marker data"
-    assert memory_md.read_text(encoding="utf-8") == "memory marker data"
+    assert not (data / "agent" / "workspace" / "USER.md").exists()
+    assert not (data / "agent" / "workspace" / "MEMORY.md").exists()
     assert db.read_bytes() == b"existing-db"
     assert state.read_text(encoding="utf-8") == "MEMORYSTATE=true\nCUSTOM=value\n"
-    assert history.read_text(encoding="utf-8") == "existing history"
+    assert not (home / ".openclaw" / ".memory.log").exists()

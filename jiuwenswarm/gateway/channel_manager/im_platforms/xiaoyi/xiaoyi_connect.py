@@ -1970,12 +1970,9 @@ class XiaoyiChannel(BaseChannel):
                 memory_query.message_id,
                 memory_query.params,
             )
-            from jiuwenswarm.common.utils import get_agent_workspace_dir
-
             answer = await asyncio.to_thread(
                 handle_memory_query,
                 memory_query,
-                workspace_dir=get_agent_workspace_dir(),
                 runtime_state_path=configured_runtime_state_path(),
             )
             logger.info(
@@ -2285,12 +2282,9 @@ class XiaoyiChannel(BaseChannel):
 
         memory_query = extract_memory_query(message)
         if memory_query is not None:
-            from jiuwenswarm.common.utils import get_agent_workspace_dir
-
             answer = await asyncio.to_thread(
                 handle_memory_query,
                 memory_query,
-                workspace_dir=get_agent_workspace_dir(),
                 runtime_state_path=configured_runtime_state_path(),
             )
             await self.send_xiaoyi_phone_tools_command(
