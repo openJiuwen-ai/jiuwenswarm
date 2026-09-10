@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.foundation.llm import AssistantMessage, AssistantMessageChunk, ToolCall
@@ -16,7 +16,6 @@ from openjiuwen.harness.deep_agent import DeepAgent
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.schema.config import DeepAgentConfig
 
-from jiuwenswarm.agents.harness.common.memory.celia.config import CeliaConfig
 from jiuwenswarm.agents.harness.common.memory.celia.prompt import load_celia_agent_prompt
 from jiuwenswarm.agents.harness.common.memory.celia.prompt import CeliaMcpPromptRail
 from jiuwenswarm.agents.swarm import SwarmBuildContext, register_swarm_providers
@@ -34,21 +33,6 @@ def memory_config():
             "external": {"provider": "celia", "user_id": "alice", "scope_id": "user"},
         }
     }
-
-
-@pytest.fixture
-def unavailable_backend(monkeypatch):
-    # Even an enabled preflight must never stop the builder mounting the rail.
-    preflight = Mock(return_value=["Celia requires Linux"])
-    manager = SimpleNamespace(acquire=AsyncMock(side_effect=RuntimeError("backend unavailable")))
-    monkeypatch.setattr(CeliaConfig, "preflight_issues", preflight)
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.memory.celia.provider.get_celia_client_manager",
-        lambda: manager,
-    )
-    yield manager
-    manager.acquire.assert_not_awaited()
-    preflight.assert_not_called()
 
 
 @pytest.fixture(params=[False, True], ids=["missing-mcp", "gausspd-mcp"])
@@ -114,12 +98,10 @@ def _assert_model_received_celia_prompt(request, gausspd):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["team", "team.plan", "code.team", "design", "design.normal", "design.plan"])
 @pytest.mark.parametrize("role", ["leader", "teammate"])
-@pytest.mark.parametrize("preflight_enabled", [False, True])
-async def test_swarm_member_mounts_celia_prompt_when_backend_is_unavailable(
-    tmp_path, memory_config, unavailable_backend, mode, role, preflight_enabled, gausspd,
+async def test_swarm_member_mounts_celia_prompt_with_configured_mcp_tools(
+    tmp_path, memory_config, mode, role, gausspd,
 ):
     register_swarm_providers()
-    memory_config["memory"]["external"]["celia"] = {"preflight_enabled": preflight_enabled}
     specs, _ = build_member_capability_specs(memory_config, mode, role)
     external_specs = [spec for spec in specs if spec.type == registry.EXTERNAL_MEMORY]
     assert len(external_specs) == 1
@@ -156,7 +138,7 @@ def test_swarm_external_memory_respects_disable_config(tmp_path, memory_config, 
 
 @pytest.mark.asyncio
 async def test_code_and_design_mode_switches_preserve_one_memory_rail_and_can_disable_it(
-    tmp_path, monkeypatch, memory_config, unavailable_backend, gausspd,
+    tmp_path, monkeypatch, memory_config, gausspd,
 ):
     monkeypatch.setattr(interface_deep, "get_config", lambda: memory_config)
     adapter = object.__new__(JiuwenSwarmCodeAdapter)
@@ -201,7 +183,7 @@ async def test_code_and_design_mode_switches_preserve_one_memory_rail_and_can_di
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_deep_adapter_injects_prompt_into_final_model_request(
-    tmp_path, monkeypatch, memory_config, unavailable_backend, streaming, gausspd,
+    tmp_path, monkeypatch, memory_config, streaming, gausspd,
 ):
     monkeypatch.setattr(interface_deep, "get_config", lambda: memory_config)
     adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
@@ -222,9 +204,8 @@ async def test_deep_adapter_injects_prompt_into_final_model_request(
 
 
 @pytest.mark.asyncio
-async def test_gausspd_call_uses_existing_executor_and_survives_prompt_unmount(gausspd, unavailable_backend):
-    if gausspd is None:
-        return
+@pytest.mark.parametrize("gausspd", [True], indirect=True)
+async def test_gausspd_call_uses_existing_executor_and_survives_prompt_unmount(gausspd):
     agent = _agent("gausspd-call", gausspd)
     rail = CeliaMcpPromptRail()
     responses = iter([

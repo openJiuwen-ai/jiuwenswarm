@@ -25,7 +25,7 @@ class MemoryQueryContext:
 
 
 def configured_runtime_state_path() -> str:
-    """Read the same YAML override used by the Celia provider."""
+    """Read the configured Xiaoyi memory state file override."""
     try:
         from jiuwenswarm.agents.harness.common.memory.config import _load_config
         from jiuwenswarm.agents.harness.common.memory.external_memory_config import (

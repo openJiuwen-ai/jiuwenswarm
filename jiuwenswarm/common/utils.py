@@ -1397,11 +1397,10 @@ def prepare_workspace(
                 shutil.copy2(source, target)
         celia_preserve.cleanup()
 
-    # OpenClaw compatibility state is incremental user data. Never overwrite
-    # existing DB/Markdown/marker content during normal initialization.
-    from jiuwenswarm.common.celia_setup import initialize_celia_compatibility
+    # Initialize memory UI files while preserving existing user contents.
+    from jiuwenswarm.common.celia_setup import initialize_celia_workspace
 
-    initialize_celia_compatibility(package_root, workspace_dir, deepagent_workspace)
+    initialize_celia_workspace(deepagent_workspace)
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(

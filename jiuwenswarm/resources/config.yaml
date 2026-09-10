@@ -198,41 +198,9 @@ memory:
     user_id: ${MEMORY_USER_ID:-openclaw-user}
     scope_id: ${MEMORY_SCOPE_ID:-user}
 
-    # -- Celia Memory MCP -------------------------------------------------
-    # 生效条件：provider='celia'。正式运行需要 Linux ARM64/aarch64 binary。
+    # -- Celia memory UI state; GaussPD tools use mcp.servers --
     celia:
-      # 关闭静态平台/二进制预检查；实际启动失败由 Rail 降级处理。
-      preflight_enabled: false
-      # 追加到每次 MCP 调用的隔离键；tenantId 由运行时租户身份注入。
-      request_scope: {}
-      # 按需启用且需后端支持；restore 和 update_config 会修改数据/配置。
-      advanced_tools: []  # memory_backup | memory_restore | memory_update_config
-      server_binary_path: ${CELIA_MEMORY_BINARY_PATH:-}
-      db_path: ${CELIA_MEMORY_DB_PATH:-}
-      log_path: ${CELIA_MEMORY_LOG_PATH:-}
       runtime_state_path: ${CELIA_XIAOYI_RUNTIME_PATH:-}
-      tenant_id: ${CELIA_TENANT_ID:-default}
-      vector_dim: ${CELIA_VECTOR_DIM:-}
-      embed:
-        base_url: http://lfhagmirror.hwcloudtest.cn:80/celia-claw/v1/rest-api
-        api_key: sk-virtual
-        model: xiaoyiprovider/text-embedding-v1.0
-        uid: uid-virtual
-        headers: {}
-      chat:
-        base_url: http://lfhagmirror.hwcloudtest.cn:80/celia-claw/v1/sse-api
-        api_key: sk-virtual
-        model: Auto-Model
-        uid: uid-virtual
-        headers: {"Accept": "text/event-stream", "x-request-from": "openclaw", "x-uid": "uid-virtual", "x-api-key": "sk-virtual"}
-      rerank:
-        base_url: ${OPENAI_RERANK_BASE_URL:-}
-        api_key: ${OPENAI_RERANK_API_KEY:-}
-        model: ${OPENAI_RERANK_MODEL:-}
-      procedural_dir: ${CELIA_PROCEDURAL_DIR:-}
-      procedural_learn_debug: false
-      dedup_policy: {}
-      dreaming_enabled: inherit
 
     # -- OpenJiuwen LTM（本地长期记忆：KV + 向量 + DB）--
     # 生效条件：provider='openjiuwen'

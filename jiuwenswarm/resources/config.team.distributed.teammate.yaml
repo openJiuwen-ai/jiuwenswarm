@@ -84,14 +84,9 @@ memory:
     user_id: ${MEMORY_USER_ID:-__default__}
     scope_id: ${MEMORY_SCOPE_ID:-__default__}
 
-    # -- Celia Memory MCP --
+    # -- Celia memory UI state; GaussPD tools use mcp.servers --
     celia:
-      # 关闭静态平台/二进制预检查；实际启动失败由 Rail 降级处理。
-      preflight_enabled: false
-      # 追加到每次 MCP 调用的隔离键；tenantId 由运行时租户身份注入。
-      request_scope: {}
-      # 按需启用且需后端支持；restore 和 update_config 会修改数据/配置。
-      advanced_tools: []  # memory_backup | memory_restore | memory_update_config
+      runtime_state_path: ${CELIA_XIAOYI_RUNTIME_PATH:-}
 
     # -- OpenJiuwen LTM（本地长期记忆：KV + 向量 + DB）--
     # 生效条件：provider='openjiuwen'

@@ -9,7 +9,6 @@ import pytest
 from openjiuwen.harness.prompts.sections import SectionName
 
 from jiuwenswarm.agents.harness.common.memory.celia import prompt as prompt_module
-from jiuwenswarm.agents.harness.common.memory.celia import provider as provider_module
 
 
 def test_packaged_celia_prompt_contains_current_memory_contract():
@@ -48,23 +47,6 @@ def test_celia_prompt_loader_fails_open(monkeypatch):
         assert warnings
     finally:
         prompt_module.load_celia_agent_prompt.cache_clear()
-
-
-def test_provider_compatibility_prompt_preserves_dynamic_runtime_path(monkeypatch):
-    monkeypatch.setattr(
-        provider_module,
-        "load_celia_agent_prompt",
-        lambda: "packaged Celia instructions",
-    )
-    provider = SimpleNamespace(
-        config=SimpleNamespace(runtime_state_path="/custom/.xiaoyiruntime")
-    )
-
-    content = provider_module.CeliaMemoryProvider.system_prompt_block(provider)
-
-    assert content.startswith("packaged Celia instructions")
-    assert "The real compatibility state is at /custom/.xiaoyiruntime" in content
-    assert "MEMORYSTATE=false disables L1/L2 extraction but keeps L3" in content
 
 
 @pytest.mark.asyncio
