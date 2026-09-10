@@ -27,6 +27,7 @@ import { StreamingContent } from './StreamingContent';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { ToolCallDisplay } from './ToolCallDisplay';
 import { MediaRenderer, stripUploadDocumentBlocks } from './MediaRenderer';
+import { stripSwarmflowAdvisory } from '../../utils/swarmflowAdvisory';
 import { A2UIMessageContent } from '../../features/a2ui/A2UIMessageContent';
 import { QaSummaryCard } from '../InteractionSlot/QaSummaryCard';
 import { isQaSummaryContent } from '../InteractionSlot/qaSummary';
@@ -136,7 +137,9 @@ function TeamLeaderPlainTextMessage({
   member = 'team_leader',
   content,
   messageId,
+  timestamp,
   isStreaming = false,
+  hideMeta = false,
   showAvatar = true,
   fileItems,
   disableA2UIInteraction = false,
@@ -144,7 +147,9 @@ function TeamLeaderPlainTextMessage({
   member?: string;
   content: string;
   messageId: string;
+  timestamp: string;
   isStreaming?: boolean;
+  hideMeta?: boolean;
   showAvatar?: boolean;
   fileItems?: FileDownloadItem[];
   disableA2UIInteraction?: boolean;
@@ -169,6 +174,14 @@ function TeamLeaderPlainTextMessage({
           disableInteraction={disableA2UIInteraction}
         />
       </div>
+      {!isStreaming && !hideMeta && (
+        <div
+          data-testid="chat-panel-message-meta"
+          className="flex items-center gap-1 text-sm mt-2 text-text-meta justify-start"
+        >
+          <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
+        </div>
+      )}
     </TeamMemberMessageFrame>
   );
 }
@@ -395,7 +408,7 @@ export const MessageItem = memo(function MessageItem({
 
   const handleCopy = useCallback(async () => {
     if (!content) return;
-    const raw = role === 'user' ? stripUploadDocumentBlocks(content) : content;
+    const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : content;
     if (!raw) return;
     const copyContent = a2uiContentToText(raw) || raw;
     try {
@@ -574,6 +587,9 @@ export const MessageItem = memo(function MessageItem({
 	                 member={event.fromMember}
 	                 content={event.content}
 	                 messageId={id}
+	                 timestamp={timestamp}
+	                 isStreaming={isStreaming}
+	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
 	               />
 	             );
@@ -635,7 +651,9 @@ export const MessageItem = memo(function MessageItem({
 	           member="team_leader"
 	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
 	           messageId={id}
+	           timestamp={timestamp}
 	           isStreaming={isStreaming}
+	           hideMeta={hideMeta}
 	           showAvatar={showAvatar}
 	           fileItems={fileItems}
 	           disableA2UIInteraction={disableA2UIInteraction}
@@ -652,9 +670,10 @@ export const MessageItem = memo(function MessageItem({
     );
   }
 
-  // 用户/助手消息
+  // 用户/助手消息。用户气泡剔除机器注入的 advisory 后再去掉上传文档提示块，
+  // 历史渲染只展示用户真正输入的原文。
   const isUser = role === 'user';
-  const displayContent = isUser ? stripUploadDocumentBlocks(content) : content;
+  const displayContent = isUser ? stripSwarmflowAdvisory(stripUploadDocumentBlocks(content)) : content;
   const showTTS = Boolean(
     !isUser && !isStreaming && content && (ttsSupported || audioBase64)
   );
@@ -1036,6 +1055,11 @@ function FileDownloadList({
         const downloadToken = resolveFileDownloadToken(file);
         const isSaving = savingIndex === index;
         const isSaved = savedIndex.has(index);
+        const isImage = !isSkill && Boolean(file.mime_type && file.mime_type.startsWith('image/')) && Boolean(file.download_url);
+        const isVideo = !isSkill && Boolean(file.mime_type && file.mime_type.startsWith('video/')) && Boolean(file.download_url);
+        const showImagePreview = isImage && !expired;
+        const showVideoPreview = isVideo && !expired;
+        const showPreview = showImagePreview || showVideoPreview;
         return (
           <div
             key={`${file.name}-${index}`}
@@ -1043,6 +1067,7 @@ function FileDownloadList({
             data-variant={file.name}
             className={clsx(
               'chat-panel-file-download-item group',
+              showPreview && 'chat-panel-file-download-item--with-preview',
               expired
                 ? 'chat-panel-file-download-item--expired'
                 : !onPreview && 'chat-panel-file-download-item--no-preview',
@@ -1051,6 +1076,7 @@ function FileDownloadList({
               if (!expired) onPreview?.(index);
             }}
           >
+            <div className="chat-panel-file-download-item__row">
             <button
               type="button"
               data-testid="chat-panel-file-download-preview"
@@ -1142,6 +1168,27 @@ function FileDownloadList({
                   </svg>
                 )}
               </button>
+            )}
+            </div>
+            {showImagePreview && (
+              <img
+                src={file.download_url}
+                alt={displayName}
+                className="chat-panel-file-download-image-preview"
+                data-testid="chat-panel-file-download-image-preview"
+                loading="lazy"
+              />
+            )}
+            {showVideoPreview && (
+              <video
+                controls
+                preload="metadata"
+                className="chat-panel-file-download-video-preview"
+                data-testid="chat-panel-file-download-video-preview"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <source src={file.download_url} type={file.mime_type} />
+              </video>
             )}
           </div>
         );

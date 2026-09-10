@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.runtime.mcp import state_store as state_store_mod
+from jiuwenswarm.server.runtime.mcp import registry as registry_mod
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -638,7 +640,7 @@ async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypat
     monkeypatch.setattr(
         agent_ws_server_module,
         "upsert_mcp_server",
-        lambda payload: (payload, True),
+        lambda payload, **kw: (payload, True),
     )
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
 
@@ -651,6 +653,21 @@ async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypat
         "_pre_check_mcp_server",
         staticmethod(_pre_check_ok),
     )
+
+    # Mock the live-connect probe: success → record is flipped to connected
+    # and reload runs (this is the path that was missing before the fix; an
+    # unreachable MCP would otherwise be persisted as "connected").
+    state_flips = []
+
+    async def _probe_ok(_name):
+        return True, ""
+
+    monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe_ok)
+
+    def _set_state(name, *, state):
+        state_flips.append((name, state))
+
+    monkeypatch.setattr(state_store_mod, "set_mcp_state", _set_state)
 
     called = {"reload": 0}
 
@@ -673,10 +690,217 @@ async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypat
 
     await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
     assert called["reload"] == 1
+    assert state_flips == [("demo", "connected")], "probe success must flip to connected"
     assert fake_ws.sent == [
         {
             "response_id": "req-mcp-add",
             "payload": {"type": "added", "name": "demo", "applied": True},
+            "ok": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_mcp_add_probe_fails_rolls_back(server, fake_ws, monkeypatch):
+    """add with a failing live-probe must roll back to "registered" and NOT
+    reload — an unreachable MCP must never be persisted as "connected"."""
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "upsert_mcp_server",
+        lambda payload, **kw: (payload, True),
+    )
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
+
+    async def _pre_check_ok(_payload):
+        return True, "pre-check ok"
+
+    monkeypatch.setattr(
+        agent_ws_server_module.AgentWebSocketServer,
+        "_pre_check_mcp_server",
+        staticmethod(_pre_check_ok),
+    )
+
+    async def _probe_fail(_name):
+        return False, "stdio spawn failed: handshake timeout"
+
+    monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe_fail)
+
+    rolled_back = {"name": None}
+
+    def _rollback(name):
+        rolled_back["name"] = name
+
+    monkeypatch.setattr(registry_mod, "rollback_failed_connect", _rollback)
+
+    called = {"reload": 0}
+
+    async def _reload(_config, _env):
+        called["reload"] += 1
+
+    monkeypatch.setattr(server.get_agent_manager(), "reload_agents_config", _reload)
+    request = AgentRequest(
+        request_id="req-mcp-add-fail",
+        channel_id="tui",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={
+            "action": "add",
+            "name": "demo",
+            "transport": "stdio",
+            "command": "python",
+            "args": ["server.py"],
+        },
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+    assert rolled_back["name"] == "demo", "probe failure must roll back the record"
+    assert called["reload"] == 0, "reload must not run when probe fails"
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-mcp-add-fail",
+            "payload": {
+                "type": "add_failed",
+                "name": "demo",
+                "error": "stdio spawn failed: handshake timeout",
+                "code": "MCP_UNREACHABLE",
+            },
+            "ok": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_mcp_add_unchanged_skips_probe(server, fake_ws, monkeypatch):
+    """Re-adding an identical MCP (config unchanged) must NOT downgrade it to
+    "connecting" or run the live probe — the record keeps "connected" and no
+    reload/probe runs."""
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_mcp_server_config",
+        # old_item carries internal fields (server_id_scope) that
+        # _normalize_mcp_payload never emits — the diff must strip them,
+        # else a state.json MCP always looks "changed" and gets probed.
+        lambda name: {
+            "name": name, "enabled": True, "transport": "sse",
+            "url": "http://127.0.0.1:9000/sse",
+            "server_id_scope": "mcp:demo",
+        },
+    )
+    upsert_calls = []
+
+    def _upsert(payload, *, state="connected"):
+        upsert_calls.append((payload.get("name"), state))
+        return payload, False
+
+    monkeypatch.setattr(agent_ws_server_module, "upsert_mcp_server", _upsert)
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
+
+    # Bypass the real HTTP pre-check so the unchanged-re-add path is reached.
+    async def _pre_check_ok(_payload):
+        return True, "pre-check ok"
+
+    monkeypatch.setattr(
+        agent_ws_server_module.AgentWebSocketServer,
+        "_pre_check_mcp_http_auth",
+        staticmethod(_pre_check_ok),
+    )
+
+    probe_called = {"n": 0}
+
+    async def _probe(_name):
+        probe_called["n"] += 1
+        return True, ""
+
+    monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe)
+    monkeypatch.setattr(
+        server.get_agent_manager(), "reload_agents_config", lambda _c, _e: None
+    )
+    request = AgentRequest(
+        request_id="req-mcp-add-unchanged",
+        channel_id="tui",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={
+            "action": "add",
+            "name": "demo",
+            "transport": "sse",
+            "url": "http://127.0.0.1:9000/sse",
+            "enabled": True,
+        },
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+    assert upsert_calls == [("demo", "connected")], "unchanged re-add must persist connected, not connecting"
+    assert probe_called["n"] == 0, "unchanged re-add must not run the live probe"
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-mcp-add-unchanged",
+            "payload": {"type": "updated", "name": "demo", "applied": True},
+            "ok": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_mcp_update_config_yaml_skips_probe(server, fake_ws, monkeypatch):
+    """A config.yaml legacy-stock MCP has no connection_state, so the probe
+    (and its state.json-only rollback) must be skipped — else a probe failure
+    rolls back to nothing and leaves the broken config.yaml entry in place."""
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_mcp_server_config",
+        lambda name: {"name": name, "enabled": True, "transport": "sse", "url": "http://old:9000/sse"},
+    )
+    # Pretend the MCP is legacy stock living in config.yaml.
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_config_yaml_mcp_servers",
+        lambda: [{"name": "demo", "enabled": True, "transport": "sse", "url": "http://old:9000/sse"}],
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "upsert_mcp_server",
+        lambda payload, **kw: (payload, False),
+    )
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
+
+    async def _pre_check_ok(_payload):
+        return True, "pre-check ok"
+
+    monkeypatch.setattr(
+        agent_ws_server_module.AgentWebSocketServer,
+        "_pre_check_mcp_http_auth",
+        staticmethod(_pre_check_ok),
+    )
+
+    probe_called = {"n": 0}
+
+    async def _probe(_name):
+        probe_called["n"] += 1
+        return True, ""
+
+    monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe)
+
+    async def _reload(_config, _env):
+        return None
+
+    monkeypatch.setattr(server.get_agent_manager(), "reload_agents_config", _reload)
+    request = AgentRequest(
+        request_id="req-mcp-update-yaml",
+        channel_id="tui",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={"action": "update", "name": "demo", "url": "http://new:9000/sse"},
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+    assert probe_called["n"] == 0, "config.yaml legacy stock must skip the live probe"
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-mcp-update-yaml",
+            "payload": {
+                "type": "updated",
+                "name": "demo",
+                "applied": True,
+                "item": {"name": "demo", "enabled": True, "transport": "sse", "url": "http://new:9000/sse"},
+            },
             "ok": True,
         }
     ]
@@ -750,9 +974,17 @@ async def test_handle_command_mcp_update(server, fake_ws, monkeypatch):
     monkeypatch.setattr(
         agent_ws_server_module,
         "upsert_mcp_server",
-        lambda payload: (payload, False),
+        lambda payload, **kw: (payload, False),
     )
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
+
+    # update branch also runs the live-connect probe before flipping to
+    # connected — mock it as success so reload runs and "updated" is returned.
+    async def _probe_ok(_name):
+        return True, ""
+
+    monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe_ok)
+    monkeypatch.setattr(state_store_mod, "set_mcp_state", lambda name, *, state: None)
 
     async def _reload(_config, _env):
         return None
@@ -792,7 +1024,7 @@ async def test_handle_command_mcp_add_http_auth_rejected(server, fake_ws, monkey
     monkeypatch.setattr(
         agent_ws_server_module,
         "upsert_mcp_server",
-        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+        lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
 
@@ -848,7 +1080,7 @@ async def test_handle_command_mcp_add_http_timeout(server, fake_ws, monkeypatch)
     monkeypatch.setattr(
         agent_ws_server_module,
         "upsert_mcp_server",
-        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+        lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
 
@@ -889,7 +1121,7 @@ async def test_handle_command_mcp_add_http_passed(server, fake_ws, monkeypatch):
     monkeypatch.setattr(
         agent_ws_server_module,
         "upsert_mcp_server",
-        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+        lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
 
@@ -901,6 +1133,14 @@ async def test_handle_command_mcp_add_http_passed(server, fake_ws, monkeypatch):
         "_pre_check_mcp_http_auth",
         staticmethod(_pre_check_ok),
     )
+
+    # pre-check passes → add branch runs the live probe before flipping to
+    # connected; mock probe success so reload runs and "added" is returned.
+    async def _probe_ok(_name):
+        return True, ""
+
+    monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe_ok)
+    monkeypatch.setattr(state_store_mod, "set_mcp_state", lambda name, *, state: None)
 
     called = {"reload": 0}
 
@@ -940,7 +1180,7 @@ async def test_handle_command_mcp_add_stdio_command_not_found(server, fake_ws, m
     monkeypatch.setattr(
         agent_ws_server_module,
         "upsert_mcp_server",
-        lambda payload: (upsert_calls.append(payload), (payload, True))[1],
+        lambda payload, **kw: (upsert_calls.append(payload), (payload, True))[1],
     )
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
 
@@ -987,7 +1227,7 @@ async def test_handle_command_mcp_update_http_auth_rejected(server, fake_ws, mon
     monkeypatch.setattr(
         agent_ws_server_module,
         "upsert_mcp_server",
-        lambda payload: (upsert_calls.append(payload), (payload, False))[1],
+        lambda payload, **kw: (upsert_calls.append(payload), (payload, False))[1],
     )
     monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {"mcp": {"servers": []}})
 
@@ -1033,7 +1273,7 @@ async def test_handle_command_mcp_update_http_auth_rejected(server, fake_ws, mon
 async def test_handle_command_mcp_minimal_flow_add_list_disable(server, fake_ws, monkeypatch):
     state = {"servers": []}
 
-    def _upsert(payload):
+    def _upsert(payload, **kw):
         state["servers"] = [item for item in state["servers"] if item.get("name") != payload.get("name")]
         state["servers"].append(dict(payload))
         return payload, True
@@ -1063,6 +1303,14 @@ async def test_handle_command_mcp_minimal_flow_add_list_disable(server, fake_ws,
         "_pre_check_mcp_http_auth",
         staticmethod(_pre_check_ok),
     )
+
+    # add branch runs the live probe before flipping to connected — mock
+    # success so the flow (add→list→disable) proceeds without real I/O.
+    async def _probe_ok(_name):
+        return True, ""
+
+    monkeypatch.setattr(server.get_agent_manager(), "probe_mcp_live_connection", _probe_ok)
+    monkeypatch.setattr(state_store_mod, "set_mcp_state", lambda name, *, state: None)
 
     async def _reload(_config, _env):
         return None

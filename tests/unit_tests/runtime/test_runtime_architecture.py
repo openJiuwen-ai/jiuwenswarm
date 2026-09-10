@@ -322,3 +322,45 @@ def test_agentserver_session_delete_is_transport_only() -> None:
                 violations.append(f"{node.lineno}: import {node.module}")
 
     assert violations == []
+
+
+def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    handlers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_handle_session_switch"
+    ]
+    assert len(handlers) == 1
+    handler = handlers[0]
+    called_attributes = {
+        node.func.attr
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    called_names = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert {
+        "_execution_runtime",
+        "prepare_session_switch",
+        "commit_session_provision",
+    } <= called_attributes
+    assert {
+        "SessionSwitchInput",
+        "SessionProvisionCommitContext",
+        "encode_agent_response_for_wire",
+        "send_wire_payload",
+    } <= called_names
+    assert {
+        "_prepare_session_switch_owner",
+        "_dispatch_session_switch_kvc",
+        "prepare_session_switch",
+    }.isdisjoint(called_names)
+    assert "get_team_manager" not in called_names
+    assert "resolve_session_switch_context" not in called_names

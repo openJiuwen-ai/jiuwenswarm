@@ -238,6 +238,7 @@ class HeartbeatRailRuntime:
             self.release_agent(session_id)
             self._deleting_sessions.discard(session_id)
             self.scheduler.resume_session(session_id)
+            await self.admission.clear_interaction_pending(session_id)
             await self.admission.unblock_heartbeats(session_id)
 
     async def _sync_session_agent(

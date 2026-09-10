@@ -297,6 +297,10 @@ export interface TeamTaskEvent {
   content?: string;
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
+  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
+  progress_frozen?: boolean;
+  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
+  progress_frozen_at?: number;
   // Truncation observability flags — backend may set these on team.task.created/
   // updated events when the title/content exceeded the wire limit. Purely
   // passthrough: the store does not render a badge; the inline marker
@@ -329,6 +333,10 @@ export interface TeamTask {
   files?: string[];
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
+  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
+  progress_frozen?: boolean;
+  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
+  progress_frozen_at?: number;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these
@@ -442,8 +450,6 @@ export interface SessionRuntime {
   enabledMcps: string[];
   /** 是否已从后端快照恢复，或已由用户在本地明确修改。 */
   extensionsHydrated: boolean;
-  /** SwarmFlow 是否激活（曾收到过 swarmflow 事件即置真，粘性） */
-  swarmflowActive: boolean;
   /** 本会话是否启用 swarmflow（会话级，随 chat.send 下发） */
   enableSwarmflow: boolean;
   /** 本会话 swarmflow token 上限（留空=不限） */
@@ -477,7 +483,6 @@ function createEmptyRuntime(sessionId?: string): SessionRuntime {
     enabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
-    swarmflowActive: false,
     enableSwarmflow: false,
     swarmflowBudget: null,
     workflowRuns: [],
@@ -587,8 +592,7 @@ interface SessionState {
   /** 增量合并一条 workflow 更新到 workflowRuns */
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
-  setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;  /** 置位 swarmflowActive 粘性视图标志（置真后不再回 false）；后端 swarmflow.activated 事件专用 */
-  setSwarmflowViewActive: (sessionId: string) => void;
+  setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
   /** 懒加载 phase 完整 agents（command.workflows get_phase） */
   loadPhaseAgents: (
     sessionId: string,
@@ -957,9 +961,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (existingIndex >= 0) {
         const existing = runtime.teamTasks[existingIndex];
         const updatedTasks = [...runtime.teamTasks];
+        // The board's visual progress is eased from `timestamp` (task start).
+        // A later status event must not restart that clock — pause → resume
+        // would otherwise drop the bar back to 10%.
+        const frozen = task.progress_frozen ?? existing.progress_frozen;
         updatedTasks[existingIndex] = {
           ...existing,
           ...task,
+          timestamp: existing.timestamp ?? task.timestamp,
+          progress_frozen: frozen,
+          progress_frozen_at: frozen
+            ? (existing.progress_frozen ? existing.progress_frozen_at : task.timestamp)
+            : undefined,
           // An event without an explicit status (e.g. a content-only update)
           // must not reset the task; keep the existing status.
           status: task.status ?? existing.status,
@@ -1591,7 +1604,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            swarmflowActive: true,
             workflowRuns: applyWorkflowUpdateImpl(runtime.workflowRuns, workflow),
           },
         },
@@ -1660,19 +1672,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             enableSwarmflow: active,
             swarmflowBudget: nextBudget,
           },
-        },
-      };
-    });
-  },
-
-  setSwarmflowViewActive: (sessionId) => {
-    set((state) => {
-      const rt = state.runtimes[sessionId];
-      if (!rt) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...rt, swarmflowActive: true },
         },
       };
     });

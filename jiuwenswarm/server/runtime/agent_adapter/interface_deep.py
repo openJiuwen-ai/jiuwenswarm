@@ -200,7 +200,6 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     build_permission_rail,
     convert_interactions_to_ask_user_question,
 )
-from jiuwenswarm.common.cron_session import is_cron_execution_session
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
@@ -316,6 +315,17 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 )
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
+from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
+    generate_video,
+    check_video_status,
+    video_gen_configured,
+    video_gen_enabled,
+)
+from jiuwenswarm.agents.harness.common.tools.visual_gen_tools import (
+    generate_visual,
+    visual_gen_configured,
+    visual_gen_enabled,
+)
 
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
@@ -422,6 +432,7 @@ from jiuwenswarm.common.utils import (
     get_default_project_session_workspace_dir,
     get_env_file,
     get_runtime_state_path,
+    mask_sensitive,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.mode_matrix import (
@@ -1541,6 +1552,8 @@ class JiuWenSwarmDeepAdapter:
         self._audio_tools_registered: bool = False
         self._video_tool_registered: bool = False
         self._image_gen_tool_registered: bool = False
+        self._video_gen_tool_registered: bool = False
+        self._visual_gen_tool_registered: bool = False
         self._model: Model | None = None
         self._model_client_config: ModelClientConfig | None = None
         self._model_request_config: ModelRequestConfig | None = None
@@ -1634,6 +1647,8 @@ class JiuWenSwarmDeepAdapter:
         self._audio_model_config: AudioModelConfig | None = None
         self._video_model_config: bool = False
         self._image_gen_model_config: bool = False
+        self._video_gen_model_config: bool = False
+        self._visual_gen_model_config: bool = False
         self._vision_tools: list[Any] = []
         self._audio_tools: list[Any] = []
         self._instance_overrides: dict[str, Any] = {}
@@ -1735,6 +1750,7 @@ class JiuWenSwarmDeepAdapter:
         self._send_file_toolkit: SendFileToolkit | None = None
         self._runtime_state_write_task: asyncio.Task[None] | None = None
         self._channel_id: str | None = None
+        self._is_cron_execution: bool = False
         # (name, load_record, manifest.version)
         self._loaded_agent_template: tuple[str, Any, str] | None = None
         # name → (load_record, manifest.version)
@@ -3471,29 +3487,6 @@ class JiuWenSwarmDeepAdapter:
         return ""
 
     @staticmethod
-    def _resolve_managed_browser_type_from_config(
-        config_base: dict[str, Any] | None = None,
-    ) -> str:
-        """Resolve browser type: auto | chrome | msedge."""
-        if config_base is None:
-            config_base = get_config()
-        if not isinstance(config_base, dict):
-            return "auto"
-        config = resolve_env_vars(config_base)
-        browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
-        if not isinstance(browser_cfg, dict):
-            return "auto"
-        raw = browser_cfg.get("browser_type", "auto")
-        if not isinstance(raw, str):
-            return "auto"
-        normalized = raw.strip().lower()
-        if normalized in {"chrome", "google-chrome", "google_chrome"}:
-            return "chrome"
-        if normalized in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-            return "msedge"
-        return "auto"
-
-    @staticmethod
     def _resolve_headless_from_config(
         config_base: dict[str, Any] | None = None,
     ) -> bool:
@@ -3635,35 +3628,14 @@ class JiuWenSwarmDeepAdapter:
         else:
             os.environ.pop("BROWSER_MANAGED_BINARY", None)
 
-        browser_type = self._resolve_managed_browser_type_from_config(config_base)
-        if browser_type and browser_type != "auto":
-            os.environ["BROWSER_MANAGED_TYPE"] = browser_type
-        else:
-            os.environ.pop("BROWSER_MANAGED_TYPE", None)
-
-        # Hint MCP/CDP which Chromium flavor to expect (auto → leave unset / chrome default).
-        path_l = chrome_path.replace("\\", "/").lower() if chrome_path else ""
-        path_looks_edge = bool(
-            path_l
-            and (
-                "msedge" in path_l
-                or "/microsoft/edge/" in path_l
-                or "microsoft edge" in path_l
-            )
-        )
-        if browser_type == "msedge" or path_looks_edge:
-            os.environ["PLAYWRIGHT_MCP_BROWSER"] = "msedge"
-        elif browser_type == "chrome" or chrome_path:
-            os.environ["PLAYWRIGHT_MCP_BROWSER"] = "chrome"
-        else:
-            # auto without explicit path: ManagedBrowserDriver chooses Chrome then Edge.
-            os.environ.pop("PLAYWRIGHT_MCP_BROWSER", None)
+        # Chrome-only managed runtime: clear temporary Edge-selection env leftovers.
+        os.environ.pop("BROWSER_MANAGED_TYPE", None)
+        os.environ.pop("PLAYWRIGHT_MCP_BROWSER", None)
 
         logger.info(
-            "[%s] browser runtime config: headless=%s, browser_type=%s, chrome_path=%s",
+            "[%s] browser runtime config: headless=%s, chrome_path=%s",
             type(self).__name__,
             headless,
-            browser_type or "auto",
             chrome_path or "<auto>",
         )
 
@@ -4130,7 +4102,10 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
                 if not first_error:
-                    first_error = str(exc) or repr(exc)
+                    # exc may carry the full McpServerConfig (env with plaintext
+                    # tokens) serialized by openjiuwen build_error — mask before
+                    # propagating so it never reaches the frontend / logs as-is.
+                    first_error = mask_sensitive(str(exc) or repr(exc))
         if not applied_any:
             raise RuntimeError(first_error or f"MCP '{name}' register failed")
         return applied_any
@@ -4605,6 +4580,34 @@ class JiuWenSwarmDeepAdapter:
             return False
         return True
 
+    @staticmethod
+    def _build_video_gen_model_config(
+        config_base: dict[str, Any],
+    ) -> bool:
+        """Build DeepAgent video generation config from service config/env mapping."""
+        _ = config_base
+        if not video_gen_enabled():
+            logger.info("[JiuWenSwarmDeepAdapter] video_gen tools skipped: Video processing disabled")
+            return False
+        if not video_gen_configured():
+            logger.info("[JiuWenSwarmDeepAdapter] video_gen tools skipped: Video Model config incomplete")
+            return False
+        return True
+
+    @staticmethod
+    def _build_visual_gen_model_config(
+        config_base: dict[str, Any],
+    ) -> bool:
+        """Build DeepAgent image generation config from service config/env mapping."""
+        _ = config_base
+        if not visual_gen_enabled():
+            logger.info("[JiuWenSwarmDeepAdapter] visual_gen tool skipped: Visual processing disabled")
+            return False
+        if not visual_gen_configured():
+            logger.info("[JiuWenSwarmDeepAdapter] visual_gen tool skipped: Visual processing config incomplete")
+            return False
+        return True
+
     def _iter_runtime_audio_tools(self, agent_id: str | None) -> list[Any]:
         """Return audio tools only while the audio capability is enabled."""
         if self._audio_model_config is None:
@@ -4626,6 +4629,8 @@ class JiuWenSwarmDeepAdapter:
         self._audio_model_config = self._build_audio_model_config(config_base)
         self._video_model_config = self._build_video_model_config(config_base)
         self._image_gen_model_config = self._build_image_gen_model_config(config_base)
+        self._video_gen_model_config = self._build_video_gen_model_config(config_base)
+        self._visual_gen_model_config = self._build_visual_gen_model_config(config_base)
 
         for tool in self._vision_tools:
             tool.vision_model_config = self._vision_model_config
@@ -5108,8 +5113,45 @@ class JiuWenSwarmDeepAdapter:
             warn_label="generate_image tool",
         )
 
+        _, self._video_gen_tool_registered = self._sync_tool_group(
+            current_tools=mark_stateless([generate_video, check_video_status]),
+            registered=self._video_gen_tool_registered,
+            enabled=bool(self._video_gen_model_config),
+            create_fn=lambda: mark_stateless([generate_video, check_video_status]),
+            warn_label="generate_video tools",
+        )
+
+        _, self._visual_gen_tool_registered = self._sync_tool_group(
+            current_tools=mark_stateless([generate_visual]),
+            registered=self._visual_gen_tool_registered,
+            enabled=bool(self._visual_gen_model_config),
+            create_fn=lambda: mark_stateless([generate_visual]),
+            warn_label="generate_visual tool",
+        )
+
+    def _invalidate_stale_paid_search_tool(self) -> None:
+        """Re-register paid search when its configured-provider metadata changes."""
+        if self._paid_search_tool is None or not self._paid_search_registered:
+            return
+        current = self._paid_search_tool.card
+        updated = WebPaidSearchTool(
+            language=self._resolve_runtime_language(), agent_id=self._tool_owner_id()
+        ).card
+        if current.description == updated.description and current.input_params == updated.input_params:
+            return
+        self._remove_registered_tools([self._paid_search_tool])
+        self._prune_tool_cards({current.name})
+        self._paid_search_tool = None
+        self._paid_search_registered = False
+
+    def refresh_paid_search_tool_for_runtime(self) -> None:
+        """Refresh paid search on a live adapter without creating its runtime."""
+        if self._instance is not None:
+            self._sync_paid_search_tool_for_runtime()
+
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid-search tool registration after config reload."""
+        self._invalidate_stale_paid_search_tool()
         # The owner id, not ``card.id``; see ``_sync_multimodal_tools_for_runtime``.
         agent_id = self._tool_owner_id()
         tools, self._paid_search_registered = self._sync_tool_group(
@@ -7529,7 +7571,7 @@ class JiuWenSwarmDeepAdapter:
         self, config_base: dict[str, Any]
     ) -> list[_RailBuildInfo]:
         """PermissionInterruptRail recipe, omitted for unattended cron sessions."""
-        if is_cron_execution_session(self._parent_session_id):
+        if self._is_cron_execution:
             logger.info(
                 "[JiuWenSwarmDeepAdapter] skip PermissionInterruptRail for cron session %s",
                 self._parent_session_id,
@@ -7664,7 +7706,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _update_permission_rail(self, config_base: dict[str, Any] | None) -> None:
         """原地更新已有 PermissionRail 配置，或在首次启用时新建。"""
-        if is_cron_execution_session(self._parent_session_id):
+        if self._is_cron_execution:
             logger.info(
                 "[JiuWenSwarmDeepAdapter] skip PermissionInterruptRail hot-update "
                 "for cron session %s",
@@ -7922,6 +7964,34 @@ class JiuWenSwarmDeepAdapter:
             except Exception as exc:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] generate_image tool registration failed: %s",
+                    exc,
+                )
+
+        # generate_video/check_video_status tools: dedicated video_gen model config
+        self._video_gen_tool_registered = False
+        if self._video_gen_model_config:
+            try:
+                self._register_shared_tool(generate_video)
+                tool_cards.append(generate_video.card)
+                self._register_shared_tool(check_video_status)
+                tool_cards.append(check_video_status.card)
+                self._video_gen_tool_registered = True
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] generate_video tools registration failed: %s",
+                    exc,
+                )
+
+        # generate_visual tool: dedicated visual_gen model config
+        self._visual_gen_tool_registered = False
+        if self._visual_gen_model_config:
+            try:
+                self._register_shared_tool(generate_visual)
+                tool_cards.append(generate_visual.card)
+                self._visual_gen_tool_registered = True
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] generate_visual tool registration failed: %s",
                     exc,
                 )
 
@@ -8197,6 +8267,7 @@ class JiuWenSwarmDeepAdapter:
             (config or {}).get("channel_id") if isinstance(config, dict) else ""
             or ""
         ).strip() or getattr(self, "_channel_id", "")
+        self._is_cron_execution = self._channel_id == "__cron__"
 
         await self.set_checkpoint()
         await asyncio.sleep(0)
@@ -8493,6 +8564,11 @@ class JiuWenSwarmDeepAdapter:
         if self._is_session_scoped_adapter:
             return
         if not target_sid:
+            if not reload_scopes or "search" in reload_scopes:
+                # Refresh the small tool surface now, including running sessions;
+                # the full agent/model reload remains lazy at the request boundary.
+                for _, adapter in self._iter_session_adapters_for_reload(None):
+                    adapter.refresh_paid_search_tool_for_runtime()
             self._mark_session_adapters_stale_for_reload(
                 config_base,
                 env_overrides,

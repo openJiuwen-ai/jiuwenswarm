@@ -38,6 +38,7 @@ import {
   detectPhaseLoops,
   sortPhasesByExecution,
   computeLoopStatus,
+  computeSessionStatus,
   findActiveIterationIndex,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
@@ -426,11 +427,15 @@ function addPhaseChildren(
       drawnSessions.add(session.label);
       const representative = session.members[0];
       if (!representative) continue;
+      // 代表节点状态按 members 聚合：Turn0 完成不代表整张卡完成。
+      const status = computeSessionStatus(session.members);
+      const nodeAgent =
+        status === representative.status ? representative : { ...representative, status };
       const nodeId = `${phaseId}:${representative.id}`;
       nodes.push({
         id: nodeId,
         type: 'sessionNode',
-        data: { agent: representative, members: session.members, run, sessionId },
+        data: { agent: nodeAgent, members: session.members, run, sessionId },
         position: { x: 0, y: 0 },
       });
       edges.push({
@@ -438,7 +443,7 @@ function addPhaseChildren(
         source: phaseId,
         target: nodeId,
         type: 'default',
-        animated: representative.status === 'running',
+        animated: status === 'running',
       });
       continue;
     }

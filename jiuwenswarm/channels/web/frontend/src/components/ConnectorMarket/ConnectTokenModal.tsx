@@ -78,7 +78,7 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           <EntityAvatar
             iconUrl={iconUrl}
             avatar={avatar}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-semibold"
           />
         </div>
 

@@ -233,7 +233,7 @@ export function SkillPickerPanel({
           >
             <div className="chat-skill-select__item-main" data-testid="chat-panel-skill-select-item-main">
               <div className="chat-skill-select__item-head">
-                <div className={`chat-skill-select__avatar ${avatar.color}`} data-testid="chat-panel-skill-select-item-avatar">
+                <div className="chat-skill-select__avatar" style={avatar.style} data-testid="chat-panel-skill-select-item-avatar">
                   {avatar.firstChar}
                 </div>
                 <div className="chat-skill-select__item-name" data-testid="chat-panel-skill-select-item-name">{skill.display_name || skill.name}</div>

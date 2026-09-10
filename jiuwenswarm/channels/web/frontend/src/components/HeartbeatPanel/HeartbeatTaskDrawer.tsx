@@ -73,10 +73,6 @@ export default function HeartbeatTaskDrawer({ mode, initial, meta, submitting, e
   }, [form.schedule.kind]);
 
   const concurrencyOptions = meta.concurrency_policies.map((p) => ({ value: p, label: t(`heartbeat.concurrencyPolicy.${p}`) }));
-  const sessionDeletedOptions = meta.session_deleted_policies.map((p) => ({
-    value: p,
-    label: t(`heartbeat.sessionDeletedPolicy.${p}`),
-  }));
 
   // once 模式只触发一次，「最大触发次数」没有意义，整块不显示，提交时也强制 null
   const isOnce = form.schedule.kind === 'once';
@@ -160,22 +156,6 @@ export default function HeartbeatTaskDrawer({ mode, initial, meta, submitting, e
             options={concurrencyOptions}
           />
         </div>
-        {mode === 'edit' && (
-          <div className="flex-1" data-testid="heartbeat-panel-session-deleted-policy-field">
-            <label
-              className="mb-1 block text-sm text-text-muted"
-              title={t('heartbeat.drawer.fieldSessionDeletedPolicyHint') ?? undefined}
-              data-testid="heartbeat-panel-session-deleted-policy-label"
-            >
-              {t('heartbeat.drawer.fieldSessionDeletedPolicy')}
-            </label>
-            <SimpleSelect
-              value={form.sessionDeletedPolicy}
-              onChange={(v) => setForm({ ...form, sessionDeletedPolicy: v as HeartbeatSessionDeletedPolicy })}
-              options={sessionDeletedOptions}
-            />
-          </div>
-        )}
       </div>
       {!isOnce && (
         <div data-testid="heartbeat-panel-max-runs-field">

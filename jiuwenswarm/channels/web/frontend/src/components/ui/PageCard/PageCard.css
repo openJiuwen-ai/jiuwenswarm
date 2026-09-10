@@ -1,0 +1,212 @@
+.page-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 160px;
+  min-width: 360px;
+  overflow: visible;
+  padding: 24px;
+  gap: 18px;
+  background: var(--color-surface-card);
+  border: none;
+  border-radius: 16px;
+  outline: 1px solid var(--color-border-default);
+  cursor: pointer;
+  text-align: left;
+  transition: outline-color var(--duration-fast) ease, box-shadow var(--duration-fast) ease;
+}
+
+.page-card:hover {
+  outline-color: transparent;
+  box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
+}
+
+.page-card:focus-within {
+  box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
+}
+
+@media (min-width: 1600px) {
+  .page-card {
+    max-width: 456px;
+  }
+}
+
+.page-card__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.page-card--single-line .page-card__header {
+  align-items: center;
+}
+
+.page-card__avatar {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--color-text-inverse);
+}
+
+.page-card__avatar-letter {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-size: inherit;
+  font-weight: inherit;
+  border-radius: inherit;
+}
+
+.page-card__avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.page-card__title-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.page-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.page-card__title {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-card__title-end {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.page-card__label {
+  display: flex;
+  min-width: 0;
+}
+
+.page-card__action {
+  flex-shrink: 0;
+}
+
+/* 标签列表容器：单行 nowrap，溢出由内部 JS 测量控制 */
+.page-card__tags {
+  --page-card-tag-overflow-width: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* 单个标签：参考 SkillPanel 样式（h-5 / px-2 / rounded / text-xs / bg-neutral） */
+.page-card__tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--color-tag-neutral-surface);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 溢出指示器（三个点的容器） */
+.page-card__tag-overflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--page-card-tag-overflow-width);
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+/* 测量层：绝对定位到屏幕外，不可见，用于读取每个标签的真实渲染宽度 */
+.page-card__tags-measure {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  display: flex;
+  gap: 6px;
+  visibility: hidden;
+  width: max-content;
+  pointer-events: none;
+}
+
+/* 操作按钮统一容器：32×32 圆形底座 + hover 变色 */
+.page-card-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--color-skill-card-action-surface);
+  color: var(--color-text-primary);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.page-card-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.page-card-action:hover {
+  background: var(--color-skill-card-action-hover-surface);
+  color: var(--color-chat-accent);
+}
+
+.page-card-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-card__body {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 22px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* hover 时才显示的按钮组（菜单 / 去试试等），默认透明 */
+.page-card-actions-hover {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.page-card:hover .page-card-actions-hover {
+  opacity: 1;
+}

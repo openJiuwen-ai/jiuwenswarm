@@ -1266,6 +1266,7 @@ class GitDiffWatcherRegistry:
                 "branch": repo.get("branch"),
                 "head": repo.get("head"),
                 "transient": repo.get("transient", False),
+                "repo_is_parent_of_project": repo.get("repo_is_parent_of_project", False),
             },
             "current": self._summary_entry(current) if current else None,
             "last_turn": self._turn_summary_entry(last_turn) if last_turn else None,

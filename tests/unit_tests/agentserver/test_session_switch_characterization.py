@@ -1,11 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Behavior contract for ``session.switch`` before Runtime migration."""
+"""Behavior contract for ``session.switch`` across the Runtime boundary."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 from weakref import WeakValueDictionary
 
@@ -15,18 +16,101 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime import (
+    AgentRuntime,
+    SessionProvisionCommitContext,
+    SessionProvisionCommitTiming,
+    SessionProvisionState,
+    SessionSwitchInput,
+    SessionSwitchResult,
+)
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketServer
 
 
 class RecordingWebSocket:
-    def __init__(self, trace: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        trace: list[str] | None = None,
+        *,
+        send_error: Exception | None = None,
+    ) -> None:
         self.trace = trace if trace is not None else []
         self.sent: list[dict[str, Any]] = []
+        self.send_error = send_error
 
     async def send(self, payload: str) -> None:
         self.trace.append("response.send")
+        if self.send_error is not None:
+            raise self.send_error
         self.sent.append(json.loads(payload))
+
+
+class SwitchRuntime:
+    """Small Runtime-boundary double; it contains no Server business logic."""
+
+    def __init__(
+        self,
+        trace: list[str] | None = None,
+        *,
+        result_mode: str = "agent.plan",
+    ) -> None:
+        self.agent_manager = object()
+        self.trace = trace if trace is not None else []
+        self.result_mode = result_mode
+        self.start_count = 0
+        self.inputs: list[SessionSwitchInput] = []
+        self.contexts: list[SessionProvisionCommitContext] = []
+        self.prepared: list[Any] = []
+        self.abort_calls: list[Any] = []
+        self.prepare_hook: Any = None
+        self.commit_hook: Any = None
+
+    async def start(self) -> None:
+        self.start_count += 1
+
+    async def prepare_session_switch(
+        self,
+        provision_input: SessionSwitchInput,
+    ) -> Any:
+        self.trace.append("switch.prepare")
+        self.inputs.append(provision_input)
+        if self.prepare_hook is not None:
+            await self.prepare_hook(provision_input)
+        prepared = SimpleNamespace(
+            state=SessionProvisionState.PREPARED,
+            result=SessionSwitchResult(
+                channel_id=provision_input.channel_id,
+                session_id=provision_input.target_session_id,
+                mode=self.result_mode,
+            ),
+        )
+        self.prepared.append(prepared)
+        return prepared
+
+    async def commit_session_provision(
+        self,
+        prepared: Any,
+        *,
+        timing: SessionProvisionCommitTiming,
+        context: SessionProvisionCommitContext,
+    ) -> SessionSwitchResult:
+        assert timing is SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
+        self.trace.append("switch.kvc")
+        self.contexts.append(context)
+        prepared.state = SessionProvisionState.COMMITTING
+        if self.commit_hook is not None:
+            try:
+                await self.commit_hook(context)
+            except BaseException:
+                prepared.state = SessionProvisionState.COMMITTED
+                raise
+        prepared.state = SessionProvisionState.COMMITTED
+        return prepared.result
+
+    async def abort_session_provision(self, prepared: Any) -> None:
+        self.abort_calls.append(prepared)
+        prepared.state = SessionProvisionState.ABORTED
 
 
 class SessionSwitchServer(AgentWebSocketServer):
@@ -52,7 +136,10 @@ class SessionSwitchServer(AgentWebSocketServer):
     async def _dispatch_gateway_adapter_request(self, *_args: Any) -> bool:
         return False
 
-    async def _trigger_before_chat_request_hook(self, _request: AgentRequest) -> None:
+    async def _trigger_before_chat_request_hook(
+        self,
+        _request: AgentRequest,
+    ) -> None:
         return None
 
 
@@ -65,9 +152,12 @@ def isolated_switch_locks(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def make_server() -> SessionSwitchServer:
+def make_server(runtime: Any = None) -> SessionSwitchServer:
+    runtime = runtime or SwitchRuntime()
     server = SessionSwitchServer.__new__(SessionSwitchServer)
     server._adapter_registry = AdapterRegistry()
+    server._agent_manager = runtime.agent_manager
+    server._runtime = runtime
     return server
 
 
@@ -76,7 +166,7 @@ def switch_request(
     request_id: str = "switch-request",
     channel_id: str | None = "web",
     session_id: str = "request-session",
-    params: dict[str, Any] | None = None,
+    params: Any = None,
     metadata: dict[str, Any] | None = None,
 ) -> AgentRequest:
     return AgentRequest(
@@ -110,28 +200,11 @@ def switch_wire(
 
 
 @pytest.mark.asyncio
-async def test_success_preserves_complete_wire_metadata_and_order(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = make_server()
+async def test_success_preserves_complete_wire_metadata_and_order() -> None:
     trace: list[str] = []
+    runtime = SwitchRuntime(trace, result_mode="code.normal")
+    server = make_server(runtime)
     ws = RecordingWebSocket(trace)
-    prepare_calls: list[dict[str, Any]] = []
-    kvc_calls: list[dict[str, Any]] = []
-    context = object()
-    dispatch_signals = object()
-
-    async def prepare(**kwargs: Any) -> tuple[bool, str, Any, None, Any]:
-        trace.append("switch.prepare")
-        prepare_calls.append(kwargs)
-        return False, "code.normal", context, None, dispatch_signals
-
-    async def dispatch_kvc(**kwargs: Any) -> None:
-        trace.append("switch.kvc")
-        kvc_calls.append(kwargs)
-
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", prepare)
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", dispatch_kvc)
     metadata = {"trace_id": "switch-success", "nested": {"value": 1}}
     request = switch_request(
         request_id="switch-success",
@@ -140,6 +213,8 @@ async def test_success_preserves_complete_wire_metadata_and_order(
             "session_id": "target-session",
             "previous_session_id": "previous-session",
             "mode": "code.normal",
+            "previous_mode": "team",
+            "team": {"name": "requested-team"},
             "view_id": "view-7",
         },
         metadata=metadata,
@@ -148,26 +223,19 @@ async def test_success_preserves_complete_wire_metadata_and_order(
     await server.handle_session_switch_for_test(ws, request, asyncio.Lock())
 
     assert trace == ["switch.prepare", "switch.kvc", "response.send"]
-    assert prepare_calls == [
-        {
-            "channel_id": "web",
-            "target_session_id": "target-session",
-            "previous_session_id": "previous-session",
-            "params": request.params,
-            "reason": "session.switch: ",
-        }
+    assert runtime.inputs == [
+        SessionSwitchInput(
+            channel_id="web",
+            target_session_id="target-session",
+            previous_session_id="previous-session",
+            mode="code.normal",
+            previous_mode="team",
+            team_hint=True,
+        )
     ]
-    assert kvc_calls == [
-        {
-            "channel_id": "web",
-            "target_session_id": "target-session",
-            "previous_session_id": "previous-session",
-            "context": context,
-            "dispatch_signals": dispatch_signals,
-            "view_id": "view-7",
-        }
+    assert runtime.contexts == [
+        SessionProvisionCommitContext(foreground_scope_id="view-7")
     ]
-    assert len(ws.sent) == 1
     response = parse_agent_server_wire_unary(ws.sent[0])
     assert response.request_id == "switch-success"
     assert response.channel_id == "web"
@@ -178,6 +246,92 @@ async def test_success_preserves_complete_wire_metadata_and_order(
         "switched": True,
     }
     assert response.metadata == metadata
+
+
+@pytest.mark.asyncio
+async def test_server_crosses_real_runtime_and_provisioner_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_product_hooks,
+    )
+
+    trace: list[str] = []
+
+    class AgentManagerStub:
+        async def cancel_all_inflight_work(self, _reason: str) -> None:
+            return None
+
+        async def cleanup(self) -> None:
+            return None
+
+    class PlanControllerStub:
+        def reset_session(self, _session_id: str) -> None:
+            return None
+
+    async def initialize() -> None:
+        trace.append("runtime.start")
+
+    context = SimpleNamespace(
+        target_is_team=False,
+        previous_is_team=False,
+        resolved_mode="code.normal",
+        affinity_enabled=True,
+    )
+
+    def resolve_context(**_kwargs: Any) -> Any:
+        trace.append("runtime.switch.prepare")
+        return context
+
+    async def dispatch_signals(**kwargs: Any) -> None:
+        trace.append("runtime.switch.commit")
+        assert kwargs["view_id"] == "integration-view"
+
+    monkeypatch.setattr(
+        kv_cache_product_hooks,
+        "resolve_session_switch_context",
+        resolve_context,
+    )
+    monkeypatch.setattr(
+        kv_cache_product_hooks,
+        "dispatch_session_switch_signals",
+        dispatch_signals,
+    )
+    runtime = AgentRuntime(
+        agent_manager=AgentManagerStub(),  # type: ignore[arg-type]
+        initializer=initialize,
+        plan_controller=PlanControllerStub(),  # type: ignore[arg-type]
+    )
+    server = make_server(runtime)
+    ws = RecordingWebSocket(trace)
+
+    try:
+        await server.handle_session_switch_for_test(
+            ws,
+            switch_request(
+                params={
+                    "session_id": "integration-session",
+                    "mode": "agent.plan",
+                    "view_id": "integration-view",
+                }
+            ),
+            asyncio.Lock(),
+        )
+
+        assert trace == [
+            "runtime.start",
+            "runtime.switch.prepare",
+            "runtime.switch.commit",
+            "response.send",
+        ]
+        response = parse_agent_server_wire_unary(ws.sent[0])
+        assert response.payload == {
+            "session_id": "integration-session",
+            "mode": "code.normal",
+            "switched": True,
+        }
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -204,24 +358,24 @@ async def test_success_preserves_complete_wire_metadata_and_order(
             "request-session",
             "default",
         ),
+        (
+            ["not", "a", "mapping"],
+            "request-session",
+            "tui",
+            "request-session",
+            "tui",
+        ),
     ],
 )
 async def test_target_precedence_fallback_and_default_channel(
-    monkeypatch: pytest.MonkeyPatch,
-    params: dict[str, Any],
+    params: Any,
     request_session_id: str,
     channel_id: str | None,
     expected_target: str,
     expected_channel: str,
 ) -> None:
-    server = make_server()
-    calls: list[dict[str, Any]] = []
-
-    async def prepare(**kwargs: Any) -> tuple[bool, str, None, None, None]:
-        calls.append(kwargs)
-        return False, "agent.plan", None, None, None
-
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", prepare)
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
     ws = RecordingWebSocket()
     request = switch_request(
         channel_id=channel_id,
@@ -231,9 +385,10 @@ async def test_target_precedence_fallback_and_default_channel(
 
     await server.handle_session_switch_for_test(ws, request, asyncio.Lock())
 
-    assert calls[0]["target_session_id"] == expected_target
-    assert calls[0]["channel_id"] == expected_channel
+    assert runtime.inputs[0].target_session_id == expected_target
+    assert runtime.inputs[0].channel_id == expected_channel
     response = parse_agent_server_wire_unary(ws.sent[0])
+    assert response.channel_id == (channel_id or "")
     assert response.payload == {
         "session_id": expected_target,
         "mode": "agent.plan",
@@ -242,52 +397,38 @@ async def test_target_precedence_fallback_and_default_channel(
 
 
 @pytest.mark.asyncio
-async def test_missing_kvc_context_skips_dispatch_and_still_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = make_server()
-
-    async def prepare(**_kwargs: Any) -> tuple[bool, str, None, None, Any]:
-        return False, "agent.plan", None, None, object()
-
-    async def unexpected_dispatch(**_kwargs: Any) -> None:
-        raise AssertionError("KVC dispatch must be skipped without a context")
-
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", prepare)
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", unexpected_dispatch)
+async def test_missing_target_stays_server_validation_with_exact_error() -> None:
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
     ws = RecordingWebSocket()
+    metadata = {"trace_id": "missing-target"}
 
     await server.handle_session_switch_for_test(
         ws,
-        switch_request(params={"session_id": "target-session"}),
+        switch_request(
+            session_id="  ",
+            params={"session_id": "  "},
+            metadata=metadata,
+        ),
         asyncio.Lock(),
     )
 
     response = parse_agent_server_wire_unary(ws.sent[0])
-    assert response.ok is True
+    assert response.ok is False
     assert response.payload == {
-        "session_id": "target-session",
-        "mode": "agent.plan",
-        "switched": True,
+        "error": "session_id is required",
+        "code": "BAD_REQUEST",
     }
+    assert response.metadata == metadata
+    assert runtime.start_count == 0
+    assert runtime.inputs == []
 
 
 @pytest.mark.asyncio
-async def test_default_view_id_remains_scoped_to_server_websocket(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = make_server()
+async def test_default_view_id_remains_scoped_to_server_websocket() -> None:
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
     ws = RecordingWebSocket()
-    dispatched: list[dict[str, Any]] = []
-
-    async def prepare(**_kwargs: Any) -> tuple[bool, str, Any, None, Any]:
-        return False, "agent.plan", object(), None, object()
-
-    async def dispatch_kvc(**kwargs: Any) -> None:
-        dispatched.append(kwargs)
-
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", prepare)
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", dispatch_kvc)
 
     await server.handle_session_switch_for_test(
         ws,
@@ -295,28 +436,38 @@ async def test_default_view_id_remains_scoped_to_server_websocket(
         asyncio.Lock(),
     )
 
-    assert dispatched[0]["view_id"] == f"ws:{id(ws)}"
+    assert runtime.contexts == [
+        SessionProvisionCommitContext(
+            foreground_scope_id=f"ws:{id(ws)}",
+        )
+    ]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure_stage", ["prepare", "kvc"])
 async def test_business_failure_keeps_legacy_error_wire_through_full_message_path(
-    monkeypatch: pytest.MonkeyPatch,
     failure_stage: str,
 ) -> None:
-    server = make_server()
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
     error_message = f"{failure_stage} failed"
 
-    async def prepare(**_kwargs: Any) -> tuple[bool, str, Any, None, Any]:
-        if failure_stage == "prepare":
-            raise RuntimeError(error_message)
-        return False, "agent.plan", object(), None, object()
-
-    async def dispatch_kvc(**_kwargs: Any) -> None:
+    async def fail_prepare(_provision_input: SessionSwitchInput) -> None:
         raise RuntimeError(error_message)
 
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", prepare)
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", dispatch_kvc)
+    commit_attempts = 0
+
+    async def fail_commit(
+        _context: SessionProvisionCommitContext,
+    ) -> None:
+        nonlocal commit_attempts
+        commit_attempts += 1
+        raise RuntimeError(error_message)
+
+    if failure_stage == "prepare":
+        runtime.prepare_hook = fail_prepare
+    else:
+        runtime.commit_hook = fail_commit
     metadata = {"trace_id": f"switch-{failure_stage}-failure"}
     ws = RecordingWebSocket()
 
@@ -331,33 +482,33 @@ async def test_business_failure_keeps_legacy_error_wire_through_full_message_pat
         asyncio.Lock(),
     )
 
-    assert len(ws.sent) == 1
     response = parse_agent_server_wire_unary(ws.sent[0])
     assert response.request_id == f"switch-{failure_stage}-failure"
     assert response.channel_id == "tui"
     assert response.ok is False
     assert response.payload == {"error": error_message}
     assert response.metadata == metadata
+    if failure_stage == "kvc":
+        assert commit_attempts == 1
+        assert runtime.prepared[0].state is SessionProvisionState.COMMITTED
 
 
 @pytest.mark.asyncio
-async def test_cancelled_owner_releases_switch_lock_for_successor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = make_server()
+async def test_cancelled_prepare_releases_switch_lock_for_successor() -> None:
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
     ws = RecordingWebSocket()
     owner_entered = asyncio.Event()
     successor_entered = asyncio.Event()
     never_release = asyncio.Event()
 
-    async def prepare(**kwargs: Any) -> tuple[bool, str, None, None, None]:
-        if kwargs["target_session_id"] == "owner-session":
+    async def prepare(provision_input: SessionSwitchInput) -> None:
+        if provision_input.target_session_id == "owner-session":
             owner_entered.set()
             await never_release.wait()
         successor_entered.set()
-        return False, "agent.plan", None, None, None
 
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", prepare)
+    runtime.prepare_hook = prepare
     owner: asyncio.Task[None] | None = None
     successor: asyncio.Task[None] | None = None
     try:
@@ -393,7 +544,6 @@ async def test_cancelled_owner_releases_switch_lock_for_successor(
         )
         await asyncio.wait_for(successor_entered.wait(), timeout=1.0)
         await successor
-        assert len(ws.sent) == 1
         assert parse_agent_server_wire_unary(ws.sent[0]).payload == {
             "session_id": "successor-session",
             "mode": "agent.plan",
@@ -409,25 +559,69 @@ async def test_cancelled_owner_releases_switch_lock_for_successor(
 
 
 @pytest.mark.asyncio
-async def test_different_websockets_same_channel_can_prepare_concurrently(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_cancelled_commit_is_terminal_and_does_not_strand_lease() -> None:
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
+    ws = RecordingWebSocket()
+    commit_entered = asyncio.Event()
+    never_release = asyncio.Event()
+    commit_attempts = 0
+
+    async def commit(_context: SessionProvisionCommitContext) -> None:
+        nonlocal commit_attempts
+        commit_attempts += 1
+        commit_entered.set()
+        await never_release.wait()
+
+    runtime.commit_hook = commit
+    task = asyncio.create_task(
+        server.handle_session_switch_for_test(
+            ws,
+            switch_request(params={"session_id": "owner-session"}),
+            asyncio.Lock(),
+        )
+    )
+    try:
+        await asyncio.wait_for(commit_entered.wait(), timeout=1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert commit_attempts == 1
+        assert runtime.prepared[0].state is SessionProvisionState.COMMITTED
+        assert runtime.abort_calls == []
+        assert ws.sent == []
+        lock_key = f"{id(ws)}:web"
+        assert not agent_ws_server_module._session_switch_locks[lock_key].locked()
+    finally:
+        never_release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_websocket", [False, True])
+async def test_independent_switch_lock_scopes_can_prepare_concurrently(
+    same_websocket: bool,
 ) -> None:
-    server = make_server()
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
     first_ws = RecordingWebSocket()
-    second_ws = RecordingWebSocket()
+    second_ws = first_ws if same_websocket else RecordingWebSocket()
+    second_channel = "tui" if same_websocket else "web"
     first_entered = asyncio.Event()
     second_entered = asyncio.Event()
     release_first = asyncio.Event()
 
-    async def prepare(**kwargs: Any) -> tuple[bool, str, None, None, None]:
-        if kwargs["target_session_id"] == "first-session":
+    async def prepare(provision_input: SessionSwitchInput) -> None:
+        if provision_input.target_session_id == "first-session":
             first_entered.set()
             await release_first.wait()
         else:
             second_entered.set()
-        return False, "agent.plan", None, None, None
 
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", prepare)
+    runtime.prepare_hook = prepare
     first: asyncio.Task[None] | None = None
     second: asyncio.Task[None] | None = None
     try:
@@ -436,6 +630,7 @@ async def test_different_websockets_same_channel_can_prepare_concurrently(
                 first_ws,
                 switch_request(
                     request_id="switch-first",
+                    channel_id="web",
                     params={"session_id": "first-session"},
                 ),
                 asyncio.Lock(),
@@ -448,6 +643,7 @@ async def test_different_websockets_same_channel_can_prepare_concurrently(
                 second_ws,
                 switch_request(
                     request_id="switch-second",
+                    channel_id=second_channel,
                     params={"session_id": "second-session"},
                 ),
                 asyncio.Lock(),
@@ -458,8 +654,6 @@ async def test_different_websockets_same_channel_can_prepare_concurrently(
 
         release_first.set()
         await asyncio.gather(first, second)
-        assert len(first_ws.sent) == 1
-        assert len(second_ws.sent) == 1
     finally:
         release_first.set()
         tasks = [task for task in (first, second) if task is not None]
@@ -467,3 +661,70 @@ async def test_different_websockets_same_channel_can_prepare_concurrently(
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_same_websocket_and_channel_remain_serialized() -> None:
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
+    ws = RecordingWebSocket()
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    prepare_order: list[str] = []
+
+    async def prepare(provision_input: SessionSwitchInput) -> None:
+        prepare_order.append(provision_input.target_session_id)
+        if provision_input.target_session_id == "first-session":
+            first_entered.set()
+            await release_first.wait()
+
+    runtime.prepare_hook = prepare
+    first = asyncio.create_task(
+        server.handle_session_switch_for_test(
+            ws,
+            switch_request(params={"session_id": "first-session"}),
+            asyncio.Lock(),
+        )
+    )
+    second: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(first_entered.wait(), timeout=1.0)
+        second = asyncio.create_task(
+            server.handle_session_switch_for_test(
+                ws,
+                switch_request(params={"session_id": "second-session"}),
+                asyncio.Lock(),
+            )
+        )
+        await asyncio.sleep(0)
+        assert prepare_order == ["first-session"]
+
+        release_first.set()
+        await asyncio.gather(first, second)
+        assert prepare_order == ["first-session", "second-session"]
+    finally:
+        release_first.set()
+        tasks = [first] + ([second] if second is not None else [])
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_send_failure_does_not_abort_committed_switch() -> None:
+    runtime = SwitchRuntime()
+    server = make_server(runtime)
+    send_error = RuntimeError("send failed")
+    ws = RecordingWebSocket(send_error=send_error)
+
+    with pytest.raises(RuntimeError) as captured:
+        await server.handle_session_switch_for_test(
+            ws,
+            switch_request(params={"session_id": "target-session"}),
+            asyncio.Lock(),
+        )
+
+    assert captured.value is send_error
+    assert runtime.prepared[0].state is SessionProvisionState.COMMITTED
+    assert runtime.abort_calls == []

@@ -2720,8 +2720,11 @@ _DATA_IMAGE_PATTERN = re.compile(
 # 4) 值本体（用于脱敏后附指纹）；5) 可选结束引号。
 _KV_SENSITIVE_PATTERN = re.compile(
     r"(?i)(?<![A-Za-z0-9])"
-    r"(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|authorization|user[_-]?id|userid)"
+    r"(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
+    r"secret[_-]?key|access[_-]?token|refresh[_-]?token|authorization|"
+    r"auth[_-]?code|auth[_-]?token|"
+    r"user[_-]?id|userid|project[_-]?id|"
+    r"amap[_-]?key|map[_-]?ak)"
     r"(?![A-Za-z0-9])(\s*[:=]\s*)([\"']?)([^,\s\"'\]\}]+)([\"']?)"
 )
 # 匹配“键名包含敏感关键词”且“值被引号包裹”的场景，覆盖:
@@ -2735,13 +2738,27 @@ _KV_SENSITIVE_PATTERN = re.compile(
 # 4) 结束引号（通过 (\2) 强制与起始引号一致）
 _NAMED_SENSITIVE_KV_PATTERN = re.compile(
     r"(?i)([\"']?[A-Za-z0-9_.-]*"
-    r"(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|"
-    r"credential|private[_-]?key|user[_-]?id|userid)"
+    r"(?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|"
+    r"secret[_-]?key|authorization|auth[_-]?code|auth[_-]?token|"
+    r"credential|private[_-]?key|"
+    r"user[_-]?id|userid|project[_-]?id|"
+    r"amap[_-]?key|map[_-]?ak)"
     r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
 )
 # 匹配 Authorization Bearer 令牌，保留 "Bearer " 前缀，仅掩码后面的令牌值。
 # 分组：1) "Bearer " 前缀；2) 令牌值本体（用于算指纹）。
 _BEARER_SENSITIVE_PATTERN = re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9\-._~+/]+=*)")
+# 匹配命令行 flag 后跟明文凭证值（如 args=['--token', 'xxx', '--api-key', 'yyy']）：
+# ``--token VALUE`` / ``--api-key VALUE`` 不是 KV 语法，KV 正则覆盖不到，单列一条。
+# 覆盖三种形态：``--token VALUE``（空格）、``--token=VALUE``、``'--token', 'VALUE'``
+# （pydantic repr 把 list 序列化成引号逗号分隔的元素）。
+# 分组：1) flag 名 + 分隔（空白/= 或引号逗号引号）；2) 凭证值本体（用于算指纹）。
+_CLI_FLAG_SENSITIVE_PATTERN = re.compile(
+    r"(?i)(--(?:[a-z]+[_-])*(?:token|secret|password|passwd|pwd|api[_-]?key|"
+    r"access[_-]?key|secret[_-]?key|auth[_-]?code|auth[_-]?token|"
+    r"access[_-]?token|refresh[_-]?token|apikey|authorization)"
+    r"(?:[a-z0-9_-]*)(?:\s*=|',\s*'|\s+))([A-Za-z0-9\-._~+/]+=*)"
+)
 _SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
     # 匹配 JWT（header.payload.signature 三段式，常见以 eyJ 开头）。
     re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
@@ -2824,6 +2841,10 @@ def _sanitize_log_text(text: str) -> str:
     )
     # _BEARER_SENSITIVE_PATTERN: 组1=Bearer 前缀, 组2=令牌值。
     masked = _BEARER_SENSITIVE_PATTERN.sub(
+        lambda m: f"{m.group(1)}{_masked_with_fp(m.group(2))}", masked
+    )
+    # _CLI_FLAG_SENSITIVE_PATTERN: 组1=flag 名+分隔, 组2=凭证值。
+    masked = _CLI_FLAG_SENSITIVE_PATTERN.sub(
         lambda m: f"{m.group(1)}{_masked_with_fp(m.group(2))}", masked
     )
     # 凭证类 prefix key（JWT/sk-/ghp_/glpat-）：掩码并附指纹。

@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jiuwenswarm import runtime as runtime_package
+from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
+    SessionRunAdmission,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -106,6 +109,38 @@ class FakeAgent:
             payload={"event_type": "chat.final", "content": "ok"},
             is_complete=True,
             metadata={"route": "stream"},
+        )
+
+
+class AskUserAgent(FakeAgent):
+    async def process_message(self, request: AgentRequest) -> AgentResponse:
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={
+                "event_type": "chat.ask_user_question",
+                "request_id": "call_ask_user",
+            },
+        )
+
+    async def process_message_stream(self, request: AgentRequest):
+        params = request.params if isinstance(request.params, dict) else {}
+        if params.get("answers"):
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "chat.final", "content": "answered"},
+                is_complete=True,
+            )
+            return
+        yield AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={
+                "event_type": "chat.ask_user_question",
+                "request_id": "call_ask_user",
+            },
+            is_complete=True,
         )
 
 
@@ -873,6 +908,71 @@ async def test_answer_interaction_forwards_runtime_execution_options() -> None:
         trigger_hook=False,
         on_control_event=control_handler,
     )
+
+
+@pytest.mark.asyncio
+async def test_pending_interaction_blocks_heartbeat_until_matching_answer() -> None:
+    admission = SessionRunAdmission()
+    manager = FakeAgentManager()
+    manager.agent = AskUserAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+        admission_controller=admission,
+    )
+    session_id = "ask-user-session"
+    request = AgentRequest(
+        request_id="ask-user-request",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "ask", "mode": "agent", "work_mode": "work"},
+        is_stream=True,
+    )
+
+    events = [event async for event in runtime.stream(request, trigger_hook=False)]
+
+    assert [event.event_type for event in events] == ["chat.ask_user_question"]
+    assert admission.has_pending_interaction(session_id) is True
+    assert await admission.try_begin_heartbeat(session_id, "heartbeat-1") is False
+
+    answer = AgentRequest(
+        request_id="answer-request",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "request_id": "call_ask_user",
+            "answers": [{"question": "choose", "selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+        is_stream=True,
+    )
+    answer_events = [
+        event async for event in runtime.stream(answer, trigger_hook=False)
+    ]
+
+    assert [event.event_type for event in answer_events] == ["chat.final"]
+    assert admission.has_pending_interaction(session_id) is False
+    assert await admission.try_begin_heartbeat(session_id, "heartbeat-2") is True
+    await admission.end_heartbeat(session_id, "heartbeat-2")
+
+
+@pytest.mark.asyncio
+async def test_stale_answer_does_not_clear_current_pending_interaction() -> None:
+    admission = SessionRunAdmission()
+    await admission.mark_interaction_pending("session-1", "current-question")
+
+    await admission.begin_user("session-1")
+    await admission.clear_interaction_pending("session-1", "stale-question")
+    await admission.end_user("session-1")
+
+    assert admission.has_pending_interaction("session-1") is True
+    assert await admission.try_begin_heartbeat("session-1", "heartbeat-1") is False
 
 
 @pytest.mark.asyncio

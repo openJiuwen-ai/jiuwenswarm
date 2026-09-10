@@ -430,6 +430,31 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             for template in legacy_templates
         )
 
+    @staticmethod
+    def _is_serialised_interrupt_envelope(content: str) -> bool:
+        """Detect a serialised interrupt envelope inside a ToolMessage.
+
+        Delegation tools return the interrupt as a plain dict (built by
+        ToolInterruptHandler.build_interrupt_result in agent-core) instead of
+        raising ToolInterruptException. The dict lands in the ToolMessage
+        content either as a Python repr (ability_manager str()-serialises raw
+        dict results with single quotes) or as JSON (json.dumps paths), so we
+        match the structural key pattern by text, not by JSON parsing. Without
+        this, the first-wins dedup in _fix_incomplete_tool_context mistakes
+        the envelope for a real result and discards the sub-agent's
+        post-resume answer.
+        """
+        text = content.strip()
+        if not text.startswith("{"):
+            return False
+        # Both serialisations carry the envelope's two invariant keys as
+        # quoted literals: 'result_type': 'interrupt' and 'interrupt_ids'.
+        return (
+            re.search(r"['\"]result_type['\"]\s*:\s*['\"]interrupt['\"]", text)
+            is not None
+            and "interrupt_ids" in text
+        )
+
     def _is_tool_interrupt_placeholder(
         self,
         message: Any,
@@ -456,6 +481,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if not content:
             return False
         if expected and content == expected:
+            return True
+        if self._is_serialised_interrupt_envelope(content):
             return True
         tool_name = tool_names_by_id.get(tool_call_id, "")
         if not tool_name:

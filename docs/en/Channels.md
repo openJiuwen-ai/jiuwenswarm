@@ -95,3 +95,7 @@ In addition to the end-user chat platforms above, JiuwenSwarm also provides inte
 The **Browser Extension** (`browser-extension/BrowserExtension.md`) is a WebSocket client of the
 gateway (like the built-in Web UI), not an IM ingress channel — it connects to `ws://<host>:19000/ws`
 and shares sessions/history with the webview. See its docs for details.
+
+The **IDE Plugins** (`ide/jetbrains/JetBrains.md` and `ide/vscode/VSCode.md`) are WebSocket
+clients of the gateway (like the built-in Web UI) — they connect to `ws://<host>:19000/ws` with
+`channel_id: "ide"` and share sessions/history with the webview. See their docs for details.

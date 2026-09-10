@@ -1,8 +1,10 @@
+import { type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentCatalogItem, RequestStatus } from '../../features/agentManagement';
-import { CategoryTabs } from '../ui';
-import { DefinitionCard } from './DefinitionCard';
+import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
+import { getAgentAvatarUrl } from '../../features/agentManagement';
+import { CategoryTabs, PageCard } from '../ui';
+import ReminderIcon from '../../assets/agent-management/remind.svg?react';
 
 const PAGE_SIZE = 15;
 const CATEGORIES = [
@@ -15,6 +17,10 @@ const CATEGORIES = [
   'Communication',
   'Other',
 ];
+
+function getAvatarLetter(name: string): string {
+  return name.trim().slice(0, 1).toUpperCase() || '?';
+}
 
 type CatalogPageProps = {
   scope: 'catalog' | 'mine';
@@ -114,19 +120,100 @@ export function CatalogPage({
         ) : (
           <>
             <div className="card-grid-auto" style={{ paddingTop: '16px' }}>
-              {items.map((item) => (
-                <DefinitionCard
-                  key={item.id}
-                  item={item}
-                  scope={scope}
-                  busy={busyId === item.id}
-                  onOpen={onOpen}
-                  onUse={onUse}
-                  onReconnect={onReconnect}
-                  onInstall={onInstall}
-                  onUninstall={onUninstall}
-                />
-              ))}
+              {items.map((item) => {
+                const isBusy = busyId === item.id;
+                const avatarUrl = getAgentAvatarUrl(item);
+                const description = item.description || t('agentManagement.unknownDescription');
+                const canUse = item.installed && item.connectionState === 'connected' && item.enabled !== false;
+                const needsConnection = item.installed && item.connectionState !== 'connected';
+
+                const avatar = avatarUrl
+                  ? <img src={avatarUrl} alt="" />
+                  : <span style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '10px', background: 'var(--color-action-primary-subtle)', color: 'var(--color-text-link)', fontWeight: 700, fontSize: '20px' }}>{getAvatarLetter(item.displayName)}</span>;
+
+                const labelTags: string[] | undefined = item.tags.length > 0
+                  ? item.tags.map(tg => tg.label)
+                  : (scope === 'mine'
+                    ? [t(`agentManagement.categories.${item.category}`, { defaultValue: item.category || t('agentManagement.categoryOther') })]
+                    : undefined);
+
+                let actionContent: ReactNode = null;
+                if (item.installed) {
+                  actionContent = (
+                    <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
+                      <button
+                        type="button"
+                        className="agent-management-button agent-management-button--secondary agent-management-card-action--use"
+                        disabled={!canUse || isBusy}
+                        aria-disabled={!canUse}
+                        onClick={(e) => { e.stopPropagation(); onUse(item.id); }}
+                      >
+                        {t('agentManagement.actions.use')}
+                      </button>
+                      {needsConnection ? (
+                        <button
+                          type="button"
+                          className="agent-management-button agent-management-button--secondary"
+                          disabled={isBusy}
+                          aria-busy={isBusy}
+                          onClick={(e) => { e.stopPropagation(); onReconnect(item.id); }}
+                        >
+                          {isBusy ? t('agentManagement.actions.connecting') : t('agentManagement.actions.connect')}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="agent-management-button agent-management-button--primary"
+                          disabled={isBusy}
+                          aria-busy={isBusy}
+                          onClick={(e) => { e.stopPropagation(); onUninstall(item.id); }}
+                        >
+                          {isBusy ? t('agentManagement.actions.uninstalling') : t('agentManagement.actions.uninstall')}
+                        </button>
+                      )}
+                    </div>
+                  );
+                } else {
+                  actionContent = (
+                    <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
+                      <button
+                        type="button"
+                        className="agent-management-button agent-management-button--primary"
+                        disabled={isBusy}
+                        aria-busy={isBusy}
+                        onClick={(e) => { e.stopPropagation(); onInstall(item.id); }}
+                      >
+                        {isBusy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install')}
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <PageCard
+                    key={item.id}
+                    testId="agent-card"
+                    variant={item.id}
+                    onClick={() => onOpen(item.id)}
+                    avatar={avatar}
+                    title={item.displayName}
+                    titleEnd={
+                      scope === 'mine' && item.updateAvailable ? (
+                        <span className="agent-management-card__update">
+                          <ReminderIcon aria-hidden="true" />
+                          <span className="agent-management-card__update-dot" aria-hidden="true" />
+                          <span className="agent-management-card__update-tooltip" role="status">
+                            {t('agentManagement.states.newVersion')}
+                          </span>
+                        </span>
+                      ) : undefined
+                    }
+                    label={labelTags}
+                    description={description}
+                    actionSlot={actionContent}
+                  />
+                );
+              })}
             </div>
             {totalPages > 1 ? (
               <div className="agent-management-pagination" aria-label={t('agentManagement.pagination.label')}>

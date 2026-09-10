@@ -279,7 +279,7 @@ export function TeamSkillsHubModal({
                         {viewMode === "list" ? (
                           <>
                             <div className="flex items-center gap-3 min-w-0 flex-1">
-                              <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold`} data-testid="team-skills-hub-modal-skill-avatar">
+                              <div className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold" style={avatar.style} data-testid="team-skills-hub-modal-skill-avatar">
                                 {avatar.firstChar}
                               </div>
                               <div className="min-w-0 flex-1">
@@ -318,7 +318,7 @@ export function TeamSkillsHubModal({
                         ) : (
                           <>
                             <div className="flex items-start gap-3 flex-shrink-0">
-                              <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold text-sm`} data-testid="team-skills-hub-modal-skill-avatar">
+                              <div className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold text-sm" style={avatar.style} data-testid="team-skills-hub-modal-skill-avatar">
                                 {avatar.firstChar}
                               </div>
                               <div className="min-w-0 flex-1">
@@ -479,7 +479,7 @@ export function TeamSkillsHubModal({
                         data-variant={item.asset_id}
                       >
                         <div className="flex items-center gap-3 min-w-0 flex-1">
-                          <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold`} data-testid="team-skills-hub-modal-skill-avatar">
+                          <div className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold" style={avatar.style} data-testid="team-skills-hub-modal-skill-avatar">
                             {avatar.firstChar}
                           </div>
                           <div className="min-w-0 flex-1">

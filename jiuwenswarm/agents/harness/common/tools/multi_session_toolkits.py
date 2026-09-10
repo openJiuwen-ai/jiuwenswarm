@@ -35,7 +35,7 @@ from pydantic import BaseModel
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
-from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import get_mcp_tools
+from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import get_mcp_tools, track_mcp_search_tools
 from jiuwenswarm.runtime.context import get_current_agent_manager
 from jiuwenswarm.runtime.host_services import send_runtime_push
 
@@ -109,6 +109,7 @@ class MultiSessionToolkit:
         for mcp_tool in mcp_tools:
             Runner.resource_mgr.add_tool(mcp_tool)
             agent.ability_manager.add(mcp_tool.card)
+        track_mcp_search_tools(agent.ability_manager)
         logger.debug("[MultiSessionToolkit] get_sub_agent 完成 mcp_tools_count=%d", len(mcp_tools))
         return agent
 

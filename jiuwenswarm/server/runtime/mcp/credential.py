@@ -19,11 +19,14 @@ subclass per kind) wraps these; see ``connect_mcp`` for the dispatch point.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
+import platform
 import re
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -40,6 +43,124 @@ logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_RE = re.compile(r"\$\{(\w+)\}")
 _load_json = load_json
+
+# Encrypted credential envelope version. Bump when the on-disk format changes.
+_CRED_FORMAT_VERSION = 1
+_KEY_INFO = b"jiuwenswarm-mcp-credential-v1"
+_FALLBACK_MACHINE_ID = "unknown-machine-id"
+_FALLBACK_USER_SID = "unknown-user-sid"
+
+
+def _read_windows_machine_guid() -> str:
+    """Read HKLM\\SOFTWARE\\Microsoft\\Cryptography\\MachineGuid via winreg."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0,
+            winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "MachineGuid")
+            return str(value).strip()
+    except (OSError, ImportError):
+        return ""
+
+
+def _get_machine_id() -> str:
+    """Stable per-machine identifier (Windows MachineGuid / macOS IOPlatformUUID
+    / Linux /etc/machine-id). Falls back to a constant; never raises — a missing
+    id weakens encryption but must not block credential reads/writes."""
+    try:
+        if os.name == "nt":
+            mid = _read_windows_machine_guid()
+            if mid:
+                return mid
+        elif platform.system() == "Darwin":
+            r = subprocess.run(
+                ["/usr/sbin/ioreg", "-d2", "-c", "IOPlatformExpertDevice"],
+                capture_output=True, text=True, timeout=2,
+            )
+            for line in r.stdout.splitlines():
+                if "IOPlatformUUID" in line:
+                    parts = line.split('"')
+                    if len(parts) >= 4 and parts[3]:
+                        return parts[3]
+        else:
+            for p in ("/etc/machine-id", "/proc/sys/kernel/random/boot_id"):
+                fp = Path(p)
+                if fp.is_file():
+                    mid = fp.read_text(encoding="utf-8", errors="replace").strip()
+                    if mid:
+                        return mid
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return _FALLBACK_MACHINE_ID
+
+
+def _get_user_sid() -> str:
+    """Per-user identifier for cross-user isolation (Windows DOMAIN\\USER, Unix
+    uid+user). Falls back to a constant; never raises."""
+    try:
+        if os.name == "nt":
+            domain = os.environ.get("USERDOMAIN", "")
+            user = os.environ.get("USERNAME", "")
+            if user:
+                return f"{domain}\\{user}" if domain else user
+        uid = os.getuid() if hasattr(os, "getuid") else ""
+        user = os.environ.get("USER", "")
+        if uid or user:
+            return f"{uid}:{user}"
+    except OSError:
+        pass
+    return _FALLBACK_USER_SID
+
+
+def _derive_key(salt: bytes) -> bytes:
+    """Derive a 256-bit AES key via HKDF-SHA256 from machine+user identity and
+    a per-file salt. ``salt`` doubles as the AEAD associated data so a swapped
+    salt from another file breaks decryption."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    ikm = (_get_machine_id() + "|" + _get_user_sid()).encode("utf-8", "replace")
+    return HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=salt, info=_KEY_INFO,
+    ).derive(ikm)
+
+
+def _encrypt_payload(data: dict[str, str]) -> dict[str, str]:
+    """Encrypt a credential dict into the on-disk envelope
+    ``{v, salt, nonce, ct}`` (all base64)."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    salt = os.urandom(16)
+    nonce = os.urandom(12)
+    key = _derive_key(salt)
+    plaintext = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    ct = AESGCM(key).encrypt(nonce, plaintext, associated_data=salt)
+    return {
+        "v": str(_CRED_FORMAT_VERSION),
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "ct": base64.b64encode(ct).decode("ascii"),
+    }
+
+
+def _decrypt_payload(blob: dict[str, Any]) -> dict[str, str]:
+    """Decrypt an envelope back to the credential dict. Returns ``{}`` on any
+    failure (corrupt/rotated key) — matches the existing 'file unreadable →
+    empty' contract, so a lost key just means re-entering tokens."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    try:
+        salt = base64.b64decode(blob["salt"])
+        nonce = base64.b64decode(blob["nonce"])
+        ct = base64.b64decode(blob["ct"])
+        key = _derive_key(salt)
+        plaintext = AESGCM(key).decrypt(nonce, ct, associated_data=salt)
+        data = json.loads(plaintext)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — KeyError/InvalidTag/any crypto failure → empty
+        return {}
 
 
 def _mcp_root() -> Path:
@@ -187,23 +308,28 @@ def detect_credential_kind(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CredentialStore — persistent token storage (plaintext JSON; the public API
-# is stable so an aes-256-gcm + hkdf-sha256 backend can be swapped in later).
+# CredentialStore — AES-256-GCM encrypted per-MCP token storage. The public
+# API is plaintext dicts; encryption/decryption happens transparently in
+# _load/_save. Master key is HKDF-SHA256(machine_id + user_sid, per-file salt).
+# Legacy plaintext files are auto-migrated on next _save.
 # ---------------------------------------------------------------------------
 
 
 class CredentialStore:
     """File-backed per-MCP token storage.
 
-    Layout: ``<workspace>/mcp/credentials/<name>.json`` holding
-    ``{key: value}``. One file per MCP makes delete trivial and keeps
-    concurrent MCPs from clobbering each other.
+    Layout: ``<workspace>/mcp/credentials/<name>.json`` holding an encrypted
+    envelope ``{v, salt, nonce, ct}``. One file per MCP makes delete trivial
+    and keeps concurrent MCPs from clobbering each other.
     """
 
     def __init__(self, *, workspace_dir: Path | None = None) -> None:
         self._workspace = workspace_dir if workspace_dir is not None else get_workspace_dir()
         self._root = self._workspace / "mcp" / "credentials"
         self._root.mkdir(parents=True, exist_ok=True)
+        # MCPs whose on-disk file is still legacy plaintext and should be
+        # re-encrypted on next _save.
+        self._needs_reencrypt: set[str] = set()
 
     def _path(self, name: str) -> Path:
         return self._root / f"{str(name or '').strip()}.json"
@@ -217,26 +343,34 @@ class CredentialStore:
             # or PowerShell ``Set-Content -Encoding utf8`` may have written.
             with p.open("r", encoding="utf-8-sig") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
+        if not isinstance(data, dict):
+            return {}
+        # Encrypted envelope — decrypt.
+        if "v" in data and "ct" in data:
+            return _decrypt_payload(data)
+        # Legacy plaintext file — mark for lazy re-encryption on next _save.
+        self._needs_reencrypt.add(name)
+        return data
 
     def _save(self, name: str, data: dict[str, str]) -> None:
-        """原子写入 + Unix 权限收紧到 0600。
+        """原子写入加密信封 + Unix 权限收紧到 0600。
 
-        凭证文件存明文 token，写到一半崩溃会留下截断文件（下次读取 token
-        丢失，需重输）。用 tempfile + os.replace 保证原子性：要么完整新值，
-        要么保留旧值。Unix 下额外 chmod 600 防止多用户机其他账号读取；
-        Windows 无 stat 权限语义（NTFS ACL 不走 mode），原子写仍生效。
+        明文 dict 先经 _encrypt_payload 加密为 {v,salt,nonce,ct} 再落盘；
+        tempfile + os.replace 保证原子性（要么完整新值，要么保留旧值）。
+        Unix 下 chmod 600 防止多用户机其他账号读取；Windows 无 stat 权限
+        语义（NTFS ACL 不走 mode），原子写仍生效。
         """
         p = self._path(name)
+        self._needs_reencrypt.discard(name)
         try:
             # dir= 同目录保证 os.replace 是原子的 rename，不跨文件系统。
             with tempfile.NamedTemporaryFile(
                 "w", encoding="utf-8", dir=str(p.parent), suffix=".tmp",
                 delete=False,
             ) as fh:
-                json.dump(data, fh, ensure_ascii=False)
+                json.dump(_encrypt_payload(data), fh, ensure_ascii=False)
                 tmp_path = Path(fh.name)
             # Unix 收紧权限（仅在非 Windows 且 mode 可写时）；Windows 跳过。
             if os.name != "nt":
