@@ -368,6 +368,9 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
     teammate_bootstrap_task = asyncio.create_task(
         run_teammate_bootstrap_daemon(stop_event=stop_event)
     )
+    from jiuwenswarm.common.mcp_server_registry import start_mcp_registry_runtime, stop_mcp_registry_runtime
+
+    await start_mcp_registry_runtime()
 
     def _on_signal() -> None:
         stop_event.set()
@@ -392,6 +395,10 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         pass
     finally:
         logger.info("[AgentServer] stopping…")
+        try:
+            await stop_mcp_registry_runtime()
+        except Exception as exc:
+            logger.warning("[AgentServer] MCP registry scanner stop failed: %s", exc)
         if teammate_bootstrap_task is not None:
             teammate_bootstrap_task.cancel()
             try:

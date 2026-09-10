@@ -1414,6 +1414,14 @@ hooks:
 
 mcp:
   servers: []
+  # 进程内 MCP 注册表（mcp.server.* / chat.send mcp_server_list）。也可由环境变量覆盖：
+  # MCP_REGISTRY_SCAN_INTERVAL_S / MCP_REGISTRY_SCAN_CONCURRENCY /
+  # MCP_REGISTRY_WORKER_IDLE_TTL_S / MCP_REGISTRY_SCAN_FAIL_THRESHOLD
+  # registry:
+  #   scan_interval_s: 600
+  #   scan_concurrency: 3
+  #   worker_idle_ttl_s: 600
+  #   scan_fail_threshold: 3
   # 示例：
   # servers:
   #   - name: playwright

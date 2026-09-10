@@ -851,12 +851,13 @@ class _PooledMcpWorker:
     Exposes ``call_tool`` so callers can treat it like a ``ClientSession``.
     """
 
-    __slots__ = ("queue", "task", "server_name")
+    __slots__ = ("queue", "task", "server_name", "last_used")
 
     def __init__(self, server_name: str) -> None:
         self.queue: asyncio.Queue[_McpCallRequest | None] = asyncio.Queue()
         self.task: asyncio.Task | None = None
         self.server_name = server_name
+        self.last_used = time.monotonic()
 
     @property
     def alive(self) -> bool:
@@ -868,6 +869,7 @@ class _PooledMcpWorker:
             raise RuntimeError(
                 f"request-scoped MCP worker for '{self.server_name}' is not running"
             )
+        self.last_used = time.monotonic()
         req = _McpCallRequest(name, arguments)
         await self.queue.put(req)
         return await req.future
@@ -1138,13 +1140,9 @@ async def acquire_request_scoped_mcp_session(
     return worker
 
 
-async def _close_pooled_worker(
-    worker: _PooledMcpWorker,
-    key: tuple[str, str],
-) -> None:
-    """Best-effort stop+remove one pooled worker (kills the stdio process)."""
+async def shutdown_pooled_mcp_worker(worker: _PooledMcpWorker) -> None:
+    """Best-effort stop of one pooled worker (kills the stdio process)."""
 
-    _request_scoped_mcp_sessions.pop(key, None)
     task = worker.task
     if task is None:
         return
@@ -1156,9 +1154,10 @@ async def _close_pooled_worker(
         worker.queue.put_nowait(None)
     except Exception as exc:
         logger.warning(
-            "request-scoped MCP worker close: put_nowait(None) failed "
-            "server=%s key=%s error=%s (will fall back to task.cancel)",
-            worker.server_name, key, exc,
+            "MCP worker close: put_nowait(None) failed server=%s error=%s "
+            "(will fall back to task.cancel)",
+            worker.server_name,
+            exc,
         )
     try:
         with anyio.fail_after(5.0):
@@ -1181,10 +1180,20 @@ async def _close_pooled_worker(
     except Exception as exc:
         # owner task 抛了非超时/非 cancel 的异常（多数是已结束），记录一下根因。
         logger.warning(
-            "request-scoped MCP worker owner task exited with error "
-            "server=%s key=%s error=%s",
-            worker.server_name, key, exc,
+            "MCP worker owner task exited with error server=%s error=%s",
+            worker.server_name,
+            exc,
         )
+
+
+async def _close_pooled_worker(
+    worker: _PooledMcpWorker,
+    key: tuple[str, str],
+) -> None:
+    """Best-effort stop+remove one request-scoped pooled worker."""
+
+    _request_scoped_mcp_sessions.pop(key, None)
+    await shutdown_pooled_mcp_worker(worker)
 
 
 async def release_request_scoped_mcp_sessions(request_id: str) -> None:
@@ -1200,7 +1209,19 @@ async def release_request_scoped_mcp_sessions(request_id: str) -> None:
 
 
 OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX = "office-claw-request-"
+MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX = "mcp-registry-request-"
+REQUEST_SCOPED_MCP_TOOL_ID_PREFIXES = (
+    OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX,
+    MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX,
+)
 OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG = "_office_claw_expected_tool_ids"
+
+
+def is_request_scoped_mcp_tool_id(tool_id: str) -> bool:
+    """True for request-scoped MCP tool ids (legacy office-claw or registry)."""
+
+    normalized = str(tool_id or "").strip()
+    return any(normalized.startswith(prefix) for prefix in REQUEST_SCOPED_MCP_TOOL_ID_PREFIXES)
 
 # Attribute name used to store the request-scoped OfficeClaw tool id allowlist.
 # The allowlist must cross the asyncio task boundary between the caller's task
@@ -1464,22 +1485,28 @@ def bind_office_claw_from_agent(agent: Any) -> Iterator[None]:
         _active_office_claw_tool_ids.reset(token)
 
 
-def ensure_request_scoped_office_claw_tool_allowed(tool_id: str) -> None:
-    """Refuse request-scoped OfficeClaw tools outside the active request allowlist."""
+def ensure_request_scoped_mcp_tool_allowed(tool_id: str) -> None:
+    """Refuse request-scoped MCP tools outside the active request allowlist."""
 
     normalized = str(tool_id or "").strip()
-    if not normalized.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX):
+    if not is_request_scoped_mcp_tool_id(normalized):
         return
     allowed = _active_office_claw_tool_ids.get()
     if allowed is None:
         raise RuntimeError(
-            "OfficeClaw MCP tool invoked without an active request binding; "
+            "MCP tool invoked without an active request binding; "
             "refusing unbound request-scoped invoke"
         )
     if normalized not in allowed:
         raise RuntimeError(
-            "OfficeClaw MCP tool is bound to another request; refusing cross-request invoke"
+            "MCP tool is bound to another request; refusing cross-request invoke"
         )
+
+
+def ensure_request_scoped_office_claw_tool_allowed(tool_id: str) -> None:
+    """Backward-compatible alias of :func:`ensure_request_scoped_mcp_tool_allowed`."""
+
+    ensure_request_scoped_mcp_tool_allowed(tool_id)
 
 
 def ensure_office_claw_tool_invocation_matches_active(
@@ -1534,7 +1561,7 @@ def resolve_active_office_claw_tool_id(tool_name: str) -> str | None:
     preferred = [
         tool_id
         for tool_id in matches
-        if tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX) and tool_id.endswith(suffix)
+        if is_request_scoped_mcp_tool_id(tool_id) and tool_id.endswith(suffix)
     ]
     return preferred[0] if preferred else matches[0]
 
@@ -2024,6 +2051,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
         params: Mapping[str, Any],
         request_id: str = "",
         server_name: str = "",
+        *,
+        use_global_pool: bool = False,
     ) -> None:
         super().__init__(card)
         # Deep-copy env so concurrent registrations cannot mutate each other's
@@ -2035,14 +2064,29 @@ class RequestScopedOfficeClawMcpTool(Tool):
         self._params = copied
         self._request_id = str(request_id or "")
         self._server_name = str(server_name or "")
+        self._use_global_pool = bool(use_global_pool)
+
+    async def _acquire_mcp_session(self, *, force_rebuild: bool = False):
+        if self._use_global_pool:
+            from jiuwenswarm.common.mcp_server_registry import get_mcp_server_registry
+
+            return await get_mcp_server_registry().worker_pool.acquire(
+                self._server_name, self._params, force_rebuild=force_rebuild
+            )
+        return await acquire_request_scoped_mcp_session(
+            self._request_id,
+            self._server_name,
+            self._params,
+            force_rebuild=force_rebuild,
+        )
 
     async def stream(self, inputs: Any, **kwargs: Any):
         raise build_error(StatusCode.TOOL_STREAM_NOT_SUPPORTED, card=self._card)
 
     async def invoke(self, inputs: Any, **kwargs: Any) -> dict[str, Any]:
         tool_id = str(getattr(self._card, "id", "") or "")
-        if get_active_office_claw_mcp_tool_ids() is None and tool_id.startswith(
-            OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX
+        if get_active_office_claw_mcp_tool_ids() is None and is_request_scoped_mcp_tool_id(
+            tool_id
         ):
             live = self._resolve_unbound_office_claw_allowlist(tool_id, kwargs)
             if live is not None:
@@ -2085,7 +2129,7 @@ class RequestScopedOfficeClawMcpTool(Tool):
 
         tool_id = str(getattr(self._card, "id", "") or "")
         try:
-            ensure_request_scoped_office_claw_tool_allowed(tool_id)
+            ensure_request_scoped_mcp_tool_allowed(tool_id)
             ensure_office_claw_tool_invocation_matches_active(self)
         except RuntimeError as exc:
             raise build_error(
@@ -2098,19 +2142,12 @@ class RequestScopedOfficeClawMcpTool(Tool):
 
         arguments = inputs if isinstance(inputs, dict) else {}
         try:
-            session = await acquire_request_scoped_mcp_session(
-                self._request_id, self._server_name, self._params
-            )
+            session = await self._acquire_mcp_session()
             try:
                 result = await session.call_tool(self._card.name, arguments=arguments)
             except Exception:
                 # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
-                session = await acquire_request_scoped_mcp_session(
-                    self._request_id,
-                    self._server_name,
-                    self._params,
-                    force_rebuild=True,
-                )
+                session = await self._acquire_mcp_session(force_rebuild=True)
                 result = await session.call_tool(self._card.name, arguments=arguments)
             result_content: str | None = None
             if result.content:
@@ -2129,6 +2166,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
 __all__ = [
     "OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG",
     "OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX",
+    "MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX",
+    "REQUEST_SCOPED_MCP_TOOL_ID_PREFIXES",
     "OfficeClawMcpRegistration",
     "RequestScopedOfficeClawMcpTool",
     "acquire_request_scoped_mcp_session",
@@ -2140,7 +2179,9 @@ __all__ = [
     "build_mcp_server_config",
     "create_mcp_tool",
     "ensure_office_claw_tool_invocation_matches_active",
+    "ensure_request_scoped_mcp_tool_allowed",
     "ensure_request_scoped_office_claw_tool_allowed",
+    "is_request_scoped_mcp_tool_id",
     "extract_enabled_mcp_server_entries",
     "extract_office_claw_mcp",
     "extract_request_mcp_servers",
@@ -2155,6 +2196,7 @@ __all__ = [
     "publish_live_office_claw_allowlist",
     "register_live_office_claw_tool_instance",
     "release_request_scoped_mcp_sessions",
+    "shutdown_pooled_mcp_worker",
     "resolve_active_office_claw_invocation_id",
     "resolve_active_office_claw_tool_id",
     "revoke_live_office_claw_allowlist",
