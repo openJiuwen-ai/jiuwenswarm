@@ -1031,7 +1031,7 @@ def _migrate_legacy_heartbeat_jobs(workspace_dir: Path) -> bool:
             target_path,
         )
         return True
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         if temp_path is not None:
             try:
                 temp_path.unlink(missing_ok=True)
