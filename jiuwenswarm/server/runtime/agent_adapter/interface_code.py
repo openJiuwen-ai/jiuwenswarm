@@ -46,6 +46,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _AGENT_CARD_ID,
     _CRON_TOOL_CHANNEL_ID,
     _RailBuildInfo,
+    _apply_xiaoyi_fetch_webpage_description,
     _agent_def_to_subagent_config,
     _deep_agent_context_engine_config,
     _deep_agent_kv_cache_affinity_config,
@@ -80,6 +81,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     ProjectMemoryRail,
     StructuredAskUserRail,
     ToolUsagePromptRail,
+    XiaoyiDefaultToolVisibilityRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.agents.harness.common.tools import (
@@ -372,7 +374,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     _FIXED_RAIL_NAMES = frozenset({
         "RuntimePromptRail", "ResponsePromptRail",
         "JiuSwarmStreamEventRail", "SecurityRail", "CsplSentinelRail",
-        "ToolUsagePromptRail",
+        "ToolUsagePromptRail", "XiaoyiDefaultToolVisibilityRail",
         "LspRail", "ProjectMemoryRail", "PermissionInterruptRail",
         "ContextProcessorRail",
         "SysOperationRail", "CodingMemoryRail",
@@ -389,6 +391,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._coding_memory_rail: CodingMemoryRail | None = None
         self._worktree_rail: WorktreeRail | None = None
         self._tool_usage_prompt_rail: ToolUsagePromptRail | None = None
+        self._tool_visibility_rail: XiaoyiDefaultToolVisibilityRail | None = None
         # 单点 source-of-truth, 让 sysop_builder 的"主写入根"分支
         # (project_dir vs get_agent_workspace_dir) 落到 code-agent 这一支。
         # 父类默认 False (deep agent → workspace), Code adapter override 成
@@ -653,6 +656,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_tool_usage_prompt_rail", self._build_tool_usage_prompt_rail),
+            _RailBuildInfo(
+                "_tool_visibility_rail",
+                self._build_xiaoyi_default_tool_visibility_rail,
+            ),
             _RailBuildInfo("_cspl_sentinel_rail", self._build_cspl_sentinel_rail),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
@@ -1341,8 +1348,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_web_fetch_webpage_tool(self, agent_id: str) -> Any:
         """构建 web_fetch_webpage 工具."""
-        return WebFetchWebpageTool(
-            language=self._resolve_output_language(), agent_id=agent_id
+        return _apply_xiaoyi_fetch_webpage_description(
+            WebFetchWebpageTool(
+                language=self._resolve_output_language(), agent_id=agent_id
+            ),
+            self._resolve_output_language(),
         )
 
     def _build_paid_search_tool(self, agent_id: str) -> WebPaidSearchTool | None:

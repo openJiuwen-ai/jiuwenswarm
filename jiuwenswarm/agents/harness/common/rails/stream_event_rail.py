@@ -10,7 +10,6 @@ Migrated from JiuSwarmReActAgent:
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import re
 from typing import Any, List, Mapping, Optional
@@ -46,7 +45,6 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
     extract_call_goal,
-    inject_call_goal_schema,
 )
 from jiuwenswarm.common.utils import logger
 
@@ -638,64 +636,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
 
-        self._inject_tool_call_goal_schema(ctx)
-
         if ctx.context is not None:
             if not self._read_image_multimodal_enabled():
                 strip_image_content_from_model_context(ctx.context)
             await self._fix_incomplete_tool_context(ctx)
-
-    @staticmethod
-    def _inject_tool_call_goal_schema(ctx: AgentCallbackContext) -> None:
-        """仅给送入 LLM 的 ToolInfo 注入 call_goal，且必须 deepcopy。
-
-        不可就地改 parameters / card.input_params：ToolInfo 与执行侧 schema 常共享
-        内层 properties，注入后 SchemaUtils 会补上 call_goal=None，LocalFunction
-        再 **kwargs 传给 send_file 等实现会直接 TypeError（表现为工具挂掉）。
-        """
-        tools = getattr(ctx.inputs, "tools", None) or []
-        if not tools:
-            return
-        next_tools: list[Any] = []
-        changed = False
-        for tool in tools:
-            params = getattr(tool, "parameters", None)
-            if not isinstance(params, dict):
-                next_tools.append(tool)
-                continue
-            props = params.get("properties")
-            if isinstance(props, dict) and "call_goal" in props:
-                next_tools.append(tool)
-                continue
-            cloned = copy.deepcopy(params)
-            inject_call_goal_schema(cloned)
-            if cloned == params:
-                next_tools.append(tool)
-                continue
-            model_copy = getattr(tool, "model_copy", None)
-            if callable(model_copy):
-                try:
-                    next_tools.append(model_copy(update={"parameters": cloned}))
-                    changed = True
-                    continue
-                except Exception as exc:
-                    # model_copy 可能抛 ValidationError 等与具体 ToolInfo 实现相关的异常；
-                    # 注入失败时跳过该工具，不阻断主链路。
-                    logger.warning(
-                        "[StreamEventRail] model_copy for call_goal failed; skip inject tool=%s err=%s",
-                        getattr(tool, "name", type(tool).__name__),
-                        exc,
-                    )
-            # 无 model_copy / copy 失败：绝不回写原始 ToolInfo，避免 call_goal 泄漏进执行侧。
-            next_tools.append(tool)
-        if changed:
-            try:
-                ctx.inputs.tools = next_tools
-            except (AttributeError, TypeError) as exc:
-                logger.warning(
-                    "[StreamEventRail] replace tools with call_goal schema failed: %s",
-                    exc,
-                )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
         await self._emit_context_usage(

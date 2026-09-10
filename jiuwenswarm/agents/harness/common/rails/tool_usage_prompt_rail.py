@@ -13,6 +13,74 @@ from openjiuwen.harness.rails.context_engineer.context_assemble_rail import (
 
 _TOOL_USAGE_SECTION_PRIORITY = 14
 
+# Optional platform capabilities should not consume the default Xiaoyi Work
+# model-tool budget. Their implementations remain available for explicit
+# integrations; this list controls only model visibility.
+XIAOYI_HIDDEN_DEFAULT_TOOL_NAMES = frozenset(
+    {
+        # LLM Wiki
+        "wiki_ingest",
+        "wiki_query",
+        "wiki_lint",
+        # Audio processing
+        "audio_metadata",
+        "audio_transcribe",
+        "audio_understanding",
+        # Third-party channel administration
+        "configure_channel",
+        "get_wechat_login_status",
+        # Persistent Goal protocol
+        "submit",
+        "submit_goal_report",
+        "get_current_goal",
+        # Skill self-evolution protocol. Keep the whole workflow hidden so
+        # the model is never left with only an unusable intermediate step.
+        "prepare_skill_evolution",
+        "evolve_review_task",
+        "list_skill_experiences",
+        "read_skill_experiences",
+        "evolve_skill_experiences",
+        "simplify_skill_experiences",
+    }
+)
+
+
+def _model_tool_name(tool) -> str:  # type: ignore[no-untyped-def]
+    """Return a name from an OpenAI-schema dict or an OpenJiuwen ToolCard."""
+    if isinstance(tool, dict):
+        function = tool.get("function")
+        if isinstance(function, dict):
+            return str(function.get("name", "") or "")
+        return str(tool.get("name", "") or "")
+    return str(getattr(tool, "name", "") or "")
+
+
+def filter_xiaoyi_default_model_tools(tools):  # type: ignore[no-untyped-def]
+    """Return a model-tool list without product-disabled default tools."""
+    if not isinstance(tools, list):
+        return tools
+    return [tool for tool in tools if _model_tool_name(tool) not in XIAOYI_HIDDEN_DEFAULT_TOOL_NAMES]
+
+
+class XiaoyiDefaultToolVisibilityRail(DeepAgentRail):
+    """Remove optional platform tools at the final model-call boundary.
+
+    Goal and Skill Evolution tools are added by upstream rails after adapters
+    assemble their initial cards. Filtering here therefore covers office, code,
+    and design without deleting the underlying optional implementations.
+    """
+
+    priority = -1000
+
+    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        inputs = getattr(ctx, "inputs", None)
+        if inputs is None:
+            return
+        tools = getattr(inputs, "tools", None)
+        filtered = filter_xiaoyi_default_model_tools(tools)
+        if isinstance(tools, list) and len(filtered) != len(tools):
+            inputs.tools = filtered
+
 
 class ToolUsagePromptRail(DeepAgentRail):
     """Render rules for the tools that are actually registered on this agent.
