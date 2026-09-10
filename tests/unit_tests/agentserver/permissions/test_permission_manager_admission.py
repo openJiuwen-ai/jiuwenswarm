@@ -125,6 +125,49 @@ class _ChangingTailLock(asyncio.Lock):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "failed", "cancelled"])
+async def test_admission_waits_for_older_notification_after_latest_finishes(monkeypatch, outcome):
+    manager = AgentManager()
+    started, release = asyncio.Event(), asyncio.Event()
+    install = AsyncMock()
+
+    async def reload(config, *_args, **_kwargs):
+        if config.get("older"):
+            started.set()
+            await release.wait()
+            if outcome == "failed":
+                raise RuntimeError("older notification failed")
+
+    monkeypatch.setattr(manager, "reload_agents_config", reload)
+    older = manager.schedule_permissions_reload({"older": True})
+    await asyncio.wait_for(started.wait(), 2)
+    await manager.schedule_permissions_reload({})
+
+    async def enter():
+        async with manager.build_permissions_external_input_context(install)():
+            pass
+
+    admission = asyncio.create_task(enter())
+    await asyncio.sleep(0)
+    assert not admission.done()
+    install.assert_not_awaited()
+    if outcome == "cancelled":
+        older.cancel()
+    release.set()
+    await asyncio.gather(older, return_exceptions=True)
+    if outcome == "success":
+        await asyncio.wait_for(admission, 2)
+        install.assert_awaited_once_with()
+    else:
+        with pytest.raises(RuntimeError, match="permission reload scheduling failed"):
+            await asyncio.wait_for(admission, 2)
+        install.assert_not_awaited()
+        await manager.schedule_permissions_reload({})
+        await enter()
+        install.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changes", [1, 2, 3])
 async def test_external_input_builder_checks_latest_tail_with_three_attempt_limit(changes: int) -> None:
     manager = AgentManager()

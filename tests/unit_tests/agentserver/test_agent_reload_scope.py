@@ -112,18 +112,18 @@ class FakeTeamManager:
 
 
 @pytest.mark.asyncio
-async def test_permission_change_notification_uses_existing_global_reload() -> None:
+async def test_permission_rpc_notification_uses_captured_global_reload() -> None:
     manager = agent_manager_module.AgentManager()
     manager.reload_agents_config = AsyncMock()
 
-    manager.schedule_permissions_reload()
+    manager.schedule_permissions_reload({})
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
     manager.reload_agents_config.assert_awaited_once_with(
+        {},
         None,
-        None,
-        reload_scopes={"permissions"},
+        permission_notification=True,
     )
     assert manager._permissions_reload_tasks == set()
 
@@ -136,15 +136,16 @@ async def test_cleanup_settles_owned_reload_before_agents(fail_finalizer):
     events = []
 
     async def reload(*_args, **_kwargs):
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            finalizing.set()
-            await release.wait()
-            events.append("reload settled")
-            if fail_finalizer:
-                raise RuntimeError("reload cleanup failed")
+        async with manager._reload_lock:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finalizing.set()
+                await release.wait()
+                events.append("reload settled")
+                if fail_finalizer:
+                    raise RuntimeError("reload cleanup failed")
 
     async def cleanup_agent():
         assert events == ["reload settled"]
@@ -152,16 +153,16 @@ async def test_cleanup_settles_owned_reload_before_agents(fail_finalizer):
 
     manager.reload_agents_config = reload
     manager.agents = {"web": {"agent": SimpleNamespace(cleanup=cleanup_agent)}}
-    first = manager.schedule_permissions_reload()
+    first = manager.schedule_permissions_reload({})
     await asyncio.wait_for(entered.wait(), 2)
-    queued = manager.schedule_permissions_reload()
+    queued = manager.schedule_permissions_reload({})
     cleanup = asyncio.create_task(manager.cleanup())
     try:
         await asyncio.wait_for(finalizing.wait(), 2)
         assert not cleanup.done()
         assert events == []
         with pytest.raises(RuntimeError, match="owner is closing"):
-            manager.schedule_permissions_reload()
+            manager.schedule_permissions_reload({})
     finally:
         release.set()
         await asyncio.wait_for(cleanup, 2)
@@ -171,7 +172,7 @@ async def test_cleanup_settles_owned_reload_before_agents(fail_finalizer):
     assert manager._permissions_reload_tail is None
     assert manager._permissions_reload_schedule_failure is None
     with pytest.raises(RuntimeError, match="owner is closing"):
-        manager.schedule_permissions_reload()
+        manager.schedule_permissions_reload({})
     await manager.cleanup()
     assert events == ["reload settled", "agent cleaned"]
 
@@ -224,7 +225,7 @@ async def test_permission_reload_waiter_cancellation_does_not_cancel_tail() -> N
         await reload_release.wait()
 
     manager.reload_agents_config = slow_reload
-    tail = manager.schedule_permissions_reload()
+    tail = manager.schedule_permissions_reload({})
     await reload_started.wait()
     waiter = asyncio.create_task(manager.wait_for_permissions_ready())
     await asyncio.sleep(0)
@@ -240,46 +241,34 @@ async def test_permission_reload_waiter_cancellation_does_not_cancel_tail() -> N
 
 
 @pytest.mark.asyncio
-async def test_cancelled_new_reload_does_not_run_after_waiting_for_prior_tail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_cancelled_reload_waiting_for_existing_lock_does_not_run() -> None:
     manager = agent_manager_module.AgentManager()
-    first_started = asyncio.Event()
-    first_release = asyncio.Event()
+    first_started, first_release = asyncio.Event(), asyncio.Event()
     second_waiting = asyncio.Event()
     calls = 0
 
     async def serialized_reload(*_args, **_kwargs):
         nonlocal calls
-        calls += 1
-        if calls == 1:
-            first_started.set()
-            await first_release.wait()
+        if manager._reload_lock.locked():
+            second_waiting.set()
+        async with manager._reload_lock:
+            calls += 1
+            if calls == 1:
+                first_started.set()
+                await first_release.wait()
 
     manager.reload_agents_config = serialized_reload
-    first = manager.schedule_permissions_reload()
-    await first_started.wait()
-    real_shield = asyncio.shield
-
-    def observed_shield(awaitable):
-        shielded = real_shield(awaitable)
-        second_waiting.set()
-        return shielded
-
-    monkeypatch.setattr(asyncio, "shield", observed_shield)
-    cancelled = manager.schedule_permissions_reload()
-    await second_waiting.wait()
+    first = manager.schedule_permissions_reload({})
+    await asyncio.wait_for(first_started.wait(), 2)
+    cancelled = manager.schedule_permissions_reload({})
+    await asyncio.wait_for(second_waiting.wait(), 2)
     cancelled.cancel()
-
     with pytest.raises(asyncio.CancelledError):
         await cancelled
     assert calls == 1
-
-    monkeypatch.setattr(asyncio, "shield", real_shield)
     first_release.set()
     await first
-    recovered = manager.schedule_permissions_reload()
-    await recovered
+    await manager.schedule_permissions_reload({})
     await manager.wait_for_permissions_ready()
     assert calls == 2
 
@@ -296,11 +285,11 @@ async def test_later_permission_reload_retries_after_prior_failure() -> None:
             raise RuntimeError("first reload failed")
 
     manager.reload_agents_config = flaky_reload
-    first = manager.schedule_permissions_reload()
+    first = manager.schedule_permissions_reload({})
     with pytest.raises(RuntimeError, match="first reload failed"):
         await first
 
-    second = manager.schedule_permissions_reload()
+    second = manager.schedule_permissions_reload({})
     await second
     await manager.wait_for_permissions_ready()
     assert calls == 2
@@ -319,7 +308,7 @@ async def test_schedule_failure_latch_survives_older_tail_success(
         await reload_release.wait()
 
     manager.reload_agents_config = slow_reload
-    older_tail = manager.schedule_permissions_reload()
+    older_tail = manager.schedule_permissions_reload({})
     await reload_started.wait()
     real_get_running_loop = asyncio.get_running_loop
 
@@ -328,7 +317,7 @@ async def test_schedule_failure_latch_survives_older_tail_success(
 
     monkeypatch.setattr(asyncio, "get_running_loop", fail_get_running_loop)
     with pytest.raises(RuntimeError, match="scheduler unavailable"):
-        manager.schedule_permissions_reload()
+        manager.schedule_permissions_reload({})
     monkeypatch.setattr(asyncio, "get_running_loop", real_get_running_loop)
 
     reload_release.set()
@@ -336,7 +325,7 @@ async def test_schedule_failure_latch_survives_older_tail_success(
     with pytest.raises(RuntimeError, match="permission reload scheduling failed"):
         await manager.wait_for_permissions_ready()
 
-    recovered = manager.schedule_permissions_reload()
+    recovered = manager.schedule_permissions_reload({})
     await recovered
     await manager.wait_for_permissions_ready()
 
@@ -356,7 +345,7 @@ async def test_reused_schedule_exception_cannot_clear_newer_failure_latch(
 
     monkeypatch.setattr(asyncio, "get_running_loop", fail_get_running_loop)
     with pytest.raises(RuntimeError, match="scheduler unavailable"):
-        manager.schedule_permissions_reload()
+        manager.schedule_permissions_reload({})
     monkeypatch.setattr(asyncio, "get_running_loop", real_get_running_loop)
 
     async def slow_reload(*_args, **_kwargs):
@@ -364,12 +353,12 @@ async def test_reused_schedule_exception_cannot_clear_newer_failure_latch(
         await reload_release.wait()
 
     manager.reload_agents_config = slow_reload
-    recovery = manager.schedule_permissions_reload()
+    recovery = manager.schedule_permissions_reload({})
     await reload_started.wait()
 
     monkeypatch.setattr(asyncio, "get_running_loop", fail_get_running_loop)
     with pytest.raises(RuntimeError, match="scheduler unavailable"):
-        manager.schedule_permissions_reload()
+        manager.schedule_permissions_reload({})
     monkeypatch.setattr(asyncio, "get_running_loop", real_get_running_loop)
 
     reload_release.set()

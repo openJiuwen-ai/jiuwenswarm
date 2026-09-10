@@ -1126,7 +1126,7 @@ class MessageHandler(ABC):
 
         for old_sid, mode in sid_mode.items():
             cancel_msg = self._clone_message_for_session_cancel(msg, old_sid, mode=mode)
-            cleaned = await self._cancel_agent_work_for_session(
+            await self._cancel_agent_work_for_session(
                 cancel_msg,
                 old_sid,
                 publish_interrupt_result=False,
@@ -1134,8 +1134,6 @@ class MessageHandler(ABC):
                 cancel_gateway_tasks=False,
                 agent_notify="await",
             )
-            if not cleaned:
-                raise RuntimeError("previous task continuation cleanup failed")
 
         if unresolved_rids:
             logger.warning(
@@ -1323,15 +1321,13 @@ class MessageHandler(ABC):
 
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         if payload.get("event_type") == "chat.interrupt_result":
-            interrupt_succeeded = bool(resp.ok) and payload.get("success") is not False
             if not publish_interrupt_result:
                 logger.info(
-                    "[MessageHandler] 已静默 AgentServer 中断结果: request_id=%s ok=%s success=%s",
+                    "[MessageHandler] 已静默 AgentServer 中断结果: request_id=%s ok=%s",
                     resp.request_id,
                     resp.ok,
-                    payload.get("success"),
                 )
-                return interrupt_succeeded
+                return bool(resp.ok)
             out = self._response_to_message(
                 resp,
                 sid_for_agent,
@@ -1349,7 +1345,7 @@ class MessageHandler(ABC):
             await self._send_cancelled_tool_results(
                 msg.channel_id, sid_for_agent, payload, msg.metadata
             )
-            return interrupt_succeeded
+            return bool(resp.ok)
 
         error_message = "任务终止失败"
         if isinstance(payload, dict):
@@ -4137,7 +4133,12 @@ class MessageHandler(ABC):
                         if tasks_to_cancel:
                             await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
-                        # 2. 发送 supplement intent 到 AgentServer（取消任务但保留 todo）
+                        # 2. 通知前端 supplement（前端据此判断 is_processing 状态）
+                        await self._send_interrupt_result_notification(
+                            msg.id, msg.channel_id, msg.session_id, "supplement",
+                        )
+
+                        # 3. 发送 supplement intent 到 AgentServer（取消任务但保留 todo）
                         #    用 await 确保 agent 侧先完成取消再启动新任务
                         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
@@ -4186,35 +4187,10 @@ class MessageHandler(ABC):
                             await self._send_cancelled_tool_results(
                                 msg.channel_id, msg.session_id, payload, msg.metadata
                             )
-                        except Exception as exc:
-                            await self._send_interrupt_result_notification(
-                                msg.id,
-                                msg.channel_id,
-                                msg.session_id,
-                                "supplement",
-                                message=f"任务切换失败: {exc}",
-                                success=False,
-                            )
-                            continue
-                        if not resp.ok or payload.get("success") is False:
-                            error = payload.get("error") or payload.get("message")
-                            await self._send_interrupt_result_notification(
-                                msg.id,
-                                msg.channel_id,
-                                msg.session_id,
-                                "supplement",
-                                message=str(error or "任务切换失败"),
-                                success=False,
-                            )
-                            continue
-                        await self._send_interrupt_result_notification(
-                            msg.id,
-                            msg.channel_id,
-                            msg.session_id,
-                            "supplement",
-                        )
+                        except Exception:
+                            pass  # 即使失败也继续启动新任务
 
-                        # 3. 入队新任务（单一任务，不并发）
+                        # 4. 入队新任务（单一任务，不并发）
                         from jiuwenswarm.common.schema.message import Message
 
                         new_req_id = f"req_{int(time.time() * 1000):x}_{msg.id}"

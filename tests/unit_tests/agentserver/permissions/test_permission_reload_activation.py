@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -11,6 +12,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
 from jiuwenswarm.server.runtime.agent_adapter import interface, interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import BrowserRuntimeSecurityProfile
+from jiuwenswarm.server.runtime.agent_manager import AgentManager
 from tests.unit_tests.agentserver.permissions.test_permission_lifecycle_integration import (
     lifecycle as lifecycle,
 )
@@ -60,6 +62,88 @@ def test_facade_propagates_permission_notifier_during_lazy_adapter_creation(monk
     assert facade._ensure_adapter() is adapter
     assert facade._ensure_adapter() is adapter
     assert adapter.notifiers == [notify]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_legacy", [False, True])
+@pytest.mark.parametrize("change", ["permissions", "model", "already_dirty"])
+@pytest.mark.parametrize("installed,desired", [(True, "auto"), (True, "manual"), (False, "auto")])
+async def test_permission_notification_preserves_child_reload_versions(
+    monkeypatch, include_legacy, change, installed, desired,
+):
+    router = interface_deep.JiuWenSwarmDeepAdapter()
+    config = {"permissions": {"enabled": True, "mode": desired}, "models": {"default": "old"}}
+    smart = interface_deep.JiuWenSwarmDeepAdapter()
+    smart.mark_as_session_scoped("smart")
+    smart._session_instance_mode = "agent"
+    smart._enable_auto_permission = installed
+    ordinary = interface_deep.JiuWenSwarmDeepAdapter()
+    ordinary.mark_as_session_scoped("code")
+    ordinary._is_code_agent = True
+    for adapter in (router, smart, ordinary):
+        adapter._config_base_cache = deepcopy(config)
+    router._session_adapters = {"smart": smart, "code": ordinary}
+    router._session_adapter_config_version = 2
+    router._session_adapter_versions = {"smart": 1 if change == "already_dirty" else 2, "code": 2}
+    if change == "model":
+        config["models"]["default"] = "new"
+    # Only external dotenv/memory IO is stubbed; facade, router and version publication are real.
+    monkeypatch.setattr(router, "_apply_reload_config_snapshot", AsyncMock(return_value=config))
+    full_snapshot = router._apply_reload_config_snapshot
+    facade = interface.JiuWenSwarm()
+    facade._adapter = router
+    await facade.reload_permissions_config(config, include_legacy=include_legacy)
+    assert router._session_adapter_config_version == (3 if include_legacy else 2)
+    assert router._session_adapter_versions["code"] == 2
+    expected = 1 if change == "already_dirty" else 2
+    if include_legacy and change == "permissions":
+        expected = 3
+    assert router._session_adapter_versions["smart"] == expected
+    assert smart._enable_auto_permission is installed
+    assert smart._permission_state.permission_epoch is None
+    assert full_snapshot.await_count == int(include_legacy)
+    if include_legacy:
+        assert router._pending_session_reload_config_base == config
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("smart", [False, True])
+@pytest.mark.parametrize("include_legacy", [False, True])
+async def test_permission_notification_uses_existing_facade_owner(monkeypatch, smart, include_legacy):
+    facade = interface.JiuWenSwarm()
+    adapter = Mock()
+    adapter.has_smart_permission_lifecycle.return_value = smart
+    adapter.notify_permissions_changed = AsyncMock()
+    facade._adapter = adapter
+    legacy = AsyncMock()
+    monkeypatch.setattr(facade, "reload_agent_config", legacy)
+    config = {"permissions": {"enabled": True, "mode": "manual"}}
+    await facade.reload_permissions_config(config, include_legacy=include_legacy)
+    if smart:
+        adapter.notify_permissions_changed.assert_awaited_once_with(config, include_legacy=include_legacy)
+    else:
+        adapter.notify_permissions_changed.assert_not_awaited()
+    if not smart and include_legacy:
+        legacy.assert_awaited_once_with(config_base=config, env_overrides={})
+    else:
+        legacy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_smart_grant_notification_does_not_reload_ordinary_facades(monkeypatch):
+    manager = AgentManager()
+    config = {"permissions": {"enabled": True, "mode": "manual"}}
+    monkeypatch.setattr("jiuwenswarm.server.runtime.agent_manager.get_config", lambda: config)
+    smart, ordinary = interface.JiuWenSwarm(), interface.JiuWenSwarm()
+    smart._adapter = Mock()
+    smart._adapter.has_smart_permission_lifecycle.return_value = True
+    smart._adapter.notify_permissions_changed = AsyncMock()
+    ordinary._adapter = None
+    monkeypatch.setattr(ordinary, "_ensure_adapter", Mock(side_effect=AssertionError("created ordinary owner")))
+    manager.agents = {"web": {"smart": smart, "manual": ordinary}}
+    await manager.schedule_permissions_reload()
+    await manager.wait_for_permissions_ready()
+    smart._adapter.notify_permissions_changed.assert_awaited_once_with(config, include_legacy=False)
 
 
 @pytest.mark.asyncio

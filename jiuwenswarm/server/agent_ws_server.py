@@ -1360,9 +1360,9 @@ class AgentWebSocketServer:
         - 老逻辑要 ``enabled=True`` AND ``startup_mode=internal`` 才拉, 但
           ``enabled`` 是 ``/sandbox`` 命令的产物, 用户手改 yaml 设了 ``internal``
           的话很容易漏配 ``enabled`` → boot 时一声不吭跳过, 体验差。
-        - 现在: 只要 ``startup_mode=internal`` 就拉; 启用状态优先遵循
-          显式 ``sandbox.enabled``，仅在缺失时由端点配置推导。自动启动
-          不再写回 ``sandbox.enabled``。
+        - 现在: 只要 ``startup_mode=internal`` 就拉; 成功后顺手把
+          ``sandbox.enabled`` 同步成 ``True``, ``/sandbox status`` 显示与实际
+          运行的 jiuwenbox 一致。
         - ``/sandbox disable`` 仍然会停 jiuwenbox 并把 ``enabled`` 置 ``False``,
           但**重启后会被本方法重新拉起** (因为 ``startup_mode`` 没改)。要让
           disable 跨重启生效, 把 ``startup_mode`` 改为 ``external`` 或从 yaml
@@ -1475,6 +1475,19 @@ class AgentWebSocketServer:
                 logger.warning(
                     "[AgentWebSocketServer] persist sandbox endpoint failed "
                     "after auto-start: %s",
+                    exc,
+                )
+
+            # auto-start 成功 → ``runtime.enabled`` 同步为 True, 这样 /sandbox
+            # status / TUI 显示的状态跟真实运行的 jiuwenbox 对齐。如果用户上次
+            # /sandbox disable 留下了 False, 这里会被覆盖 —— 这是已知的、属于
+            # 上面 docstring 提到的 "disable 不跨重启" 语义的一部分。
+            try:
+                update_sandbox_runtime({"enabled": True})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentWebSocketServer] persist sandbox.enabled=True "
+                    "failed after auto-start: %s",
                     exc,
                 )
 
@@ -5038,26 +5051,15 @@ class AgentWebSocketServer:
         from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import \
             dispatch_permissions_config_request
 
-        try:
-            resp = dispatch_permissions_config_request(request)
-
-            # After any successful mutation (delete / update / set / create),
-            # publish the manager-owned reload before acknowledging persistence.
-            read_only_methods = {
-                ReqMethod.PERMISSIONS_TOOLS_GET,
-                ReqMethod.PERMISSIONS_RULES_GET,
-                ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
-            }
-            if resp.ok and request.req_method not in read_only_methods:
-                self._agent_manager.schedule_permissions_reload()
-        except RuntimeError as exc:
-            logger.exception("[AgentWebSocketServer] permissions config failed")
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(exc)},
-            )
+        resp = dispatch_permissions_config_request(request)
+        read_only_methods = {
+            ReqMethod.PERMISSIONS_TOOLS_GET,
+            ReqMethod.PERMISSIONS_RULES_GET,
+            ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
+        }
+        if resp.ok and request.req_method not in read_only_methods:
+            # Preserve develop's capture time and outer request error handling.
+            self._agent_manager.schedule_permissions_reload(get_config())
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
@@ -6052,7 +6054,7 @@ class AgentWebSocketServer:
                 persist = {"ok": False, "error": "path is required"}
             else:
                 persist = persist_cli_trusted_directory(str(directory_path))
-            if persist.get("ok") is True:
+            if persist.get("ok") is True and self._agent_manager.has_smart_permission_lifecycle(get_config()):
                 self._agent_manager.schedule_permissions_reload()
             resp = AgentResponse(
                 request_id=request.request_id,

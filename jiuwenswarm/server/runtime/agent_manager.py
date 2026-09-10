@@ -217,24 +217,20 @@ class AgentManager:
 
     async def _run_scheduled_permissions_reload(
         self,
-        previous: asyncio.Task[None] | None,
+        config: dict[str, Any] | None,
         observed_schedule_failure: tuple[object, Exception] | None,
     ) -> None:
-        if previous is not None:
-            try:
-                await asyncio.shield(previous)
-            except asyncio.CancelledError:
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise
-            except Exception:
-                # A newer notification retries the latest persisted config.
-                pass
-        await self.reload_agents_config(
-            None,
-            None,
-            reload_scopes={"permissions"},
-        )
+        if config is None:
+            # Smart grants/add-dir publish D only, without reloading ordinary owners.
+            async with self._reload_lock:
+                desired = get_config()
+                for agents in self.agents.values():
+                    for agent in list(agents.values()):
+                        if agent.has_smart_permission_lifecycle(desired):
+                            await agent.reload_permissions_config(desired, include_legacy=False)
+        else:
+            # RPCs retain develop's captured full reload for ordinary owners.
+            await self.reload_agents_config(config, None, permission_notification=True)
         if (
             self._permissions_reload_tail is asyncio.current_task()
             and self._permissions_reload_schedule_failure
@@ -242,7 +238,15 @@ class AgentManager:
         ):
             self._permissions_reload_schedule_failure = None
 
-    def schedule_permissions_reload(self) -> asyncio.Task[None]:
+    def has_smart_permission_lifecycle(self, config: dict[str, Any]) -> bool:
+        return any(
+            agent.has_smart_permission_lifecycle(config)
+            for agents in self.agents.values() for agent in agents.values()
+        )
+
+    def schedule_permissions_reload(
+        self, config: dict[str, Any] | None = None,
+    ) -> asyncio.Task[None]:
         """Publish one manager-owned reload tail after permission persistence."""
         if self._permissions_reload_closing:
             raise RuntimeError("permission reload owner is closing")
@@ -253,7 +257,7 @@ class AgentManager:
             raise
 
         reload_coro = self._run_scheduled_permissions_reload(
-            self._permissions_reload_tail,
+            config,
             self._permissions_reload_schedule_failure,
         )
         try:
@@ -268,22 +272,30 @@ class AgentManager:
         def _finish(done: asyncio.Task[None]) -> None:
             self._permissions_reload_tasks.discard(done)
             if done.cancelled():
+                if not self._permissions_reload_closing:
+                    self._permissions_reload_schedule_failure = (
+                        object(), RuntimeError("permission reload cancelled"),
+                    )
                 return
-            try:
-                done.result()
-            except Exception:
-                logger.exception(
-                    "[AgentManager] permissions reload notification failed"
-                )
+            failure = done.exception()
+            if failure is not None:
+                self._permissions_reload_schedule_failure = (object(), failure)
+                logger.error("[AgentManager] permissions reload notification failed: %s", failure)
 
         task.add_done_callback(_finish)
         return task
 
     async def wait_for_permissions_ready(self) -> None:
-        """Wait for the reload tail visible at this execution admission."""
-        tail = self._permissions_reload_tail
-        if tail is not None:
-            await asyncio.shield(tail)
+        """Wait for all visible notifications, including an older unfinished task."""
+        tasks = set(self._permissions_reload_tasks)
+        if self._permissions_reload_tail is not None:
+            tasks.add(self._permissions_reload_tail)
+        results = await asyncio.gather(
+            *(asyncio.shield(task) for task in tasks), return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
         schedule_failure = self._permissions_reload_schedule_failure
         if schedule_failure is not None:
             raise RuntimeError("permission reload scheduling failed") from schedule_failure[1]
@@ -298,16 +310,15 @@ class AgentManager:
             for _attempt in range(3):
                 tail = self._permissions_reload_tail
                 tail_error: BaseException | None = None
-                if tail is not None:
-                    try:
-                        await asyncio.shield(tail)
-                    except asyncio.CancelledError as exc:
-                        current = asyncio.current_task()
-                        if current is not None and current.cancelling():
-                            raise
-                        tail_error = exc
-                    except BaseException as exc:
-                        tail_error = exc
+                try:
+                    await self.wait_for_permissions_ready()
+                except asyncio.CancelledError as exc:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+                    tail_error = exc
+                except BaseException as exc:
+                    tail_error = exc
 
                 async with self._reload_lock:
                     if tail is not self._permissions_reload_tail:
@@ -1414,6 +1425,7 @@ class AgentManager:
         target_channel_id: str | None = None,
         target_session_id: str | None = None,
         reload_scopes: set[str] | None = None,
+        permission_notification: bool = False,
     ) -> None:
         """reload agent config.
 
@@ -1508,7 +1520,10 @@ class AgentManager:
                         reload_kwargs["target_session_id"] = target_session
                     if scope_set:
                         reload_kwargs["reload_scopes"] = scope_set
-                    await agent.reload_agent_config(**reload_kwargs)
+                    if permission_notification:
+                        await agent.reload_permissions_config(effective_config, include_legacy=True)
+                    else:
+                        await agent.reload_agent_config(**reload_kwargs)
                 try:
                     team_config = effective_config if isinstance(effective_config, dict) else get_config()
                     await get_team_manager(channel_id).update_evolution_config(team_config)

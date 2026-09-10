@@ -5,7 +5,7 @@ import json
 # these tests do not open sockets or contact running services.
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -87,24 +87,44 @@ def patch_wire_encoder(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_internal_jiuwenbox_bootstrap_does_not_persist_enabled(
+@pytest.mark.parametrize("enabled", [False, True, None])
+@pytest.mark.parametrize("outcome", ["started", "start_failed", "write_failed", "external", "darwin"])
+async def test_internal_jiuwenbox_bootstrap_persists_enabled(
     server,
     monkeypatch,
     tmp_path,
+    enabled,
+    outcome,
 ):
+    from jiuwenswarm.common.config import resolve_sandbox_enabled
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
     policy_path = tmp_path / "policy.yaml"
     policy_path.write_text("version: 1\n", encoding="utf-8")
     endpoint_updates = []
+    runtime_updates = []
+    sandbox = {"type": "jiuwenbox", "url": "http://sandbox.invalid:8321"}
+    if enabled is not None:
+        sandbox["enabled"] = enabled
+
+    def persist_runtime(patch):
+        runtime_updates.append(patch)
+        if outcome == "write_failed":
+            raise OSError("test persistence failure")
+        sandbox.update(patch)
 
     class Runner:
         async def ensure_running(self, **_kwargs):
-            return True
+            return outcome != "start_failed"
 
-    monkeypatch.setattr(agent_ws_server_module.sys, "platform", "linux")
+        def get_stderr_tail(self, _lines):
+            return "test startup failure"
+
+    monkeypatch.setattr(agent_ws_server_module.sys, "platform", "darwin" if outcome == "darwin" else "linux")
     monkeypatch.setattr(
         agent_ws_server_module,
         "get_sandbox_startup_mode_explicit",
-        lambda: "internal",
+        lambda: "external" if outcome == "external" else "internal",
     )
     monkeypatch.setattr(
         agent_ws_server_module,
@@ -128,7 +148,7 @@ async def test_internal_jiuwenbox_bootstrap_does_not_persist_enabled(
     monkeypatch.setattr(
         agent_ws_server_module,
         "update_sandbox_runtime",
-        lambda _patch: pytest.fail("bootstrap must not persist sandbox.enabled"),
+        persist_runtime,
     )
     monkeypatch.setattr(
         server,
@@ -144,7 +164,9 @@ async def test_internal_jiuwenbox_bootstrap_does_not_persist_enabled(
 
     await server._bootstrap_internal_jiuwenbox()
 
-    assert endpoint_updates == [
+    started = outcome in {"started", "write_failed"}
+    assert runtime_updates == ([{"enabled": True}] if started else [])
+    assert endpoint_updates == ([
         (
             ("http://sandbox.invalid:8321", "jiuwenbox"),
             {
@@ -152,7 +174,25 @@ async def test_internal_jiuwenbox_bootstrap_does_not_persist_enabled(
                 "policy_file": "policy.yaml",
             },
         )
-    ]
+    ] if started else [])
+
+    # Verify the production provider-selection branch without registering tools
+    # or opening a connection to the reserved test endpoint.
+    monkeypatch.setattr(interface_deep, "get_sandbox_endpoint", lambda: sandbox)
+    monkeypatch.setattr(interface_deep, "get_sandbox_runtime", lambda: {"enabled": resolve_sandbox_enabled(sandbox)})
+    local = MagicMock(return_value=None)
+    monkeypatch.setattr(interface_deep, "create_local_sysop_card", local)
+    for smart in (False, True):
+        adapter = interface_deep.JiuWenSwarmDeepAdapter()
+        adapter._enable_auto_permission = smart
+        remote = MagicMock(return_value=None)
+        monkeypatch.setattr(adapter, "_create_sandbox_sys_operation", remote)
+        monkeypatch.setattr(adapter, "_resolve_project_dir_for_sandbox", lambda: None)
+        local.reset_mock()
+        adapter._resolve_sys_operation()
+        expected_remote = outcome == "started" or enabled is True
+        assert remote.called is expected_remote
+        assert local.called is not expected_remote
 
 
 @pytest.mark.asyncio
@@ -244,9 +284,11 @@ async def test_browser_runtime_restart_uses_identity_scoped_sdk_reset():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("smart", [False, True])
 async def test_handle_command_add_dir_returns_path_and_remember(
-    server, fake_ws, monkeypatch
+    server, fake_ws, monkeypatch, smart
 ):
+    monkeypatch.setattr(server.get_agent_manager(), "has_smart_permission_lifecycle", lambda _: smart)
     persist_stub = {
         "ok": True,
         "normalized": "/tmp/demo",
@@ -285,13 +327,14 @@ async def test_handle_command_add_dir_returns_path_and_remember(
             "ok": True,
         }
     ]
-    reload_notify.assert_called_once_with()
+    assert reload_notify.call_args_list == ([call()] if smart else [])
 
 
 @pytest.mark.asyncio
 async def test_handle_command_add_dir_reports_reload_schedule_failure(
     server, fake_ws, monkeypatch
 ):
+    monkeypatch.setattr(server.get_agent_manager(), "has_smart_permission_lifecycle", lambda _: True)
     monkeypatch.setattr(
         agent_ws_server_module,
         "persist_cli_trusted_directory",
@@ -340,16 +383,18 @@ async def test_handle_command_add_dir_sends_no_target_dirty_signal_without_waiti
     reload_release = asyncio.Event()
     reload_calls = []
 
-    async def _blocking_reload(_config, _env, **kwargs):
-        reload_calls.append((_config, _env, kwargs))
+    async def _blocking_reload(_config, **kwargs):
+        reload_calls.append(kwargs)
         reload_started.set()
         await reload_release.wait()
 
-    monkeypatch.setattr(
-        server.get_agent_manager(),
-        "reload_agents_config",
-        _blocking_reload,
-    )
+    manager = server.get_agent_manager()
+    manager.agents = {"tui": {"agent": SimpleNamespace(
+        has_smart_permission_lifecycle=lambda _: True,
+        reload_permissions_config=_blocking_reload,
+    )}}
+    full_reload = AsyncMock(side_effect=AssertionError("add-dir must not dirty ordinary owners"))
+    monkeypatch.setattr(manager, "reload_agents_config", full_reload)
     request = AgentRequest(
         request_id="req-add-dir-no-reload-wait",
         channel_id="tui",
@@ -364,7 +409,7 @@ async def test_handle_command_add_dir_sends_no_target_dirty_signal_without_waiti
 
     await asyncio.wait_for(reload_started.wait(), timeout=0.5)
     assert reload_calls == [
-        (None, None, {"reload_scopes": {"permissions"}}),
+        {"include_legacy": False},
     ]
     assert fake_ws.sent == [
         {
@@ -378,7 +423,8 @@ async def test_handle_command_add_dir_sends_no_target_dirty_signal_without_waiti
         }
     ]
     reload_release.set()
-    await asyncio.sleep(0)
+    await manager.wait_for_permissions_ready()
+    full_reload.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1547,6 +1593,8 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
         raising=True,
     )
     reload_calls = []
+    captured = {"models": {"default": "captured"}}
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: captured)
 
     async def _slow_reload(_config, _env, **kwargs):
         reload_calls.append((_config, _env, kwargs))
@@ -1574,7 +1622,7 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
     # reload 在后台被调度: 等它跑完确认调用过一次
     await asyncio.sleep(0.3)
     assert reload_calls == [
-        (None, None, {"reload_scopes": {"permissions"}}),
+        (captured, None, {"permission_notification": True}),
     ]
 
 
@@ -1603,12 +1651,7 @@ async def test_handle_permissions_config_reports_reload_schedule_failure(
         params={"tool": "bash", "level": "deny"},
     )
 
-    await server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock())
-
-    assert fake_ws.sent == [
-        {
-            "response_id": "req-perm-schedule-failed",
-            "payload": {"error": "scheduler unavailable"},
-            "ok": False,
-        }
-    ]
+    # As in develop, the enclosing WebSocket dispatcher owns RPC exceptions.
+    with pytest.raises(RuntimeError, match="scheduler unavailable"):
+        await server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock())
+    assert fake_ws.sent == []
