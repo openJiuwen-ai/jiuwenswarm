@@ -6,11 +6,14 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
+from weakref import WeakSet
 
 
 logger = logging.getLogger("jiuwenswarm.llm_provider_compat_patch")
 
 _MODELARTS_TOOLS_NONE_MODELS = frozenset({"qwen3-32b"})
+_ANTHROPIC_PATCHED_CLASSES: WeakSet[type] = WeakSet()
+_OPENAI_PATCHED_CLASSES: WeakSet[type] = WeakSet()
 
 
 def _host_from_client(client: Any) -> str:
@@ -41,7 +44,7 @@ def _flatten_text_blocks(value: Any) -> Any:
 
 
 def _patch_anthropic_modelarts(client_class: type) -> None:
-    if getattr(client_class, "_jiuwenswarm_modelarts_text_patch", False):
+    if client_class in _ANTHROPIC_PATCHED_CLASSES:
         return
     original = client_class._build_request_params  # pylint: disable=protected-access
 
@@ -57,30 +60,28 @@ def _patch_anthropic_modelarts(client_class: type) -> None:
         return params
 
     client_class._build_request_params = _build_request_params  # type: ignore[method-assign]  # pylint: disable=protected-access
-    client_class._jiuwenswarm_modelarts_text_patch = True
+    _ANTHROPIC_PATCHED_CLASSES.add(client_class)
 
 
 def _patch_openai_modelarts_tool_choice(client_class: type) -> None:
-    if getattr(client_class, "_jiuwenswarm_modelarts_tool_patch", False):
+    if client_class in _OPENAI_PATCHED_CLASSES:
         return
     original = client_class._build_request_params  # pylint: disable=protected-access
 
     def _build_request_params(self, *args, **kwargs):
         params = original(self, *args, **kwargs)
         model_name = str(params.get("model") or "").strip().lower()
-        if (
-            _is_modelarts(self)
-            and model_name in _MODELARTS_TOOLS_NONE_MODELS
-            and params.get("tools")
-            and params.get("tool_choice", "auto") == "auto"
-        ):
+        is_affected_model = model_name in _MODELARTS_TOOLS_NONE_MODELS
+        if not _is_modelarts(self) or not is_affected_model:
+            return params
+        if params.get("tools") and params.get("tool_choice", "auto") == "auto":
             # This hosted model accepts tool schemas but rejects auto selection
             # unless the serving deployment enables a tool-call parser.
             params["tool_choice"] = "none"
         return params
 
     client_class._build_request_params = _build_request_params  # type: ignore[method-assign]  # pylint: disable=protected-access
-    client_class._jiuwenswarm_modelarts_tool_patch = True
+    _OPENAI_PATCHED_CLASSES.add(client_class)
 
 
 def apply_provider_compat_patches() -> None:
