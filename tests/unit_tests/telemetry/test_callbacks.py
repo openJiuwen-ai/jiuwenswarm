@@ -2971,13 +2971,25 @@ async def test_real_framework_cancellation_closes_core_llm_span_and_metrics_once
     monkeypatch: pytest.MonkeyPatch,
     interceptor_error: BaseException,
 ) -> None:
+    # Exercise cancellation, not the independent token-count timeout. Under CI
+    # load the 0.5s timeout can finish the task before the waiter calls cancel().
+    monkeypatch.setattr(
+        telemetry_env.callbacks,
+        "_config",
+        SimpleNamespace(
+            **vars(telemetry_env.callbacks._config),
+            token_count_timeout_seconds=float("inf"),
+        ),
+    )
     token_count_started = threading.Event()
     release_token_count = threading.Event()
 
     def slow_token_count(messages, tools):
         del messages, tools
         token_count_started.set()
-        release_token_count.wait(timeout=3)
+        # Only the finally block releases this worker; it must not complete
+        # naturally before the cancellation assertion on a slow runner.
+        release_token_count.wait()
         return ContextTokenBreakdown()
 
     monkeypatch.setattr(callbacks_module, "count_context_tokens", slow_token_count)
@@ -3003,7 +3015,7 @@ async def test_real_framework_cancellation_closes_core_llm_span_and_metrics_once
     )
     try:
         assert await asyncio.to_thread(token_count_started.wait, 1)
-        task.cancel()
+        assert task.cancel(), "token-count task must still be pending"
         with pytest.raises(asyncio.CancelledError):
             await task
     finally:
