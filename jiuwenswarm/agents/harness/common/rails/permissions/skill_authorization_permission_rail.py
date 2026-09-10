@@ -7,11 +7,16 @@
 标记；本 rail（priority=90）命中标记即跳过，避免同一次调用重复弹权限审批卡。
 对应 0708 对 permission_rail.py 的原地修改，这里下沉为 jiuwenswarm 侧子类，
 不改动 agent-core。
+
+另：会话里若残留 bash 等权限 HITL，下一条普通 ``chat.send`` 会被 ReAct 当成
+resume 答案。openjiuwen 解析失败会再弹 ``匹配规则: N/A`` 的卡，并跳过
+``auto_confirm``。此处仅把「无法解析的纯文本」回退成首次检查。
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Any, Optional
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
@@ -22,6 +27,13 @@ logger = logging.getLogger(__name__)
 _SKILL_GATE_TOOL_NAMES = ("skill_tool", "skill_complete")
 
 
+def is_unparseable_permission_resume_text(user_input: Any) -> bool:
+    """Whether leftover HITL resume fed a non-confirm chat string into the rail."""
+    if not isinstance(user_input, str):
+        return False
+    return PermissionInterruptRail.parse_confirm_payload(user_input) is None
+
+
 class SkillAuthorizationPermissionRail(PermissionInterruptRail):
     """PermissionInterruptRail 子类：Skill 门禁已裁决的调用跳过权限 Rail。"""
 
@@ -29,6 +41,25 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         if self._skill_authorization_gate_handled(ctx):
             return
         await super().before_tool_call(ctx)
+
+    async def resolve_interrupt(
+        self,
+        ctx: AgentCallbackContext,
+        tool_call: Optional[Any],
+        user_input: Optional[Any],
+        auto_confirm_config: Optional[dict] = None,
+    ):
+        if is_unparseable_permission_resume_text(user_input):
+            logger.info(
+                "[PermissionEngine] permission.rail.invalid_payload_fallback "
+                "tool=%s user_input_type=%s reason=treat_as_first_check",
+                getattr(tool_call, "name", "") if tool_call is not None else "",
+                type(user_input).__name__,
+            )
+            user_input = None
+        return await super().resolve_interrupt(
+            ctx, tool_call, user_input, auto_confirm_config
+        )
 
     def _skill_authorization_gate_handled(self, ctx: AgentCallbackContext) -> bool:
         """本次 skill_tool/skill_complete 是否已被动态授权门禁接管。"""
@@ -79,4 +110,5 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
 
 __all__ = [
     "SkillAuthorizationPermissionRail",
+    "is_unparseable_permission_resume_text",
 ]
