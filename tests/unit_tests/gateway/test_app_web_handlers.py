@@ -1979,6 +1979,10 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
         lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
     )
     monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
+        lambda: None,
+    )
+    monkeypatch.setattr(
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_external_cli_agents_in_config",
         lambda agents, publish_url=None: updates.append((agents, publish_url)),
     )
@@ -2208,6 +2212,14 @@ def test_optional_dependency_install_times_out_after_one_hour(
             10.0 + app_web_handlers._OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
         ],
     )
+    calling_thread = threading.current_thread()
+    real_monotonic = time.monotonic
+
+    def fake_monotonic() -> float:
+        if threading.current_thread() is calling_thread:
+            return next(monotonic_values)
+        return real_monotonic()
+
     monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
     monkeypatch.setattr(
         app_web_handlers,
@@ -2223,7 +2235,7 @@ def test_optional_dependency_install_times_out_after_one_hour(
     monkeypatch.setattr(
         app_web_handlers.time,
         "monotonic",
-        lambda: next(monotonic_values),
+        fake_monotonic,
     )
 
     with pytest.raises(

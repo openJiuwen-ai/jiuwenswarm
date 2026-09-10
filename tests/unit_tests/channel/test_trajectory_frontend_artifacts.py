@@ -15,6 +15,10 @@ _NOTICE_ROOT = Path("third-party") / "deepseek-harness"
 _ARTIFACT_FILES = ("LICENSE", "NOTICE.md", "NOTICE.zh.md")
 
 
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _require_tool(name: str) -> str:
     """Return the tool path, skipping the test when the tool is not installed.
 
@@ -53,16 +57,22 @@ def test_trajectory_license_and_notice_ship_in_vite_dist_and_python_wheel(tmp_pa
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     public_root = _FRONTEND_ROOT / "public" / _NOTICE_ROOT
     dist_root = _FRONTEND_ROOT / "dist" / _NOTICE_ROOT
     public_contents = {
-        artifact_name: (public_root / artifact_name).read_text(encoding="utf-8")
+        artifact_name: _normalize_newlines(
+            (public_root / artifact_name).read_text(encoding="utf-8")
+        )
         for artifact_name in _ARTIFACT_FILES
     }
     dist_contents = {
-        artifact_name: (dist_root / artifact_name).read_text(encoding="utf-8")
+        artifact_name: _normalize_newlines(
+            (dist_root / artifact_name).read_text(encoding="utf-8")
+        )
         for artifact_name in _ARTIFACT_FILES
     }
     assert dist_contents == public_contents
@@ -82,6 +92,8 @@ def test_trajectory_license_and_notice_ship_in_vite_dist_and_python_wheel(tmp_pa
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     wheel_paths = list(tmp_path.glob("*.whl"))
     assert len(wheel_paths) == 1
@@ -91,6 +103,8 @@ def test_trajectory_license_and_notice_ship_in_vite_dist_and_python_wheel(tmp_pa
     with zipfile.ZipFile(wheel_paths[0]) as wheel:
         for artifact_name in _ARTIFACT_FILES:
             archive_name = f"{wheel_prefix}/{_NOTICE_ROOT.as_posix()}/{artifact_name}"
-            wheel_contents[artifact_name] = wheel.read(archive_name).decode("utf-8")
+            wheel_contents[artifact_name] = _normalize_newlines(
+                wheel.read(archive_name).decode("utf-8")
+            )
     assert wheel_contents == public_contents
     _assert_notice_contents(wheel_contents)
