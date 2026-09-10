@@ -356,6 +356,13 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
           </div>
         )}
 
+        {branch === 'PAPER' && (
+          <div className="rsi-create-dialog__info-bar">
+            <TipIcon className="w-3.5 h-3.5 shrink-0" />
+            <span>{t('rsi.createDialog.paperInfoBar')}</span>
+          </div>
+        )}
+
         {/* 基础字段 */}
         <Field label={t('rsi.createDialog.nameLabel')}>
           <input
@@ -505,7 +512,6 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
             </Field>
             <Field
               label={t('rsi.createDialog.webProxyLabel')}
-              tip={t('rsi.createDialog.webProxyTip')}
             >
               <input
                 className="rsi-input"
@@ -516,7 +522,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
                 autoComplete="off"
               />
               <div style={{ fontSize: 12, lineHeight: 1.5, marginTop: 5, color: 'var(--color-text-secondary)' }}>
-                {t('rsi.createDialog.webProxyHint')}
+                {t('rsi.createDialog.webProxyTip')}
               </div>
             </Field>
           </>
