@@ -52,6 +52,26 @@ def test_blocks_pkill_on_jiuwenclaw_backend() -> None:
     assert reason is not None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf /tmp/x",
+        "del /f /s /q C:\\temp\\x",
+        "rd /s /q C:\\temp\\x",
+        "format C:",
+        "shutdown -h now",
+        "reboot",
+        "diskpart",
+        "mkfs.ext4 /dev/sdb",
+        "reg delete HKCU\\Software\\Example",
+        "Remove-Item -Recurse -Force C:\\temp\\x",
+    ],
+)
+def test_engine_owned_command_patterns_are_not_hard_blocked(command: str) -> None:
+    """Generic command policy must be evaluated by PermissionEngine instead."""
+    assert _check_command_safety(command) is None
+
+
 # ── jiuwenswarm-tui spawn 护栏 ────────────────────────────────
 
 

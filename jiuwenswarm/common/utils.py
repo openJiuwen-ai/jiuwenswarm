@@ -1231,10 +1231,6 @@ def prepare_workspace(
 
     _copy_system_file(config_yaml_src, config_yaml_dest)
 
-    builtin_rules_src = resources_dir / "builtin_rules.yaml"
-    builtin_rules_dest = config_dest_dir / "builtin_rules.yaml"
-    _copy_system_file(builtin_rules_src, builtin_rules_dest)
-
     resolved_lang = _resolve_preferred_language(
         config_yaml_dest, preferred_language, overlay_yaml_dest
     )
@@ -1474,7 +1470,6 @@ def init_user_workspace(
     用户根:
     - ~/.jiuwenswarm/config/config.yaml（系统默认副本）
     - ~/.jiuwenswarm/config/config.user.yaml（稀疏 overlay）
-    - ~/.jiuwenswarm/config/builtin_rules.yaml（内置 shell 安全规则模板，与 config 同目录）
     - ~/.jiuwenswarm/config/.env
     - ~/.jiuwenswarm/agent/...
 
