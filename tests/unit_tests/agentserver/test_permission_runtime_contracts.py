@@ -359,3 +359,142 @@ async def test_failed_file_guard_persistence_rolls_back_live_engine(
     assert persisted_candidates
     assert persisted_candidates[0]["file_guard"] != snapshot["file_guard"]
     assert after.permission == PermissionLevel.ASK
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_live_registers_permission_rail_on_hot_reload() -> None:
+    """Issue #4059: permission rail must reach the execution chain after
+    reload_agent_config re-issues configure()."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert rail is not None, "build_permission_rail returned None — preconditions broken"
+
+    agent = DeepAgent(AgentCard(name="permission-runtime-issue-4059"))
+
+    # Cold start is required so that _react_agent exists; that is the bridge
+    # destination for BEFORE_TOOL_CALL callbacks registered later.
+    agent.configure(DeepAgentConfig(rails=[], auto_create_workspace=False))
+    await agent.ensure_initialized()
+
+    # Hot reload re-runs configure() with the new permission rail, queueing
+    # it into _pending_rails. The persistent interaction loop never re-runs
+    # ensure_initialized(), so without the helper this rail is dead.
+    agent.configure(DeepAgentConfig(rails=[rail], auto_create_workspace=False))
+    assert rail in agent._pending_rails
+    assert rail not in agent._registered_rails
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = agent
+    adapter._permission_rail = rail
+    adapter._is_cron_execution = False
+
+    try:
+        await adapter._ensure_permission_rail_live_registered()
+
+        assert rail in agent._registered_rails
+
+        # BEFORE_TOOL_CALL is in _BRIDGE_EVENTS, so the callback goes through
+        # _react_agent's namespaced callback manager. Query via the bridge
+        # target so the namespace prefix matches what was registered.
+        bridge_event = (
+            agent._react_agent._agent_callback_manager._get_agent_event(
+                AgentCallbackEvent.BEFORE_TOOL_CALL
+            )
+        )
+        callbacks = Runner.callback_framework.list_callbacks(bridge_event)
+        assert len(callbacks) >= 1
+
+        registered_before = list(agent._registered_rails)
+        callbacks_before = list(callbacks)
+        await adapter._ensure_permission_rail_live_registered()
+        assert agent._registered_rails == registered_before
+        assert list(
+            Runner.callback_framework.list_callbacks(bridge_event)
+        ) == callbacks_before
+    finally:
+        await agent._agent_callback_manager.clear()
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_live_register_no_op_without_rail_or_instance() -> None:
+    """Issue #4059: the helper short-circuits on cold-start and cron paths."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+
+    # Case 1: cold start — permission disabled, no rail, no instance.
+    adapter._instance = None
+    adapter._permission_rail = None
+    adapter._is_cron_execution = False
+    await adapter._ensure_permission_rail_live_registered()
+
+    # Case 2: rail built but instance not yet created.
+    adapter._instance = None
+    adapter._permission_rail = build_permission_rail(
+        {"permissions": {"enabled": True}}
+    )
+    await adapter._ensure_permission_rail_live_registered()
+
+    # Case 3: cron session.
+    agent = DeepAgent(AgentCard(name="permission-runtime-issue-4059-cron"))
+    try:
+        adapter._instance = agent
+        adapter._is_cron_execution = True
+        await adapter._ensure_permission_rail_live_registered()
+        assert agent._registered_rails == []
+    finally:
+        await agent._agent_callback_manager.clear()
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_live_register_recovers_when_instance_uses_pending_path() -> None:
+    """Issue #4059: register_rail() promotes the rail into _registered_rails
+    and bridges BEFORE_TOOL_CALL into _react_agent for the persistent loop."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert rail is not None
+
+    old_rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert old_rail is not None
+    agent = DeepAgent(AgentCard(name="permission-runtime-issue-4059-promote"))
+    # Cold start establishes _react_agent; that is what BEFORE_TOOL_CALL
+    # bridges into.
+    agent.configure(
+        DeepAgentConfig(rails=[old_rail], auto_create_workspace=False)
+    )
+    await agent.ensure_initialized()
+    # Hot reload swaps in the new rail via configure(); it lands in
+    # _pending_rails, _registered_rails is cleared.
+    agent.configure(
+        DeepAgentConfig(rails=[rail], auto_create_workspace=False)
+    )
+    assert rail in agent._pending_rails
+    assert agent._registered_rails == []
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = agent
+    adapter._permission_rail = rail
+    adapter._is_cron_execution = False
+
+    try:
+        await adapter._ensure_permission_rail_live_registered()
+
+        assert rail in agent._registered_rails
+
+        bridge_event = (
+            agent._react_agent._agent_callback_manager._get_agent_event(
+                AgentCallbackEvent.BEFORE_TOOL_CALL
+            )
+        )
+        callbacks = Runner.callback_framework.list_callbacks(bridge_event)
+        assert len(callbacks) >= 1
+    finally:
+        await agent._agent_callback_manager.clear()

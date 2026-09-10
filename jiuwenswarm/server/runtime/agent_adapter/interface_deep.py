@@ -7745,6 +7745,48 @@ class JiuWenSwarmDeepAdapter:
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
 
+    async def _ensure_permission_rail_live_registered(self) -> None:
+        """Issue #4059: keep ``_permission_rail`` on the running instance's
+        execution chain after a hot reload.
+
+        ``reload_agent_config`` re-issues ``self._instance.configure(rails=...)``
+        which clears ``_registered_rails`` and queues every rail into
+        ``_pending_rails``. The persistent interaction loop never re-runs
+        ``ensure_initialized()``, so anything left in ``_pending_rails`` never
+        reaches the execution chain. Other rails (memory, task_planning,
+        ask_user, context_*, skill_evolution, skill_retrieval_prompt, ...) work
+        around this by calling ``self._instance.register_rail()`` directly
+        after ``configure()``; this method gives the permission rail the same
+        treatment.
+
+        Idempotent: skips cron sessions, sessions without a built rail, and
+        sessions whose instance has the rail already on the registered chain.
+        On ``register_rail()`` failure it logs a warning without clearing
+        ``_permission_rail`` so the next reload retries the same registration.
+        """
+        if getattr(self, "_is_cron_execution", False):
+            return
+        rail = getattr(self, "_permission_rail", None)
+        if rail is None or self._instance is None:
+            return
+        register = getattr(self._instance, "register_rail", None)
+        if not callable(register):
+            return
+        registered = getattr(self._instance, "_registered_rails", None)
+        if isinstance(registered, list) and rail in registered:
+            return
+        try:
+            await register(rail)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] _permission_rail live-register failed: %s",
+                exc,
+            )
+            return
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] _permission_rail live-registered on hot-reload"
+        )
+
     def _get_current_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any] | None = None
     ) -> list[Any]:
@@ -8712,6 +8754,11 @@ class JiuWenSwarmDeepAdapter:
         finally:
             self._restore_omitted_reload_fields(deep_cfg, omitted_fields)
         self._commit_reload_fingerprints(reload_fingerprints)
+        # Issue #4059: configure() above moved _permission_rail (if any) into
+        # _pending_rails. The persistent interaction loop never re-runs
+        # ensure_initialized(), so we live-register it here — same pattern
+        # memory / task_planning / ask_user / context_* / skill_evolution use.
+        await self._ensure_permission_rail_live_registered()
         self._sync_active_evolution_review_agent_after_reload()
 
         await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
