@@ -116,6 +116,7 @@ async def test_mcp_without_scope_schema_is_untouched(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_bound_business_session_wins_over_internal_session(monkeypatch) -> None:
     calls = []
+    monkeypatch.setenv("CELIA_CELIAWORK_PROJECT_ID", "fallback-project")
 
     def metadata(sid):
         calls.append(sid)
@@ -127,12 +128,26 @@ async def test_bound_business_session_wins_over_internal_session(monkeypatch) ->
     await McpProjectIdRail(session_id="business-session").before_tool_call(ctx)
     assert calls == ["business-session"]
     assert ctx.inputs.tool_args["session_id"] == "business-session"
+    assert ctx.inputs.tool_args["project_id"] == "project-42"
+
+
+@pytest.mark.asyncio
+async def test_celia_project_env_fallback_overrides_model_value(monkeypatch) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda _sid: {})
+    monkeypatch.setattr(interface_deep, "_CRON_TOOL_METADATA", SimpleNamespace(get=lambda: {}))
+    monkeypatch.setenv("CELIA_CELIAWORK_PROJECT_ID", "fallback-project")
+    ctx = _context("mcp_celiamcp_memory_store", {"content": "x", "project_id": "fake"},
+                   mcp_scope=("celiamcp", "memory_store"))
+    await McpProjectIdRail(session_id="business-session").before_tool_call(ctx)
+    assert ctx.inputs.tool_args["project_id"] == "fallback-project"
 
 
 @pytest.mark.asyncio
 async def test_missing_trusted_scope_removes_model_values(monkeypatch) -> None:
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda _sid: {})
-    monkeypatch.delenv("GSPD_CELIAWORK_PROJECT_ID", raising=False)
+    monkeypatch.delenv("CELIA_CELIAWORK_PROJECT_ID", raising=False)
     rail = McpProjectIdRail(session_id="business-session")
     monkeypatch.setattr(rail, "_resolve_project_binding", lambda _ctx: {})
     ctx = _context("mcp_example_store", {"content": "x", "project_id": "fake", "project_dir": "fake"},

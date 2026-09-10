@@ -219,7 +219,7 @@ class McpProjectIdRail(DeepAgentRail):
         优先级：
         1. ctx 关联的 session_metadata["project_id" / "project_dir"]
         2. 运行时 contextvar 中的 cron metadata
-        3. 环境变量 GSPD_CELIAWORK_PROJECT_ID（兜底）
+        3. 环境变量 CELIA_CELIAWORK_PROJECT_ID（兜底）
         """
         binding: dict[str, str] = {}
 
@@ -259,7 +259,7 @@ class McpProjectIdRail(DeepAgentRail):
 
         # 路径 3: 环境变量兜底（仅旧单项目 project_id，无目录可用）。
         if self.PROJECT_ID_KEY not in binding:
-            value = os.getenv("GSPD_CELIAWORK_PROJECT_ID", "").strip()
+            value = os.getenv("CELIA_CELIAWORK_PROJECT_ID", "").strip()
             if value:
                 binding[self.PROJECT_ID_KEY] = value
         return binding

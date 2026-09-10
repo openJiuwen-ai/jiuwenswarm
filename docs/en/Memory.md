@@ -1,6 +1,6 @@
 # Memory
 
-JiuwenSwarm uses external services for persistent, cross-session memory. The Celia provider injects the Memory prompt; configured `gausspdmcp` tools supply schemas and execution through the standard MCP integration. Project coding memory remains separate.
+JiuwenSwarm uses external services for persistent, cross-session memory. The Celia provider injects the Memory prompt; configured `celiamcp` tools supply schemas and execution through the standard MCP integration. Project coding memory remains separate.
 
 **External Memory Providers**, supporting third-party memory services (OpenJiuwen LTM, Mem0, OpenViking) or custom plugins.
 
