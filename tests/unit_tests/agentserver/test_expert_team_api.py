@@ -564,3 +564,49 @@ def test_locate_session_adapter_converts_canonical_to_manager_mode(
     svc = ExpertService(agent_manager=_AM(), adapter_resolver=lambda agent: None)
     svc._locate_session_adapter("desktop", "s1", mode=metadata_mode)
     assert captured["mode"] == expected_manager_mode
+
+
+@pytest.mark.asyncio
+async def test_install_fetch_only_no_session_binding(
+        server, local_source: Path, metadata_store: dict
+) -> None:
+    """expert.install 仅拉取资源：成功 + 判型 team，完全不碰 session metadata。"""
+    ws = FakeWebSocket()
+    await server._handle_expert_install(
+        ws,
+        _request(ReqMethod.EXPERT_INSTALL, {"expert_id": GROUP_ID}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is True
+    assert msg["payload"]["expert_id"] == GROUP_ID
+    assert msg["payload"]["type"] == "team"
+    assert "warnings" in msg["payload"]
+    # 不绑定会话：无任何 metadata 写入
+    assert metadata_store["__writes__"] == []
+
+
+@pytest.mark.asyncio
+async def test_install_not_found(server, local_source: Path) -> None:
+    """expert.install 未知专家 → NOT_FOUND。"""
+    ws = FakeWebSocket()
+    await server._handle_expert_install(
+        ws,
+        _request(ReqMethod.EXPERT_INSTALL, {"expert_id": "no-such-expert"}),
+        asyncio.Lock(),
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_install_missing_expert_id(server) -> None:
+    """expert.install 缺 expert_id → BAD_REQUEST。"""
+    ws = FakeWebSocket()
+    await server._handle_expert_install(
+        ws, _request(ReqMethod.EXPERT_INSTALL, {}), asyncio.Lock()
+    )
+    msg = ws.sent[0]
+    assert msg["ok"] is False
+    assert msg["payload"]["code"] == "BAD_REQUEST"
