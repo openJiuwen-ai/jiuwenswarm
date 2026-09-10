@@ -10,6 +10,7 @@ import pytest
 
 from jiuwenswarm.agents.harness.team.summary_team_org.factory import (
     JiuwenSummaryTeamFactory,
+    _leader_id_from_agent,
     _summary_team_id_for_task,
 )
 from jiuwenswarm.agents.harness.team.summary_team_org.wiring import (
@@ -79,6 +80,52 @@ def test_register_summary_factory_installer_sets_lazy_installer(
     register_summary_factory_installer()
     assert captured["installer"] is install_summary_factory
     assert getattr(runner, "_team_runtime_manager") is not None
+
+
+@pytest.mark.asyncio
+async def test_leader_id_prefers_resolver() -> None:
+    """resolver 有答案时优先采用它（可覆盖 member_name 的误导）。"""
+    resolved_calls: list[bool] = []
+
+    class _Backend:
+        member_name = "member-x"
+        leader_member_name = ""  # a plain member's backend: not the leader
+
+        async def resolve_leader_member_name(self) -> str:
+            resolved_calls.append(True)
+            return "team-leader"
+
+    agent = SimpleNamespace(team_backend=_Backend(), member_name="member-x")
+    assert await _leader_id_from_agent(agent, "org-summary-abc") == "team-leader"
+    assert resolved_calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_leader_id_falls_back_to_team_id_when_resolver_empty() -> None:
+    """resolver 返回空（或不存在）时用确定性兜底，绝不返回空串。"""
+
+    class _EmptyResolverBackend:
+        leader_member_name = "from-field"
+        member_name = "member-x"
+
+        async def resolve_leader_member_name(self) -> str:
+            return ""
+
+    # An empty resolver answer is not trusted, even though the fields carry a
+    # name: the deterministic floor wins so register_leader never sees "".
+    agent = SimpleNamespace(team_backend=_EmptyResolverBackend())
+    assert await _leader_id_from_agent(agent, "t-1") == "leader-t-1"
+
+    # A backend without the resolver at all lands on the same floor.
+    legacy = SimpleNamespace(team_backend=SimpleNamespace(leader_member_name="legacy-leader"))
+    assert await _leader_id_from_agent(legacy, "t-1") == "leader-t-1"
+
+
+@pytest.mark.asyncio
+async def test_leader_id_floor_without_backend() -> None:
+    """没有 team_backend 时同样用 leader-<team_id> 兜底。"""
+    assert await _leader_id_from_agent(SimpleNamespace(), "t-2") == "leader-t-2"
+    assert await _leader_id_from_agent(SimpleNamespace(team_backend=SimpleNamespace()), "t-2") == "leader-t-2"
 
 
 def test_summary_team_id_for_task_is_deterministic() -> None:

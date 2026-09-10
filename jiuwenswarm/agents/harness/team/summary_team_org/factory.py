@@ -33,15 +33,22 @@ def _summary_team_id_for_task(summary_task_id: str) -> str:
     return f"org-summary-{digest}"
 
 
-def _leader_id_from_agent(agent: Any, team_id: str) -> str:
+async def _leader_id_from_agent(agent: Any, team_id: str) -> str:
+    """Resolve the team's leader member name for the LaunchedSummaryTeam binding.
+
+    Prefer ``TeamBackend.resolve_leader_member_name()``: it answers "who leads
+    this team" for both the leader's own backend and a plain member's backend,
+    and falls back to the ``team_info`` row when the name was not handed in at
+    construction.  It may legitimately return ``""`` (team row absent), so the
+    deterministic ``leader-<team_id>`` remains as the non-empty floor.
+    """
     backend = getattr(agent, "team_backend", None)
-    for attr in ("leader_member_name", "member_name"):
-        value = getattr(backend, attr, None) if backend is not None else None
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    member_name = getattr(agent, "member_name", None)
-    if isinstance(member_name, str) and member_name.strip():
-        return member_name.strip()
+    if backend is not None:
+        resolve = getattr(backend, "resolve_leader_member_name", None)
+        if callable(resolve):
+            resolved = await resolve()
+            if isinstance(resolved, str) and resolved.strip():
+                return resolved.strip()
     return f"leader-{team_id}"
 
 
@@ -263,7 +270,7 @@ class JiuwenSummaryTeamFactory:
                         exc,
                     )
             return _Launched(
-                team_id=team_id, leader_id=_leader_id_from_agent(agent, team_id)
+                team_id=team_id, leader_id=await _leader_id_from_agent(agent, team_id)
             )
         except Exception as exc:
             import logging
