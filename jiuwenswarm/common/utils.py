@@ -989,8 +989,8 @@ def _migrate_legacy_heartbeat_jobs(workspace_dir: Path) -> bool:
     ``agent/home`` predates the DeepAgent workspace layout and is removed by
     :func:`_migrate_legacy_workspace`.  Heartbeat jobs were later persisted in
     that directory, so deleting it could silently erase every job.  The legacy
-    layout gate routes ``agent/home`` through this migration before AgentServer
-    starts.
+    Heartbeat gate routes the old store through this migration before
+    AgentServer starts.
 
     When both files exist, the new location is authoritative.  The legacy file
     is removed instead of merged because merging stale state could resurrect
@@ -1042,20 +1042,6 @@ def _migrate_legacy_heartbeat_jobs(workspace_dir: Path) -> bool:
             exc,
         )
         return False
-
-
-def _remove_legacy_home(old_home: Path, heartbeat_jobs_migrated: bool) -> None:
-    """Remove legacy home only after its Heartbeat store is safe."""
-    if not old_home.exists():
-        return
-    if not heartbeat_jobs_migrated:
-        logger.error(
-            "Preserved old home because heartbeat_jobs.json migration failed: %s",
-            old_home,
-        )
-        return
-    shutil.rmtree(old_home)
-    logger.info("Removed old home: %s", old_home)
 
 
 def _migrate_legacy_workspace(
@@ -1209,7 +1195,14 @@ def _migrate_legacy_workspace(
 
     # 6. Clean up old directories after successful migration
     try:
-        _remove_legacy_home(old_home, heartbeat_jobs_migrated)
+        if old_home.exists() and heartbeat_jobs_migrated:
+            shutil.rmtree(old_home)
+            logger.info("Removed old home: %s", old_home)
+        elif old_home.exists():
+            logger.error(
+                "Preserved old home because heartbeat_jobs.json migration failed: %s",
+                old_home,
+            )
         if old_skills.exists():
             shutil.rmtree(old_skills)
             logger.info(f"Removed old skills: {old_skills}")
@@ -1855,13 +1848,9 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     new_workspace = workspace_dir / "agent" / "workspace"
     old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
     mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
-    legacy_layout_exists = any(
-        (
-            (workspace_dir / "agent" / "home").exists(),
-            (workspace_dir / "agent" / "skills").exists(),
-            (workspace_dir / "agent" / "memory").exists(),
-        )
-    )
+    legacy_heartbeat_exists = (
+        workspace_dir / "agent" / "home" / "heartbeat_jobs.json"
+    ).exists()
 
     cleanup_team_files(workspace_dir)
 
@@ -1873,7 +1862,7 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
         (
             config_missing,
             workspace_migration_needed,
-            legacy_layout_exists,
+            legacy_heartbeat_exists,
             mcp_builtins_missing,
             mcp_builtins_update_needed,
         )

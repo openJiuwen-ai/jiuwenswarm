@@ -136,7 +136,7 @@ def test_existing_current_store_removes_invalid_legacy(
     )
 
 
-def test_runtime_preparation_routes_legacy_home_through_workspace_migration(
+def test_runtime_preparation_routes_legacy_heartbeat_through_workspace_migration(
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -174,3 +174,40 @@ def test_runtime_preparation_routes_legacy_home_through_workspace_migration(
     assert prepare_calls == [{"overwrite": False, "workspace_dir": workspace}]
     assert not legacy.exists()
     assert (workspace / "agent" / "heartbeat_jobs.json").exists()
+
+
+def test_runtime_preparation_ignores_unrelated_legacy_directories(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unrelated = workspace / "agent" / "home" / "other" / "history.json"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text("preserve", encoding="utf-8")
+    (workspace / "agent" / "skills").mkdir()
+    (workspace / "agent" / "memory").mkdir()
+    (workspace / "config").mkdir(parents=True)
+    (workspace / "config" / "config.yaml").write_text("{}", encoding="utf-8")
+    (workspace / "agent" / "workspace" / "mcp" / "mcp_builtins").mkdir(
+        parents=True
+    )
+    monkeypatch.setattr(common_utils, "cleanup_team_files", lambda _workspace: None)
+    monkeypatch.setattr(
+        common_utils,
+        "mcp_builtins_seed_update_needed",
+        lambda _workspace: False,
+    )
+    monkeypatch.setattr(
+        common_utils,
+        "prepare_workspace",
+        lambda **_kwargs: pytest.fail("unrelated legacy data must not trigger migration"),
+    )
+    monkeypatch.setattr(
+        common_utils,
+        "ensure_config_migrated_from_template",
+        lambda _workspace: None,
+    )
+    monkeypatch.setattr(common_utils, "ensure_default_builtin_skills", lambda: None)
+
+    common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)
+
+    assert unrelated.read_text(encoding="utf-8") == "preserve"
