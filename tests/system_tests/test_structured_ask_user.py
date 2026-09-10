@@ -144,13 +144,15 @@ class TestStructuredAskUserToolSchema:
         options_schema = props["options"]
         # Moonshot/Kimi flavored schema：type 必须落在 anyOf 分支内，父级不得
         # 同置 type；数量约束（0 个或 2-4 个）由两个分支各自声明。
-        assert options_schema["anyOf"] == [
-            {"type": "array", "maxItems": 0},
-            {"type": "array", "minItems": 2, "maxItems": 4},
-        ]
-        option_schema = options_schema["items"]
-        assert option_schema["required"] == ["label"]
-        assert option_schema["properties"]["label"]["minLength"] == 1
+        assert "items" not in options_schema  # Gemini rejects parent-level items with anyOf
+        assert len(options_schema["anyOf"]) == 2
+        empty_branch, choice_branch = options_schema["anyOf"]
+        assert empty_branch["type"] == "array" and empty_branch["maxItems"] == 0
+        assert choice_branch["minItems"] == 2 and choice_branch["maxItems"] == 4
+        for branch in options_schema["anyOf"]:
+            option_schema = branch["items"]
+            assert option_schema["required"] == ["label"]
+            assert option_schema["properties"]["label"]["minLength"] == 1
 
     @staticmethod
     def test_tool_card_name_is_ask_user():
