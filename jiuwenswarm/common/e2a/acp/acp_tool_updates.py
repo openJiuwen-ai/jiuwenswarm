@@ -45,10 +45,8 @@ _READ_TOOL_NAMES = frozenset(
         "list_files",
         "list_paths",
         "ls",
-        "memory_get",
         "read",
         "read_file",
-        "read_memory",
         "read_terminal_output",
         "read_text_file",
         "view",
@@ -63,7 +61,6 @@ _EDIT_TOOL_NAMES = frozenset(
         "search_replace",
         "write",
         "write_file",
-        "write_memory",
         "write_text_file",
     }
 )

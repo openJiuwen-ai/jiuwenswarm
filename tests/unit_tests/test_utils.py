@@ -441,26 +441,6 @@ class TestHardcodedPathsPhase2:
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
             f"Expected: {expected_path.resolve()}, Got: {actual_path.resolve()}"
 
-    @staticmethod
-    def test_im_inbound_path_structure():
-        """Test im_inbound.py uses DeepAgent standard USER.md path."""
-        # Reset caches to ensure clean state after previous tests
-        setattr(utils, '_user_home', None)
-        setattr(utils, '_initialized', False)
-        setattr(utils, '_config_dir', None)
-        setattr(utils, '_workspace_dir', None)
-        setattr(utils, '_root_dir', None)
-
-        from jiuwenswarm.common.utils import get_deepagent_user_md_path, get_user_workspace_dir
-
-        workspace = get_user_workspace_dir()
-        expected_path = workspace / "agent" / "workspace" / "USER.md"
-        actual_path = get_deepagent_user_md_path()
-
-        assert str(actual_path.resolve()) == str(expected_path.resolve()), \
-            f"Expected: {expected_path.resolve()}, Got: {actual_path.resolve()}"
-
-
 class TestAdditionalHardcodedPaths:
     """Test additional hardcoded paths fixed in config.py and rail_manager.py.
 

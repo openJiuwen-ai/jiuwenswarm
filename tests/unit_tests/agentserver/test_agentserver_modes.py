@@ -1285,7 +1285,6 @@ def test_deep_adapter_registers_evolution_interrupt_rail_before_skill_evolution(
         return None
 
     monkeypatch.setattr(adapter, "_build_task_planning_rail", lambda: None)
-    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
     monkeypatch.setattr(interface_deep_module, "SkillEvolutionRail", FakeSkillEvolutionRail)
     monkeypatch.setattr(interface_deep_module, "EvolutionInterruptRail", FakeEvolutionInterruptRail)
@@ -1419,7 +1418,6 @@ def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monk
     adapter._config_cache = {"evolution": {"enabled": True}}
 
     ask_user_rail = object()
-    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_build_structured_ask_user_rail", lambda: ask_user_rail)
     monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
@@ -1467,7 +1465,6 @@ def test_deep_adapter_registers_ask_user_rail_when_entering_plan_mode(monkeypatc
     ask_user_rail = object()
     monkeypatch.setattr(adapter, "_build_task_planning_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_structured_ask_user_rail", lambda: ask_user_rail)
-    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
 
     asyncio.run(adapter._update_rails_for_mode("agent.plan"))
@@ -1505,7 +1502,6 @@ def test_deep_adapter_registers_ask_user_rail_when_entering_fast_mode(monkeypatc
 
     ask_user_rail = object()
     monkeypatch.setattr(adapter, "_build_structured_ask_user_rail", lambda: ask_user_rail)
-    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
 

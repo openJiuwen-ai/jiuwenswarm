@@ -9,8 +9,7 @@ Embedding API settings are in the 'embed' section.
 import logging
 import os
 import re
-from typing import Any, Optional, Dict, List
-from dataclasses import dataclass, field
+from typing import Any, Optional, Dict
 from pathlib import Path
 
 import yaml
@@ -84,110 +83,6 @@ def get_embed_config() -> Dict[str, str]:
         "base_url": embed_config.get("embed_base_url"),
         "model": embed_config.get("embed_model"),
     }
-
-
-EMBED_API_KEY = property(lambda self: get_embed_config()["api_key"])
-EMBED_BASE_URL = property(lambda self: get_embed_config()["base_url"])
-EMBED_MODEL = property(lambda self: get_embed_config()["model"])
-
-
-@dataclass
-class MemorySettings:
-    """Memory configuration settings."""
-    provider: str = "openai_compatible"
-    model: str = "text-embedding-v3"
-    fallback: str = "mock"
-    sources: List[str] = field(default_factory=lambda: ["memory", "sessions"])
-    extraPaths: List[str] = field(default_factory=list)
-    
-    chunking: Dict[str, int] = field(default_factory=lambda: {"tokens": 256, "overlap": 32})
-    
-    query: Dict[str, Any] = field(default_factory=lambda: {
-        "maxResults": 10,
-        "minScore": 0.3,
-        "hybrid": {
-            "enabled": True,
-            "vectorWeight": 0.7,
-            "textWeight": 0.3,
-            "candidateMultiplier": 2.0
-        }
-    })
-    
-    store: Dict[str, Any] = field(default_factory=lambda: {
-        # 相对于 workspace_dir/memory/ 目录
-        "path": "memory.db",
-        "vector": {"enabled": True},
-        "fts": {"enabled": True}
-    })
-    
-    sync: Dict[str, Any] = field(default_factory=lambda: {
-        "watch": True,
-        "watchDebounceMs": 2000,
-        "onSearch": True,
-        "onSessionStart": True,
-        "intervalMinutes": 0
-    })
-    
-    cache: Dict[str, Any] = field(default_factory=lambda: {
-        "enabled": True,
-        "maxEntries": 10000
-    })
-
-
-def create_memory_settings(
-    workspace_dir: str = DEFAULT_WORKSPACE_DIR,
-    **overrides
-) -> MemorySettings:
-    """Create MemorySettings instance.
-    
-    Args:
-        workspace_dir: Workspace directory
-        **overrides: Override default settings
-    
-    Returns:
-        MemorySettings instance
-    """
-    config = _load_config()
-    embed_config = get_embed_config()
-    memory_config = config.get("memory", {})
-    
-    settings = MemorySettings()
-    
-    settings.model = embed_config.get("model", settings.model)
-    
-    if memory_config:
-        if "provider" in memory_config:
-            settings.provider = memory_config["provider"]
-        if "fallback" in memory_config:
-            settings.fallback = memory_config["fallback"]
-        if "sources" in memory_config:
-            settings.sources = memory_config["sources"]
-        if "extraPaths" in memory_config:
-            settings.extraPaths = memory_config["extraPaths"]
-        if "chunking" in memory_config:
-            settings.chunking = memory_config["chunking"]
-        if "query" in memory_config:
-            settings.query = memory_config["query"]
-        if "sync" in memory_config:
-            settings.sync = memory_config["sync"]
-        if "cache" in memory_config:
-            settings.cache = memory_config["cache"]
-    
-    if "store" not in overrides:
-        store_config = memory_config.get("store", {})
-        # 向量数据库索引文件存放在与 MEMORY.md 同目录 (workspace_dir/memory/memory.db)
-        # 只使用文件名，让 manager.py 的 _resolve_db_path 处理完整路径
-        overrides["store"] = {
-            "path": store_config.get("path", "memory.db"),
-            "vector": store_config.get("vector", {"enabled": True}),
-            "fts": store_config.get("fts", {"enabled": True}),
-        }
-    
-    for key, value in overrides.items():
-        if hasattr(settings, key):
-            setattr(settings, key, value)
-    
-    return settings
 
 
 def is_agent_mode(mode: str) -> bool:

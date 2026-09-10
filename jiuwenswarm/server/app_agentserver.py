@@ -297,14 +297,6 @@ async def _run(host: str, port: int) -> None:
             logger.info("[AgentServer][sandbox] step 2 done")
         except Exception as exc:  # noqa: BLE001
             logger.warning("[AgentServer] jiuwenbox runner stop failed: %s", exc)
-        try:
-            from jiuwenswarm.agents.harness.common.memory.celia.client_manager import (
-                get_celia_client_manager,
-            )
-
-            await get_celia_client_manager().close_all()
-        except Exception as exc:
-            logger.warning("[AgentServer] Celia shutdown failed: %s", exc)
         # Shutdown team observability (flush & close spans)
         try:
             from jiuwenswarm.agents.harness.team.team_manager import shutdown_team_observability

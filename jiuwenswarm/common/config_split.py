@@ -63,7 +63,7 @@ def _plain(value: Any) -> Any:
     """ruamel / 自定义类型 → 可比较的纯 Python 对象。
 
     ``sort_keys=False``：保留用户 yaml 里的键顺序（PyYAML dump 默认会按字母序排，
-    导致 overlay 里 GaussPD server 变成 ``command`` 在前，桌面补丁认不出 ``- name:``）。
+    导致 overlay 里 Celia server 变成 ``command`` 在前，桌面补丁认不出 ``- name:``）。
     """
     if value is None:
         return None

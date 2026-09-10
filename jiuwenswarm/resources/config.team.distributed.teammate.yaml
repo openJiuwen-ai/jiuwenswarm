@@ -17,21 +17,7 @@ memory:
   # ============================================================
   # 记忆系统配置
   # ============================================================
-  # 两个正交开关：
-  #   1) engine — 挂载哪套 rail（内置 / 外接 / 都挂 / 都不挂）
-  #   2) mode   — 内置记忆的存储位置（local | cloud），不影响外接
-  #
-  # 外接 rail 的启用 = (engine ∈ {external, both}) AND (external.provider 非空)
-  # 内置 rail 的启用 = (engine ∈ {builtin, both})  AND (mode=local)
-  #                    AND modes.agent.memory.enabled=true
-  # ============================================================
-
-  mode: ${MEMORY_MODE:-local}            # 内置记忆存储位置：local | cloud
-  # 记忆引擎总开关：builtin | external | both | none
-  #   builtin  — 仅内置记忆（兼容旧配置）
-  #   external — 仅外接记忆（默认 Celia，也可选 LTM / Mem0 / OpenViking / 插件）
-  #   both     — 内置 + 外接并存
-  #   none     — 全部关闭
+  # 外接记忆：external 启用，none 关闭；还需配置 external.provider。
   engine: ${MEMORY_ENGINE:-external}
   forbidden_memory_definition:
     enabled: false
@@ -46,7 +32,7 @@ memory:
   # 启用方式（任选一种）：
   #
   # 【方案 1：YAML 直接改】
-  #   memory.engine: external   # 或 both
+  #   memory.engine: external
   #   memory.external.provider: mem0   # 选一个：openjiuwen | mem0 | openviking
   #   # 然后在下方对应的 mem0/openjiuwen/openviking 子段填 api_key 或 endpoint
   #
@@ -56,19 +42,17 @@ memory:
   #   export MEM0_API_KEY=sk-xxx
   #
   # 【关闭外接记忆】
-  #   把 memory.engine 改回 builtin 或 none；
+  #   把 memory.engine 改为 none；
   #   或把 memory.external.provider 留空（两者任一生效即可禁用）
   #
   # 【挂载模式常见组合】
   #   ┌─────────────┬───────────────┬──────────────────────────────────────┐
   #   │ engine      │ provider      │ 效果                                 │
   #   ├─────────────┼───────────────┼──────────────────────────────────────┤
-  #   │ builtin     │ *             │ 只挂内置（外接即使填了也不挂）       │
   #   │ external    │ openjiuwen    │ 只挂外接 LTM                         │
   #   │ external    │ mem0          │ 只挂外接 Mem0                        │
   #   │ external    │ openviking    │ 只挂外接 OpenViking                  │
   #   │ external    │ <plugin-name> │ 只挂用户安装的插件                   │
-  #   │ both        │ 任一          │ 内置 + 外接同时挂（LLM 两套工具并列）│
   #   │ none        │ *             │ 全关，任何记忆 rail 都不挂           │
   #   └─────────────┴───────────────┴──────────────────────────────────────┘
   #
@@ -78,20 +62,15 @@ memory:
   # - 单 provider 策略：同一时刻 provider 只能选一个
   # - 失败降级：provider 构建失败或网络异常不阻塞主流程
   external:
-    # 选哪家 provider。空字符串 = 禁用外接（等价于 engine=builtin）
+    # 选哪家 provider。空字符串 = 禁用外接
     provider: ${MEMORY_EXTERNAL_PROVIDER:-celia}   # '' | openjiuwen | mem0 | openviking | celia | <plugin-name>
     # 数据隔离标识（所有 provider 共用）
     user_id: ${MEMORY_USER_ID:-__default__}
     scope_id: ${MEMORY_SCOPE_ID:-__default__}
 
-    # -- Celia Memory MCP --
+    # -- Celia memory UI state; Celia tools use mcp.servers --
     celia:
-      # 关闭静态平台/二进制预检查；实际启动失败由 Rail 降级处理。
-      preflight_enabled: false
-      # 追加到每次 MCP 调用的隔离键；tenantId 由运行时租户身份注入。
-      request_scope: {}
-      # 按需启用且需后端支持；restore 和 update_config 会修改数据/配置。
-      advanced_tools: []  # memory_backup | memory_restore | memory_update_config
+      runtime_state_path: ${CELIA_XIAOYI_RUNTIME_PATH:-}
 
     # -- OpenJiuwen LTM（本地长期记忆：KV + 向量 + DB）--
     # 生效条件：provider='openjiuwen'
@@ -477,11 +456,6 @@ permissions:
     write_file: allow
     edit_file: allow
     search_replace: allow
-    write_memory: allow
-    edit_memory: allow
-    read_memory: allow
-    memory_search: allow
-    memory_get: allow
     todo_create: allow
     todo_insert: allow
     todo_complete: allow

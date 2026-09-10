@@ -1,61 +1,38 @@
-# Celia 新版 MCP 工具适配
+# Celia 提示词与 Celia MCP 工具
 
-本次适配依据 2026-09-08 提供的九工具输入契约。服务端源码和实际响应结构尚未核验；测试使用该契约以及本地真实工具包装器。
+Swarm 使用通用 MCP 流程中已注册的 `celiamcp` 服务。模型收到的工具名为 `mcp_celiamcp_*`，工具描述、参数 schema 和执行均沿用该服务。
 
-## 工具分工
+## 挂载入口
 
-`jiuwenswarm/agents/harness/common/memory/celia/tools.py` 的 `mcp_tool_schemas()` 返回完整九工具传输契约，`tool_schemas()` 生成模型可见的工具定义。
+`memory.external.provider: celia` 现在只挂载 `CeliaMcpPromptRail`，负责注入静态 Memory 段，优先级仍为 15。普通、代码、设计和集群模式共用此入口；模式切换后恢复提示词，卸载时移除该段。
 
-| 工具 | 调用入口 |
-| --- | --- |
-| `memory_add` | 每轮结束的自动入库钩子；不交给模型重复调用 |
-| `memory_store` | 模型显式记忆；直接调用后端持久化 |
-| `memory_record_search` | 模型检索；必须指定 `atomic_fact` 或 `raw_conv` |
-| `memory_global_load` | 自动预加载及模型按需加载 |
-| `memory_scene_load` | 模型按 `sceneIds` 加载，单次 1–5 个 |
-| `memory_scene_search` | 模型按 `subSceneTag` 查找场景 |
-| `memory_backup` | 显式配置启用且后端声明支持后注册 |
-| `memory_restore` | 同上；`dryRun=1` 仅预览，默认 0 会写入 |
-| `memory_update_config` | 同上；修改运行配置，属于写操作 |
+旧 `CeliaMemoryProvider`、`CeliaMemoryRail`、私有 MCP 客户端及静态 schema 已删除，无前缀的 `memory_*` 工具不再注册。
 
-旧的 `memory_open`、`memory_search_l2/l3`、`memory_load_l1`、场景索引接口和用量上报接口不再用于此协议。旧二进制不兼容时，初始化日志会报告缺少的工具；Rail 的静态提示词仍可挂载。
-
-## 身份与隔离
-
-模型只填写业务参数。`userId`、`sessionId`、`traceId`、`requestScope`、`scope`、`scopeFilter` 由适配层注入，模型传入这些字段会被拒绝。
-
-- 用户和租户来自请求上下文，配置值作为回退；集群成员也接收序列化的请求 metadata。
-- `request_scope` 配置与可信请求 metadata 的 `celia_request_scope` 合并。`tenantId` 固定取当前租户身份，保留原租户隔离。
-- `memory.external.scope_id` 支持 `user`/`1`、`global`/`0`、`session`/`3`。旧的 `__default__` 按用户范围处理；agent 范围不受新版契约支持。
-- 用户范围检索省略 `sessionId`，以便检索历史会话。会话范围检索携带当前 conversation ID；写入也携带它作为 `sessionId`。
-- 缓存按数据库、用户、租户、授权范围和动态隔离键区分；会话范围还区分 conversation ID。
-
-## 配置与记忆开关
+## 配置与职责
 
 ```yaml
 memory:
   engine: external
   external:
     provider: celia
-    scope_id: user
-    celia:
-      preflight_enabled: false
-      request_scope: {}
-      advanced_tools: []
+mcp:
+  servers:
+    - name: celiamcp
+      enabled: true
+      transport: stdio
+      command: ${CELIA_MCP_EXE}
 ```
 
-需要扩展工具时，在 `advanced_tools` 中明确填写相应名称。服务端仅声明支持不会自动启用这些工具。
+Celia 服务在部署环境的 `mcp.servers` 中使用服务名称 `celiamcp`，通用 MCP 流程据此生成 `mcp_celiamcp_*` 工具名。上例的 `CELIA_MCP_EXE` 指向部署环境的 MCP 可执行文件；使用 HTTP 等传输时填写对应的连接参数。项目 ID 的环境变量兜底名称为 `CELIA_CELIAWORK_PROJECT_ID`。
 
-`memory.engine` 决定是否挂载 Rail；`.xiaoyiruntime` 的 `MEMORYSTATE` 独立控制提取及提取后记忆的使用：
+自动摘要读取和对话入库由现有 Celia 接入负责；Swarm 的提示词 Rail 不再重复执行。现有扩展 Hook、参数处理、连接管理及工具白名单保持原有流程。
 
-- 开启：自动写入使用 `skipExtraction=0`，可显式存储、检索原子事实并加载摘要/场景。
-- 关闭：自动写入使用 `skipExtraction=1`，仍可检索 `raw_conv`；直接提取存储和原子事实/场景检索返回关闭状态。
-- 后端不可用时，`memory_store` 返回失败，不再通过本地缓冲返回持久化成功。
+配置模板已移除旧 Celia 私有客户端参数，仅保留小艺记忆开关使用的 `celia.runtime_state_path`。小艺 `MemoryQuery` 仅保留 `MemoryStateGet` / `MemoryStateSet`；`UserMdQuery`、`MemoryMdQuery` 和 `MemoryHistory` 已移除。工作区根目录的 `USER.md`、`MEMORY.md` 及 `.memory.log` 不再创建或读取，旧标记区同步模块已删除。内置文件记忆已下线：不再创建、迁移、索引或注入 `memory/MEMORY.md`、`memory/daily_memory/*.md`，SDK 默认工作区及上下文清单也不再包含这些文件和 `USER.md`。旧文件读写工具及请求期间重新注册它们的逻辑已删除；日报技能不再读取每日文件。磁盘上的历史文件不自动删除。代码记忆的项目索引继续保留。
 
-自动写入按用户/助手角色分开发送；长文本按 UTF-8 边界分块，每块最多 81920 字节。显式 `memory_store` 超过该字节限制会被拒绝。
+`memory.engine` 仅支持 `external` / `none`，默认 `external`；无效配置不挂载记忆 Rail。SDK 的默认目录策略由仓库中的 `agents/harness/workspace_policy.py` 统一设置，覆盖普通 Agent、集群和子代理，安装本仓库即可生效。
 
-## 响应与验证范围
+## 验证
 
-业务工具保留后端完整结果结构。全局预加载保留原始响应，避免猜测字段名而丢失导航或场景 ID；无法从导航获得 ID 时，prompt 指引模型先调用 `memory_scene_search`。
+测试使用真实 DeepAgent 和 MCP 工具执行器，验证模型仅收到已注册的 Celia 工具、参数 schema 与服务端一致、工具能够执行，以及移除提示词 Rail 后 MCP 工具仍然可用。同时覆盖各模式挂载、流式请求、模式切换和 MCP 缺失场景，以及小艺记忆开关、已移除查询的错误响应和初始化不再创建旧记忆文件。最终请求检查包含真实工作区、运行时目录说明与上下文组装，并放入旧文件验证内容不会被读取或注入。
 
-测试覆盖参数边界、身份覆盖拒绝、动态隔离、直接存储失败、关闭状态下原文检索、UTF-8 分块、工具注册、真实 `LocalFunction` 参数转换，以及集群和代码/设计模式挂载。真实 Celia 二进制、HTTP 认证和服务端返回结构仍需部署环境联调。
+实际 Celia 数据库和自动记忆效果仍需部署环境联调。

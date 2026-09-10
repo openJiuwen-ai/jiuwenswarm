@@ -4,12 +4,10 @@
 
 处理所有 per-request 的 avatar 逻辑：
 1. before_model_call: 根据 ContextVar 动态注入/移除 avatar 相关 PromptSection
-2. before_tool_call: 拦截群聊记忆禁写 + enable_memory=False 场景
 """
 
 from __future__ import annotations
 
-from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
@@ -18,8 +16,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
 )
 
-_MEMORY_WRITE_TOOLS = frozenset({"write_memory", "edit_memory"})
-
 _AVATAR_PROMPT_PRIORITY = 110
 
 
@@ -27,8 +23,7 @@ class AvatarPromptRail(DeepAgentRail):
     """数字分身 Rail — 处理所有 per-request 的 avatar 逻辑。
 
     职责:
-    1. before_model_call: 根据 ContextVar 动态注入/移除 avatar 相关 PromptSection
-    2. before_tool_call: 拦截群聊记忆禁写 + enable_memory=False 场景
+    before_model_call: 根据 ContextVar 动态注入/移除 avatar 相关 PromptSection
     """
 
     priority: int = 85
@@ -77,9 +72,9 @@ class AvatarPromptRail(DeepAgentRail):
         # 群聊数字分身模式：禁止写入记忆
         if is_group_digital_avatar:
             notice = (
-                "\n[群聊模式：禁止调用 write_memory/edit_memory]\n"
+                "\n[群聊模式：禁止写入记忆]\n"
                 if language == "cn"
-                else "\n[Group chat mode: write_memory/edit_memory calls are prohibited]\n"
+                else "\n[Group chat mode: memory writes are prohibited]\n"
             )
             section = PromptSection(
                 name="group_chat_memory_notice",
@@ -114,57 +109,6 @@ class AvatarPromptRail(DeepAgentRail):
             )
             builder.add_section(section)
             self._injected_sections.add("interaction_guidance")
-
-    async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """拦截记忆工具调用。
-
-        不依赖 _tool_names 白名单，直接检查所有工具。
-        由于 DeepAgentRail.before_tool_call 没有白名单过滤，所有工具调用都会经过这里。
-
-        处理两种场景：
-        1. 群聊数字分身模式（group_digital_avatar=True + avatar_mode=True）：禁止写入记忆，但允许读取
-        2. 记忆完全禁用（enable_memory=False + group_digital_avatar=True + avatar_mode=True）：禁止读取和写入记忆
-        """
-        tool_name = ctx.inputs.tool_name
-        perm_ctx = TOOL_PERMISSION_CONTEXT.get()
-        if perm_ctx is None:
-            return
-
-        # 判断是否为群聊数字分身模式
-        is_group_digital_avatar = (
-            perm_ctx.group_digital_avatar
-            and perm_ctx.avatar_mode
-        )
-
-        # 判断是否为记忆完全禁用（三个条件同时满足）
-        should_disable_memory = (
-            not perm_ctx.enable_memory
-            and perm_ctx.group_digital_avatar
-            and perm_ctx.avatar_mode
-        )
-
-        # 场景2：记忆完全禁用 - 禁止读取和写入
-        if should_disable_memory:
-            all_memory_tools = frozenset({
-                "write_memory", "edit_memory", "read_memory", "memory_search", "memory_get"
-            })
-            if tool_name in all_memory_tools:
-                self._reject_tool(ctx, "[PERMISSION_DENIED] 记忆系统已禁用，禁止访问")
-            return
-
-        # 场景1：群聊数字分身模式 - 只禁止写入
-        if is_group_digital_avatar and tool_name in _MEMORY_WRITE_TOOLS:
-            self._reject_tool(ctx, "[PERMISSION_DENIED] 群聊模式下禁止写入/编辑记忆文件")
-            return
-
-    @staticmethod
-    def _reject_tool(ctx: AgentCallbackContext, message: str) -> None:
-        """跳过工具执行，直接返回拒绝消息。"""
-        tool_call = ctx.inputs.tool_call
-        tool_call_id = tool_call.id if tool_call else ""
-        ctx.extra["_skip_tool"] = True
-        ctx.inputs.tool_result = message
-        ctx.inputs.tool_msg = ToolMessage(content=message, tool_call_id=tool_call_id)
 
 
 def _build_avatar_prompt(principal_user_id: str | None, language: str) -> str:
@@ -225,27 +169,6 @@ def _build_avatar_prompt(principal_user_id: str | None, language: str) -> str:
 """
 
 
-def _build_memory_disabled_prompt(language: str) -> str:
-    """记忆写入禁用提示词（保留读能力，与 React 链路行为一致）。"""
-    if language == "cn":
-        return """## 记忆系统 - 写入已禁用
-
-记忆写入功能当前已禁用。
-
-- 禁止 使用 write_memory、edit_memory 写入或修改记忆文件
-- 允许 使用 memory_search、memory_get、read_memory 查询已有记忆
-- 如果用户要求记住某些内容，回复："记忆写入功能当前未启用，无法保存新信息，但我可以查询已有的记忆。"
-"""
-    return """## Memory System - Write Disabled
-
-Memory write operations are currently disabled.
-
-- Do NOT use write_memory or edit_memory to write or modify memory files
-- Allowed: memory_search, memory_get, read_memory for reading existing memories
-- If the user asks to remember something, reply: "Memory writing is currently disabled, but I can query existing memories."
-"""
-
-
 def _build_memory_fully_disabled_prompt(language: str) -> str:
     """记忆完全禁用提示词（禁止读取和写入）。"""
     if language == "cn":
@@ -253,18 +176,14 @@ def _build_memory_fully_disabled_prompt(language: str) -> str:
 
 记忆系统当前已完全禁用。
 
-- 禁止 使用任何记忆工具：
-  - 写入工具：write_memory、edit_memory
-  - 读取工具：read_memory、memory_search、memory_get
+- 禁止 使用任何记忆工具
 - 如果用户询问历史信息或要求记住某些内容，回复："记忆系统当前已禁用，我无法访问历史记录或保存新信息。"
 """
     return """## Memory System - Fully Disabled
 
 The memory system is currently fully disabled.
 
-- Do NOT use any memory tools:
-  - Write tools: write_memory, edit_memory
-  - Read tools: read_memory, memory_search, memory_get
+- Do NOT use any memory tools.
 - If the user asks about historical information or requests to remember something, reply: \
     "The memory system is currently disabled. I cannot access historical records or save new information."
 """

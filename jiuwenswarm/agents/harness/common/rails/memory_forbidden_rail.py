@@ -23,8 +23,6 @@ from jiuwenswarm.common.utils import logger
 
 _MEMORY_WRITE_TOOLS = frozenset(
     {
-        "write_memory",
-        "edit_memory",
         "coding_memory_write",
         "coding_memory_edit",
         "experience_learn",
@@ -59,7 +57,6 @@ _NEW_CONTENT_KEYS = (
 
 _MEMORY_FILE_NAMES = frozenset(
     {
-        "user.md",
         "identity.md",
         "memory.md",
         "jiuwenswarm.md",
@@ -67,7 +64,7 @@ _MEMORY_FILE_NAMES = frozenset(
     }
 )
 
-_MEMORY_PATH_PARTS = frozenset({"memory", "coding_memory"})
+_MEMORY_PATH_PARTS = frozenset({"coding_memory"})
 
 _DENIAL_MESSAGE = (
     "[SENSITIVE_MEMORY_BLOCKED] 检测到敏感信息，已阻止写入记忆；请删除或脱敏后再保存。"

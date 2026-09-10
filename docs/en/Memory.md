@@ -1,6 +1,6 @@
 # Memory
 
-Memory gives JiuwenSwarm **persistent, cross-session recall**: important facts are written to files and retrieved with semantic search (plus optional BM25).
+JiuwenSwarm uses external services for persistent, cross-session memory. The Celia provider injects the Memory prompt; configured `celiamcp` tools supply schemas and execution through the standard MCP integration. Project coding memory remains separate.
 
 **External Memory Providers**, supporting third-party memory services (OpenJiuwen LTM, Mem0, OpenViking) or custom plugins.
 
@@ -12,26 +12,12 @@ Control memory engine mounting via `memory.engine` config:
 
 | Value | Description |
 |-------|-------------|
-| `builtin` | Only built-in memory (default, backward-compatible) |
-| `external` | Only external memory (LTM / Mem0 / OpenViking / plugin) |
-| `both` | Built-in + external coexist |
+| `external` | External memory (default; requires a provider) |
 | `none` | All disabled |
 
 ---
 
 ## Configuration
-
-### Built-in Memory
-
-Retrieval defaults to BM25 full-text search. Configure **`EMBED_API_KEY`** (and related embed settings) for vector + BM25 hybrid search.
-
-| Variable | Description |
-|----------|-------------|
-| `EMBED_API_KEY` | Embedding API key (mock provider if unset) |
-| `EMBED_API_BASE` | Embedding endpoint URL |
-| `EMBED_MODEL` | Embedding model name |
-
-![Memory config](../assets/images/memory_config.png)
 
 ### External Memory
 
@@ -39,7 +25,7 @@ Config location: `memory.external` section in `config.yaml`.
 
 ```yaml
 memory:
-  engine: external   # or both
+  engine: external
   external:
     provider: mem0   # Choose one: openjiuwen | mem0 | openviking | <plugin-name>
     user_id: __default__
@@ -110,49 +96,11 @@ The LLM call reuses `models.default`; no extra model config required.
 
 ---
 
-## Built-in Memory File Layout
+## Retired file memory
 
+The built-in file-memory tools, index, daily-file migration and prompt injection have been removed. Workspace defaults no longer create `USER.md`, `memory/MEMORY.md` or `memory/daily_memory/*.md`. Existing files are left on disk and are not read by the memory integration. Daily reports no longer collect these files.
 
-## File layout
-
-Memory is plain Markdown; the agent uses file tools:
-
-```
-{workspace_dir}/memory
-├── MEMORY.md               # Long-term memory
-├── USER.md                 # User profile
-└── YYYY-MM-DD.md           # Daily log
-```
-![Memory files](../assets/images/memory_files.png)
-
-### `memory/MEMORY.md` (long-term)
-
-- **Use**: Decisions, preferences, stable facts.
-- **Updates**: `write` / `edit` tools.
-
-### `USER.md` (profile)
-
-- **Use**: Name, role, hobbies, location, etc.
-- **Updates**: `write` / `edit`.
-
-### `YYYY-MM-DD.md` (daily)
-
-- **Use**: Day log, running context.
-- **Updates**: Append via `write` / `edit`; summarization may run when conversations are long.
-
-## Memory Write Triggers
-
-During interactions with users, JiuwenSwarm automatically triggers memory writes when needed, persisting key information to memory files for long-term storage.
-
-| Information Type | Target File | Operation | Example |
-|------------------|-------------|-----------|---------|
-| Decisions, preferences, persistent facts | `memory/MEMORY.md` | write / edit tools | "Project uses Python 3.12", "Prefers pytest framework" |
-| User personal information | `memory/USER.md` | write / edit tools | User name, occupation, hobbies |
-| Daily notes, runtime context | `memory/YYYY-MM-DD.md` | write / edit tools | "Fixed login bug today", "Deployed v2.1" |
-| User says "remember this" | `memory/YYYY-MM-DD.md` | write tool | "Remember I stored project files on D drive" |
-
-![Memory Write Triggers](../assets/images/记忆.png)
-![Memory Write](../assets/images/记忆写入.png)
+Project coding memory and team memory retain their own storage and tools.
 
 ## Dreaming: Sleep-Time Memory Consolidation
 
@@ -230,92 +178,6 @@ The extractor agent autonomously reads existing memory, analyzes the round, and 
 - **Temporary teams**: read-only access to the parent workspace; the source memory cannot be polluted
 
 
-## Architecture overview
-
-The memory system has three independent write channels operating in parallel, all sharing the same storage and retrieval layer:
-
-```
-                       User / Agent
-                            │
-        ┌───────────────────┼───────────────────┐
-        ↓                   ↓                   ↓
-  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-  │ In-session   │   │ Dreaming     │   │ Agent Team   │
-  │ writes       │   │ background   │   │ coordination │
-  │              │   │ extraction   │   │              │
-  │ Agent calls  │   │ Orchestrator │   │ Leader runs  │
-  │ tools itself │   │ periodic LLM │   │ at round end │
-  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘
-         │                  │                  │
-         └──────────────────┼──────────────────┘
-                            ↓ writes Markdown
-            ┌──────────────────────────────────────┐
-            │ MemoryIndexManager (shared index)    │
-            │  persistence / watch / hybrid search │
-            └────────────────┬─────────────────────┘
-                             ↑ search / read
-                       User / Agent
-```
-
-> Index internals are covered below in "Technical stack".
-
-| Channel | Triggered by | When | Typical targets |
-|---------|--------------|------|-----------------|
-| In-session writes | Agent calls tools itself | During the conversation | `MEMORY.md` / `USER.md` / `YYYY-MM-DD.md` / `coding_memory/*.md` |
-| Dreaming offline extraction | In-process Orchestrator | Periodic idle-time sweep | `DREAMING.md` / `consolidated_{hash}.md` |
-| Agent Team coordination | Leader at end of round | After a team round completes | Team `TEAM_MEMORY.md` + each member's personal memory |
-
-All three channels share the same **MemoryIndexManager** for indexing and retrieval, so the agent reading memory does not need to know which channel wrote it.
-
-### Capabilities
-
-| Capability | Description |
-|------------|-------------|
-| Persistence | Markdown files as source of truth |
-| File watch | Watchdog updates local indexes async |
-| Semantic search | Embeddings + BM25 hybrid recall |
-| Direct read | Read specific files to keep context small |
-
-### Technical stack
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     MemoryIndexManager                          │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐      │
-│  │ Config      │  │ Embedding   │  │ SQLite Database     │      │
-│  │ (config.py) │  │ Provider    │  │ - chunks            │      │
-│  └─────────────┘  └─────────────┘  │ - files             │      │
-│         │                │         │ - embedding_cache   │      │
-│         │                │         │ - chunks_fts (FTS5) │      │
-│         │                │         │ - chunks_vec (vec0) │      │
-│         │                │         └─────────────────────┘      │
-│         │                │                   │                  │
-│         ▼                ▼                   ▼                  │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                    Search Pipeline                        │  │
-│  │  Query ──► Embed ──► Vector Search ──┐                    │  │
-│  │                                      ├─► Merge ──► Results|  |
-│  │  Query ──► FTS5 Search ──────────────┘                    │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ## Retrieval
 
-### Modes
-
-| Mode | When | Example |
-|------|------|---------|
-| Semantic search | Fuzzy intent, unknown file | “What did we decide about deploy?” |
-| Direct read | Known date or path | Read `memory/2026-02-28.md` |
-
-### Hybrid scoring
-
-```
-Query ──► Embed ──► Vector Search ──┐
-                                    ├─► Merge ──► Results
-Query ──► FTS5 Search ──────────────┘
-```
-
-Combined score: `score = vectorWeight * vectorScore + textWeight * textScore` (defaults: vector 0.7, text 0.3).
+Memory retrieval uses the configured external provider. For Celia, tool names, parameter schemas and execution come directly from the registered MCP server. See [Celia prompt and Celia integration](../zh/Celia新版MCP工具适配.md) for mounting and validation details.

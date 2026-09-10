@@ -18,7 +18,6 @@ Runtime layout:
   - IDENTITY.md
   - SOUL.md
   - HEARTBEAT.md
-  - USER.md
 - <root>/agent/sessions
 - <root>/agent/workspace/agent-data.json
 - <root>/agent/.checkpoint
@@ -810,20 +809,18 @@ def _migrate_legacy_workspace(
 ) -> None:
     """Migrate from legacy layout to new DeepAgent workspace layout.
 
-    This handles VERY old layouts where skills, memory, and home were
+    This handles VERY old layouts where skills and home were
     separate directories outside of the workspace.
 
     Migration:
     - Old: ~/.jiuwenswarm/agent/home/ (PRINCIPLE.md, TONE.md, HEARTBEAT.md)
     - Old: ~/.jiuwenswarm/agent/skills/
-    - Old: ~/.jiuwenswarm/agent/memory/
 
     - New: ~/.jiuwenswarm/agent/workspace/ (DeepAgent standard)
 
     Mapping:
     - agent/home/HEARTBEAT.md -> agent/workspace/HEARTBEAT.md
     - agent/skills/ -> agent/workspace/skills/
-    - agent/memory/ -> agent/workspace/memory/
 
     Note: jiuwenclaw_workspace -> workspace renaming is handled separately by
     _migrate_jiuwenclaw_workspace_to_workspace.
@@ -836,7 +833,6 @@ def _migrate_legacy_workspace(
 
     old_home = workspace_dir / "agent" / "home"
     old_skills = workspace_dir / "agent" / "skills"
-    old_memory = workspace_dir / "agent" / "memory"
 
     new_workspace = workspace_dir / "agent" / "workspace"
     new_workspace.mkdir(parents=True, exist_ok=True)
@@ -882,50 +878,6 @@ def _migrate_legacy_workspace(
                  or skill_dir.name in ["daily-report", "skill-creation"]):
                 shutil.rmtree(skill_dir)
 
-    # 4. Migrate memory
-    new_memory = new_workspace / "memory"
-    new_memory.mkdir(parents=True, exist_ok=True)
-
-    if old_memory.exists():
-        # 4.1 Migrate USER.md to workspace root (not in memory/)
-        old_user = old_memory / "USER.md"
-        new_user = new_workspace / "USER.md"
-        if old_user.exists() and not new_user.exists():
-            shutil.copy2(old_user, new_user)
-            logger.info("Migrated USER.md from memory/ to workspace root")
-
-        # 4.2 Create daily_memory directory
-        daily_memory = new_memory / "daily_memory"
-        daily_memory.mkdir(parents=True, exist_ok=True)
-
-        # 4.3 Merge memory files (skip if already exists)
-        # Date pattern: YYYY-MM-DD.md (e.g., 2026-04-14.md)
-        date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
-
-        for item in old_memory.iterdir():
-            if item.name == "USER.md":
-                continue  # Already handled above
-            if item.name == "MEMORY.md":
-                dest = new_memory / "MEMORY.md"
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-                    logger.info("Migrated MEMORY.md")
-            elif item.is_file():
-                # Date-based memory files (YYYY-MM-DD.md) -> daily_memory/
-                # Other files -> new_memory/ root
-                dest = daily_memory / item.name if date_pattern.match(item.name) else new_memory / item.name
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-                    logger.info(f"Migrated memory file: {item.name}")
-            elif item.is_dir():
-                # Other directories (e.g., specific memory categories)
-                dest = new_memory / item.name
-                if not dest.exists():
-                    shutil.copytree(item, dest)
-                    logger.info(f"Migrated memory directory: {item.name}")
-
-        logger.info(f"Migrated memory: {old_memory} -> {new_memory}")
-
     # 5. Keep cron runtime files in agent/home (canonical location, see
     # get_cron_jobs_path). They must NOT be migrated to gateway/ (dead path,
     # no reader) nor deleted by the old-home cleanup below.
@@ -936,9 +888,6 @@ def _migrate_legacy_workspace(
         if old_skills.exists():
             shutil.rmtree(old_skills)
             logger.info(f"Removed old skills: {old_skills}")
-        if old_memory.exists():
-            shutil.rmtree(old_memory)
-            logger.info(f"Removed old memory: {old_memory}")
     except OSError as e:
         logger.warning(f"Failed to remove some old directories: {e}")
 
@@ -1123,8 +1072,6 @@ def prepare_workspace(
     celia_preserved_paths: list[Path] = []
     if overwrite:
         durable_relatives = [
-            Path("agent/workspace/USER.md"),
-            Path("agent/workspace/MEMORY.md"),
             Path("agent/workspace/memory/celia_memory"),
         ]
         if any((workspace_dir / relative).exists() for relative in durable_relatives):
@@ -1152,7 +1099,6 @@ def prepare_workspace(
     old_workspace = workspace_dir / "agent" / "workspace"
     old_home = workspace_dir / "agent" / "home"
     old_skills = workspace_dir / "agent" / "skills"
-    old_memory = workspace_dir / "agent" / "memory"
 
     # Check for legacy directory migration (for start command, overwrite=False)
     # agent/home is the CANONICAL cron runtime dir (get_cron_jobs_path); it exists
@@ -1163,7 +1109,7 @@ def prepare_workspace(
         (old_home / m).exists() for m in _legacy_home_markers
     )
     legacy_dirs_exist = (
-        old_home_is_legacy or old_skills.exists() or old_memory.exists()
+        old_home_is_legacy or old_skills.exists()
     )
 
     if legacy_dirs_exist and not overwrite:
@@ -1178,9 +1124,6 @@ def prepare_workspace(
             if old_skills.exists():
                 shutil.rmtree(old_skills)
                 logger.info(f"Removed old skills: {old_skills}")
-            if old_memory.exists():
-                shutil.rmtree(old_memory)
-                logger.info(f"Removed old memory: {old_memory}")
         except OSError as e:
             logger.warning(f"Failed to remove some old directories: {e}")
 
@@ -1345,7 +1288,6 @@ def prepare_workspace(
         (f"HEARTBEAT{suffix}.md", "HEARTBEAT.md"),
         (f"IDENTITY{suffix}.md", "IDENTITY.md"),
         (f"SOUL{suffix}.md", "SOUL.md"),
-        (f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"),
     ]
     for src_name, dst_name in multilang_files:
         src_path = template_agent_workspace / src_name
@@ -1393,11 +1335,10 @@ def prepare_workspace(
                 shutil.copy2(source, target)
         celia_preserve.cleanup()
 
-    # OpenClaw compatibility state is incremental user data. Never overwrite
-    # existing DB/Markdown/marker content during normal initialization.
-    from jiuwenswarm.common.celia_setup import initialize_celia_compatibility
+    # Initialize the Xiaoyi memory switch without creating local memory files.
+    from jiuwenswarm.agents.harness.common.memory.celia.runtime_state import ensure_runtime_state
 
-    initialize_celia_compatibility(package_root, workspace_dir, deepagent_workspace)
+    ensure_runtime_state()
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(
@@ -1787,15 +1728,6 @@ def get_deepagent_identity_md_path() -> Path:
         Path to IDENTITY.md: ~/.jiuwenswarm/agent/workspace/IDENTITY.md
     """
     return get_agent_workspace_dir() / "IDENTITY.md"
-
-
-def get_deepagent_user_md_path() -> Path:
-    """Get the DeepAgent USER.md file path.
-
-    Returns:
-        Path to USER.md: ~/.jiuwenswarm/agent/workspace/USER.md
-    """
-    return get_agent_workspace_dir() / "USER.md"
 
 
 def get_builtin_skills_dir() -> Path:

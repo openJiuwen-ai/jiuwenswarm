@@ -25,29 +25,24 @@ _DEFAULT_USER = "__default__"
 _DEFAULT_SCOPE = "__default__"
 _LTM_SUBDIR = "memory/ltm"
 
-_VALID_ENGINES = {"builtin", "external", "both", "none"}
+_VALID_ENGINES = {"external", "none"}
 
 
 def get_memory_engine(config: Optional[Dict[str, Any]] = None) -> str:
-    """Return the memory engine policy: builtin | external | both | none.
+    """Return the memory engine policy: external | none.
 
     Controls which memory subsystems are allowed to mount.
-    Default: builtin (backward-compatible with configs that predate this flag).
+    Default: external; invalid values disable memory.
     """
     cfg = config if config is not None else _load_config()
     mem = (cfg or {}).get("memory", {}) if isinstance(cfg, dict) else {}
-    value = str(mem.get("engine") or "builtin").strip().lower()
-    return value if value in _VALID_ENGINES else "builtin"
-
-
-def is_builtin_memory_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
-    """Engine-level gate for the built-in MemoryRail."""
-    return get_memory_engine(config) in {"builtin", "both"}
+    value = str(mem.get("engine") or "external").strip().lower()
+    return value if value in _VALID_ENGINES else "none"
 
 
 def is_external_memory_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
     """Engine-level gate for the ExternalMemoryRail."""
-    return get_memory_engine(config) in {"external", "both"}
+    return get_memory_engine(config) == "external"
 
 
 def get_external_memory_config(

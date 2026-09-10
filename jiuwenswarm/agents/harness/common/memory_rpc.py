@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.agents.harness.common.memory import (
-    get_memory_manager,
     is_memory_enabled,
 )
 from jiuwenswarm.agents.harness.common.memory.config import (
@@ -47,7 +46,6 @@ def _get_coding_memory_dir(workspace: str, project_dir: str | None = None) -> st
 
 def _get_allowed_dirs(workspace: str, project_dir: str | None = None) -> list[str]:
     allowed_dirs = [
-        os.path.join(workspace, "memory"),
         _get_coding_memory_dir(workspace, project_dir),
         os.path.join(workspace, ".jiuwen"),
         os.path.expanduser("~/.jiuwen"),
@@ -78,11 +76,9 @@ def _get_runtime_memory_dirs(workspace: str, project_dir: str | None = None) -> 
     """运行时记忆目录（agent 自动写入，对用户只读）。
 
     使用父目录以覆盖所有项目子目录：
-    - <workspace>/memory            -> agent mode auto memory
     - <workspace>/coding_memory     -> code mode coding memory（含各项目子目录）
     """
     return [
-        os.path.normpath(os.path.join(workspace, "memory")),
         os.path.normpath(os.path.join(workspace, "coding_memory")),
     ]
 
@@ -357,21 +353,6 @@ async def handle_memory_status(
     }
 
     if detailed:
-        manager = await get_memory_manager(agent_id="default", workspace_dir=workspace)
-        if manager is not None:
-            status = manager.status()
-            result["index"] = {
-                "available": status.get("available", False),
-                "provider": status.get("provider"),
-                "model": status.get("model"),
-                "files_count": status.get("files", 0),
-                "chunks_count": status.get("chunks", 0),
-                "dirty": status.get("dirty", False),
-                "fts": status.get("fts", {}),
-                "vector": status.get("vector", {}),
-                "cache": status.get("cache", {}),
-            }
-
         project_dir = params.get("project_dir")
         discover_workspace = project_dir or workspace
         clear_project_memory_cache(discover_workspace)
@@ -428,7 +409,7 @@ async def handle_memory_status(
             }
 
         engine = get_memory_engine(config)
-        if engine in ("external", "both"):
+        if engine == "external":
             ext_cfg = get_external_memory_config(config)
             result["external_memory"] = {
                 "provider": ext_cfg.get("provider", "unknown") if ext_cfg else "unknown",
@@ -589,7 +570,6 @@ async def handle_memory_open(
 ) -> dict[str, Any]:
     project_dir = params.get("project_dir")
     result: dict[str, Any] = {
-        "memory_dir": os.path.join(workspace, "memory"),
         "project_memory_dir": workspace,
     }
     if project_dir:

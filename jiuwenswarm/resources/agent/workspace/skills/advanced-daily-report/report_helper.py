@@ -4,9 +4,8 @@
 日报生成器辅助脚本
 
 功能：
-1. 收集今日记忆文件内容
-2. 解析待办事项状态
-3. 生成格式化日报
+1. 解析待办事项状态
+2. 生成格式化日报
 
 使用方式：
     python report_helper.py --date 2026-03-06
@@ -37,7 +36,7 @@ if sys.platform == "win32":
 
 
 def get_workspace_dir() -> Path:
-    """获取 Agent 根目录（含 memory/、sessions/、skills/）。
+    """获取 Agent 根目录（含 sessions/、skills/）。
 
     优先级：
     1. jiuwenswarm.utils.get_agent_root_dir()（如果可用）
@@ -65,7 +64,7 @@ def get_workspace_dir() -> Path:
     # 开发模式：包内 resources/agent
     script_dir = Path(__file__).resolve()
     pkg_agent = script_dir.parent.parent.parent  # daily-report -> skills -> agent
-    if (pkg_agent / "memory").is_dir() or (pkg_agent / "skills").is_dir():
+    if (pkg_agent / "skills").is_dir():
         return pkg_agent
 
     return home_agent
@@ -156,50 +155,6 @@ def parse_todo_status(content: str) -> dict[str, list[dict]]:
     return result
 
 
-def extract_work_summary(content: str) -> list[str]:
-    """从记忆文件中提取工作摘要
-
-    提取要点：
-    - 以 - 或 * 开头的列表项
-    - 以 ## 标题分隔的内容
-    """
-    summaries = []
-
-    if not content:
-        return summaries
-
-    lines = content.split("\n")
-    in_section = False
-    current_section = []
-
-    for line in lines:
-        stripped = line.strip()
-
-        # 跳过空行和注释
-        if not stripped or stripped.startswith("<!--"):
-            continue
-
-        # 检测标题
-        if stripped.startswith("##"):
-            if in_section and current_section:
-                summaries.append("\n".join(current_section))
-                current_section = []
-            in_section = True
-            continue
-
-        # 收集列表项
-        if stripped.startswith("-") or stripped.startswith("*"):
-            item = stripped.lstrip("-* ").strip()
-            if item:
-                current_section.append(f"- {item}")
-
-    # 添加最后一个 section
-    if current_section:
-        summaries.append("\n".join(current_section))
-
-    return summaries
-
-
 def find_latest_todo_file(workspace_dir: Path) -> Path | None:
     """查找最新的 todo.md 文件"""
     session_dir = workspace_dir / "session"
@@ -219,9 +174,7 @@ def find_latest_todo_file(workspace_dir: Path) -> Path | None:
 
 def generate_report(
     date_str: str,
-    memory_content: str,
     todo_data: dict[str, list[dict]],
-    long_term_memory: str = ""
 ) -> dict[str, Any]:
     """生成日报数据"""
 
@@ -229,9 +182,6 @@ def generate_report(
     completed_count = len(todo_data["completed"])
     running_count = len(todo_data["running"])
     waiting_count = len(todo_data["waiting"])
-
-    # 提取工作摘要
-    work_summaries = extract_work_summary(memory_content)
 
     # 生成日报
     report = {
@@ -247,8 +197,6 @@ def generate_report(
             "running": [t["description"] for t in todo_data["running"]],
             "waiting": [t["description"] for t in todo_data["waiting"]]
         },
-        "work_summary": work_summaries,
-        "long_term_context": long_term_memory[:500] if long_term_memory else ""  # 截取前500字符
     }
 
     return report
@@ -280,15 +228,6 @@ def format_report_markdown(report: dict[str, Any]) -> str:
         for task in report["tasks"]["running"]:
             lines.append(f"- {task}")
         lines.append("")
-
-    # 今日工作记录
-    lines.append("## 📝 今日工作记录")
-    if report["work_summary"]:
-        for summary in report["work_summary"]:
-            lines.append(summary)
-    else:
-        lines.append("- 暂无工作记录")
-    lines.append("")
 
     # 明日计划
     lines.append("## 🔜 明日计划")

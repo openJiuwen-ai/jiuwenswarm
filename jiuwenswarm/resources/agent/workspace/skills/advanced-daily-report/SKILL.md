@@ -3,7 +3,7 @@ name: advanced-daily-report
 version: 2.0.0
 description: 进阶版日报生成器，支持多数据源采集、工作分析、趋势对比、周报月报聚合
 tags: [report, automation, productivity, daily, weekly, monthly, advanced]
-allowed_tools: [read_memory, write_memory, bash, read_file, write_file]
+allowed_tools: [bash, read_file, write_file]
 ---
 
 # 进阶版日报生成器
@@ -18,7 +18,6 @@ allowed_tools: [read_memory, write_memory, bash, read_file, write_file]
 |--------|----------|------|
 | **Git 仓库** | 提交记录、代码变更统计 | 实时 |
 | **网易邮箱** | 收发邮件统计、未读提醒 | 实时 |
-| **记忆系统** | 今日工作记录、长期记忆 | 实时 |
 | **待办事项** | 任务状态、完成率 | 实时 |
 
 ### 2. 智能工作分析
@@ -54,7 +53,6 @@ daily-report/
 │   ├── __init__.py
 │   ├── git_collector.py  # Git 提交采集
 │   ├── email_collector.py # 邮件统计采集
-│   ├── memory_collector.py # 记忆数据采集
 │   ├── todo_collector.py  # 待办事项采集
 │   └── aggregator.py      # 数据聚合器
 ├── analyzers/            # 分析模块
@@ -70,13 +68,12 @@ daily-report/
 
 ### ⚠️ 重要：执行方式
 
-本技能通过执行 Python 脚本来采集数据（Git提交、邮箱邮件、记忆、待办）。
+本技能通过执行 Python 脚本来采集数据（Git提交、邮箱邮件、待办）。
 **必须使用 `bash` 工具执行脚本**，而不是直接回复用户。
 
 **脚本会自动采集以下数据**：
 - **Git 提交记录**：通过 `git log` 命令读取 `D:/Download/jiuwenswarm` 仓库的提交历史
 - **邮箱邮件统计**：通过 IMAP 协议连接 `.env` 中配置的邮箱账户读取邮件统计（需要邮箱授权码）
-- **记忆系统**：读取 `~/.jiuwenswarm/agent/workspace/memory/` 目录下的每日记忆文件
 - **待办事项**：读取 `~/.jiuwenswarm/agent/sessions/` 下各会话的 `todo.md` 文件
 
 ### 手动触发
@@ -84,7 +81,7 @@ daily-report/
 当用户请求生成日报/周报/月报时，**执行以下命令**：
 
 ```bash
-# 生成今日日报（记忆/待办/Git 等；Git 在仓库根目录统计）
+# 生成今日日报（待办/Git 等；Git 在仓库根目录统计）
 python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py daily --save
 
 # 生成指定日期日报
@@ -107,7 +104,6 @@ python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py monthly 
 3. 脚本自动采集数据：
    - Git: 执行 `git log` 获取提交记录、代码变更统计
    - 邮箱: 通过 IMAP 连接获取邮件统计（如果配置了邮箱）
-   - 记忆: 读取记忆文件获取工作记录
    - 待办: 解析 todo.md 获取任务状态
 4. 脚本执行完成后，输出格式为 `REPORT_FILE:/path/to/report.md`
 5. **⚠️ 重要：使用 read_file 工具读取报告文件，然后将完整内容发送给用户**
@@ -127,7 +123,6 @@ python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py monthly 
 |--------|----------|----------|
 | **Git 仓库** | `git log` 命令 | 仓库路径: `D:/Download/jiuwenswarm` |
 | **网易邮箱** | IMAP 协议 | `.env`: `EMAIL_ADDRESS`, `EMAIL_TOKEN` |
-| **记忆系统** | 读取 MD 文件 | `~/.jiuwenswarm/agent/workspace/memory/YYYY-MM-DD.md` |
 | **待办事项** | 解析 todo.md | `~/.jiuwenswarm/agent/sessions/*/todo.md` |
 
 ### 定时触发

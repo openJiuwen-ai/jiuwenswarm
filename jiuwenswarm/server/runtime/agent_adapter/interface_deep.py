@@ -35,7 +35,6 @@ from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
 from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
 from openjiuwen.core.foundation.llm import ModelRequestConfig, ModelClientConfig, Model
 from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_account_provider
-from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.core.runner import Runner
@@ -69,7 +68,6 @@ from openjiuwen.harness.rails import (
     SubagentRail,
     SysOperationRail,
     HeartbeatRail,
-    MemoryRail,
     configure_skill_evolution_runtime,
     unconfigure_skill_evolution,
 )
@@ -181,17 +179,12 @@ from jiuwenswarm.common.billing_client import (
 )
 from jiuwenswarm.server.xiaoyi_invocation import get_xiaoyi_trace_header_exporters
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
-    TOOL_PERMISSION_CONTEXT,
     setup_permission_context,
     cleanup_permission_context,
 )
 from jiuwenswarm.agents.harness.common.memory.config import (
     clear_config_cache,
-    get_memory_mode,
-    is_memory_enabled,
-    is_proactive_memory,
 )
-from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import TOOL_PERMISSION_CHANNEL_ID
 from jiuwenswarm.agents.harness.common.channel_runtime_context import (
@@ -1205,16 +1198,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._response_prompt_rail: ResponsePromptRail | None = None
         self._invocation_context_rail: InvocationContextRail | None = None
         self._security_rail: SecurityRail | None = None
-        self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
         self._external_memory_rail_registered: bool = False
-        # 记忆 embedding 配置指纹：用于检测 embed 段变化并据此重建 MemoryRail。
-        # 重建 rail 才能让 _embedding_config 刷新；否则换 endpoint 时 rail 复用旧配置。
-        self._memory_embedding_fingerprint: str = ""
-        # 最近一次请求使用的 mode：reload 时无 runtime_config 上下文，靠它主动刷新 memory rail。
-        self._last_mode: str | None = None
-        # 延时重索引任务（debounce）：连续改多次 embedding 只在最后一次后跑一次。
-        self._memory_reindex_task: asyncio.Task | None = None
         self._llm_retry_rail: LLMRetryRail | None = None
         self._heartbeat_rail: HeartbeatRail | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
@@ -1306,7 +1291,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # reclaimed with the session instead of accumulating for the life of
         # the process.
         self._session_git_snapshots: dict[str, _GitSnapshot] = {}
-        self._is_proactive_memory: bool | None = None
         self._model_cache: dict[str, Model] = {}
         self._model_name_to_keys: dict[str, list[str]] = {}
         # Cache system prompt to avoid re-building on every btw/recap call.
@@ -4641,141 +4625,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             security_prompt_rail = None
         return security_prompt_rail
 
-    # 重索引延时（秒）：embedding 配置变更后，延后这段时间再跑一次全量重索引。
-    # 配合 _schedule_memory_reindex 的 debounce，连续改多次只在最后一次后跑一次。
-    _MEMORY_REINDEX_DELAY_SECONDS: float = 5.0
-    _MEMORY_REINDEX_KEYS: set[tuple[str, str]] = set()
-    _MEMORY_REINDEX_KEYS_LOCK = threading.Lock()
-
-    @staticmethod
-    def _embedding_config_fingerprint(config: dict | None) -> str:
-        """计算 config.yaml embed 段的配置指纹，用于检测是否变化。
-
-        归一化逻辑与 openjiuwen OpenAICompatibleEmbeddingProvider.normalize_base_url
-        保持一致（去尾斜杠 + 去尾 /embeddings），使等价 endpoint 不会被误判为变化。
-        api_key 取 sha256 截断，不明文比较。
-        """
-        embed = config.get("embed") if isinstance(config, dict) else None
-        if not isinstance(embed, dict):
-            return ""
-        api_key = str(embed.get("embed_api_key") or "")
-        base_url = str(embed.get("embed_base_url") or "").strip()
-        # 与 provider 侧归一化一致：去尾 /embeddings 再去尾斜杠
-        if base_url.endswith("/embeddings"):
-            base_url = base_url.rsplit("/embeddings", 1)[0]
-        while base_url.endswith("/"):
-            base_url = base_url[:-1]
-        model = str(embed.get("embed_model") or "")
-        api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        return f"{model}:{base_url}:{api_key_hash}"
-
-    def _schedule_memory_reindex(self) -> None:
-        """延时后对记忆重新索引（debounce：多次触发只跑最后一次）。
-
-        前提：调用前 MemoryRail 已按新 embedding 配置重建（_embedding_config 已刷新），
-        且 openjiuwen lite 的 INDEX_CACHE 已清（aclose_memory_manager_cache）。
-        这样延时到期时 init_memory_manager_async 会用新配置建新 manager + 新 provider。
-        """
-        workspace = os.path.normcase(os.path.abspath(self._workspace_dir or ""))
-        reindex_key = (workspace, self._memory_embedding_fingerprint)
-        with self._MEMORY_REINDEX_KEYS_LOCK:
-            if reindex_key in self._MEMORY_REINDEX_KEYS:
-                logger.info(
-                    "[JiuWenSwarmDeepAdapter] memory reindex coalesced: workspace=%s",
-                    workspace,
-                )
-                return
-            self._MEMORY_REINDEX_KEYS.add(reindex_key)
-        if self._memory_reindex_task is not None and not self._memory_reindex_task.done():
-            self._memory_reindex_task.cancel()
-        self._memory_reindex_task = asyncio.create_task(
-            self._do_memory_reindex(reindex_key)
-        )
-
-    async def _do_memory_reindex(self, reindex_key: tuple[str, str]) -> None:
-        try:
-            await asyncio.sleep(self._MEMORY_REINDEX_DELAY_SECONDS)
-            rail = self._memory_rail
-            if rail is None:
-                return
-            manager = await self._get_current_memory_manager()
-            if manager is None:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] memory reindex skipped: manager unavailable"
-                )
-                return
-            await manager.sync(reason="embed_config_changed", force=True)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] memory reindexed after embedding config change"
-            )
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning("[JiuWenSwarmDeepAdapter] memory reindex failed: %s", e)
-        finally:
-            with self._MEMORY_REINDEX_KEYS_LOCK:
-                self._MEMORY_REINDEX_KEYS.discard(reindex_key)
-
-    async def _get_current_memory_manager(self):
-        """获取当前 MemoryRail 对应的 memory manager（必要时按新配置重建）。
-
-        rail 重建后其 _embedding_config 已是最新值；但 manager 在 rail 首次 invoke
-        前可能尚未 init，这里主动调 init_memory_manager_async 触发初始化/复用。
-        """
-        from openjiuwen.core.memory.lite.memory_tools import init_memory_manager_async
-
-        rail = self._memory_rail
-        if rail is None:
-            return None
-        embedding_config = getattr(rail, "_embedding_config", None)
-        workspace = self._get_memory_workspace()
-        agent_id = getattr(getattr(self._instance, "card", None), "id", None) or "default"
-        try:
-            return await init_memory_manager_async(
-                workspace=workspace,
-                agent_id=agent_id,
-                embedding_config=embedding_config,
-                sys_operation=self._sys_operation,
-            )
-        except Exception as e:
-            logger.warning("[JiuWenSwarmDeepAdapter] init memory manager failed: %s", e)
-            return None
-
-    def _get_memory_workspace(self):
-        """构造记忆用的 Workspace 对象（与 _make_deep_agent_config 中构造方式一致）。"""
-        resolved_language = getattr(self, "_resolved_language", None) or "zh"
-        return Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
-
-    def _build_memory_rail(self, mode: str) -> MemoryRail | None:
-        try:
-            config = get_config()
-            embed_config = config.get("embed") if isinstance(config, dict) else None
-            has_api_key = (
-                embed_config.get("embed_api_key") if isinstance(embed_config, dict) else None
-            )
-            has_base_url = (
-                embed_config.get("embed_base_url") if isinstance(embed_config, dict) else None
-            )
-            has_model = embed_config.get("embed_model") if isinstance(embed_config, dict) else None
-            if not all([has_api_key, has_base_url, has_model]):
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] MemoryRail create failed: No available embedding config"
-                )
-            self._is_proactive_memory = is_proactive_memory(mode, config)
-            memory_rail = MemoryRail(
-                embedding_config=EmbeddingConfig(
-                    model_name=embed_config.get("embed_model"),
-                    base_url=embed_config.get("embed_base_url"),
-                    api_key=embed_config.get("embed_api_key"),
-                ),
-                is_proactive=self._is_proactive_memory,
-            )
-            logger.info("[JiuWenSwarmDeepAdapter] MemoryRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] MemoryRail create failed: %s", exc)
-            memory_rail = None
-        return memory_rail
-
     @staticmethod
     def _build_heartbeat_rail() -> HeartbeatRail | None:
         """Build HeartbeatRail."""
@@ -5167,7 +5016,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
 
-        # MemoryRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
 
         if self._filesystem_rail_enabled_for_profile():
             rail_infos.insert(1, _RailBuildInfo("_filesystem_rail", self._build_filesystem_rail))
@@ -5341,7 +5189,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
     ) -> list[Any]:
         """Return rail instances that need to be re-initialized on hot reload.
 
-        SkillUseRail, ContextEngineeringRail, and MemoryRail are rebuilt on config reload.
+        SkillUseRail and ContextEngineeringRail are rebuilt on config reload.
         All other rails read language dynamically from system_prompt_builder.language
         and are updated in-place where needed — they are NOT passed to configure()
         so their existing registered state is preserved without an uninit/init cycle.
@@ -5391,8 +5239,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             rails_list.append(self._context_assemble_rail)
         if self._context_processor_rail is not None:
             rails_list.append(self._context_processor_rail)
-        if self._memory_rail is not None:
-            rails_list.append(self._memory_rail)
         if self._avatar_rail is not None:
             rails_list.append(self._avatar_rail)
         if self._memory_forbidden_rail is not None:
@@ -6071,18 +5917,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             The normalized config snapshot that was cached on this adapter.
         """
         clear_config_cache()
-        # 清 MemoryRail 实际使用的 openjiuwen lite INDEX_CACHE（而非仓内并行实现的那份），
-        # 并 close 旧实例（db 连接 / watchdog observer / 定时任务），使下次
-        # init_memory_manager_async 用最新 embedding_config 创建新 manager + 新 provider。
-        try:
-            from openjiuwen.core.memory.lite.manager import aclose_memory_manager_cache
-
-            await aclose_memory_manager_cache()
-        except Exception as e:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] aclose openjiuwen memory cache failed: %s", e
-            )
-
         if env_overrides is not None:
             if not isinstance(env_overrides, dict):
                 raise TypeError("env_overrides must be a dict when provided")
@@ -6235,17 +6069,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         await self._fan_out_reload_to_session_adapters(config_base, env_overrides, target_sid)
 
-        # 主动刷新 memory rail（不等下次请求的 _update_rails_for_mode）：
-        # 让 embedding 配置变更立即走指纹检测 + 重建 rail + 延时重索引。
-        # 若从未处理过请求（_last_mode 为 None，如冷启动后首次 reload），退化为默认 agent。
-        try:
-            mode = self._last_mode or "agent"
-            await self._handle_memory_rail_by_config(mode)
-        except Exception as e:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] memory rail refresh on reload failed: %s", e
-            )
-
         logger.info("[JiuWenSwarmDeepAdapter] 配置已热更新（configure），未重启进程")
 
     @staticmethod
@@ -6331,10 +6154,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """装配 agent 模式 rails。
 
         plan / fast 已合并为单一 ``agent`` 模式：统一挂载 plan 档能力
-        （TaskPlanning / Subagent / 演进 rail 等），记忆固定为被动模式，
+        （TaskPlanning / Subagent / 演进 rail 等），
         不再按子模式分叉。历史 ``agent.plan`` / ``agent.fast`` 归一到此路径。
         """
-        self._last_mode = mode
         await self._update_agent_rails()
 
     @staticmethod
@@ -6391,7 +6213,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             ):
                 self._instance.ability_manager.remove(existing.name)
         # agent 模式，根据config选择是否注册或者卸载memory rail（固定被动记忆）
-        await self._handle_memory_rail_by_config("agent")
         # 外接记忆 rail（mode-independent，注册一次，跨 reload 持久）
         await self._handle_external_memory_rail_by_config()
         # 上下文 rail
@@ -7028,61 +6849,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._update_prompt_for_mode(runtime_config.mode, resolved_language)
         stage_timer.mark("prompt_for_mode")
 
-        # 处理两种场景的记忆工具移除：
-        # 1. 群聊数字分身模式（group_digital_avatar=True + avatar_mode=True）：移除写入工具，但保留读取工具
-        # 2. 记忆完全禁用（enable_memory=False + group_digital_avatar=True + avatar_mode=True）：移除所有记忆工具（读取和写入）
-        perm_ctx = TOOL_PERMISSION_CONTEXT.get() if bind_request else None
-        if perm_ctx is not None:
-            # 判断是否为群聊数字分身模式
-            is_group_digital_avatar = perm_ctx.group_digital_avatar and perm_ctx.avatar_mode
-
-            # 判断是否为记忆完全禁用（三个条件同时满足）
-            should_disable_memory = (
-                not perm_ctx.enable_memory
-                and perm_ctx.group_digital_avatar
-                and perm_ctx.avatar_mode
-            )
-
-            # 场景2：记忆完全禁用 - 移除所有记忆工具
-            if should_disable_memory:
-                _all_memory_tools = (
-                    "write_memory",
-                    "edit_memory",
-                    "read_memory",
-                    "memory_search",
-                    "memory_get",
-                )
-                for tool_name in _all_memory_tools:
-                    try:
-                        self._instance.ability_manager.remove(tool_name)
-                        logger.info("[JiuWenSwarmDeepAdapter] 记忆系统已禁用，移除 %s", tool_name)
-                    except Exception:
-                        pass
-            # 场景1：群聊数字分身模式 - 只移除写入工具
-            elif is_group_digital_avatar:
-                for tool_name in ("write_memory", "edit_memory"):
-                    try:
-                        self._instance.ability_manager.remove(tool_name)
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] 群聊模式下禁止写入记忆，移除 %s", tool_name
-                        )
-                    except Exception:
-                        pass
-            # 非群聊数字分身且记忆启用时，恢复写入工具
-            else:
-                try:
-                    from openjiuwen.core.memory.lite.memory_tools import (
-                        get_decorated_tools as _get_sdk_memory_tools,
-                    )
-
-                    for tool in _get_sdk_memory_tools():
-                        name = getattr(getattr(tool, "card", None), "name", "")
-                        if name in ("write_memory", "edit_memory"):
-                            self._instance.ability_manager.add(tool.card)
-                except ImportError:
-                    pass
-        stage_timer.mark("memory_tools")
-
     @staticmethod
     def _should_register_acp_runtime_tools(
         channel_id: str | None,
@@ -7182,11 +6948,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 )
         self._teardown_agent_owned_tools()
         self._release_sys_operations()
-        # 取消未到期的延时重索引 task，避免 adapter cleanup 后仍有孤儿 task
-        # 去触发 manager.sync（此时 rail/manager 可能已失效）。
-        if self._memory_reindex_task is not None and not self._memory_reindex_task.done():
-            self._memory_reindex_task.cancel()
-        self._memory_reindex_task = None
         await self._close_a2x_client()
 
     def _teardown_agent_owned_tools(self) -> None:
@@ -11429,59 +11190,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             logger.debug("[_parse_stream_chunk] 解析异常", exc_info=True)
 
         return None
-
-    async def _handle_memory_rail_by_config(self, mode: str):
-        config = get_config()
-        if get_memory_mode(config) == "local":
-            # 引擎门禁：memory.engine 未放行内置时，等同于禁用
-            builtin_on = is_builtin_memory_allowed(config) and is_memory_enabled(mode, config)
-            if builtin_on:
-                # 开启记忆
-                new_embed_fp = self._embedding_config_fingerprint(config)
-                previous_embed_fp = self._memory_embedding_fingerprint
-                if self._memory_rail is not None:
-                    cur_memory_type = is_proactive_memory(mode, config)
-                    if self._is_proactive_memory != cur_memory_type:
-                        # 当前记忆类型（主动/被动）和之前注册的不一致，重新注册
-                        await self._instance.unregister_rail(self._memory_rail)
-                        self._memory_rail = None
-                    elif self._memory_embedding_fingerprint != new_embed_fp:
-                        # 记忆类型没变，但 embedding 配置（base_url/api_key/model）变了：
-                        # 必须重建 rail 才能刷新 MemoryRail._embedding_config，否则换 endpoint
-                        # 时 rail 仍持旧配置，新 manager 仍用旧 provider。
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] embedding config changed, rebuilding MemoryRail"
-                        )
-                        await self._instance.unregister_rail(self._memory_rail)
-                        self._memory_rail = None
-                    else:
-                        # 已经注册，且记忆类型与 embedding 配置均未变，无需其他操作
-                        return
-                if self._memory_rail is None:
-                    self._memory_rail = self._build_memory_rail(mode)
-                if self._memory_rail is not None:
-                    # 重建（或首次注册）后记录新指纹，作为下次比对的基线
-                    self._memory_embedding_fingerprint = new_embed_fp
-                    try:
-                        await self._instance.register_rail(self._memory_rail)
-                    except Exception as e:
-                        # register_rail 失败：回滚指纹与 rail，避免留下"指纹已是新值、
-                        # 但 rail 未成功注册"的不一致状态——否则下次比对会认为"没变"而
-                        # 走 return，让这个孤儿 rail 既不注册也不重建，记忆静默失效。
-                        self._memory_embedding_fingerprint = ""
-                        self._memory_rail = None
-                        logger.warning(
-                            "[JiuWenSwarmDeepAdapter] register MemoryRail failed: %s", e
-                        )
-                    else:
-                        logger.info(f"[JiuWenSwarmDeepAdapter] MemoryRail registered for {mode} mode")
-                        # 重建后触发延时重索引（debounce），使新 embedding 配置对历史记忆文件生效
-                        if previous_embed_fp and previous_embed_fp != new_embed_fp:
-                            self._schedule_memory_reindex()
-            elif not builtin_on and self._memory_rail is not None:
-                await self._instance.unregister_rail(self._memory_rail)
-                self._memory_rail = None
-                logger.info(f"[JiuWenSwarmDeepAdapter] MemoryRail unregistered for {mode} mode")
 
     def _build_external_memory_rail(self):
         from jiuwenswarm.agents.harness.common.memory.external_memory_builder import (

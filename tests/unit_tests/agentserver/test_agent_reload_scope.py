@@ -392,7 +392,6 @@ async def test_deep_adapter_global_reload_marks_sessions_stale_without_fanout(mo
     with (
         patch.object(interface_module, "clear_config_cache", MagicMock()),
         _maybe_patch_aclose_memory_cache(),
-        patch.object(interface_module.JiuWenSwarmDeepAdapter, "_handle_memory_rail_by_config", AsyncMock()),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_refresh_multimodal_configs", MagicMock()),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_create_model", MagicMock(return_value=object())),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_multimodal_tools_for_runtime", MagicMock()),
@@ -470,7 +469,6 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
     with (
         patch.object(interface_module, "clear_config_cache", MagicMock()),
         _maybe_patch_aclose_memory_cache(),
-        patch.object(interface_module.JiuWenSwarmDeepAdapter, "_handle_memory_rail_by_config", AsyncMock()),
         patch.object(
             interface_module.JiuWenSwarmDeepAdapter,
             "_refresh_multimodal_configs",

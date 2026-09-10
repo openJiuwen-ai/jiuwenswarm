@@ -1,12 +1,5 @@
-"""Celia Memory adapter for JiuwenSwarm External Memory."""
+"""Celia memory prompt and Xiaoyi memory state support."""
 
-from .config import CeliaConfig, build_celia_config
-from .provider import CeliaMemoryProvider
-from .rail import CeliaMemoryRail
+from .prompt import CeliaMcpPromptRail, load_celia_agent_prompt
 
-__all__ = [
-    "CeliaConfig",
-    "CeliaMemoryProvider",
-    "CeliaMemoryRail",
-    "build_celia_config",
-]
+__all__ = ["CeliaMcpPromptRail", "load_celia_agent_prompt"]

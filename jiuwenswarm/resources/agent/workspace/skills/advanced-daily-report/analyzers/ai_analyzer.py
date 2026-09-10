@@ -275,14 +275,10 @@ class AIAnalyzer:
             list[str]: 明日计划建议列表
         """
         todo_data = data.get("todo", {})
-        memory_data = data.get("memory", {})
 
         # 待处理任务
         pending_tasks = todo_data.get("pending_items", [])
         in_progress = todo_data.get("in_progress_items", [])
-
-        # 今日工作记录
-        work_notes = memory_data.get("content", "")
 
         system_prompt = """你是一个专业的工作规划助手。你的任务是根据今日工作情况和待办事项，给出具体的明日工作建议。
 要求：
@@ -302,9 +298,6 @@ class AIAnalyzer:
 
 ## 进行中任务
 {in_progress_str}
-
-## 今日工作记录
-{work_notes[:500] if work_notes else '无记录'}
 
 请给出明日工作建议（每行一条）："""
 
