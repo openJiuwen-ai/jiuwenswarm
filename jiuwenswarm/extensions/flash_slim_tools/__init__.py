@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""SlimTools extension: tool surface slimming as a loadable extension.
+"""FlashSlimTools extension: tool surface slimming as a loadable extension.
 
-When SLIM_TOOLS_ENABLED=1, runtime-patches the adapter to:
+When FLASH_ENABLED=1 (or SLIM_TOOLS_ENABLED=1), runtime-patches the adapter to:
 - drop wiki_ingest / wiki_query / wiki_lint tool cards
 - drop acp_chat tool card
 - retire the metadata-only audio fallback (audio_metadata)
@@ -13,6 +13,6 @@ When SLIM_TOOLS_ENABLED=1, runtime-patches the adapter to:
 Zero modification to any stock jiuwenswarm source file.
 """
 
-from jiuwenswarm.extensions.slim_tools.extension import register_extensions
+from jiuwenswarm.extensions.flash_slim_tools.extension import register_extensions
 
 __all__ = ["register_extensions"]
