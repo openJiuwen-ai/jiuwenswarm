@@ -24,8 +24,20 @@ from jiuwenswarm.server.runtime.expert.expert_store import (
     InvalidExpertPackage,
     validate_expert_package,
 )
+from jiuwenswarm.server.runtime.expert.skill_contract import inspect_skill_contracts
+from jiuwenswarm.server.runtime.expert.team_contract import (
+    EXPERT_GRAPH_GENERATOR,
+    EXPERT_TEAM_DISPATCH_CONTRACT,
+    EXPERT_TEAM_MATERIALIZER_VERSION,
+    EXPERT_TEAM_STAGE_FILE,
+    EXPERT_TEAM_STAGE_METADATA_KEY,
+)
 
 _SAFE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+_WINDOWS_DEVICE_NAME = re.compile(
+    r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$", re.IGNORECASE
+)
+_PROMPT_OR_WINDOWS_RESERVED_CHARS = frozenset('<>:"|?*`')
 _MAX_MEMBERS = 4
 _TEXT_ARTIFACT_WRITE_GUIDANCE = (
     "文本主产物写入：不得把大型完整正文塞入单次 `write_file`/`edit_file` "
@@ -77,6 +89,7 @@ def materialize_team_candidate(
                 Path(expert_packages[member_id]),
                 staging / "agents" / member_id,
                 member_id=member_id,
+                workflow=candidate.get("workflow"),
             )
         validate_agent_group_package(staging)
         os.replace(staging, destination)
@@ -157,7 +170,10 @@ def _write_top_level(
             "quickPrompts": quick_prompts,
             "profession": name,
             "categoryId": "IndustryConsultant",
-            "generatedBy": "expert-graph",
+            "generatedBy": EXPERT_GRAPH_GENERATOR,
+            "dispatchMode": "scheduled",
+            "dispatchContract": EXPERT_TEAM_DISPATCH_CONTRACT,
+            "materializerVersion": EXPERT_TEAM_MATERIALIZER_VERSION,
             "graphId": graph_id,
             "candidateId": team_id,
             "memberExpertIds": member_ids,
@@ -199,17 +215,165 @@ def _write_leader(
     )
     (leader_dir / "AGENT.md").write_text(
         "# 专家团调度规则\n\n"
-        "1. 必须使用团队运行时提供的 `create_task`、`spawn_teammate` 和 "
-        "`send_message` 调度成员，不得模拟成员输出。\n"
-        "2. 运行时主理人成员名固定为 `team-leader`；成员向主理人回传时必须使用该名称。\n"
-        "3. 严格按共享 instruction 中的调用链执行；前序结果完整传给后序成员。\n"
-        "4. 中间交接写入 `.expert-handoffs/`，不得冒充用户最终成品。\n"
-        "5. 只把调用链最后阶段生成的成品作为主产物发送给用户，并确认文件可打开。\n",
+        '1. 每次收到新的用户请求，先调用 `view_task(action="list")` 查看当前看板。'
+        "若已存在与当前请求匹配且未终结的同一组阶段任务，继续使用原任务，禁止重复创建；"
+        "否则生成本次请求唯一的 `run_key`：优先使用当前 request id 的短后缀，"
+        "拿不到时使用 UTC 时间戳加 4 位随机小写字母/数字。\n"
+        "2. 首次执行必须按下方映射在一次 `create_task` 调用中创建完整任务 DAG。"
+        "每个任务都必须显式填写唯一 `task_id`、对应成员 `assignee` 和 `depends_on`；"
+        "`depends_on` 只能引用同批任务的 `task_id`，绝不能填写 expertId。\n"
+        f"\n{_leader_task_dag(candidate.get('workflow'), member_ids)}\n"
+        "3. 所有专业成员均已由 AgentGroup 预注册，禁止调用 `spawn_teammate` 重复创建成员。\n"
+        "4. 当前图谱团由 scheduled scheduler 独占依赖放行和任务派发；禁止通过 broadcast "
+        "或 `send_message` 提前启动 pending/blocked 下游。只有成员已经执行且确需澄清时，"
+        "才可定向发送补充信息。\n"
+        "5. 不得模拟成员输出；严格按共享 instruction 的调用链等待真实成员完成。"
+        "前序结果通过声明的 `.expert-handoffs/` 契约完整传给后序成员。\n"
+        "6. 运行时主理人成员名固定为 `team-leader`；成员向主理人回传时必须使用该名称。\n"
+        "7. 中间交接不得冒充用户最终成品；只把调用链最后阶段生成且已经打开检查的"
+        "主成品发送给用户。\n",
         encoding="utf-8",
     )
 
 
-def _embed_member(source: Path, destination: Path, *, member_id: str) -> None:
+def _leader_task_dag(workflow: Any, member_ids: list[str]) -> str:
+    """Render the candidate's expert DAG as unambiguous task-id templates."""
+    mapping_steps = _validated_workflow_dag(workflow, member_ids)
+    ordered_experts = [
+        str(item.get("expertId") or "").strip() for item in mapping_steps
+    ]
+    stage_by_expert = {
+        expert_id: index for index, expert_id in enumerate(ordered_experts, start=1)
+    }
+    lines = [
+        "## 固定任务 ID 映射",
+        "",
+        "下表的 `{run_key}` 在同一次用户请求中必须保持不变。`task_id` 是任务标识，"
+        "`assignee` 才是专家成员名，两者不得混用。",
+        "",
+        "| 阶段 | task_id | assignee | depends_on（task_id） |",
+        "| --- | --- | --- | --- |",
+    ]
+    for index, item in enumerate(mapping_steps, start=1):
+        expert_id = ordered_experts[index - 1]
+        raw_dependencies = item.get("dependsOn")
+        dependencies = (
+            [str(value or "").strip() for value in raw_dependencies]
+            if isinstance(raw_dependencies, (list, tuple))
+            else []
+        )
+        unknown = [
+            dependency
+            for dependency in dependencies
+            if dependency and dependency not in stage_by_expert
+        ]
+        if unknown:
+            raise TeamMaterializationError(
+                "candidate workflow dependsOn references unknown experts: "
+                + ", ".join(unknown)
+            )
+        dependency_ids = [
+            f"`{{run_key}}-s{stage_by_expert[dependency]:02d}`"
+            for dependency in dependencies
+            if dependency
+        ]
+        depends_on = "[" + ", ".join(dependency_ids) + "]"
+        lines.append(
+            f"| {index} | `{{run_key}}-s{index:02d}` | `{expert_id}` | {depends_on} |"
+        )
+    lines.extend(
+        [
+            "",
+            "批量创建失败或进程恢复时，必须再次查看看板：若这些 `task_id` 已存在，"
+            "复用并继续它们；只有确认本次请求尚无对应任务时才能创建新 `run_key`。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _validated_workflow_dag(
+    workflow: Any, member_ids: list[str]
+) -> list[Mapping[str, Any]]:
+    """Fail closed unless the workflow is one complete, ordered, single-sink DAG."""
+
+    if not isinstance(workflow, (list, tuple)) or not workflow:
+        raise TeamMaterializationError("candidate workflow must be a non-empty DAG")
+    if not all(isinstance(item, Mapping) for item in workflow):
+        raise TeamMaterializationError(
+            "candidate workflow must contain structured expert stages"
+        )
+    steps = list(workflow)
+    expert_ids = [str(item.get("expertId") or "").strip() for item in steps]
+    if expert_ids != member_ids or len(set(expert_ids)) != len(expert_ids):
+        raise TeamMaterializationError(
+            "candidate workflow must cover memberIds exactly once and in stage order"
+        )
+
+    stage_by_expert = {expert_id: index for index, expert_id in enumerate(expert_ids)}
+    outgoing = {expert_id: set() for expert_id in expert_ids}
+    undirected = {expert_id: set() for expert_id in expert_ids}
+    final_output_experts: list[str] = []
+    for index, item in enumerate(steps):
+        expert_id = expert_ids[index]
+        raw_dependencies = item.get("dependsOn", [])
+        if not isinstance(raw_dependencies, (list, tuple)):
+            raise TeamMaterializationError(
+                f"candidate workflow dependsOn must be a list: {expert_id}"
+            )
+        dependencies = [str(value or "").strip() for value in raw_dependencies]
+        if any(not value for value in dependencies) or len(set(dependencies)) != len(
+            dependencies
+        ):
+            raise TeamMaterializationError(
+                f"candidate workflow has blank or duplicate dependencies: {expert_id}"
+            )
+        unknown = [value for value in dependencies if value not in stage_by_expert]
+        if unknown:
+            raise TeamMaterializationError(
+                "candidate workflow dependsOn references unknown experts: "
+                + ", ".join(unknown)
+            )
+        if any(stage_by_expert[value] >= index for value in dependencies):
+            raise TeamMaterializationError(
+                "candidate workflow must be acyclic and topologically ordered"
+            )
+        for dependency in dependencies:
+            outgoing[dependency].add(expert_id)
+            undirected[dependency].add(expert_id)
+            undirected[expert_id].add(dependency)
+        if _final_output_clause(item.get("finalOutput")):
+            final_output_experts.append(expert_id)
+
+    visited: set[str] = set()
+    frontier = [expert_ids[0]]
+    while frontier:
+        current = frontier.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        frontier.extend(undirected[current] - visited)
+    if visited != set(expert_ids):
+        raise TeamMaterializationError("candidate workflow DAG must be connected")
+
+    sinks = [expert_id for expert_id, targets in outgoing.items() if not targets]
+    if len(sinks) != 1:
+        raise TeamMaterializationError(
+            "candidate workflow DAG must contain exactly one sink"
+        )
+    if final_output_experts != sinks:
+        raise TeamMaterializationError(
+            "candidate workflow finalOutput must exist only on its unique sink"
+        )
+    return steps
+
+
+def _embed_member(
+    source: Path,
+    destination: Path,
+    *,
+    member_id: str,
+    workflow: Any,
+) -> None:
     try:
         source = source.expanduser().resolve(strict=True)
     except OSError as exc:
@@ -246,8 +410,153 @@ def _embed_member(source: Path, destination: Path, *, member_id: str) -> None:
     metadata["originExpertId"] = str(
         (manifest.get("agentCard") or {}).get("id") or member_id
     )
+    metadata[EXPERT_TEAM_STAGE_METADATA_KEY] = EXPERT_TEAM_STAGE_FILE
     embedded["metadata"] = metadata
+    _inject_team_stage_persona(
+        destination,
+        embedded,
+        member_id=member_id,
+        workflow=workflow,
+        skill_names=_declared_skill_names(source, manifest),
+    )
     _write_json(destination / "manifest.json", embedded)
+
+
+def _inject_team_stage_persona(
+    member_root: Path,
+    manifest: Mapping[str, Any],
+    *,
+    member_id: str,
+    workflow: Any,
+    skill_names: list[str],
+) -> None:
+    """Write a loader-mounted stage section without replacing source persona files."""
+    persona = manifest.get("persona")
+    if not isinstance(persona, Mapping) or not isinstance(persona.get("dir"), str):
+        raise TeamMaterializationError(
+            f"embedded member has no safe persona.dir: {member_id}"
+        )
+    raw_dir = str(persona["dir"]).strip()
+    _safe_package_dir(
+        member_root,
+        raw_dir,
+        label=f"embedded member {member_id!r} persona.dir",
+    )
+
+    override = member_root / EXPERT_TEAM_STAGE_FILE
+    if override.exists() or override.is_symlink():
+        raise TeamMaterializationError(
+            f"embedded member reserves {EXPERT_TEAM_STAGE_FILE!r}: {member_id}"
+        )
+    override.write_text(
+        _team_stage_persona(member_id, workflow, skill_names), encoding="utf-8"
+    )
+
+
+def _declared_skill_names(package_root: Path, manifest: Mapping[str, Any]) -> list[str]:
+    """Read original Skill names through the shared beta3 callability contract."""
+    inspection = inspect_skill_contracts(package_root, manifest)
+    if inspection.errors:
+        raise TeamMaterializationError(
+            "embedded member has uncallable Skills: " + "; ".join(inspection.errors)
+        )
+    return list(inspection.names)
+
+
+def _safe_package_dir(root: Path, raw_dir: str, *, label: str) -> Path:
+    """Resolve one package-relative directory without accepting traversal."""
+    relative = Path(raw_dir)
+    windows_relative = PureWindowsPath(raw_dir)
+    if (
+        not raw_dir
+        or relative.is_absolute()
+        or windows_relative.is_absolute()
+        or ".." in relative.parts
+        or ".." in windows_relative.parts
+    ):
+        raise TeamMaterializationError(f"{label} is unsafe: {raw_dir!r}")
+    root = root.resolve(strict=True)
+    try:
+        resolved = (root / relative).resolve(strict=True)
+    except OSError as exc:
+        raise TeamMaterializationError(f"{label} does not exist: {raw_dir!r}") from exc
+    if not resolved.is_relative_to(root) or not resolved.is_dir():
+        raise TeamMaterializationError(f"{label} escapes its package: {raw_dir!r}")
+    return resolved
+
+
+def _team_stage_persona(member_id: str, workflow: Any, skill_names: list[str]) -> str:
+    """Render one member's strict graph-stage scope for its embedded persona."""
+    raw_steps = workflow if isinstance(workflow, (list, tuple)) else []
+    steps = [item for item in raw_steps if isinstance(item, Mapping)]
+    stage = next(
+        (
+            item
+            for item in steps
+            if str(item.get("expertId") or "").strip() == member_id
+        ),
+        {},
+    )
+    outgoing_contracts: list[dict[str, str]] = []
+    for item in steps:
+        target = str(item.get("expertId") or "").strip()
+        outgoing_contracts.extend(
+            contract
+            for contract in _step_handoff_contracts(item, target_expert_id=target)
+            if contract["source"] == member_id
+        )
+
+    lines = [
+        "# 专家团阶段执行覆盖规则（最高优先级）",
+        "",
+        "本文件仅在当前专家团中生效；如与原 persona 的产物要求冲突，以本文件为准。",
+        "收到已指派任务后，先确认任务已进入可执行状态；仅当运行时提供 `claim_task` "
+        "且任务仍为 pending 时调用，scheduled 已自动进入 in_progress 时直接执行，禁止重复领取。",
+        "",
+        "## 本阶段产物边界",
+        "",
+    ]
+    final_output_clause = _final_output_clause(stage.get("finalOutput"))
+    if final_output_clause:
+        lines.extend(
+            [
+                "你是调用链终点。只生成并发送图谱声明的 `finalOutput`；"
+                "短暂本地渲染脚本必须在完成后删除，不得作为产物。",
+                f"- {final_output_clause}",
+                "不得额外生成或发送其他 standalone/public/primary 主产物。",
+            ]
+        )
+    else:
+        lines.append(
+            "你不是调用链终点。仅允许生成本阶段图谱声明的 hard-edge handoff；"
+            "不得生成或发送任何 standalone/public/primary 主产物。"
+        )
+        if outgoing_contracts:
+            for contract in outgoing_contracts:
+                lines.append(
+                    f"- `{contract['path']}`（{_handoff_contract_details(contract)}），"
+                    f"交给 `{contract['target']}`"
+                )
+        else:
+            lines.append("- 本阶段未声明 hard-edge handoff；不得自行虚构交接文件。")
+
+    lines.extend(["", "## 本地 Skills", ""])
+    if skill_names:
+        lines.append(
+            "按任务需要使用下列本地 Skills；其原始 name 已与 beta3 运行时调用 ID "
+            "核验一致，调用时必须逐字使用："
+        )
+        lines.extend(
+            f"- 原始 name：{json.dumps(name, ensure_ascii=False)}"
+            for name in skill_names
+        )
+        lines.append("不得改名、另起别名或虚构不存在的 Skill。")
+    else:
+        lines.append(
+            "本成员没有可按 `SKILL.md` 原始 name 确认的本地 Skills；"
+            "不得虚构或声称调用了任何 Skill。"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _copy_package_files(source: Path, destination: Path) -> None:
@@ -299,8 +608,10 @@ def _team_instruction(
     return (
         f"你们是{name}。可用专业成员为 {member_text}。\n\n"
         f"## 调用链\n{stage_text}\n\n"
-        "每个阶段必须由对应真实成员执行。主理人通过团队任务和消息机制传递完整交接，"
-        "不得代写成员结果；前序中间结果放入 `.expert-handoffs/`。"
+        "每个阶段必须由对应真实成员执行。主理人一次性创建同构任务 DAG，"
+        "用调用链中的 expertId 作为 assignee，并把依赖关系写入 depends_on；"
+        "由 scheduled scheduler 自动放行，不得手工提前启动下游。"
+        "主理人不得代写成员结果；前序中间结果放入 `.expert-handoffs/`。"
         f"最终交付目标：{deliverable_text}。只发送最后阶段的主成品给用户。"
     )
 
@@ -383,17 +694,11 @@ def _final_output_clause(value: Any) -> str:
     """Render the unique sink's user-visible primary artifact contract."""
     if not isinstance(value, Mapping):
         return ""
-    output_id = str(value.get("id") or "").strip()
-    if not output_id:
+    output_id = str(value.get("id") or "")
+    if not output_id.strip():
         return ""
-    relative = Path(output_id.replace("\\", "/"))
-    if relative.is_absolute() or ".." in relative.parts:
-        raise TeamMaterializationError(
-            f"final output is not a safe relative file: {output_id!r}"
-        )
-    media_type = str(
-        value.get("mediaType") or value.get("media_type") or ""
-    ).strip()
+    relative = _safe_relative_artifact_path(output_id, label="final output")
+    media_type = str(value.get("mediaType") or value.get("media_type") or "").strip()
     schema = str(value.get("schema") or "").strip()
     details = []
     if media_type:
@@ -437,15 +742,16 @@ def _step_handoff_contracts(
             input_ = evidence.get("input")
             if not isinstance(output, Mapping) or not isinstance(input_, Mapping):
                 continue
-            output_id = str(output.get("id") or "").strip()
-            input_id = str(input_.get("id") or "").strip()
-            if not output_id:
+            output_id = str(output.get("id") or "")
+            input_id = str(input_.get("id") or "")
+            if not output_id.strip():
                 continue
-            relative = Path(output_id.replace("\\", "/"))
-            if relative.is_absolute() or ".." in relative.parts:
-                raise TeamMaterializationError(
-                    f"handoff output is not a safe relative file: {output_id!r}"
-                )
+            relative = _safe_relative_artifact_path(output_id, label="handoff output")
+            safe_input_id = (
+                _safe_relative_artifact_path(input_id, label="handoff input").as_posix()
+                if input_id.strip()
+                else ""
+            )
             parts = list(relative.parts)
             if parts and parts[0] == ".expert-handoffs":
                 parts = parts[1:]
@@ -456,8 +762,8 @@ def _step_handoff_contracts(
                 "source": source,
                 "target": target_expert_id,
                 "path": path,
-                "output_id": output_id,
-                "input_id": input_id,
+                "output_id": relative.as_posix(),
+                "input_id": safe_input_id,
                 "output_media": str(
                     output.get("mediaType") or output.get("media_type") or ""
                 ).strip(),
@@ -490,6 +796,45 @@ def _handoff_contract_details(contract: Mapping[str, str]) -> str:
     if input_schema and input_schema != output_schema:
         parts.append(f"输入 schema=`{input_schema}`")
     return "，".join(parts) or "遵循图谱声明的原始格式"
+
+
+def _safe_relative_artifact_path(value: str, *, label: str) -> Path:
+    """Return one host-independent relative artifact path.
+
+    ``Path`` on macOS does not recognize Windows drive or UNC paths as
+    absolute, so both path dialects must be checked before a team package can
+    be moved to another platform.
+    """
+
+    raw = str(value or "")
+    normalized = raw.replace("\\", "/")
+    relative = Path(normalized)
+    windows = PureWindowsPath(raw)
+    parts = normalized.split("/")
+    invalid_segment = any(
+        not part
+        or part in {".", ".."}
+        or part.endswith((" ", "."))
+        or any(ord(char) < 32 for char in part)
+        or any(char in _PROMPT_OR_WINDOWS_RESERVED_CHARS for char in part)
+        or _WINDOWS_DEVICE_NAME.fullmatch(part)
+        for part in parts
+    )
+    if (
+        not raw
+        or raw != raw.strip()
+        or "\x00" in raw
+        or normalized.endswith("/")
+        or normalized in {".", "..", "~"}
+        or (parts and parts[0].startswith("~"))
+        or relative.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or invalid_segment
+        or not relative.name
+    ):
+        raise TeamMaterializationError(f"{label} is not a safe relative file: {raw!r}")
+    return relative
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:

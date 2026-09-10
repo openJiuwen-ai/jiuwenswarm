@@ -17,10 +17,8 @@ import mimetypes
 import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
-
-import yaml
 
 from jiuwenswarm.server.runtime.expert.expert_store import (
     ExpertNotFound,
@@ -29,6 +27,11 @@ from jiuwenswarm.server.runtime.expert.expert_store import (
     ExpertSummary,
     InvalidExpertPackage,
     validate_expert_package,
+)
+from jiuwenswarm.server.runtime.expert.skill_contract import inspect_skill_contracts
+from jiuwenswarm.server.runtime.expert.team_contract import (
+    EXPERT_TEAM_DISPATCH_CONTRACT,
+    EXPERT_TEAM_MATERIALIZER_VERSION,
 )
 
 INVENTORY_SCHEMA_VERSION = "xiaoyi.expert-inventory.v1"
@@ -402,63 +405,6 @@ def _package_hash(package_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def _skill_names(
-    package_dir: Path, manifest: Mapping[str, Any], *, is_team: bool
-) -> tuple[str, ...]:
-    package_root = package_dir.resolve()
-    names: list[str] = []
-    for item in manifest.get("skills") or []:
-        if isinstance(item, str):
-            relative = f"skills/{item}" if is_team else item
-        elif isinstance(item, Mapping):
-            relative = str(item.get("dir") or item.get("path") or "").strip()
-        else:
-            continue
-        if not relative:
-            continue
-        raw_path = Path(relative)
-        windows_path = PureWindowsPath(relative)
-        if (
-            raw_path.is_absolute()
-            or windows_path.is_absolute()
-            or ".." in raw_path.parts
-            or ".." in windows_path.parts
-        ):
-            continue
-        try:
-            skill_dir = (package_root / raw_path).resolve(strict=True)
-        except OSError:
-            continue
-        if not skill_dir.is_relative_to(package_root) or not skill_dir.is_dir():
-            continue
-        try:
-            skill_md = (skill_dir / "SKILL.md").resolve(strict=True)
-        except OSError:
-            continue
-        if (
-            not skill_md.is_relative_to(package_root)
-            or not skill_md.is_relative_to(skill_dir)
-            or not skill_md.is_file()
-        ):
-            continue
-        name = skill_dir.name
-        try:
-            text = skill_md.read_text(encoding="utf-8")
-            if text.startswith("---"):
-                closing = text.find("\n---", 3)
-                if closing >= 0:
-                    metadata = yaml.safe_load(text[3:closing])
-                    if isinstance(metadata, Mapping):
-                        declared = metadata.get("name")
-                        if isinstance(declared, str) and declared.strip():
-                            name = declared.strip()
-        except (OSError, UnicodeDecodeError, yaml.YAMLError):
-            pass
-        if name and name not in names:
-            names.append(name)
-    return tuple(names)
-
-
 def _collaboration_metadata(
     manifest: Mapping[str, Any], metadata: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -570,7 +516,8 @@ def normalize_expert_manifest(
     deliverables = _as_string_list(
         metadata.get("deliverables") or collaboration.get("deliverables")
     )
-    skills = _skill_names(package_dir, manifest, is_team=is_team)
+    skill_contract = inspect_skill_contracts(package_dir, manifest, is_team=is_team)
+    skills = skill_contract.names
     if not skills:
         summary_skills = _summary_value(summary, "skills", []) or []
         skills = tuple(
@@ -585,6 +532,8 @@ def normalize_expert_manifest(
         try:
             validate_expert_package(package_dir)
             status = _EXECUTABLE_STATUS
+            if not is_team and skill_contract.errors:
+                status = "invalid"
         except InvalidExpertPackage:
             status = "invalid"
 
@@ -1067,6 +1016,11 @@ def _candidate_for(
         # not mint a second ID for the exact same atomic collaboration.
         "members": sorted((member.id, member.content_hash) for member in members),
         "edges": sorted(edge.id for edge in hard_edges),
+        # A new renderer/runtime contract must mint a new installable package
+        # identity instead of colliding with an older package that cannot be
+        # overwritten safely in place.
+        "materializerVersion": EXPERT_TEAM_MATERIALIZER_VERSION,
+        "dispatchContract": EXPERT_TEAM_DISPATCH_CONTRACT,
     }
     return ExpertTeamCandidate(
         id=f"expert-team-{_digest(key, length=16)}",
@@ -1128,7 +1082,9 @@ def mine_expert_team_candidates(
             outdegree = {member_id: 0 for member_id in member_ids}
             for edge in internal:
                 outdegree[edge.source] += 1
-            sinks = [member_id for member_id, degree in outdegree.items() if degree == 0]
+            sinks = [
+                member_id for member_id, degree in outdegree.items() if degree == 0
+            ]
             if len(sinks) != 1:
                 continue
             sink = next(member for member in members if member.id == sinks[0])

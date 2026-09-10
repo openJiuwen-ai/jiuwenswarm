@@ -19,6 +19,7 @@ purely from the config source plus provider name references.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -38,6 +39,9 @@ from jiuwenswarm.agents.swarm.registry import (
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
 from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.server.runtime.expert.team_contract import (
+    classify_expert_team_dispatch_contract,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,21 @@ logger = logging.getLogger(__name__)
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
 
 _PROMPT_TEMPLATE_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
+
+
+def _expert_group_dispatch_profile(package_dir: Path) -> str:
+    """Recognize legacy, complete scheduled, and invalid partial packages."""
+    try:
+        payload = json.loads(
+            (package_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "legacy"
+    return (
+        classify_expert_team_dispatch_contract(package_dir, payload)
+        if isinstance(payload, dict)
+        else "legacy"
+    )
 
 
 def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
@@ -58,7 +77,9 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     project_root = str(project_dir or "").strip()
     if not project_root:
         return member_spec
-    return member_spec.model_copy(update={"cwd": project_root, "project_root": project_root})
+    return member_spec.model_copy(
+        update={"cwd": project_root, "project_root": project_root}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +225,10 @@ def _render_member_identity_text(
     def _block(lang: str) -> str:
         if lang == "cn":
             title = "主理人" if role == "leader" else "成员"
-            lines = ["# 你的身份", f"你是专家团「{group_display}」的{title} {display_name}。"]
+            lines = [
+                "# 你的身份",
+                f"你是专家团「{group_display}」的{title} {display_name}。",
+            ]
         else:
             title = "leader" if role == "leader" else "member"
             lines = [
@@ -253,7 +277,9 @@ def _with_member_identity(
     return member_spec
 
 
-def _apply_agent_group(spec: Any, agent_group_name: str, package_dir: Path | None = None) -> None:
+def _apply_agent_group(
+    spec: Any, agent_group_name: str, package_dir: Path | None = None
+) -> None:
     """把"本会话绑定的专家团包"覆写到 enrich 后的 TeamAgentSpec（组装七步）。
 
     1. 能力探针；
@@ -297,10 +323,7 @@ def _apply_agent_group(spec: Any, agent_group_name: str, package_dir: Path | Non
     group_display = str(read_group_display(package_dir)["name"] or "").strip()
     # 团队版 switch notice（与单专家 expert.switch_notice 体验对齐）：
     # 绑定期间随 spec 构建写入 leader prompt 头部；退队后不再构建，自然摘除。
-    group_notice = (
-        f"当前会话由专家团「{group_display}」协作，"
-        "你是该团的主理人。"
-    )
+    group_notice = f"当前会话由专家团「{group_display}」协作，你是该团的主理人。"
     spec.leader = spec.leader.model_copy(
         update={
             "prompt": _merge_team_prompt(
@@ -360,8 +383,17 @@ def _apply_agent_group(spec: Any, agent_group_name: str, package_dir: Path | Non
         )
 
     spec.predefined_members = predefined_members
-    spec.team_mode = "hybrid"
-    spec.dispatch_mode = "autonomous"
+    dispatch_profile = _expert_group_dispatch_profile(package_dir)
+    if dispatch_profile == "invalid":
+        raise ValueError(
+            "专家团声明了版本化调度契约，但包结构或版本不完整，拒绝降级运行"
+        )
+    scheduled_graph_team = dispatch_profile == "scheduled"
+    # A versioned graph team has a fixed roster and owned task DAG. Enforce both
+    # contracts in the runtime instead of relying on prompt-only prohibitions.
+    # Legacy AgentGroups retain their existing hybrid/autonomous behavior.
+    spec.team_mode = "predefined" if scheduled_graph_team else "hybrid"
+    spec.dispatch_mode = "scheduled" if scheduled_graph_team else "autonomous"
     spec.enable_task_verification = False
 
 

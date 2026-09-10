@@ -36,7 +36,7 @@ def _write_agent_package(
     expert_id: str,
     *,
     skill_dir: str = "skill-folder",
-    skill_name: str = "Original Skill Name",
+    skill_name: str = "skill-folder",
     collaboration: dict | None = None,
 ) -> Path:
     package = root / expert_id
@@ -119,7 +119,7 @@ def test_normalize_current_manifest_preserves_declared_skill_name_and_ports(
     package = _write_agent_package(
         tmp_path,
         "sales-analyst",
-        skill_dir="renamed-directory-must-not-leak",
+        skill_dir="excel-analysis",
         skill_name="excel-analysis",
         collaboration={
             "contractVersion": "1",
@@ -154,6 +154,60 @@ def test_normalize_current_manifest_preserves_declared_skill_name_and_ports(
     assert len(descriptor.content_hash) == 64
 
 
+def test_uncallable_skill_name_is_quarantined_before_team_mining(
+    tmp_path: Path,
+) -> None:
+    producer = _write_agent_package(
+        tmp_path,
+        "producer",
+        skill_dir="runtime-skill-id",
+        skill_name="Original Display Name",
+        collaboration={
+            "outputs": [
+                {
+                    "id": "brief.json",
+                    "mediaType": "application/json",
+                    "schema": "brief.v1",
+                }
+            ]
+        },
+    )
+    consumer = _write_agent_package(
+        tmp_path,
+        "consumer",
+        skill_dir="copywriter",
+        skill_name="copywriter",
+        collaboration={
+            "inputs": [
+                {
+                    "id": "brief.json",
+                    "mediaType": "application/json",
+                    "schema": "brief.v1",
+                }
+            ],
+            "outputs": [
+                {
+                    "id": "result.html",
+                    "mediaType": "text/html",
+                    "schema": "result.v1",
+                    "primary": True,
+                    "visibility": "public",
+                }
+            ],
+        },
+    )
+
+    producer_descriptor = normalize_expert_manifest(producer)
+    consumer_descriptor = normalize_expert_manifest(consumer)
+    graph = build_expert_graph(_inventory(producer_descriptor, consumer_descriptor))
+    candidates = mine_expert_team_candidates(graph)
+
+    assert producer_descriptor.skills == ("Original Display Name",)
+    assert producer_descriptor.status == "invalid"
+    assert producer_descriptor.reusable is False
+    assert all("producer" not in candidate.member_ids for candidate in candidates)
+
+
 def test_skill_inventory_skips_parent_directory_escape_without_name_leak(
     tmp_path: Path,
 ) -> None:
@@ -172,7 +226,7 @@ def test_skill_inventory_skips_parent_directory_escape_without_name_leak(
     descriptor = normalize_expert_manifest(package)
 
     assert descriptor.status == "invalid"
-    assert descriptor.skills == ("Original Skill Name",)
+    assert descriptor.skills == ("skill-folder",)
     assert "must-not-leak" not in descriptor.skills
 
 
@@ -199,7 +253,7 @@ def test_skill_inventory_skips_external_symlink_without_name_leak(
     descriptor = normalize_expert_manifest(package)
 
     assert descriptor.status == "invalid"
-    assert descriptor.skills == ("Original Skill Name",)
+    assert descriptor.skills == ("skill-folder",)
     assert "symlink-secret" not in descriptor.skills
 
 
