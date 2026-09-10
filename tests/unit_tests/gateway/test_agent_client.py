@@ -248,6 +248,7 @@ async def test_message_receiver_loop_sets_ready_on_late_connection_ack():
         await asyncio.sleep(0.001)
 
     assert client.get_server_ready_for_test() is True
+    assert client.agent_ready is False
     assert ws.recv_calls >= 1  # ack 帧已被消费，连接保持（第二轮 recv 挂起中）
 
     task.cancel()
@@ -255,6 +256,45 @@ async def test_message_receiver_loop_sets_ready_on_late_connection_ack():
         await task
     except asyncio.CancelledError:
         pass
+
+
+def test_connection_ack_warming_is_not_agent_ready():
+    client = AgentClientHarness()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "ready", "readiness": "RUNTIME_WARMING"},
+        }
+    )
+    assert client.server_ready is True
+    assert client.agent_ready is False
+
+
+def test_connection_ack_failed_keeps_server_ready_not_agent_ready():
+    client = AgentClientHarness()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "failed", "readiness": "FAILED"},
+        }
+    )
+    assert client.server_ready is True
+    assert client.agent_ready is False
+
+
+def test_connection_ack_agent_ready_sets_execution_flag():
+    client = AgentClientHarness()
+    client._apply_connection_ack(
+        {
+            "type": "event",
+            "event": "connection.ack",
+            "payload": {"status": "ready", "readiness": "AGENT_READY"},
+        }
+    )
+    assert client.server_ready is True
+    assert client.agent_ready is True
 
 
 @pytest.mark.asyncio

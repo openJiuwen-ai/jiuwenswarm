@@ -852,12 +852,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
 
     async def _session_delete(ws, req_id, params, session_id, user_id=None):
-        """删除一个 session（统一薄代理 E2A 转发 + 单用户共享目录适配器 fallback）。
+        """删除一个 session（统一薄代理 E2A 转发）。
 
-        Phase 4 整合：手写 E2A 与本地删除收敛到 ``proxy_unary_request``——
-        AgentOS 下 AgentServer 不可达返回可重试错误；单用户 WebSocket 客户端
-        不可达时由薄代理跑 SessionAdapter 的文件级删除（共享目录等价，保持
-        迁移前离线可用性）；client 未构造（ac=None）返回 SERVICE_UNAVAILABLE。
+        AgentServer 不可达时返回 SERVICE_UNAVAILABLE；Gateway 不再跑本地
+        SessionAdapter 删除路径。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
