@@ -73,6 +73,21 @@ test('merge prefers incoming with url over existing without url', () => {
   assert.equal(merged[0].download_url, '/d?token=new');
 });
 
+test('merge keeps is_skill_package true if either side is true', () => {
+  const merged = mergeFileDownloadItems(
+    [{ name: 'pack.zip', path: '/ws/pack.zip', is_skill_package: true, download_url: '/d?t=1' }],
+    [{ name: 'pack.zip', path: '/ws/pack.zip', is_skill_package: false, download_url: '/d?t=2' }]
+  );
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].is_skill_package, true);
+
+  const merged2 = mergeFileDownloadItems(
+    [{ name: 'pack.zip', path: '/ws/pack.zip', download_url: '/d?t=1' }],
+    [{ name: 'pack.zip', path: '/ws/pack.zip', is_skill_package: true, download_url: '/d?t=2' }]
+  );
+  assert.equal(merged2[0].is_skill_package, true);
+});
+
 test('findOverlappingFileExecutionEvent only matches shared identity', () => {
   const events = [
     {

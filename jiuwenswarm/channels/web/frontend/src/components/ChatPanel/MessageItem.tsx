@@ -52,6 +52,7 @@ import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
+import { isSkillPackageFile } from '../../utils/skillPackageFile';
 
 function openArtifactPanelForActiveMode(selectedArtifactId: string): void {
   const sessionId = useChatStore.getState().activeSessionId;
@@ -868,18 +869,6 @@ function formatFileSize(bytes: number | undefined): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const size = bytes / Math.pow(1024, i);
   return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-/** 识别可保存的 Skill 包：`.skill` / `.skill.zip` */
-function isSkillPackageFile(file: FileDownloadItem): boolean {
-  const candidates = [file.name, file.path].filter(Boolean) as string[];
-  for (const candidate of candidates) {
-    const base = candidate.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '';
-    if (base.endsWith('.skill.zip') || base.endsWith('.skill')) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function skillPackageDisplayName(file: FileDownloadItem): string {

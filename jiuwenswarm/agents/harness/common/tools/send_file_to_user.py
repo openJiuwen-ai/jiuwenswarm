@@ -16,6 +16,7 @@ import json
 import os
 import logging
 import shutil
+import zipfile
 from pathlib import Path
 from typing import Any, List, Union
 
@@ -23,6 +24,50 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
 
 logger = logging.getLogger(__name__)
+
+
+def looks_like_skill_package(path: str | Path) -> bool:
+    """轻量判断交付文件是否为 Skill 包（不解压全量内容）.
+
+    - ``.skill`` / ``.skill.zip``：按扩展名视为技能包
+    - ``.zip``：中央目录含根级或一层目录下的 ``SKILL.md`` 则视为技能包
+    - 探测失败：返回 False（保守当普通产物）
+    """
+    try:
+        file_path = Path(path)
+    except (TypeError, ValueError):
+        return False
+    name = file_path.name.lower()
+    if name.endswith(".skill.zip") or name.endswith(".skill"):
+        return True
+    if not name.endswith(".zip"):
+        return False
+    try:
+        if not file_path.is_file():
+            return False
+        with zipfile.ZipFile(file_path, "r") as zf:
+            for entry in zf.namelist():
+                parts = [
+                    part
+                    for part in str(entry).replace("\\", "/").split("/")
+                    if part and part != "."
+                ]
+                if not parts:
+                    continue
+                if parts[-1].lower() != "skill.md":
+                    continue
+                # 根级 SKILL.md 或 skill_name/SKILL.md
+                if len(parts) <= 2:
+                    return True
+    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        logger.warning(
+            "[SendFileToolkit] skill package probe failed path=%s error=%s",
+            path,
+            exc,
+        )
+        return False
+    return False
+
 
 # Session-level dedup for send_file_to_user. Compression may drop prior tool
 # results, so the agent can re-call the same path; IM request-level dedup alone
@@ -399,6 +444,7 @@ class SendFileToolkit:
                         "mime_type": download_info["mime_type"],
                         "download_url": download_info["download_url"],
                         "download_token": download_info["download_token"],
+                        "is_skill_package": looks_like_skill_package(file_path),
                     })
             except Exception as download_err:
                 logger.warning(
@@ -409,6 +455,7 @@ class SendFileToolkit:
                     {
                         "path": file_path,
                         "name": os.path.basename(file_path),
+                        "is_skill_package": looks_like_skill_package(file_path),
                     }
                     for file_path in valid_files
                 ]
