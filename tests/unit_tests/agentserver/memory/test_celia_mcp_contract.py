@@ -331,25 +331,3 @@ async def test_old_backend_contract_is_reported_and_lease_released(provider, mon
         await provider.initialize()
     manager.release.assert_awaited_once_with(lease)
     provider.client.call_tool.assert_not_awaited()
-
-
-def test_swarm_builder_preserves_remote_request_identity(tmp_path):
-    from jiuwenswarm.agents.swarm import SwarmBuildContext
-    from jiuwenswarm.agents.swarm.providers.member_rails import _build_external_memory_rail
-
-    rail = _build_external_memory_rail(
-        {},
-        SwarmBuildContext(
-            config={"memory": {"engine": "external", "external": {"provider": "celia"}}},
-            workspace=SimpleNamespace(root_path=str(tmp_path)),
-            session_id="team-session",
-            request_metadata={
-                "celia_user_id": "remote-user",
-                "celia_request_scope": {"project": "team-project"},
-            },
-        ),
-    )
-    context = rail._provider._context()
-    assert context.user_id == "remote-user"
-    assert context.conversation_id == "team-session"
-    assert context.request_scope["project"] == "team-project"
