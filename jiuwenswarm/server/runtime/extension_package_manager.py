@@ -31,15 +31,19 @@ from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
 )
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
     HubAssetDetail,
+    HubAssetKind,
     HubAssetPort,
     HubAssetQuery,
     HubAssetSummary,
-    HubAssetKind,
+    HubDownloadRequest,
     HubSearchRequest,
     create_default_hub_asset_port,
 )
 from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
     HubInstallStateStore,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
+    HubPackageDownloader,
 )
 
 logger = logging.getLogger(__name__)
@@ -1333,6 +1337,7 @@ async def _list_equipment_with_hub(
     params: dict | None,
     *,
     hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> list[dict]:
     hub_asset_kind = _hub_asset_kind(kind)
     local_cards = (
@@ -1398,18 +1403,24 @@ async def _list_equipment_with_hub(
 
 
 async def list_agent_templates_with_hub(
-    params: dict | None = None, *, hub_port: HubAssetPort | None = None
+    params: dict | None = None,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> list[dict]:
     return await _list_equipment_with_hub(
-        _AGENT_TEMPLATE_KIND, params, hub_port=hub_port
+        _AGENT_TEMPLATE_KIND, params, hub_port=hub_port, downloader=downloader
     )
 
 
 async def list_plugin_packages_with_hub(
-    params: dict | None = None, *, hub_port: HubAssetPort | None = None
+    params: dict | None = None,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> list[dict]:
     return await _list_equipment_with_hub(
-        _PLUGIN_PACKAGE_KIND, params, hub_port=hub_port
+        _PLUGIN_PACKAGE_KIND, params, hub_port=hub_port, downloader=downloader
     )
 
 
@@ -1686,7 +1697,11 @@ def _hub_detail_card(
 
 
 async def _show_equipment_with_hub(
-    kind: str, name: str, *, hub_port: HubAssetPort | None = None
+    kind: str,
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> dict | None:
     hub_asset_kind = _hub_asset_kind(kind)
     state_store = _hub_install_state_store(kind)
@@ -1730,18 +1745,18 @@ async def _show_equipment_with_hub(
 
 
 async def show_agent_template_with_hub(
-    name: str, *, hub_port: HubAssetPort | None = None
+    name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
     return await _show_equipment_with_hub(
-        _AGENT_TEMPLATE_KIND, name, hub_port=hub_port
+        _AGENT_TEMPLATE_KIND, name, hub_port=hub_port, downloader=downloader
     )
 
 
 async def show_plugin_package_with_hub(
-    name: str, *, hub_port: HubAssetPort | None = None
+    name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
     return await _show_equipment_with_hub(
-        _PLUGIN_PACKAGE_KIND, name, hub_port=hub_port
+        _PLUGIN_PACKAGE_KIND, name, hub_port=hub_port, downloader=downloader
     )
 
 
@@ -2034,15 +2049,112 @@ def _agent_template_preview_dir(name: str) -> Path:
     return pkg_dir
 
 
-def list_agent_template_files(name: str) -> list[dict]:
-    """Return the previewable file tree for one agent_template package."""
-    pkg_dir = _agent_template_preview_dir(name)
-    return _build_file_tree(pkg_dir, pkg_dir)
+def _hub_preview_cache_dir(kind: str, asset_id: str, version: str) -> Path:
+    return _kind_root(kind) / "hub_preview" / asset_id / version
 
 
-def read_agent_template_file(name: str, rel_path: str) -> dict:
-    """Read one previewable file from an agent_template package."""
-    pkg_dir = _agent_template_preview_dir(name)
+def _cached_hub_preview_package(kind: str, asset_id: str, version: str) -> Path | None:
+    cached = _hub_preview_cache_dir(kind, asset_id, version)
+    if (cached / "manifest.json").is_file():
+        return cached
+    return None
+
+
+async def _materialize_hub_preview_package(
+    kind: str,
+    identifier: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> Path:
+    """Download a Hub package into a preview cache without installing it."""
+    hub_asset_kind = _hub_asset_kind(kind)
+    kind_label = hub_asset_kind
+    package_type = hub_asset_kind
+    asset_id = _reject_package_name(identifier, kind_label)
+    port = hub_port or create_default_hub_asset_port()
+    detail = await port.query_asset(
+        HubAssetQuery(kind=hub_asset_kind, asset_id=asset_id)
+    )
+    if detail.kind != hub_asset_kind:
+        raise ValueError(f"Hub package type mismatch: {asset_id}")
+    if detail.asset_id != asset_id:
+        raise ValueError(
+            f"Hub asset id mismatch: expected {asset_id!r}, got {detail.asset_id!r}"
+        )
+    version = str(detail.version or "").strip()
+    if not version:
+        raise ValueError(f"Hub package has no public version: {asset_id}")
+    cached = _cached_hub_preview_package(kind, asset_id, version)
+    if cached is not None:
+        return cached
+
+    artifact = await port.resolve_download(
+        HubDownloadRequest(kind=hub_asset_kind, asset_id=asset_id, version=version)
+    )
+    if artifact.kind != hub_asset_kind:
+        raise ValueError(f"Hub artifact type mismatch: {asset_id}")
+    if artifact.asset_id != asset_id:
+        raise ValueError(
+            f"Hub artifact asset id mismatch: expected {asset_id!r}, "
+            f"got {artifact.asset_id!r}"
+        )
+    if artifact.version != version:
+        raise ValueError(
+            f"Hub artifact version mismatch: expected {version!r}, "
+            f"got {artifact.version!r}"
+        )
+
+    package_downloader = downloader or HubPackageDownloader()
+    preview_parent = _kind_root(kind) / "hub_preview" / asset_id
+    preview_parent.mkdir(parents=True, exist_ok=True)
+    destination = preview_parent / version
+    with tempfile.TemporaryDirectory(
+        prefix=f"jiuwenswarm_hub_{kind}_preview_"
+    ) as temp:
+        extracted = Path(temp)
+        await package_downloader.download_and_extract(artifact, extracted)
+        package_root = _find_package_root(extracted, kind_label)
+        _normalize_hub_equipment_manifest(package_root, package_type=package_type)
+        _validate_package_manifest(package_root, kind_label, package_type)
+        staging_parent = Path(
+            tempfile.mkdtemp(prefix=f".{asset_id}.preview-", dir=preview_parent)
+        )
+        staged = staging_parent / version
+        try:
+            _copytree_without_symlinks(package_root, staged)
+            cached = _cached_hub_preview_package(kind, asset_id, version)
+            if cached is not None:
+                return cached
+            if destination.exists():
+                shutil.rmtree(destination)
+            staged.replace(destination)
+        finally:
+            shutil.rmtree(staging_parent, ignore_errors=True)
+    return destination
+
+
+async def _agent_template_preview_dir_with_hub(
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> Path:
+    """Resolve local expert files, or materialize a Hub preview cache."""
+    try:
+        return _agent_template_preview_dir(name)
+    except ValueError as exc:
+        if "package not found" not in str(exc):
+            raise
+        return await _materialize_hub_preview_package(
+            _AGENT_TEMPLATE_KIND,
+            name,
+            hub_port=hub_port,
+            downloader=downloader,
+        )
+
+
+def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
     rel = str(rel_path or "").strip().replace("\\", "/")
     if not _is_previewable_file(rel):
         raise ValueError(f"file not previewable: {rel}")
@@ -2055,6 +2167,44 @@ def read_agent_template_file(name: str, rel_path: str) -> dict:
     except UnicodeDecodeError:
         content = f"[二进制文件，大小 {size} bytes]"
     return {"path": rel, "content": content}
+
+
+def list_agent_template_files(name: str) -> list[dict]:
+    """Return the previewable file tree for one agent_template package."""
+    pkg_dir = _agent_template_preview_dir(name)
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+def read_agent_template_file(name: str, rel_path: str) -> dict:
+    """Read one previewable file from an agent_template package."""
+    return _read_previewable_file(_agent_template_preview_dir(name), rel_path)
+
+
+async def list_agent_template_files_with_hub(
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> list[dict]:
+    """List previewable files, downloading an uninstalled Hub expert if needed."""
+    pkg_dir = await _agent_template_preview_dir_with_hub(
+        name, hub_port=hub_port, downloader=downloader
+    )
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+async def read_agent_template_file_with_hub(
+    name: str,
+    rel_path: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> dict:
+    """Read one previewable file, downloading an uninstalled Hub expert if needed."""
+    pkg_dir = await _agent_template_preview_dir_with_hub(
+        name, hub_port=hub_port, downloader=downloader
+    )
+    return _read_previewable_file(pkg_dir, rel_path)
 
 
 def list_agent_group_files(name: str) -> list[dict]:
