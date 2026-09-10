@@ -9,8 +9,10 @@ import pytest
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
     _CronToolsCronBackend,
+    CronRuntimeBridge,
     _extract_legacy_params,
 )
+from openjiuwen.harness.tools.cron import CronToolContext
 from jiuwenswarm.agents.harness.common.tools.cron import cron_tools as cron_tools_module
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
@@ -1153,3 +1155,61 @@ class TestComputeNextRunMissedTriggerWindow:
 
         assert push_dt.minute == 35
         assert wake_dt == push_dt
+
+
+class _FakeDispatchBackend:
+    """Minimal backend double for unified cron tool dispatch tests."""
+
+    async def list_jobs(self, *, include_disabled: bool = True):
+        return [{"id": "job-1"}]
+
+    async def create_job(self, params: dict, *, context=None) -> dict:
+        return {"id": "spawned", **params}
+
+
+class TestBuildToolsAllowCreate:
+    """cron 执行会话的受限工具集：创建能力必须下掉，管理能力保留。"""
+
+    def _build(self, allow_create: bool) -> list:
+        bridge = CronRuntimeBridge()
+        bridge.set_backend(_FakeDispatchBackend())
+        return bridge.build_tools(
+            context=CronToolContext(channel_id="web", session_id="sess-1"),
+            agent_id="agent-1",
+            allow_create=allow_create,
+        )
+
+    def test_allow_create_false_drops_cron_create_job(self) -> None:
+        tools = self._build(allow_create=False)
+        names = {tool.card.name for tool in tools}
+        assert "cron_create_job" not in names
+        assert {
+            "cron",
+            "cron_list_jobs",
+            "cron_get_job",
+            "cron_update_job",
+            "cron_delete_job",
+            "cron_toggle_job",
+            "cron_preview_job",
+        } <= names
+
+    def test_allow_create_true_keeps_cron_create_job(self) -> None:
+        tools = self._build(allow_create=True)
+        assert "cron_create_job" in {tool.card.name for tool in tools}
+
+    @pytest.mark.asyncio
+    async def test_unified_cron_tool_add_blocked_when_create_disabled(self) -> None:
+        tools = self._build(allow_create=False)
+        unified = next(tool for tool in tools if tool.card.name == "cron")
+
+        with pytest.raises(ValueError, match="not allowed"):
+            await unified._func(action="add", job={"name": "spawned"})
+
+    @pytest.mark.asyncio
+    async def test_unified_cron_tool_list_still_works_when_create_disabled(self) -> None:
+        tools = self._build(allow_create=False)
+        unified = next(tool for tool in tools if tool.card.name == "cron")
+
+        result = await unified._func(action="list")
+
+        assert result == {"jobs": [{"id": "job-1"}]}
