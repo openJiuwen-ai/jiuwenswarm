@@ -99,7 +99,7 @@ def _build_celia_rail(
 ):
     from .celia.prompt import CeliaMcpPromptRail
 
-    # GaussPD is already registered through the ordinary MCP integration.
+    # Celia is already registered through the ordinary MCP integration.
     # Its extension owns recall/ingestion; do not start a second Celia provider.
     return CeliaMcpPromptRail()
 

@@ -30,7 +30,7 @@ def load_celia_agent_prompt() -> str:
 
 
 class CeliaMcpPromptRail(DeepAgentRail):
-    """Inject memory instructions; the configured GaussPD MCP owns the tools."""
+    """Inject memory instructions; the configured Celia MCP owns the tools."""
 
     def init(self, agent) -> None:
         super().init(agent)
