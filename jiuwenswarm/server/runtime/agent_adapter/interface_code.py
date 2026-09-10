@@ -1113,6 +1113,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 exc,
             )
 
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Code mode excludes multimodal tools, including during scoped reloads.
+
+        Keep the inherited snapshot refresh and session fan-out behavior without
+        allowing the deep adapter's reload path to register these capabilities.
+        """
+
     async def reload_agent_config(
         self,
         config_base: dict[str, Any] | None = None,
@@ -1368,7 +1375,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             if getattr(tool, "card", None) is not None
         }
         with self._code_spec_config_scope(config_base):
-            self._sync_multimodal_tools_for_runtime()
             self._sync_paid_search_tool_for_runtime()
             self._sync_symphony_tools_for_runtime(config_base)
             self._sync_skill_retrieval_tools_for_runtime(config_base)

@@ -414,7 +414,7 @@ rsync -av ~/.jiuwenswarm ~/.jiuwenswarm_backup
 | `agent/workspace/skills/` | Skills library (custom skills and config) |
 | `agent/home/` | Scheduled task data (`cron_jobs.json`) |
 
-> `agent/jiuwenclaw_workspace/`, `agent/memory/`, and `agent/skills/` are legacy locations. Current versions migrate their contents into `agent/workspace/`.
+> `agent/jiuwenclaw_workspace/` is a legacy location. Current versions no longer automatically migrate its contents into `agent/workspace/`. If you still have important data there, please manually copy or merge it into `agent/workspace/`.
 
 #### 2. Perform the upgrade
 

@@ -401,8 +401,6 @@ def get_user_workspace_dir() -> Path:
     1. Cached value (if already set via set_user_workspace_dir or previous call)
     2. JIUWENSWARM_DATA_DIR environment variable (for multi-instance isolation)
     3. get_user_home() / ".jiuwenswarm" (default instance)
-
-    Also performs one-time migration from ~/.jiuwenclaw/ to ~/.jiuwenswarm/ if needed.
     """
     global _workspace_base_dir
     if _workspace_base_dir is not None:
@@ -411,9 +409,6 @@ def get_user_workspace_dir() -> Path:
     if env_workspace:
         _workspace_base_dir = Path(env_workspace)
         return _workspace_base_dir
-
-    # One-time migration from .jiuwenclaw to .jiuwenswarm
-    _migrate_from_jiuwenclaw_root()
 
     _workspace_base_dir = get_user_home() / ".jiuwenswarm"
     return _workspace_base_dir
@@ -560,14 +555,6 @@ def prompt_preferred_language() -> Optional[Literal["zh", "en"]]:
         return "en"
     print("[jiuwenswarm-init] 无效选项；未选择有效语言，初始化已取消（与拒绝 yes/no 相同）。")
     return None
-
-
-def _get_builtin_skill_names() -> set[str]:
-    """Get the set of built-in skill names from package resources."""
-    builtin_skills_dir = get_builtin_skills_dir()
-    if not builtin_skills_dir.exists():
-        return set()
-    return {item.name for item in builtin_skills_dir.iterdir() if item.is_dir()}
 
 
 def _update_skills_state_for_builtin(
@@ -913,240 +900,6 @@ def ensure_config_migrated_from_template(
     return True
 
 
-def _migrate_from_jiuwenclaw_root() -> bool:
-    """Migrate from legacy ~/.jiuwenclaw/ to ~/.jiuwenswarm/.
-
-    This is a one-time migration that moves the entire root directory.
-    Called at startup before any workspace operations.
-
-    Returns:
-        True if migration was performed, False otherwise.
-    """
-    user_home = get_user_home()
-    old_root = user_home / ".jiuwenclaw"
-    new_root = user_home / ".jiuwenswarm"
-
-    # No migration needed if old doesn't exist or new already exists
-    if not old_root.exists():
-        return False
-    if new_root.exists():
-        # New workspace exists, don't migrate
-        print(f"[migration] Both .jiuwenclaw and .jiuwenswarm exist, skipping migration")
-        return False
-
-    print(f"[migration] Migrating from {old_root} to {new_root}")
-
-    try:
-        shutil.move(str(old_root), str(new_root))
-        print(f"[migration] Migration completed: {old_root} -> {new_root}")
-        return True
-    except OSError as e:
-        print(f"[migration] ERROR: Failed to migrate from .jiuwenclaw to .jiuwenswarm: {e}")
-        return False
-
-
-def _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir: Path) -> None:
-    """Migrate from legacy jiuwenclaw_workspace directory name to workspace.
-
-    Migration:
-    - Old: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/
-    - New: ~/.jiuwenswarm/agent/workspace/
-
-    Args:
-        workspace_dir: Path to workspace root (~/.jiuwenswarm).
-    """
-    old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
-    new_workspace = workspace_dir / "agent" / "workspace"
-
-    if not old_workspace.exists():
-        return
-    if new_workspace.exists():
-        # Both exist - merge carefully
-        print(f"[migration] Both jiuwenclaw_workspace and workspace exist, merging...")
-        for item in old_workspace.iterdir():
-            dest = new_workspace / item.name
-            if item.is_dir():
-                if dest.exists():
-                    # Merge directories
-                    shutil.copytree(item, dest, dirs_exist_ok=True)
-                else:
-                    shutil.copytree(item, dest)
-            else:
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-        # Remove old after successful merge
-        shutil.rmtree(old_workspace)
-        print(f"[migration] Merged and removed: {old_workspace}")
-    else:
-        # Simple rename
-        shutil.move(str(old_workspace), str(new_workspace))
-        print(f"[migration] Renamed: {old_workspace} -> {new_workspace}")
-
-
-def _migrate_legacy_workspace(
-    workspace_dir: Path,
-    preferred_language: Optional[str] = None,
-) -> None:
-    """Migrate from legacy layout to new DeepAgent workspace layout.
-
-    This handles VERY old layouts where skills, memory, and home were
-    separate directories outside of the workspace.
-
-    Migration:
-    - Old: ~/.jiuwenswarm/agent/home/ (PRINCIPLE.md, TONE.md)
-    - Old: ~/.jiuwenswarm/agent/skills/
-    - Old: ~/.jiuwenswarm/agent/memory/
-
-    - New: ~/.jiuwenswarm/agent/workspace/ (DeepAgent standard)
-
-    Mapping:
-    - agent/skills/ -> agent/workspace/skills/
-    - agent/memory/ -> agent/workspace/memory/
-
-    Note: jiuwenclaw_workspace -> workspace renaming is handled separately by
-    _migrate_jiuwenclaw_workspace_to_workspace.
-
-    Args:
-        workspace_dir: Path to workspace root (~/.jiuwenswarm).
-        preferred_language: Preferred language for config (zh/en).
-    """
-    logger.info(f"Migrating from legacy layout: {workspace_dir}")
-
-    old_home = workspace_dir / "agent" / "home"
-    old_skills = workspace_dir / "agent" / "skills"
-    old_memory = workspace_dir / "agent" / "memory"
-
-    new_workspace = workspace_dir / "agent" / "workspace"
-    new_workspace.mkdir(parents=True, exist_ok=True)
-
-    # 1. Migrate old home files
-    if old_home.exists():
-        # Merge PRINCIPLE.md and TONE.md into SOUL.md
-        old_principle = old_home / "PRINCIPLE.md"
-        old_tone = old_home / "TONE.md"
-        new_soul = new_workspace / "SOUL.md"
-        if not new_soul.exists() and (old_principle.exists() or old_tone.exists()):
-            soul_content = ["# Agent Soul\n\n"]
-            if old_principle.exists():
-                principle_text = old_principle.read_text(encoding="utf-8")
-                soul_content.append("## Principles\n\n")
-                soul_content.append(principle_text)
-                soul_content.append("\n\n")
-            if old_tone.exists():
-                tone_text = old_tone.read_text(encoding="utf-8")
-                soul_content.append("## Tone\n\n")
-                soul_content.append(tone_text)
-                soul_content.append("\n\n")
-            new_soul.write_text("".join(soul_content), encoding="utf-8")
-            logger.info("Merged PRINCIPLE.md and TONE.md into SOUL.md")
-
-    new_skills = new_workspace / "skills"
-    if old_skills.exists():
-        if new_skills.exists():
-            shutil.rmtree(new_skills)
-        shutil.copytree(old_skills, new_skills)
-        logger.info(f"Migrated skills: {old_skills} -> {new_skills}")
-
-        builtin_skill_names = _get_builtin_skill_names()
-        for skill_dir in new_skills.iterdir():
-            if skill_dir.is_dir() and (skill_dir.name in builtin_skill_names \
-                 or skill_dir.name in ["daily-report", "skill-creation"]):
-                shutil.rmtree(skill_dir)
-
-    # 4. Migrate memory
-    new_memory = new_workspace / "memory"
-    new_memory.mkdir(parents=True, exist_ok=True)
-
-    if old_memory.exists():
-        # 4.1 Migrate USER.md to workspace root (not in memory/)
-        old_user = old_memory / "USER.md"
-        new_user = new_workspace / "USER.md"
-        if old_user.exists() and not new_user.exists():
-            shutil.copy2(old_user, new_user)
-            logger.info("Migrated USER.md from memory/ to workspace root")
-
-        # 4.2 Create daily_memory directory
-        daily_memory = new_memory / "daily_memory"
-        daily_memory.mkdir(parents=True, exist_ok=True)
-
-        # 4.3 Merge memory files (skip if already exists)
-        # Date pattern: YYYY-MM-DD.md (e.g., 2026-04-14.md)
-        date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
-
-        for item in old_memory.iterdir():
-            if item.name == "USER.md":
-                continue  # Already handled above
-            if item.name == "MEMORY.md":
-                dest = new_memory / "MEMORY.md"
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-                    logger.info("Migrated MEMORY.md")
-            elif item.is_file():
-                # Date-based memory files (YYYY-MM-DD.md) -> daily_memory/
-                # Other files -> new_memory/ root
-                dest = daily_memory / item.name if date_pattern.match(item.name) else new_memory / item.name
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-                    logger.info(f"Migrated memory file: {item.name}")
-            elif item.is_dir():
-                # Other directories (e.g., specific memory categories)
-                dest = new_memory / item.name
-                if not dest.exists():
-                    shutil.copytree(item, dest)
-                    logger.info(f"Migrated memory directory: {item.name}")
-
-        logger.info(f"Migrated memory: {old_memory} -> {new_memory}")
-
-    # 5. Migrate cron_jobs.json from old_home to gateway
-    # This ensures cron jobs are not lost during migration
-    old_cron_jobs = old_home / "cron_jobs.json"
-    gateway_dir = workspace_dir / "gateway"
-    new_cron_jobs = gateway_dir / "cron_jobs.json"
-    if old_cron_jobs.exists():
-        gateway_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            # Read old cron jobs data
-            old_data = json.loads(old_cron_jobs.read_text(encoding="utf-8"))
-            # Add 'expired': false to each job if not present (schema migration)
-            if "jobs" in old_data and isinstance(old_data["jobs"], list):
-                for job in old_data["jobs"]:
-                    if isinstance(job, dict) and "expired" not in job:
-                        job["expired"] = False
-            if not new_cron_jobs.exists():
-                # Write migrated data to new location
-                new_cron_jobs.write_text(
-                    json.dumps(old_data, ensure_ascii=False, indent=2),
-                    encoding="utf-8"
-                )
-                logger.info(f"Migrated cron_jobs.json: {old_cron_jobs} -> {new_cron_jobs}")
-            else:
-                # Both exist - backup old, log warning
-                backup_cron = gateway_dir / f"cron_jobs.json.backup.{int(time.time())}"
-                shutil.copy2(old_cron_jobs, backup_cron)
-                logger.warning(
-                    f"Both old and new cron_jobs.json exist. "
-                    f"Kept new version, backed up old to {backup_cron}"
-                )
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Failed to migrate cron_jobs.json: {e}")
-
-    # 6. Clean up old directories after successful migration
-    try:
-        if old_home.exists():
-            shutil.rmtree(old_home)
-            logger.info(f"Removed old home: {old_home}")
-        if old_skills.exists():
-            shutil.rmtree(old_skills)
-            logger.info(f"Removed old skills: {old_skills}")
-        if old_memory.exists():
-            shutil.rmtree(old_memory)
-            logger.info(f"Removed old memory: {old_memory}")
-    except OSError as e:
-        logger.warning(f"Failed to remove some old directories: {e}")
-
-    logger.info(f"Migration completed: {new_workspace}")
-
-
 def cleanup_team_files(workspace_dir: Path) -> None:
     """清理 Team 旧版本遗留的文件和目录.
 
@@ -1302,39 +1055,6 @@ def prepare_workspace(
 
     # Create logs directory at workspace root (~/.jiuwenswarm/logs)
     (workspace_dir / "logs").mkdir(parents=True, exist_ok=True)
-
-    # Migrate from legacy jiuwenclaw_workspace directory name to workspace
-    _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir)
-
-    # Check for legacy workspace migration or cleanup (pre-DeepAgent layout)
-    # These are even older layouts: agent/workspace, agent/home, agent/skills, agent/memory
-    old_workspace = workspace_dir / "agent" / "workspace"
-    old_home = workspace_dir / "agent" / "home"
-    old_skills = workspace_dir / "agent" / "skills"
-    old_memory = workspace_dir / "agent" / "memory"
-
-    # Check for legacy directory migration (for start command, overwrite=False)
-    # Migration triggers when ANY legacy directory exists, not just old_workspace
-    legacy_dirs_exist = (
-        old_home.exists() or old_skills.exists() or old_memory.exists()
-    )
-
-    if legacy_dirs_exist and not overwrite:
-        _migrate_legacy_workspace(workspace_dir, preferred_language)
-    # If overwrite (init command), clean up old legacy directories first
-    elif overwrite:
-        try:
-            if old_home.exists():
-                shutil.rmtree(old_home)
-                logger.info(f"Removed old home: {old_home}")
-            if old_skills.exists():
-                shutil.rmtree(old_skills)
-                logger.info(f"Removed old skills: {old_skills}")
-            if old_memory.exists():
-                shutil.rmtree(old_memory)
-                logger.info(f"Removed old memory: {old_memory}")
-        except OSError as e:
-            logger.warning(f"Failed to remove some old directories: {e}")
 
     # ----- config: copy config.yaml -----
     resources_dir = package_root / "resources"
@@ -1778,19 +1498,16 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     workspace_dir = get_user_workspace_dir()
     config_file = workspace_dir / "config" / "config.yaml"
     new_workspace = workspace_dir / "agent" / "workspace"
-    old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
     mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
 
     cleanup_team_files(workspace_dir)
 
     config_missing = not config_file.exists()
-    workspace_migration_needed = old_workspace.exists() and not new_workspace.exists()
     mcp_builtins_missing = not mcp_builtins_dir.is_dir()
     mcp_builtins_update_needed = mcp_builtins_seed_update_needed(workspace_dir)
     workspace_preparation_needed = any(
         (
             config_missing,
-            workspace_migration_needed,
             mcp_builtins_missing,
             mcp_builtins_update_needed,
         )
@@ -1872,7 +1589,7 @@ def init_user_workspace(
 
     Args:
         overwrite: True 时强制清理整个工作空间目录后初始化；
-                   False 时保留原有数据，执行迁移合并逻辑。
+                   False 时保留原有数据，仅增量补齐缺失文件。
         workspace_dir: 工作空间目录路径，若不指定则使用 get_user_workspace_dir() 获取。
     """
     if workspace_dir is None:
@@ -1943,9 +1660,6 @@ def _resolve_paths() -> None:
         return
 
     workspace_dir = get_user_workspace_dir()
-
-    # Migrate from legacy jiuwenclaw_workspace directory name to workspace
-    _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir)
 
     # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
     # 保证源码运行与安装包运行后的读写路径完全一致。
@@ -2499,26 +2213,12 @@ def get_interactions_dir() -> Path:
 
 
 def get_cron_jobs_path() -> Path:
-    """Path to cron_jobs.json, following wherever this workspace keeps it.
+    """Canonical path for cron_jobs.json, pinned to ``agent/home``.
 
-    ``_migrate_legacy_workspace`` relocates the file to ``gateway/`` while this
-    getter pointed at ``agent/home/``, so after a migration the scheduler read a
-    missing path and silently loaded zero jobs. Resolution order:
-
-    1. ``gateway/`` if present -- the migration ran.
-    2. ``agent/home/`` if present -- it has not; repointing unconditionally
-       would empty the schedules of every deployment that never migrated.
-    3. ``gateway/`` otherwise, so a fresh workspace never creates
-       ``agent/home``, whose existence alone marks a workspace legacy.
+    Gateway、Agent 工具与存储层统一经本函数取路径，禁止在业务代码中
+    硬编码该路径。历史版本遗留的 ``gateway/cron_jobs.json`` 不再读取。
     """
-    workspace = get_user_workspace_dir()
-    gateway_path = workspace / "gateway" / "cron_jobs.json"
-    legacy_path = workspace / "agent" / "home" / "cron_jobs.json"
-    if gateway_path.exists():
-        return gateway_path
-    if legacy_path.exists():
-        return legacy_path
-    return gateway_path
+    return get_agent_home_dir() / "cron_jobs.json"
 
 
 def get_heartbeat_jobs_path() -> Path:
