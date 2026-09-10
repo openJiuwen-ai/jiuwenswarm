@@ -6,6 +6,8 @@
 指导 LLM 何时使用 skill_acceleration_exec 加速通道以及失败后的降级策略。
 
 仅在 config.react.skill_turbo.enabled = true 时生效。
+当构造参数 ``acceleration_disabled=True``（调用方根据 disabled_tools 判定）
+时不注入。
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import PromptPriori
 logger = logging.getLogger(__name__)
 
 _SECTION_NAME = "skill_turbo_guide"
+_SKILL_ACCELERATION_TOOL = "skill_acceleration_exec"
 
 
 def _build_skill_turbo_guide_text(language: str) -> str:
@@ -52,15 +55,21 @@ class SkillTurboPromptRail(DeepAgentRail):
     """Inject skill_acceleration_exec usage guide before each model call.
 
     仅在 config.react.skill_turbo.enabled = true 时注入提示词。
+    Callers that honor ``react.disabled_tools`` must pass
+    ``acceleration_disabled=True`` when ``skill_acceleration_exec`` is blocked;
+    this rail does not scan sibling rails at runtime.
     """
 
     priority = 8
 
-    def __init__(self) -> None:
+    def __init__(self, *, acceleration_disabled: bool = False) -> None:
         super().__init__()
         self.system_prompt_builder: Any = None
+        self._agent: Any | None = None
+        self._acceleration_disabled = bool(acceleration_disabled)
 
     def init(self, agent: Any) -> None:
+        self._agent = agent
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
 
     def uninit(self, agent: Any) -> None:
@@ -70,6 +79,7 @@ class SkillTurboPromptRail(DeepAgentRail):
         if self.system_prompt_builder is not None:
             self.system_prompt_builder.remove_section(_SECTION_NAME)
         self.system_prompt_builder = None
+        self._agent = None
 
     def _resolve_priority(self, name: str, default_priority: int) -> int:
         if self.system_prompt_builder is None:
@@ -82,11 +92,21 @@ class SkillTurboPromptRail(DeepAgentRail):
         return "cn"
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        # Bridge path: ctx.agent is the inner ReActAgent. Refresh the prompt
+        # builder from it, but keep self._agent as the DeepAgent from init().
         _builder = getattr(getattr(ctx, "agent", None), "system_prompt_builder", None)
         if _builder is not None:
             self.system_prompt_builder = _builder
 
         if self.system_prompt_builder is None:
+            return
+
+        if self._acceleration_disabled:
+            self.system_prompt_builder.remove_section(_SECTION_NAME)
+            logger.debug(
+                "[SkillTurboPromptRail] skip skill_turbo_guide: %s is disabled",
+                _SKILL_ACCELERATION_TOOL,
+            )
             return
 
         language = self._resolve_language()

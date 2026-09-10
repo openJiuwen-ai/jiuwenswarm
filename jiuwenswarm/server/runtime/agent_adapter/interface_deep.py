@@ -1386,15 +1386,26 @@ def build_progressive_tool_rail_from_config(
             eager_tools.insert(2, "deepresearch_execute")
 
     normalized_language = resolve_language(language)
+    disabled_tools: list[str] = []
+    try:
+        disabled_tools = resolve_string_or_list_config(config.get("disabled_tools"))
+    except Exception as exc:
+        logger.warning(
+            "[ProgressiveToolRail] ignore malformed disabled_tools while building "
+            "progressive rail: %s",
+            exc,
+        )
+
     logger.info(
         "[ProgressiveToolRail] enabled profile=%s kind=%s eager_tools=%s "
-        "agent_id=%s agent_card_id=%s enable_for_models=%s",
+        "agent_id=%s agent_card_id=%s enable_for_models=%s disabled_tools=%s",
         normalized_profile,
         subagent_kind or "",
         eager_tools,
         agent_id,
         agent_card_id,
         enable_for_models,
+        disabled_tools,
     )
 
     return ProgressiveToolRail(
@@ -1405,6 +1416,7 @@ def build_progressive_tool_rail_from_config(
         agent_card_id=agent_card_id,
         enable_for_models=enable_for_models,
         deepresearch_context_provider=deepresearch_context_provider,
+        disabled_tools=disabled_tools,
     )
 
 
@@ -1542,10 +1554,25 @@ def _deep_agent_kv_cache_affinity_config(
     )
 
 
-def _build_context_assemble_rail() -> ContextAssembleRail | None:
-    """Build ContextAssembleRail."""
+def _build_context_assemble_rail(
+    disabled_tools: list[str] | None = None,
+) -> ContextAssembleRail | None:
+    """Build ContextAssembleRail.
+
+    ``disabled_tools`` seeds the tools prompt hide-list. Product adapters own
+    the blacklist data flow at construction time (and optional later
+    ``update_disabled_tools`` calls). Compatible with older openjiuwen / test
+    fakes whose constructor does not accept ``disabled_tools=``: fall back to
+    no-arg construction and ``update_disabled_tools`` when available.
+    """
     try:
-        context_assemble_rail = ContextAssembleRail()
+        try:
+            context_assemble_rail = ContextAssembleRail(disabled_tools=disabled_tools)
+        except TypeError:
+            context_assemble_rail = ContextAssembleRail()
+            update = getattr(context_assemble_rail, "update_disabled_tools", None)
+            if callable(update) and disabled_tools:
+                update(disabled_tools)
         logger.info("[JiuWenSwarmDeepAdapter] ContextAssembleRail create success")
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] ContextAssembleRail create failed: %s", exc)
@@ -8580,6 +8607,21 @@ class JiuWenSwarmDeepAdapter:
             if old_disabled_tools_rail is not None:
                 rails_to_unregister.append(old_disabled_tools_rail)
             self._disabled_tools_rail = disabled_tools_rail
+            # Keep ContextAssemble tools-prompt hide-list in sync without rebuild.
+            assemble = self._context_assemble_rail
+            if assemble is not None and hasattr(assemble, "update_disabled_tools"):
+                try:
+                    assemble.update_disabled_tools(
+                        list(getattr(disabled_tools_rail, "_disabled_tools", ()) or ())
+                        if disabled_tools_rail is not None
+                        else []
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] ContextAssembleRail "
+                        "update_disabled_tools failed: %s",
+                        exc,
+                    )
 
         rails_list = []
         if self._skill_rail is not None:
@@ -10074,12 +10116,45 @@ class JiuWenSwarmDeepAdapter:
             if self._context_assemble_rail is not None:
                 await self._instance.unregister_rail(self._context_assemble_rail)
                 self._context_assemble_rail = None
-            self._context_assemble_rail = _build_context_assemble_rail()
-            self._context_assemble_mode = "agent"
-            await self._instance.register_rail(self._context_assemble_rail)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] %s registered for agent mode", "ContextAssembleRail"
+            disabled_list: list[str] = []
+            try:
+                # Prefer the already-built DisabledToolsRail (same source as
+                # Progressive). Fall back to _config_cache, which IS the react
+                # section (not config_base) — do not dig for a nested "react" key.
+                rail_names = getattr(
+                    self._disabled_tools_rail, "_disabled_tools", None
+                )
+                if rail_names:
+                    disabled_list = [
+                        str(name).strip()
+                        for name in rail_names
+                        if str(name).strip()
+                    ]
+                else:
+                    disabled_list = resolve_string_or_list_config(
+                        (self._config_cache or {}).get("disabled_tools")
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] ignore malformed disabled_tools for "
+                    "ContextAssembleRail: %s",
+                    exc,
+                )
+            self._context_assemble_rail = _build_context_assemble_rail(
+                disabled_tools=disabled_list or None,
             )
+            self._context_assemble_mode = "agent"
+            if self._context_assemble_rail is not None:
+                await self._instance.register_rail(self._context_assemble_rail)
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] ContextAssembleRail registered for agent mode "
+                    "(disabled_tools=%s)",
+                    disabled_list,
+                )
+            else:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] ContextAssembleRail build returned None; skip register"
+                )
 
         # ContextProcessorRail
         if context_enabled:
@@ -10991,6 +11066,9 @@ class JiuWenSwarmDeepAdapter:
         """构建 SkillTurboPromptRail: 注入 skill_acceleration_exec 使用指南。
 
         仅在 config.react.skill_turbo.enabled = true 时创建，否则返回 None。
+        When ``skill_acceleration_exec`` is on ``react.disabled_tools``, the rail
+        is still created but with ``acceleration_disabled=True`` so the guide
+        section is never injected (explicit data flow; no sibling-rail scan).
         """
         try:
             config_base = get_config()
@@ -11000,9 +11078,26 @@ class JiuWenSwarmDeepAdapter:
             if not enabled:
                 return None
 
+            acceleration_disabled = False
+            try:
+                disabled_list = resolve_string_or_list_config(
+                    react_config.get("disabled_tools") if isinstance(react_config, dict) else None
+                )
+                acceleration_disabled = "skill_acceleration_exec" in disabled_list
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] ignore malformed disabled_tools for "
+                    "SkillTurboPromptRail: %s",
+                    exc,
+                )
+
             from jiuwenswarm.server.runtime.skill_turbo.rails.skill_prompt_rail import SkillTurboPromptRail
-            rail = SkillTurboPromptRail()
-            logger.info("[JiuWenSwarmDeepAdapter] SkillTurboPromptRail create success")
+            rail = SkillTurboPromptRail(acceleration_disabled=acceleration_disabled)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SkillTurboPromptRail create success "
+                "(acceleration_disabled=%s)",
+                acceleration_disabled,
+            )
             return rail
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] SkillTurboPromptRail create failed: %s", exc)
