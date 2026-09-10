@@ -124,7 +124,9 @@ models:
       endpoint_profile: ${ENDPOINT_PROFILE:-openai}
       timeout: 1800
       verify_ssl: false
-      custom_headers: {}
+      # 留空而不是 {}：模板同时充当升级时的键白名单，写成映射会被当作允许的
+      # 子键全集。
+      custom_headers:
     model_config_obj:
       temperature: 0.95
   video:
@@ -175,7 +177,10 @@ telemetry:
   exporter: otlp                    # otlp / console / none
   endpoint: http://localhost:4317   # OTLP endpoint
   protocol: grpc                    # grpc / http
-  headers: {}                       # 公共 OTLP headers，可被 traces/metrics 覆盖
+  # 公共 OTLP headers，可被 traces/metrics 覆盖。留空而不是 {}：本模板同时
+  # 充当升级时的键白名单，写成映射会被当作允许的子键全集，操作员自己加的
+  # header 会被 _deep_merge 一并删掉。
+  headers:
   log_messages: true                # 是否在 span event 中记录完整消息内容
   service_name: jiuwenswarm
   provider_factory:                 # 自定义 provider factory，格式：module:function
@@ -183,12 +188,12 @@ telemetry:
     exporter:                       # trace exporter，默认回退到 telemetry.exporter
     endpoint:                       # trace endpoint，默认回退到 telemetry.endpoint
     protocol:                       # trace protocol，默认回退到 telemetry.protocol
-    headers: {}                     # trace headers，默认回退到 telemetry.headers
+    headers:                        # trace headers，默认回退到 telemetry.headers；留空而非 {}，理由同上
   metrics:
     exporter:                       # metrics exporter，默认回退到 telemetry.exporter
     endpoint:                       # metrics endpoint，默认回退到 telemetry.endpoint
     protocol:                       # metrics protocol，默认回退到 telemetry.protocol
-    headers: {}                     # metrics headers，默认回退到 telemetry.headers
+    headers:                        # metrics headers，默认回退到 telemetry.headers；留空而非 {}，理由同上
 
 kv_cache_affinity_config:
   enable_kv_cache_affinity: false
@@ -707,7 +712,10 @@ permissions:
     # path_ask_* → file_guard.paths（match: glob）
 
   # 数字分身 owner-scoped 权限（默认空，不生效）
-  owner_scopes: {}
+  # 键是 channel_id，由操作员或 Web 设置页写入，本模板无从预知。留空而不是
+  # {}：模板同时充当升级时的键白名单，写成映射会被当作允许的子键全集，写进
+  # 去的授权会被 _deep_merge 一并删掉——包括设置页刚刚保存的那一份。
+  owner_scopes:
   deny_guidance_message: ""
 
   file_guard:
