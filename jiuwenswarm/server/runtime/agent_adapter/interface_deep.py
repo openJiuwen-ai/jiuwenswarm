@@ -3261,6 +3261,13 @@ class JiuWenSwarmDeepAdapter:
         """
         card = getattr(getattr(self, "_instance", None), "card", None)
         if card is None:
+            # card 缺失时无法打开 checkpointer 通道，clear 静默跳过会导致
+            # 残留 resume_ctx 触发任务重跑，提升到 warning 保证可观测。
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] skill_turbo resume ctx clear skipped: "
+                "card is None session_id=%s (stale resume_ctx may trigger task rerun)",
+                session_id,
+            )
             return
         from openjiuwen.core.session.agent import create_agent_session
         from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
@@ -3277,9 +3284,12 @@ class JiuWenSwarmDeepAdapter:
             try:
                 await session.post_run()
             except Exception:
-                logger.debug(
+                # post_run 失败时 clear 不落盘，残留 resume_ctx 会触发任务重跑，
+                # 提升到 warning 保证可观测。
+                logger.warning(
                     "[JiuWenSwarmDeepAdapter] skill_turbo resume ctx clear "
-                    "post_run failed",
+                    "post_run failed session_id=%s (stale resume_ctx may trigger task rerun)",
+                    session_id,
                     exc_info=True,
                 )
 
@@ -11516,28 +11526,29 @@ class JiuWenSwarmDeepAdapter:
         if not summary:
             return
 
-        # 构建中断恢复提示词（内联，避免依赖 plan_pause_helpers）。
+        # 构建产物提示词（内联，避免依赖 plan_pause_helpers）。
+        # 注：此提示对中断取消和正常完成两种场景都生效——产物记录不区分二者，
+        # 措辞统一为"已有产物"而非"中断取消"，避免对已完成的任务产生误导。
         language = self._resolve_runtime_language()
         template = (
-            "[Interrupt recovery hint]\n"
-            "The previous task was interrupted and cancelled. "
-            "Here is a summary of completed work artifacts before the interruption:\n\n"
+            "[Existing artifact hint]\n"
+            "A previous run left completed work artifacts:\n\n"
             "{summary}\n\n"
             "Based on this, judge the current task state:\n"
             "- If artifacts show the target file already exists with substantial content, "
-            "read_file first before deciding to supplement or rebuild from scratch\n"
+            "read_file first to check the current state before deciding to supplement or "
+            "rebuild from scratch\n"
             "- If artifacts show the target file was not created or has minimal content, "
             "you may create it anew\n"
-            "- Do not blindly write_file to rebuild a file that already exists and is complete"
+            "- Do not blindly rebuild a file that already exists and is complete"
         ) if language in ("en", "english") else (
-            "【中断恢复提示】之前的任务被中断取消。"
-            "以下是中断前已完成的工作产物摘要：\n\n"
+            "【已有产物提示】检测到上一轮留下的已完成产物：\n\n"
             "{summary}\n\n"
             "请据此判断当前任务状态：\n"
             "- 如果产物显示目标文件已存在且内容较完整，请先 read_file 查看当前状态，"
             "再决定是补充完善还是从头重建\n"
             "- 如果产物显示目标文件尚未创建或内容很少，可以重新创建\n"
-            "- 不要盲目从头 write_file 重建一个已存在的完整文件"
+            "- 不要盲目从头重建一个已存在的完整文件"
         )
         prompt = template.format(summary=summary.strip() or "(empty)")
 
@@ -12167,12 +12178,21 @@ class JiuWenSwarmDeepAdapter:
                     yield summary_chunk
 
             async def _clear_resume_ctx() -> None:
-                await _skill_turbo_clear_resume_ctx(session)
+                # session 已被 mark_resume_in_flight post_run 过（_post_run_done=True），
+                # 直接再 post_run 是 no-op，update_state(None) 不会落盘。新请求 pre_run
+                # 会从 checkpointer 读回残留 ctx，触发 skill_acceleration_exec 重复执行。
+                # 用独立 session 重新 pre_run+clear+post_run 保证清除一定持久化。
+                sid = request.session_id or "default"
                 try:
-                    await session.post_run()
+                    await self._clear_skill_turbo_resume_ctx_via_isolated_session(sid)
                 except Exception:
-                    logger.debug(
-                        "[JiuWenSwarmDeepAdapter] skill_turbo resume_stream post_run failed",
+                    # 清除失败时残留 resume_ctx 会让后续请求重跑已完成任务，
+                    # 提升到 warning 保证该复发信号生产可观测。
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] skill_turbo resume clear via "
+                        "isolated session failed session_id=%s (stale resume_ctx "
+                        "may trigger task rerun)",
+                        sid,
                         exc_info=True,
                     )
 
