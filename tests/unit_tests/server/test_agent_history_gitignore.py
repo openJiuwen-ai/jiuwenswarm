@@ -52,43 +52,6 @@ async def test_runtime_state_git_probe_is_non_blocking_and_coalesced(monkeypatch
     await asyncio.wait_for(first_task, timeout=1)
 
 
-@pytest.mark.asyncio
-async def test_memory_reindex_is_singleflight_per_workspace_and_config(
-    monkeypatch, tmp_path
-):
-    first = JiuWenSwarmDeepAdapter()
-    second = JiuWenSwarmDeepAdapter()
-    for adapter in (first, second):
-        adapter._workspace_dir = str(tmp_path)
-        adapter._memory_embedding_fingerprint = "embed-v2"
-    started = asyncio.Event()
-    release = asyncio.Event()
-    calls = 0
-
-    async def _slow_reindex(self, key):
-        nonlocal calls
-        calls += 1
-        started.set()
-        try:
-            await release.wait()
-        finally:
-            with self._MEMORY_REINDEX_KEYS_LOCK:
-                self._MEMORY_REINDEX_KEYS.discard(key)
-
-    JiuWenSwarmDeepAdapter._MEMORY_REINDEX_KEYS.clear()
-    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_do_memory_reindex", _slow_reindex)
-    first._schedule_memory_reindex()
-    second._schedule_memory_reindex()
-    await asyncio.wait_for(started.wait(), timeout=1)
-
-    assert calls == 1
-    assert first._memory_reindex_task is not None
-    assert second._memory_reindex_task is None
-
-    release.set()
-    await asyncio.wait_for(first._memory_reindex_task, timeout=1)
-
-
 def test_ensure_project_gitignore_agent_history_updates_repo_root(tmp_path):
     repo = tmp_path / "repo"
     subdir = repo / "pkg"

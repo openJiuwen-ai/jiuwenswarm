@@ -63,7 +63,7 @@ except ImportError:
     IMAP_AVAILABLE = False
     imaplib = None
 
-# 脚本与路径：Git 用仓库根；记忆/会话/报告用 Agent 数据目录
+# 脚本与路径：Git 用仓库根；会话/报告用 Agent 数据目录
 SKILL_DIR = Path(__file__).parent
 PACKAGE_ROOT = SKILL_DIR.parent.parent.parent.parent
 REPO_ROOT = PACKAGE_ROOT.parent
@@ -404,20 +404,6 @@ def generate_daily_report(date: str = None, enable_ai: bool = True) -> str:
     # 采集邮箱数据
     email_stats = collect_email_stats(date)
 
-    # 读取记忆文件
-    memory_file = AGENT_ROOT / "memory" / f"{date}.md"
-    memory_content = ""
-    work_items = []
-
-    if memory_file.exists():
-        memory_content = memory_file.read_text(encoding="utf-8")
-        for line in memory_content.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("-") or stripped.startswith("*"):
-                item = stripped.lstrip("-* ").strip()
-                if item and not item.startswith("<!--"):
-                    work_items.append(item)
-
     # 查找 todo 文件
     todo_file = None
     session_dir = AGENT_ROOT / "sessions"
@@ -490,13 +476,6 @@ def generate_daily_report(date: str = None, enable_ai: bool = True) -> str:
             )
         lines.append("")
 
-    # 工作记录
-    if work_items:
-        lines.extend(["## 📝 今日工作记录", ""])
-        for item in work_items[:10]:
-            lines.append(f"- {item}")
-        lines.append("")
-
     # AI 智能分析（如果启用）
     if enable_ai:
         try:
@@ -524,9 +503,6 @@ def generate_daily_report(date: str = None, enable_ai: bool = True) -> str:
                     "received_count": email_stats.get("received_today", 0),
                     "sent_count": 0,
                 },
-                "memory": {
-                    "content": memory_content[:500] if memory_content else "",
-                }
             }
 
             # 采集工作模式分析数据

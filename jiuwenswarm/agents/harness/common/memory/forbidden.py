@@ -157,7 +157,7 @@ def get_forbidden_memory_prompt(language: str) -> str:
             prompt_parts.append("")
         prompt_parts.append("**执行要求：**")
         prompt_parts.append(
-            "- 在调用 `experience_learn` 或 `write_memory` 存储记忆前，必须检查内容是否包含上述敏感信息"
+            "- 在存储记忆前，必须检查内容是否包含上述敏感信息"
         )
         prompt_parts.append(
             "- 如果检测到敏感信息，必须对其进行脱敏处理（如替换为 ***）或拒绝存储"
@@ -178,7 +178,7 @@ def get_forbidden_memory_prompt(language: str) -> str:
         prompt_parts.append("")
     prompt_parts.append("**Requirements:**")
     prompt_parts.append(
-        "- Before calling `experience_learn` or `write_memory` to store memories, \
+        "- Before storing memories, \
             you must check if the content contains the above sensitive information"
     )
     prompt_parts.append(

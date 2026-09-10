@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -12,12 +13,16 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.foundation.tool.mcp.base import MCPTool, McpToolCard
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from openjiuwen.core.sys_operation import LocalWorkConfig, SysOperation, SysOperationCard
 from openjiuwen.harness.deep_agent import DeepAgent
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.schema.config import DeepAgentConfig
+from openjiuwen.harness.schema.deep_agent_spec import WorkspaceSpec
 
 from jiuwenswarm.agents.harness.common.memory.celia.prompt import load_celia_agent_prompt
 from jiuwenswarm.agents.harness.common.memory.celia.prompt import CeliaMcpPromptRail
+from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
+from jiuwenswarm.agents.harness.common.rails.tool_usage_prompt_rail import ToolUsagePromptRail
 from jiuwenswarm.agents.swarm import SwarmBuildContext, register_swarm_providers
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
@@ -50,10 +55,28 @@ def gausspd(request, monkeypatch):
     return SimpleNamespace(server=server, schema=schema, tool=tool, call=call)
 
 
-def _agent(name, gausspd=None):
+def _agent(name, gausspd=None, workspace_dir=None, mode="agent", language="en"):
     card = AgentCard(id=name, name=name)
     agent = DeepAgent(card)
-    agent.configure(DeepAgentConfig(card=card, system_prompt="Test agent.", language="en"))
+    kwargs = {}
+    if workspace_dir is not None:
+        workspace = WorkspaceSpec(root_path=str(workspace_dir), language=language).build()
+        # Existing legacy files must neither be read nor appear in any message.
+        for relative in ("USER.md", "memory/MEMORY.md", "memory/daily_memory/2026-09-10.md"):
+            path = workspace_dir / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("RETIRED_FILE_SENTINEL", encoding="utf-8")
+        operation = SysOperation(SysOperationCard(
+            id=f"{name}-fs", work_config=LocalWorkConfig(sandbox_root=[str(workspace_dir)]),
+        ))
+        fs = operation.fs()
+        fs.read_file = AsyncMock(wraps=fs.read_file)
+        runtime = RuntimePromptRail(language=language, channel="web")
+        runtime.set_runtime_paths(cwd=str(workspace_dir), workspace_dir=str(workspace_dir))
+        runtime.set_mode(mode)
+        context = ToolUsagePromptRail() if mode.startswith(("code", "design")) else interface_deep._build_context_assemble_rail()
+        kwargs = {"workspace": workspace, "sys_operation": operation, "rails": [runtime, context]}
+    agent.configure(DeepAgentConfig(card=card, system_prompt="Test agent.", language=language, **kwargs))
     if gausspd is not None:
         agent.ability_manager.add(gausspd.server)
     return agent
@@ -80,6 +103,9 @@ async def _capture_model_request(agent, *, streaming=False):
         result = await agent.invoke(inputs)
         assert result["output"] == "OK"
     assert len(captured) == 1
+    if agent.deep_config.sys_operation is not None:
+        reads = agent.deep_config.sys_operation.fs().read_file.call_args_list
+        assert not any(Path(call.args[0]).name in {"USER.md", "MEMORY.md", "2026-09-10.md"} for call in reads)
     return captured[0]
 
 
@@ -87,8 +113,12 @@ def _assert_model_received_celia_prompt(request, gausspd):
     systems = [message.content for message in request["messages"] if message.role == "system"]
     assert len(systems) == 1
     assert systems[0].count(load_celia_agent_prompt()) == 1
+    for retired in ("USER.md", "memory/MEMORY.md", "daily_memory", "RETIRED_FILE_SENTINEL",
+                    "read_memory", "write_memory", "edit_memory"):
+        assert retired not in str(request["messages"])
+
     tools = {tool.name: tool for tool in request["tools"] or []}
-    assert not any(name.startswith("memory_") for name in tools)
+    assert not any(name.startswith("memory_") or name in {"read_memory", "write_memory", "edit_memory"} for name in tools)
     if gausspd is None:
         assert not any(name.startswith("mcp_gausspdmcp_") for name in tools)
     else:
@@ -114,7 +144,7 @@ async def test_swarm_member_mounts_celia_prompt_with_configured_mcp_tools(
     )
     rail = external_specs[0].build(language="en", context=context)
     assert isinstance(rail, CeliaMcpPromptRail)
-    agent = _agent(f"celia-{mode}-{role}", gausspd)
+    agent = _agent(f"celia-{mode}-{role}", gausspd, tmp_path, mode)
     try:
         await agent.register_rail(rail)
         assert load_celia_agent_prompt() in agent.system_prompt_builder.build()
@@ -142,7 +172,7 @@ async def test_code_and_design_mode_switches_preserve_one_memory_rail_and_can_di
 ):
     monkeypatch.setattr(interface_deep, "get_config", lambda: memory_config)
     adapter = object.__new__(JiuwenSwarmCodeAdapter)
-    adapter._instance = _agent("celia-code-adapter", gausspd)
+    adapter._instance = _agent("celia-code-adapter", gausspd, tmp_path, "code")
     adapter._workspace_dir = str(tmp_path)
     adapter._parent_session_id = "conversation-code"
     adapter._external_memory_rail = None
@@ -182,12 +212,13 @@ async def test_code_and_design_mode_switches_preserve_one_memory_rail_and_can_di
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("language", ["cn", "en"])
 async def test_deep_adapter_injects_prompt_into_final_model_request(
-    tmp_path, monkeypatch, memory_config, streaming, gausspd,
+    tmp_path, monkeypatch, memory_config, streaming, gausspd, language,
 ):
     monkeypatch.setattr(interface_deep, "get_config", lambda: memory_config)
     adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
-    adapter._instance = _agent(f"celia-deep-adapter-{streaming}", gausspd)
+    adapter._instance = _agent(f"celia-deep-adapter-{streaming}", gausspd, tmp_path, language=language)
     adapter._workspace_dir = str(tmp_path)
     adapter._parent_session_id = "conversation-deep"
     adapter._external_memory_rail = None

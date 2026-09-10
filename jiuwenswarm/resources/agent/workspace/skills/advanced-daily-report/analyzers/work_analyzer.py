@@ -373,10 +373,6 @@ class WorkAnalyzer:
 
         # 提取关键词
         all_text = ""
-        memory_data = data.get("memory", {})
-        all_text += memory_data.get("today_content", "") + " "
-        all_text += " ".join(memory_data.get("work_summaries", []))
-
         # 添加 Git 提交信息
         git_data = data.get("git", {})
         for commit in git_data.get("commits", []):

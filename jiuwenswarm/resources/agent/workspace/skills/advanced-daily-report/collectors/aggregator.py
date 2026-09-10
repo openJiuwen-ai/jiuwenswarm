@@ -21,7 +21,6 @@ _REPORT_TZ = ZoneInfo("Asia/Shanghai")
 
 from .email_collector import EmailCollector, EmailStats
 from .git_collector import GitCollector, GitStats
-from .memory_collector import MemoryCollector, MemoryData
 from .todo_collector import TodoCollector, TodoStats
 
 
@@ -38,9 +37,6 @@ class CollectedData:
     # 邮件数据
     email: EmailStats = field(default_factory=EmailStats)
 
-    # 记忆数据
-    memory: MemoryData = field(default_factory=MemoryData)
-
     # 待办数据
     todo: TodoStats = field(default_factory=TodoStats)
 
@@ -53,7 +49,6 @@ class CollectedData:
             "collected_at": self.collected_at.isoformat(),
             "git": self.git.to_dict(),
             "email": self.email.to_dict(),
-            "memory": self.memory.to_dict(),
             "todo": self.todo.to_dict(),
             "comparison": self.comparison,
         }
@@ -82,7 +77,6 @@ class DataAggregator:
         self.workspace_dir = Path(workspace_dir)
 
         # 初始化各采集器
-        self.memory_collector = MemoryCollector(self.workspace_dir)
         self.todo_collector = TodoCollector(self.workspace_dir)
 
         # Git 采集器（可选）
@@ -113,8 +107,6 @@ class DataAggregator:
             collected_at=datetime.now(_REPORT_TZ),
         )
 
-        # 采集记忆数据
-        data.memory = self.memory_collector.collect(date)
 
         # 采集待办数据
         data.todo = self.todo_collector.collect()
@@ -189,7 +181,7 @@ class DataAggregator:
         return comparison
 
     def _collect_light(self, date: str) -> CollectedData:
-        """轻量采集（仅 Git 和记忆）"""
+        """轻量采集（仅 Git）"""
         data = CollectedData(
             date=date,
             collected_at=datetime.now(_REPORT_TZ),
@@ -198,7 +190,6 @@ class DataAggregator:
         if self.git_collector:
             data.git = self.git_collector.get_commits(date)
 
-        data.memory = self.memory_collector.collect(date)
 
         return data
 

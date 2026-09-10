@@ -88,44 +88,42 @@ def _isolate_utils_stubs():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("value, expected", [
-    ("builtin", "builtin"),
+    ("builtin", "none"),
     ("external", "external"),
-    ("both", "both"),
+    ("both", "none"),
     ("none", "none"),
-    ("BUILTIN", "builtin"),
-    ("  both ", "both"),
+    ("EXTERNAL", "external"),
+    ("  external ", "external"),
 ])
 def test_get_memory_engine_valid_values(value, expected):
     assert emc.get_memory_engine({"memory": {"engine": value}}) == expected
 
 
 @pytest.mark.parametrize("cfg", [
-    {"memory": {"engine": "weird"}},
     {"memory": {"engine": None}},
     {"memory": {}},
     {},
     None,
 ])
-def test_get_memory_engine_falls_back_to_builtin(cfg, monkeypatch):
+def test_get_memory_engine_defaults_to_external(cfg, monkeypatch):
     # None loads runtime config; keep this missing-engine case independent of
     # the shipped default (which now explicitly enables external memory).
     monkeypatch.setattr(emc, "_load_config", lambda: {})
-    assert emc.get_memory_engine(cfg) == "builtin"
+    assert emc.get_memory_engine(cfg) == "external"
 
 
 # ---------------------------------------------------------------------------
 # Engine gates truth table
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("engine, builtin_ok, external_ok", [
-    ("builtin", True, False),
-    ("external", False, True),
-    ("both", True, True),
-    ("none", False, False),
+@pytest.mark.parametrize("engine, external_ok", [
+    ("builtin", False),
+    ("external", True),
+    ("both", False),
+    ("none", False),
 ])
-def test_engine_gates_truth_table(engine, builtin_ok, external_ok):
+def test_engine_gates_truth_table(engine, external_ok):
     cfg = {"memory": {"engine": engine}}
-    assert emc.is_builtin_memory_allowed(cfg) is builtin_ok
     assert emc.is_external_memory_allowed(cfg) is external_ok
 
 
@@ -175,7 +173,7 @@ def test_external_config_malformed_section_tolerated():
 @pytest.mark.parametrize("cfg, expected", [
     # engine gate allows, provider present → enabled
     ({"memory": {"engine": "external", "external": {"provider": "mem0"}}}, True),
-    ({"memory": {"engine": "both", "external": {"provider": "openjiuwen"}}}, True),
+    ({"memory": {"engine": "both", "external": {"provider": "openjiuwen"}}}, False),
     # engine gate blocks, regardless of provider
     ({"memory": {"engine": "builtin", "external": {"provider": "mem0"}}}, False),
     ({"memory": {"engine": "none", "external": {"provider": "mem0"}}}, False),

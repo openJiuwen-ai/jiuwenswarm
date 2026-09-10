@@ -301,7 +301,7 @@ def _format_trajectory_feedback(entry: Dict[str, Any]) -> str:
         "{content, section, when_to_use, title, description, query, label, tools_used}. "
         "Include tools_used as a list of objects describing each tool call outcome this turn, "
         "e.g. tools_used=[{\"tool\": \"web_search\", \"status\": \"success\"}, "
-        "{\"tool\": \"write_memory\", \"status\": \"failed\", \"error\": \"permission denied\", "
+        "{\"tool\": \"write_file\", \"status\": \"failed\", \"error\": \"permission denied\", "
         "\"note\": \"fell back to in-chat reply\"}]. "
         "Always record failed tool calls — these are the most valuable learning signals."
     ),

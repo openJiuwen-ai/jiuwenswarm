@@ -283,16 +283,6 @@ class ReportGenerator:
                 )
             lines.append("")
 
-        # 今日工作记录
-        if data.memory.work_summaries:
-            lines.extend([
-                "## 📝 今日工作记录",
-                "",
-            ])
-            for summary in data.memory.work_summaries[:10]:
-                lines.append(f"- {summary}")
-            lines.append("")
-
         # 邮件概况
         if data.email.received_today > 0 or data.email.sent_today > 0:
             lines.extend([
