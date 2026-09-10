@@ -8358,8 +8358,16 @@ class JiuWenSwarmDeepAdapter:
         return None
 
     def _active_profile_spec(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
-        """Return the named profile dict for self._active_agent_kind (or {})."""
-        kind = self._active_agent_kind
+        """Return the named profile dict for self._active_agent_kind (or {}).
+
+        ``_active_agent_kind`` is set in ``create_instance`` (and
+        re-applied on reload); paths that bypass ``__init__`` (e.g. unit tests
+        constructing the adapter via ``object.__new__``) never set it. Read
+        defensively so that a missing attribute degrades to "no profile
+        active" (returns ``{}``, i.e. no keep/drop filtering) rather than
+        raising.
+        """
+        kind = getattr(self, "_active_agent_kind", None)
         if not kind:
             return {}
         profiles = (config_base or {}).get("agent_profiles", {})
