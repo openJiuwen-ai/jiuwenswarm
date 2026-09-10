@@ -3,8 +3,9 @@ import test from 'node:test';
 
 import {
   buildSkillSourceDisplayNameMap,
+  buildSkillSourceTypeMap,
+  resolveSkillTrustBadge,
   resolveSkillSourceDisplayName,
-  shouldShowSkillTrustBadge,
 } from '../node_modules/.cache/skill-approval-presentation/components/ChatPanel/skillApprovalPresentation.js';
 
 test('registered source display name is used without changing its source id', () => {
@@ -27,7 +28,28 @@ test('blank source display name falls back to the stable source id', () => {
   assert.equal(resolveSkillSourceDisplayName('customer-source', displayNames), 'customer-source');
 });
 
-test('only builtin skills display a trust badge', () => {
-  assert.equal(shouldShowSkillTrustBadge('builtin'), true);
-  assert.equal(shouldShowSkillTrustBadge('other'), false);
+test('enterprise prebuilt skill displays the enterprise prebuilt badge', () => {
+  const sourceTypes = buildSkillSourceTypeMap([
+    { name: 'enterprise-probe', source_type: 'prebuilt' },
+  ]);
+
+  assert.equal(resolveSkillTrustBadge('builtin', sourceTypes.get('enterprise-probe')), 'prebuilt');
+});
+
+test('repository builtin skill keeps the builtin badge', () => {
+  assert.equal(resolveSkillTrustBadge('builtin', undefined), 'builtin');
+});
+
+test('untrusted skill does not display a trust badge', () => {
+  assert.equal(resolveSkillTrustBadge('other', 'user'), null);
+});
+
+test('blank installation identity is ignored when building source types', () => {
+  const sourceTypes = buildSkillSourceTypeMap([
+    { name: ' enterprise-probe ', source_type: ' prebuilt ' },
+    { name: ' ', source_type: 'prebuilt' },
+  ]);
+
+  assert.equal(sourceTypes.get('enterprise-probe'), 'prebuilt');
+  assert.equal(sourceTypes.size, 1);
 });

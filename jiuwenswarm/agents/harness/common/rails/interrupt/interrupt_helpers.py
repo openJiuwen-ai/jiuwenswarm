@@ -69,17 +69,11 @@ def _has_active_skill_overlay() -> bool:
     判定失败按存在处理（返回 True，强制回落 engine），不放宽权限。
     """
     try:
-        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-            get_effective_permissions_config,
-        )
         from openjiuwen.harness.security.skill_authorization import (
             get_skill_authorization_context,
             get_skill_grant_store,
-            is_skill_authorization_enabled,
         )
 
-        if not is_skill_authorization_enabled(get_effective_permissions_config()):
-            return False
         authz = get_skill_authorization_context()
         if authz is None or not authz.session_id or not authz.agent_scope_id:
             return False

@@ -21,15 +21,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { isEnterprise } from '../../edition';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores';
 import type { SkillApprovalAction, SkillApprovalCardPayload } from '../../types';
 import { shouldUnlockPendingApproval } from '../InteractionSlot/interactionSubmission';
 import {
   buildSkillSourceDisplayNameMap,
+  buildSkillSourceTypeMap,
   resolveSkillSourceDisplayName,
-  shouldShowSkillTrustBadge,
+  resolveSkillTrustBadge,
   type SkillSourceDisplayNames,
+  type SkillSourceTypes,
 } from './skillApprovalPresentation';
 
 interface SkillApprovalCardProps {
@@ -49,6 +52,7 @@ const ACTION_WIRE_LABELS: Record<SkillApprovalAction, string> = {
 };
 
 const sourceDisplayNameRequests = new Map<string, Promise<SkillSourceDisplayNames>>();
+const sourceTypeRequests = new Map<string, Promise<SkillSourceTypes>>();
 
 function fetchSkillSourceDisplayNames(sessionId: string): Promise<SkillSourceDisplayNames> {
   const cached = sourceDisplayNameRequests.get(sessionId);
@@ -64,6 +68,26 @@ function fetchSkillSourceDisplayNames(sessionId: string): Promise<SkillSourceDis
       return new Map<string, string>();
     });
   sourceDisplayNameRequests.set(sessionId, request);
+  return request;
+}
+
+function fetchSkillSourceTypes(sessionId: string): Promise<SkillSourceTypes> {
+  const inflight = sourceTypeRequests.get(sessionId);
+  if (inflight) return inflight;
+
+  const request = (async () => {
+    try {
+      const response = await webRequest<{
+        skills?: Array<{ name?: unknown; skill_name?: unknown; source_type?: unknown }>;
+      }>('skills.enterprise.list', { session_id: sessionId });
+      return buildSkillSourceTypeMap(response.skills);
+    } catch {
+      return new Map<string, string>();
+    } finally {
+      sourceTypeRequests.delete(sessionId);
+    }
+  })();
+  sourceTypeRequests.set(sessionId, request);
   return request;
 }
 
@@ -103,8 +127,14 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore(s => s.activeSessionId);
   const pendingQuestion = useChatStore(s => s.runtimes[activeSessionId ?? '']?.pendingQuestion ?? null);
+  const approvalSkillName = card?.skill_name.trim() ?? '';
   const [submitted, setSubmitted] = useState(false);
   const [sourceDisplayName, setSourceDisplayName] = useState(card?.source ?? '');
+  const [sourceTypeLookup, setSourceTypeLookup] = useState<{
+    skillName: string;
+    sourceType?: string;
+    complete: boolean;
+  }>({ skillName: '', complete: false });
 
   useEffect(() => {
     const sourceId = card?.source.trim() ?? '';
@@ -119,6 +149,29 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
       active = false;
     };
   }, [activeSessionId, card?.source, card?.trust]);
+
+  useEffect(() => {
+    const skillName = approvalSkillName;
+    setSourceTypeLookup({ skillName, complete: false });
+    if (!isEnterprise() || !skillName || !activeSessionId || card?.trust !== 'builtin') {
+      setSourceTypeLookup({ skillName, complete: true });
+      return undefined;
+    }
+
+    let active = true;
+    void fetchSkillSourceTypes(activeSessionId).then(sourceTypes => {
+      if (active) {
+        setSourceTypeLookup({
+          skillName,
+          sourceType: sourceTypes.get(skillName),
+          complete: true,
+        });
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [activeSessionId, approvalSkillName, card?.trust]);
 
   const question = pendingQuestion?.questions[0];
   const availableActions = useMemo((): SkillApprovalAction[] => {
@@ -157,7 +210,12 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
     return null;
   }
 
-  const showTrustBadge = shouldShowSkillTrustBadge(card?.trust);
+  const sourceTypeResolved =
+    !isEnterprise() ||
+    (sourceTypeLookup.skillName === approvalSkillName && sourceTypeLookup.complete);
+  const trustBadge = sourceTypeResolved
+    ? resolveSkillTrustBadge(card?.trust, sourceTypeLookup.sourceType)
+    : null;
   const versionLabel = card?.version || t('chatUi.skillApproval.versionLocal');
   const cachedDecisionLabel = card?.cached_decision === 'session' ? t('chatUi.skillApproval.cachedSession') : t('chatUi.skillApproval.cachedLocal');
 
@@ -215,7 +273,7 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
             {t('chatUi.skillApproval.title')}
             {card ? `：${card.skill_name}` : ''}
           </span>
-          {card && showTrustBadge && (
+          {card && trustBadge && (
             <span
               className="text-[10px] px-1.5 py-0.5 rounded"
               style={{
@@ -223,7 +281,11 @@ export function SkillApprovalCard({ onSubmit, card }: SkillApprovalCardProps) {
                 border: '1px solid var(--color-feedback-success)',
               }}
             >
-              {t('chatUi.skillApproval.trustBuiltin')}
+              {t(
+                trustBadge === 'prebuilt'
+                  ? 'chatUi.skillApproval.trustPrebuilt'
+                  : 'chatUi.skillApproval.trustBuiltin',
+              )}
             </span>
           )}
         </div>

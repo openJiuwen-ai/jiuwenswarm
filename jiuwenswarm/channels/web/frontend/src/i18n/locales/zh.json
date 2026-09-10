@@ -2330,6 +2330,7 @@
     "skillApproval": {
       "title": "Skill 加载审批",
       "trustBuiltin": "内置",
+      "trustPrebuilt": "企业预置",
       "versionLocal": "本地（无版本）",
       "source": "来源",
       "version": "版本",
