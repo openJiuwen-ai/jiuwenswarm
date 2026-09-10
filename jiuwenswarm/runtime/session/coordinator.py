@@ -581,42 +581,29 @@ class RuntimeSessionCoordinator:
     def _control_parent(
         self, record: _SessionRecord, request_id: str
     ) -> SessionExecutionHandle | None:
-        parents = [
-            handle
-            for handle in self._registry.select(
-                session_id=record.session_id,
-                generation=record.generation,
-                active_only=True,
-            )
-            if handle.waiting_control_id == request_id
-            and handle.state
-            in {
-                SessionExecutionState.RUNNING,
-                SessionExecutionState.WAITING_FOR_CONTROL,
-            }
-        ]
+        deliverable = {
+            SessionExecutionState.RUNNING,
+            SessionExecutionState.WAITING_FOR_CONTROL,
+        }
+        parents: list[SessionExecutionHandle] = []
+        for handle in self._registry.select(
+            session_id=record.session_id,
+            generation=record.generation,
+            active_only=True,
+        ):
+            if handle.waiting_control_id != request_id:
+                continue
+            if handle.state not in deliverable:
+                continue
+            parents.append(handle)
         if not parents:
             return None
         return max(parents, key=lambda handle: handle.started_at or handle.created_at)
 
-    def _is_control_claimed(
+    def _claimed_execution_id(
         self, record: _SessionRecord, request_id: str
-    ) -> bool:
-        return any(
-            claimed_session == record.session_id
-            and claimed_generation == record.generation
-            and claimed_request == request_id
-            for (
-                claimed_session,
-                claimed_generation,
-                _claimed_execution,
-                claimed_request,
-            ) in self._control_claims
-        )
-
-    def _claimed_control_parent(
-        self, record: _SessionRecord, request_id: str
-    ) -> SessionExecutionHandle | None:
+    ) -> str | None:
+        """Return the execution owning an in-flight control delivery, if any."""
         for (
             claimed_session,
             claimed_generation,
@@ -628,8 +615,21 @@ class RuntimeSessionCoordinator:
                 and claimed_generation == record.generation
                 and claimed_request == request_id
             ):
-                return self._registry.get(claimed_execution)
+                return claimed_execution
         return None
+
+    def _is_control_claimed(
+        self, record: _SessionRecord, request_id: str
+    ) -> bool:
+        return self._claimed_execution_id(record, request_id) is not None
+
+    def _claimed_control_parent(
+        self, record: _SessionRecord, request_id: str
+    ) -> SessionExecutionHandle | None:
+        execution_id = self._claimed_execution_id(record, request_id)
+        if execution_id is None:
+            return None
+        return self._registry.get(execution_id)
 
     def _heartbeat_root(
         self, handle: SessionExecutionHandle
