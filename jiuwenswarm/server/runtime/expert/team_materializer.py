@@ -27,6 +27,11 @@ from jiuwenswarm.server.runtime.expert.expert_store import (
 
 _SAFE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 _MAX_MEMBERS = 4
+_TEXT_ARTIFACT_WRITE_GUIDANCE = (
+    "文本主产物写入：不得把大型完整正文塞入单次 `write_file`/`edit_file` "
+    "tool arguments；优先使用简短本地渲染脚本读取结构化交接并动态生成，"
+    "无法采用时按有界小段分段写入"
+)
 
 
 class TeamMaterializationError(ValueError):
@@ -396,9 +401,14 @@ def _final_output_clause(value: Any) -> str:
     if schema:
         details.append(f"schema=`{schema}`")
     detail_text = "，".join(details) or "遵循图谱声明的原始格式"
+    completion_separator = (
+        f"；{_TEXT_ARTIFACT_WRITE_GUIDANCE}；"
+        if media_type.casefold().startswith("text/")
+        else "，"
+    )
     return (
-        f"最终主产物：必须生成 `{relative.as_posix()}`（{detail_text}），"
-        "完成后打开检查，并只向用户发送这个主文件"
+        f"最终主产物：必须生成 `{relative.as_posix()}`（{detail_text}）"
+        f"{completion_separator}完成后打开检查，并只向用户发送这个主文件"
     )
 
 

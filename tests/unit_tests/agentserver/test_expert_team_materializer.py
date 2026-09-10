@@ -193,8 +193,68 @@ def test_materialize_renders_hard_edge_handoff_contract(tmp_path: Path) -> None:
     assert "最终主产物：必须生成 `campaign.html`" in workflow[1]
     assert "mediaType=`text/html`" in workflow[1]
     assert "schema=`xiaoyi.campaign.v1`" in workflow[1]
+    assert "不得把大型完整正文塞入单次 `write_file`/`edit_file`" in workflow[1]
+    assert "优先使用简短本地渲染脚本读取结构化交接并动态生成" in workflow[1]
+    assert "无法采用时按有界小段分段写入" in workflow[1]
     assert "只向用户发送这个主文件" in workflow[1]
     assert ".expert-handoffs/data-insight-brief.json" in manifest["instruction"]
+    assert "不得把大型完整正文塞入单次 `write_file`/`edit_file`" in manifest[
+        "instruction"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("media_type", "expects_guidance"),
+    [
+        ("text/plain", True),
+        ("Text/Markdown", True),
+        ("application/pdf", False),
+    ],
+)
+def test_materialize_adds_reliable_write_guidance_only_for_text_final_outputs(
+    tmp_path: Path,
+    media_type: str,
+    expects_guidance: bool,
+) -> None:
+    sources = tmp_path / "sources"
+    packages = {
+        "data-analyst": _expert(sources, "data-analyst", skill_name="excel-analysis"),
+        "content-designer": _expert(
+            sources, "content-designer", skill_name="copywriter"
+        ),
+    }
+    candidate = _candidate()
+    candidate["workflow"] = [
+        {
+            "step": 1,
+            "expertId": "data-analyst",
+            "expertName": "数据分析师",
+            "dependsOn": [],
+        },
+        {
+            "step": 2,
+            "expertId": "content-designer",
+            "expertName": "内容设计师",
+            "dependsOn": ["data-analyst"],
+            "finalOutput": {
+                "id": "result.txt",
+                "mediaType": media_type,
+                "schema": "xiaoyi.result.v1",
+                "primary": True,
+                "visibility": "public",
+            },
+        },
+    ]
+
+    result = materialize_team_candidate(
+        candidate, expert_packages=packages, destination_root=tmp_path / "experts"
+    )
+
+    manifest = json.loads((result / "manifest.json").read_text(encoding="utf-8"))
+    workflow_clause = manifest["metadata"]["workflow"][1]
+    guidance = "不得把大型完整正文塞入单次 `write_file`/`edit_file`"
+    assert (guidance in workflow_clause) is expects_guidance
+    assert (guidance in manifest["instruction"]) is expects_guidance
 
 
 def test_materialize_accepts_agent_group_safe_non_slug_member_ids(
