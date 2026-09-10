@@ -46,7 +46,7 @@ def _patch_get_tool_cards() -> None:
     """Wrap _get_tool_cards to filter out wiki/acp tool cards."""
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as _iface
 
-    original = _iface.JiuWenSwarmDeepAdapter._get_tool_cards
+    original = _iface.JiuWenSwarmDeepAdapter._get_tool_cards  # pylint: disable=protected-access
 
     async def _patched_get_tool_cards(self, agent_id):
         tool_cards = await original(self, agent_id)
@@ -60,7 +60,7 @@ def _patch_get_tool_cards() -> None:
             logger.info("[FlashSlimTools] dropped %d tool card(s) from registration", dropped)
         return tool_cards
 
-    _iface.JiuWenSwarmDeepAdapter._get_tool_cards = _patched_get_tool_cards
+    _iface.JiuWenSwarmDeepAdapter._get_tool_cards = _patched_get_tool_cards  # pylint: disable=protected-access
     logger.info("[FlashSlimTools] patched _get_tool_cards (drop wiki/acp)")
 
 
@@ -74,26 +74,26 @@ def _patch_audio_tools() -> None:
         The metadata-only fallback (audio_metadata without any model config)
         is retired: return nothing unless the full audio suite is configured.
         """
-        if self._audio_model_config is None:
+        if self._audio_model_config is None:  # pylint: disable=protected-access
             return []
         from openjiuwen.harness.tools.multimodal import create_audio_tools
 
         return list(
             create_audio_tools(
-                language=self._resolve_runtime_language(),
-                audio_model_config=self._audio_model_config,
+                language=self._resolve_runtime_language(),  # pylint: disable=protected-access
+                audio_model_config=self._audio_model_config,  # pylint: disable=protected-access
                 agent_id=agent_id,
             )
         )
 
-    _iface.JiuWenSwarmDeepAdapter._iter_runtime_audio_tools = _patched_iter_audio
+    _iface.JiuWenSwarmDeepAdapter._iter_runtime_audio_tools = _patched_iter_audio  # pylint: disable=protected-access
     logger.info("[FlashSlimTools] patched _iter_runtime_audio_tools (no metadata-only)")
 
 
 def _patch_filesystem_rail() -> None:
     """Build SlimSysOperationRail instead of stock SysOperationRail."""
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as _iface
-    from jiuwenswarm.extensions.flash_slim_tools.SlimSysOperationRail import (
+    from jiuwenswarm.extensions.flash_slim_tools.slim_sys_operation_rail import (
         SlimSysOperationRail,
     )
 
@@ -109,7 +109,7 @@ def _patch_filesystem_rail() -> None:
             logger.warning("[FlashSlimTools] SlimSysOperationRail create failed: %s", exc)
             return None
 
-    _iface.JiuWenSwarmDeepAdapter._build_filesystem_rail = staticmethod(_patched_build_fs)
+    _iface.JiuWenSwarmDeepAdapter._build_filesystem_rail = staticmethod(_patched_build_fs)  # pylint: disable=protected-access
     logger.info("[FlashSlimTools] patched _build_filesystem_rail (slim rail)")
 
 
@@ -117,7 +117,7 @@ def _patch_eager_tools() -> None:
     """Remove list_files from the progressive eager-tools default."""
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as _iface
 
-    original = _iface._normalize_progressive_eager_tools
+    original = _iface._normalize_progressive_eager_tools  # pylint: disable=protected-access
 
     def _patched_normalize(value, default=None):
         result = original(value, default)
@@ -126,14 +126,14 @@ def _patch_eager_tools() -> None:
             logger.info("[FlashSlimTools] removed list_files from eager tools")
         return result
 
-    _iface._normalize_progressive_eager_tools = _patched_normalize
+    _iface._normalize_progressive_eager_tools = _patched_normalize  # pylint: disable=protected-access
     logger.info("[FlashSlimTools] patched _normalize_progressive_eager_tools (no list_files)")
 
 
 def _patch_skill_toolkit() -> None:
     """Use SlimSkillToolkit (merged search_skill) instead of stock SkillToolkit."""
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as _iface
-    from jiuwenswarm.extensions.flash_slim_tools.SlimSkillToolkit import SlimSkillToolkit
+    from jiuwenswarm.extensions.flash_slim_tools.slim_skill_toolkit import SlimSkillToolkit
 
     # Patch the module-level import so any `SkillToolkit(...)` call in
     # interface_deep resolves to SlimSkillToolkit.

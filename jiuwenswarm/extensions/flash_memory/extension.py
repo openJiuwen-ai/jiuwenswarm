@@ -53,7 +53,7 @@ def _patch_memory_rail_register() -> None:
             return
 
         try:
-            from jiuwenswarm.extensions.flash_memory.FlashMemoryTool import (
+            from jiuwenswarm.extensions.flash_memory.flash_memory_tool import (
                 FlashMemoryTool,
             )
 
@@ -68,11 +68,11 @@ def _patch_memory_rail_register() -> None:
                 str(self.workspace.get_node_path("memory") or "") if self.workspace else ""
             )
             settings = create_memory_settings(memory_dir)
-            self._tool_ctx = MemoryToolContext(
+            self._tool_ctx = MemoryToolContext(  # pylint: disable=protected-access
                 workspace=self.workspace,
                 settings=settings,
                 agent_id=agent_id,
-                embedding_config=self._embedding_config,
+                embedding_config=self._embedding_config,  # pylint: disable=protected-access
                 sys_operation=self.sys_operation,
                 manager=None,
                 node_name="memory",
@@ -81,7 +81,7 @@ def _patch_memory_rail_register() -> None:
             # Read-only flag: reuse MemoryRail's runtime _is_read_only state
             read_only_flag = lambda: getattr(self, "_is_read_only", False)
             tool = FlashMemoryTool(
-                self._tool_ctx,
+                self._tool_ctx,  # pylint: disable=protected-access
                 read_only_flag=read_only_flag,
                 language=language,
                 agent_id=agent_id,
@@ -89,7 +89,7 @@ def _patch_memory_rail_register() -> None:
             card = tool.card
             result = agent.ability_manager.add_ability(card, tool)
             if result.added:
-                self._owned_tool_cards[card.name] = card
+                self._owned_tool_cards[card.name] = card  # pylint: disable=protected-access
                 logger.info(
                     "[FlashMemory] Registered unified memory tool: %s "
                     "(modes: write/edit/read/search, 5-in-1)",
@@ -99,13 +99,13 @@ def _patch_memory_rail_register() -> None:
         except Exception as exc:
             logger.error("[FlashMemory] unified register failed, falling back: %s", exc)
             # Fallback: call the original registration (stock 5 tools)
-            MemoryRail._original_register_memory_tools(self, agent)
+            MemoryRail._original_register_memory_tools(self, agent)  # pylint: disable=protected-access
 
     # Save original for fallback
     if not hasattr(MemoryRail, "_original_register_memory_tools"):
-        MemoryRail._original_register_memory_tools = MemoryRail._register_memory_tools
+        MemoryRail._original_register_memory_tools = MemoryRail._register_memory_tools  # pylint: disable=protected-access
 
-    MemoryRail._register_memory_tools = _patched_register
+    MemoryRail._register_memory_tools = _patched_register  # pylint: disable=protected-access
     logger.info("[FlashMemory] patched MemoryRail._register_memory_tools (unified tool)")
 
 
@@ -165,7 +165,7 @@ def _patch_group_chat_linkage() -> None:
     # Stock: _all_memory_tools = (write_memory, edit_memory, read_memory, memory_search, memory_get)
     # Unified: _all_memory_tools = (memory,)
     if hasattr(_iface, "_all_memory_tools"):
-        _iface._all_memory_tools = ("memory",)
+        _iface._all_memory_tools = ("memory",)  # pylint: disable=protected-access
         logger.info("[FlashMemory] patched _all_memory_tools → ('memory',)")
 
     # Stock also removes ("write_memory", "edit_memory") specifically for group chat

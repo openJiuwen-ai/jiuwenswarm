@@ -56,8 +56,8 @@ def _patch_todo_tool_name_sets() -> None:
         TaskExecutionRail.TODO_TOOLS = TaskExecutionRail.TODO_TOOLS | {"todo"}
         logger.info("[FlashTodo] patched TaskExecutionRail.TODO_TOOLS += 'todo'")
 
-    if "todo" not in _ser._TODO_TOOL_NAMES:
-        _ser._TODO_TOOL_NAMES = _ser._TODO_TOOL_NAMES | {"todo"}
+    if "todo" not in _ser._TODO_TOOL_NAMES:  # pylint: disable=protected-access
+        _ser._TODO_TOOL_NAMES = _ser._TODO_TOOL_NAMES | {"todo"}  # pylint: disable=protected-access
         logger.info("[FlashTodo] patched stream_event_rail._TODO_TOOL_NAMES += 'todo'")
 
 
@@ -69,7 +69,7 @@ def _patch_adapter_rail_builder() -> None:
     """
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as _iface
 
-    original = _iface.JiuWenSwarmDeepAdapter._build_task_planning_rail
+    original = _iface.JiuWenSwarmDeepAdapter._build_task_planning_rail  # pylint: disable=protected-access
 
     def _patched_build(self, config=None):
         try:
@@ -78,7 +78,7 @@ def _patch_adapter_rail_builder() -> None:
             # unconditionally selects the unified path here).
             raw = os.getenv("FLASH_TODO_ENABLED", "").strip().lower()
             if raw in ("1", "true", "yes", "on"):
-                from jiuwenswarm.extensions.flash_todo.FlashTodoRail import (
+                from jiuwenswarm.extensions.flash_todo.flash_todo_rail import (
                     FlashTodoRail,
                 )
 
@@ -89,10 +89,10 @@ def _patch_adapter_rail_builder() -> None:
                 return rail
 
             # Secondary gate: react.todo.unified config
-            react_cfg = config if config is not None else self._config_cache
+            react_cfg = config if config is not None else self._config_cache  # pylint: disable=protected-access
             todo_cfg = (react_cfg or {}).get("todo", {}) or {}
             if isinstance(todo_cfg, dict) and todo_cfg.get("unified", False):
-                from jiuwenswarm.extensions.flash_todo.FlashTodoRail import (
+                from jiuwenswarm.extensions.flash_todo.flash_todo_rail import (
                     FlashTodoRail,
                 )
 
@@ -105,7 +105,7 @@ def _patch_adapter_rail_builder() -> None:
             logger.warning("[FlashTodo] unified path failed, falling back: %s", exc)
         return original(self, config)
 
-    _iface.JiuWenSwarmDeepAdapter._build_task_planning_rail = _patched_build
+    _iface.JiuWenSwarmDeepAdapter._build_task_planning_rail = _patched_build  # pylint: disable=protected-access
     logger.info("[FlashTodo] patched _build_task_planning_rail (unified gate)")
 
 
@@ -117,7 +117,7 @@ def _patch_progressive_eager_tools() -> None:
     """
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as _iface
 
-    original = _iface._normalize_progressive_eager_tools
+    original = _iface._normalize_progressive_eager_tools  # pylint: disable=protected-access
 
     def _patched_normalize(value, default=None):
         result = original(value, default)
@@ -129,7 +129,7 @@ def _patch_progressive_eager_tools() -> None:
             result.append("todo")
         return result
 
-    _iface._normalize_progressive_eager_tools = _patched_normalize
+    _iface._normalize_progressive_eager_tools = _patched_normalize  # pylint: disable=protected-access
     logger.info("[FlashTodo] patched _normalize_progressive_eager_tools (swap todo)")
 
 
