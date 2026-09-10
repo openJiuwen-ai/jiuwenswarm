@@ -35,10 +35,15 @@ class PermissionRailGroup:
     ask_user_rail: StructuredAskUserRail | None
 
     def rails(self) -> list[Any]:
-        return [rail for rail in (
-            self.permission_rail, self.root_permission_queue_rail, self.root_context_rail,
-            self.root_permission_completion_rail, self.stream_event_rail, self.ask_user_rail,
-        ) if rail is not None]
+        candidates = (
+            self.permission_rail,
+            self.root_permission_queue_rail,
+            self.root_context_rail,
+            self.root_permission_completion_rail,
+            self.stream_event_rail,
+            self.ask_user_rail,
+        )
+        return [rail for rail in candidates if rail is not None]
 
     def validate_composition(self, rails: list[Any], *, smart: bool, sys_operation: Any) -> None:
         """Check candidate membership without requiring SDK registration."""

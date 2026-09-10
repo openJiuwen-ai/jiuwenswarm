@@ -220,4 +220,5 @@ async def test_multimodal_scope_uses_targeted_reload_without_resetting_other_run
         {"VISION_ENABLED": "true"},
         None,
         {"multimodal"},
+        permission_notification=False,
     )

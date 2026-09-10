@@ -2213,7 +2213,8 @@ class JiuWenSwarmDeepAdapter:
         # Inherit the channel id so the child's MCP load strategy matches the
         # parent's (TUI loads the global set, web loads nothing on init).
         adapter._channel_id = getattr(self, "_channel_id", "")
-        adapter._is_cron_execution = self._is_cron_execution
+        # Parent and child are instances of this class and share cron context.
+        adapter._is_cron_execution = self._is_cron_execution  # pylint: disable=protected-access
         adapter.set_personal_context_runtime_enabled(
             self._personal_context_runtime_enabled
         )
@@ -2713,12 +2714,26 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         # Never acknowledge an older or newly discovered model/MCP update as
         # applied merely because this RPC changed permissions.
-        permission_only_children = [
-            sid for sid, child in self._session_adapters.items()
-            if permission_notification and child._uses_smart_permission_lifecycle(config_base)
-            and child._is_permission_only_reload(config_base, env_overrides)
-            and self._session_adapter_versions.get(sid, 0) >= self._session_adapter_config_version
-        ]
+        permission_only_children: list[str] = []
+        if permission_notification:
+            for sid, child in self._session_adapters.items():
+                uses_smart_lifecycle = child._uses_smart_permission_lifecycle(  # pylint: disable=protected-access
+                    config_base
+                )
+                if not uses_smart_lifecycle:
+                    continue
+                is_permission_only = child._is_permission_only_reload(  # pylint: disable=protected-access
+                    config_base,
+                    env_overrides,
+                )
+                if not is_permission_only:
+                    continue
+                if (
+                    self._session_adapter_versions.get(sid, 0)
+                    < self._session_adapter_config_version
+                ):
+                    continue
+                permission_only_children.append(sid)
         self._session_adapter_config_version += 1
         self._pending_session_reload_config_base = copy.deepcopy(config_base)
         self._pending_session_reload_env_overrides = (
