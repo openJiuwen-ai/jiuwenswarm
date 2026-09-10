@@ -46,3 +46,13 @@ def test_default_telemetry_config_is_disabled_and_documents_unified_fields():
         "stuck_threshold_ms": 300000,
         "stuck_check_interval_s": 30,
     }
+
+
+def test_default_ttse_config_is_disabled():
+    repo_root = Path(__file__).resolve().parents[2]
+    config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
+
+    react = yaml.safe_load(config_file.read_text(encoding="utf-8"))["react"]
+
+    assert react["ttse"]["enabled"] is False
+    assert "ttse_consult" not in react["tool_lazy_load"]["eager_tools"]

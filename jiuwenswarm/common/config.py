@@ -399,6 +399,23 @@ def _get_bool_env(value: str | None) -> bool | None:
     return value.lower() in ("true", "1", "yes")
 
 
+def coerce_config_bool(value: Any, default: bool) -> bool:
+    """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
 def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(config, dict):
         return {}
@@ -509,6 +526,7 @@ def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
 def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     """Return whether TTSE (FACT/TIP) rail should be mounted.
 
+    Opt-in: missing / unset ``enabled`` is False (shipped template and docs 2.7).
     Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
     """
     return bool(_get_ttse_config(config).get("enabled"))

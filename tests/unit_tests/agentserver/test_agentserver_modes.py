@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.common.config import get_ttse_enabled
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
@@ -65,6 +66,7 @@ def test_progressive_defaults_expose_registered_ask_user_tool():
     assert "ask_user" in rail.eager_tools
     assert "deepresearch_execute" in rail.eager_tools
     assert "ask_user_question" not in rail.eager_tools
+    assert "ttse_consult" not in rail.eager_tools
 
 
 def test_progressive_runtime_config_exposes_registered_ask_user_tool():
@@ -74,10 +76,9 @@ def test_progressive_runtime_config_exposes_registered_ask_user_tool():
 
     assert "ask_user" in eager_tools
     assert "ask_user_question" not in eager_tools
-    assert "ttse_consult" in eager_tools
-    assert eager_tools.index("ttse_consult") < eager_tools.index(
-        "skill_acceleration_exec"
-    )
+    # Default-off: the shipped eager list must not advertise ttse_consult.
+    # After react.ttse.enabled=true, runtime inserts it for first-turn consult.
+    assert "ttse_consult" not in eager_tools
 
 
 def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
@@ -106,6 +107,7 @@ def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
 
 
 def test_progressive_eager_tools_keep_ttse_consult_when_inject_enabled():
+    """After TTSE is configured on, first-turn schema includes ttse_consult."""
     rail = interface_deep_module.build_progressive_tool_rail_from_config(
         {
             "tool_lazy_load": {
@@ -144,6 +146,94 @@ def test_progressive_eager_tools_skip_ttse_consult_when_inject_disabled():
     )
 
     assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
+
+
+def test_progressive_eager_tools_skip_ttse_consult_when_master_disabled():
+    """Default-off: yaml listing ttse_consult must not put it in schema."""
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": [
+                    "read_file",
+                    "ttse_consult",
+                    "skill_acceleration_exec",
+                ],
+            },
+            "ttse": {"enabled": False, "inject_enabled": True},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
+
+
+def test_progressive_eager_tools_skip_ttse_consult_when_enabled_unset():
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": ["read_file", "ttse_consult"],
+            },
+            "ttse": {"inject_enabled": True},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
+
+
+@pytest.mark.parametrize(
+    ("ttse", "expect_mounted", "expect_eager"),
+    [
+        ({}, False, False),
+        ({"dream_interval": 5}, False, False),
+        ({"inject_enabled": True}, False, False),
+        ({"inject_enabled": True, "evolve_enabled": True}, False, False),
+        ({"enabled": False}, False, False),
+        ({"enabled": False, "inject_enabled": True}, False, False),
+        ({"enabled": True}, True, True),
+        ({"enabled": True, "inject_enabled": True}, True, True),
+        ({"enabled": True, "inject_enabled": False}, True, False),
+    ],
+)
+def test_ttse_eager_and_mount_agree_on_enabled_default(ttse, expect_mounted, expect_eager):
+    """Eager consult must not diverge from get_ttse_enabled on missing/false enabled."""
+    react = {"ttse": ttse}
+    assert get_ttse_enabled({"react": react}) is expect_mounted
+    assert get_ttse_enabled(react) is expect_mounted
+    assert interface_deep_module._ttse_consult_should_be_eager(react) is expect_eager
+    if not expect_mounted:
+        assert expect_eager is False
+
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": ["read_file", "ttse_consult"],
+            },
+            "ttse": ttse,
+        },
+        language="zh",
+    )
+    assert rail is not None
+    assert ("ttse_consult" in rail.eager_tools) is expect_eager
+
+
+def test_shipped_config_omits_ttse_consult_from_first_turn_schema():
+    config_path = Path(__file__).parents[3] / "jiuwenswarm/resources/config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        config["react"],
+        language="zh",
+    )
+
+    assert rail is not None
+    assert config["react"]["ttse"]["enabled"] is False
     assert "ttse_consult" not in rail.eager_tools
 
 
@@ -2722,12 +2812,53 @@ def test_deep_adapter_registers_ttse_rail_when_enabled(monkeypatch):
     monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
 
     asyncio.run(adapter._update_rails_for_mode("agent"))
     asyncio.run(adapter._reconcile_evolution_rails())
 
     assert adapter._ttse_rail is ttse_rail
     assert adapter._instance.registered.count(ttse_rail) == 1
+
+
+def test_deep_adapter_skips_ttse_rail_when_enabled_unset(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "ttse": {"inject_enabled": True, "evolve_enabled": True},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    built = []
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(
+        adapter,
+        "_build_ttse_rail",
+        lambda _config: built.append("built") or object(),
+    )
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+
+    asyncio.run(adapter._update_rails_for_mode("agent"))
+
+    assert adapter._ttse_rail is None
+    assert built == []
 
 
 def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
@@ -2758,6 +2889,11 @@ def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
         lambda _config: built.append("built") or object(),
     )
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": False}}},
+    )
 
     asyncio.run(adapter._update_rails_for_mode("agent"))
 
@@ -2779,13 +2915,20 @@ def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
     }
 
     ttse_rail = object()
+    yaml_enabled = {"value": True}
     monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": yaml_enabled["value"]}}},
+    )
 
     asyncio.run(adapter._reconcile_evolution_rails())
     assert adapter._ttse_rail is ttse_rail
 
     adapter._config_cache["ttse"] = {"enabled": False}
+    yaml_enabled["value"] = False
     asyncio.run(adapter._reconcile_evolution_rails())
 
     assert adapter._ttse_rail is None

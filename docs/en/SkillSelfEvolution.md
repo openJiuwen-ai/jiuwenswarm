@@ -85,6 +85,31 @@ Evolution experience is stored in the `evolutions.json` file under the skill dir
 
 Changes take effect automatically in the next dialogue.
 
+### 2.7 TTSE Dual-Track Self-Evolution (FACT / TIP)
+
+TTSE (Two-Track Self-Evolution) is independent of Skill-body evolution: it induces environment facts (FACT) and capability-selection hints (TIP) from dialogue trajectories and injects catalog guidance, **without rewriting SKILL.md or showing an approval dialog**.
+
+It is gated by `react.ttse.enabled` and applies to **agent mode only** (code / team do not mount it). The shipped template and the unset default are **off**, so unevaluated deployments do not incur extra induction LLM cost. After you set `enabled: true`, agent mode mounts `TTSERail` and puts `ttse_consult` in the first-turn schema (no `tools_search` required).
+
+```yaml
+react:
+  ttse:
+    enabled: false          # mount TTSERail in agent mode
+    evolve_enabled: true    # induce FACT/TIP from trajectories
+    inject_enabled: true    # inject system-prompt guidance
+    # Auto-dream (silent bank hygiene; does not hijack the user turn)
+    dream_enabled: true
+    dream_interval: 20
+    dream_min_hours: 24.0
+    dream_ttl_days: 90
+    embedding:
+      api_key: "${EMBED_API_KEY}"
+      base_url: "${EMBED_API_BASE}"
+      model: "${EMBED_MODEL}"
+```
+
+The rule bank is always `workspace/.ttse/bank.json`. Disclosure is always `disk_catalog` (P:45 writes guidance only; FACT/TIP bodies go through `ttse_consult`). Neither path is a user setting. `embedding` is optional; env names follow `secret_registry` (`EMBED_API_KEY` / `EMBED_API_BASE` / `EMBED_MODEL`). When all three resolve to non-empty values, consult uses BM25+embedding hybrid recall; otherwise it falls back to BM25.
+
 ## 3. Case Practice: Triggering Code Modifications Through Text Dialogue Fields
 
 ### 3.1 Scenario Background

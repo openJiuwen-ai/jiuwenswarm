@@ -470,6 +470,7 @@ from jiuwenswarm.common.config import (
     get_sandbox_runtime,
     get_sandbox_startup_mode,
     get_skill_create_enabled,
+    coerce_config_bool,
     _get_ttse_config,
     get_ttse_embedding_config,
     get_ttse_enabled,
@@ -1280,7 +1281,6 @@ _DEFAULT_PROGRESSIVE_EAGER_TOOLS = [
     "bash",
     "skill_tool",
     "skill_complete",
-    "ttse_consult",
     "todo_create",
     "todo_list",
     "todo_modify",
@@ -1311,47 +1311,34 @@ def _ensure_progressive_meta_tools(eager_tools: list[str]) -> list[str]:
     return eager_tools
 
 
-def _ttse_flag_enabled(value: Any, default: bool) -> bool:
-    """Parse yaml/json booleans for TTSE eager-tool gating."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off", ""}:
-            return False
-    return default
-
-
 def _ttse_consult_should_be_eager(react_config: dict[str, Any] | None) -> bool:
-    """True when TTSE inject is on, so ``ttse_consult`` must stay in the schema."""
+    """True when TTSE is opted in and inject is on, so ``ttse_consult`` stays in schema.
+
+    Master switch uses :func:`get_ttse_enabled` (missing ``enabled`` is False) so
+    eager gating cannot diverge from TTSERail mount.
+    """
     if not isinstance(react_config, dict):
         return False
-    ttse = react_config.get("ttse")
-    if not isinstance(ttse, dict):
+    if not get_ttse_enabled(react_config):
         return False
-    enabled = _ttse_flag_enabled(ttse.get("enabled"), True)
-    inject_enabled = _ttse_flag_enabled(ttse.get("inject_enabled"), True)
-    return enabled and inject_enabled
+    ttse = _get_ttse_config(react_config)
+    return coerce_config_bool(ttse.get("inject_enabled"), True)
 
 
 def _ensure_ttse_consult_eager_tool(
     eager_tools: list[str],
     react_config: dict[str, Any] | None,
 ) -> list[str]:
-    """Keep ``ttse_consult`` visible when TTSE inject is on.
+    """Expose ``ttse_consult`` on first turn only after TTSE is explicitly enabled.
 
-    ProgressiveToolRail only exposes ``eager_tools``. P:45 tells the model to
-    call ``ttse_consult`` before ``skill_acceleration_exec``; if the name is
-    filtered out, first-turn consult is impossible without tools_search.
+    ProgressiveToolRail only exposes ``eager_tools``. After ``react.ttse.enabled``
+    (and inject) is on, P:45 tells the model to call ``ttse_consult`` before
+    ``skill_acceleration_exec``; if the name is filtered out, first-turn consult
+    is impossible without tools_search. Default-off must strip the name even if
+    a yaml eager list still includes it.
     """
     if not _ttse_consult_should_be_eager(react_config):
-        return eager_tools
+        return [name for name in eager_tools if name != _TTSE_CONSULT_TOOL_NAME]
     if _TTSE_CONSULT_TOOL_NAME in eager_tools:
         return eager_tools
     if "skill_acceleration_exec" in eager_tools:
@@ -7158,23 +7145,6 @@ class JiuWenSwarmDeepAdapter:
         return skill_evolution_rail
 
     @staticmethod
-    def _coerce_ttse_bool(value: Any, default: bool) -> bool:
-        """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
-        if isinstance(value, bool):
-            return value
-        if value is None:
-            return default
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            text = value.strip().lower()
-            if text in {"1", "true", "yes", "on"}:
-                return True
-            if text in {"0", "false", "no", "off", ""}:
-                return False
-        return default
-
-    @staticmethod
     def _ttse_bank_path() -> str:
         """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob."""
         return str(get_agent_workspace_dir() / ".ttse" / "bank.json")
@@ -7199,6 +7169,8 @@ class JiuWenSwarmDeepAdapter:
             "dream_interval",
             "dream_min_hours",
             "dream_ttl_days",
+            "consult_top_k",
+            "consult_rrf_k",
         ):
             value = yaml_ttse.get(key)
             if value not in (None, ""):
@@ -7221,9 +7193,9 @@ class JiuWenSwarmDeepAdapter:
 
             ttse_cfg = self._resolved_ttse_config(config)
             store_path = self._ttse_bank_path()
-            evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
-            inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
-            dream_enabled = self._coerce_ttse_bool(ttse_cfg.get("dream_enabled"), True)
+            evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
+            inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
+            dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
             try:
                 dream_interval = int(ttse_cfg.get("dream_interval", 20))
             except (TypeError, ValueError):
@@ -7236,6 +7208,14 @@ class JiuWenSwarmDeepAdapter:
                 dream_ttl_days = int(ttse_cfg.get("dream_ttl_days", 90))
             except (TypeError, ValueError):
                 dream_ttl_days = 90
+            try:
+                consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
+            except (TypeError, ValueError):
+                consult_top_k = 8
+            try:
+                consult_rrf_k = int(ttse_cfg.get("consult_rrf_k", 60) or 60)
+            except (TypeError, ValueError):
+                consult_rrf_k = 60
             logger.info(
                 "[JiuWenSwarmDeepAdapter] TTSEConfig: store_path=%s evolve_enabled=%s "
                 "inject_enabled=%s dream_enabled=%s dream_interval=%s "
@@ -7281,6 +7261,8 @@ class JiuWenSwarmDeepAdapter:
                     dream_interval=dream_interval,
                     dream_min_hours=dream_min_hours,
                     dream_ttl_days=dream_ttl_days,
+                    consult_top_k=consult_top_k,
+                    consult_rrf_k=consult_rrf_k,
                 ),
                 trajectory_span_processor=trajectory_span_processor,
             )
@@ -7304,8 +7286,8 @@ class JiuWenSwarmDeepAdapter:
             return
         ttse_cfg = self._resolved_ttse_config(config)
         store_path = self._ttse_bank_path()
-        evolve_enabled = self._coerce_ttse_bool(ttse_cfg.get("evolve_enabled"), True)
-        inject_enabled = self._coerce_ttse_bool(ttse_cfg.get("inject_enabled"), True)
+        evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
+        inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
         cfg = getattr(rail, "_ttse_config", None)
         path_changed = False
         if cfg is not None:

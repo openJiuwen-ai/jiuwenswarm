@@ -566,7 +566,6 @@ react:
       - bash
       - skill_tool
       - skill_complete
-      - ttse_consult                 # 常驻可见，否则第一轮 schema 里没有，P:45 无法先咨询
       - skill_acceleration_exec
       - todo_create
       - todo_list
@@ -697,8 +696,10 @@ react:
     skill_create: false        # true = 注册 SkillCreateRail（单 agent）及 TeamSkillCreateRail（leader）
     skill_base_dir: "agent/skills"  # Skill 根目录
   # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
+  # 默认关闭，避免未评估就产生额外归纳 LLM 成本。显式 enabled: true 后才挂载，
+  # 并由代码把 ttse_consult 插入首轮 eager schema（不必写进上方 eager_tools）。
   ttse:
-    enabled: true          # agent 模式是否挂载 TTSERail
+    enabled: false          # 默认关闭；true 才挂载 TTSERail（仅 agent 模式）
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
@@ -706,11 +707,11 @@ react:
     dream_interval: 20      # 每 N 次非 follow-up 任务迭代尝试一次 dream
     dream_min_hours: 24.0   # 距上次成功 dream 的最短间隔（小时）
     dream_ttl_days: 90      # 超过该天数未注入展示则剪枝
-    # 语义检索 / dedup；三段齐全时启用 top-K 注入，否则回退整库
+    # 语义检索 / dedup；变量名与 secret_registry embed.* 一致。三段解析非空时混合召回，否则 BM25 兜底
     embedding:
-      api_key: "lhqBVy952vGXQJshDBGvN5wtIbrkGTUzL0Pt-vyDxCuLDPe6wJM5LosjD-Sn0oVsy_GUQx28qpbNVu_dIXG8gw"
-      base_url: "https://api.modelarts-maas.com/v1/embeddings"
-      model: "bge-m3"
+      api_key: ${EMBED_API_KEY}
+      base_url: ${EMBED_API_BASE}
+      model: ${EMBED_MODEL}
   a2x_registry:
     base_url: "http://127.0.0.1:8000"
     timeout: 30.0

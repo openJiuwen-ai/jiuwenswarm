@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from jiuwenswarm.common.config import (
+    coerce_config_bool,
     get_config_raw,
     get_evolution_auto_save_enabled,
     get_evolution_enabled,
@@ -291,6 +292,25 @@ class TestConfigFunctions:
         assert get_skill_create_enabled(config) is expected
 
     @pytest.mark.parametrize(
+        ("value", "default", "expected"),
+        [
+            (None, False, False),
+            (None, True, True),
+            (True, False, True),
+            (False, True, False),
+            ("true", False, True),
+            ("false", True, False),
+            ("0", True, False),
+            ("1", False, True),
+            ("", True, False),
+            (0, True, False),
+            (1, False, True),
+        ],
+    )
+    def test_coerce_config_bool_values(self, value, default, expected):
+        assert coerce_config_bool(value, default) is expected
+
+    @pytest.mark.parametrize(
         ("config", "expected"),
         [
             ({}, False),
@@ -330,10 +350,22 @@ class TestConfigFunctions:
             ),
             ({"react": {"ttse": {"enabled": "true"}}}, True),
             ({"react": {"ttse": {}}}, False),
+            ({"react": {"ttse": {"inject_enabled": True}}}, False),
         ],
     )
     def test_ttse_enabled_config_values(self, config, expected):
         assert get_ttse_enabled(config) is expected
+
+    def test_shipped_template_ttse_disabled_by_default(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["react"]["ttse"]["enabled"] is False
+        assert get_ttse_enabled(config) is False
 
     @pytest.mark.parametrize(
         ("config", "expected"),
@@ -375,6 +407,70 @@ class TestConfigFunctions:
     )
     def test_ttse_embedding_config_values(self, config, expected):
         assert get_ttse_embedding_config(config) == expected
+
+    def test_ttse_embedding_resolves_secret_registry_embed_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        values = {
+            "EMBED_API_KEY": "k",
+            "EMBED_API_BASE": "https://example.invalid/v1",
+            "EMBED_MODEL": "bge-m3",
+        }
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_local_config",
+            lambda name, default=None: values.get(name, default),
+        )
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "model": "bge-m3",
+        }
+
+    def test_ttse_embedding_unresolved_embed_env_falls_back_to_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_local_config",
+            lambda name, default=None: default,
+        )
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {}
+
+    def test_shipped_ttse_embedding_uses_embed_env_placeholders(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        embedding = yaml.safe_load(config_path.read_text(encoding="utf-8"))["react"][
+            "ttse"
+        ]["embedding"]
+        assert embedding["api_key"] == "${EMBED_API_KEY}"
+        assert embedding["base_url"] == "${EMBED_API_BASE}"
+        assert embedding["model"] == "${EMBED_MODEL}"
+        assert "modelarts-maas" not in str(embedding["base_url"])
 
     @staticmethod
     def test_get_config_raw(temp_config_file: Path):
