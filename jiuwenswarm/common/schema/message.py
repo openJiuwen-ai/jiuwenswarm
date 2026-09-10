@@ -222,6 +222,8 @@ class ReqMethod(Enum):
     EXPERTS_LIST = "experts.list"
     EXPERT_LOAD = "expert.load"
     EXPERT_UNLOAD = "expert.unload"
+    # 仅拉取资源（fetch+校验+判型），不绑定会话——桌面端「召唤到我的专家（不对话）」
+    EXPERT_INSTALL = "expert.install"
 
     # Schedule task management
     SCHEDULE_CHECK_CONFIG = "schedule.check_config"

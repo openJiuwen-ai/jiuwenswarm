@@ -2087,6 +2087,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.EXPERT_LOAD:
                 await self._handle_expert_load(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.EXPERT_INSTALL:
+                await self._handle_expert_install(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.EXPERT_UNLOAD:
                 await self._handle_expert_unload(ws, request, send_lock)
                 return
@@ -4069,6 +4072,14 @@ class AgentWebSocketServer:
             session_id=session_id,
             expert_id=expert_id,
         )
+        await self._send_expert_response(
+            ws, request, send_lock, ok=result.ok, payload=result.payload
+        )
+
+    async def _handle_expert_install(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """仅拉取专家资源、不绑定会话（业务编排在 ExpertService.install_expert）。"""
+        _, expert_id = self._extract_expert_params(request)
+        result = await self._expert_service.install_expert(expert_id=expert_id)
         await self._send_expert_response(
             ws, request, send_lock, ok=result.ok, payload=result.payload
         )

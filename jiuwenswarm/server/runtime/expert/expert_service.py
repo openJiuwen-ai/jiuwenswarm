@@ -231,6 +231,43 @@ class ExpertService:
                 ok=False, payload={"error": str(exc), "code": "INTERNAL_ERROR"}
             )
 
+    async def install_expert(self, *, expert_id: str) -> ExpertOpResult:
+        """仅拉取资源到本地缓存（fetch + 校验 + 判型），不绑定任何会话。
+
+        供桌面端「召唤到我的专家（不对话）」用：与 expert.load 的首次 fetch
+        同路径（fetch_and_classify_expert），成功后包已落本地缓存，后续真正
+        load（会话绑定）时 fetch 直接命中缓存。
+        """
+        if not expert_id:
+            return ExpertOpResult(
+                ok=False,
+                payload={"error": "missing expert_id", "code": "BAD_REQUEST"},
+            )
+        try:
+            expert_type, _package_dir, warnings = await fetch_and_classify_expert(expert_id)
+        except _expert_store.ExpertNotFound as exc:
+            logger.warning("[ExpertService] expert.install 专家不存在: %s", exc)
+            return ExpertOpResult(
+                ok=False, payload={"error": str(exc), "code": "NOT_FOUND"}
+            )
+        except _expert_store.ExpertRepoUnavailable as exc:
+            logger.warning("[ExpertService] expert.install 仓库不可达: %s", exc)
+            return ExpertOpResult(
+                ok=False, payload={"error": str(exc), "code": "REPO_UNAVAILABLE"}
+            )
+        except _expert_store.InvalidExpertPackage as exc:
+            logger.warning("[ExpertService] expert.install 包非法: %s", exc)
+            return ExpertOpResult(
+                ok=False, payload={"error": str(exc), "code": "INVALID_PACKAGE"}
+            )
+        logger.info(
+            "[ExpertService] expert.install 完成: expert=%s type=%s", expert_id, expert_type
+        )
+        return ExpertOpResult(
+            ok=True,
+            payload={"expert_id": expert_id, "type": expert_type, "warnings": warnings},
+        )
+
     async def load_expert(
             self,
             *,
