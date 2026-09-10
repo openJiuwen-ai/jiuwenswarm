@@ -2224,10 +2224,12 @@ class JiuWenSwarm:
                 payload = {"template": card}
             elif method == ReqMethod.AGENT_TEMPLATES_FILE_LIST:
                 payload = {
-                    "tree": package_manager.list_agent_template_files(str(name or ""))
+                    "tree": await package_manager.list_agent_template_files_with_hub(
+                        str(name or "")
+                    )
                 }
             elif method == ReqMethod.AGENT_TEMPLATES_FILE_READ:
-                payload = package_manager.read_agent_template_file(
+                payload = await package_manager.read_agent_template_file_with_hub(
                     str(name or ""), str(params.get("path", ""))
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_LIST:
