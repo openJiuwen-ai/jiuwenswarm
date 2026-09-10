@@ -130,21 +130,14 @@ class JiuwenSummaryTeamFactory:
         """Re-attach or recreate a Summary Team for an interrupted execution (§8).
 
         The framework calls this only for an execution that never bound a
-        ``summary_team_id``.  Reuse the shared-DB bound team id when a durable
-        leader record exists for it; otherwise cold-launch on the deterministic
-        id derived from the Summary Task.
+        ``summary_team_id``.  The team id is a pure function of the Summary Task,
+        so this is idempotent: a repeated recovery converges on the same team
+        name, and ``activate`` re-adopts any paused in-session instance for it.
         """
         from openjiuwen.agent_teams.organization.summary import LaunchedSummaryTeam
 
         spec0 = self.default_spec()
         team_id = _summary_team_id_for_task(summary_task_id)
-        # §8 reuse decision: adopt the id when a durable leader record exists,
-        # otherwise cold-start on the same deterministic id so the pool entry
-        # (or a later recovery) converges on this team name too.
-        team_id = await self._recover_team_id(
-            preferred=team_id,
-            session_id=session_id,
-        )
         launched = await self._launch_team(
             spec0=spec0,
             team_id=team_id,
@@ -169,52 +162,6 @@ class JiuwenSummaryTeamFactory:
 
     async def _allocate_team_id(self) -> str:
         return f"org-summary-{uuid.uuid4().hex[:12]}"
-
-    async def _recover_team_id(
-        self,
-        *,
-        preferred: str,
-        session_id: str,
-    ) -> str:
-        """Choose the team id for a §8 recovery.
-
-        If the shared DB already has a leader record for ``preferred``, reuse
-        it; otherwise cold-start on ``preferred`` (the deterministic id for the
-        task).  The id is a pure function of the summary task in both cases, so
-        repeated recoveries and cold launches all converge on one team name.
-        """
-        return (
-            await self._find_bound_team_id(team_id=preferred, session_id=session_id)
-            or preferred
-        )
-
-    async def _find_bound_team_id(
-        self,
-        *,
-        team_id: str,
-        session_id: str,
-    ) -> str:
-        """Return the shared-DB bound team id for ``team_id``, if any, else ''.
-
-        Mirrors the "reuse if present in the shared DB" decision: a previously
-        completed provision wrote an ``OrgLeaderRecord`` keyed by team id.  When
-        no such leader exists this is a cold start and '' is returned.
-        """
-        donor_backend = await self._resolve_donor_backend(
-            session_id=session_id,
-            team_id=team_id,
-            share_db_from_team_id=None,
-        )
-        donor_db = (
-            getattr(donor_backend, "db", None) if donor_backend is not None else None
-        )
-        if donor_db is None:
-            return ""
-
-        from openjiuwen.agent_teams.organization.task_pool import OrgTaskManager
-
-        org_ids = await OrgTaskManager.find_organization_ids_for_team(donor_db, team_id)
-        return team_id if org_ids else ""
 
     def _get_runtime(self) -> Any:
         if self._runtime_manager is not None:

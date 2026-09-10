@@ -92,62 +92,38 @@ def test_summary_team_id_for_task_is_deterministic() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recover_reuses_bound_team_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Recover adopts the shared-DB bound id when a leader record exists."""
+async def test_recover_converges_on_deterministic_team_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recover launches on the deterministic id and is idempotent across retries."""
     task_id = "summary-task-1"
-    bound_id = _summary_team_id_for_task(task_id)
+    expected = _summary_team_id_for_task(task_id)
 
     factory = JiuwenSummaryTeamFactory(runtime_manager=object())
     launched_calls: list[dict] = []
-
-    async def _fake_find_bound(team_id: str, session_id: str) -> str:
-        return team_id  # shared DB has a leader record -> reuse
 
     async def _fake_launch(**kwargs) -> SimpleNamespace:
         launched_calls.append(kwargs)
         return SimpleNamespace(team_id=kwargs["team_id"], leader_id="leader-summary")
 
-    monkeypatch.setattr(factory, "_find_bound_team_id", _fake_find_bound)
     monkeypatch.setattr(factory, "_launch_team", _fake_launch)
 
-    launched = await factory.recover(
+    first = await factory.recover(
         execution_id="summary-exec-1",
         organization_id="org-1",
         root_task_id="root-1",
         summary_task_id=task_id,
         session_id="sess-1",
     )
-    assert launched.team_id == bound_id
-    assert launched_calls[0]["team_id"] == bound_id
-
-
-@pytest.mark.asyncio
-async def test_recover_cold_starts_on_deterministic_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Recover falls back to the deterministic id when no leader record exists."""
-    task_id = "summary-task-2"
-    bound_id = _summary_team_id_for_task(task_id)
-
-    factory = JiuwenSummaryTeamFactory(runtime_manager=object())
-    launched_calls: list[dict] = []
-
-    async def _fake_find_bound(team_id: str, session_id: str) -> str:
-        return ""  # no leader record -> cold start
-
-    async def _fake_launch(**kwargs) -> SimpleNamespace:
-        launched_calls.append(kwargs)
-        return SimpleNamespace(team_id=kwargs["team_id"], leader_id="leader-summary")
-
-    monkeypatch.setattr(factory, "_find_bound_team_id", _fake_find_bound)
-    monkeypatch.setattr(factory, "_launch_team", _fake_launch)
-
-    launched = await factory.recover(
-        execution_id="summary-exec-2",
-        organization_id="org-2",
-        root_task_id="root-2",
+    # A second recovery of the same execution must converge on the same team
+    # name, so repeated §8 scans never spawn duplicate teams.
+    second = await factory.recover(
+        execution_id="summary-exec-1",
+        organization_id="org-1",
+        root_task_id="root-1",
         summary_task_id=task_id,
-        session_id="sess-2",
+        session_id="sess-1",
     )
-    assert launched.team_id == bound_id
-    assert launched_calls[0]["team_id"] == bound_id
+    assert first.team_id == expected
+    assert second.team_id == expected
+    assert [c["team_id"] for c in launched_calls] == [expected, expected]
