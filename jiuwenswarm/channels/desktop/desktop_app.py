@@ -2013,43 +2013,68 @@ class DesktopRuntime:
                         cleanup_exc,
                     )
 
-    @staticmethod
-    def _show_download_complete(file_path: str) -> None:
-        """下载完成后提醒用户并打开文件所在文件夹。"""
+    def _show_download_complete(self, file_path: str) -> None:
+        """Show a confirmation owned by the desktop window on its UI thread."""
         try:
+            if self.window is None or (os.name != "nt" and sys.platform != "darwin"):
+                return
+
+            # Match the frontend's localStorage language detector and Chinese default.
+            language = self.window.evaluate_js("localStorage.getItem('i18nextLng')")
+            english = isinstance(language, str) and language.split("-")[0] == "en"
+            title = "Download complete" if english else "下载完成"
+            message = (
+                f"File saved to:\n{file_path}\n\nOpen the containing folder?"
+                if english else f"文件已下载到:\n{file_path}\n\n是否打开所在文件夹？"
+            )
             if os.name == "nt":
-                # Windows: 弹窗询问是否打开文件夹
-                result = ctypes.windll.user32.MessageBoxW(
-                    0,
-                    f"文件已下载到:\n{file_path}\n\n是否打开所在文件夹？",
-                    "下载完成",
-                    0x44  # MB_YESNO + MB_ICONINFORMATION
+                from System import Action  # type: ignore[import-not-found]
+                from System.Windows.Forms import (  # type: ignore[import-not-found]
+                    DialogResult, MessageBox, MessageBoxButtons, MessageBoxIcon,
                 )
-                if result == 6:  # IDYES
-                    # 打开文件夹并选中文件
-                    explorer_path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "explorer.exe")
-                    subprocess.Popen(
-                        [explorer_path, "/select,", file_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=_creationflags(),
+
+                native_window = self.window.native
+
+                def confirm_windows() -> None:
+                    result = MessageBox.Show(
+                        native_window, message, title,
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Information,
                     )
-            elif sys.platform == "darwin":
-                # macOS: 弹窗询问
-                result = subprocess.run(
-                    ["/usr/bin/osascript", "-e", f'''
-                    display alert "下载完成" message "文件已下载到:\\n{file_path}\\n\\n是否打开所在文件夹？" buttons {"取消", "打开文件夹"} default button "打开文件夹" as informational
-                    '''],
-                    capture_output=True,
-                    text=True,
-                )
-                if "打开文件夹" in result.stdout:
-                    # 打开文件夹并选中文件
-                    subprocess.Popen(
-                        ["/usr/bin/open", "-R", file_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    if result == DialogResult.Yes:
+                        explorer_path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "explorer.exe")
+                        subprocess.Popen(
+                            [explorer_path, "/select,", file_path],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=_creationflags(),
+                        )
+
+                native_window.Invoke(Action(confirm_windows))
+            else:
+                import AppKit  # type: ignore[import-not-found]
+                from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+
+                native_window = self.window.native
+
+                def confirm_macos() -> None:
+                    alert = AppKit.NSAlert.alloc().init()
+                    alert.setMessageText_(title)
+                    alert.setInformativeText_(message)
+                    alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
+                    alert.addButtonWithTitle_("Open folder" if english else "打开文件夹")
+                    alert.addButtonWithTitle_("Cancel" if english else "取消")
+
+                    def completed(response: int) -> None:
+                        if response == AppKit.NSAlertFirstButtonReturn:
+                            subprocess.Popen(
+                                ["/usr/bin/open", "-R", file_path],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+
+                    alert.beginSheetModalForWindow_completionHandler_(native_window, completed)
+
+                AppHelper.callAfter(confirm_macos)
         except Exception as exc:  # noqa: BLE001
             logger.error("[desktop] failed to show download complete: %s", exc)
 

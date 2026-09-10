@@ -125,3 +125,91 @@ def test_download_file_reports_destination_write_failure(monkeypatch, tmp_path):
 
     assert result == {"ok": False, "cancelled": False}
     assert target_path.exists() is False
+
+
+@pytest.mark.parametrize("language", [None, "zh", "en", "en-US"])
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_download_confirmation_is_a_sheet_on_the_macos_window(
+    monkeypatch, language, confirmed
+):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    runtime = _runtime()
+    native_window = object()
+    runtime.window = SimpleNamespace(
+        native=native_window, evaluate_js=Mock(return_value=language)
+    )
+    alert = Mock()
+    appkit = SimpleNamespace(
+        NSAlert=SimpleNamespace(alloc=lambda: SimpleNamespace(init=lambda: alert)),
+        NSAlertStyleInformational=1,
+        NSAlertFirstButtonReturn=1000,
+    )
+    schedule = Mock()
+    monkeypatch.setitem(sys.modules, "AppKit", appkit)
+    monkeypatch.setitem(
+        sys.modules, "PyObjCTools", SimpleNamespace(AppHelper=SimpleNamespace(callAfter=schedule))
+    )
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_app.os, "name", "posix")
+    launch = Mock()
+    monkeypatch.setattr(desktop_app.subprocess, "Popen", launch)
+    path = '/tmp/report "quoted".pdf'
+
+    runtime._show_download_complete(path)
+
+    alert.beginSheetModalForWindow_completionHandler_.assert_not_called()
+    schedule.call_args.args[0]()
+    owner, complete = alert.beginSheetModalForWindow_completionHandler_.call_args.args
+    assert owner is native_window
+    assert path in alert.setInformativeText_.call_args.args[0]
+    english = language in ("en", "en-US")
+    alert.setMessageText_.assert_called_once_with("Download complete" if english else "下载完成")
+    launch.assert_not_called()
+    complete(1000 if confirmed else 1001)
+    assert launch.call_count == int(confirmed)
+    if confirmed:
+        assert launch.call_args.args[0] == ["/usr/bin/open", "-R", path]
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+@pytest.mark.parametrize("language", ["zh", "en"])
+def test_windows_download_confirmation_has_an_owner_on_the_ui_thread(
+    monkeypatch, confirmed, language
+):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    runtime = _runtime()
+    native_window = Mock()
+    runtime.window = SimpleNamespace(native=native_window, evaluate_js=Mock(return_value=language))
+    show = Mock(return_value="yes" if confirmed else "no")
+    monkeypatch.setitem(sys.modules, "System", SimpleNamespace(Action=lambda callback: callback))
+    monkeypatch.setitem(sys.modules, "System.Windows.Forms", SimpleNamespace(
+        DialogResult=SimpleNamespace(Yes="yes"),
+        MessageBox=SimpleNamespace(Show=show),
+        MessageBoxButtons=SimpleNamespace(YesNo="yes-no"),
+        MessageBoxIcon=SimpleNamespace(Information="info"),
+    ))
+    monkeypatch.setattr(desktop_app.os, "name", "nt")
+    monkeypatch.setattr(desktop_app, "_creationflags", lambda: 0)
+    launch = Mock()
+    monkeypatch.setattr(desktop_app.subprocess, "Popen", launch)
+
+    runtime._show_download_complete(r"C:\Downloads\report.pdf")
+
+    show.assert_not_called()
+    native_window.Invoke.assert_called_once()
+    native_window.Invoke.call_args.args[0]()
+    show.assert_called_once()
+    owner, message, title, buttons, icon = show.call_args.args
+    assert owner is native_window
+    assert r"C:\Downloads\report.pdf" in message
+    assert title == ("Download complete" if language == "en" else "下载完成")
+    assert (buttons, icon) == ("yes-no", "info")
+    assert launch.call_count == int(confirmed)
+    if confirmed:
+        assert launch.call_args.args[0][1:] == ["/select,", r"C:\Downloads\report.pdf"]
