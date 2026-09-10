@@ -983,6 +983,81 @@ def _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir: Path) -> None:
         print(f"[migration] Renamed: {old_workspace} -> {new_workspace}")
 
 
+def _migrate_legacy_heartbeat_jobs(workspace_dir: Path) -> bool:
+    """Move Heartbeat jobs out of the legacy ``agent/home`` directory.
+
+    ``agent/home`` predates the DeepAgent workspace layout and is removed by
+    :func:`_migrate_legacy_workspace`.  Heartbeat jobs were later persisted in
+    that directory, so deleting it could silently erase every job.  The legacy
+    layout gate routes ``agent/home`` through this migration before AgentServer
+    starts.
+
+    When both files exist, the new location is authoritative.  The legacy file
+    is removed instead of merged because merging stale state could resurrect
+    jobs that the user already deleted or disabled.
+    """
+    legacy_path = workspace_dir / "agent" / "home" / "heartbeat_jobs.json"
+    target_path = workspace_dir / "agent" / "heartbeat_jobs.json"
+    if not legacy_path.exists():
+        return True
+
+    temp_path: Path | None = None
+    try:
+        if target_path.exists():
+            legacy_path.unlink()
+            logger.warning(
+                "Both legacy and current heartbeat_jobs.json exist. "
+                "Kept current version and removed the legacy store: %s",
+                legacy_path,
+            )
+            return True
+
+        legacy_data = json.loads(legacy_path.read_text(encoding="utf-8"))
+        if not isinstance(legacy_data, dict) or not isinstance(
+            legacy_data.get("jobs"), list
+        ):
+            raise ValueError("heartbeat store must be an object with a jobs array")
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target_path.parent / (
+            f".{target_path.name}.migrate.{os.getpid()}.{time.time_ns()}"
+        )
+        shutil.copy2(legacy_path, temp_path)
+        os.replace(temp_path, target_path)
+        legacy_path.unlink()
+        logger.info(
+            "Migrated heartbeat_jobs.json: %s -> %s",
+            legacy_path,
+            target_path,
+        )
+        return True
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        logger.error(
+            "Failed to migrate heartbeat_jobs.json; preserving legacy home: %s",
+            exc,
+        )
+        return False
+
+
+def _remove_legacy_home(old_home: Path, heartbeat_jobs_migrated: bool) -> None:
+    """Remove legacy home only after its Heartbeat store is safe."""
+    if not old_home.exists():
+        return
+    if not heartbeat_jobs_migrated:
+        logger.error(
+            "Preserved old home because heartbeat_jobs.json migration failed: %s",
+            old_home,
+        )
+        return
+    shutil.rmtree(old_home)
+    logger.info("Removed old home: %s", old_home)
+
+
 def _migrate_legacy_workspace(
     workspace_dir: Path,
     preferred_language: Optional[str] = None,
@@ -1015,6 +1090,8 @@ def _migrate_legacy_workspace(
     old_home = workspace_dir / "agent" / "home"
     old_skills = workspace_dir / "agent" / "skills"
     old_memory = workspace_dir / "agent" / "memory"
+
+    heartbeat_jobs_migrated = _migrate_legacy_heartbeat_jobs(workspace_dir)
 
     new_workspace = workspace_dir / "agent" / "workspace"
     new_workspace.mkdir(parents=True, exist_ok=True)
@@ -1132,9 +1209,7 @@ def _migrate_legacy_workspace(
 
     # 6. Clean up old directories after successful migration
     try:
-        if old_home.exists():
-            shutil.rmtree(old_home)
-            logger.info(f"Removed old home: {old_home}")
+        _remove_legacy_home(old_home, heartbeat_jobs_migrated)
         if old_skills.exists():
             shutil.rmtree(old_skills)
             logger.info(f"Removed old skills: {old_skills}")
@@ -1780,6 +1855,13 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     new_workspace = workspace_dir / "agent" / "workspace"
     old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
     mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
+    legacy_layout_exists = any(
+        (
+            (workspace_dir / "agent" / "home").exists(),
+            (workspace_dir / "agent" / "skills").exists(),
+            (workspace_dir / "agent" / "memory").exists(),
+        )
+    )
 
     cleanup_team_files(workspace_dir)
 
@@ -1791,6 +1873,7 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
         (
             config_missing,
             workspace_migration_needed,
+            legacy_layout_exists,
             mcp_builtins_missing,
             mcp_builtins_update_needed,
         )
@@ -2522,11 +2605,20 @@ def get_cron_jobs_path() -> Path:
 
 
 def get_heartbeat_jobs_path() -> Path:
-    """Canonical path for heartbeat_jobs.json (new thread-automation heartbeat jobs).
+    """Resolve the Heartbeat store without stranding pre-migration jobs.
 
-    与 ``get_cron_jobs_path`` 同目录(``agent/home``),禁止在业务代码中硬编码该路径。
+    Fresh and migrated deployments use ``agent/heartbeat_jobs.json``.  The
+    legacy fallback keeps jobs readable if startup migration could not move the
+    file (for example because of a temporary permission or filesystem error).
     """
-    return get_agent_home_dir() / "heartbeat_jobs.json"
+    workspace = get_user_workspace_dir()
+    current_path = workspace / "agent" / "heartbeat_jobs.json"
+    legacy_path = workspace / "agent" / "home" / "heartbeat_jobs.json"
+    if current_path.exists():
+        return current_path
+    if legacy_path.exists():
+        return legacy_path
+    return current_path
 
 
 def get_deepagent_todo_dir() -> Path:
