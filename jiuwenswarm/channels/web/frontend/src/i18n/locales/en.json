@@ -2652,6 +2652,8 @@
     "confirm": "Confirm",
     "customOption": "Custom",
     "customPlaceholder": "No suitable option? Type your answer...",
+    "customRequired": "Please enter a custom answer.",
+    "selectionRequired": "Select at least one option or enter a custom answer.",
     "skippedSummary": "Skipped"
   },
   "qaSummary": {
