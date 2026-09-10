@@ -1235,6 +1235,15 @@ class AgentOSRouterClient(AgentServerClient):
                     uri,
                     extra_headers=ws_headers,
                 )
+                # 建连成功即注册断连通知（早于 _get_ws_client 写缓存，缩小
+                # 「已连接但未注册」的漏报窗口）；test double 无该接口时跳过。
+                self._register_ws_disconnect_handler(
+                    client,
+                    user_id=user_id,
+                    session_id=session_id,
+                    agent_type=agent_type,
+                    instance_id=instance_id,
+                )
                 log_agentos(
                     logger,
                     logging.INFO,
@@ -1441,6 +1450,76 @@ class AgentOSRouterClient(AgentServerClient):
                 await client.disconnect()
             except Exception:
                 logger.warning("[AgentOSRouter] close agent ws failed", exc_info=True)
+
+    def _register_ws_disconnect_handler(
+        self,
+        client: Any,
+        *,
+        user_id: str,
+        session_id: str,
+        agent_type: str,
+        instance_id: str,
+    ) -> None:
+        """注册南向实例 WS 断连通知；test double 无该接口时静默跳过。"""
+        setter = getattr(client, "set_disconnect_handler", None)
+        if not callable(setter):
+            return
+
+        async def _on_ws_closed(exc: BaseException) -> None:
+            await self._handle_agent_ws_closed(client, user_id=user_id, session_id=session_id, agent_type=agent_type,
+                                               instance_id=instance_id, reason=type(exc).__name__)
+
+        setter(_on_ws_closed)
+
+    async def _handle_agent_ws_closed(
+        self,
+        client: Any,
+        *,
+        user_id: str,
+        session_id: str,
+        agent_type: str,
+        instance_id: str,
+        reason: str,
+    ) -> None:
+        """南向实例 WS 断开：摘除死 client 缓存，并把既有延迟清理提前排上。
+
+        清理复用北向断连的 :meth:`_delayed_cleanup`（连接数复核 → task_count 复核 → pop_if_idle
+        in-flight 请求持有 task_count 时会拒绝删除），不走 ``_cleanup_agent_on_network_failure``
+        强制路径——WS开不代表沙箱有问题（YuanRong 代理抖动 / supervisor 拉起中），强制清理会误杀可恢复实例。
+        """
+        if self._closed:
+            # 关停期：_close_all_ws_clients 走正常 disconnect()，不应有事件；
+            # 即使有也不触发清理
+            return
+        # 摘除死 client：仅当缓存中仍是该 client（可能已被正常摘除或替换）。
+        # 下个请求走 _get_ws_client 正常重建，避免误用死连接。
+        async with self._ws_clients_lock:
+            if self._ws_clients.get(instance_id) is client:
+                self._ws_clients.pop(instance_id, None)
+        log_agentos(logger, logging.WARNING, "agent.ws.closed", user_id=user_id, session_id=session_id,
+                    sandbox_id=instance_id, agent_type=agent_type, instance=instance_id, reason=reason)
+        if self._disconnect_cleanup_timeout_seconds <= 0:
+            # 与北向断连同一开关：<=0 关闭延迟清理路径
+            return
+        if self._agent_manager.get_user_connection_count(user_id) > 0:
+            # 用户在线：实例真死由请求路径很快发现并走其网络失败清理
+            # （基于数据面真实异常，比这里更准）；控制面抖动时不抢跑。
+            log_agentos(logger, logging.INFO, "agent.ws.cleanup.skip_online", user_id=user_id,
+                        session_id=session_id, sandbox_id=instance_id, agent_type=agent_type, instance=instance_id)
+            return
+        existing = self._pending_cleanups.get(user_id)
+        if existing is not None and not existing.done():
+            return
+        log_agentos(logger, logging.INFO, "agent.ws.cleanup.scheduled", user_id=user_id, session_id=session_id,
+                    sandbox_id=instance_id, agent_type=agent_type, instance=instance_id,
+                    wait_s=f"{self._disconnect_cleanup_timeout_seconds:.0f}s")
+        task = asyncio.create_task(
+            self._delayed_cleanup(user_id),
+            name=f"agentos-ws-closed-cleanup-{user_id[:24]}",
+        )
+        self._pending_cleanups[user_id] = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def send_request(self, envelope: E2AEnvelope) -> AgentResponse:
         # 3rdagent.list / 3rdagent.switch are handled by Gateway ThirdAgent
