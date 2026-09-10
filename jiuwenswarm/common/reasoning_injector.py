@@ -81,7 +81,8 @@ def inject_reasoning_params(
     # 无协商余地。必须早于 reasoning 的 level early-return,否则无 reasoning_level
     # 的普通调用(绝大多数)不会走到下面的 target 注入分支。
     override = resolve_sampling_override(
-        model_client_config.get("api_base") or model_client_config.get("base_url")
+        model_client_config.get("api_base") or model_client_config.get("base_url"),
+        model_client_config.get("model_name") or model_client_config.get("model"),
     )
     if override:
         runtime_model_config.update(override)

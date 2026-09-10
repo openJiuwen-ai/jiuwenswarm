@@ -54,6 +54,26 @@ def test_sampling_override_absent_for_other_hosts() -> None:
     assert resolve_sampling_override(None) is None
 
 
+@pytest.mark.parametrize("model_name", ["kimi-k3", "KIMI-K2.6", "moonshotai/Kimi-K2.7-Code"])
+def test_sampling_override_follows_kimi_model_across_aggregators(model_name: str) -> None:
+    assert resolve_sampling_override(
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        model_name,
+    ) == {"temperature": 1.0, "top_p": 0.95}
+
+
+def test_inject_reasoning_params_forces_sampling_on_aggregated_kimi() -> None:
+    injected = inject_reasoning_params(
+        model_client_config={
+            "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "model_name": "kimi-k3",
+        },
+        model_config_obj={"temperature": 0.95},
+    )
+
+    assert injected == {"temperature": 1.0, "top_p": 0.95}
+
+
 def test_inject_reasoning_params_forces_sampling_on_kimi_coding_plan() -> None:
     # Kimi Coding Plan 端点(api.kimi.com)必须在推理参数注入时也强制覆盖到 1.0/0.95,
     # 否则 core 默认 0.95 原样发厂商 -> 400 "invalid temperature: only 1 is allowed".
