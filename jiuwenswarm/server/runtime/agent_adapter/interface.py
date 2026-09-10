@@ -2712,6 +2712,32 @@ class JiuWenSwarm:
                                 should_record = True
                             if et == "chat.error":
                                 await _prepare_rewind_for_error()
+                            # DeepAgent round 级异常（round_execution_error，如模型调用失败）：
+                            # agent-core 只以 execution.error 下发，客户端没有对应分支时会在
+                            # 流尾判成「已完成」（长任务中途失败 → 假完成，只剩琥珀「本轮曾
+                            # 发生异常」）。此处补发一条 chat.error，复用既有「轮内错误 →
+                            # 流尾失败收口」链路；原 execution.error 仍照常下发（web 的 goal
+                            # 语义依赖它）。带 goal 的属于 goal 尝试失败、后续可能继续，不补，
+                            # 避免打断续跑。
+                            if et == "execution.error" and not data.payload.get("goal"):
+                                await _prepare_rewind_for_error()
+                                _round_err_text = str(
+                                    data.payload.get("message")
+                                    or data.payload.get("error")
+                                    or "本轮执行失败"
+                                )
+                                _round_err_payload: dict[str, Any] = {
+                                    "event_type": "chat.error",
+                                    "error": _round_err_text,
+                                }
+                                if data.payload.get("code"):
+                                    _round_err_payload["code"] = data.payload.get("code")
+                                yield AgentResponseChunk(
+                                    request_id=rid,
+                                    channel_id=cid,
+                                    payload=_round_err_payload,
+                                    is_complete=False,
+                                )
                             if et == "context.compression_state":
                                 _append_compact_history_from_payload(
                                     payload=data.payload,
