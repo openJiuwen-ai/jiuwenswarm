@@ -566,8 +566,6 @@ class McpServerRegistry:
         while not self._scanner_stop.is_set():
             try:
                 await self.scan_once()
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception("[McpServerRegistry] scanner cycle failed")
             jitter = 1.0 + random.uniform(0.0, 0.1)
