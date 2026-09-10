@@ -152,7 +152,10 @@ def validate_a2ui_config_update(
     if config_key is None:
         return False, {}, f"Unknown A2UI config key: {param_key}"
 
-    return True, {config_key: _to_bool(value)}, ""
+    if _to_bool(value):
+        return False, {}, "A2UI is disabled by backend policy and cannot be enabled"
+
+    return True, {config_key: False}, ""
 
 
 __all__ = [
