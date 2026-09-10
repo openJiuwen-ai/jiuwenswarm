@@ -514,10 +514,22 @@ def _code_base_rail_names(role: str) -> tuple[str, ...]:
 
 def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
     """Return the role-specific skill-evolution rails (shared by both profiles)."""
+    from jiuwenswarm.symphony.config import load_symphony_config
+
+    rails: list[RailSpec] = []
+    symphony = load_symphony_config(config)
+    if (
+        role == "leader"
+        and symphony.enabled
+        and symphony.evolution.backend == "core"
+        and (symphony.evolution.enabled or symphony.flow.enabled)
+    ):
+        rails.append(RailSpec(type=registry.SYMPHONY_GRAPH_EVOLUTION, params={}))
     if not get_skill_evolution_enabled(config):
-        return []
+        return rails
     if role == "leader":
         return [
+            *rails,
             RailSpec(
                 type=registry.TEAM_SKILL_EVOLUTION,
                 params=_team_evolution_rail_params(config),
@@ -532,6 +544,7 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
             ),
         ]
     return [
+        *rails,
         RailSpec(
             type=registry.MEMBER_SKILL_EVOLUTION,
             params=_member_evolution_rail_params(config),

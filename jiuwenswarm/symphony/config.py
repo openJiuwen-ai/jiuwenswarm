@@ -22,6 +22,8 @@ DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
 
 DEFAULT_SYMPHONY_ENABLED = False
 DEFAULT_EVOLUTION_ENABLED = False
+DEFAULT_EVOLUTION_BACKEND = "core"
+DEFAULT_FLOW_ENABLED = False
 
 DEFAULT_ORCHESTRATION_MODE = "fast"
 DEFAULT_ORCHESTRATION_TOP_K = 3
@@ -67,6 +69,13 @@ class SymphonyBuildConfig:
 @dataclass(frozen=True)
 class SymphonyEvolutionConfig:
     enabled: bool = DEFAULT_EVOLUTION_ENABLED
+    backend: str = DEFAULT_EVOLUTION_BACKEND
+
+
+@dataclass(frozen=True)
+class SymphonyFlowConfig:
+    enabled: bool = DEFAULT_FLOW_ENABLED
+    flow_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,7 @@ class SymphonyConfig:
     fingerprint: SymphonyFingerprintConfig
     build: SymphonyBuildConfig
     evolution: SymphonyEvolutionConfig
+    flow: SymphonyFlowConfig
     orchestration: SymphonyOrchestrationConfig
 
 
@@ -110,6 +120,8 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     extraction = _mapping(fingerprint.get("extraction"))
     build = _mapping(data.get("build"))
     evolution = _mapping(data.get("evolution"))
+    flow = _mapping(data.get("flow"))
+    flow_dir = flow.get("dir") or flow.get("flow_dir")
     orchestration = _mapping(data.get("orchestration"))
 
     return SymphonyConfig(
@@ -169,6 +181,18 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
             enabled=_bool(
                 evolution.get("enabled"),
                 DEFAULT_EVOLUTION_ENABLED,
+            ),
+            backend=_evolution_backend(
+                evolution.get("backend"),
+                DEFAULT_EVOLUTION_BACKEND,
+            ),
+        ),
+        flow=SymphonyFlowConfig(
+            enabled=_bool(flow.get("enabled"), DEFAULT_FLOW_ENABLED),
+            flow_dir=(
+                _resolve_path(flow_dir, Path("."))
+                if str(flow_dir or "").strip()
+                else None
             ),
         ),
         orchestration=SymphonyOrchestrationConfig(
@@ -259,3 +283,10 @@ def _orchestration_mode(value: Any, default: str) -> str:
     if text in {"fast", "beam"}:
         return text
     raise ValueError(f"Unsupported Symphony orchestration mode: {value}")
+
+
+def _evolution_backend(value: Any, default: str) -> str:
+    text = str(value or "").strip().lower() or default
+    if text in {"core", "legacy"}:
+        return text
+    raise ValueError(f"Unsupported Symphony evolution backend: {value}")

@@ -1184,6 +1184,20 @@ class AgentWebSocketServer:
         self._tokenizer_warmup_tasks.add(task)
         task.add_done_callback(self._tokenizer_warmup_tasks.discard)
 
+    @staticmethod
+    async def _start_symphony_recovery() -> None:
+        """Recover Flow candidates without affecting AgentServer availability."""
+
+        try:
+            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+            await get_swarm_symphony_service().start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] Symphony Flow recovery failed: %s",
+                exc,
+            )
+
     async def start(self) -> None:
         """启动或恢复面向 Gateway 的 WebSocket 服务端。
 
@@ -1256,7 +1270,6 @@ class AgentWebSocketServer:
                 try:
                     await self._runtime.start()
                     await self._heartbeat_runtime.start()
-                    return
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "[AgentWebSocketServer] Runtime warmup failed; "
@@ -1264,8 +1277,11 @@ class AgentWebSocketServer:
                         retry_delay,
                         exc,
                     )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(30.0, retry_delay * 2)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(30.0, retry_delay * 2)
+                    continue
+                await self._start_symphony_recovery()
+                return
 
         self._checkpointer_warmup_task = asyncio.create_task(
             _start_runtime(), name="runtime-start"
@@ -1740,6 +1756,16 @@ class AgentWebSocketServer:
                     ConfigAdapter(),
                 ):
                     self._adapter_registry.register(adapter)
+
+        try:
+            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+            await get_swarm_symphony_service().close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] Symphony runtime close failed: %s",
+                exc,
+            )
 
         runtime_push_handler = getattr(self, "_runtime_push_handler", None)
         if runtime_push_handler is not None:

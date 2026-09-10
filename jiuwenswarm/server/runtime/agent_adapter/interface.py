@@ -831,6 +831,8 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_GRAPH_STATUS: "handle_skills_graph_status",
     ReqMethod.SKILLS_GRAPH_GET: "handle_skills_graph_get",
     ReqMethod.SKILLS_GRAPH_CANCEL: "handle_skills_graph_cancel",
+    ReqMethod.SKILLS_EXPERIENCE_LIST: "handle_skills_experience_list",
+    ReqMethod.SKILLS_EXPERIENCE_REQUEST: "handle_skills_experience_request",
     ReqMethod.SKILLS_EVOLUTION_STATUS: "handle_skills_evolution_status",
     ReqMethod.SKILLS_EVOLUTION_GET: "handle_skills_evolution_get",
     ReqMethod.SKILLS_EVOLUTION_SAVE: "handle_skills_evolution_save",
@@ -1796,9 +1798,12 @@ class JiuWenSwarm:
                 "handle_skills_import_local",
                 "handle_skills_get",
                 "handle_skills_files_get",
+                "handle_skills_experience_request",
             ):
                 # download_token / 正文图片 token 校验需要绑定当前会话 sid
                 params["_session_id"] = str(request.session_id or "").strip()
+                if handler_name == "handle_skills_experience_request":
+                    params["_channel_id"] = str(request.channel_id or "").strip()
                 if handler_name == "handle_skills_files_get" and not params.get("session_id"):
                     params["session_id"] = params["_session_id"]
             if handler_name in {

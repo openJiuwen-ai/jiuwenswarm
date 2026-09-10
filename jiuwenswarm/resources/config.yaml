@@ -48,7 +48,14 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+    enabled: false
+    # core = Core GraphEngine 动态图；legacy = 旧 JiuwenSwarm overlay 回退。
+    backend: core
+
+  flow:
+    # 经验 Recipe 和安装候选默认关闭，开启后仍需用户确认才会安装。
+    enabled: false
+    dir: ""
 
   orchestration:
     # fast is the default one-shot path; beam enables bidirectional search.
