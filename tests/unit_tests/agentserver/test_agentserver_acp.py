@@ -25,7 +25,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime import (
+from jiuwenswarm.runtime.session_provisioner import (
     RuntimeSessionProvisioner,
     SessionProvisionCommitTiming,
     SessionProvisionState,
@@ -993,7 +993,7 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
     metadata = get_session_metadata("acp_session_001", cache_bust=True)
     assert metadata["mode"] == "agent.work.normal"
-    runtime_session = server._execution_runtime().session_coordinator.snapshot_session(
+    runtime_session = server._execution_runtime()._session_coordinator.snapshot_session(
         "acp_session_001"
     )
     assert runtime_session is not None

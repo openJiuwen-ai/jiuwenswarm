@@ -79,7 +79,7 @@ async def test_work_and_code_normal_unary_use_session_registry(
         params={"mode": mode, "work_mode": work_mode},
     )
     assert await runtime.invoke(request) == [request.request_id]
-    snapshot = runtime.session_coordinator.snapshot_session(session_id)
+    snapshot = runtime._session_coordinator.snapshot_session(session_id)
     assert snapshot is not None
     assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
     assert snapshot.executions[-1].work_kind is SessionWorkKind.CHAT_UNARY
@@ -113,7 +113,7 @@ async def test_work_and_code_normal_stream_use_session_registry(
         is_stream=True,
     )
     assert [item async for item in runtime.stream(request)] == [request.request_id]
-    snapshot = runtime.session_coordinator.snapshot_session(session_id)
+    snapshot = runtime._session_coordinator.snapshot_session(session_id)
     assert snapshot is not None
     assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
     assert snapshot.executions[-1].work_kind is SessionWorkKind.CHAT_STREAM
@@ -188,7 +188,7 @@ async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
 
     runtime._invoke_started = invoke_started  # type: ignore[method-assign]
     assert await runtime.invoke(request) == [request.request_id]
-    snapshot = runtime.session_coordinator.snapshot_session("session")
+    snapshot = runtime._session_coordinator.snapshot_session("session")
     assert snapshot is not None
     assert snapshot.executions == ()
     await runtime.close()
@@ -212,7 +212,7 @@ async def test_cancel_runs_semantic_interrupt_before_coordinator_cancel(
             order.append("execution-exited")
 
     running = asyncio.create_task(
-        runtime.session_coordinator.run_unary(
+        runtime._session_coordinator.run_unary(
             "session", "target", SessionWorkKind.CHAT_UNARY, work
         )
     )
@@ -249,15 +249,15 @@ def test_process_client_uses_the_standard_runtime() -> None:
 async def test_closed_session_can_be_registered_as_a_new_generation() -> None:
     runtime = _runtime()
     await runtime.start()
-    await runtime.register_session(session_id="session", channel_id="web")
-    first = runtime.session_coordinator.snapshot_session("session")
+    await runtime._register_session(session_id="session", channel_id="web")
+    first = runtime._session_coordinator.snapshot_session("session")
     assert first is not None
 
-    await runtime.session_coordinator.close_session("session")
-    assert not runtime.owns_session("session")
-    await runtime.register_session(session_id="session", channel_id="tui")
+    await runtime._session_coordinator.close_session("session")
+    assert not runtime._owns_session("session")
+    await runtime._register_session(session_id="session", channel_id="tui")
 
-    second = runtime.session_coordinator.snapshot_session("session")
+    second = runtime._session_coordinator.snapshot_session("session")
     assert second is not None
     assert second.generation == first.generation + 1
     assert second.channel_id == "tui"
@@ -307,7 +307,7 @@ async def test_single_agent_runtime_owns_every_user_channel(
     )
 
     assert await runtime.invoke(request) == [request.request_id]
-    snapshot = runtime.session_coordinator.snapshot_session(request.session_id)
+    snapshot = runtime._session_coordinator.snapshot_session(request.session_id)
     assert snapshot is not None
     assert snapshot.channel_id == channel_id
     assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
@@ -335,7 +335,7 @@ async def test_plan_and_team_work_keep_their_existing_owner(
     )
 
     assert await runtime.invoke(request) == [request.request_id]
-    assert runtime.session_coordinator.snapshot_session(request.session_id) is None
+    assert runtime._session_coordinator.snapshot_session(request.session_id) is None
     await runtime.close()
 
 

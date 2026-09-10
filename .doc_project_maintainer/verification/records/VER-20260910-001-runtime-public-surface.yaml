@@ -1,0 +1,51 @@
+id: VER-20260910-001-runtime-public-surface
+applies_to:
+  source_revision: 029c76a64+session-runtime-public-surface
+  modules: [runtime-session, agentserver-runtime]
+  flows: [runtime-session-reference-chain]
+  symbols:
+    - jiuwenswarm.runtime.__all__
+    - AgentRuntime
+    - AgentRuntime._register_session
+    - AgentRuntime._prepare_chat_turn
+  paths:
+    - jiuwenswarm/runtime/__init__.py
+    - jiuwenswarm/runtime/service.py
+    - jiuwenswarm/runtime/session_provisioner.py
+    - jiuwenswarm/server/agent_ws_server.py
+evidence:
+  level: synthetic_integration
+  scenario: runtime-public-surface-and-affected-boundaries
+  environment: Windows, repository .venv, Python 3.12.12
+  command: >-
+    .venv/Scripts/python.exe -m pytest --no-cov -q -o log_cli=false
+    tests/unit_tests/process_cli/test_process_cli.py
+    tests/unit_tests/runtime/test_runtime_architecture.py
+    tests/unit_tests/runtime/test_runtime_service.py
+    tests/unit_tests/runtime/test_runtime_session_provisioner.py
+    tests/unit_tests/runtime/test_runtime_single_agent_reference.py
+    tests/unit_tests/runtime/test_session_create_provisioner.py
+    tests/unit_tests/runtime/test_session_fork_provisioner.py
+    tests/unit_tests/runtime/test_session_provision_contract.py
+    tests/unit_tests/runtime/test_session_switch_provisioner.py
+    tests/unit_tests/runtime/test_runtime_session_coordinator.py
+    tests/unit_tests/agentserver/test_agentserver_acp.py
+    tests/unit_tests/agentserver/test_agentserver_boundary_characterization.py
+    tests/unit_tests/agentserver/test_mode_cross_layer_protocol.py
+    tests/unit_tests/agentserver/test_session_create_runtime_boundary.py
+    tests/unit_tests/agentserver/test_session_fork_characterization.py
+    tests/unit_tests/agentserver/test_session_switch_characterization.py
+    tests/system_tests/test_process_cli_session_runtime_live.py
+  repetitions: 1
+  successes: 456
+  warnings: 2
+result: passed
+status: active
+recorded_at: 2026-09-10T11:53:00Z
+supersedes: []
+evidence_paths: []
+notes: >-
+  All 456 affected deterministic tests passed. Four configured-model system cases were
+  collected and skipped because live-model execution was not enabled. Ruff
+  passed for the changed Runtime and test files. The unchanged AgentServer
+  baseline retains five unrelated E402/F841 findings outside this refactor.

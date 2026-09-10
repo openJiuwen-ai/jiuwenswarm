@@ -312,10 +312,6 @@ class AgentRuntime:
     def plan_controller(self) -> PlanModeController:
         return self._plan_controller
 
-    @property
-    def session_coordinator(self) -> RuntimeSessionCoordinator:
-        return self._session_coordinator
-
     def set_admission_controller(self, controller: Any | None) -> None:
         """Attach optional host-owned scheduling admission to chat execution."""
         self._admission_controller = controller
@@ -415,7 +411,7 @@ class AgentRuntime:
             channel_id=channel_id,
             session_id=requested or None,
         )
-        await self.register_session(
+        await self._register_session(
             session_id=resolved_session_id,
             channel_id=channel_id,
         )
@@ -552,11 +548,11 @@ class AgentRuntime:
             else:
                 mode = None
                 work_mode = None
-            if mode is not None and self.is_single_agent_session_mode(
+            if mode is not None and self._is_single_agent_session_mode(
                 mode,
                 work_mode=work_mode,
             ):
-                await self.register_session(
+                await self._register_session(
                     session_id=result.session_id,
                     channel_id=result.channel_id,
                 )
@@ -586,7 +582,7 @@ class AgentRuntime:
         }:
             self._pending_session_provisions.discard(prepared)
 
-    async def register_session(self, *, session_id: str, channel_id: str) -> None:
+    async def _register_session(self, *, session_id: str, channel_id: str) -> None:
         """Adopt an existing product Session into this Runtime.
 
         Product create/switch and direct process callers converge here after
@@ -601,7 +597,7 @@ class AgentRuntime:
             SessionPersistencePolicy.PERSISTENT,
         )
 
-    def owns_session(self, session_id: str | None) -> bool:
+    def _owns_session(self, session_id: str | None) -> bool:
         """Return whether the Coordinator owns the current Session generation."""
         snapshot = (
             self._session_coordinator.snapshot_session(session_id)
@@ -611,7 +607,7 @@ class AgentRuntime:
         return bool(snapshot and snapshot.state is not RuntimeSessionState.CLOSED)
 
     @staticmethod
-    def is_single_agent_session_mode(
+    def _is_single_agent_session_mode(
         mode: object,
         *,
         work_mode: object = None,
@@ -633,7 +629,7 @@ class AgentRuntime:
             NEW_AGENT_CODE_NORMAL,
         }
 
-    async def prepare_chat_turn(
+    async def _prepare_chat_turn(
         self,
         request: AgentRequest,
         channel_id: str,
@@ -689,7 +685,7 @@ class AgentRuntime:
             await self._clear_pending_interaction(
                 request.session_id or "default"
             )
-        if request.session_id and self.owns_session(request.session_id):
+        if request.session_id and self._owns_session(request.session_id):
             params = request.params if isinstance(request.params, dict) else {}
             target_request_id = str(params.get("target_request_id") or "").strip()
             await self._session_coordinator.cancel_execution(
@@ -845,7 +841,7 @@ class AgentRuntime:
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
             else:
-                mode, sub_mode, agent = await self.prepare_chat_turn(
+                mode, sub_mode, agent = await self._prepare_chat_turn(
                     request,
                     channel_id,
                     sync_metadata=not readonly_goal_get,
@@ -1122,7 +1118,7 @@ class AgentRuntime:
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
             else:
-                mode, sub_mode, agent = await self.prepare_chat_turn(
+                mode, sub_mode, agent = await self._prepare_chat_turn(
                     request,
                     channel_id,
                     sync_metadata=not readonly_goal_get,
@@ -1331,7 +1327,7 @@ class AgentRuntime:
         """
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
-        if self.owns_session(session_id):
+        if self._owns_session(session_id):
             await self._session_coordinator.close_session(session_id)
         cleaned = await self._agent_manager.cleanup_session_runtime(
             channel_id=channel_id,
@@ -1356,12 +1352,8 @@ class AgentRuntime:
             cleanup_session=self.cleanup_session,
         )
         if result.ok:
-            self.commit_session_delete(result)
+            self._session_provisioner.commit_session_delete(result)
         return result
-
-    def commit_session_delete(self, result: SessionDeleteResult) -> None:
-        """Commit Runtime-owned state after persistent Session deletion."""
-        self._session_provisioner.commit_session_delete(result)
 
     async def close(self) -> None:
         """Release resources unless a Session provision is unfinished.
@@ -1534,7 +1526,7 @@ class AgentRuntime:
         if background or not request.session_id:
             return None
         params = request.params if isinstance(request.params, dict) else {}
-        if not cls.is_single_agent_session_mode(
+        if not cls._is_single_agent_session_mode(
             params.get("mode"),
             work_mode=params.get("work_mode"),
         ):
@@ -1566,9 +1558,9 @@ class AgentRuntime:
     async def _ensure_session_registered(self, request: AgentRequest) -> None:
         """Idempotently adopt direct callers that already own a product ID."""
         session_id = str(request.session_id or "").strip()
-        if self.owns_session(session_id):
+        if self._owns_session(session_id):
             return
-        await self.register_session(
+        await self._register_session(
             session_id=session_id,
             channel_id=request.channel_id or "default",
         )

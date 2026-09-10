@@ -136,7 +136,7 @@ async def test_process_cli_two_turn_session_resume_live(
 
     assert len(_RecordingClient.instances) == 2
     for client in _RecordingClient.instances:
-        snapshot = client.runtime.session_coordinator.snapshot_session(session_id)
+        snapshot = client.runtime._session_coordinator.snapshot_session(session_id)
         assert snapshot is not None
         assert snapshot.state is RuntimeSessionState.CLOSED
         assert all(execution.state.terminal for execution in snapshot.executions)
@@ -196,7 +196,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             event
             async for event in client.stream(original)
         ]
-        waiting = client.runtime.session_coordinator.snapshot_session(session_id)
+        waiting = client.runtime._session_coordinator.snapshot_session(session_id)
         assert waiting is not None
         execution = next(
             execution
@@ -246,7 +246,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             for event in resumed_events
         )
         assert expected_text in resumed_text
-        completed = client.runtime.session_coordinator.snapshot_session(session_id)
+        completed = client.runtime._session_coordinator.snapshot_session(session_id)
         assert completed is not None
         assert all(execution.state.terminal for execution in completed.executions)
     finally:

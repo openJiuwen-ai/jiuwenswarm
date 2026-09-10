@@ -3,7 +3,7 @@ id: runtime-session-reference-chain
 name: Runtime Session Reference Chain
 status: current
 confidence: confirmed
-last_updated: 2026-09-09
+last_updated: 2026-09-10
 user_visible_surface: "Work Normal and Code Normal chat, Goal, and interaction control across Process CLI, Web, TUI, ACP, and IM channels."
 source_of_truth:
   - "RuntimeSessionCoordinator process-local Session records"
@@ -26,6 +26,8 @@ entrypoints:
 ## Outcome
 
 Work Normal and Code Normal share one transport-neutral Session runtime from the in-process Process CLI and AgentServer. Ordinary chat and Goal work therefore use the same execution registry, cancellation, control-input, stream-ownership, cleanup, and shutdown path across Web, TUI, ACP, and IM while preserving existing Session IDs, events, metadata, history, and facade preprocessing.
+
+Callers enter through the narrow `jiuwenswarm.runtime` package API, which exports only `AgentRuntime` and `RuntimeStateError`. Runtime Session internals remain behind that service boundary; provisioning transactions use the explicit `jiuwenswarm.runtime.session_provisioner` submodule.
 
 ## Causal Path
 
