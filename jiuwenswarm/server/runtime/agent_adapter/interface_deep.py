@@ -7198,6 +7198,17 @@ class JiuWenSwarmDeepAdapter:
                     base_url=emb_cfg["base_url"],
                     model=emb_cfg["model"],
                 )
+            from jiuwenswarm.agents.harness.observability_runtime import (
+                get_trajectory_span_processor,
+            )
+
+            trajectory_span_processor = get_trajectory_span_processor()
+            if trajectory_span_processor is None:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] TTSERail create skipped: "
+                    "TrajectorySpanProcessor unavailable"
+                )
+                return None
             # TTSERail defaults to SignalBasedSuccessDetector(llm=..., model=..., config=...).
             # Do not construct the detector without those required kwargs.
             ttse_rail = TTSERail(
@@ -7213,6 +7224,7 @@ class JiuWenSwarmDeepAdapter:
                     dream_min_hours=dream_min_hours,
                     dream_ttl_days=dream_ttl_days,
                 ),
+                trajectory_span_processor=trajectory_span_processor,
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] TTSERail create success, "

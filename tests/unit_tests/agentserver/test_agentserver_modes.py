@@ -2750,6 +2750,7 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     captured: dict[str, object] = {}
+    fake_processor = object()
 
     class FakeTTSEConfig:
         def __init__(self, **kwargs):
@@ -2759,14 +2760,14 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured["rail"] = kwargs
 
-    class FakeDetector:
-        pass
-
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
-    monkeypatch.setattr(interface_deep_module, "SignalBasedSuccessDetector", FakeDetector)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: fake_processor,
+    )
 
     adapter = JiuWenSwarmDeepAdapter()
     adapter._model = Mock()
@@ -2794,6 +2795,30 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     assert captured["config"]["dream_min_hours"] == 12.0
     assert captured["config"]["dream_ttl_days"] == 30
     assert captured["rail"]["model"] == "test-model"
+    assert captured["rail"]["trajectory_span_processor"] is fake_processor
+
+
+def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            raise AssertionError("TTSERail must not be constructed without a processor")
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: None,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    assert adapter._build_ttse_rail({"ttse": {}}) is None
 
 
 def test_build_ttse_rail_ignores_configured_store_path(monkeypatch, tmp_path):
@@ -2816,6 +2841,10 @@ def test_build_ttse_rail_ignores_configured_store_path(monkeypatch, tmp_path):
         interface_deep_module,
         "get_config",
         lambda: {"react": {"ttse": {"store_path": str(tmp_path / "yaml-bank.json")}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
     )
 
     adapter = JiuWenSwarmDeepAdapter()
@@ -2851,6 +2880,10 @@ def test_build_ttse_rail_ignores_configured_inject_mode(monkeypatch, tmp_path):
         "get_config",
         lambda: {"react": {"ttse": {"inject_mode": "legacy_system"}}},
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
+    )
 
     adapter = JiuWenSwarmDeepAdapter()
     adapter._model = Mock()
@@ -2875,22 +2908,21 @@ def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured["rail"] = kwargs
 
-    class FakeDetector:
-        def __init__(self, *args, **kwargs):
-            pass
-
     class FakeProvider:
         def __init__(self, **kwargs):
             captured["provider"] = kwargs
 
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
-    monkeypatch.setattr(interface_deep_module, "SignalBasedSuccessDetector", FakeDetector)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
     monkeypatch.setattr(
         "openjiuwen.core.memory.lite.embeddings.OpenAICompatibleEmbeddingProvider",
         FakeProvider,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
     )
 
     adapter = JiuWenSwarmDeepAdapter()
@@ -2932,15 +2964,14 @@ def test_build_ttse_rail_skips_embedding_when_incomplete(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured["rail"] = kwargs
 
-    class FakeDetector:
-        def __init__(self, *args, **kwargs):
-            pass
-
     monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
     monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
-    monkeypatch.setattr(interface_deep_module, "SignalBasedSuccessDetector", FakeDetector)
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
+    )
 
     adapter = JiuWenSwarmDeepAdapter()
     adapter._model = Mock()
