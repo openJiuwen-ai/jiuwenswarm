@@ -436,7 +436,6 @@ function toWireArtifactType(value: RsiArtifactType | undefined): string | undefi
 export interface RsiModelOption {
   id: string;
   name: string;
-  is_free: boolean;
   provider?: string;
 }
 
@@ -539,7 +538,6 @@ export async function rsiListModels(): Promise<RsiModelOption[]> {
         {
           id,
           name: asString(model.alias, id),
-          is_free: model.is_free === true,
           provider: asNullableString(model.model_provider) ?? undefined,
         },
       ];

@@ -22,11 +22,11 @@ function delay<T>(value: T, ms = LATENCY): Promise<T> {
 export const RSI_LOCAL_ARTIFACT_PATH = 'C:/Users/ray_l/.jiuwenswarm/rsi/tasks/package';
 const LOCAL_TEST_ARTIFACT_PATH = RSI_LOCAL_ARTIFACT_PATH;
 
-export const rsiMockModelList: Array<{ id: string; name: string; is_free: boolean; provider?: string }> = [
-  { id: 'model-qwen-max', name: 'Qwen-Max', is_free: false, provider: 'dashscope' },
-  { id: 'model-qwen-plus', name: 'Qwen-Plus', is_free: true, provider: 'dashscope' },
-  { id: 'model-deepseek-v3', name: 'DeepSeek-V3', is_free: true, provider: 'deepseek' },
-  { id: 'model-glm-4', name: 'GLM-4', is_free: false, provider: 'zhipu' },
+export const rsiMockModelList: Array<{ id: string; name: string; provider?: string }> = [
+  { id: 'model-qwen-max', name: 'Qwen-Max', provider: 'dashscope' },
+  { id: 'model-qwen-plus', name: 'Qwen-Plus', provider: 'dashscope' },
+  { id: 'model-deepseek-v3', name: 'DeepSeek-V3', provider: 'deepseek' },
+  { id: 'model-glm-4', name: 'GLM-4', provider: 'zhipu' },
 ];
 
 const mockTasks: RsiTaskListItem[] = [

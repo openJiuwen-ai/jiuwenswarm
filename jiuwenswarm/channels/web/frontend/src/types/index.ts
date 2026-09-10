@@ -118,8 +118,6 @@ export interface ModelEntry {
   plan?: ModelPlan;
   /** OpenAI 兼容接口的端点方言；Anthropic 协议不携带此字段。 */
   endpoint_profile?: string;
-  /** 免费模型标识（如 Opencode Zen 免费模型）。前端据此归入"免费模型"分组；非免费模型不带此字段。 */
-  is_free?: boolean;
   /** AgentOS 备份模型只读标识；此类条目不参与 models.replace_all。 */
   is_agentos?: boolean;
 }

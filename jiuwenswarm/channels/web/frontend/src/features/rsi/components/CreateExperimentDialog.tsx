@@ -792,10 +792,6 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
     onChange(modelName);
   };
 
-  const isFree = (m: ModelEntry) => m.is_free === true;
-  const freeModels = availableModels.filter(isFree);
-  const configuredModels = availableModels.filter((m) => !isFree(m));
-
   const renderGroup = (label: string, models: ModelEntry[]) =>
     models.length === 0 ? null : (
       <>
@@ -872,10 +868,7 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
           {availableModels.length === 0 ? (
             <div className="model-select__section-header">{t('rsi.createDialog.modelPlaceholder')}</div>
           ) : (
-            <>
-              {renderGroup(t('chat.modelSelector.configured'), configuredModels)}
-              {renderGroup(t('chat.modelSelector.free'), freeModels)}
-            </>
+            renderGroup(t('chat.modelSelector.configured'), availableModels)
           )}
         </div>
       )}

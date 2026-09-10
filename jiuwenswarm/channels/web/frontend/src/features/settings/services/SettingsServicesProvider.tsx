@@ -18,7 +18,6 @@ export type SettingsServices = {
   request: SettingsRequest;
   saveQueue: SettingsSaveQueue;
   unsavedChanges: SettingsUnsavedChangesRegistry;
-  onConfigSaved?: (updatedKeys: readonly string[]) => Promise<void> | void;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string) => Promise<ExternalCliDetectResult>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
@@ -61,7 +60,6 @@ export function SettingsServicesProvider({
       services.externalCliInstallStatuses,
       services.externalCliPendingChoices,
       services.isConnected,
-      services.onConfigSaved,
       services.onDetectExternalCli,
       services.onExternalCliDetectResultsChange,
       services.onExternalCliPendingChoicesChange,
