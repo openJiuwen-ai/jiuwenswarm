@@ -27,6 +27,7 @@ from typing import Any
 from jiuwenclaw.agentserver.permissions.checker import PERMISSION_ENABLED_CHANNELS, ToolPermissionLog
 from jiuwenclaw.agentserver.permissions.command_intent import (
     CommandIntent,
+    LlmUsageCallback,
     collect_command_intents,
     is_command_intent_enabled,
 )
@@ -299,6 +300,7 @@ class PermissionEngine:
         tool_args: dict[str, Any],
         channel_id: str = "web",
         session_id: str | None = None,
+        usage_callback: LlmUsageCallback | None = None,
     ) -> PermissionResult:
         """检查工具调用权限（按 Guard 管线编排）。"""
         logger.info(
@@ -368,6 +370,7 @@ class PermissionEngine:
                     self.config,
                     llm=self._llm,
                     model_name=self._model_name,
+                    usage_callback=usage_callback,
                 )
             except Exception:  # noqa: BLE001 — never let intent extraction crash policy
                 logger.warning(

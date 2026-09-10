@@ -266,6 +266,11 @@ from jiuwenclaw.agentserver.deep_agent.permissions.owner_scopes import (
     cleanup_permission_context,
 )
 from jiuwenclaw.agentserver.permissions.core import init_permission_engine, get_permission_engine
+from jiuwenclaw.agentserver.llm_usage import (
+    bind_aux_llm_usage_sink,
+    build_late_llm_usage_reporter,
+    reset_aux_llm_usage_sink,
+)
 from jiuwenclaw.agentserver.memory import (
     bind_memory_cache_fingerprint,
     reset_memory_cache_fingerprint,
@@ -9065,7 +9070,11 @@ class JiuWenClawDeepAdapter:
             channel_id: str,
     ) -> tuple[AgentResponseChunk, ...]:
         if result.status == "completed":
-            payload = {"event_type": "chat.final", "content": result.message}
+            payload = {
+                "event_type": "chat.final",
+                "content": result.message,
+                "is_complete": False,
+            }
         else:
             code = result.error_code or "INTERNAL_ERROR"
             content = f"改写失败（{code}）：{result.message}"
@@ -9093,6 +9102,7 @@ class JiuWenClawDeepAdapter:
                 payload={
                     "event_type": "chat.final",
                     "content": result.message,
+                    "is_complete": False,
                 },
                 is_complete=False,
             ),
@@ -9327,6 +9337,12 @@ class JiuWenClawDeepAdapter:
         rid = request.request_id
         cid = request.channel_id
         usage_accumulator = self._new_usage_accumulator()
+        auxiliary_usage_accumulator = self._new_usage_accumulator()
+        auxiliary_usage_finalized = False
+        late_auxiliary_usage_reporter = build_late_llm_usage_reporter(
+            request.params,
+            session_id,
+        )
 
         # ── SkillTurbo V2：resume 请求仍由适配器层面路由 ──
         skill_turbo_resume_stream = await self._try_skill_turbo_resume(request, inputs)
@@ -9496,6 +9512,26 @@ class JiuWenClawDeepAdapter:
         )
         token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
         token_perm = setup_permission_context(request)
+
+        async def _capture_auxiliary_usage(usage_metadata: Any) -> None:
+            nonlocal auxiliary_usage_finalized
+            normalized = self._normalize_usage_metadata(usage_metadata)
+            if normalized is None:
+                return
+            if not auxiliary_usage_finalized:
+                self._accumulate_usage_metadata(auxiliary_usage_accumulator, normalized)
+                return
+            if late_auxiliary_usage_reporter is not None:
+                await late_auxiliary_usage_reporter(normalized)
+            else:
+                logger.warning(
+                    "[JiuWenClawDeepAdapter] late auxiliary llm usage could not be reported: "
+                    "request_id=%s session_id=%s",
+                    rid,
+                    session_id,
+                )
+
+        token_aux_usage = bind_aux_llm_usage_sink(_capture_auxiliary_usage)
         perf_summary_status = "ok"
         try:
             await self._update_runtime_config(
@@ -9927,7 +9963,11 @@ class JiuWenClawDeepAdapter:
                 yield AgentResponseChunk(
                     request_id=rid,
                     channel_id=cid,
-                    payload={"event_type": "chat.final", "content": accumulated_text},
+                    payload={
+                        "event_type": "chat.final",
+                        "content": accumulated_text,
+                        "is_complete": False,
+                    },
                     is_complete=False,
                 )
             if accumulated_reasoning and not hitl_pending_stream:
@@ -10066,8 +10106,10 @@ class JiuWenClawDeepAdapter:
                 is_complete=False,
             )
         finally:
+            auxiliary_usage_finalized = True
             TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
+            reset_aux_llm_usage_sink(token_aux_usage)
             self._reset_runtime_cron_context(cron_context_tokens)
             reset_request_id(token_request_id)
             _reset_llm_trace_tokens(token_trace_sid, token_trace_rid, token_trace_iter, token_trace_model)
@@ -10083,6 +10125,27 @@ class JiuWenClawDeepAdapter:
             )
             finalize_perf_summary_request(request.request_id, status=perf_summary_status)
             clear_perf_summary_context()
+
+        auxiliary_summary = self._build_usage_summary(auxiliary_usage_accumulator)
+        if auxiliary_usage_accumulator["total_tokens"] > 0:
+            self._accumulate_usage_metadata(usage_accumulator, auxiliary_summary)
+            logger.info(
+                "[JiuWenClawDeepAdapter] auxiliary llm_usage summary: "
+                "request_id=%s session_id=%s usage=%s",
+                rid,
+                session_id,
+                auxiliary_summary,
+            )
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload={
+                    "event_type": "chat.usage_metadata",
+                    "metadata": {"usage_metadata": auxiliary_summary},
+                    "session_id": session_id,
+                },
+                is_complete=False,
+            )
 
         summary = self._build_usage_summary(usage_accumulator)
 
@@ -10712,7 +10775,11 @@ class JiuWenClawDeepAdapter:
                             iteration=_LLM_TRACE_ITERATION.get(),
                             model_name=_LLM_TRACE_MODEL_NAME.get(),
                         )
-                        return {"event_type": "chat.final", "content": ""}
+                        return {
+                            "event_type": "chat.final",
+                            "content": "",
+                            "is_complete": False,
+                        }
 
                     if not content:
                         return None
@@ -10728,7 +10795,11 @@ class JiuWenClawDeepAdapter:
                         iteration=_LLM_TRACE_ITERATION.get(),
                         model_name=_LLM_TRACE_MODEL_NAME.get(),
                     )
-                    return {"event_type": "chat.final", "content": content}
+                    return {
+                        "event_type": "chat.final",
+                        "content": content,
+                        "is_complete": False,
+                    }
 
                 if chunk_type == "tool_calls.delta":
                     if isinstance(payload, dict):

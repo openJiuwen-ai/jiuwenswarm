@@ -288,6 +288,7 @@ def test_adapter_fast_path_success_chunk_uses_fixed_invitation():
             "本轮改写已完成。若报告已是最终版本，请回复‘生成 HTML’；"
             "如需继续改写，可直接选择下一处内容。"
         ),
+        "is_complete": False,
     }
     assert chunks[0].is_complete is False
 
@@ -355,6 +356,7 @@ def test_adapter_fast_path_delivery_failure_does_not_claim_standard_success():
     assert chunks[0].payload == {
         "event_type": "chat.final",
         "content": "改写版本已成功保留，但报告文件交付失败。",
+        "is_complete": False,
     }
     assert "生成 HTML" not in chunks[0].payload["content"]
 
@@ -801,6 +803,7 @@ async def test_process_stream_skips_runner_for_html_followup(
     assert chunks[0].payload == {
         "event_type": "chat.final",
         "content": html_result.message,
+        "is_complete": False,
     }
     assert sum(chunk.is_complete for chunk in chunks) == 1
 

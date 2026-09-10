@@ -29,7 +29,7 @@ import os
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Awaitable, Callable, Iterable, Literal
 
 from jiuwenclaw.agentserver.permissions.files.extract import (
     extract_shell_path_accesses,
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 CommandIntentAction = Literal["read", "write", "exec"]
 CommandIntentSource = Literal["shlex", "llm", "script_scan"]
+LlmUsageCallback = Callable[[Any], Awaitable[None]]
 
 # 触发 L3-Cmd 的代码类工具（参数是"代码"而非系统命令）
 _CODE_TOOLS: frozenset[str] = frozenset({"run_python", "python_eval", "execute_code"})
@@ -653,6 +654,7 @@ async def invoke_llm(
         tool_name: str = "",
         command_preview: str = "",
         extra_body: dict[str, Any] | None = None,
+        usage_callback: LlmUsageCallback | None = None,
 ) -> str | None:
     """优先用 ``llm.stream`` 累积 chunk；不可用时退回 ``llm.invoke``。
 
@@ -691,11 +693,32 @@ async def invoke_llm(
         return await _invoke_llm_streaming(
             llm, common_kwargs, timeout,
             tool_name=tool_name, command_preview=command_preview,
+            usage_callback=usage_callback,
         )
     return await _invoke_llm_blocking(
         llm, common_kwargs, timeout,
         tool_name=tool_name, command_preview=command_preview,
+        usage_callback=usage_callback,
     )
+
+
+async def _forward_llm_usage(
+        usage_callback: LlmUsageCallback | None,
+        usage_metadata: Any,
+        *,
+        tool_name: str,
+) -> None:
+    """把辅助 LLM usage 交给请求主链；回调失败不能阻断权限判定。"""
+    if usage_callback is None or not usage_metadata:
+        return
+    try:
+        await usage_callback(usage_metadata)
+    except Exception:  # noqa: BLE001 — usage reporting must not break permission checks
+        logger.warning(
+            "[command_intent] L3-Cmd usage.forward_failed tool=%s",
+            tool_name or "?",
+            exc_info=True,
+        )
 
 
 async def _invoke_llm_streaming(
@@ -705,6 +728,7 @@ async def _invoke_llm_streaming(
         *,
         tool_name: str,
         command_preview: str,
+        usage_callback: LlmUsageCallback | None,
 ) -> str | None:
     """流式累积 chunk。整个 stream 周期共享一个端到端超时预算。
 
@@ -733,6 +757,7 @@ async def _invoke_llm_streaming(
     # 「到底是 0 chunk 还是只在 thinking」——这正是上一次日志里看到的现象。
     # 把它做成 dict 让 `_consume` 边收边写，超时分支照样能读到当前累计值。
     content_pieces: list[str] = []
+    latest_usage_metadata: Any = None
     stats: dict[str, Any] = {
         "chunks_total": 0,
         "first_chunk_at": None,
@@ -743,6 +768,7 @@ async def _invoke_llm_streaming(
     }
 
     async def _consume() -> str:
+        nonlocal latest_usage_metadata
         loop = asyncio.get_event_loop()
         started = loop.time()
         async for chunk in llm.stream(**invoke_kwargs):
@@ -760,6 +786,9 @@ async def _invoke_llm_streaming(
             reasoning = getattr(chunk, "reasoning_content", None)
             if isinstance(reasoning, str) and reasoning:
                 stats["reasoning_chars"] += len(reasoning)
+            chunk_usage = getattr(chunk, "usage_metadata", None)
+            if chunk_usage:
+                latest_usage_metadata = chunk_usage
             # 注意：在每个 chunk 末尾刷新 elapsed，让超时分支拿到的是「最后一次收到
             # chunk 的时刻」而不是 0。这对诊断很关键——比如 stream 中途卡住 10s 没新
             # chunk 也能看出来。
@@ -784,7 +813,18 @@ async def _invoke_llm_streaming(
             "[command_intent] L3-Cmd llm.stream failed tool=%s preview=%r",
             tool_name or "?", command_preview[:80], exc_info=True,
         )
+        await _forward_llm_usage(
+            usage_callback,
+            latest_usage_metadata,
+            tool_name=tool_name,
+        )
         return None
+
+    await _forward_llm_usage(
+        usage_callback,
+        latest_usage_metadata,
+        tool_name=tool_name,
+    )
 
     # 不管超时与否，stream done / partial 一律输出统一格式的 INFO，含全部诊断字段
     logger.info(
@@ -844,6 +884,7 @@ async def _invoke_llm_blocking(
         *,
         tool_name: str,
         command_preview: str,
+        usage_callback: LlmUsageCallback | None,
 ) -> str | None:
     """退化路径：``llm.invoke`` 阻塞调用。仅在 client 不支持 ``stream`` 时使用。"""
     try:
@@ -868,6 +909,11 @@ async def _invoke_llm_blocking(
             tool_name or "?", command_preview[:80],
         )
         return None
+    await _forward_llm_usage(
+        usage_callback,
+        getattr(ai_msg, "usage_metadata", None),
+        tool_name=tool_name,
+    )
     content = ai_msg.content if hasattr(ai_msg, "content") else str(ai_msg)
     if not content or not content.strip():
         logger.warning(
@@ -888,6 +934,7 @@ async def run_l3_cmd_intents(
         enabled: bool = True,
         timeout: float = _DEFAULT_LLM_TIMEOUT_SECONDS,
         extra_body: dict[str, Any] | None = None,
+        usage_callback: LlmUsageCallback | None = None,
 ) -> list[CommandIntent]:
     """L3-Cmd：调用 LLM 解析复杂命令串。失败/超时/未注入 LLM 一律返回 ``[]``，**永不**抛出。
 
@@ -931,6 +978,7 @@ async def run_l3_cmd_intents(
         llm, model_name, prompt, timeout,
         tool_name=tool_name, command_preview=command,
         extra_body=extra_body,
+        usage_callback=usage_callback,
     )
     if not raw_text:
         # invoke_llm 内部已根据具体原因（timeout / exception / no content）打了 warning，
@@ -1013,6 +1061,7 @@ async def collect_command_intents(
         *,
         llm: Any = None,
         model_name: str | None = None,
+        usage_callback: LlmUsageCallback | None = None,
 ) -> list[CommandIntent]:
     """L1 + L3-Cmd 一站式入口；不会抛出异常，无 LLM 时退化为纯 L1。
 
@@ -1048,5 +1097,6 @@ async def collect_command_intents(
         enabled=True,
         timeout=resolve_l3_cmd_timeout(permission_config),
         extra_body=extra_body,
+        usage_callback=usage_callback,
     )
     return merge_intents(l1, l3)
