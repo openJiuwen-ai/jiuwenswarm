@@ -41,6 +41,10 @@ XIAOYI_HIDDEN_DEFAULT_TOOL_NAMES = frozenset(
         "read_skill_experiences",
         "evolve_skill_experiences",
         "simplify_skill_experiences",
+        # Code execution (openjiuwen CodeTool). The code/design/deep profiles
+        # all expose bash/powershell; a separate python/js interpreter tool is
+        # redundant for the default Xiaoyi Work budget.
+        "code",
     }
 )
 

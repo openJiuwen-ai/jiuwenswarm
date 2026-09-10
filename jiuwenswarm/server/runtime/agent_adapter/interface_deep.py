@@ -4224,7 +4224,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
     def _build_filesystem_rail() -> SysOperationRail | None:
         """Build SysOperationRail."""
         try:
-            fs_rail = SysOperationRail(with_code_tool=True)
+            # No ``with_code_tool``: the code tool (python/js interpreter) is
+            # redundant with bash/powershell and is filtered from the default
+            # Xiaoyi tool set (XiaoyiDefaultToolVisibilityRail), so it is not
+            # registered here at all.
+            fs_rail = SysOperationRail()
             logger.info("[JiuWenSwarmDeepAdapter] SysOperationRail create success")
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] SysOperationRail create failed: %s", exc)
