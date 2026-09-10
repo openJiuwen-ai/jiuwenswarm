@@ -807,6 +807,41 @@ class AgentManager:
             return self._borrow_agent(agent) if agent is not None else None
         return None
 
+    def get_agent_for_session(
+        self,
+        channel_id: str,
+        session_id: str | None,
+    ) -> "JiuWenSwarm | None":
+        """按 session_id 反查持有其运行时的 agent 实例（不自动创建）.
+
+        interrupt/cancel 请求通常只带 session_id（无 mode/project_dir 路由键），
+        走 get_agent_nowait 的"任意 agent"兜底会命中同 channel 的无关实例，
+        interrupt 落空（被停的 DeepAgent round 收不到 abort、输出租约不释放）。
+        chat.send 建立的 session-scoped 子 adapter 登记在其实例的 root adapter
+        里，这里按归属表精确反查。遍历全 channel 兜底跨渠道异常路由（如
+        desktop 会话被错误 channel 的 interrupt 停止的场景）。
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+
+        def _find(agents: dict) -> "JiuWenSwarm | None":
+            for agent in agents.values():
+                owns = getattr(agent, "owns_session", None)
+                if callable(owns) and owns(sid):
+                    return self._borrow_agent(agent)
+            return None
+
+        channel_key = _normalize_channel_id(channel_id)
+        found = _find(self.agents.get(channel_key, {}))
+        if found is not None:
+            return found
+        for agents in self.agents.values():
+            found = _find(agents)
+            if found is not None:
+                return found
+        return None
+
     async def broadcast_package_change_to_single_agents(
         self,
         package_id: str,

@@ -1381,6 +1381,18 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         sid = self._session_adapter_key(session_id)
         return self._session_adapters.get(sid)
 
+    def has_session_runtime(self, session_id: str | None) -> bool:
+        """Whether this adapter owns the session-scoped runtime for *session_id*.
+
+        Only meaningful on a root (non-session-scoped) adapter: it exposes the
+        live ``_session_adapters`` registry so callers (AgentManager session
+        reverse-lookup for interrupt/cancel routing) can find the exact agent
+        instance a chat.send turn ran on, instead of guessing by channel.
+        """
+        if self._is_session_scoped_adapter:
+            return self._session_adapter_key(self._parent_session_id) == self._session_adapter_key(session_id)
+        return self._get_cached_session_adapter(session_id) is not None
+
     def _iter_session_adapters_for_reload(
         self,
         target_session_id: str | None = None,
