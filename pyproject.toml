@@ -58,6 +58,7 @@ dependencies = [
     "tree-sitter-bash>=0.25.0,<0.26.0",
     "playwright>=1.40,<2",
     "uv>=0.4.0,<0.13",
+    "agent-ssas>=0.1.0,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -188,6 +189,7 @@ default-groups = ['dev']
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "14a7fe2d0a2bf0cf2a25abd90f05f5ae6a9bf2d5" }
+agent-ssas = { path = "./AgentSSAS", editable = true }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
