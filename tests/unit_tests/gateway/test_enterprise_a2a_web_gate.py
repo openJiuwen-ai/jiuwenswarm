@@ -45,7 +45,7 @@ class _ConfigRepositoryProbe:
 
 class _OutboundSettingsRepositoryProbe:
     def load(self) -> dict[str, bool]:
-        return {"allow_loopback_http": False}
+        return {"allow_loopback": False, "allow_http": False}
 
 
 def _free_port() -> int:

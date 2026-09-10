@@ -630,12 +630,15 @@
         "or": " or "
       },
       "localDebug": {
-        "title": "Local Agent debugging",
-        "description": "Controls whether plaintext HTTP Agents on loopback addresses may be discovered and called. Changes apply immediately after saving.",
-        "allow": "Allow local HTTP Agents",
-        "warning": "For local E2E debugging only. This relaxes SSRF protection for 127.0.0.1 / ::1 and must remain disabled in production.",
+        "title": "Network access settings",
+        "description": "Allow access to loopback addresses such as localhost.",
+        "allow": "Allow loopback addresses",
+        "warning": "Risk: Loopback access may expose Gateway-local services. Use only trusted Agents.",
+        "httpWarning": "Risk: HTTP permits plaintext traffic over public networks, exposing credentials and task data.",
         "saving": "Saving...",
-        "saved": "Outbound local debugging settings were saved and applied immediately."
+        "saved": "Outbound network settings were saved and applied immediately.",
+        "allowHttp": "Allow HTTP",
+        "httpDescription": "Allow plaintext HTTP. Loopback access also requires the switch above."
       },
       "discovery": {
         "title": "Discover a third-party Agent",

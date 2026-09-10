@@ -93,12 +93,14 @@ class _OutboundRegistryProbe:
 class _OutboundSettingsProbe:
     def __init__(self) -> None:
         self.enabled = False
+        self.allow_http = False
 
     def load(self):
-        return {"allow_loopback_http": self.enabled}
+        return {"allow_loopback": self.enabled, "allow_http": self.allow_http}
 
-    def save(self, *, allow_loopback_http):
-        self.enabled = allow_loopback_http
+    def save(self, *, allow_loopback, allow_http):
+        self.enabled = allow_loopback
+        self.allow_http = allow_http
 
 
 @pytest.mark.asyncio
@@ -308,7 +310,7 @@ async def test_a2a_outbound_web_handlers_expose_management_facade():
         object(), "settings-get", {}, "session"
     )
     await channel.methods["a2a.outbound.settings.update"](
-        object(), "settings-update", {"allow_loopback_http": True}, "session"
+        object(), "settings-update", {"allow_loopback": True, "allow_http": True}, "session"
     )
     await channel.methods["a2a.outbound.dispatch.list"](
         object(), "dispatch-list", {"limit": 20}, "session"
@@ -329,8 +331,8 @@ async def test_a2a_outbound_web_handlers_expose_management_facade():
     assert channel.responses[6]["payload"]["accepted"] is False
     assert channel.responses[7]["payload"]["deleted"] is True
     assert channel.responses[8]["payload"]["dispatch_id"] == "dispatch-1"
-    assert channel.responses[9]["payload"] == {"allow_loopback_http": False}
-    assert channel.responses[10]["payload"] == {"allow_loopback_http": True}
+    assert channel.responses[9]["payload"] == {"allow_loopback": False, "allow_http": False}
+    assert channel.responses[10]["payload"] == {"allow_loopback": True, "allow_http": True}
     assert channel.responses[11]["payload"] == {"items": [], "total": 0, "limit": 20}
     assert channel.responses[12]["payload"]["user_enabled"] is False
     assert settings.enabled is True

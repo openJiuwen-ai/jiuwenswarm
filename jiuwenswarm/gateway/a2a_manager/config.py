@@ -35,7 +35,8 @@ A2A_INGRESS_ENV_MAP = {
     "card_auth_required": "A2A_SERVER_CARD_AUTH_REQUIRED",
     "credential": "A2A_SERVER_API_KEY",
 }
-A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP_ENV = "A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP"
+A2A_OUTBOUND_ALLOW_LOOPBACK_ENV = "A2A_OUTBOUND_ALLOW_LOOPBACK"
+A2A_OUTBOUND_ALLOW_HTTP_ENV = "A2A_OUTBOUND_ALLOW_HTTP"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"^(?P<indent>\s*)(?P<export>export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*="
 )
@@ -240,25 +241,27 @@ class A2AOutboundSettingsRepository:
     def load(env: Mapping[str, str] | None = None) -> dict[str, bool]:
         source = os.environ if env is None else env
         return {
-            "allow_loopback_http": _bool(
-                source, A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP_ENV, False
-            )
+            "allow_loopback": _bool(source, A2A_OUTBOUND_ALLOW_LOOPBACK_ENV, False),
+            "allow_http": _bool(source, A2A_OUTBOUND_ALLOW_HTTP_ENV, False),
         }
 
-    def save(self, *, allow_loopback_http: bool) -> None:
-        if not isinstance(allow_loopback_http, bool):
+    def save(self, *, allow_loopback: bool, allow_http: bool) -> None:
+        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
             raise A2AIngressError(
-                "A2A_CONFIG_INVALID", "allow_loopback_http must be a boolean"
+                "A2A_CONFIG_INVALID", "allow_loopback and allow_http must be booleans"
             )
-        update = "true" if allow_loopback_http else "false"
+        updates = {
+            A2A_OUTBOUND_ALLOW_LOOPBACK_ENV: "true" if allow_loopback else "false",
+            A2A_OUTBOUND_ALLOW_HTTP_ENV: "true" if allow_http else "false",
+        }
         try:
             _persist_dotenv_updates(
                 self._env_path,
-                {A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP_ENV: update},
+                updates,
             )
         except (OSError, portalocker.exceptions.LockException) as exc:
             raise A2AIngressError(
                 "A2A_CONFIG_INVALID",
                 f"Failed to persist A2A outbound settings: {exc}",
             ) from exc
-        os.environ[A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP_ENV] = update
+        os.environ.update(updates)

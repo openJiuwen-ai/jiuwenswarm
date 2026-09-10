@@ -558,7 +558,7 @@ async def test_real_http_stream_can_outlive_connect_timeout_within_sync_budget()
     await repository.create_agent(agent)
     dispatcher = A2AOutboundDispatcher(
         repository,
-        discovery_service=A2AOutboundDiscoveryService(allow_loopback_http=True),
+        discovery_service=A2AOutboundDiscoveryService(allow_loopback=True, allow_http=True),
     )
     try:
         result = await dispatcher.dispatch(

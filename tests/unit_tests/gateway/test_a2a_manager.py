@@ -120,22 +120,28 @@ def test_invalid_a2a_config_has_a_disabled_boot_fallback():
     assert error.code == "A2A_CONFIG_INVALID"
 
 
-def test_outbound_loopback_setting_round_trips_through_dotenv(tmp_path, monkeypatch):
+@pytest.mark.parametrize("allow_loopback,allow_http", [(False, False), (True, False), (False, True), (True, True)])
+def test_outbound_network_settings_round_trip_through_dotenv(tmp_path, monkeypatch, allow_loopback, allow_http):
     env_path = tmp_path / ".env"
     env_path.write_text(
-        'KEEP_ME="yes"\nA2A_OUTBOUND_ALLOW_LOOPBACK_HTTP="false"\n', "utf-8"
+        'KEEP_ME="yes"\nA2A_OUTBOUND_ALLOW_LOOPBACK="false"\n', "utf-8"
     )
-    monkeypatch.delenv("A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP", raising=False)
+    monkeypatch.delenv("A2A_OUTBOUND_ALLOW_LOOPBACK", raising=False)
+    monkeypatch.delenv("A2A_OUTBOUND_ALLOW_HTTP", raising=False)
     repository = A2AOutboundSettingsRepository(env_path)
 
-    assert repository.load({}) == {"allow_loopback_http": False}
-    repository.save(allow_loopback_http=True)
+    assert repository.load({}) == {"allow_loopback": False, "allow_http": False}
+    assert repository.load({"A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP": "true"}) == {
+        "allow_loopback": False, "allow_http": False,
+    }
+    repository.save(allow_loopback=allow_loopback, allow_http=allow_http)
 
-    assert repository.load() == {"allow_loopback_http": True}
+    assert repository.load() == {"allow_loopback": allow_loopback, "allow_http": allow_http}
     content = env_path.read_text("utf-8")
     assert 'KEEP_ME="yes"' in content
-    assert content.count("A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP") == 1
-    assert 'A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP="true"' in content
+    assert content.count("A2A_OUTBOUND_ALLOW_LOOPBACK") == 1
+    assert f'A2A_OUTBOUND_ALLOW_LOOPBACK="{str(allow_loopback).lower()}"' in content
+    assert f'A2A_OUTBOUND_ALLOW_HTTP="{str(allow_http).lower()}"' in content
 
 
 def test_ingress_and_outbound_repositories_share_one_dotenv_writer(tmp_path):
@@ -155,7 +161,7 @@ def test_ingress_and_outbound_repositories_share_one_dotenv_writer(tmp_path):
         )
         outbound_future = executor.submit(
             outbound.save,
-            allow_loopback_http=True,
+            allow_loopback=True, allow_http=True,
         )
         time.sleep(0.05)
         assert ingress_future.done() is False
@@ -171,7 +177,7 @@ def test_ingress_and_outbound_repositories_share_one_dotenv_writer(tmp_path):
     content = env_path.read_text("utf-8")
     assert 'KEEP_ME="yes"' in content
     assert 'A2A_SERVER_PORT="19234"' in content
-    assert 'A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP="true"' in content
+    assert 'A2A_OUTBOUND_ALLOW_LOOPBACK="true"' in content
 
 
 @pytest.mark.asyncio
