@@ -234,22 +234,22 @@ def parse_sandbox_host_port(url: str) -> tuple[str, int]:
 
 
 def _require_sandbox_supported() -> None:
-    """Reject ``/sandbox`` commands on non-Linux hosts.
+    """Reject ``/sandbox`` commands on unsupported hosts.
 
-    jiuwenbox 底层依赖 Linux 专属能力 (bwrap / Landlock / Linux namespaces /
-    ``PR_SET_CHILD_SUBREAPER`` 等), Windows / macOS 上无法实际拉起沙箱;
-    ``jiuwenbox-server`` 自检也会在非 Linux 平台直接退出。 因此在 WS 命令
-    入口前置拒绝, 让用户看到清晰 ``SANDBOX_BAD_REQUEST`` 错误, 而不是被
-    "拉起子进程失败 / 端口连接超时" 之类的下游报错搪塞。
+    jiuwenbox 底层依赖平台专属隔离能力 (Linux: bwrap / Landlock / 命名空间 /
+    ``PR_SET_CHILD_SUBREAPER``; Windows: jbx-sandbox 用户 + WFP + Job Object)。
+    macOS 等不支持的平台在 WS 命令入口前置拒绝, 让用户看到清晰
+    ``SANDBOX_BAD_REQUEST`` 错误, 而不是被 "拉起子进程失败 / 端口连接超时"
+    之类的下游报错搪塞。
 
     Raises:
-        ValueError: 当 ``sys.platform`` 不是以 ``"linux"`` 开头时。
+        ValueError: 当 ``sys.platform`` 不是 ``"linux"`` 或 ``"win32"`` 时。
     """
-    if not sys.platform.startswith("linux"):
+    if sys.platform not in ("linux", "win32"):
         raise ValueError(
-            f"/sandbox is only supported on Linux (current platform: {sys.platform!r}); "
-            "jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / "
-            "namespaces) and cannot run on Windows or macOS."
+            f"/sandbox is only supported on Linux/Windows (current platform: {sys.platform!r}); "
+            "jiuwenbox depends on platform-specific isolation features and cannot "
+            "run on macOS or other platforms."
         )
 
 

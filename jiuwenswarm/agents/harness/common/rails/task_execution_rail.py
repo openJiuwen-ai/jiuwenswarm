@@ -9,9 +9,11 @@ so downstream tool/artifact events can be attributed to the active task.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
+import stat
 import threading
 import time
 from contextvars import ContextVar
@@ -31,9 +33,21 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    is_skip_invoke_task_update_sync,
+    clear_skip_invoke_task_update_sync,
+    set_stale_todo_ids,
+    clear_stale_todo_ids,
+    set_pre_invoke_todo_ids,
+    set_current_invoke_todo_ids,
+    get_pre_invoke_todo_ids,
+)
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
     "active_task_id", default=None
+)
+SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
+    "_jiuwenswarm_skill_turbo_outer_todo_active"
 )
 
 
@@ -62,6 +76,11 @@ _ALWAYS_EXCLUDED_PATH_PATTERNS = [
     # bash/powershell 大输出落盘目录（供模型查阅，非用户产物）
     re.compile(r'[/\\][^/\\]*bash_outputs[/\\]', re.IGNORECASE),
     re.compile(r'[/\\][^/\\]*powershell_outputs[/\\]', re.IGNORECASE),
+    # 临时/缓存文件（基线快照与正文提取共用排除）
+    re.compile(r'\.tmp$', re.IGNORECASE),
+    re.compile(r'~\$\w', re.IGNORECASE),  # Office 临时锁文件 ~$xxx.pptx
+    re.compile(r'\.swp$', re.IGNORECASE),
+    re.compile(r'\.DS_Store$', re.IGNORECASE),
 ]
 
 
@@ -170,8 +189,33 @@ _ARTIFACT_PATH_PATTERNS = [
 
 # 产物路径正则扫描的文本长度上限：超过直接跳过 findall，避免超大正文
 # （如 evaluate_script ~800K HTML）爆炸匹配 + 逐条 stat() 阻塞事件循环。
-# 64K 覆盖正常 code/bash stdout 的产物路径声明。
+# 64K 覆盖正常 bash stdout 的产物路径声明。
 _ARTIFACT_SCAN_MAX_TEXT_BYTES = 64 * 1024
+
+# ---------------------------------------------------------------------------
+# 基线 diff 产物检测参数（bash 类工具：工具执行前建工作区快照，
+# 执行后增量 diff 出新增/变更文件作为候选产物，不依赖工具输出文本）
+# ---------------------------------------------------------------------------
+# 快照文件数上限：超限放弃基线 diff，降级文本提取
+MAX_SCAN_FILES = 2000
+# 单文件 sha256 上限：超限跳过哈希，信任 mtime/size 判定
+MAX_HASH_BYTES = 100 * 1024 * 1024
+# 静默期 finalize：等待文件大小稳定（防后台进程 / tmp->rename 竞态）
+STABLE_INTERVAL_S = 0.5
+# finalize 静默期总窗口（秒）：所有候选共享一个窗口批量轮询，
+# 不随候选数线性放大（逐文件串行等待会超出外层 ARTIFACT_DETECT_TIMEOUT_S，
+# 导致整体超时后基线不更新、变化累积、下一轮继续超时的循环）
+FINALIZE_TIMEOUT_S = 1.0
+# diff 阶段 sha256 累计预算（秒）：耗尽后放弃 hash 保守判变更，
+# 无死循环（该文件下次 diff mtime/size 未变即跳过）
+_HASH_BUDGET_S = 0.3
+# before_tool_call 懒建基线快照超时（秒）：超时后本会话禁用基线路径
+# （公开常量：供 SkillTurboArtifactRail 跨模块复用）
+BASELINE_SNAPSHOT_TIMEOUT_S = 2.0
+
+# 工作区快照：normcase 相对路径 -> (绝对路径, mtime_ns, size, sha256|None)
+# sha256 懒计算，仅 diff 发现 mtime/size 变化时才读取文件计算
+WorkspaceSnapshot = dict[str, tuple[str, int, int, str | None]]
 
 
 def _clean_path_candidate(path_str: str) -> str:
@@ -435,13 +479,13 @@ def _artifact_identity(path: str) -> tuple[str, int, int] | None:
     stat 失败（文件不存在等）返回 None。
     """
     try:
-        stat = Path(path).stat()
+        st = Path(path).stat()
     except OSError:
         return None
     return (
         os.path.normcase(os.path.abspath(path)),
-        stat.st_mtime_ns,
-        stat.st_size,
+        st.st_mtime_ns,
+        st.st_size,
     )
 
 
@@ -481,7 +525,7 @@ def _validate_artifact_candidates(
         if _is_excluded_path(path):
             continue
         try:
-            stat = file_path.stat()
+            st = file_path.stat()
         except OSError:
             continue
         if (
@@ -491,7 +535,7 @@ def _validate_artifact_candidates(
             continue
         if (
             tool_start_time is not None
-            and stat.st_mtime < tool_start_time - _MTIME_TOLERANCE_S
+            and st.st_mtime < tool_start_time - _MTIME_TOLERANCE_S
         ):
             continue
         identity = os.path.normcase(os.path.abspath(path))
@@ -500,6 +544,228 @@ def _validate_artifact_candidates(
         seen.add(identity)
         paths.append(path)
     return paths
+
+
+def _file_sha256(path: str) -> str | None:
+    """计算文件 sha256（超 MAX_HASH_BYTES 或读取失败返回 None）。"""
+    try:
+        if os.path.getsize(path) > MAX_HASH_BYTES:
+            return None
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _snapshot_workspace(
+    workspace_base: Path,
+    cancel_event: threading.Event | None = None,
+) -> WorkspaceSnapshot | None:
+    """递归快照工作区文件：rel_key -> (abs, mtime_ns, size, sha256)。
+
+    sha256 懒计算（快照阶段为 None）；黑名单目录剪枝不进入；
+    文件数超 MAX_SCAN_FILES 或扫描异常返回 None（降级文本提取）。
+    """
+    snapshot: WorkspaceSnapshot = {}
+    try:
+        for root, dirs, files in os.walk(workspace_base, followlinks=False):
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            # 目录剪枝：黑名单目录（node_modules 等）不进入（补尾部斜杠以匹配模式）
+            dirs[:] = [
+                d for d in dirs
+                if not _is_excluded_path(os.path.join(root, d) + os.sep)
+            ]
+            for name in files:
+                abs_path = os.path.join(root, name)
+                if _is_excluded_path(abs_path):
+                    continue
+                try:
+                    st = os.stat(abs_path)
+                except OSError:
+                    continue
+                # os.walk 的 files 已排除目录；stat 成功后复用 st_mode
+                # 判常规文件，避免 isfile 造成第二次 stat 系统调用
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                rel = os.path.normcase(os.path.relpath(abs_path, workspace_base))
+                snapshot[rel.replace("\\", "/")] = (
+                    abs_path, st.st_mtime_ns, st.st_size, None,
+                )
+                if len(snapshot) > MAX_SCAN_FILES:
+                    logger.warning(
+                        "[artifact-detect] workspace scan exceeds "
+                        "MAX_SCAN_FILES=%d, fallback to text extraction",
+                        MAX_SCAN_FILES,
+                    )
+                    return None
+    except OSError as exc:
+        logger.warning(
+            "[artifact-detect] workspace scan failed: %s", exc,
+        )
+        return None
+    return snapshot
+
+
+def _diff_snapshot(
+    old: WorkspaceSnapshot,
+    new: WorkspaceSnapshot,
+    cancel_event: threading.Event | None = None,
+) -> list[str]:
+    """对比新旧快照，返回新增/变更文件的绝对路径列表。
+
+    仅检测增量（新增/变更），不检测删除：遍历 new.keys()，基线独有
+    （已删除）的文件不会出现在候选中。下游 hook（水印/署名等）只
+    消费新生成的产物，删除检测无消费方；残留的旧 entry 无害——
+    文件被重建时仍会走 mtime/size/hash 对比正确检出。
+
+    变更判定：mtime/size 变化后再算 sha256 对比。基线 hash 为懒计算
+    （首次变化时基线 hash 未知，保守判为变更），本次算出的 hash 写回
+    new 快照，作为下次基线的参照，此后 touch（内容未变）可精确排除。
+    hash 计算受 _HASH_BUDGET_S 累计预算约束：预算耗尽后放弃 hash
+    保守判变更，避免大量变更文件把 sha256 读盘耗时放大到外层超时之外。
+    """
+    candidates: list[str] = []
+    hash_deadline = time.monotonic() + _HASH_BUDGET_S
+    for key, (abs_path, mtime_ns, size, new_hash) in new.items():
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        old_entry = old.get(key)
+        if old_entry is None:
+            logger.debug("[artifact-detect] baseline new: %s", abs_path)
+            candidates.append(abs_path)
+            continue
+        old_mtime, old_size, old_hash = old_entry[1], old_entry[2], old_entry[3]
+        if old_mtime == mtime_ns and old_size == size:
+            continue
+        # mtime/size 变化：算 hash 并写回本次快照（下次基线的参照）
+        if new_hash is not None:
+            cur_hash = new_hash
+        elif time.monotonic() < hash_deadline:
+            cur_hash = _file_sha256(abs_path)
+        else:
+            cur_hash = None  # 预算耗尽：保守判变更
+        new[key] = (abs_path, mtime_ns, size, cur_hash)
+        if (
+            cur_hash is not None
+            and old_hash is not None
+            and cur_hash == old_hash
+        ):
+            logger.debug("[artifact-detect] baseline touch skip: %s", abs_path)
+            continue
+        logger.debug("[artifact-detect] baseline changed: %s", abs_path)
+        candidates.append(abs_path)
+    return candidates
+
+
+def _finalize_candidates(
+    paths: list[str],
+    cancel_event: threading.Event | None = None,
+) -> list[str]:
+    """静默期 finalize（批量轮询）：所有候选共享窗口等待大小稳定。
+
+    防后台进程 / tmp->rename 竞态。所有候选并行轮询（总耗时与候选数
+    解耦，上限 FINALIZE_TIMEOUT_S），超时仍未稳定的文件也保留
+    （对齐原"超时取最后一次"的宽松语义，宁多勿漏）。
+    """
+    pending: dict[str, int] = {}
+    for path in paths:
+        try:
+            pending[path] = os.path.getsize(path)
+        except OSError:
+            continue  # 已消失，剔除
+    stable: set[str] = set()
+    deadline = time.monotonic() + FINALIZE_TIMEOUT_S
+    while pending and time.monotonic() < deadline:
+        time.sleep(STABLE_INTERVAL_S)
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        still: dict[str, int] = {}
+        for path, size0 in pending.items():
+            try:
+                current = os.path.getsize(path)
+            except OSError:
+                continue  # 等待期间消失，剔除
+            if current == size0:
+                stable.add(path)
+            else:
+                still[path] = current  # 仍在写，下一轮再看
+        pending = still
+    return [p for p in paths if p in stable or p in pending]
+
+
+def _refresh_baseline_entries(
+    snapshot: WorkspaceSnapshot,
+    workspace_base: Path,
+    paths: list[str],
+) -> None:
+    """局部刷新基线：hook 可能原地改写文件（水印），重新 stat + hash。"""
+    for path in paths:
+        try:
+            rel = os.path.normcase(os.path.relpath(path, workspace_base))
+        except ValueError:
+            continue
+        key = rel.replace("\\", "/")
+        try:
+            st = os.stat(path)
+            new_hash = _file_sha256(path)
+        except OSError:
+            snapshot.pop(key, None)
+            continue
+        snapshot[key] = (
+            os.path.abspath(path), st.st_mtime_ns, st.st_size, new_hash,
+        )
+
+
+def update_baseline_after_hook(
+    snapshot: WorkspaceSnapshot | None,
+    fired: bool,
+    paths: list[str],
+    workspace_base: Path | None = None,
+) -> WorkspaceSnapshot | None:
+    """返回 fire 后应存为实例基线的新快照（hook 可能原地改写文件，局部刷新）。
+
+    snapshot 为 None（非基线路径/降级）时返回 None，调用方保持原基线不变。
+    """
+    if snapshot is None:
+        return None
+    if fired and paths:
+        if workspace_base is not None:
+            _refresh_baseline_entries(snapshot, workspace_base, paths)
+        else:
+            logger.debug(
+                "[artifact-detect] baseline refresh skipped: no workspace_base"
+            )
+    return snapshot
+
+
+def _detect_via_baseline(
+    baseline: WorkspaceSnapshot,
+    workspace_base: Path,
+    cancel_event: threading.Event | None = None,
+) -> tuple[list[str], WorkspaceSnapshot | None]:
+    """基线 diff 检测：返回 (候选路径, 本次扫描快照)。
+
+    快照失败/超限返回 ([], None)，调用方降级文本提取。
+    """
+    snapshot = _snapshot_workspace(workspace_base, cancel_event)
+    if snapshot is None:
+        return [], None
+    candidates = _diff_snapshot(baseline, snapshot, cancel_event)
+    candidates = _finalize_candidates(candidates, cancel_event)
+    candidates = _validate_artifact_candidates(
+        candidates,
+        tool_start_time=None,  # 基线 diff 已保证变化，无需 mtime 校验
+        workspace_base=workspace_base,
+        cancel_event=cancel_event,
+    )
+    return candidates, snapshot
 
 
 def _extract_artifact_paths_from_result(
@@ -557,6 +823,10 @@ class ArtifactDetection(NamedTuple):
 
     tool_name: str
     paths: list[str]
+    # 本次检测的当前工作区快照（仅基线 diff 路径返回，供调用方更新基线）
+    baseline_snapshot: WorkspaceSnapshot | None = None
+    # 基线 diff 快照失败/超限：调用方据此禁用本会话基线路径（降级文本提取）
+    baseline_scan_failed: bool = False
 
 
 def detect_artifact_paths(
@@ -567,6 +837,7 @@ def detect_artifact_paths(
     tool_start_time: float | None = None,
     workspace_base: Path | None = None,
     cancel_event: threading.Event | None = None,
+    baseline: WorkspaceSnapshot | None = None,
 ) -> ArtifactDetection:
     """统一产物检测入口，供 TaskExecutionRail / SkillTurboArtifactRail 共用。
 
@@ -596,6 +867,8 @@ def detect_artifact_paths(
         tool_args = inner_args if inner_args is not None else {}
 
     paths: list[str] = []
+    baseline_snapshot: WorkspaceSnapshot | None = None
+    baseline_scan_failed = False
 
     if tool_name in IMAGE_TOOL_NAMES:
         # 图像工具返回权威路径，不做 mtime/工作区校验
@@ -617,17 +890,28 @@ def detect_artifact_paths(
             paths.extend(str(p).strip() for p in raw_list if str(p).strip())
         paths = list(dict.fromkeys(paths))
     else:
-        # code / bash / mcp_exec_command：统一提取（含黑名单/mtime/工作区过滤）
-        paths = _extract_artifact_paths_from_result(
-            tool_result,
-            tool_start_time=tool_start_time,
-            workspace_base=workspace_base,
-            cancel_event=cancel_event,
-        )
+        # bash / mcp_exec_command：优先基线 diff（不依赖工具输出文本），
+        # 基线缺失/快照失败时降级文本提取
+        if baseline is not None and workspace_base is not None:
+            paths, baseline_snapshot = _detect_via_baseline(
+                baseline, workspace_base, cancel_event,
+            )
+            # 快照失败/超限：调用方据此禁用本会话基线路径，
+            # 避免后续工具反复无效扫描（超限工作区）
+            baseline_scan_failed = baseline_snapshot is None
+        if not paths:
+            paths = _extract_artifact_paths_from_result(
+                tool_result,
+                tool_start_time=tool_start_time,
+                workspace_base=workspace_base,
+                cancel_event=cancel_event,
+            )
 
     # 统一出口：仅保留实际存在的文件（跳过 UNC 网络路径避免同步阻塞）
     paths = [p for p in paths if not _is_unc_path(p) and Path(p).exists()]
-    return ArtifactDetection(tool_name, paths)
+    return ArtifactDetection(
+        tool_name, paths, baseline_snapshot, baseline_scan_failed,
+    )
 
 
 def resolve_workspace_base() -> Path | None:
@@ -671,6 +955,7 @@ async def detect_artifact_paths_safe(
     tool_start_time: float | None,
     *,
     log_prefix: str,
+    baseline: WorkspaceSnapshot | None = None,
 ) -> ArtifactDetection | None:
     """线程中执行产物检测并加超时保护，超时/异常时返回 None（跳过检测）。
 
@@ -690,6 +975,7 @@ async def detect_artifact_paths_safe(
                 tool_start_time=tool_start_time,
                 workspace_base=resolve_workspace_base(),
                 cancel_event=cancel_event,
+                baseline=baseline,
             ),
             timeout=ARTIFACT_DETECT_TIMEOUT_S,
         )
@@ -718,6 +1004,155 @@ async def detect_artifact_paths_safe(
             exc_info=True,
         )
         return None
+
+
+def extract_effective_project_dir(metadata: Any) -> str | None:
+    """从请求 metadata 提取 effective_project_dir（strip 后非空才返回）。
+
+    供 StreamEventRail 的 ContextVar 重绑块与 TaskExecutionRail 的
+    workspace 副本直读共用，避免提取逻辑双份维护。
+    """
+    if not isinstance(metadata, dict):
+        return None
+    epd = metadata.get("effective_project_dir")
+    if isinstance(epd, str) and epd.strip():
+        return epd.strip()
+    return None
+
+
+class WorkspaceBaselineState:
+    """工作区基线懒建状态，供 TaskExecutionRail 与 SkillTurboArtifactRail 组合复用。
+
+    双检锁懒建基线：并行 tool_call 时首个 bash 建一次快照，其余等待复用。
+    快路径不碰锁（会话首个 bash 之后的常态调用零开销）；拿锁后双检，等待
+    期间其他协程可能已建好/已禁用。基线必须先于本轮任何执行类工具建立，
+    等待者串行化到快照完成（毫秒级）后才放行工具执行；超时场景等待者拿锁
+    后双检发现已禁用，直接走降级，不再重复烧一次完整超时扫描。
+
+    workspace_base：调用方直读的请求级工作区（如 TaskExecutionRail 从
+    metadata 副本解析）；为 None 时回退 resolve_workspace_base() 读
+    ContextVar，供无副本的调用方（SkillTurboArtifactRail）使用。
+
+    基线状态（snapshot/disabled）本质上是 per-workspace 的，而本实例
+    随 rail 跨请求复用（per-session）：记录状态所属的 snapshot_base，
+    ensure() 发现工作区切换（ACP 请求级 workspace_dir 可变）时重置
+    状态重建基线，避免用 W1 的基线 diff W2 的状态导致全量误报；
+    disabled 结论同样只对所属工作区有效，切换时重置重新尝试。
+    """
+
+    def __init__(self) -> None:
+        # 工作区基线快照：bash 类工具执行前的文件状态，供增量 diff 检测产物
+        self.snapshot: WorkspaceSnapshot | None = None
+        # 基线状态所属的工作区：成功/禁用都记录，供切换检测与重置判定
+        # （snapshot_base=None 表示尚未建过，_same_base 恒 False）
+        self.snapshot_base: Path | None = None
+        # 基线 diff 会话级禁用标志：快照超时/失败一次即禁用本会话基线路径
+        # （降级文本提取，与基线引入前行为一致），避免反复无效扫描/超时
+        self.disabled = False
+        # 基线懒建双检锁：并行 tool_call 时首个 bash 建一次快照，等待者复用
+        self.init_lock = asyncio.Lock()
+
+    def _same_base(self, base: Path) -> bool:
+        """工作区一致性判定：normcase 归一后字符串比较。
+
+        两个 base 来源（metadata 副本 / ContextVar）均已 .resolve()，
+        normcase 覆盖 Windows 大小写与斜杠方向差异即可。
+        """
+        return (
+            self.snapshot_base is not None
+            and os.path.normcase(str(self.snapshot_base))
+            == os.path.normcase(str(base))
+        )
+
+    @property
+    def effective(self) -> WorkspaceSnapshot | None:
+        """当前生效的基线：禁用后返回 None（跳过基线 diff，走文本提取）。"""
+        return None if self.disabled else self.snapshot
+
+    async def ensure(
+        self,
+        tool_name: str,
+        tool_args: Any,
+        *,
+        log_prefix: str,
+        workspace_base: Path | None = None,
+    ) -> None:
+        """懒建基线：首个 bash 类工具执行前建工作区快照，等待者复用。
+
+        invoke_tool 间接调用时按解包出的内部工具名判定（与 after 路径
+        detect_artifact_paths 的解包对齐），使 invoke_tool -> bash 场景
+        也能在执行前懒建基线，而非降级文本提取。无需建立时保持现状。
+        工作区切换时重置 snapshot/disabled 重建基线（见类 docstring）。
+        """
+        effective_name = tool_name
+        if tool_name in INVOKE_TOOL_NAMES:
+            inner_name, _ = _unwrap_invoke_tool(tool_args, None)
+            if inner_name is not None:
+                effective_name = inner_name
+        if effective_name not in CODE_EXEC_TOOL_NAMES:
+            return
+        base = workspace_base if workspace_base is not None else resolve_workspace_base()
+        if base is None:
+            return
+        # 快路径：已建/已禁用且工作区未变才直接返回——不比较 base 会把
+        # 旧工作区的基线/禁用结论套到新工作区（跨请求切换时全量误报）
+        if (self.snapshot is not None or self.disabled) and self._same_base(base):
+            return
+        async with self.init_lock:
+            # 双检同样带 base 比较：等待者拿锁期间若他人建的是其他工作区
+            # 的基线，不可复用（否则回到陈旧基线误报问题）
+            if (self.snapshot is not None or self.disabled) and self._same_base(base):
+                return
+            # 工作区切换：旧 snapshot/disabled 结论只对旧工作区有效，
+            # 重置后重建（disabled 随切换重置：旧工作区超限/超时不代表
+            # 新工作区也超限，切换是一次性的，无重试风暴）
+            if not self._same_base(base):
+                logger.info(
+                    "%s workspace changed %s -> %s, rebuild baseline",
+                    log_prefix, self.snapshot_base, base,
+                )
+                self.snapshot = None
+                self.disabled = False
+            # 线程 + 超时 + cancel_event 三重防护，防 stat 阻塞 event loop；
+            # 超时一次即禁用本会话基线路径，避免反复重试超时
+            cancel_event = threading.Event()
+            try:
+                snapshot = await asyncio.wait_for(
+                    asyncio.to_thread(_snapshot_workspace, base, cancel_event),
+                    timeout=BASELINE_SNAPSHOT_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                # 通知后台线程在下一个检查点退出；本会话禁用基线路径，
+                # 避免后续工具反复重试超时
+                cancel_event.set()
+                logger.warning(
+                    "%s baseline snapshot timed out (%.1fs), disable baseline "
+                    "diff for this session",
+                    log_prefix,
+                    BASELINE_SNAPSHOT_TIMEOUT_S,
+                )
+                self.disabled = True
+                self.snapshot_base = base
+                return
+            if snapshot is not None:
+                logger.info(
+                    "%s baseline ready files=%d", log_prefix, len(snapshot)
+                )
+                self.snapshot = snapshot
+                self.snapshot_base = base
+            else:
+                # 快照失败/超限返回 None（具体原因已由 _snapshot_workspace
+                # 记录）：本会话禁用基线路径，与超时路径保持一致，避免后续
+                # bash 工具反复重扫（超限工作区每次都要扫满 MAX_SCAN_FILES
+                # 才放弃）；after 路径 baseline_scan_failed 因 baseline 为
+                # None 无法兜底，必须在此禁用
+                self.disabled = True
+                self.snapshot_base = base
+                logger.warning(
+                    "%s baseline snapshot unavailable, disable baseline "
+                    "diff for this session",
+                    log_prefix,
+                )
 
 
 def filter_unhooked(
@@ -863,10 +1298,50 @@ class TaskExecutionRail(DeepAgentRail):
         self._active_tasks: dict[str, TaskExecutionContext] = {}
         self._todo_started: set[str] = set()
         self._deep_agent: Any | None = None
+        # 中断恢复 skip 机制：before_invoke 检测到 skip 标志时（本请求由
+        # prepare_* 注入了恢复提示），记录旧 todo id，_emit_task_update_event
+        # 据此过滤已清理的旧项，避免向前端回灌跨请求残留 todo。
+        self._stale_todo_ids: set[str] = set()
         # 产物检测：工具调用开始时间（按 tool_call_id 记录，用于 mtime 校验）
         self._tool_start_times: dict[str, float] = {}
         # 已触发过产物 hook 的文件身份（路径+mtime_ns+size），防止重复后处理
         self._hooked_artifacts: set[tuple[str, int, int]] = set()
+        # 工作区基线懒建状态：bash 类工具执行前的文件快照，供增量 diff 检测产物
+        self._baseline = WorkspaceBaselineState()
+        # 请求 metadata 副本（adapter 每轮 bind_request 注入）：工具运行在
+        # supervisor round task 不继承请求任务的 ContextVar，且本 rail 先于
+        # StreamEventRail 执行（priority 大者先），workspace 须从副本直读
+        self._skill_turbo_request_metadata: dict | None = None
+
+    def set_skill_turbo_request_metadata(self, metadata: dict | None) -> None:
+        """注入当前请求 metadata 副本，供 before_tool_call 解析请求级工作区。"""
+        self._skill_turbo_request_metadata = (
+            dict(metadata) if isinstance(metadata, dict) else None
+        )
+
+    def _resolve_metadata_workspace_base(self) -> Path | None:
+        """从请求 metadata 副本直读请求级工作区。
+
+        resolve_workspace_base() 读 ``_effective_request_workspace_dir``
+        ContextVar，该绑定在请求任务设置、supervisor round task 不继承，
+        且 StreamEventRail 的重绑发生在本 rail 之后（priority 数值大者
+        先执行），before 阶段读不到。这里直接从 adapter 注入的 metadata
+        副本提取 effective_project_dir；不 set/reset ContextVar，避免
+        与 StreamEventRail after 阶段的 token reset 乱序冲突。
+        """
+        epd = extract_effective_project_dir(
+            self._skill_turbo_request_metadata
+        )
+        if epd is not None:
+            try:
+                return Path(epd).resolve()
+            except OSError:
+                logger.warning(
+                    "[TaskExecutionRail] invalid effective_project_dir in "
+                    "request metadata: %r",
+                    epd,
+                )
+        return None
 
     def get_current_task_id(self) -> str | None:
         return _ACTIVE_TASK_ID.get()
@@ -889,12 +1364,48 @@ class TaskExecutionRail(DeepAgentRail):
                     "failed to get session_id",
                     exc_info=True,
                 )
+        # skip 标志置位时捕获旧 todo id 供 _emit_task_update_event 过滤。
+        skip_invoke = (
+            ctx.session is not None
+            and is_skip_invoke_task_update_sync(ctx.session)
+        )
+        if skip_invoke:
+            self._stale_todo_ids = set(self._todo_map.keys())
+            # 同步写入 session，供 StreamEventRail._emit_todo_updated（todo.updated
+            # 旁路）过滤同一批跨请求残留——那条旁路读不到本 rail 的实例字段。
+            if ctx.session is not None:
+                try:
+                    set_stale_todo_ids(ctx.session, self._stale_todo_ids)
+                except Exception:
+                    logger.debug(
+                        "[TaskExecutionRail] before_invoke: set_stale_todo_ids failed",
+                        exc_info=True,
+                    )
+            logger.info(
+                "[TaskExecutionRail] before_invoke: skip_invoke_task_update "
+                "flag set, captured %d stale todo ids=%s",
+                len(self._stale_todo_ids),
+                list(self._stale_todo_ids),
+            )
+        else:
+            self._stale_todo_ids = set()
+            # 与实例字段同步清掉 session 上的残留（上轮崩溃兜底）。
+            if ctx.session is not None:
+                try:
+                    clear_stale_todo_ids(ctx.session)
+                except Exception:
+                    logger.debug(
+                        "[TaskExecutionRail] before_invoke: clear_stale_todo_ids failed",
+                        exc_info=True,
+                    )
         logger.info(
             "[TaskExecutionRail] before_invoke reset tracking: "
-            "session_id=%s prev_todo_map_size=%d prev_active_tasks=%s",
+            "session_id=%s prev_todo_map_size=%d prev_active_tasks=%s "
+            "skip_invoke=%s",
             session_id,
             len(self._todo_map),
             list(self._active_tasks.keys()),
+            skip_invoke,
         )
         self._todo_map = {}
         self._todo_map_before_tool = {}
@@ -908,7 +1419,7 @@ class TaskExecutionRail(DeepAgentRail):
                 t.get("status") in ("pending", "in_progress")
                 for t in self._todo_map.values()
             )
-            if has_active_tasks:
+            if has_active_tasks and not skip_invoke:
                 parent_request_id = self._extract_request_id(ctx)
                 await self._emit_task_update_event(
                     ctx.session, parent_request_id
@@ -968,8 +1479,25 @@ class TaskExecutionRail(DeepAgentRail):
             tool_call_id = str(getattr(tc, "id", "") or "")
             if tool_call_id:
                 self._tool_start_times[tool_call_id] = time.time()
+            # bash 类工具懒建基线（含 invoke_tool 间接调用的内部工具名
+            # 判定、超时禁用与并行去重，详见 WorkspaceBaselineState.ensure）。workspace_base 从 metadata
+            # 副本直读：ContextVar 在本 rail 执行时尚未由 StreamEventRail
+            # 重绑（priority 大者先执行）
+            await self._baseline.ensure(
+                tool_name,
+                getattr(ctx.inputs, "tool_args", None),
+                log_prefix="[TaskExecutionRail]",
+                workspace_base=self._resolve_metadata_workspace_base(),
+            )
 
         self._bind_context_to_in_progress_task()
+        if tool_name == "skill_acceleration_exec":
+            # Rail callbacks and the tool body may run in copied Contexts.
+            # Export only display ownership; this does not affect tool
+            # registration, selection, or execution.
+            ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] = (
+                _ACTIVE_TASK_ID.get() is not None
+            )
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs):
@@ -1129,34 +1657,66 @@ class TaskExecutionRail(DeepAgentRail):
             return
 
         # 线程 + 超时 + 异常兜底执行产物检测，避免阻塞 event loop
+        # （基线禁用后传 None：跳过基线 diff，走文本提取）
         detection = await detect_artifact_paths_safe(
             ctx,
             session_id,
             pop_tool_start_time(self._tool_start_times, ctx),
             log_prefix="[TaskExecutionRail]",
+            baseline=self._baseline.effective,
         )
         if detection is None:
             return
+        # 基线 diff 快照失败/超限：禁用本会话基线路径，避免反复无效扫描
+        if detection.baseline_scan_failed:
+            self._baseline.disabled = True
+            logger.warning(
+                "[TaskExecutionRail] baseline scan failed, disable baseline "
+                "diff for this session"
+            )
         task_id = _ACTIVE_TASK_ID.get()
+        snapshot = detection.baseline_snapshot
 
         # 去重：跳过已 hook 过且内容未变化的文件
         paths = filter_unhooked(detection.paths, self._hooked_artifacts)
 
-        if not paths:
-            return
+        fired = False
+        if paths:
+            fired = await fire_artifact_hook(
+                session_id=session_id,
+                tool_name=detection.tool_name,
+                task_id=task_id,
+                artifact_paths=paths,
+                log_prefix="[TaskExecutionRail]",
+            )
+            if fired:
+                mark_hooked(paths, self._hooked_artifacts)
 
-        fired = await fire_artifact_hook(
-            session_id=session_id,
-            tool_name=detection.tool_name,
-            task_id=task_id,
-            artifact_paths=paths,
-            log_prefix="[TaskExecutionRail]",
-        )
-        if fired:
-            mark_hooked(paths, self._hooked_artifacts)
+        # 更新基线：仅拿到本次快照时更新（snapshot 为 None 表示非基线路径/
+        # 降级，保持原基线不变）；hook 可能原地改写文件（水印），局部刷新
+        # 候选条目（含 sha256 读文件，放线程防阻塞 event loop）
+        if snapshot is not None:
+            self._baseline.snapshot = await asyncio.to_thread(
+                update_baseline_after_hook,
+                snapshot, fired, paths, resolve_workspace_base(),
+            )
 
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
         self._todo_map_before_tool = {}
+        # 本轮 invoke 结束后清掉 skip 标志与 stale 缓存：skip 只在
+        # prepare→before_invoke 这一段窗口生效，之后模型若实际推进
+        # todo（todo_modify 写盘 + 下一次 emit 应正常广播新快照）。
+        if ctx.session is not None:
+            try:
+                clear_skip_invoke_task_update_sync(ctx.session)
+                clear_stale_todo_ids(ctx.session)
+            except Exception:
+                logger.debug(
+                    "[TaskExecutionRail] after_invoke: "
+                    "clear_skip_invoke_task_update_sync failed",
+                    exc_info=True,
+                )
+        self._stale_todo_ids = set()
         self._bind_context_to_in_progress_task()
 
     # ------------------------------------------------------------------
@@ -1175,6 +1735,14 @@ class TaskExecutionRail(DeepAgentRail):
                 self._todo_map = self._build_map_from_todo_items(
                     todo_items
                 )
+                # 记录磁盘加载的 todo ids 快照，用于区分「磁盘旧残留」与「本轮 LLM 新建」
+                try:
+                    set_pre_invoke_todo_ids(session, set(self._todo_map.keys()))
+                except Exception:
+                    logger.debug(
+                        "[TaskExecutionRail] set_pre_invoke_todo_ids failed",
+                        exc_info=True,
+                    )
                 logger.info(
                     "[TaskExecutionRail] Loaded todo.json "
                     "session_id=%s tasks=%d",
@@ -1359,6 +1927,14 @@ class TaskExecutionRail(DeepAgentRail):
 
         self._todo_map = current_map
         self._todo_map_before_tool = {}
+        # 记录本轮 invoke 实际存在的 todo ids，供过滤 stale 时排除本轮新建的同 ID 项
+        try:
+            set_current_invoke_todo_ids(ctx.session, set(current_map.keys()))
+        except Exception:
+            logger.debug(
+                "[TaskExecutionRail] set_current_invoke_todo_ids failed",
+                exc_info=True,
+            )
         self._bind_context_after_todo_sync(
             completed_in_batch, current_map
         )
@@ -1488,6 +2064,29 @@ class TaskExecutionRail(DeepAgentRail):
         """Send full task list snapshot (all todos) to the frontend."""
         session_id = session.get_session_id()
         todo_items = self._load_todo_from_json(session_id)
+        # 兜底过滤：即便 skip 窗口未拦下，也剔除已被 prepare_* 清理的
+        # 旧 todo id，防止跨请求残留项回灌前端快照。键推导须与
+        # _build_map_from_todo_items 一致：有 id 用 id，无 id 用 str(index)。
+        if self._stale_todo_ids:
+            # 仅过滤 stale 集中仍处于终态（cancelled/completed）的旧残留项。
+            # 本轮 LLM 通过 todo_create/todo_modify 重建的同 ID 项状态为
+            # pending/in_progress，不会被过滤。
+            # 额外排除本轮新建的同 ID 项：若 id 不在磁盘快照（pre_invoke_todo_ids）
+            # 中，说明是本轮 LLM 新建的，即使 id 与 stale 集合重合也不应过滤。
+            pre_invoke_ids = get_pre_invoke_todo_ids(session)
+            filtered: list[dict[str, Any]] = []
+            _DONE_STATUSES = frozenset({"cancelled", "completed"})  # pylint: disable=huawei-invalid-name
+            for idx, item in enumerate(todo_items):
+                key = str(item.get("id", str(idx)))
+                status = str(item.get("status", "")).lower()
+                if key in self._stale_todo_ids and status in _DONE_STATUSES:
+                    # 仅当 id 存在于磁盘快照时才认定为真旧残留
+                    if pre_invoke_ids and key not in pre_invoke_ids:
+                        filtered.append(item)
+                        continue
+                    continue
+                filtered.append(item)
+            todo_items = filtered
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"
         )

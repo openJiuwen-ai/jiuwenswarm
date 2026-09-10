@@ -158,11 +158,15 @@ def test_history_get_sanitizes_large_restorable_records(monkeypatch):
         },
     }
 
-    monkeypatch.setattr(session_handlers, "history_exists", lambda session_id: True)
+    monkeypatch.setattr(
+        session_handlers,
+        "history_exists",
+        lambda session_id, sessions_root=None: True,
+    )
     monkeypatch.setattr(
         session_handlers,
         "load_history_records",
-        lambda session_id: [large_record],
+        lambda session_id, sessions_root=None: [large_record],
     )
 
     result = session_handlers.get_conversation_history(

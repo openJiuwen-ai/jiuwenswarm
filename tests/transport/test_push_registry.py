@@ -116,6 +116,40 @@ def test_push_with_no_subscribers_is_noop() -> None:
     assert asyncio.run(PushRegistry().push(_wire())) == 0
 
 
+def test_reverse_rpc_uses_only_declared_owner() -> None:
+    reg = PushRegistry()
+    ordinary, gateway = _RecordingSink(), _RecordingSink()
+    reg.register("ordinary", ordinary)
+    reg.register("gateway", gateway, reverse_rpc_capable=True)
+
+    assert reg.reverse_rpc_ready() is True
+    assert asyncio.run(reg.push_reverse_rpc(_wire())) == 1
+    assert ordinary.wires == []
+    assert len(gateway.wires) == 1
+
+
+def test_reverse_rpc_owner_replacement_fails_existing_requests() -> None:
+    reg = PushRegistry()
+    owner_losses = []
+    reg.set_reverse_rpc_owner_lost_callback(lambda: owner_losses.append(True))
+    first, second = _RecordingSink(), _RecordingSink()
+    reg.register("first", first, reverse_rpc_capable=True)
+    reg.register("second", second, reverse_rpc_capable=True)
+
+    assert owner_losses == [True]
+    assert asyncio.run(reg.push_reverse_rpc(_wire())) == 1
+    assert first.wires == []
+    assert len(second.wires) == 1
+
+
+def test_ordinary_subscriber_does_not_make_reverse_rpc_ready() -> None:
+    reg = PushRegistry()
+    reg.register("ordinary", _RecordingSink())
+
+    assert reg.reverse_rpc_ready() is False
+    assert asyncio.run(reg.push_reverse_rpc(_wire())) == 0
+
+
 def test_send_push_reaches_http_subscriber_without_ws() -> None:
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.transports.push_registry import get_push_registry

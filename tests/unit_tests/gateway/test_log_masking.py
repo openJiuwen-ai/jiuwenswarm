@@ -29,6 +29,98 @@ def test_builtin_sanitize_masks_email_and_kv():
     assert not engine.uses_external_rules
 
 
+def test_builtin_pii_has_no_fingerprint():
+    engine = LogMaskingEngine.get_instance()
+    out = engine.sanitize("mail user@example.com phone 13800138000")
+    assert "user@example.com" not in out
+    assert "13800138000" not in out
+    assert "fp:" not in out
+
+
+def test_builtin_rule_ids_include_pii_and_kv():
+    ids = {r.rule_id for r in LogMaskingEngine.compiled_default_rules()}
+    assert {
+        "builtin_email",
+        "builtin_cn_mobile",
+        "builtin_cn_id_card",
+        "builtin_kv_sensitive",
+        "builtin_data_image",
+    } <= ids
+    by_id = {r.rule_id: r for r in LogMaskingEngine.compiled_default_rules()}
+    for rid in (
+        "builtin_email",
+        "builtin_cn_mobile",
+        "builtin_cn_id_card",
+        "builtin_data_image",
+    ):
+        assert not by_id[rid].with_fingerprint
+    assert by_id["builtin_kv_sensitive"].with_fingerprint
+
+
+def test_compile_masking_rows_reads_with_fingerprint_default_false():
+    rules = LogMaskingEngine.compile_masking_rows(
+        [
+            {
+                "id": 1,
+                "rule_id": "custom_a",
+                "rule_name": "a",
+                "pattern": r"AAA-\d+",
+                "replacement": "[A]",
+                "priority": 1,
+                "enabled": True,
+            },
+            {
+                "id": 2,
+                "rule_id": "custom_b",
+                "rule_name": "b",
+                "pattern": r"BBB-\d+",
+                "replacement": "[B]",
+                "priority": 2,
+                "enabled": True,
+                "with_fingerprint": True,
+            },
+        ]
+    )
+    by_id = {r.rule_id: r for r in rules}
+    assert by_id["custom_a"].with_fingerprint is False
+    assert by_id["custom_b"].with_fingerprint is True
+
+
+def test_with_fingerprint_false_masks_without_fp(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    LogMaskingEngine.reload_from_rows(
+        [
+            {
+                "id": 1,
+                "rule_id": "sk_plain",
+                "rule_name": "sk",
+                "pattern": r"\bsk-[A-Za-z0-9]{8,}\b",
+                "replacement": "******",
+                "priority": 50,
+                "enabled": True,
+                "with_fingerprint": False,
+            }
+        ],
+        db_authoritative=True,
+    )
+    out = LogMaskingEngine.get_instance().sanitize("key sk-abcdefghijklmnop")
+    assert "sk-abcdefghijklmnop" not in out
+    assert "******" in out
+    assert "fp:" not in out
+
+
+def test_builtin_kv_with_fingerprint_even_in_enterprise(monkeypatch):
+    """敏感 KV（with_fingerprint=True）企业版同样附指纹。"""
+    from jiuwenswarm.infrastructure.utils import fingerprint
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    LogMaskingEngine.reset_for_tests()
+    secret = "mySecretValue"
+    out = LogMaskingEngine.get_instance().sanitize(f"api_key={secret}")
+    assert secret not in out
+    assert f"******(fp:{fingerprint(secret)})" in out
+
+
 def test_reload_from_rows_sets_external_flag():
     LogMaskingEngine.reload_from_rows(
         [

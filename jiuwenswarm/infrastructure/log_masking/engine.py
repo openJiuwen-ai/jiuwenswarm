@@ -2,7 +2,7 @@
 """日志脱敏引擎：内置规则、按 priority DESC 顺序应用已编译规则。"""
 
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import logging
 import os
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from jiuwenswarm.infrastructure.config import settings
+from jiuwenswarm.infrastructure.utils import is_already_masked, masked_with_fp
 
 _logger = logging.getLogger(__name__)
 
@@ -26,8 +27,9 @@ _LOG_MASKING_RULE_TABLE = "log_masking_rule"
 _PATTERN_PERF_SAMPLE_LIMIT_SEC = 0.05
 
 _SENSITIVE_KW = (
-    r"password|passwd|pwd|secret|token|api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|authorization|credential|private[_-]?key|user[_-]?id"
+    # token/credential 用 (?![a-z0-9]) 避免误伤 tokens_used / credentialing 等。
+    r"password|passwd|pwd|secret|token(?![a-z0-9])|api[_-]?key|access[_-]?token|"
+    r"refresh[_-]?token|authorization|credentials?|private[_-]?key|user[_-]?id"
 )
 
 
@@ -38,9 +40,12 @@ def _expand_sensitive_kw_literals(kw_alternation: str) -> tuple[str, ...]:
         alt = alt.strip()
         if not alt:
             continue
+        # 预检只关心子串是否出现，去掉零宽断言。
+        alt = re.sub(r"\(\?![^)]*\)", "", alt)
+        alt = re.sub(r"\(\?<![^)]*\)", "", alt)
         if "[_-]?" not in alt:
             lit = alt.lower()
-            if lit not in literals:
+            if lit and lit not in literals:
                 literals.append(lit)
             continue
         left, right = alt.split("[_-]?", 1)
@@ -55,9 +60,37 @@ _SENSITIVE_KW_LITERALS = _expand_sensitive_kw_literals(_SENSITIVE_KW)
 
 _KV_SENSITIVE_PATTERN = re.compile(
     rf'(?i)(?P<prefix>["\']?[\w.-]{{0,128}}(?:{_SENSITIVE_KW})[\w.-]{{0,128}}["\']?\s*[:=]\s*)'
-    r'(?P<val>"[^"]*"|\'[^\']*\'|[^,\s"\'\}\]]+)'
+    # 值：引号串，或非 JSON 结构起始的标量（避免把 `"credentials": {` 整段吃掉）。
+    r'(?P<val>"[^"]*"|\'[^\']*\'|[^,\s"\'\}\]\{\[]+)'
 )
 _KV_SENSITIVE_REPLACEMENT = rf"\g<prefix>{DEFAULT_REPLACEMENT}"
+
+
+def _fingerprint_match(match: re.Match[str]) -> str:
+    """``with_fingerprint=True`` 时的统一替换。
+
+    - 有命名组 ``prefix``+``val``（敏感 KV）：保留键，对值附指纹；跳过 JSON 结构值
+    - 至少两组捕获：保留第 1 组，对第 2 组附指纹
+    - 否则：整段命中附指纹
+    """
+    groups = match.groupdict()
+    if "prefix" in groups and "val" in groups:
+        prefix = groups["prefix"]
+        val = groups["val"] or ""
+        if val[:1] in "{[":
+            return match.group(0)
+        raw = (
+            val[1:-1]
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in "'\""
+            else val
+        )
+        if is_already_masked(raw):
+            return match.group(0)
+        return f"{prefix}{masked_with_fp(raw)}"
+    if match.lastindex and match.lastindex >= 2:
+        return f"{match.group(1)}{masked_with_fp(match.group(2))}"
+    return masked_with_fp(match.group(0))
+
 
 _PATTERN_PERF_PROBE_SAMPLES: tuple[str, ...] = (
     ("x" * 19) + "z",
@@ -79,9 +112,20 @@ class CompiledMaskingRule:
     replacement: str
     name: str = ""
     priority: int = 0
+    # True：命中后走指纹替换；False：使用 replacement 静态串（可含 \\g 回引）。
+    with_fingerprint: bool = False
 
 
+# priority 越大越先执行。顺序：大体积 data-uri → PII（无指纹）→ 敏感 KV（有指纹）。
 _BUILTIN_RULES: list[CompiledMaskingRule] = [
+    CompiledMaskingRule(
+        "builtin_data_image",
+        re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+"),
+        "data:image/*;base64,******",
+        name="DataURI图片",
+        priority=50,
+    ),
+    # --- PII（邮箱 / 手机 / 身份证）：纯掩码，不附指纹 ---
     CompiledMaskingRule(
         "builtin_email",
         re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b"),
@@ -109,6 +153,7 @@ _BUILTIN_RULES: list[CompiledMaskingRule] = [
         _KV_SENSITIVE_REPLACEMENT,
         name="敏感KV",
         priority=10,
+        with_fingerprint=True,
     ),
 ]
 
@@ -270,7 +315,7 @@ class LogMaskingEngine:
 
         单机版（``JIUWENSWARM_EDITION`` 非企业版）不访问 GDB，直接使用内置规则。
         企业版直接读本网关 DB（每网关独立库，不依赖实例 id 绑定）。
-        读库走本地 ``enterprise_config.gateway_db``，不依赖 ``packages/jiuwenclaw-ee``。
+        读库走本地 ``enterprise_config.db_queries``，不依赖 ``packages/jiuwenclaw-ee``。
 
         ``db_authoritative``：
         - ``None``（默认）：GDB 有行时以库为准，空库保留内置；
@@ -289,6 +334,13 @@ class LogMaskingEngine:
                     else bool(rows)
                 )
                 cls.reload_from_rows(rows, db_authoritative=authoritative)
+                engine = cls.get_instance()
+                _logger.info(
+                    "[log_masking_db] reloaded: rows=%d rules=%d authoritative=%s",
+                    len(rows),
+                    len(engine.rules),
+                    engine.uses_external_rules,
+                )
             except Exception as exc:  # noqa: BLE001
                 _logger.warning(
                     "[log_masking_db] log_masking_rule read failed: %s",
@@ -310,9 +362,9 @@ class LogMaskingEngine:
         table_name: str = _LOG_MASKING_RULE_TABLE,
     ) -> list[dict[str, Any]]:
         """返回 ``enabled=true`` 的规则行（priority DESC）。"""
-        from jiuwenswarm.server.runtime.enterprise_config import gateway_db
+        from jiuwenswarm.server.runtime.enterprise_config import db_queries
 
-        rows = await gateway_db.list_records(
+        rows = await db_queries.list_records(
             table_name,
             filters={"enabled": True},
             order_by="priority DESC",
@@ -343,6 +395,7 @@ class LogMaskingEngine:
                 "pattern": obj.get("pattern"),
                 "replacement": obj.get("replacement"),
                 "priority": obj.get("priority", 0),
+                "with_fingerprint": bool(obj.get("with_fingerprint", False)),
                 "source": obj.get("source"),
                 "enabled": bool(enabled),
                 "data": obj.get("data"),
@@ -359,6 +412,7 @@ class LogMaskingEngine:
             "pattern": getattr(obj, "pattern", None),
             "replacement": getattr(obj, "replacement", None),
             "priority": getattr(obj, "priority", 0),
+            "with_fingerprint": bool(getattr(obj, "with_fingerprint", False)),
             "source": getattr(obj, "source", None),
             "enabled": bool(getattr(obj, "enabled", True)),
             "data": getattr(obj, "data", None),
@@ -411,6 +465,7 @@ class LogMaskingEngine:
                         replacement=normalize_replacement(row.get("replacement")),
                         name=str(row.get("rule_name") or "").strip(),
                         priority=int(row.get("priority") or 0),
+                        with_fingerprint=bool(row.get("with_fingerprint", False)),
                     )
                 )
             except ValueError as exc:
@@ -436,7 +491,10 @@ class LogMaskingEngine:
                     and not any(kw in masked.lower() for kw in _SENSITIVE_KW_LITERALS)
                 ):
                     continue
-                masked = rule.pattern.sub(rule.replacement, masked)
+                if rule.with_fingerprint:
+                    masked = rule.pattern.sub(_fingerprint_match, masked)
+                else:
+                    masked = rule.pattern.sub(rule.replacement, masked)
             except Exception:
                 _logger.debug(
                     "[LogMasking] rule %s sub failed", rule.rule_id, exc_info=True

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.utils import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.storage.backends.db.persistent_store import DbPersistentBackend
 from jiuwenswarm.gateway.storage.backends.file_persistent import FilePersistentBackend
 from jiuwenswarm.gateway.storage.backends.memory_ephemeral import MemoryEphemeralBackend
@@ -342,19 +342,7 @@ async def teardown_gateway_storage_repositories(ctx: StorageContext) -> None:
 
     clear_session_map_repository()
     _clear_config_and_cron_repositories()
-    _clear_manager_ws_table_store()
     await ctx.shutdown()
-
-
-def _clear_manager_ws_table_store() -> None:
-    try:
-        from jiuwenswarm.gateway.storage_assembly.manager_ws_bridge import (
-            clear_manager_ws_table_store,
-        )
-
-        clear_manager_ws_table_store()
-    except Exception as exc:
-        logger.warning("clear manager ws table store failed: %s", exc)
 
 
 def ensure_enterprise_storage_context(
@@ -362,7 +350,7 @@ def ensure_enterprise_storage_context(
     *,
     existing: StorageContext | None = None,
 ) -> StorageContext:
-    """企业版至少持有 ``StorageContext``（Manager WS 写路径经 ``PersistentStore``）。"""
+    """企业版至少持有 ``StorageContext``（企业配置写路径经 ``PersistentStore``）。"""
     if existing is not None:
         return existing
     if cfg is None:
@@ -374,32 +362,27 @@ def ensure_enterprise_storage_context(
     return create_gateway_storage_context(cfg)
 
 
-def wire_enterprise_manager_ws_store(
+def wire_enterprise_persistent_repositories(
     ctx: StorageContext,
     cfg: dict[str, Any] | None = None,
 ) -> None:
-    """同步包装：见 ``wire_enterprise_manager_ws_store_async``。"""
+    """同步包装：见 ``wire_enterprise_persistent_repositories_async``。"""
     from jiuwenswarm.gateway.storage.async_bridge import run_awaitable
 
-    run_awaitable(wire_enterprise_manager_ws_store_async(ctx, cfg))
+    run_awaitable(wire_enterprise_persistent_repositories_async(ctx, cfg))
 
 
-async def wire_enterprise_manager_ws_store_async(
+async def wire_enterprise_persistent_repositories_async(
     ctx: StorageContext,
     cfg: dict[str, Any] | None = None,
 ) -> None:
-    """企业版：注入 Manager WS PersistentStore 与各 Repository。"""
+    """企业版：注入 PersistentStore 与企业配置 / cron 等 Repository。"""
     if cfg is None:
         from jiuwenswarm.common.config import get_config
 
         cfg = get_config()
     if not is_enterprise():
         return
-    from jiuwenswarm.gateway.storage_assembly.manager_ws_bridge import (
-        wire_manager_ws_table_store,
-    )
-
-    wire_manager_ws_table_store(ctx)
     store = await ctx.persistent()
     from jiuwenswarm.gateway.config.enterprise.access import (
         set_enterprise_record_repositories,
@@ -503,12 +486,35 @@ def create_session_map_repository(store: PersistentStore):
 def create_a2a_outbound_repository(
     store: PersistentStore,
 ):
-    """Create the personal-edition JSON-backed outbound Repository."""
+    """Create the edition-specific outbound Repository."""
     from jiuwenswarm.gateway.a2a_manager.outbound import (
         A2AOutboundRepository,
+        EnterpriseA2AProjection,
         JsonA2AOutboundRecordCodec,
     )
 
+    if is_enterprise():
+        return EnterpriseA2AProjection(
+            store,
+            templates=create_enterprise_record_repository(
+                store, "a2a_outbound_template"
+            ),
+            user_states=create_enterprise_record_repository(
+                store, "a2a_outbound_user_state"
+            ),
+            runtime_states=create_enterprise_record_repository(
+                store, "a2a_outbound_runtime_state"
+            ),
+            policies=create_enterprise_record_repository(
+                store, "a2a_access_policy_template"
+            ),
+            agent_templates=create_enterprise_record_repository(
+                store, "agent_template"
+            ),
+            instance_resources=create_enterprise_record_repository(
+                store, "instance_agent_resource"
+            ),
+        )
     return A2AOutboundRepository(store, JsonA2AOutboundRecordCodec())
 
 
@@ -517,19 +523,14 @@ def create_permissions_config_repository(
     *,
     instance_id: str = "",
 ):
+    """permissions 仓库：仅 yaml 段（企业策略走 permissions_template 槽位，不再落 permissions_config 表）。"""
     from jiuwenswarm.gateway.config.permissions import (
-        DbBodySectionCodec,
         PermissionsConfigRepository,
         YamlSectionCodec,
     )
 
-    codec = (
-        DbBodySectionCodec()
-        if is_enterprise()
-        else YamlSectionCodec()
-    )
     return PermissionsConfigRepository(
-        store, codec, instance_id=instance_id
+        store, YamlSectionCodec(), instance_id=instance_id
     )
 
 
@@ -668,7 +669,7 @@ def create_enterprise_record_repositories(
     """为全部企业专属 store name 创建 ``EnterpriseRecordRepository``。
 
     返回 ``{store_name: repo}``；企业启动时由
-    ``set_enterprise_record_repositories`` / ``wire_enterprise_manager_ws_store_async`` 注入。
+    ``set_enterprise_record_repositories`` / ``wire_enterprise_persistent_repositories_async`` 注入。
     """
     from jiuwenswarm.gateway.config.enterprise.catalog import (
         ENTERPRISE_RECORD_STORE_NAMES,
@@ -708,6 +709,6 @@ __all__ = [
     "setup_session_map_repository",
     "teardown_gateway_storage_repositories",
     "teardown_session_map_repository",
-    "wire_enterprise_manager_ws_store",
-    "wire_enterprise_manager_ws_store_async",
+    "wire_enterprise_persistent_repositories",
+    "wire_enterprise_persistent_repositories_async",
 ]

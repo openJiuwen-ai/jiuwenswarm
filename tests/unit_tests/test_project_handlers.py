@@ -782,7 +782,7 @@ class TestEmptyPathProject:
         assert resp["payload"]["project_id"].startswith("proj_")
         # work_mode 改造后默认工作区按 work_mode 分桶:Web 通道默认 work 模式
         # → workspace/work/{name}
-        expected_path = str(get_agent_root_dir() / "workspace" / "work" / "空项目A")
+        expected_path = str(get_agent_root_dir() / "jiuwenclaw_workspace" / "work" / "空项目A")
         assert resp["payload"]["project_dir"] == expected_path
         assert os.path.isdir(expected_path)
         assert resp["payload"]["restored"] is False
@@ -949,4 +949,174 @@ class TestSessionCreateProjectDirConsistency:
         resp = await _call(registered_channel, "session.create", params)
         assert resp["ok"] is False
         assert resp["code"] == "BAD_REQUEST"
+
+
+# ===========================================================================
+# project.get_cron_sessions (remote → Agent session.list)
+# ===========================================================================
+class _FakeSessionListAgentClient:
+    def __init__(self, sessions: list[dict]):
+        self._sessions = sessions
+        self.requests: list[object] = []
+
+    async def send_request(self, request):
+        self.requests.append(request)
+        params = dict(request.params or {})
+        limit = int(params.get("limit", 200))
+        offset = int(params.get("offset", 0))
+        batch = self._sessions[offset:offset + limit]
+        return SimpleNamespace(
+            ok=True,
+            payload={
+                "sessions": batch,
+                "total": len(self._sessions),
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+
+
+class TestProjectGetCronSessionsRemote:
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remote_mode_fetches_and_filters_cron_sessions(
+        registered_channel, tmp_path, monkeypatch,
+    ):
+        """remote 存储：从 Agent session.list 拉全量，再按 cron_id / 项目过滤。"""
+        monkeypatch.setattr(
+            "jiuwenswarm.gateway.routing.session_index.is_remote_storage",
+            lambda: True,
+        )
+
+        pa = _abspath(tmp_path, "cron_app")
+        proj = _make_project("CronApp", pa)
+        agent_sessions = [
+            {
+                "session_id": "cron_run_1",
+                "cron_id": "job-abc",
+                "project_id": proj.project_id,
+                "project_dir": pa,
+                "channel_id": "__cron__",
+                "last_user_message_at": 200.0,
+                "title": "cron run",
+                "created_at": 1.0,
+                "last_message_at": 200.0,
+                "message_count": 1,
+                "mode": "agent",
+                "team_name": "",
+                "pinned": False,
+                "pin_order": 0,
+                "model": "",
+                "work_mode": "work",
+            },
+            {
+                "session_id": "web_normal",
+                "cron_id": "",
+                "project_id": proj.project_id,
+                "project_dir": pa,
+                "channel_id": "web",
+                "last_user_message_at": 300.0,
+                "title": "normal",
+                "created_at": 1.0,
+                "last_message_at": 300.0,
+                "message_count": 1,
+                "mode": "agent",
+                "team_name": "",
+                "pinned": False,
+                "pin_order": 0,
+                "model": "",
+                "work_mode": "work",
+            },
+            {
+                "session_id": "cron_other_job",
+                "cron_id": "job-other",
+                "project_id": proj.project_id,
+                "project_dir": pa,
+                "channel_id": "__cron__",
+                "last_user_message_at": 100.0,
+                "title": "other cron",
+                "created_at": 1.0,
+                "last_message_at": 100.0,
+                "message_count": 1,
+                "mode": "agent",
+                "team_name": "",
+                "pinned": False,
+                "pin_order": 0,
+                "model": "",
+                "work_mode": "work",
+            },
+        ]
+        from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+            WebHandlersBindParams,
+            _register_web_handlers,
+        )
+
+        fake_client = _FakeSessionListAgentClient(agent_sessions)
+        # handler 在注册时捕获 agent_client，需重新注册以注入 fake session.list 客户端
+        _register_web_handlers(
+            WebHandlersBindParams(channel=registered_channel, agent_client=fake_client)
+        )
+
+        resp = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": proj.project_id, "cron_id": "job-abc"},
+        )
+        assert resp["ok"] is True
+        sessions = resp["payload"]["sessions"]
+        assert len(sessions) == 1
+        assert sessions[0]["session_id"] == "cron_run_1"
+        assert sessions[0]["cron_id"] == "job-abc"
+        assert fake_client.requests
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remote_mode_paginates_session_list(registered_channel, sessions_dir, monkeypatch):
+        """remote 存储：超过单页上限时循环拉取 session.list。"""
+        monkeypatch.setattr(
+            "jiuwenswarm.gateway.routing.session_index.is_remote_storage",
+            lambda: True,
+        )
+        from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import _SESSION_LIST_PAGE_SIZE
+
+        agent_sessions = [
+            {
+                "session_id": f"cron_{i}",
+                "cron_id": "job-paged",
+                "project_id": "",
+                "project_dir": "",
+                "channel_id": "__cron__",
+                "last_user_message_at": float(i),
+                "title": "",
+                "created_at": 0.0,
+                "last_message_at": float(i),
+                "message_count": 0,
+                "mode": "agent",
+                "team_name": "",
+                "pinned": False,
+                "pin_order": 0,
+                "model": "",
+                "work_mode": "work",
+            }
+            for i in range(_SESSION_LIST_PAGE_SIZE + 3)
+        ]
+        from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+            WebHandlersBindParams,
+            _register_web_handlers,
+        )
+
+        fake_client = _FakeSessionListAgentClient(agent_sessions)
+        # handler 在注册时捕获 agent_client，需重新注册以注入 fake session.list 客户端
+        _register_web_handlers(
+            WebHandlersBindParams(channel=registered_channel, agent_client=fake_client)
+        )
+
+        resp = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-paged"},
+        )
+        assert resp["ok"] is True
+        assert resp["payload"]["total"] == _SESSION_LIST_PAGE_SIZE + 3
+        assert len(fake_client.requests) >= 2
         assert not any(sessions_dir.iterdir())

@@ -30,6 +30,8 @@ import os
 import sys
 from pathlib import Path
 
+from jiuwenswarm.edition import is_enterprise
+
 # gRPC C-core hygiene — must be set BEFORE grpc initializes (it is imported
 # lazily by the OTLP/otel exporter and chromadb). This module is the first
 # jiuwenswarm import in every entrypoint, so setting it here guarantees grpc
@@ -106,6 +108,10 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     the remapped agent port. Without the URL, Gateway builds
     ``ws://{host}:{AGENT_SERVER_PORT}`` from the injected port.
     """
+    # 企业版部署，不加载任何 `.env` 文件
+    if is_enterprise():
+        return False
+
     from dotenv import load_dotenv
 
     # relay-claw spawn env 注入 EXTENSION_DIRS；.env 的空值会经 override=True 覆盖。

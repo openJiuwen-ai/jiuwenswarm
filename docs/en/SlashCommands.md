@@ -85,7 +85,7 @@ Manages directories AI can access for file read, edit, and execute operations.
 
 #### Concepts
 
-- **System default workspace**: Fixed path `~/.jiuwenswarm/agent/jiuwenswarm_workspace`, always available
+- **System default workspace**: Fixed path `~/.jiuwenswarm/agent/jiuwenclaw_workspace`, always available
 - **Trusted directories (`trusted_dirs`)**: User-authorized accessible directories, managed by TUI, passed to backend Agent
 
 #### Control Logic
@@ -213,7 +213,7 @@ Manages model configs defined under `models.defaults` in `config.yaml`. Supports
 
 Per-turn diffs are computed from `.agent_history/file_ops_jiuwenswarm*.json` logs, not from git. The service reads and merges file operation logs from multiple locations:
 
-1. Agent workspace (`~/.jiuwenswarm/agent/jiuwenswarm_workspace/.agent_history/`)
+1. Agent workspace (`~/.jiuwenswarm/agent/jiuwenclaw_workspace/.agent_history/`)
 2. User workspace `.agent_history/`
 3. Project directory `.agent_history/` (session-specific and global files)
 
@@ -515,7 +515,7 @@ Manage skills lifecycle: listing, installing, uninstalling, marketplace source m
 - **Marketplace source**: A remote Git repository that hosts available skills. Each source has a name, URL, and enabled/disabled state.
 - **Spec**: The install identifier format supporting: `<skill>@builtin` (builtin), `<slug>@clawhub` (ClawHub), `<skill>@<marketplace>` (Git marketplace); bare names without `@` are auto-detected as builtin if applicable.
 - **Local install**: Use `/skills install <path>` to install from a local directory (must contain `SKILL.md`) or remote archive URL; paths/URLs are auto-detected and routed to the local import flow.
-- **Install location**: The directory where a skill is stored after installation (`~/.jiuwenswarm/agent/jiuwenswarm_workspace/skills/`).
+- **Install location**: The directory where a skill is stored after installation (`~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/`).
 - **Source tag**: Each skill in the list is tagged with its source: `[builtin]` = builtin, `[local]` = imported, `[clawhub]` = ClawHub, `[skillnet]` = SkillNet, `[project]` or marketplace name = other.
 
 #### Grouped List Display

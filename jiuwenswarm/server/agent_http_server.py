@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_STATUS_FAILED
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.transports.sink import STREAM_DONE, SSESink, UnaryHTTPSink
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,36 @@ API_PREFIX = "/api/v1"
 #: 端口被占时向上扫描的候选个数与步进，与实例端口组（base + index*1000）保持一致。
 PORT_SCAN_RANGE = 10
 PORT_SCAN_STEP = 1000
+
+#: 企业版北向允许的 Skill 方法白名单（必须与 Gateway ``invoke.py`` 的
+#: ``_ENTERPRISE_SKILL_ALLOWED`` 保持一致）。企业版经 SPI 开放只读列表/详情
+#: 与用户自装/卸载/更新写操作；技能卸载走 ``skills.enterprise.uninstall``。
+_ENTERPRISE_SKILL_ALLOWED = frozenset({
+    "skills.list",
+    "skills.get",
+    "skills.toggle",
+    "skills.source.providers",
+    "skills.source.search",
+    "skills.source.install",
+    "skills.updates.check",
+    "skills.update",
+    "skills.enterprise.list",
+    "skills.enterprise.install",
+    "skills.enterprise.uninstall",
+    "skills.enterprise.source.providers",
+    "skills.enterprise.source.search",
+})
+
+
+def _is_enterprise_skill_forbidden(method: str) -> bool:
+    """AgentServer 侧防御性校验：企业版下拒绝白名单外的 ``skills.*`` 写操作。
+
+    正常链路已由 Gateway 的 ``is_enterprise_write_forbidden`` 拦截；此处兜底
+    AgentServer 被直连（HTTP 直连）时绕过 Gateway 改启停/安装/卸载的情况。
+    """
+    if not is_enterprise():
+        return False
+    return method.startswith("skills.") and method not in _ENTERPRISE_SKILL_ALLOWED
 
 #: HTTP 侧交给业务层的 ``RequestContext.connection_id``。
 #:
@@ -256,6 +287,8 @@ def build_envelope_json(
     user_id: str | None,
     is_stream: bool,
     routing: dict[str, str] | None = None,
+    tenant_ids: dict[str, str] | None = None,
+    request_ext: dict[str, Any] | None = None,
 ) -> str:
     """组装与 WS 客户端等价的 E2A 信封 JSON。
 
@@ -263,8 +296,6 @@ def build_envelope_json(
     ``tests/transport/test_route_matrix.py::test_direct_agent_request_equals_json_roundtrip``
     用它比对新路径，防止两者漂移。删掉它等于删掉那份契约。
     """
-    from jiuwenswarm.common.request_identity import apply_routing_metadata
-
     env = E2AEnvelope(
         request_id=request_id,
         session_id=session_id,
@@ -273,9 +304,26 @@ def build_envelope_json(
         params=params or {},
         is_stream=is_stream,
         user_id=user_id,
-        channel_context=apply_routing_metadata({}, routing),
+        channel_context=_build_channel_context(routing, request_ext),
+        service_id=(tenant_ids or {}).get("service_id"),
+        agent_id=(tenant_ids or {}).get("agent_id"),
+        workspace_key=(tenant_ids or {}).get("workspace_key"),
     )
     return json.dumps(env.to_dict(), ensure_ascii=False)
+
+
+def _build_channel_context(
+    routing: dict[str, str] | None,
+    request_ext: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """重建结构化 REST 入口丢弃的 E2A 请求上下文子集。"""
+    from jiuwenswarm.common.request_ext import attach_to_metadata
+    from jiuwenswarm.common.request_identity import apply_routing_metadata
+
+    channel_context = apply_routing_metadata({}, routing)
+    if not request_ext:
+        return channel_context
+    return attach_to_metadata(channel_context, ext=request_ext) or {}
 
 
 def build_agent_request(
@@ -288,16 +336,20 @@ def build_agent_request(
     user_id: str | None,
     is_stream: bool,
     routing: dict[str, str] | None = None,
+    tenant_ids: dict[str, str] | None = None,
+    request_ext: dict[str, Any] | None = None,
 ) -> Any:
     """构造``AgentRequest``。
 
     ``routing`` 来自 Gateway REST 身份头（``X-User-Id`` / ``X-Bot-Id`` 等），
     经 :func:`apply_routing_metadata` 写入顶层 ``user_id`` 与
     ``channel_context.routing``（group/bot/gateway）。
+
+    ``tenant_ids`` 来自 ``X-Service-Id`` / ``X-Agent-Id`` / ``X-Workspace-Key``，
+    写入信封顶层后由 :func:`e2a_to_agent_request` 落到 ``AgentRequest``。
     """
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.common.request_identity import apply_routing_metadata
-
+    tenant = tenant_ids or {}
     env = E2AEnvelope(
         request_id=request_id,
         session_id=session_id,
@@ -306,7 +358,10 @@ def build_agent_request(
         params=params or {},
         is_stream=is_stream,
         user_id=user_id,
-        channel_context=apply_routing_metadata({}, routing),
+        channel_context=_build_channel_context(routing, request_ext),
+        service_id=tenant.get("service_id"),
+        agent_id=tenant.get("agent_id"),
+        workspace_key=tenant.get("workspace_key"),
     )
     return e2a_to_agent_request(env)
 
@@ -449,8 +504,19 @@ class AgentHTTPServer:
         channel_id: str = "web",
         user_id: str | None = None,
         routing: dict[str, str] | None = None,
+        tenant_ids: dict[str, str] | None = None,
+        request_ext: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         """非流式调用，返回 (响应体, 状态码)。"""
+        if _is_enterprise_skill_forbidden(method):
+            return (
+                {
+                    "request_id": request_id,
+                    "ok": False,
+                    "error": {"code": "FORBIDDEN", "message": "企业版配置由管理面统一下发"},
+                },
+                403,
+            )
         agent_request = build_agent_request(
             method=method,
             params=params,
@@ -460,6 +526,8 @@ class AgentHTTPServer:
             user_id=user_id,
             is_stream=False,
             routing=routing,
+            tenant_ids=tenant_ids,
+            request_ext=request_ext,
         )
         sink = UnaryHTTPSink()
         try:
@@ -490,6 +558,8 @@ class AgentHTTPServer:
         channel_id: str = "web",
         user_id: str | None = None,
         routing: dict[str, str] | None = None,
+        tenant_ids: dict[str, str] | None = None,
+        request_ext: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式调用（结构化入口），产出 sse_starlette 所需的事件 dict。"""
         agent_request = build_agent_request(
@@ -501,6 +571,8 @@ class AgentHTTPServer:
             user_id=user_id,
             is_stream=True,
             routing=routing,
+            tenant_ids=tenant_ids,
+            request_ext=request_ext,
         )
         sink = SSESink()
         async for event in self._pump_sse(

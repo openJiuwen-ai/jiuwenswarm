@@ -1,8 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved.
 """Gateway 本地库 facade（企业版）。
 
-经存储屏蔽层入口 ``ensure_db_handler`` 获取 foundation ``DBHandler``，CRUD 调
-``list_records / create / update``。每网关独立数据库，查询不加实例行级隔离。
+经 ``Database.current().ensure_ready`` 直连取 foundation ``DBHandler``，
+CRUD 调 ``list_records / create / update``。
+供 AgentServer 等无 PersistentStore 装配的进程使用；每网关独立数据库，
+查询不加实例行级隔离。
 """
 
 from __future__ import annotations
@@ -13,13 +15,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.infrastructure.module_importer import import_manager_config_receiver_module
 
 _SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-PERMISSIONS_CONFIG_TABLE = "permissions_config"
 
-# foundation ``list_records`` 默认 limit=100，此处取全部配置行。
-_LIST_LIMIT = 100_000
+# foundation ``list_records`` 默认 limit=100；此处分页拉取全表行。
+# _PAGE_SIZE：单页行数；_TOTAL_LIMIT：安全上限，防止异常大表撑爆内存。
+# 触达 _TOTAL_LIMIT 时记录 warning 并停止，不再静默截断。
+_PAGE_SIZE = 1_000
+_TOTAL_LIMIT = 1_000_000
 
 
 # --------------------------------------------------------------------------- #
@@ -56,6 +59,9 @@ def row_to_dict(row: Any) -> dict[str, Any]:
             if callable(keys_fn):
                 items = {k: row[k] for k in keys_fn(row)}
             elif hasattr(row, "__table__"):
+                items = {k: v for k, v in vars(row).items() if not k.startswith("_sa_")}
+            elif hasattr(row, "__dict__"):
+                # SimpleNamespace（manager_config_receiver 适配层返回的行）等普通对象
                 items = {k: v for k, v in vars(row).items() if not k.startswith("_sa_")}
             else:
                 items = dict(row)
@@ -98,9 +104,10 @@ def sort_by_order(rows: list[dict[str, Any]], order_by: str) -> list[dict[str, A
 # 存储屏蔽层入口
 # --------------------------------------------------------------------------- #
 async def _handler() -> Any:
-    """经 ``ensure_db_handler`` 获取 foundation ``DBHandler``。"""
-    db_mod = import_manager_config_receiver_module("infrastructure.db")
-    return await db_mod.ensure_db_handler(log_prefix="gateway_db_reader")
+    """直连 ``Database`` 单例。"""
+    from jiuwenswarm.infrastructure.db.database import Database
+
+    return await Database.current().ensure_ready(log_prefix="gateway_db_reader")
 
 
 # --------------------------------------------------------------------------- #
@@ -111,69 +118,54 @@ async def list_records(
     query: dict[str, Any] | None = None,
     order_by: str = "",
 ) -> list[dict[str, Any]]:
-    """等值 filters 列表查询（每网关独立 DB，不加实例隔离列）。"""
+    """等值 filters 列表查询（每网关独立 DB，不加实例隔离列）。
+
+    分页拉取全表行：以 ``_PAGE_SIZE`` 步进 ``offset``，返回不足一页即结束。
+    累计行数触达 ``_TOTAL_LIMIT`` 安全上限时记录 warning 并停止，避免静默
+    截断。注意：offset 分页在并发写入下可能短暂跳/重行，调用方
+    ``config_poll`` 以 dict 去重 + 周期轮询自愈，可接受。
+    """
     if not is_safe_ident(table or ""):
         logger.warning("[gateway_db_reader] invalid table name: %r", table)
         return []
 
     handler = await _handler()
+    filters = dict(query or {})
+    sort = order_by or None
     try:
-        rows = await handler.list_records(
-            table,
-            filters=dict(query or {}),
-            limit=_LIST_LIMIT,
-            offset=0,
-            order_by=(order_by or None),
-        )
-        return [row_to_dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = await handler.list_records(
+                table,
+                filters=filters,
+                limit=_PAGE_SIZE,
+                offset=offset,
+                order_by=sort,
+            )
+            if not page:
+                break
+            out.extend(row_to_dict(r) for r in page)
+            if len(page) < _PAGE_SIZE:
+                break
+            offset += len(page)
+            if len(out) >= _TOTAL_LIMIT:
+                logger.warning(
+                    "[gateway_db_reader] list %s hit total limit %d (truncated); "
+                    "narrow filters or raise _TOTAL_LIMIT",
+                    table,
+                    _TOTAL_LIMIT,
+                )
+                break
+        return out
     except Exception as exc:  # noqa: BLE001
-        logger.error("[gateway_db_reader] list %s failed: %s", table, exc)
+        logger.error("[gateway_db_reader] list %s failed: %s", table, exc, exc_info=exc)
         raise
 
 
-async def upsert_permissions_config(
-    body: dict[str, Any],
-    *,
-    source: str = "runtime_persist",
-) -> None:
-    """单例行 upsert ``permissions_config``（每网关独立 DB，无行级实例隔离）。"""
-    now = datetime.now(timezone.utc).isoformat()
-    body_json = json.dumps(body, ensure_ascii=False)
-
-    handler = await _handler()
-    rows = await handler.list_records(PERMISSIONS_CONFIG_TABLE, limit=1, offset=0)
-    if rows:
-        existing = row_to_dict(rows[0])
-        row_id = existing.get("id")
-        revision = int(existing.get("revision") or 1) + 1
-        await handler.update(
-            PERMISSIONS_CONFIG_TABLE,
-            {"id": row_id},
-            {
-                "body": body_json,
-                "source": source,
-                "revision": revision,
-                "updated_at": now,
-            },
-        )
-        return
-    await handler.create(
-        PERMISSIONS_CONFIG_TABLE,
-        {
-            "body": body_json,
-            "source": source,
-            "revision": 1,
-            "created_at": now,
-            "updated_at": now,
-        },
-    )
-
-
 __all__ = [
-    "PERMISSIONS_CONFIG_TABLE",
     "is_safe_ident",
     "list_records",
     "row_to_dict",
     "sort_by_order",
-    "upsert_permissions_config",
 ]

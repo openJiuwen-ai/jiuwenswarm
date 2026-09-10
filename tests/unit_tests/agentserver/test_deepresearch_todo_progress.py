@@ -52,8 +52,8 @@ def _stage_snapshot(active_stage: int | None) -> dict:
 def test_deepresearch_todo_path_uses_tenant_workspace(tmp_path, monkeypatch):
     calls = []
 
-    def _resolve(service_id, agent_id):
-        calls.append((service_id, agent_id))
+    def _resolve(workspace_key, **_kwargs):
+        calls.append(workspace_key)
         return tmp_path
 
     monkeypatch.setattr(
@@ -64,31 +64,29 @@ def test_deepresearch_todo_path_uses_tenant_workspace(tmp_path, monkeypatch):
 
     path = deepresearch_todo_path(
         session_id="session-1",
-        service_id="service-1",
-        agent_id="agent-1",
+        workspace_key="ws-1",
     )
 
     assert path == tmp_path / "todo" / "session-1" / "todo.json"
-    assert calls == [("service-1", "agent-1")]
+    assert calls == ["ws-1"]
 
 
 @pytest.mark.parametrize(
     "value",
     ["", "..", "a/b", r"a\b", "nul\0byte", "x" * 256],
 )
-@pytest.mark.parametrize("field", ["session_id", "service_id", "agent_id"])
+@pytest.mark.parametrize("field", ["session_id", "workspace_key"])
 def test_deepresearch_todo_path_rejects_unsafe_opaque_components(
     field, value, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress."
         "get_tenant_agent_workspace_dir",
-        lambda _service_id, _agent_id: tmp_path,
+        lambda workspace_key, **_kwargs: tmp_path,
     )
     values = {
         "session_id": "session-1",
-        "service_id": "service-1",
-        "agent_id": "agent-1",
+        "workspace_key": "ws-1",
     }
     values[field] = value
 
@@ -104,29 +102,13 @@ def test_deepresearch_todo_path_cannot_escape_tenant_workspace(
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress."
         "get_tenant_agent_workspace_dir",
-        lambda _service_id, _agent_id: tenant,
+        lambda workspace_key, **_kwargs: tenant,
     )
 
     with pytest.raises(ValueError, match="^deepresearch_todo_invalid_path$"):
         deepresearch_todo_path(
             session_id="../../tenant-b",
-            service_id="service-1",
-            agent_id="agent-1",
-        )
-
-
-@pytest.mark.parametrize(
-    ("service_id", "agent_id"),
-    [("", "agent-1"), ("service-1", ""), (None, "agent-1")],
-)
-def test_deepresearch_todo_path_requires_both_tenant_ids(
-    service_id, agent_id
-):
-    with pytest.raises(ValueError, match="^deepresearch_todo_invalid_path$"):
-        deepresearch_todo_path(
-            session_id="session-1",
-            service_id=service_id,
-            agent_id=agent_id,
+            workspace_key="ws-1",
         )
 
 

@@ -445,6 +445,7 @@ class TestTruncationAndRedaction:
         # still masked as ***. Arguments are fed as a JSON STRING — the real
         # shape LLM tool-calls deliver — so this guards the parse-then-mask path
         # (without it, _mask_secrets would skip the string and leak the secret).
+        # 附指纹（与 SensitiveDataFilter / masked_with_fp 一致；脱敏与版本无关）。
         s = debug_config.DebugTraceSettings(
             mode="code.normal",
             enabled=True,

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from openjiuwen.harness.rails.security.tool_security_rail import (
-    PermissionInterruptRail,
+from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+    SkillAuthorizationPermissionRail,
 )
 
 # skill_turbo 外层统一审批：通用兜底描述 + 工具清单
@@ -33,11 +33,12 @@ SKILL_TURBO_APPROVAL_TOOLS: list[tuple[str, str]] = [
 ]
 
 
-class SkillTurboPermissionRail(PermissionInterruptRail):
-    """PermissionInterruptRail 子类，定制 skill_acceleration_exec 审批消息。
+class SkillTurboPermissionRail(SkillAuthorizationPermissionRail):
+    """SkillAuthorizationPermissionRail 子类，定制 skill_acceleration_exec 审批消息。
 
     仅覆盖 _build_message：当 tool_name == "skill_acceleration_exec" 时，
     展示统一审批消息（含内部工具清单），其余工具走父类默认逻辑。
+    基类同时携带 Skill 动态授权门禁短路（gate-handled 命中即跳过）。
     """
 
     def _build_message(
@@ -47,26 +48,19 @@ class SkillTurboPermissionRail(PermissionInterruptRail):
     ) -> str:
         tool_name = tool_call.name if tool_call else ""
         if tool_name == "skill_acceleration_exec":
-            return self._build_skill_turbo_message(tool_call, result)
+            return self._build_skill_turbo_message()
         return super()._build_message(tool_call, result)
 
-    def _build_skill_turbo_message(
-        self,
-        tool_call: Optional[Any],
-        result: Any,
-    ) -> str:
-        """skill_turbo 外层统一审批消息：通用兜底描述 + 工具清单。"""
-        tool_args = self.parse_tool_args(tool_call)
-        risk = self.build_risk_for_message(tool_call.name, tool_args, result)
-
+    def _build_skill_turbo_message(self) -> str:
+        """skill_turbo 外层统一审批消息（工具清单）；勿再调用已移除的 risk API。"""
         tool_lines = "\n".join(
             f"- `{name}` — {desc}" for name, desc in SKILL_TURBO_APPROVAL_TOOLS
         )
+        # 文案需含「需要授权」，供 Relay 权限桥识别为审批卡。
         return (
             f"**即将调用 `skill加速`，需要授权后整体放行：**\n\n"
             f"{SKILL_TURBO_APPROVAL_DESCRIPTION}\n\n"
             f"**可能用到的工具：**\n\n{tool_lines}\n\n"
-            f"**风险等级：{risk.get('level', '')}风险**\n\n"
         )
 
 

@@ -20,9 +20,15 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.context import RequestContext
 
 logger = logging.getLogger(__name__)
+
+# 企业版 MCP 仅由管理端模板下发；本地 /mcp（含 list/show/list_tools）一律禁止，避免与生效配置脱节。
+_MCP_ENTERPRISE_FORBIDDEN = (
+    "企业版禁止使用本地 /mcp 命令，请在管理端通过 MCP 模板下发与查看。"
+)
 
 
 def _normalize_mcp_payload(
@@ -237,7 +243,22 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
         params = request.params or {}
         action = str(params.get("action", "list")).strip().lower()
 
-        if action == "list":
+        if is_enterprise():
+            logger.info(
+                "[command.mcp] reject local mcp command in enterprise: action=%s",
+                action,
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": _MCP_ENTERPRISE_FORBIDDEN,
+                    "code": "MCP_FORBIDDEN",
+                    "action": action,
+                },
+            )
+        elif action == "list":
             items = [_mask_sensitive_fields(item) for item in get_mcp_servers()]
             resp = AgentResponse(
                 request_id=request.request_id,

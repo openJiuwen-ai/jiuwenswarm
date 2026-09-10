@@ -8,16 +8,12 @@ from pathlib import Path
 
 from jiuwenswarm.agents.harness.common.memory import external_memory_config as emc
 from jiuwenswarm.common.local_env_config import (
-    bind_agent_env_ns,
     bind_task_env_overlay,
-    reset_agent_env_ns,
     reset_local_env_state_for_tests,
     reset_task_env_overlay,
 )
 from tests.unit_tests.tenant_workspace_test_helpers import (
     patch_multi_tenant_workspace_dirs,
-    tenant_workspace_key,
-    tenant_workspace_root,
 )
 
 
@@ -26,12 +22,12 @@ def test_resolve_ltm_dir_isolates_tenants(tmp_path, monkeypatch):
     monkeypatch.setattr(
         emc,
         "get_multi_tenant_user_workspace_dir",
-        lambda sid, aid=None: tenant_workspace_root(tmp_path, sid, aid),
+        lambda workspace_key: tmp_path / f"workspace_{workspace_key}",
     )
-    office = emc._resolve_ltm_dir("default", "office")
-    default = emc._resolve_ltm_dir("default", "default")
+    office = emc._resolve_ltm_dir(workspace_key="office")
+    default = emc._resolve_ltm_dir(workspace_key="default")
     assert office != default
-    assert "agent_office" in str(office)
+    assert "workspace_office" in str(office)
     assert office.name == "ltm"
     assert office.exists()
 
@@ -64,32 +60,49 @@ def test_resolve_openjiuwen_store_paths_falls_back_to_tenant_ltm(tmp_path, monke
     monkeypatch.setattr(
         emc,
         "_resolve_ltm_dir",
-        lambda sid=None, aid=None: tmp_path / tenant_workspace_key(sid, aid) / "ltm",
+        lambda *, workspace_key=None: tmp_path / (workspace_key or "default") / "ltm",
     )
     reset_local_env_state_for_tests()
     kv, vec, db = emc.resolve_openjiuwen_store_paths(
         {},
-        service_id="svc",
-        agent_id="bot",
+        workspace_key="svc_bot",
     )
     assert kv.endswith(str(Path("svc_bot") / "ltm" / "kv"))
     assert vec.endswith(str(Path("svc_bot") / "ltm" / "chroma"))
     assert db.endswith(str(Path("svc_bot") / "ltm" / "ltm.db"))
 
 
-def test_resolve_ltm_dir_uses_bound_agent_env_ns(tmp_path, monkeypatch):
+def test_resolve_ltm_dir_uses_workspace_key(tmp_path, monkeypatch):
     patch_multi_tenant_workspace_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(
         emc,
         "get_multi_tenant_user_workspace_dir",
-        lambda sid, aid=None: tenant_workspace_root(tmp_path, sid, aid),
+        lambda workspace_key: tmp_path / f"workspace_{workspace_key}",
     )
-    reset_local_env_state_for_tests()
-    ns = bind_agent_env_ns("bound_svc", "bound_aid")
+    path = emc._resolve_ltm_dir(workspace_key="bound_aid")
+    assert "workspace_bound_aid" in str(path)
+    assert path.name == "ltm"
+
+
+def test_resolve_ltm_dir_reads_bound_workspace_key(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.tenant_context import (
+        bind_workspace_key,
+        clear_tenant_bindings,
+        reset_workspace_key,
+    )
+
+    patch_multi_tenant_workspace_dirs(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        emc,
+        "get_multi_tenant_user_workspace_dir",
+        lambda workspace_key: tmp_path / f"workspace_{workspace_key}",
+    )
+    clear_tenant_bindings()
+    token = bind_workspace_key("bound_wk")
     try:
         path = emc._resolve_ltm_dir()
-        assert "service_bound_svc" in str(path)
-        assert "agent_bound_aid" in str(path)
+        assert "workspace_bound_wk" in str(path)
+        assert path.name == "ltm"
     finally:
-        reset_agent_env_ns(ns)
-        reset_local_env_state_for_tests()
+        reset_workspace_key(token)
+        clear_tenant_bindings()

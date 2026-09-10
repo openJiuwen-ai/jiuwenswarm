@@ -37,8 +37,19 @@ from jiuwenswarm.common.mcp_config import (
     bind_active_office_claw_mcp_tools,
     bind_office_claw_from_agent,
     get_active_office_claw_mcp_tool_ids,
+    is_office_claw_tool_name_live_concurrent,
     resolve_active_office_claw_tool_id,
 )
+
+
+def _office_claw_tool_env_value(tool: Any, key: str) -> str:
+    params = getattr(tool, "_params", None)
+    if not isinstance(params, dict):
+        return ""
+    env = params.get("env")
+    if not isinstance(env, dict):
+        return ""
+    return str(env.get(key) or "").strip()
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +62,13 @@ _DEEPRESEARCH_CONTEXT_TOOLS = frozenset({
     "deepresearch_commit_rewrite",
     "deepresearch_generate_rewrite_html",
 })
+_OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
+    {
+        "office_claw_register_scheduled_task",
+        "office_claw_preview_scheduled_task",
+        "office_claw_update_scheduled_task",
+    }
+)
 
 
 def _json_safe_value(value: Any) -> Any:
@@ -122,15 +140,29 @@ class ProgressiveToolRail(DeepAgentRail):
         # Interaction rounds do not inherit the facade ContextVar, so
         # invoke_tool re-binds from this attribute before tool execution.
         self._office_claw_active_tool_ids: frozenset[str] | None = None
+        self._office_claw_delivery_thread_id: str | None = None
+        self._office_claw_invocation_id: str | None = None
 
-    def set_office_claw_active_tool_ids(self, tool_ids: Iterable[str] | None) -> None:
+    def set_office_claw_active_tool_ids(
+        self,
+        tool_ids: Iterable[str] | None,
+        *,
+        delivery_thread_id: str | None = None,
+        invocation_id: str | None = None,
+    ) -> None:
         """Publish or clear this rail's OfficeClaw request-scoped allowlist."""
         if tool_ids is None:
             self._office_claw_active_tool_ids = None
+            self._office_claw_delivery_thread_id = None
+            self._office_claw_invocation_id = None
             return
         self._office_claw_active_tool_ids = frozenset(
             str(tool_id).strip() for tool_id in tool_ids if str(tool_id).strip()
         )
+        thread = str(delivery_thread_id or "").strip()
+        inv = str(invocation_id or "").strip()
+        self._office_claw_delivery_thread_id = thread or None
+        self._office_claw_invocation_id = inv or None
 
     @contextmanager
     def _bind_deepresearch_context(self, tool_name: str) -> Iterator[None]:
@@ -150,13 +182,20 @@ class ProgressiveToolRail(DeepAgentRail):
             reset_agent_env_ns,
             reset_task_env_overlay,
         )
+        from jiuwenswarm.server.runtime.tenant_context import (
+            bind_workspace_key,
+            reset_workspace_key,
+        )
 
         route = provider()
         service_id = str(route.get("service_id") or "default")
         agent_id = str(route.get("agent_id") or "default")
+        workspace_key = str(route.get("workspace_key") or "default")
         with ExitStack() as cleanup:
             ns_token = bind_agent_env_ns(service_id, agent_id)
             cleanup.callback(reset_agent_env_ns, ns_token)
+            wk_token = bind_workspace_key(workspace_key)
+            cleanup.callback(reset_workspace_key, wk_token)
             overlay_token = bind_task_env_overlay(
                 build_effective_env_overlay(
                     service_id=service_id,
@@ -170,6 +209,7 @@ class ProgressiveToolRail(DeepAgentRail):
                 session_id=str(route.get("session_id") or ""),
                 service_id=service_id,
                 agent_id=agent_id,
+                workspace_key=workspace_key,
                 output_dir=str(route.get("output_dir") or ""),
             )
             cleanup.callback(reset_deepresearch_route, route_token)
@@ -264,9 +304,16 @@ class ProgressiveToolRail(DeepAgentRail):
             self._meta_active = False
 
     def init(self, agent: Any) -> None:
-        card = getattr(agent, "card", None)
-        resolved_card_id = str(getattr(card, "id", "") or "").strip() or None
-        self.update_agent_card_id(resolved_card_id)
+        # ``AgentCard.id`` is a persistence identity shared by every session
+        # adapter for the same agent. Constructor already receives a
+        # session-scoped owner id (``{card}_s_{session}``). Overwriting it with
+        # the shared card id collapses ``invoke_tool`` / ``tools_search`` onto
+        # one process-global resource_mgr entry — last session's rail (and its
+        # OfficeClaw pin) then serves every concurrent session.
+        if not self.agent_card_id:
+            card = getattr(agent, "card", None)
+            resolved_card_id = str(getattr(card, "id", "") or "").strip() or None
+            self.update_agent_card_id(resolved_card_id)
         self._deep_agent = agent
         self._runtime_agent = agent
         self.invalidate_deferred_tool_cache()
@@ -837,8 +884,62 @@ class ProgressiveToolRail(DeepAgentRail):
             )
             return None
 
+    def _owned_office_claw_tool_id(self, tool_name: str) -> str:
+        """Return this rail's allowlisted request-scoped id for ``tool_name``."""
+        owned = getattr(self, "_office_claw_active_tool_ids", None)
+        if not owned:
+            return ""
+        suffix = f".{tool_name}"
+        matches = [
+            tool_id
+            for tool_id in owned
+            if tool_id.endswith(suffix) or tool_id.rsplit(".", 1)[-1] == tool_name
+        ]
+        if not matches:
+            return ""
+        preferred = []
+        for tool_id in matches:
+            if tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX) and tool_id.endswith(
+                suffix
+            ):
+                preferred.append(tool_id)
+        return preferred[0] if preferred else matches[0]
+
+    def _is_foreign_office_claw_tool_id(
+        self,
+        tool_id: str,
+        tool_name: str,
+        *,
+        allowed: frozenset[str] | None,
+    ) -> bool:
+        """True when ``tool_id`` must not be used for this request."""
+        if not tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX):
+            return False
+        owned = getattr(self, "_office_claw_active_tool_ids", None)
+        if owned is not None:
+            return tool_id not in owned
+        if allowed is not None:
+            return tool_id not in allowed
+        # No request binding: never trust a live request-scoped card under
+        # concurrency (ask_user resume races), and never trust one without a
+        # rail pin even when only one registration remains — it may belong to
+        # another session after our own MCP was cleaned.
+        if is_office_claw_tool_name_live_concurrent(tool_name):
+            return True
+        return not bool(
+            str(getattr(self, "_office_claw_invocation_id", None) or "").strip()
+        )
+
     def _tool_instance_available(self, tool_name: str, tool_id: str) -> bool:
         """True when cache id or this request's active OfficeClaw id still resolves."""
+        owned_id = self._owned_office_claw_tool_id(tool_name)
+        if owned_id:
+            return self._lookup_tool_instance(owned_id) is not None
+        if tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX):
+            if self._is_foreign_office_claw_tool_id(
+                tool_id, tool_name, allowed=get_active_office_claw_mcp_tool_ids()
+            ):
+                return False
         if self._lookup_tool_instance(tool_id) is not None:
             return True
         active_id = resolve_active_office_claw_tool_id(tool_name)
@@ -856,15 +957,39 @@ class ProgressiveToolRail(DeepAgentRail):
         """Resolve a live tool instance, recovering from stale card ids.
 
         Order:
-        1. this request's ``bind_active_office_claw_mcp_tools`` allowlist
-           (authoritative for OfficeClaw MCP even when short-name AM / deferred
-           cache still points at a concurrent request's live card)
-        2. preferred_id from deferred cache / AbilityManager card — skipped when
-           it is a foreign ``office-claw-request-*`` id under an active allowlist
-        3. refresh AbilityManager cache and retry if the live card id changed
+        1. this rail's request-scoped OfficeClaw allowlist (session pin)
+        2. this request's ``bind_active_office_claw_mcp_tools`` allowlist
+        3. preferred_id from deferred cache / AbilityManager card — skipped when
+           it is a foreign ``office-claw-request-*`` id
+        4. refresh AbilityManager cache and retry if the live card id changed
 
         Returns ``(tool, resolved_id, refreshed_id_for_diagnostics)``.
         """
+        owned_id = self._owned_office_claw_tool_id(tool_name)
+        if owned_id:
+            target_tool = self._lookup_tool_instance(owned_id)
+            if target_tool is not None:
+                if owned_id != preferred_id:
+                    logger.info(
+                        "%s rail-owned OfficeClaw tool_id preferred: tool_name=%s "
+                        "preferred_id=%s owned_id=%s",
+                        _LOG_PREFIX,
+                        tool_name,
+                        preferred_id,
+                        owned_id,
+                    )
+                return target_tool, owned_id, ""
+            logger.warning(
+                "%s rail-owned OfficeClaw tool instance missing: tool_name=%s "
+                "owned_id=%s preferred_id=%s",
+                _LOG_PREFIX,
+                tool_name,
+                owned_id,
+                preferred_id,
+            )
+            # Fail closed: never fall through to another request's live tool.
+            return None, owned_id, ""
+
         active_id = resolve_active_office_claw_tool_id(tool_name)
         if active_id:
             target_tool = self._lookup_tool_instance(active_id)
@@ -881,10 +1006,8 @@ class ProgressiveToolRail(DeepAgentRail):
                 return target_tool, active_id, ""
 
         allowed = get_active_office_claw_mcp_tool_ids()
-        preferred_is_foreign_office_claw = (
-            preferred_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX)
-            and allowed is not None
-            and preferred_id not in allowed
+        preferred_is_foreign_office_claw = self._is_foreign_office_claw_tool_id(
+            preferred_id, tool_name, allowed=allowed
         )
         if not preferred_is_foreign_office_claw:
             target_tool = self._lookup_tool_instance(preferred_id)
@@ -892,10 +1015,14 @@ class ProgressiveToolRail(DeepAgentRail):
                 return target_tool, preferred_id, ""
         elif preferred_id:
             logger.info(
-                "%s skip foreign OfficeClaw preferred_id: tool_name=%s preferred_id=%s",
+                "%s skip foreign OfficeClaw preferred_id: tool_name=%s preferred_id=%s "
+                "allowed_bound=%s concurrent=%s rail_bound=%s",
                 _LOG_PREFIX,
                 tool_name,
                 preferred_id,
+                allowed is not None,
+                is_office_claw_tool_name_live_concurrent(tool_name),
+                getattr(self, "_office_claw_active_tool_ids", None) is not None,
             )
 
         logger.info(
@@ -914,10 +1041,8 @@ class ProgressiveToolRail(DeepAgentRail):
             str(getattr(refreshed_card, "id", "") or "") if refreshed_card is not None else ""
         )
         if refreshed_id and refreshed_id != preferred_id:
-            refreshed_is_foreign = (
-                refreshed_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX)
-                and allowed is not None
-                and refreshed_id not in allowed
+            refreshed_is_foreign = self._is_foreign_office_claw_tool_id(
+                refreshed_id, tool_name, allowed=allowed
             )
             if not refreshed_is_foreign:
                 target_tool = self._lookup_tool_instance(refreshed_id)
@@ -945,15 +1070,19 @@ class ProgressiveToolRail(DeepAgentRail):
     ) -> dict[str, Any]:
         """Invoke a deferred tool with validated arguments."""
         owned = self._office_claw_active_tool_ids
-        bind_cm = (
-            bind_active_office_claw_mcp_tools(owned)
-            if owned is not None
-            else nullcontext()
-        )
-        with bind_cm:
-            return await self._invoke_target_tool_with_binding(
-                session, params, **kwargs
+        runtime_agent = self._resolve_runtime_agent()
+        # AM carrier may be stale/cleared across ask_user resume races; bind it
+        # first, then re-assert the rail pin so this session's request wins.
+        with bind_office_claw_from_agent(runtime_agent):
+            bind_cm = (
+                bind_active_office_claw_mcp_tools(owned)
+                if owned is not None
+                else nullcontext()
             )
+            with bind_cm:
+                return await self._invoke_target_tool_with_binding(
+                    session, params, **kwargs
+                )
 
     async def _invoke_target_tool_with_binding(
         self,
@@ -979,123 +1108,220 @@ class ProgressiveToolRail(DeepAgentRail):
                 "tool_name": tool_name,
             }
 
-        # Re-bind the OfficeClaw tool id allowlist from the shared ability_manager.
-        # The supervisor / round task (where this code runs) was created at
-        # session startup, before ``bind_active_office_claw_mcp_tools`` set
-        # the ContextVar in the caller's task.  ``bind_office_claw_from_agent``
-        # reads the ids stored on the shared ability_manager by
-        # ``register_request_scoped_office_claw_mcp`` and sets the ContextVar
-        # for this task so that both tool resolution
-        # (``resolve_active_office_claw_tool_id``) and tool invocation
-        # (``ensure_request_scoped_office_claw_tool_allowed``) pass.
-        runtime_agent = self._resolve_runtime_agent()
-        with bind_office_claw_from_agent(runtime_agent):
-            target_tool_card = None
-            for tool in self._cached_deferred_tool_infos:
-                if str(getattr(tool, "name", "") or "") == tool_name:
-                    target_tool_card = tool
-                    break
+        target_tool_card = None
+        for tool in self._cached_deferred_tool_infos:
+            if str(getattr(tool, "name", "") or "") == tool_name:
+                target_tool_card = tool
+                break
 
-            if target_tool_card is None:
-                agent = self._resolve_runtime_agent()
-                ability_manager = getattr(agent, "ability_manager", None)
-                lookup_timeout = getattr(AbilityManager, "_resolve_call_timeout")(None)
-                try:
-                    with anyio.fail_after(lookup_timeout):
-                        if ability_manager is not None:
-                            try:
-                                await ability_manager.list_tool_info()
-                            except Exception as exc:
-                                logger.warning(
-                                    "%s invoke fallback list_tool_info failed: %s",
-                                    _LOG_PREFIX,
-                                    exc,
-                                )
-                        await self._refresh_deferred_tool_cache()
-                        for tool in self._cached_deferred_tool_infos:
-                            if str(getattr(tool, "name", "") or "") == tool_name:
-                                target_tool_card = tool
-                                break
-                except TimeoutError:
+        if target_tool_card is None:
+            agent = self._resolve_runtime_agent()
+            ability_manager = getattr(agent, "ability_manager", None)
+            lookup_timeout = getattr(AbilityManager, "_resolve_call_timeout")(None)
+            try:
+                with anyio.fail_after(lookup_timeout):
+                    if ability_manager is not None:
+                        try:
+                            await ability_manager.list_tool_info()
+                        except Exception as exc:
+                            logger.warning(
+                                "%s invoke fallback list_tool_info failed: %s",
+                                _LOG_PREFIX,
+                                exc,
+                            )
+                    await self._refresh_deferred_tool_cache()
+                    for tool in self._cached_deferred_tool_infos:
+                        if str(getattr(tool, "name", "") or "") == tool_name:
+                            target_tool_card = tool
+                            break
+            except TimeoutError:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Tool lookup for '{tool_name}' timed out after "
+                        f"{lookup_timeout}s"
+                    ),
+                    "tool_name": tool_name,
+                }
+
+        owned_id = self._owned_office_claw_tool_id(tool_name)
+        if target_tool_card is None and not owned_id:
+            concurrent = is_office_claw_tool_name_live_concurrent(tool_name)
+            if concurrent or tool_name.startswith("office_claw_"):
+                return {
+                    "success": False,
+                    "error": (
+                        f"工具 '{tool_name}' 当前不可用（可能被并发会话清理），"
+                        "请稍后重试注册/调用。"
+                    ),
+                    "tool_name": tool_name,
+                }
+            return {
+                "success": False,
+                "error": f"工具 '{tool_name}' 未注册或不在按需可见工具列表中。",
+                "tool_name": tool_name,
+            }
+
+        preferred_id = owned_id or str(getattr(target_tool_card, "id", "") or "")
+        target_tool, target_tool_id, refreshed_id = await self._resolve_tool_instance_with_recovery(
+            tool_name,
+            preferred_id,
+        )
+
+        if target_tool is None:
+            logger.warning(
+                "%s invoke tool=%s failed: instance not found, "
+                "tool_id=%s, refresh_attempted=True, refreshed_id=%s, active_id=%s "
+                "owned_id=%s concurrent=%s",
+                _LOG_PREFIX,
+                tool_name,
+                target_tool_id,
+                refreshed_id,
+                resolve_active_office_claw_tool_id(tool_name) or "",
+                owned_id or "",
+                is_office_claw_tool_name_live_concurrent(tool_name),
+            )
+            if tool_name.startswith("office_claw_") or is_office_claw_tool_name_live_concurrent(
+                tool_name
+            ):
+                error = (
+                    f"无法获取工具 '{tool_name}' 的实例"
+                    "（可能被并发请求清理），请稍后重试。"
+                )
+            else:
+                error = f"无法获取工具 '{tool_name}' 的实例。"
+            return {
+                "success": False,
+                "error": error,
+                "tool_name": tool_name,
+            }
+
+        expected_invocation = str(self._office_claw_invocation_id or "").strip()
+        actual_invocation = _office_claw_tool_env_value(
+            target_tool, "OFFICE_CLAW_INVOCATION_ID"
+        )
+        active_allowed = get_active_office_claw_mcp_tool_ids()
+        is_request_tool_without_binding = (
+            target_tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX)
+            and not expected_invocation
+            and self._office_claw_active_tool_ids is None
+            and active_allowed is None
+        )
+        if is_request_tool_without_binding:
+            logger.warning(
+                "%s refuse OfficeClaw tool without request binding: "
+                "tool_name=%s tool_id=%s actual_inv=%s",
+                _LOG_PREFIX,
+                tool_name,
+                target_tool_id,
+                (actual_invocation[:8] + "…") if actual_invocation else "-",
+            )
+            return {
+                "success": False,
+                "error": (
+                    "OfficeClaw MCP tools are not bound for this request; "
+                    "refusing cross-session invoke — please retry"
+                ),
+                "tool_name": tool_name,
+            }
+        if expected_invocation:
+            if actual_invocation and actual_invocation != expected_invocation:
+                active_id = resolve_active_office_claw_tool_id(tool_name) or owned_id
+                recovered = (
+                    self._lookup_tool_instance(active_id) if active_id else None
+                )
+                recovered_inv = (
+                    _office_claw_tool_env_value(
+                        recovered, "OFFICE_CLAW_INVOCATION_ID"
+                    )
+                    if recovered is not None
+                    else ""
+                )
+                if recovered is not None and recovered_inv == expected_invocation:
+                    logger.warning(
+                        "%s replaced cross-request OfficeClaw tool instance: "
+                        "tool_name=%s stale_id=%s active_id=%s",
+                        _LOG_PREFIX,
+                        tool_name,
+                        target_tool_id,
+                        active_id,
+                    )
+                    target_tool = recovered
+                    target_tool_id = active_id or target_tool_id
+                else:
+                    logger.warning(
+                        "%s refuse OfficeClaw tool credential mismatch: "
+                        "tool_name=%s tool_id=%s expected_inv=%s actual_inv=%s",
+                        _LOG_PREFIX,
+                        tool_name,
+                        target_tool_id,
+                        expected_invocation[:8],
+                        actual_invocation[:8],
+                    )
                     return {
                         "success": False,
                         "error": (
-                            f"Tool lookup for '{tool_name}' timed out after "
-                            f"{lookup_timeout}s"
+                            "OfficeClaw MCP tool credentials belong to another "
+                            "request; refusing cross-session invoke"
                         ),
                         "tool_name": tool_name,
                     }
 
-            if target_tool_card is None:
-                return {
-                    "success": False,
-                    "error": f"工具 '{tool_name}' 未注册或不在按需可见工具列表中。",
-                    "tool_name": tool_name,
-                }
+        pinned_thread = str(self._office_claw_delivery_thread_id or "").strip()
+        if (
+            pinned_thread
+            and tool_name in _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS
+        ):
+            arguments["deliveryThreadId"] = pinned_thread
 
-            preferred_id = str(getattr(target_tool_card, "id", "") or "")
-            target_tool, target_tool_id, refreshed_id = await self._resolve_tool_instance_with_recovery(
-                tool_name,
-                preferred_id,
+        try:
+            kwargs_without_session = {k: v for k, v in kwargs.items() if k != "session"}
+            owned = self._office_claw_active_tool_ids
+            if owned is not None:
+                kwargs_without_session[OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG] = owned
+            call_timeout = getattr(AbilityManager, "_resolve_call_timeout")(
+                target_tool_card
             )
-
-            if target_tool is None:
-                logger.warning(
-                    "%s invoke tool=%s failed: instance not found, "
-                    "tool_id=%s, refresh_attempted=True, refreshed_id=%s, active_id=%s",
-                    _LOG_PREFIX,
-                    tool_name,
-                    target_tool_id,
-                    refreshed_id,
-                    resolve_active_office_claw_tool_id(tool_name) or "",
-                )
-                return {
-                    "success": False,
-                    "error": f"无法获取工具 '{tool_name}' 的实例。",
-                    "tool_name": tool_name,
-                }
-
-            try:
-                kwargs_without_session = {k: v for k, v in kwargs.items() if k != "session"}
-                owned = self._office_claw_active_tool_ids
-                if owned is not None:
-                    kwargs_without_session[OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG] = owned
-                call_timeout = getattr(AbilityManager, "_resolve_call_timeout")(
-                    target_tool_card
-                )
-                with self._bind_deepresearch_context(tool_name):
-                    try:
-                        with anyio.fail_after(call_timeout) as timeout_scope:
-                            result = await target_tool.invoke(
-                                arguments, session=session, **kwargs_without_session
-                            )
-                    except TimeoutError as exc:
-                        if not timeout_scope.cancel_called:
-                            raise
-                        raise TimeoutError(
-                            f"Tool '{tool_name}' timed out after {call_timeout}s"
-                        ) from exc
-                logger.info(
-                    "%s invoke tool=%s success=True result_type=%s",
-                    _LOG_PREFIX,
-                    tool_name,
-                    type(result).__name__,
-                )
-                return {
-                    "success": True,
-                    "tool_name": tool_name,
-                    "result": _json_safe_value(result),
-                }
-            except Exception as exc:
-                logger.warning(
-                    "%s invoke tool=%s failed: %s",
-                    _LOG_PREFIX,
-                    tool_name,
-                    exc,
-                    exc_info=True,
-                )
-                return {
-                    "success": False,
-                    "error": str(exc),
-                    "tool_name": tool_name,
-                }
+            with self._bind_deepresearch_context(tool_name):
+                try:
+                    with anyio.fail_after(call_timeout) as timeout_scope:
+                        result = await target_tool.invoke(
+                            arguments, session=session, **kwargs_without_session
+                        )
+                except TimeoutError as exc:
+                    if not timeout_scope.cancel_called:
+                        raise
+                    raise TimeoutError(
+                        f"Tool '{tool_name}' timed out after {call_timeout}s"
+                    ) from exc
+            env_inv = _office_claw_tool_env_value(
+                target_tool, "OFFICE_CLAW_INVOCATION_ID"
+            )
+            logger.info(
+                "%s invoke tool=%s success=True result_type=%s tool_id=%s "
+                "env_invocation_id=%s delivery_thread_id=%s",
+                _LOG_PREFIX,
+                tool_name,
+                type(result).__name__,
+                target_tool_id,
+                (env_inv[:8] + "…") if env_inv else "-",
+                pinned_thread or "-",
+            )
+            return {
+                "success": True,
+                "tool_name": tool_name,
+                "result": _json_safe_value(result),
+            }
+        except Exception as exc:
+            logger.warning(
+                "%s invoke tool=%s failed: %s",
+                _LOG_PREFIX,
+                tool_name,
+                exc,
+                exc_info=True,
+            )
+            return {
+                "success": False,
+                "error": str(exc),
+                "tool_name": tool_name,
+            }

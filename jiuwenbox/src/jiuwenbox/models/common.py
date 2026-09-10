@@ -42,3 +42,6 @@ class HealthResponse(BaseModel):
     runtime: str = "process"
     landlock_supported: bool = False
     sandboxes_active: int = 0
+    # Windows 沙箱是否可用 (仅 win32 且 setup 完成时为 True). Linux 下恒为
+    # False, 不影响现有 /health 响应语义 (docs/window沙箱.md 6.9).
+    windows_supported: bool = False

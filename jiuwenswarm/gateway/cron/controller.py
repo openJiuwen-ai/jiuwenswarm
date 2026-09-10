@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.cron.cron_expr import clamp_wake_offset_for_delay_seconds, normalize_cron_expr
 from jiuwenswarm.gateway.cron.enterprise_gate import (
     coerce_routing_id,
@@ -115,7 +115,12 @@ class CronController:
         cron_expr: str,
         timezone: str,
     ) -> Any:
-        """企业创建兜底：wake_offset 不得超过距下次 push 的剩余秒数。"""
+        """创建兜底：wake_offset 不得超过距下次 push 的剩余秒数。
+
+        这是纯业务约束，与存储介质无关，个人版/企业版统一应用：
+        若提前量大于距下次触发的剩余时间，wake 时刻会落在过去，
+        调度器会立即误触发（或在停摆后链式补跑）。
+        """
         try:
             tz = ZoneInfo(timezone)
             now = datetime.now(tz=tz)
@@ -305,12 +310,11 @@ class CronController:
         self._validate_schedule(cron_expr=cron_expr, timezone=timezone)
         description = self._normalize_description(description, name)
 
-        if is_enterprise():
-            wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
-                wake_offset_seconds,
-                cron_expr=cron_expr,
-                timezone=timezone,
-            )
+        wake_offset_seconds = self._clamp_wake_offset_for_upcoming_run(
+            wake_offset_seconds,
+            cron_expr=cron_expr,
+            timezone=timezone,
+        )
 
         routing_sid = self._routing_session_id(targets, params.get("session_id"))
         chat_type = params.get("chat_type")
@@ -532,6 +536,26 @@ class CronController:
 
     async def run_now_info(self, job_id: str) -> dict[str, str]:
         return await self._scheduler.trigger_run_now_info(job_id)
+
+    async def run_now_with_session(
+        self,
+        job_id: str,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, str]:
+        """web「立即执行」：校验归属并提前创建真实执行会话，返回给前端跳转。
+
+        与 ``run_now`` 的差异仅在返回真实 session_id（非 team 模式预分配会话），
+        避免前端跳到占位 ``cron_<ts>_<job.id>`` 空会话。预分配失败降级为占位，
+        执行阶段仍会兜底创建。
+        """
+        job = await self._store.get_job(job_id)
+        if job is None:
+            raise KeyError("job not found")
+        self._assert_job_owned(job, group_id=group_id, bot_id=bot_id, user_id=user_id)
+        return await self._scheduler.trigger_run_now_info(job_id, preallocate=True)
 
     async def _create_job_tool(
         self,

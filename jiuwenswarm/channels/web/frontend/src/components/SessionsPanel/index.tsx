@@ -23,6 +23,8 @@ interface SessionsPanelProps {
   isConnected: boolean;
   isProcessing: boolean;
   onRestoreSession: (sessionId: string, mode?: string) => void | Promise<void>;
+  /** remote 模式：会话文件在远程/Web Pod，不浏览网关本地文件 */
+  isRemoteSessionStorage?: boolean;
 }
 
 interface SessionListResponse {
@@ -262,6 +264,7 @@ export function SessionsPanel({
   isConnected,
   isProcessing,
   onRestoreSession,
+  isRemoteSessionStorage = false,
 }: SessionsPanelProps) {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<SessionItem[]>([]);
@@ -292,6 +295,12 @@ export function SessionsPanel({
         typeof preservePath === 'string' && preservePath.length > 0;
 
       if (!sessionId) {
+        setFiles([]);
+        setFilesError(null);
+        setSelectedFile(null);
+        return;
+      }
+      if (isRemoteSessionStorage) {
         setFiles([]);
         setFilesError(null);
         setSelectedFile(null);
@@ -330,7 +339,7 @@ export function SessionsPanel({
         const rows = await fetchDirEntries(rootDir, 0);
 
         // Check for todo.json in DeepAgent workspace todo directory
-        const todoPath = `agent/workspace/todo/${sessionId}/todo.json`;
+        const todoPath = `agent/jiuwenclaw_workspace/todo/${sessionId}/todo.json`;
         try {
           const todoResp = await fetch(`/file-api/file-content?path=${encodeURIComponent(todoPath)}`, { cache: 'no-store' });
           if (todoResp.ok) {
@@ -381,7 +390,7 @@ export function SessionsPanel({
         setLoadingFiles(false);
       }
     },
-    [t]
+    [isRemoteSessionStorage, t]
   );
 
   const loadSessions = useCallback(async () => {
@@ -588,6 +597,10 @@ export function SessionsPanel({
               <div className="flex-1 overflow-auto p-2">
                 {!selectedSessionId ? (
                   <div className="h-full flex items-center justify-center text-sm text-text-muted">{t('sessions.selectFirst')}</div>
+                ) : isRemoteSessionStorage ? (
+                  <div className="h-full flex items-center justify-center text-sm text-text-muted px-4 text-center">
+                    {t('sessions.remoteFilesUnavailable')}
+                  </div>
                 ) : loadingFiles ? (
                   <div className="h-full flex items-center justify-center text-sm text-text-muted">{t('sessions.loadingFiles')}</div>
                 ) : filesError ? (

@@ -16,8 +16,8 @@ from weakref import WeakValueDictionary
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.local_env_config import (
-    is_enterprise,
     apply_env_overrides_to_active,
     apply_env_removals,
     bind_task_env_overlay,
@@ -65,6 +65,19 @@ _DISK_ONLY_EVOLUTION_METHODS: frozenset[str] = frozenset(
 
 def _normalize_channel_id(channel_id: str | None) -> str:
     return str(channel_id or "default").strip() or "default"
+
+
+def _session_id_prefix_for_channel(channel_id: str | None) -> str:
+    """Path-safe session id prefix; may differ from logical ``channel_id``.
+
+    Cron scheduler uses channel ``__cron__`` for routing, but ids like
+    ``__cron___{ts}_{uuid}`` fail ``sanitize_session_id`` and cannot be
+    used as sessions directory names.
+    """
+    channel_key = _normalize_channel_id(channel_id)
+    if channel_key == "__cron__":
+        return "cron"
+    return channel_key
 
 
 def _normalize_mode(mode: str | None) -> str:
@@ -130,6 +143,7 @@ class AgentManager:
         last_reload_trace_id: str | None = None,
         env_agent_id: str | None = None,
         env_service_id: str | None = None,
+        workspace_key: str | None = None,
     ) -> None:
         self.agents: dict[str, dict[str, "JiuWenSwarm"]] = {}
         # 记录每个 (channel_id, mode) 的创建参数, 便于 recreate_agent 立刻重建
@@ -147,7 +161,10 @@ class AgentManager:
         self.service_id = service_id or "default"
         self._env_agent_id: str = env_agent_id or agent_id or "default"
         self._env_service_id: str = env_service_id or service_id or "default"
+        self._workspace_key: str = (workspace_key or "").strip() or "default"
         self._user_workspace_dir = user_workspace_dir
+        self._skill_manager = None
+        self._skill_manager_lock = asyncio.Lock()
         if env_overrides is not None and isinstance(env_overrides, dict):
             omission_removals = infer_multimodal_env_removals(
                 None,
@@ -200,9 +217,11 @@ class AgentManager:
         self.warm_pool = AgentWarmPool(self)
         if self._user_workspace_dir is not None and is_enterprise():
             logger.info(
-                "[AgentManager] enterprise init: agent_id=%s service_id=%s user_workspace=%s",
+                "[AgentManager] enterprise init: agent_id=%s service_id=%s "
+                "workspace_key=%s user_workspace=%s",
                 self.agent_id,
                 self.service_id,
+                self._workspace_key,
                 self._user_workspace_dir,
             )
 
@@ -227,6 +246,49 @@ class AgentManager:
             create_lock = asyncio.Lock()
             self._agent_create_locks[lock_key] = create_lock
         return create_lock
+
+    async def _get_or_create_skill_manager(self):
+        """Return the one SkillManager owned by this tenant workspace."""
+        if self._skill_manager is not None:
+            return self._skill_manager
+        async with self._skill_manager_lock:
+            if self._skill_manager is not None:
+                return self._skill_manager
+            from pathlib import Path
+
+            from jiuwenswarm.common.utils import (
+                collapse_nested_agent_workspace_dir,
+                get_agent_workspace_dir,
+                get_agent_workspace_relative_dir,
+            )
+            from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+            from jiuwenswarm.server.runtime.skill.workspace_provider import (
+                SkillWorkspaceProvider,
+                SkillWorkspaceUnavailable,
+            )
+
+            if self._user_workspace_dir is not None:
+                workspace_dir = collapse_nested_agent_workspace_dir(
+                    Path(self._user_workspace_dir) / get_agent_workspace_relative_dir()
+                )
+            elif is_enterprise():
+                raise SkillWorkspaceUnavailable(
+                    "enterprise tenant workspace was not resolved"
+                )
+            else:
+                workspace_dir = collapse_nested_agent_workspace_dir(
+                    get_agent_workspace_dir()
+                )
+            self._skill_manager, _created = SkillWorkspaceProvider().get_or_create_manager(
+                workspace_dir,
+                require_valid_state=is_enterprise(),
+                factory=lambda ready: SkillManager(
+                    workspace_dir=str(ready.workspace_dir),
+                    service_id=self.service_id,
+                    agent_id=self.agent_id,
+                ),
+            )
+            return self._skill_manager
 
     def _borrow_agent(self, agent: "JiuWenSwarm") -> "JiuWenSwarm":
         try:
@@ -522,9 +584,11 @@ class AgentManager:
                 else None,
                 agent_id=self.agent_id,
                 service_id=self.service_id,
+                skill_manager=await self._get_or_create_skill_manager(),
             )
             setattr(agent, "_env_agent_id", self._env_agent_id)
             setattr(agent, "_env_service_id", self._env_service_id)
+            setattr(agent, "_workspace_key", self._workspace_key)
             if self._user_workspace_dir is not None:
                 setattr(agent, "_user_workspace_dir", self._user_workspace_dir)
             await agent.create_instance(
@@ -714,8 +778,9 @@ class AgentManager:
             logger.info("[AgentManager] session ensured: channel_id=%s session_id=%s", channel_id, explicit_session_id)
             return explicit_session_id
         channel_key = _normalize_channel_id(channel_id)
+        session_prefix = _session_id_prefix_for_channel(channel_id)
         session_id = (
-            f"{channel_key}_{int(time.time() * 1000):x}_"
+            f"{session_prefix}_{int(time.time() * 1000):x}_"
             f"{uuid.uuid4().hex[:12]}"
         )
         logger.info(
@@ -1436,7 +1501,11 @@ class AgentManager:
                 else None,
                 agent_id=self.agent_id,
                 service_id=self.service_id,
+                skill_manager=await self._get_or_create_skill_manager(),
             )
+            setattr(agent, "_env_agent_id", self._env_agent_id)
+            setattr(agent, "_env_service_id", self._env_service_id)
+            setattr(agent, "_workspace_key", self._workspace_key)
             if self._latest_env_overrides:
                 overlay = build_effective_env_overlay(self._latest_env_overrides)
                 if overlay:
@@ -1489,7 +1558,7 @@ class AgentManager:
                         get_session_metadata,
                     )
                     sessions_root = resolve_tenant_sessions_dir(
-                        self.service_id, self.agent_id,
+                        getattr(self, "_workspace_key", None) or "default",
                     )
                     meta = get_session_metadata(
                         sid, cache_bust=True, enable_writeback=False,
@@ -1551,7 +1620,7 @@ class AgentManager:
                     )
 
                     sessions_root = resolve_tenant_sessions_dir(
-                        self.service_id, self.agent_id,
+                        getattr(self, "_workspace_key", None) or "default",
                     )
                     meta = get_session_metadata(
                         sid,

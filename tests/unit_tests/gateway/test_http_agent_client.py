@@ -13,6 +13,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.request_ext import INTERNAL_HEADER_NAME, decode_internal_header
 from jiuwenswarm.gateway.routing.agent_rest_map import (
     RestAssemblyError,
     assemble_rest_request,
@@ -46,6 +47,30 @@ def test_assemble_chat_send_uses_completions_and_params_body_only():
     assert assembled.json_body is not None
     assert "method" not in assembled.json_body
     assert "request_id" not in assembled.json_body
+
+
+def test_assemble_rest_request_carries_request_ext_in_internal_header():
+    env = e2a_from_agent_fields(
+        request_id="r-ext",
+        channel_id="web",
+        session_id="s-ext",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hi"},
+        is_stream=True,
+        user_id="u1",
+    )
+    env.channel_context["ext"] = {
+        "tenant": "租户-a",
+        "custom_trace": "trace-1",
+    }
+
+    assembled = assemble_rest_request(env, base_url="http://127.0.0.1:8766")
+
+    assert decode_internal_header(assembled.headers[INTERNAL_HEADER_NAME]) == {
+        "tenant": "租户-a",
+        "custom_trace": "trace-1",
+    }
+    assert "ext" not in (assembled.json_body or {})
 
 
 def test_assemble_session_rename_fills_path_and_drops_used_keys():

@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: <<PROXY_NAME>>-nginx-conf
+  namespace: default
+data:
+  default.conf: |
+    server {
+        listen <<PROXY_PORT>>;
+        server_name _;
+        location / {
+            proxy_pass <<PROXY_UPSTREAM>>;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_connect_timeout 10s;
+            proxy_read_timeout 600s;
+            proxy_send_timeout 600s;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <<PROXY_NAME>>
+  namespace: default
+  labels:
+    app: <<PROXY_NAME>>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: <<PROXY_NAME>>
+  template:
+    metadata:
+      labels:
+        app: <<PROXY_NAME>>
+    spec:
+      nodeName: <<CURRENT_NODE_NAME>>
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: nginx
+        image: <<PROXY_IMAGE>>
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: conf
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: conf
+        configMap:
+          name: <<PROXY_NAME>>-nginx-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: <<PROXY_NAME>>
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+  - port: <<PROXY_PORT>>
+    targetPort: <<PROXY_PORT>>
+  selector:
+    app: <<PROXY_NAME>>

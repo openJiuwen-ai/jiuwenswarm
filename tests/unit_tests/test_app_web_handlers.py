@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -1796,3 +1797,88 @@ def test_chat_interrupt_ack_payload_http_carries_interrupt_result():
     paused = _chat_interrupt_ack_payload("s1", {"intent": "pause"}, for_http=True)
     assert paused["intent"] == "pause"
     assert paused["message"] == "任务已暂停"
+
+
+def test_inject_connection_identity_overrides_frame_params() -> None:
+    """连接级身份无条件覆盖帧 params（防伪造），供 history 回调落库归属。"""
+    from jiuwenswarm.gateway.channel_manager.web import web_ws_transport as wsm
+
+    transport = object.__new__(wsm.WebWsTransport)
+    ws = SimpleNamespace(
+        **{wsm._WEB_CONNECTION_USER_ID_ATTR: "u1"},
+        _web_routing={"group_id": "g1", "bot_id": "b1"},
+    )
+    raw = json.dumps({
+        "type": "req", "id": "r1", "method": "chat.send",
+        "params": {
+            "session_id": "s1", "query": "hi",
+            "user": "forged", "user_id": "forged",
+            "group_id": "forged", "bot_id": "forged",
+        },
+    })
+    out = json.loads(transport._inject_user_id_into_frame(ws, raw))
+    assert out["params"]["user"] == "u1"
+    assert out["params"]["user_id"] == "u1"
+    assert out["params"]["group_id"] == "g1"
+    assert out["params"]["bot_id"] == "b1"
+
+
+def test_inject_identity_noop_without_connection_identity() -> None:
+    from jiuwenswarm.gateway.channel_manager.web import web_ws_transport as wsm
+
+    transport = object.__new__(wsm.WebWsTransport)
+    ws = SimpleNamespace()
+    raw = json.dumps({
+        "type": "req", "id": "r1", "method": "chat.send",
+        "params": {"session_id": "s1"},
+    })
+    assert transport._inject_user_id_into_frame(ws, raw) == raw
+
+
+def test_capture_session_create_row_on_ok_response(monkeypatch) -> None:
+    """create 成功响应经下行拦截异步落行（remote 转发主路径）；失败/未知 rid 不动。"""
+    import threading
+
+    from jiuwenswarm.channels.web.history_store import api as history_api
+    from jiuwenswarm.gateway.channel_manager.web import web_ws_transport as wsm
+
+    captured: dict[str, object] = {}
+    done = threading.Event()
+
+    def fake_ensure(sid, store, **kwargs):
+        captured["sid"] = sid
+        captured.update(kwargs)
+        done.set()
+        return True
+
+    monkeypatch.setattr(history_api, "ensure_session_row_sync", fake_ensure)
+
+    transport = object.__new__(wsm.WebWsTransport)
+    transport._pending_session_creates = {}
+    ws = SimpleNamespace(
+        **{wsm._WEB_CONNECTION_USER_ID_ATTR: "u1"},
+        _web_routing={"group_id": "g1", "bot_id": "b1", "user_id": ""},
+    )
+    transport._pending_session_creates["rid1"] = (ws, "新会话标题")
+
+    ok_frame = {
+        "type": "res", "id": "rid1", "ok": True,
+        "payload": {"session_id": "web_new", "projectId": "p1", "workMode": "work"},
+    }
+    transport._capture_session_create_row(ws, ok_frame)
+    assert done.wait(timeout=5), "ensure_session_row_sync 未被调用"
+    assert captured["sid"] == "web_new"
+    assert captured["user"] == "u1"
+    assert captured["group_id"] == "g1"
+    assert captured["bot_id"] == "b1"
+    assert captured["project_id"] == "p1"
+    assert captured["work_mode"] == "work"
+    assert captured["title"] == "新会话标题"
+    assert "rid1" not in transport._pending_session_creates
+
+    # 失败响应 / 未知 rid / 非会话帧：不触发、不误清
+    transport._pending_session_creates["rid2"] = (ws, "t")
+    transport._capture_session_create_row(ws, {"type": "res", "id": "rid2", "ok": False, "payload": {}})
+    assert "rid2" in transport._pending_session_creates
+    transport._capture_session_create_row(ws, {"type": "event", "id": "rid2", "payload": {}})
+    assert "rid2" in transport._pending_session_creates

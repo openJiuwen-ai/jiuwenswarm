@@ -307,10 +307,29 @@ class TestCronLastSessionId:
         info = await svc.trigger_run_now_info(job.id)
 
         assert info["run_id"].startswith(f"{job.id}:")
+        # 默认（非 web 路径）不预分配：返回占位 cron_<ts>_<job.id>，保持 trigger_run_now
+        # 非阻塞语义不变。
         assert info["session_id"].startswith("cron_")
         assert info["session_id"].endswith(f"_{job.id}")
         state = svc.runs[info["run_id"]]
         assert state.exec_session_id == info["session_id"]
+        assert state.session_preallocated is False
+
+    @pytest.mark.asyncio
+    async def test_run_now_info_preallocate_returns_real_session_id(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+
+        info = await svc.trigger_run_now_info(job.id, preallocate=True)
+
+        assert info["run_id"].startswith(f"{job.id}:")
+        # 非 team 模式 + preallocate：提前创建真实会话（FakeAgentClient 固定返回
+        # cron_agentserver_allocated），返回真实 session_id 供前端跳转。
+        assert info["session_id"] == "cron_agentserver_allocated"
+        state = svc.runs[info["run_id"]]
+        assert state.exec_session_id == info["session_id"]
+        assert state.session_preallocated is True
 
 
 class TestCheckStoreChanged:

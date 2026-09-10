@@ -28,7 +28,13 @@ from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
 @pytest.mark.asyncio
 async def test_invoke_retries_with_refreshed_id_when_cached_id_is_stale():
     """When get_tool(stale_id) returns None, the rail refreshes the cache
-    and retries with the new id from the refreshed card."""
+    and retries with the new id from the refreshed card.
+
+    Same-session MCP rebind must keep the request allowlist (rail pin or
+    ContextVar) pointed at the fresh id; without that pin, request-scoped
+    OfficeClaw cards fail closed under concurrency.
+    """
+    from jiuwenswarm.common.mcp_config import bind_active_office_claw_mcp_tools
 
     old_card = SimpleNamespace(
         name="office_claw_register_scheduled_task",
@@ -59,7 +65,7 @@ async def test_invoke_retries_with_refreshed_id_when_cached_id_is_stale():
             return target
         return None
 
-    with patch.object(
+    with bind_active_office_claw_mcp_tools([new_card.id]), patch.object(
         Runner.resource_mgr, "get_tool", side_effect=_get_tool_side_effect
     ), patch.object(
         rail, "_refresh_deferred_tool_cache", new=_fake_refresh
@@ -426,3 +432,40 @@ def test_resolve_active_office_claw_tool_id_maps_short_name():
         assert resolve_active_office_claw_tool_id("missing_tool") is None
 
     assert resolve_active_office_claw_tool_id("office_claw_preview_scheduled_task") is None
+
+
+def test_rail_init_preserves_session_scoped_meta_tool_owner_id():
+    """Concurrent session adapters share AgentCard.id; meta tools must not.
+
+    Regression: ProgressiveToolRail.init() used to overwrite the constructor's
+    ``{card}_s_{session}`` owner with the shared AgentCard.id, so every
+    session registered the same InvokeToolTool id and last writer's OfficeClaw
+    pin served all sessions (scheduled-task deliveryThreadId cross-bind).
+    """
+    shared_card_id = "office-agent-card"
+    rail_a = ProgressiveToolRail(
+        eager_tools=["tools_search", "invoke_tool"],
+        agent_card_id=f"{shared_card_id}_s_session_a",
+        agent_id=f"{shared_card_id}_s_session_a",
+    )
+    rail_b = ProgressiveToolRail(
+        eager_tools=["tools_search", "invoke_tool"],
+        agent_card_id=f"{shared_card_id}_s_session_b",
+        agent_id=f"{shared_card_id}_s_session_b",
+    )
+    shared_agent_a = SimpleNamespace(card=SimpleNamespace(id=shared_card_id))
+    shared_agent_b = SimpleNamespace(card=SimpleNamespace(id=shared_card_id))
+
+    rail_a.init(shared_agent_a)
+    rail_b.init(shared_agent_b)
+
+    assert rail_a.agent_card_id == f"{shared_card_id}_s_session_a"
+    assert rail_b.agent_card_id == f"{shared_card_id}_s_session_b"
+
+    id_a = {tool.card.id for tool in rail_a._meta_tool_instances()}
+    id_b = {tool.card.id for tool in rail_b._meta_tool_instances()}
+    assert id_a.isdisjoint(id_b)
+    assert any("_s_session_a" in tool_id for tool_id in id_a)
+    assert any("_s_session_b" in tool_id for tool_id in id_b)
+    assert not any("_s_session_b" in tool_id for tool_id in id_a)
+    assert not any("_s_session_a" in tool_id for tool_id in id_b)

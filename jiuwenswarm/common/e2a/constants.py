@@ -109,6 +109,34 @@ E2A_WIRE_INTERNAL_METADATA_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Gateway ↔ AgentServer chunked file transfer (E2A methods / push event_types)
+FILE_TRANSFER_START = "file.transfer.start"
+FILE_TRANSFER_CHUNK = "file.transfer.chunk"
+FILE_TRANSFER_COMPLETE = "file.transfer.complete"
+FILE_DOWNLOAD_START = "file.download.start"
+FILE_DOWNLOAD_CHUNK = "file.download.chunk"
+FILE_DOWNLOAD_COMPLETE = "file.download.complete"
+FILE_TRANSFER_EVENT_TYPES: tuple[str, ...] = (
+    FILE_TRANSFER_START,
+    FILE_TRANSFER_CHUNK,
+    FILE_TRANSFER_COMPLETE,
+    FILE_DOWNLOAD_START,
+    FILE_DOWNLOAD_CHUNK,
+    FILE_DOWNLOAD_COMPLETE,
+)
+FILE_TRANSFER_ERROR_TIMEOUT = "file.transfer.timeout"
+FILE_TRANSFER_ERROR_CHECKSUM_MISMATCH = "file.transfer.checksum_mismatch"
+FILE_TRANSFER_ERROR_CHUNK_MISSING = "file.transfer.chunk_missing"
+FILE_TRANSFER_ERROR_SIZE_EXCEEDED = "file.transfer.size_exceeded"
+FILE_TRANSFER_ERROR_INVALID_FILE = "file.transfer.invalid_file"
+FILE_TRANSFER_ERROR_TYPES: tuple[str, ...] = (
+    FILE_TRANSFER_ERROR_TIMEOUT,
+    FILE_TRANSFER_ERROR_CHECKSUM_MISMATCH,
+    FILE_TRANSFER_ERROR_CHUNK_MISSING,
+    FILE_TRANSFER_ERROR_SIZE_EXCEEDED,
+    FILE_TRANSFER_ERROR_INVALID_FILE,
+)
+
 ACP_SESSION_UPDATE_KINDS: tuple[str, ...] = (
     "user_message_chunk",
     "agent_message_chunk",

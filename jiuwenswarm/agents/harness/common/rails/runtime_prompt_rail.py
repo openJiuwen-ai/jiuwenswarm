@@ -7,7 +7,7 @@ every model call by reading runtime_state.yaml in Python, so the LLM always
 sees the current values without needing to call any tool.
 """
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import os
 import sys

@@ -3,6 +3,8 @@
  *
  * 用于在前端配置后端 API/WS 地址
  */
+import { isEnterprise } from "../edition";
+
 function normalizeBase(input: string): string {
   return input.replace(/\/+$/, "");
 }
@@ -23,24 +25,36 @@ export function getWsBase(): string {
 
 export type WebTransport = "websocket" | "http";
 
-/** 运行时由 app_web.py 注入 window.__JIUWEN_WEB_TRANSPORT__；未注入回退构建期值。默认 websocket。`a2` 与 `http` 同义。 */
-export function getWebTransport(): WebTransport {
-  const injected = String(window.__JIUWEN_WEB_TRANSPORT__ ?? "").trim().toLowerCase();
-  if (injected && !injected.startsWith("__")) {
-    if (injected === "http" || injected === "a2") {
-      return "http";
-    }
-    return "websocket";
+function parseWebTransportToken(raw: string): WebTransport | null {
+  const value = raw.trim().toLowerCase();
+  if (!value || value.startsWith("__")) {
+    return null;
   }
-  const raw = String(
-    import.meta.env.VITE_WEB_TRANSPORT ?? import.meta.env.VITE_TRANSPORT ?? "websocket"
-  )
-    .trim()
-    .toLowerCase();
-  if (raw === "http" || raw === "a2") {
+  if (value === "http" || value === "a2") {
     return "http";
   }
-  return "websocket";
+  if (value === "websocket" || value === "ws") {
+    return "websocket";
+  }
+  return null;
+}
+
+/**
+ * 北向传输：显式 ``WEB_TRANSPORT`` / ``VITE_WEB_TRANSPORT``（含 ``a2``→http）优先；
+ * 未指定时企业版默认 http，个人版默认 websocket。
+ */
+export function getWebTransport(): WebTransport {
+  const injected = parseWebTransportToken(String(window.__JIUWEN_WEB_TRANSPORT__ ?? ""));
+  if (injected) {
+    return injected;
+  }
+  const fromEnv = parseWebTransportToken(
+    String(import.meta.env.VITE_WEB_TRANSPORT ?? import.meta.env.VITE_TRANSPORT ?? ""),
+  );
+  if (fromEnv) {
+    return fromEnv;
+  }
+  return isEnterprise() ? "http" : "websocket";
 }
 
 /** Gateway A2 前缀，默认同源 `/gateway-api/v1`，避免与 Manager `/api/v1` 冲突。 */

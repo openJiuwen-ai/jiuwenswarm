@@ -464,7 +464,9 @@ async def test_file_backend_cas_preserves_first_terminal_winner(tmp_path) -> Non
     }
 
 
-def test_storage_registry_exposes_only_personal_a2a_layouts(tmp_path) -> None:
+def test_storage_registry_uses_file_dispatch_for_personal_and_db_for_enterprise(
+    tmp_path,
+) -> None:
     personal = build_gateway_store_registry(persistent_root=tmp_path)
     enterprise = build_gateway_store_registry()
 
@@ -477,7 +479,12 @@ def test_storage_registry_exposes_only_personal_a2a_layouts(tmp_path) -> None:
         assert personal_layout.file.path == str(tmp_path / filename)
         assert personal_layout.file.key_fields == (key,)
         assert personal_layout.db is None
-        assert enterprise.get(name) is None
+    assert enterprise.get("a2a_outbound_agent") is None
+    enterprise_dispatch = enterprise.get("a2a_outbound_dispatch")
+    assert enterprise_dispatch is not None
+    assert enterprise_dispatch.file is None
+    assert enterprise_dispatch.db is not None
+    assert enterprise_dispatch.db.table == "a2a_outbound_dispatch"
 
 
 def test_repository_factory_creates_personal_json_repository() -> None:

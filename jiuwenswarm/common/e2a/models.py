@@ -126,11 +126,11 @@ class E2AEnvelope:
     agent_ref: dict | None = None
     chat_id: str | None = None
     source_agent_id: str | None = None
-    # 企业多租户 / OfficeClaw：可选；wire 顶层或由 agent_ref 派生
+    # 企业多租户 / OfficeClaw：可选；仅 wire 顶层（勿从 agent_ref 推导）
     agent_id: str | None = None
     service_id: str | None = None
     # 数据目录逻辑键（Runtime 解析后可为明文；发往 AgentServer 前一般为 MD5 hex）
-    workspace_dir: str | None = None
+    workspace_key: str | None = None
 
     # --- 网关 RPC（原 req_method）；ACP 转入时同字段承载 JSON-RPC method ---
     method: str | None = None
@@ -320,20 +320,26 @@ def _normalize_optional_wire_str(value: Any) -> str | None:
 
 
 def _resolve_wire_agent_id(data: dict[str, Any]) -> str | None:
-    """Resolve tenant agent_id from legacy wire keys or V2 agent_ref."""
+    """Resolve tenant ``agent_id`` from wire top-level fields only.
+
+    Do **not** derive from ``agent_ref.id``: that is a routing/window identity
+    (often the sentinel ``default``), not the multi-tenant tip ``agent_id``.
+    """
     direct = _normalize_optional_wire_str(data.get("agent_id"))
     if direct:
         return direct
-    agent_ref = data.get("agent_ref")
-    if isinstance(agent_ref, dict):
-        ref_id = _normalize_optional_wire_str(agent_ref.get("id"))
-        if ref_id:
-            return ref_id
     return _normalize_optional_wire_str(data.get("source_agent_id"))
 
 
 def _resolve_wire_service_id(data: dict[str, Any]) -> str | None:
     return _normalize_optional_wire_str(data.get("service_id"))
+
+
+def _resolve_wire_workspace_key(data: dict[str, Any]) -> str | None:
+    """Prefer ``workspace_key``; accept legacy wire key ``workspace_dir``."""
+    return _normalize_optional_wire_str(
+        data.get("workspace_key")
+    ) or _normalize_optional_wire_str(data.get("workspace_dir"))
 
 
 def _params_with_optional_legacy_payload(data: dict[str, Any]) -> dict[str, Any]:
@@ -428,7 +434,7 @@ def _envelope_from_dict(data: dict[str, Any]) -> E2AEnvelope:
         source_agent_id=data.get("source_agent_id"),
         agent_id=_resolve_wire_agent_id(data),
         service_id=_resolve_wire_service_id(data),
-        workspace_dir=_normalize_optional_wire_str(data.get("workspace_dir")),
+        workspace_key=_resolve_wire_workspace_key(data),
         method=raw_method,
         params=params,
         ext_method=data.get("ext_method"),

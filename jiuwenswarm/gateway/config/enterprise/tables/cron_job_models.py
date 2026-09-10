@@ -35,7 +35,7 @@ CRON_JOB_TABLE_DEF = TableDefinition(
         ColumnDefinition("description", "string", length=4096, nullable=True),
         ColumnDefinition("cron_expr", "string", length=128, nullable=False),
         ColumnDefinition("timezone", "string", length=64, nullable=False),
-        ColumnDefinition("wake_offset_seconds", "integer", nullable=False, default=300),
+        ColumnDefinition("wake_offset_seconds", "integer", nullable=False, default=0),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("expired", "boolean", nullable=False, default=False),
         ColumnDefinition("delete_after_run", "boolean", nullable=False, default=False),

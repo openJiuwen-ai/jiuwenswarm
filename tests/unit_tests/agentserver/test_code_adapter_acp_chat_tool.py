@@ -68,6 +68,12 @@ def test_code_adapter_builds_coding_memory_rail_without_embedding_config(monkeyp
 
     project_dir = tmp_path / "project"
     agent_workspace_dir = tmp_path / "agent_workspace"
+    legacy_dir = project_dir / "coding_memory"
+    legacy_dir.mkdir(parents=True)
+    legacy_content = (
+        "---\nname: Legacy\ndescription: Legacy memory\ntype: project\n---\n\nbody\n"
+    )
+    (legacy_dir / "legacy.md").write_text(legacy_content, encoding="utf-8")
 
     rail = interface_code.create_coding_memory_rail(
         project_dir=str(project_dir),
@@ -82,3 +88,5 @@ def test_code_adapter_builds_coding_memory_rail_without_embedding_config(monkeyp
     assert created["embedding_config"].model_name == "text-embedding-v3"
     assert created["embedding_config"].base_url == ""
     assert created["embedding_config"].api_key is None
+    migrated = agent_workspace_dir / "coding_memory" / "project" / "legacy.md"
+    assert migrated.read_text(encoding="utf-8") == legacy_content

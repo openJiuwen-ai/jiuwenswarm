@@ -45,6 +45,7 @@ def cron_run_from_bytes(raw: bytes) -> CronRunState:
         timezone=data.get("timezone"),
         exec_channel_id=data.get("exec_channel_id"),
         exec_session_id=data.get("exec_session_id"),
+        manual_trigger=bool(data.get("manual_trigger", False)),
     )
 
 

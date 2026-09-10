@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNode
+from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils import (
     BashExecError,
     cli_path,
@@ -15,6 +18,9 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils imp
 )
 
 logger = logging.getLogger(__name__)
+
+# 与 CLI convert native composer 同一判据（pptx-template-canvas-plan-v2）。
+_NATIVE_PLAN_SCHEMA_VERSION = "pptx-template-canvas-plan-v2"
 
 
 _ILLEGAL_FILENAME_RE = re.compile(r'[<>:"/\\|?*]')
@@ -56,7 +62,7 @@ _CONVERT_MAX_ATTEMPTS = 2
 
 
 class PPTExportNode(PlanNode):
-    """P9 — PPTX 导出（对应 SKILL Stage 8）。"""
+    """P9 — PPTX 导出（Phase 4.3）。"""
 
     def __init__(self) -> None:
         super().__init__(
@@ -66,44 +72,10 @@ class PPTExportNode(PlanNode):
                 "\n"
                 "### 节点职责\n"
                 "1. sanitize topic → 生成 PPTX 文件名\n"
-                "2. 普通分支：cli.js convert 将 pages_dir 下 HTML 转为 PPTX\n"
-                "3. `template_canvas` 分支：走 `_execute_template_finalizer`，执行 check → snapshot-dna → "
-                "template-safe fix → convert → check-pptx-artifact 终检导出流程\n"
+                "2. 普通分支：cli.js convert → validate-pptx-artifact\n"
+                "3. `template_canvas`：normalize-template-chrome → check-template-canvas → "
+                "check-template-render → convert（条件 --native-plan）→ validate-pptx-artifact\n"
                 "4. 验证 PPTX 产物（文件存在 + 大小 > 10KB）\n"
-                "\n"
-                "### 前置条件\n"
-                "- `bash` 工具可用\n"
-                "- Node.js >= 18 已安装\n"
-                "- P8.3 QA 与自动修复已完成，pages_dir 下 HTML 文件就绪\n"
-                "\n"
-                "### 输入\n"
-                "- `output_dir`（必填）: 会话产物目录\n"
-                "- `pages_dir`（必填）: HTML 页面目录\n"
-                "- `topic`（必填）: PPT 主题，用于生成 PPTX 文件名\n"
-                "- `style_mode`（可选）: `template_canvas` 时走模板终检导出流程\n"
-                "- `pack_dir`（`template_canvas` 分支必填）: 模板包目录绝对路径\n"
-                "\n"
-                "### 输出\n"
-                "- `pptx_path`: 最终 PPTX 文件绝对路径（失败时为空字符串）\n"
-                "- `pptx_filename`: PPTX 文件名\n"
-                "- `export_status`: ok / partial / failed\n"
-                "\n"
-                "### 执行流程\n"
-                "1. sanitize topic → 生成 PPTX 文件名\n"
-                "2. `style_mode == template_canvas` 时走 `_execute_template_finalizer`：check → snapshot-dna → "
-                "template-safe fix → convert → check-pptx-artifact\n"
-                "3. 普通分支：cli.js convert 将 pages_dir 下 HTML 转为 PPTX\n"
-                "4. 验证 PPTX 产物（文件存在 + 大小 > 10KB）\n"
-                "\n"
-                "### 失败兜底\n"
-                "- `template_canvas` 分支 `pack_dir` 为空：export_status = failed\n"
-                "- fill.js check 出现内容质量类 HARD 错误：export_status = failed（manifest 声明类警告忽略）\n"
-                "- snapshot-template-dna / template-safe fix 失败：export_status = failed\n"
-                "- cli.js convert 失败：export_status = failed，pptx_path 为空\n"
-                "- PPTX 不存在 / stat 失败：export_status = failed\n"
-                "- PPTX 文件过小（< 10KB）：export_status = partial\n"
-                "- 上游 missing_pages 非空或 ppt_gen_status=failed：export_status = failed\n"
-                "- bash 不可用：export_status = failed\n"
             ),
         )
 
@@ -121,15 +93,14 @@ class PPTExportNode(PlanNode):
                 "pptx_path": "",
                 "pptx_filename": "",
                 "export_status": "failed",
+                "validate_pptx_status": "skipped",
             }
 
         sanitized = _sanitize_filename(topic or "presentation")
         pptx_filename = f"{sanitized}.pptx"
         pptx_path = f"{output_dir}/{pptx_filename}"
-
         pptx_root = str(inputs.get("pptx_root") or "").strip()
 
-        # 上游 P8 缺页时 convert 必然因页码不连续失败；提前硬失败，避免假 status=ok。
         missing_pages = inputs.get("missing_pages") or []
         if isinstance(missing_pages, list) and missing_pages:
             logger.error("[P9] 上游页面缺失 missing=%s，拒绝导出", missing_pages)
@@ -137,7 +108,14 @@ class PPTExportNode(PlanNode):
                 "pptx_path": "",
                 "pptx_filename": pptx_filename,
                 "export_status": "failed",
+                "validate_pptx_status": "skipped",
             }
+        layout_warning_pages = inputs.get("layout_warning_pages") or []
+        if isinstance(layout_warning_pages, list) and layout_warning_pages:
+            logger.warning(
+                "[P9] 上游 layout 警告页 layout_warning=%s，仍继续导出",
+                layout_warning_pages,
+            )
         ppt_gen_status = str(inputs.get("ppt_gen_status") or "").strip()
         if ppt_gen_status == "failed":
             logger.error("[P9] 上游 ppt_gen_status=failed，拒绝导出")
@@ -145,9 +123,9 @@ class PPTExportNode(PlanNode):
                 "pptx_path": "",
                 "pptx_filename": pptx_filename,
                 "export_status": "failed",
+                "validate_pptx_status": "skipped",
             }
 
-        # 模板画布分支：style_mode == template_canvas 时走模板终检导出流程
         style_mode = str(inputs.get("style_mode") or "").strip()
         if style_mode == "template_canvas":
             paths = ExportPaths(
@@ -157,25 +135,30 @@ class PPTExportNode(PlanNode):
                 pptx_filename=pptx_filename,
                 pptx_root=pptx_root,
             )
-            return await self._execute_template_finalizer(inputs, paths)
+            return await self._execute_template_export(inputs, paths)
 
         export_status = await self._run_convert(pages_dir, pptx_path, pptx_root)
+        validate_status = "skipped"
+        if export_status != "failed":
+            validate_ok = await self._run_validate_pptx_artifact(
+                pages_dir, pptx_path, pptx_root,
+            )
+            validate_status = "passed" if validate_ok else "failed"
+            if not validate_ok:
+                export_status = "failed"
         return {
-            "pptx_path": pptx_path if export_status != "failed" else "",
+            "pptx_path": pptx_path if Path(pptx_path).is_file() else "",
             "pptx_filename": pptx_filename,
             "export_status": export_status,
+            "validate_pptx_status": validate_status,
         }
 
-    async def _execute_template_finalizer(
+    async def _execute_template_export(
         self,
         inputs: dict[str, Any],
         paths: ExportPaths,
     ) -> dict[str, Any]:
-        """模板包分支：执行 template-finalizer 终检导出流程。
-
-        流程：check（manifest 声明类忽略）→ snapshot-dna → template-safe fix（dry run）
-              → post-fix gate（warning 不阻塞）→ convert → check-pptx-artifact（warning 不阻塞）
-        """
+        """模板包：normalize-chrome → canvas/render → convert → validate。"""
         output_dir = paths.output_dir
         pages_dir = paths.pages_dir
         pptx_path = paths.pptx_path
@@ -183,158 +166,206 @@ class PPTExportNode(PlanNode):
         pptx_root = paths.pptx_root
         pack_dir = str(inputs.get("pack_dir") or "").strip()
         if not pack_dir:
-            logger.error("[P9-TF] pack_dir 为空，无法执行模板终检")
+            logger.error("[P9-T] pack_dir 为空，无法执行模板导出")
             return {
                 "pptx_path": "",
                 "pptx_filename": pptx_filename,
                 "export_status": "failed",
+                "validate_pptx_status": "skipped",
             }
 
-        temp_dir = f"{output_dir}/temp"
-        dna_path = f"{temp_dir}/template-dna-before.json"
+        plan_path = str(
+            inputs.get("template_canvas_plan_path")
+            or f"{output_dir}/template-canvas-plan.json"
+        ).strip()
 
-        # 1. 复核 template-filler 输出
-        try:
-            check_cmd = (
-                f"{cli_path('check', pptx_root)} "
-                f"{quote_path(pages_dir)}"
-            )
-            result = await run_bash(
-                self, check_cmd,
-                timeout_seconds=300, required=False, workdir=pptx_root,
-            )
-            if result.exit_code != 0:
-                # 解析 HARD 错误，区分 manifest 声明类（可忽略）和内容质量类（阻塞）
-                check_output = result.stdout + "\n" + result.stderr
-                has_content_error = False
-                for line in check_output.splitlines():
-                    if "HARD" not in line.upper():
-                        continue
-                    if "manifest" in line.lower() and "声明" in line:
-                        continue  # manifest 声明类，忽略
-                    has_content_error = True
-                    break
-                if has_content_error:
-                    logger.error("[P9-TF] fill.js check 失败 exit=%d", result.exit_code)
+        for step_name, builder in (
+            (
+                "normalize-template-chrome",
+                lambda: (
+                    f"{cli_path('normalize-template-chrome', pptx_root)} "
+                    f"--plan {quote_path(plan_path)} "
+                    f"--pages-dir {quote_path(pages_dir)}"
+                ),
+            ),
+            (
+                "check-template-canvas",
+                lambda: (
+                    f"{cli_path('check-template-canvas', pptx_root)} "
+                    f"--plan {quote_path(plan_path)} "
+                    f"--pages-dir {quote_path(pages_dir)}"
+                ),
+            ),
+            (
+                "check-template-render",
+                lambda: (
+                    f"{cli_path('check-template-render', pptx_root)} "
+                    f"--plan {quote_path(plan_path)} "
+                    f"--pages-dir {quote_path(pages_dir)}"
+                ),
+            ),
+        ):
+            try:
+                result = await run_bash(
+                    self,
+                    builder(),
+                    timeout_seconds=300,
+                    required=False,
+                    workdir=pptx_root,
+                )
+                if result.exit_code != 0:
+                    logger.error(
+                        "[P9-T] %s 失败 exit=%d: %s",
+                        step_name,
+                        result.exit_code,
+                        ((result.stderr or result.stdout) or "")[:500],
+                    )
                     return {
                         "pptx_path": "",
                         "pptx_filename": pptx_filename,
                         "export_status": "failed",
+                        "validate_pptx_status": "skipped",
                     }
-                else:
-                    logger.info("[P9-TF] fill.js check 仅剩 manifest 声明类警告，视为通过")
-        except BashExecError as e:
-            logger.error("[P9-TF] fill.js check 异常: %s", e)
-            return {
-                "pptx_path": "",
-                "pptx_filename": pptx_filename,
-                "export_status": "failed",
-            }
-
-        # 2. DNA 快照（在 fix 之前保存原始 DNA）
-        try:
-            snapshot_cmd = (
-                f"{cli_path('snapshot-template-dna', pptx_root)} "
-                f"{quote_path(pages_dir)} {quote_path(dna_path)}"
-            )
-            result = await run_bash(
-                self, snapshot_cmd,
-                timeout_seconds=60, required=False, workdir=pptx_root,
-            )
-            if result.exit_code != 0:
-                logger.error("[P9-TF] snapshot-template-dna 失败 exit=%d", result.exit_code)
+                logger.info("[P9-T] %s 通过", step_name)
+            except BashExecError as e:
+                logger.error("[P9-T] %s 异常: %s", step_name, e)
                 return {
                     "pptx_path": "",
                     "pptx_filename": pptx_filename,
                     "export_status": "failed",
+                    "validate_pptx_status": "skipped",
                 }
-        except BashExecError as e:
-            logger.error("[P9-TF] snapshot-template-dna 异常: %s", e)
-            return {
-                "pptx_path": "",
-                "pptx_filename": pptx_filename,
-                "export_status": "failed",
-            }
 
-        # 3. template-safe 检查（只检查不修改，避免破坏 HTML 内容）
-        try:
-            fix_cmd = (
-                f"{cli_path('fix', pptx_root)} "
-                f"{quote_path(pages_dir + '/')} --profile template-safe"
-            )
-            result = await run_bash(
-                self, fix_cmd,
-                timeout_seconds=600, required=False, workdir=pptx_root,
-            )
-            if result.exit_code != 0:
-                logger.error("[P9-TF] template-safe fix 失败 exit=%d", result.exit_code)
-                return {
-                    "pptx_path": "",
-                    "pptx_filename": pptx_filename,
-                    "export_status": "failed",
-                }
-        except BashExecError as e:
-            logger.error("[P9-TF] template-safe fix 异常: %s", e)
-            return {
-                "pptx_path": "",
-                "pptx_filename": pptx_filename,
-                "export_status": "failed",
-            }
-
-        # 4. post-fix 安全闸（字号/内容跨度问题不阻塞导出，仅警告）
-        try:
-            post_fix_cmd = (
-                f"{cli_path('check-post-fix-template-pages', pptx_root)} "
-                f"{quote_path(pages_dir)} {quote_path(dna_path)}"
-            )
-            result = await run_bash(
-                self, post_fix_cmd,
-                timeout_seconds=300, required=False, workdir=pptx_root,
-            )
-            if result.exit_code != 0:
-                logger.warning("[P9-TF] check-post-fix-template-pages 失败 exit=%d（字号/内容跨度问题不阻塞导出）", result.exit_code)
-        except BashExecError as e:
-            logger.warning("[P9-TF] check-post-fix-template-pages 异常: %s（继续导出）", e)
-
-        # 5. 导出 PPTX
-        export_status = await self._run_convert(pages_dir, pptx_path, pptx_root)
+        native_plan = await self._resolve_native_plan_arg(plan_path, output_dir)
+        export_status = await self._run_convert(
+            pages_dir, pptx_path, pptx_root, native_plan=native_plan,
+        )
         if export_status == "failed":
             return {
                 "pptx_path": "",
                 "pptx_filename": pptx_filename,
                 "export_status": "failed",
+                "validate_pptx_status": "skipped",
             }
 
-        # 6. 产物硬闸
-        try:
-            artifact_cmd = (
-                f"{cli_path('check-pptx-artifact', pptx_root)} "
-                f"{quote_path(pages_dir)} {quote_path(pptx_path)}"
-            )
-            result = await run_bash(
-                self, artifact_cmd,
-                timeout_seconds=60, required=False, workdir=pptx_root,
-            )
-            if result.exit_code != 0:
-                logger.warning("[P9-TF] check-pptx-artifact 失败 exit=%d（缺少批准凭证，不阻塞交付）", result.exit_code)
-        except BashExecError as e:
-            logger.warning("[P9-TF] check-pptx-artifact 异常: %s（不阻塞交付）", e)
+        validate_ok = await self._run_validate_pptx_artifact(
+            pages_dir, pptx_path, pptx_root,
+        )
+        validate_status = "passed" if validate_ok else "failed"
+        if not validate_ok:
+            export_status = "failed"
 
-        logger.info("[P9-TF] 模板终检导出完成: %s status=%s", pptx_path, export_status)
+        logger.info(
+            "[P9-T] 模板导出完成: %s status=%s validate=%s",
+            pptx_path, export_status, validate_status,
+        )
         return {
-            "pptx_path": pptx_path,
+            "pptx_path": pptx_path if Path(pptx_path).is_file() else "",
             "pptx_filename": pptx_filename,
             "export_status": export_status,
+            "validate_pptx_status": validate_status,
         }
 
+    async def _read_file(self, path: str) -> str:
+        if not path:
+            return ""
+        if not self.has_tool("read_file"):
+            logger.warning("[P9] read_file 工具不可用，无法读取文件 %s", path)
+            return ""
+        try:
+            result = await self.call_tool("read_file", file_path=path)
+            return PptCommon.parse_tool_file_content(result)
+        except Exception as e:
+            if isinstance(e, AbortError):
+                raise
+            logger.warning("[P9] 读取文件失败 %s: %s", path, e)
+            return ""
+
+    async def _resolve_native_plan_arg(self, plan_path: str, output_dir: str) -> str:
+        """v2 且 nativeTemplate.available=true 时返回 plan 路径，否则空串。
+
+        判据对齐 CLI convert：schema_version == pptx-template-canvas-plan-v2
+        且 nativeTemplate.available is True。禁止文本 token 猜测。
+        """
+        candidates = [
+            Path(plan_path),
+            Path(output_dir) / "template-canvas-plan.json",
+        ]
+        seen: set[str] = set()
+        for path in candidates:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not path.is_file():
+                continue
+            text = await self._read_file(str(path))
+            if not text:
+                continue
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                logger.warning("[P9-T] native-plan 候选非 JSON，跳过 path=%s", path)
+                continue
+            if not isinstance(data, dict):
+                continue
+            native = data.get("nativeTemplate")
+            if (
+                data.get("schema_version") == _NATIVE_PLAN_SCHEMA_VERSION
+                and isinstance(native, dict)
+                and native.get("available") is True
+            ):
+                return str(path)
+        return ""
+
+    async def _run_validate_pptx_artifact(
+        self,
+        pages_dir: str,
+        pptx_path: str,
+        pptx_root: str,
+    ) -> bool:
+        try:
+            cmd = (
+                f"{cli_path('validate-pptx-artifact', pptx_root)} "
+                f"--pages-dir {quote_path(pages_dir)} "
+                f"--pptx {quote_path(pptx_path)}"
+            )
+            result = await run_bash(
+                self, cmd,
+                timeout_seconds=120, required=False, workdir=pptx_root,
+            )
+            if result.exit_code != 0:
+                logger.error(
+                    "[P9] validate-pptx-artifact 失败 exit=%d: %s",
+                    result.exit_code,
+                    ((result.stderr or result.stdout) or "")[:500],
+                )
+                return False
+            logger.info("[P9] validate-pptx-artifact 通过")
+            return True
+        except BashExecError as e:
+            logger.error("[P9] validate-pptx-artifact 异常: %s", e)
+            return False
+        except Exception as e:
+            if isinstance(e, AbortError):
+                raise
+            logger.error("[P9] validate-pptx-artifact 异常: %s", e)
+            return False
+
     async def _attempt_convert(
-        self, pages_dir: str, pptx_path: str, pptx_root: str
+        self,
+        pages_dir: str,
+        pptx_path: str,
+        pptx_root: str,
+        *,
+        native_plan: str = "",
     ) -> tuple[str, str | None]:
-        """执行一次 convert，返回 (export_status, error_detail)。"""
         convert_cmd = (
             f"{cli_path('convert', pptx_root)} "
             f"{quote_path(pages_dir + '/')} {quote_path(pptx_path)}"
         )
+        if native_plan:
+            convert_cmd += f" --native-plan {quote_path(native_plan)}"
         try:
             await run_bash(
                 self, convert_cmd,
@@ -351,11 +382,18 @@ class PPTExportNode(PlanNode):
                 raise
             return "failed", str(e)
 
-    async def _run_convert(self, pages_dir: str, pptx_path: str, pptx_root: str) -> str:
+    async def _run_convert(
+        self,
+        pages_dir: str,
+        pptx_path: str,
+        pptx_root: str,
+        *,
+        native_plan: str = "",
+    ) -> str:
         last_error: str | None = None
         for attempt in range(1, _CONVERT_MAX_ATTEMPTS + 1):
             export_status, error_detail = await self._attempt_convert(
-                pages_dir, pptx_path, pptx_root,
+                pages_dir, pptx_path, pptx_root, native_plan=native_plan,
             )
             if export_status != "failed":
                 if attempt > 1:
@@ -424,7 +462,7 @@ class PPTExportNode(PlanNode):
         status_map = {"ok": "ok", "partial": "warning", "failed": "error"}
         if export_status == "failed":
             message = (
-                "PPTX 导出失败：未生成有效文件，请检查 Chromium 环境及网络后重试"
+                "PPTX 导出失败：未生成有效文件或 validate-pptx-artifact 未通过"
             )
         elif export_status == "partial":
             message = (

@@ -8,9 +8,10 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import replace
 from datetime import datetime, timezone as dt_timezone
+from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from jiuwenswarm.gateway.cron.cron_expr import _DEFAULT_WAKE_OFFSET_SECONDS
 from jiuwenswarm.gateway.cron.cron_job_mutations import (
@@ -72,18 +73,46 @@ def _dt_to_epoch(value: Any) -> float | None:
 
 
 def _compute_next_run_at(job: CronJob) -> str | None:
-    try:
-        from jiuwenswarm.gateway.cron.scheduler import _cron_next_push_dt
+    from jiuwenswarm.gateway.cron.db_schedule import (
+        compute_next_push_dt,
+        datetime_to_db_value,
+    )
 
-        tz = ZoneInfo(job.timezone or "Asia/Shanghai")
-        base = datetime.now(tz=tz)
-        nxt = _cron_next_push_dt(job.cron_expr, base)
-        if nxt is None:
-            return None
-        dt = nxt if nxt.tzinfo is not None else nxt.replace(tzinfo=dt_timezone.utc)
-        return dt.astimezone(dt_timezone.utc).isoformat()
+    try:
+        push_dt = compute_next_push_dt(job.cron_expr, job.timezone)
+        return datetime_to_db_value(push_dt).isoformat(sep=" ")
     except Exception:
         return None
+
+
+def _next_run_at_db_value(job: CronJob) -> str | None:
+    """序列化 ``job.next_run_at``（库表调度权威值），不做重算。
+
+    ``next_run_at`` 是库表调度的唯一权威：它只能由认领 SQL（``claim_periodic_run`` /
+    ``claim_oneshot_run``）原子推进，或在新建/改调度时按 cron 表达式计算一次。
+    任何其它 ``update_job``（如回写 ``last_session_id`` / ``expired`` / ``enabled``）
+    都不允许重算它——否则会在认领刚推进到下一趟后，又把它按“当前时刻”倒推回去，
+    导致多副本重复触发，或跳档“罢工”。
+
+    仅当 ``next_run_at`` 为空（新建任务、或调度被修改后主动清空）时才按表达式计算。
+    """
+    from jiuwenswarm.gateway.cron.db_schedule import datetime_to_db_value
+
+    raw = getattr(job, "next_run_at", None)
+    if raw is not None:
+        try:
+            if isinstance(raw, datetime):
+                dt = raw if raw.tzinfo is not None else raw.replace(tzinfo=dt_timezone.utc)
+            else:
+                dt = datetime.fromtimestamp(float(raw), tz=dt_timezone.utc)
+            return datetime_to_db_value(dt).isoformat(sep=" ")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[CronDbStore] 序列化 next_run_at 失败，回退按 cron 表达式重算 "
+                "job_id=%s raw=%r: %s",
+                getattr(job, "id", None), raw, exc,
+            )
+    return _compute_next_run_at(job)
 
 
 def _record_to_mapping(row: Any) -> dict[str, Any]:
@@ -133,7 +162,11 @@ def _row_to_job(row: Any) -> CronJob | None:
             "expired": bool(data.get("expired", False)),
             "cron_expr": str(data.get("cron_expr") or "").strip(),
             "timezone": str(data.get("timezone") or "").strip(),
-            "wake_offset_seconds": int(data.get("wake_offset_seconds") or 60),
+            "wake_offset_seconds": int(
+                data.get("wake_offset_seconds")
+                if data.get("wake_offset_seconds") is not None
+                else _DEFAULT_WAKE_OFFSET_SECONDS
+            ),
             "description": str(data.get("description") or ""),
             "targets": str(data.get("targets") or "").strip(),
             "session_id": data.get("session_id"),
@@ -145,6 +178,8 @@ def _row_to_job(row: Any) -> CronJob | None:
             "user_id": data.get("user_id"),
             "created_at": _dt_to_epoch(data.get("created_at")),
             "updated_at": _dt_to_epoch(data.get("updated_at")),
+            "next_run_at": _dt_to_epoch(data.get("next_run_at")),
+            "last_run_at": _dt_to_epoch(data.get("last_run_at")),
         }
         for key in _EXTRA_DATA_KEYS:
             if key in extra and extra.get(key) is not None:
@@ -162,6 +197,11 @@ class GatewayDbCronJobStore:
         self._lock = asyncio.Lock()
         self._revision = 0
 
+    @property
+    def path(self) -> Path:
+        """Compatibility marker for CronTenantRegistry logging."""
+        return Path("db://cron_job")
+
     @staticmethod
     async def _require_store() -> PersistentStore:
         from jiuwenswarm.gateway.storage.access import require_persistent_store
@@ -173,7 +213,14 @@ class GatewayDbCronJobStore:
         return {"job_id": job_id}
 
     async def get_revision(self) -> int:
-        return int(self._revision)
+        jobs = await self.list_jobs()
+        if not jobs:
+            return int(self._revision or 0)
+        stamp = max(float(j.updated_at or 0) for j in jobs)
+        db_rev = int(stamp * 1_000_000)
+        if self._revision:
+            return max(int(self._revision), db_rev)
+        return db_rev
 
     def _bump_revision(self) -> None:
         self._revision = int(time.time() * 1_000_000)
@@ -222,6 +269,8 @@ class GatewayDbCronJobStore:
         )
         extra = _extra_from_job(job)
         return {
+            "service_id": job.service_id or "default",
+            "agent_id": job.agent_id or "default",
             "job_id": job.id,
             "group_id": job.group_id,
             "bot_id": job.bot_id,
@@ -242,7 +291,7 @@ class GatewayDbCronJobStore:
             "targets": job.targets,
             "session_id": job.session_id,
             "chat_type": job.chat_type,
-            "next_run_at": _compute_next_run_at(job),
+            "next_run_at": _next_run_at_db_value(job),
             "created_at": created_iso,
             "updated_at": now_iso,
             "data": json.dumps(extra, ensure_ascii=False) if extra else None,
@@ -250,7 +299,13 @@ class GatewayDbCronJobStore:
 
     async def create_job(self, **kwargs: Any) -> CronJob:
         store = await self._require_store()
-        job = build_new_cron_job(**kwargs)
+        tenant_sid = str(kwargs.pop("service_id", None) or "default").strip() or "default"
+        tenant_aid = str(kwargs.pop("agent_id", None) or "default").strip() or "default"
+        job = replace(
+            build_new_cron_job(**kwargs),
+            service_id=tenant_sid,
+            agent_id=tenant_aid,
+        )
         row_data = self._job_to_row(job)
         identity = self._job_identity(job_id=job.id)
         async with self._lock:
@@ -272,6 +327,10 @@ class GatewayDbCronJobStore:
             if existing is None:
                 raise KeyError("job not found")
             updated = apply_cron_job_patch(existing, patch)
+            if "cron_expr" in patch or "timezone" in patch:
+                # 调度表达式/时区变化：next_run_at 需按新表达式重算一次。
+                # 清空后由 _job_to_row → _next_run_at_db_value 回退到 _compute_next_run_at。
+                updated.next_run_at = None
             row_data = self._job_to_row(updated)
             row_data.pop("job_id", None)
             row_data.pop("created_at", None)

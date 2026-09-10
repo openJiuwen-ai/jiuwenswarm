@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
-from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
+from jiuwenswarm.gateway.cron.cron_expr import is_oneshot_cron_expr, normalize_cron_expr
 from jiuwenswarm.gateway.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
 from jiuwenswarm.gateway.cron.scheduler import _cron_next_push_dt, CronSchedulerService
 from jiuwenswarm.gateway.cron.models import (
@@ -25,8 +26,8 @@ from jiuwenswarm.server.gateway_push import (
     GatewayPushTransport,
     WebSocketGatewayPushTransport,
 )
+from jiuwenswarm.common import utils as _jiuwenswarm_utils
 from jiuwenswarm.common.utils import (
-    get_multi_tenant_user_workspace_dir,
     normalize_tenant_scope_id,
 )
 
@@ -38,15 +39,11 @@ def resolve_cron_jobs_path(
     agent_id: str,
     workspace_key: str | None = None,
 ) -> Path:
-    """Per-tenant cron_jobs.json under ``service_{sid}/agent_{aid}/agent/home/``."""
-    del workspace_key  # legacy kw; disk isolation is service_id + agent_id
-    sid = normalize_tenant_scope_id(service_id)
-    aid = normalize_tenant_scope_id(agent_id)
-    base = get_multi_tenant_user_workspace_dir(sid, aid)
-    if base is None:
-        raise TypeError(
-            f"invalid tenant for cron jobs path: service_id={sid!r}, agent_id={aid!r}"
-        )
+    """Per-tenant cron_jobs.json under ``workspace_{key}/agent/home/``."""
+    del service_id, agent_id  # routing ids; disk isolation is workspace_key
+    wk = normalize_tenant_scope_id(workspace_key)
+    # Look up via module attribute so unit-test monkeypatch on utils applies.
+    base = _jiuwenswarm_utils.get_multi_tenant_user_workspace_dir(wk)
     return base / "agent" / "home" / "cron_jobs.json"
 
 # 按 asyncio Task 隔离：多 session 并发时不能用单例字段存路由，否则后到的请求会覆盖先到的 session_id。
@@ -87,14 +84,20 @@ class CronTools:
         *,
         service_id: str = "default",
         agent_id: str = "default",
+        workspace_key: str = "default",
         agent_client: Any | None = None,
         message_handler: Any | None = None,
     ) -> None:
         self._service_id = str(service_id or "default").strip() or "default"
         self._agent_id = str(agent_id or "default").strip() or "default"
+        self._workspace_key = str(workspace_key or "default").strip() or "default"
         self._gateway_push: GatewayPushTransport = gateway_push or WebSocketGatewayPushTransport()
         self._local_store = CronJobStore(
-            path=resolve_cron_jobs_path(self._service_id, self._agent_id)
+            path=resolve_cron_jobs_path(
+                self._service_id,
+                self._agent_id,
+                workspace_key=self._workspace_key,
+            )
         )
         # 内置调度器，用于在 Agent-side 执行定时任务
         self._scheduler: CronSchedulerService | None = None
@@ -256,14 +259,14 @@ class CronTools:
             extract_routing_triple,
             routing_triple_complete,
         )
-        from jiuwenswarm.server.runtime.enterprise_config import gateway_db
+        from jiuwenswarm.server.runtime.enterprise_config import db_queries
 
         identity = self._routing_identity_payload()
         g, b, u = extract_routing_triple(identity)
         if not routing_triple_complete(g, b, u):
             raise ValueError("enterprise cron list requires group_id, bot_id and user_id")
         filters: dict[str, Any] = {"group_id": g, "bot_id": b, "user_id": u}
-        rows = await gateway_db.list_records("cron_job", filters=filters, order_by="updated_at DESC")
+        rows = await db_queries.list_records("cron_job", filters=filters, order_by="updated_at DESC")
         out: list[dict[str, Any]] = []
         for row in rows:
             job = _row_to_job(row)
@@ -414,9 +417,17 @@ class CronTools:
 
     async def create_job(self, params: dict[str, Any]) -> Any:
         normalized = dict(params or {})
+        # 幂等：id 在 AgentServer 侧生成一次，随 push 下发（企业版）或直接写入
+        # 本地 store（个人版）。Gateway 收到同一 id 时靠 already-exists 检查去重，
+        # 避免多副本扇出导致重复落库。与个人版"id 在 AgentServer 生成"保持一致。
+        job_id = str(normalized.get("id") or "").strip() or uuid.uuid4().hex
         normalized.pop("session_id", None)
         normalized["targets"] = self._normalize_targets_param(normalized.get("targets"))
         normalized["cron_expr"] = normalize_cron_expr(str(normalized.get("cron_expr") or "").strip())
+        # 与手动创建规格对齐：LLM 工具 schema 无 delete_after_run 字段，未显式传入时
+        # 按 cron_expr 推断「单次」任务（年份为固定值），保证对话创建与手动创建一致。
+        if "delete_after_run" not in normalized:
+            normalized["delete_after_run"] = is_oneshot_cron_expr(normalized["cron_expr"])
         targets_str = normalized["targets"]
         logger.info(
             "[CronTools] create_job: route(channel=%s session=%s request=%s) input.targets=%s normalized.targets=%s",
@@ -483,7 +494,7 @@ class CronTools:
         if self._enterprise_ready():
             push_payload = {
                 **normalized,
-                "id": str(normalized.get("id") or "").strip() or None,
+                "id": job_id,
                 "project_id": resolved_project_id,
                 "work_mode": work_mode,
                 **session_kw,
@@ -495,7 +506,7 @@ class CronTools:
             return push_payload
 
         job = await self._local_store.create_job(
-            job_id=str(normalized.get("id") or "").strip() or None,
+            job_id=job_id,
             name=str(normalized.get("name") or "").strip(),
             cron_expr=str(normalized.get("cron_expr") or "").strip(),
             timezone=str(normalized.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai",

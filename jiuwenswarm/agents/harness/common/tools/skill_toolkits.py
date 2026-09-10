@@ -1,7 +1,6 @@
 """面向 agent 的 skill 管理工具封装。"""
 
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
 
 import asyncio
 import logging
@@ -11,8 +10,9 @@ from typing import Any, Callable
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
-from jiuwenswarm.server.runtime.skill.skill_whitelist import is_skill_whitelist_tenant
+from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillNameConflictError
+from jiuwenswarm.server.runtime.skill.skill_prebuilt import is_skill_prebuilt_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -77,28 +77,7 @@ class SkillToolkit:
         self._on_installed_skills_changed = on_installed_skills_changed
 
     def _is_enterprise(self) -> bool:
-        return is_skill_whitelist_tenant(self._agent_id, self._service_id)
-
-    @staticmethod
-    def _enterprise_user_id() -> str | None:
-        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-            get_runtime_tool_metadata,
-        )
-
-        meta = get_runtime_tool_metadata() or {}
-        _g, _b, user_id = extract_routing_triple(meta)
-        return str(user_id).strip() if user_id else None
-
-    @staticmethod
-    def _enterprise_routing() -> tuple[str | None, str | None, str | None]:
-        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-            get_runtime_tool_metadata,
-        )
-
-        meta = get_runtime_tool_metadata() or {}
-        return extract_routing_triple(meta)
+        return is_skill_prebuilt_tenant(self._agent_id, self._service_id)
 
     async def _notify_installed_skills_changed(self) -> None:
         if self._on_installed_skills_changed is None:
@@ -590,53 +569,6 @@ class SkillToolkit:
             resolved_source = normalized_source
             wait_timeout = self._safe_int(timeout_sec, 60)
 
-            if self._is_enterprise():
-                from jiuwenswarm.agents.harness.common.installed_skill_ops import (
-                    install_from_channel,
-                )
-
-                group_id, bot_id, user_id = self._enterprise_routing()
-
-                async def _do_channel_install(
-                    tgt: str, src: str, timeout: int, *, force: bool
-                ) -> dict[str, Any]:
-                    return await self._channel_install(tgt, src, timeout, force=force)
-
-                result = await install_from_channel(
-                    service_id=str(self._service_id or ""),
-                    agent_id=str(self._agent_id or ""),
-                    target=target,
-                    source=resolved_source,
-                    timeout_sec=wait_timeout,
-                    channel_install=_do_channel_install,
-                    get_skill_meta=self._get_skill_meta,
-                    remove_skill_dir=self._manager.remove_skill_directory,
-                    group_id=group_id,
-                    bot_id=bot_id,
-                    user_id=user_id or self._enterprise_user_id(),
-                )
-                if not result.get("success"):
-                    return result
-                await self._notify_installed_skills_changed()
-                name = str(result.get("name") or "").strip()
-                installed_item = self._build_installed_item(name, resolved_source)
-                detail = (
-                    f"Skill installed successfully. Available now: - `{installed_item['name']}`: "
-                    f"{installed_item['description'].strip() or 'No description provided.'}"
-                )
-                if installed_item["skill_file"]:
-                    detail = f"{detail} Read SKILL.md before use."
-                return {
-                    "success": True,
-                    "source": resolved_source,
-                    "installed": True,
-                    "name": installed_item["name"],
-                    "description": installed_item["description"],
-                    "identifier": installed_item["identifier"],
-                    "skill_file": installed_item["skill_file"],
-                    "detail": detail,
-                }
-
             if resolved_source == "skillnet":
                 r = self._check_already_installed(target, resolved_source)
                 if r is not None:
@@ -688,6 +620,44 @@ class SkillToolkit:
             # 底层未显式返回名称时，尽量从 identifier 推断一个稳定值。
             name = Path(target).name if resolved_source == "skillnet" else target
 
+        if self._is_enterprise():
+            record_origin = ""
+            for record in self._manager.get_local_skills():
+                if str(record.get("name") or "").strip() == name:
+                    record_origin = str(record.get("origin") or "").strip()
+                    break
+            if not record_origin:
+                record_origin = str(target or "").strip() or resolved_source
+            meta = self._get_skill_meta(name) or {}
+            try:
+                await asyncio.to_thread(
+                    self._manager.record_skill_installation,
+                    name=name,
+                    source_type="user",
+                    source=resolved_source,
+                    origin=record_origin,
+                    version=str(meta.get("version") or "").strip(),
+                )
+            except SkillNameConflictError as exc:
+                self._manager.remove_skill_directory(name)
+                return {
+                    "success": False,
+                    "source": resolved_source,
+                    "installed": False,
+                    "error_code": "skill_name_conflict",
+                    "detail": str(exc),
+                }
+            except Exception as exc:  # noqa: BLE001
+                self._manager.remove_skill_directory(name)
+                return {
+                    "success": False,
+                    "source": resolved_source,
+                    "installed": False,
+                    "error_code": "state_write_failed",
+                    "detail": str(exc),
+                }
+            await self._notify_installed_skills_changed()
+
         installed_item = self._build_installed_item(name, resolved_source)
         detail = (
             f"Skill installed successfully. Available now: - `{installed_item['name']}`: "
@@ -728,20 +698,53 @@ class SkillToolkit:
                 }
 
             if self._is_enterprise():
-                from jiuwenswarm.agents.harness.common.installed_skill_ops import uninstall
-
-                async def _remove_disk(n: str) -> dict[str, Any]:
-                    return await self._manager.handle_skills_uninstall({"name": n})
-
-                result = await uninstall(
-                    service_id=str(self._service_id or ""),
-                    agent_id=str(self._agent_id or ""),
-                    skill_name=skill_name,
-                    remove_from_disk=_remove_disk,
+                installation = None
+                for record in self._manager.list_skill_installations():
+                    if (
+                        str(record.get("name") or "").strip() == skill_name
+                        and str(record.get("source_type") or "").strip()
+                        in {"prebuilt", "user"}
+                    ):
+                        installation = record
+                        break
+                if installation is None:
+                    return {
+                        "success": False,
+                        "removed": False,
+                        "name": skill_name,
+                        "error_code": "not_found",
+                        "detail": f"Skill `{skill_name}` is not installed.",
+                    }
+                if str(installation.get("source_type") or "").strip() == "prebuilt":
+                    return {
+                        "success": False,
+                        "removed": False,
+                        "name": skill_name,
+                        "error_code": "prebuilt_not_removable",
+                        "detail": f"Skill `{skill_name}` is prebuilt and cannot be uninstalled.",
+                    }
+                result = await self._manager.handle_skills_uninstall(
+                    {
+                        "name": skill_name,
+                        "origin": str(installation.get("origin") or ""),
+                    }
                 )
                 if result.get("success"):
                     await self._notify_installed_skills_changed()
-                return result
+                    return {
+                        "success": True,
+                        "removed": True,
+                        "name": skill_name,
+                        "source": "user",
+                        "detail": f"Skill `{skill_name}` uninstalled successfully.",
+                    }
+                return {
+                    "success": False,
+                    "removed": False,
+                    "name": skill_name,
+                    "error_code": str(result.get("error_code") or "uninstall_failed"),
+                    "detail": str(result.get("detail") or "uninstall failed"),
+                }
 
             installed_payload = await self._list_installed_skills()
             if not installed_payload.get("success"):

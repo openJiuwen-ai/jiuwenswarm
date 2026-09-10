@@ -252,6 +252,10 @@ async def save_resume_ctx(
         "plan_code": plan_code,
         "inputs": dict(inputs),
         "pending_tool_call_id": pending_tool_call_id,
+        # update_state 使用 merge 语义；上一轮 mark_resume_in_flight 写入的
+        # resume_in_flight=True 不会因新 entry 缺少该键而被移除。显式置 None
+        # 让 merge 将其从持久化状态中删除，避免下一轮恢复被误判为重复答案。
+        "resume_in_flight": None,
     }
     if task_states:
         entry["task_states"] = copy.deepcopy(task_states)
@@ -326,3 +330,68 @@ async def clear_resume_ctx(session: Any) -> None:
             "[SkillTurboResume] clear_resume_ctx update_state failed", exc_info=True
         )
     logger.info("[SkillTurboResume] clear_resume_ctx: cleared sid=%s", sid)
+
+
+async def mark_resume_in_flight(session: Any, resume_ctx: dict[str, Any]) -> None:
+    """Mark resume_ctx as in-flight so duplicate answer submits are ignored.
+
+    Same-process double-click / retry can otherwise load the same pending tcid
+    and start a second resume stream (gateway does not cancel interrupt-resume).
+
+    Persists via ``update_state`` + ``post_run`` so a later request that
+    ``load_resume_ctx`` (pre_run from checkpointer) also sees the flag.
+    """
+    if session is None or not isinstance(resume_ctx, dict):
+        return
+    sid = _get_sid(session)
+    marked = dict(resume_ctx)
+    marked["resume_in_flight"] = True
+    try:
+        await session.pre_run(inputs=None)
+    except Exception as e:
+        logger.warning(
+            "[SkillTurboResume] mark_resume_in_flight pre_run failed: sid=%s err=%s",
+            sid,
+            e,
+        )
+    try:
+        session.update_state({SKILL_TURBO_RESUME_CTX_KEY: marked})
+    except Exception:
+        logger.debug(
+            "[SkillTurboResume] mark_resume_in_flight update_state failed",
+            exc_info=True,
+        )
+        return
+    try:
+        await session.post_run()
+    except Exception as e:
+        logger.warning(
+            "[SkillTurboResume] mark_resume_in_flight post_run failed: sid=%s err=%s",
+            sid,
+            e,
+        )
+
+
+async def clear_resume_in_flight(session: Any) -> None:
+    """Clear the in-flight flag if resume_ctx is still present."""
+    if session is None:
+        return
+    try:
+        state = session.get_state(SKILL_TURBO_RESUME_CTX_KEY)
+    except Exception as e:
+        logger.warning(
+            "[SkillTurboResume] clear_resume_in_flight get_state failed: err=%s",
+            e,
+        )
+        return
+    if not isinstance(state, dict) or not state.get("resume_in_flight"):
+        return
+    cleaned = dict(state)
+    cleaned.pop("resume_in_flight", None)
+    try:
+        session.update_state({SKILL_TURBO_RESUME_CTX_KEY: cleaned})
+    except Exception:
+        logger.debug(
+            "[SkillTurboResume] clear_resume_in_flight update_state failed",
+            exc_info=True,
+        )

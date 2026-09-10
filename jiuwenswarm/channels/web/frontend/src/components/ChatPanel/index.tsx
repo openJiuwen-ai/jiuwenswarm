@@ -6,7 +6,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, CheckCircle2, ClipboardList, Copy, Info, LoaderCircle, Share2, Sparkles, X } from 'lucide-react';
+import { ArrowRight, CheckCircle2, ClipboardList, Copy, Info, Share2, Sparkles, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
@@ -15,7 +15,6 @@ import type { HumanShareCommand } from '../../stores/sessionStore';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
-import chatIcon from '../../assets/chat.svg';
 import expandIcon from '../../assets/expand.svg';
 import lineUpIcon from '../../assets/lineUp.svg';
 import loadSendIcon from '../../assets/load-send.svg';
@@ -84,7 +83,7 @@ interface ChatPanelProps {
     answers: UserAnswer[],
     source?: string,
     status?: UserAnswerStatus,
-  ) => void;
+  ) => Promise<void>;
   onExportShare?: () => void | Promise<void>;
   isExportingShare?: boolean;
   canExportShare?: boolean;
@@ -426,20 +425,6 @@ function WelcomeHeading() {
   );
 }
 
-function getShareExportTitle(
-  t: TFunction,
-  isExportingShare: boolean,
-  canExportShare: boolean
-): string {
-  if (isExportingShare) {
-    return t('share.exporting');
-  }
-  if (!canExportShare) {
-    return t('share.exportUnavailable');
-  }
-  return t('share.export');
-}
-
 function getHumanShareStatusLabel(command: HumanShareCommand, t: TFunction): string {
   if (command.status === 'joined') return t('humanShare.status.joined');
   if (command.status === 'left') return t('humanShare.status.left');
@@ -677,9 +662,6 @@ export function ChatPanel({
   onSwitchMode,
   isProcessing,
   onUserAnswer,
-  onExportShare,
-  isExportingShare = false,
-  canExportShare = false,
   sessionTitle,
   sessionProjectName,
   sessionProject = null,
@@ -757,8 +739,6 @@ export function ChatPanel({
     t('chat.welcomeSuggestions.skills'),
   ];
   const shouldShowChatHeader = hasConversation;
-  const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
-  const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const {
@@ -1155,29 +1135,6 @@ export function ChatPanel({
             )}
           </div>
           <div className="chat-panel-header__actions">
-            {shouldShowShareExport && (
-              <button
-                type="button"
-                className={`icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
-                data-testid="share-export"
-                title={shareExportTitle}
-                aria-label={shareExportTitle}
-                aria-busy={isExportingShare}
-                disabled={!canExportShare || isExportingShare}
-                onClick={() => {
-                  void onExportShare?.();
-                }}
-              >
-                {isExportingShare ? (
-                  <>
-                    <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />
-                    <span className="share-export-btn__label">{t('share.generating')}</span>
-                  </>
-                ) : (
-                  <Share2 size={14} strokeWidth={2} />
-                )}
-              </button>
-            )}
             {shouldShowHumanShare && (
               <button
                 type="button"
@@ -1190,15 +1147,8 @@ export function ChatPanel({
             )}
             <button
               type="button"
-              className={`chat-header-icon-btn ${!teamAreaExpanded ? 'chat-header-icon-btn--active' : ''}`}
-              onClick={() => onToggleTeamArea?.(false)}
-            >
-              <img src={chatIcon} alt="" className="chat-header-icon-btn__icon" />
-            </button>
-            <button
-              type="button"
               className={`chat-header-icon-btn ${teamAreaExpanded ? 'chat-header-icon-btn--active' : ''}`}
-              onClick={() => onToggleTeamArea?.(true)}
+              onClick={() => onToggleTeamArea?.(!teamAreaExpanded)}
             >
               <img src={expandIcon} alt="" className="chat-header-icon-btn__icon" />
             </button>

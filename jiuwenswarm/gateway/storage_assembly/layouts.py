@@ -144,12 +144,13 @@ def _db_table(table: str) -> StoreLayout:
 
 _YAML_AND_DB_SECTIONS: dict[str, _YamlSectionSpec] = {
     "channel_config": ("/channels", ("id",), ""),
-    "permissions_config": ("/permissions", (), ""),
     "logging_config": ("/logging", (), ""),
     "memory_config": ("/memory", (), ""),
 }
 
 _YAML_ONLY_SECTIONS: dict[str, _YamlSectionSpec] = {
+    # 企业策略走 permissions_template 槽位，不再落实例级 permissions_config 表
+    "permissions_config": ("/permissions", (), ""),
     "heartbeat_config": ("/heartbeat", (), ""),
     "browser_config": ("/browser", (), ""),
     "preferred_language_config": ("/preferred_language", (), "preferred_language"),
@@ -262,6 +263,8 @@ def _build_layouts(
 
     for table in ENTERPRISE_RECORD_STORE_NAMES:
         if table == "cron_job":
+            continue
+        if persistent_root is not None and table in _JSON_ONLY_STORES:
             continue
         layouts[table] = _db_table(table)
 

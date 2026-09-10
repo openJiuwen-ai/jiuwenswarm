@@ -42,26 +42,21 @@ gen_identity_file() {
 }
 
 render_manager_files() {
-    local is_up_web="${DEPLOY_VARS["IS_UP_MANAGER_WEB"]}"
-
     render_secret_configmap
     ensure_available_port "MANAGER_SERVER_NODE_PORT" "MANAGER_WEB_NODE_PORT"
     gen_manager_server_file
     gen_identity_file
 
-    if [ "${is_up_web}" == "true" ]; then
-        local manager_web_template_file="${CONFIG["MANAGER_WEB_TEMPLATE_FILE"]}"
-        local manager_web_file="${CONFIG["MANAGER_WEB_FILE"]}"
+    local manager_web_template_file="${CONFIG["MANAGER_WEB_TEMPLATE_FILE"]}"
+    local manager_web_file="${CONFIG["MANAGER_WEB_FILE"]}"
 
-        render_config_template "${manager_web_template_file}" "${manager_web_file}" "DEPLOY_VARS"
-        enable_dev_mode_if_needed "${manager_web_file}" manager-web
-        add_resource_if_set "MANAGER_WEB" "${manager_web_file}"
-    fi
+    render_config_template "${manager_web_template_file}" "${manager_web_file}" "DEPLOY_VARS"
+    enable_dev_mode_if_needed "${manager_web_file}" manager-web
+    add_resource_if_set "MANAGER_WEB" "${manager_web_file}"
 }
 
 deploy_manager() {
     local namespace="${DEPLOY_VARS["NAMESPACE"]}"
-    local is_up_web="${DEPLOY_VARS["IS_UP_MANAGER_WEB"]}"
 
     ensure_secret_configmap
 
@@ -79,29 +74,22 @@ deploy_manager() {
     wait_k8s_resource_ready "deployment" "${identity_name}" "${namespace}"
 
     # manager-web
-    if [ "${is_up_web}" == "true" ]; then
-        local manager_web_name="${DEPLOY_VARS["MANAGER_WEB_NAME"]}"
-        local manager_web_file="${CONFIG["MANAGER_WEB_FILE"]}"
+    local manager_web_name="${DEPLOY_VARS["MANAGER_WEB_NAME"]}"
+    local manager_web_file="${CONFIG["MANAGER_WEB_FILE"]}"
 
-        exec_cmd kubectl apply -f ${manager_web_file}
-        wait_k8s_resource_ready "deployment" "${manager_web_name}" "${namespace}"
-        success "MANAGER_WEB_NODE_PORT: ${DEPLOY_VARS["MANAGER_WEB_NODE_PORT"]}"
-
-    fi
-
+    exec_cmd kubectl apply -f ${manager_web_file}
+    wait_k8s_resource_ready "deployment" "${manager_web_name}" "${namespace}"
+    success "MANAGER_WEB_NODE_PORT: ${DEPLOY_VARS["MANAGER_WEB_NODE_PORT"]}"
 }
 
 uninstall_manager() {
     local namespace="${DEPLOY_VARS["NAMESPACE"]}"
-    local is_up_web="${DEPLOY_VARS["IS_UP_MANAGER_WEB"]}"
 
     # 反序：manager-web → identity → manager-server
-    if [ "${is_up_web}" == "true" ]; then
-        local manager_web_name="${DEPLOY_VARS["MANAGER_WEB_NAME"]}"
-        local manager_web_file="${CONFIG["MANAGER_WEB_FILE"]}"
-        exec_cmd kubectl delete -f ${manager_web_file} --ignore-not-found=true
-        wait_pod_terminated "${manager_web_name}" "${namespace}"
-    fi
+    local manager_web_name="${DEPLOY_VARS["MANAGER_WEB_NAME"]}"
+    local manager_web_file="${CONFIG["MANAGER_WEB_FILE"]}"
+    exec_cmd kubectl delete -f ${manager_web_file} --ignore-not-found=true
+    wait_pod_terminated "${manager_web_name}" "${namespace}"
 
     local identity_name="${DEPLOY_VARS["IDENTITY_NAME"]}"
     local identity_file="${CONFIG["IDENTITY_FILE"]}"

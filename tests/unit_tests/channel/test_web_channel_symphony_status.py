@@ -391,6 +391,33 @@ async def test_web_channel_routes_rpc_response_by_request_ws_id():
         await channel.unregister_ws(other_client)
 
 
+def test_web_channel_preserves_ask_user_question_expired_payload():
+    payload = {
+        "event_type": "chat.ask_user_question_expired",
+        "request_id": "approval-1",
+        "source": "subagent_skill_load",
+        "agent_scope_id": "child-agent",
+        "reason": "timeout",
+    }
+    msg = Message(
+        id="transport-1",
+        type="event",
+        channel_id="web",
+        session_id="sess-skill",
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload=payload,
+    )
+
+    assert WebChannel._build_event_payload(
+        msg, "chat.ask_user_question_expired"
+    ) == {
+        **payload,
+        "session_id": "sess-skill",
+    }
+
+
 @pytest.mark.asyncio
 async def test_web_channel_routes_event_by_request_ws_id_before_session_bucket():
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())

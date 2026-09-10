@@ -168,8 +168,8 @@ def verify_workspace_structure():
             workspace_dir / "agent" / "skills",
             workspace_dir / "agent" / "memory",
             workspace_dir / "agent" / "sessions",
-            workspace_dir / "agent" / "workspace",
-            workspace_dir / "agent" / "workspace" / "projects",
+            workspace_dir / "agent" / "jiuwenclaw_workspace",
+            workspace_dir / "agent" / "jiuwenclaw_workspace" / "projects",
             workspace_dir / "agent" / ".checkpoint",
             workspace_dir / "agent" / ".logs",
         ]

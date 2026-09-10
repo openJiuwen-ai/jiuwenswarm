@@ -49,28 +49,28 @@
         "volumeMounts": [
           {
             "name": "hp-code",
-            "mountPath": "/app/jiuwenswarm"
+            "mountPath": "<<CLAW_POD_CODE_PATH>>"
           },
           {
             "name": "hp-rt-foundation",
-            "mountPath": "/usr/local/lib/python3.11/site-packages/openjiuwen_runtime/foundation"
+            "mountPath": "<<RUNTIME_POD_PKG_PATH>>/foundation"
           },
           {
             "name": "hp-rt-management",
-            "mountPath": "/usr/local/lib/python3.11/site-packages/openjiuwen_runtime/management"
+            "mountPath": "<<RUNTIME_POD_PKG_PATH>>/management"
           },
           {
             "name": "hp-openjiuwen",
-            "mountPath": "/usr/local/lib/python3.11/site-packages/openjiuwen"
-          },
-          {
-            "name": "gw-envfile",
-            "mountPath": "/root/.jiuwenswarm/config/.env",
-            "subPath": ".env"
+            "mountPath": "<<CORE_POD_PKG_PATH>>"
           },
           {
             "name": "data",
-            "mountPath": "<<AGENT_SERVER_HOME>>/.jiuwenswarm"
+            "mountPath": "<<CLAW_HOME>>/.jiuwenswarm"
+          },
+          {
+            "name": "agentserver-config",
+            "mountPath": "<<CLAW_HOME>>/.jiuwenswarm/config/config.yaml",
+            "subPath": "config.yaml"
           }
         ]
       },
@@ -91,7 +91,7 @@
           },
           {
             "name": "JIUWENBOX_POLICY_PATH",
-            "value": "/usr/local/lib/python3.11/site-packages/jiuwenbox/configs/enterprise-policy.yaml"
+            "value": "<<CLAW_POD_CODE_PATH>>/jiuwenbox/src/jiuwenbox/configs/enterprise-policy.yaml"
           },
           {
             "name": "TZ",
@@ -127,7 +127,7 @@
           },
           {
             "name": "hp-jiuwenbox",
-            "mountPath": "/usr/local/lib/python3.11/site-packages/jiuwenbox"
+            "mountPath": "<<CLAW_POD_CODE_PATH>>/jiuwenbox/src"
           },
           {
             "name": "data",
@@ -184,15 +184,15 @@
             }
           },
           {
-            "name": "gw-envfile",
-            "configMap": {
-              "name": "<<GATEWAY_ENV_FILE_CM_NAME>>"
-            }
-          },
-          {
             "name": "data",
             "persistentVolumeClaim": {
               "claimName": "<<CLAW_PVC>>"
+            }
+          },
+          {
+            "name": "agentserver-config",
+            "configMap": {
+              "name": "<<GATEWAY_CONFIG_MAP_NAME>>"
             }
           },
           {
@@ -205,7 +205,7 @@
           {
             "name": "hp-jiuwenbox",
             "hostPath": {
-              "path": "<<CLAW_CODE_PATH>>/jiuwenbox/src/jiuwenbox",
+              "path": "<<CLAW_CODE_PATH>>/jiuwenbox/src",
               "type": "Directory"
             }
           }

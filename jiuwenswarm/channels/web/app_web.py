@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import errno
 import http.client
+import io
 import json
 import logging
 import mimetypes
@@ -35,7 +36,7 @@ parse_dotenv_early("jiuwenswarm-web")
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_insecure_ssl_context, get_ssl_verify
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.ws_diagnostics import describe_ws_exception, format_ws_diagnostics
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.utils import (
     get_logs_dir,
     get_root_dir,
@@ -98,10 +99,13 @@ def _parse_login_auth_simulate(raw: str | None) -> bool:
 
 
 def _parse_web_transport(raw: str | None) -> str:
+    """Parse WEB_TRANSPORT; unset follows edition (enterprise→http, personal→websocket)."""
     value = (raw or "").strip().lower()
     if value in ("http", "a2"):
         return "http"
-    return "websocket"
+    if value in ("websocket", "ws"):
+        return "websocket"
+    return "http" if is_enterprise() else "websocket"
 
 
 def _probe_http_service(
@@ -135,7 +139,7 @@ def _probe_identity_service(target: str, timeout: float = 3.0) -> tuple[bool, st
 
 def _probe_manager_service(target: str, timeout: float = 3.0) -> tuple[bool, str]:
     return _probe_http_service(
-        target, "/api/v1/user-console/gateways", "Manager业务接口", timeout
+        target, "/api/v1/user-console/agent-contexts", "Manager业务接口", timeout
     )
 
 
@@ -174,6 +178,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     }
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
+    _PROXY_STREAM_CHUNK = 65536
     _WS_CONNECT_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
     _WS_RECV_BUFFER = 65536
@@ -382,7 +387,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             conn.request(self.command, self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-            resp_body = resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
@@ -390,11 +394,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 self.send_header(key, value)
             self.end_headers()
-            if self.command != "HEAD":
-                self.wfile.write(resp_body)
+            if self.command == "HEAD":
+                return
+            # 流式泵送（read1 + 逐块 flush）：SSE（chat.delta / history.message）的
+            # 实时性依赖 body 增量到达。此前 resp.read() 整段读完才回包——响应头
+            # 和全部帧推迟到上游流结束，浏览器把 8s 的流式回复在流结束时一次性
+            # 收到，既丢失流式渲染，又让响应头超过前端 15s 请求超时（触发
+            # REQUEST_TIMEOUT → 前端自动 interrupt）。
+            # 注意必须用 read1：read(65536) 会跨 chunk 凑满 64KB 才返回，SSE 小帧
+            # 永远凑不满，等于仍然整段缓冲。HTTP/1.0 下无 Content-Length 的响应
+            # 由连接关闭定界（SSE 场景）。
+            while True:
+                chunk = resp.read1(self._PROXY_STREAM_CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
-            self.send_error(502, "proxy http error")
+            try:
+                self.send_error(502, "proxy http error")
+            except Exception:  # noqa: BLE001
+                # 响应头已发出（流中断）：无法再回 502，断开连接由关闭定界
+                self.close_connection = True
         finally:
             conn.close()
 
@@ -696,6 +718,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # 运行时配置已逐请求注入 index.html，必须禁止缓存，
+            # 否则浏览器会复用含过期/跨用户配置的旧响应。
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -748,8 +773,23 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.logger.error("%s - %s", self.address_string(), format % args)
 
     def _is_document_request(self) -> bool:
+        # 与上游一致：仅 Accept 含 text/html 的请求视为文档请求，磁盘上不存在的
+        # SPA 子路由也按文档处理（由 do_GET 注入 index.html）。
+        # Accept 缺失（如 IAB 首次导航）的 root 请求不走这里，改由 send_head
+        # 对 index.html 逐请求注入运行时配置兜底，行为不回退。
         path = urlparse(self.path).path
-        return path in ("/", "/index.html") and "text/html" in self.headers.get("Accept", "")
+        if "text/html" not in self.headers.get("Accept", ""):
+            return False
+        if path in ("/", "/index.html"):
+            return True
+        rel_path = unquote(path).lstrip("/")
+        if not rel_path:
+            return True
+        base_dir = Path(self.directory or os.getcwd()).resolve()
+        target = (base_dir / rel_path).resolve()
+        if os.path.commonpath([str(base_dir), str(target)]) != str(base_dir):
+            return False
+        return not target.exists()
 
     def send_head(self):
         parsed = urlparse(self.path)
@@ -761,7 +801,64 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
 
         if in_base and target.exists():
+            if target.name == "index.html":
+                # Accept 缺失（如 IAB 首次导航）时 _is_document_request 为 False
+                # 走到这里：index.html 必须逐请求注入运行时配置，禁止裸发。
+                body = _inject_user_web_runtime_config(
+                    target.read_text(encoding="utf-8"),
+                    self.login_auth_simulate,
+                    self.web_transport,
+                ).encode("utf-8")
+                f = io.BytesIO(body)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header(
+                    "Cache-Control", "no-cache, no-store, must-revalidate"
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return f
             return super().send_head()
+
+        # Vite base:'./' produces relative asset URLs (./assets/...). When the
+        # SPA route is a sub-path (e.g. /chat/new), the browser resolves these
+        # to /chat/assets/... which don't exist under dist/. Strip leading path
+        # segments and retry from the dist root before falling back to index.html.
+        static_exts = (".js", ".css", ".svg", ".png", ".jpg", ".jpeg", ".ico",
+                       ".webp", ".gif", ".woff", ".woff2", ".ttf", ".eot",
+                       ".map", ".json", ".webmanifest")
+        if req_path.endswith(static_exts) and "/" in rel_path:
+            basename = rel_path.rsplit("/", 1)[-1]
+            # Try progressively shorter prefixes (e.g. chat/assets/x.js ->
+            # assets/x.js -> x.js).
+            parts = rel_path.split("/")
+            for i in range(1, len(parts)):
+                candidate_rel = "/".join(parts[i:])
+                candidate = (base_dir / candidate_rel).resolve()
+                cand_in_base = os.path.commonpath(
+                    [str(base_dir), str(candidate)]
+                ) == str(base_dir)
+                if cand_in_base and candidate.exists():
+                    self.path = "/" + candidate_rel
+                    return super().send_head()
+
+        # SPA fallback: serve index.html with runtime config injected.
+        index_path = base_dir / "index.html"
+        if index_path.exists():
+            body = _inject_user_web_runtime_config(
+                index_path.read_text(encoding="utf-8"),
+                self.login_auth_simulate,
+                self.web_transport,
+            ).encode("utf-8")
+            f = io.BytesIO(body)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            # 运行时配置已逐请求注入 index.html，必须禁止缓存，
+            # 否则浏览器会复用含过期/跨用户配置的旧响应。
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return f
 
         self.path = "/index.html"
         return super().send_head()

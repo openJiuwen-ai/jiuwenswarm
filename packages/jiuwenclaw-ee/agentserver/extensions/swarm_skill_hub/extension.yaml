@@ -1,0 +1,12 @@
+id: swarm_skill_hub
+name: swarm_skill_hub
+version: 0.1.0
+description: SwarmSkillHub Skill Source provider factory (search / check_updates / get_artifact).
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.0"
+roles:
+  - agentserver
+capabilities:
+  - skill-source-v2
+config_schema:
+  type: object

@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Permissions 配置加载：企业版 Gateway DB 优先，否则回落 config.yaml。"""
+"""Permissions 配置加载：Agent template 槽位优先，否则回落 config.yaml。"""
 
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import asyncio
 import contextvars
@@ -14,9 +14,8 @@ from typing import Any, Callable, Literal
 
 logger = logging.getLogger(__name__)
 
-PERMISSIONS_CONFIG_TABLE = "permissions_config"
-
 PersistScope = Literal["session", "base"]
+
 
 _cached_permissions: dict[str, Any] | None = None
 _cache_source: str | None = None
@@ -27,6 +26,11 @@ PERMISSIONS_SESSION_ID: contextvars.ContextVar[str | None] = contextvars.Context
     default=None,
 )
 
+# Agent 级权限基线（来自 template_ref.permissions 模板 body）；优先于进程级 yaml/DB。
+PERMISSIONS_AGENT_BASE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "jiuwenclaw_permissions_agent_base",
+    default=None,
+)
 
 
 def setup_permissions_session_scope(session_id: str | None) -> contextvars.Token:
@@ -41,6 +45,24 @@ def reset_permissions_session_scope(token: contextvars.Token) -> None:
 
 def get_permissions_session_id() -> str | None:
     return PERMISSIONS_SESSION_ID.get()
+
+
+def setup_permissions_agent_base(body: dict[str, Any] | None) -> contextvars.Token:
+    """绑定当前 Task 的 Agent 级 permissions 基线（企业模板 body）。"""
+    if isinstance(body, dict):
+        return PERMISSIONS_AGENT_BASE.set(copy.deepcopy(body))
+    return PERMISSIONS_AGENT_BASE.set(None)
+
+
+def reset_permissions_agent_base(token: contextvars.Token) -> None:
+    PERMISSIONS_AGENT_BASE.reset(token)
+
+
+def get_permissions_agent_base() -> dict[str, Any] | None:
+    body = PERMISSIONS_AGENT_BASE.get()
+    if isinstance(body, dict):
+        return copy.deepcopy(body)
+    return None
 
 
 def clear_permissions_config_cache() -> None:
@@ -242,36 +264,48 @@ def merge_session_permissions_overlay(
     return _merge_permissions_config(base_config, overlay)
 
 
+def resolve_permissions_body_from_enterprise(
+    enterprise_config: Any,
+) -> dict[str, Any] | None:
+    """从企业配置 ``permissions`` 槽位取首个启用模板的 ``body``。
+
+    不写进程级 base 缓存；调用方用返回值作为本请求/本 Agent 的权限基线。
+    无模板或无 ``body`` 时返回 ``None``，由调用方回落 yaml。
+    """
+    if enterprise_config is None:
+        return None
+    templates = getattr(enterprise_config, "permissions", None)
+    if not isinstance(templates, list):
+        return None
+    for tpl in templates:
+        if not isinstance(tpl, dict):
+            continue
+        if tpl.get("enabled") is False:
+            continue
+        body = tpl.get("body")
+        if isinstance(body, dict):
+            return copy.deepcopy(body)
+    return None
+
+
 def get_base_permissions_config(*, force_reload: bool = False) -> dict[str, Any]:
-    """返回 base ``permissions`` 段（不含企业版会话 overlay）。"""
+    """返回 base ``permissions`` 段（不含企业版会话 overlay）。
+
+    若当前 Task 绑定了 Agent 级模板 body（``setup_permissions_agent_base``），
+    优先返回该 body。否则回落 ``config.yaml``（不再读取实例级 permissions_config 表）。
+    """
     global _cached_permissions, _cache_source
+
+    agent_base = PERMISSIONS_AGENT_BASE.get()
+    if isinstance(agent_base, dict):
+        return copy.deepcopy(agent_base)
 
     if not force_reload and _cached_permissions is not None:
         return copy.deepcopy(_cached_permissions)
 
-    if not is_enterprise():
-        cfg = _load_permissions_from_yaml()
-        _cached_permissions = cfg
-        _cache_source = "yaml"
-        return copy.deepcopy(cfg)
-
-    if _event_loop_is_running():
-        if _cached_permissions is not None:
-            return copy.deepcopy(_cached_permissions)
-        cfg = _load_permissions_from_yaml()
-        _cached_permissions = cfg
-        _cache_source = "yaml_fallback"
-        return copy.deepcopy(cfg)
-
-    body = _run_async(_load_permissions_body_from_db())
-    if isinstance(body, dict) and body:
-        _cached_permissions = body
-        _cache_source = "gateway_db"
-        return copy.deepcopy(body)
-
     cfg = _load_permissions_from_yaml()
     _cached_permissions = cfg
-    _cache_source = "yaml_fallback"
+    _cache_source = "yaml"
     return copy.deepcopy(cfg)
 
 
@@ -288,41 +322,43 @@ def get_effective_permissions_config(
 
 
 def apply_permissions_config_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    """将 WS payload / 冷启动读库结果应用到本进程 base 缓存（同 logging 热更新模式）。
+    """刷新本进程 permissions base 缓存。
 
+    实例级 ``permissions_config`` 表已移除；payload 仅用于显式注入 body 或回落 yaml。
     不清理各会话 runtime overlay。
     """
+    old_effective = copy.deepcopy(_cached_permissions) if _cached_permissions is not None else None
     clear_permissions_config_cache()
 
     if not payload or payload.get("op") == "delete":
         effective = _load_permissions_from_yaml()
-        _set_cache(effective, "yaml_fallback")
+        _set_cache(effective, "yaml")
     elif isinstance(payload.get("body"), dict):
         effective = copy.deepcopy(payload["body"])
-        _set_cache(effective, "gateway_db")
+        _set_cache(effective, "memory")
     else:
         effective = _load_permissions_from_yaml()
-        _set_cache(effective, "yaml_fallback")
+        _set_cache(effective, "yaml")
+
+    # Skill 动态授权联动：功能开关运行中关闭时清空全部 Grant；普通热更新不清。
+    try:
+        from openjiuwen.harness.security.skill_authorization import (
+            sync_grants_on_permissions_reload,
+        )
+
+        sync_grants_on_permissions_reload(old_effective, effective)
+    except Exception:  # noqa: BLE001 — Grant 同步失败不掩盖配置热更新结果
+        logger.warning(
+            "[permissions_config] skill_authorization grant sync failed",
+            exc_info=True,
+        )
 
     return copy.deepcopy(effective)
 
 
 async def reload_permissions_from_gateway_db() -> dict[str, Any]:
-    """冷启动：从 Gateway 库加载 ``permissions_config`` 并刷新缓存。"""
-    if not is_enterprise():
-        return apply_permissions_config_payload({"op": "delete"})
-    try:
-        body = await _load_permissions_body_from_db()
-        if isinstance(body, dict) and body:
-            return apply_permissions_config_payload({"body": body})
-        return apply_permissions_config_payload({"op": "delete"})
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[permissions_config] permissions_config read failed: %s",
-            exc,
-            exc_info=True,
-        )
-        return apply_permissions_config_payload({"op": "delete"})
+    """冷启动：刷新 permissions 缓存（仅 yaml；Agent 模板在请求路径注入）。"""
+    return apply_permissions_config_payload({"op": "delete"})
 
 
 def persist_permissions_mutate(
@@ -336,7 +372,8 @@ def persist_permissions_mutate(
 
     - 标准版：写 ``config.yaml``。
     - 企业版 + ``persist_scope='session'``：仅更新指定会话的内存 overlay。
-    - 企业版 + ``persist_scope='base'``：更新 base 缓存并写 Gateway DB（Web UI / CLI）。
+    - 企业版 + ``persist_scope='base'``：仅更新进程内存缓存（不再写 permissions_config 表；
+      Agent 级策略请改 permissions_template）。
     """
     if is_enterprise() and persist_scope == "session":
         sid = _resolve_session_id(session_id)
@@ -363,31 +400,33 @@ def persist_permissions_mutate(
     else:
         permissions = copy.deepcopy(permissions)
 
+    old_permissions = copy.deepcopy(permissions)
     mutate_fn(permissions)
 
     if is_enterprise():
-        if _event_loop_is_running():
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(
-                _upsert_permissions_config_to_db(permissions, source=source),
-            )
-
-            def _log_persist_error(done: asyncio.Task[Any]) -> None:
-                if done.cancelled():
-                    return
-                exc = done.exception()
-                if exc is not None:
-                    logger.warning(
-                        "[permissions_config] async permissions persist failed",
-                        exc_info=exc,
-                    )
-
-            task.add_done_callback(_log_persist_error)
-        else:
-            _run_async(_upsert_permissions_config_to_db(permissions, source=source))
-        _set_cache(permissions, "gateway_db")
+        _set_cache(permissions, "memory")
+        logger.info(
+            "[permissions_config] enterprise base persist kept in-memory only "
+            "(source=%s); use permissions_template for Agent-level policy",
+            source,
+        )
     else:
         _persist_permissions_to_yaml(permissions)
+
+    # Skill 动态授权联动：功能开关运行中关闭时清空全部 Grant；普通热更新不清。
+    # 所有 base 写路径（permissions_config_rpc / 权限 Rail 永久记住）都汇聚于此，
+    # 只有这里能同时拿到变更前后的配置快照。
+    try:
+        from openjiuwen.harness.security.skill_authorization import (
+            sync_grants_on_permissions_reload,
+        )
+
+        sync_grants_on_permissions_reload(old_permissions, permissions)
+    except Exception:  # noqa: BLE001 — Grant 同步失败不掩盖配置变更结果
+        logger.warning(
+            "[permissions_config] skill_authorization grant sync failed",
+            exc_info=True,
+        )
 
     return permissions
 
@@ -405,29 +444,6 @@ def _persist_permissions_to_yaml(permissions: dict[str, Any]) -> None:
     clear_permissions_config_cache()
 
 
-async def _load_permissions_body_from_db() -> dict[str, Any] | None:
-    from jiuwenswarm.server.runtime.enterprise_config import gateway_db
-
-    rows = await gateway_db.list_records(PERMISSIONS_CONFIG_TABLE)
-    row = rows[0] if rows else None
-    if row is None:
-        return None
-    body = row.get("body")
-    if isinstance(body, dict) and body:
-        return copy.deepcopy(body)
-    return None
-
-
-async def _upsert_permissions_config_to_db(
-    body: dict[str, Any],
-    *,
-    source: str = "runtime_persist",
-) -> None:
-    from jiuwenswarm.server.runtime.enterprise_config import gateway_db
-
-    await gateway_db.upsert_permissions_config(body, source=source)
-
-
 def _event_loop_is_running() -> bool:
     try:
         asyncio.get_running_loop()
@@ -437,9 +453,9 @@ def _event_loop_is_running() -> bool:
 
 
 def _run_async(awaitable: Any) -> Any:
-    """仅在无运行中 event loop 的同步上下文中执行 DB 协程。"""
+    """仅在无运行中 event loop 的同步上下文中执行协程。"""
     if _event_loop_is_running():
         raise RuntimeError(
-            "permissions config async DB operation invoked while event loop is running",
+            "permissions config async operation invoked while event loop is running",
         )
     return asyncio.run(awaitable)

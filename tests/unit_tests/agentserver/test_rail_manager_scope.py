@@ -28,12 +28,15 @@ def test_get_rail_manager_requires_scope():
 def test_rail_manager_pool_isolates_tenants(monkeypatch, tmp_path):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
 
-    def _workspace(service_id: str, agent_id: str | None = None) -> Path:
+    key_a = tenant_workspace_key("svc-a", "agent-1")
+    key_b = tenant_workspace_key("svc-b", "agent-2")
+
+    def _workspace(workspace_key: str) -> Path:
         mapping = {
-            ("svc-a", "agent-1"): tmp_path / "tenant-a",
-            ("svc-b", "agent-2"): tmp_path / "tenant-b",
+            key_a: tmp_path / "tenant-a",
+            key_b: tmp_path / "tenant-b",
         }
-        return mapping.get((service_id, agent_id), tmp_path / f"{service_id}_{agent_id}")
+        return mapping.get(workspace_key, tmp_path / str(workspace_key))
 
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.plugins.rail_manager.get_multi_tenant_user_workspace_dir",
@@ -41,22 +44,22 @@ def test_rail_manager_pool_isolates_tenants(monkeypatch, tmp_path):
     )
 
     scope_a = RuntimeScopeKey.from_ids(
-        "svc-a", "agent-1", workspace_key=tenant_workspace_key("svc-a", "agent-1")
+        "svc-a", "agent-1", workspace_key=key_a
     )
     scope_b = RuntimeScopeKey.from_ids(
-        "svc-b", "agent-2", workspace_key=tenant_workspace_key("svc-b", "agent-2")
+        "svc-b", "agent-2", workspace_key=key_b
     )
 
     mgr_a = get_rail_manager(scope_a)
     mgr_b = get_rail_manager(scope_b)
 
     assert mgr_a is not mgr_b
-    assert mgr_a.extensions_dir == tmp_path / "tenant-a" / "agent" / "workspace" / "extensions"
-    assert mgr_b.extensions_dir == tmp_path / "tenant-b" / "agent" / "workspace" / "extensions"
+    assert mgr_a.extensions_dir == tmp_path / "tenant-a" / "agent" / "jiuwenclaw_workspace" / "extensions"
+    assert mgr_b.extensions_dir == tmp_path / "tenant-b" / "agent" / "jiuwenclaw_workspace" / "extensions"
 
     assert get_rail_manager(scope_a) is mgr_a
     assert get_rail_manager(
-        ("svc-b", "agent-2", tenant_workspace_key("svc-b", "agent-2"))
+        ("svc-b", "agent-2", key_b)
     ) is mgr_b
 
 

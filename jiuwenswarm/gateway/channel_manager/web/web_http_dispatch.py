@@ -13,6 +13,7 @@ from typing import Any
 from jiuwenswarm.common.request_ext import attach_to_metadata as _ext_attach
 from jiuwenswarm.common.request_ext import build_ext_from_source as _ext_build
 from jiuwenswarm.common.schema.message import Message
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
 from jiuwenswarm.gateway.channel_manager.web.outbound import (
     HttpJsonOutbound,
@@ -53,8 +54,6 @@ def _trust_client_tenant_headers(client_host: str | None) -> bool:
     # 企业用户面通过 NodePort/Web Pod 访问时，客户端地址不是回环地址。
     # 企业版的身份边界由上游认证和 ``is_enterprise()`` 控制，必须把选中的
     # user/group/bot 透传给 Runtime 路由；个人版继续只信任本机请求。
-    from jiuwenswarm.common.utils import is_enterprise
-
     if is_enterprise():
         return True
     host = str(client_host or "").strip().lower()
@@ -120,7 +119,35 @@ async def dispatch_http_request(
     )
 
     setattr(outbound, _WEB_CONNECTION_USER_ID_ATTR, user_id)
+    # 连接级身份 scope（与 WS 的 ws._web_routing 对齐）：本地 handler（session.list
+    # 等）经 _ws_identity_scope 读取，用于 PG 会话行的身份过滤。
+    _http_routing: dict[str, str] = {}
+    if user_id:
+        _http_routing["user_id"] = user_id
+    if trust_tenant_headers:
+        _gid = _get_header(hdrs, "X-Group-Id")
+        _bid = _get_header(hdrs, "X-Bot-Id")
+        if _gid:
+            _http_routing["group_id"] = _gid
+        if _bid:
+            _http_routing["bot_id"] = _bid
+    if _http_routing:
+        setattr(outbound, "_web_routing", _http_routing)
     channel.register_request_outbound(outbound)
+
+    # remote 模式 session.create 走转发主路径：与 WS 上行对齐，登记请求，
+    # 成功响应经 _enqueue_send 拦截后落 web 库会话行（见
+    # WebWsTransport._capture_session_create_row；失败不阻塞，首条消息兜底）。
+    if method == "session.create":
+        transport = getattr(channel, "ws", channel)
+        pending_creates = getattr(transport, "_pending_session_creates", None)
+        if isinstance(pending_creates, dict):
+            if len(pending_creates) >= 512:
+                pending_creates.clear()
+            pending_creates[req_id] = (
+                outbound,
+                str(params.get("title") or "").strip(),
+            )
 
     # Enterprise ChatHistoryStore: HTTP path has no browser WS frame; synthesize the
     # same inbound shape WebChannel._handle_raw_message records as "browser".
@@ -128,11 +155,22 @@ async def dispatch_http_request(
         try:
             import json as _json
 
+            # 注入连接级身份到 params，保证 history 回调按正确用户/身份 scope 落库
+            # （前端请求体不含 user_id/group_id/bot_id，它们来自 X-* Header / 握手 query）。
+            # 无条件覆盖：客户端伪造的 user/user_id/group_id/bot_id 不能覆盖连接级身份（防冒充）。
+            frame_params = dict(params) if isinstance(params, dict) else {}
+            if user_id:
+                frame_params["user_id"] = user_id
+                frame_params["user"] = user_id
+            for _fid in ("group_id", "bot_id"):
+                _fval = _http_routing.get(_fid)
+                if _fval:
+                    frame_params[_fid] = _fval
             browser_frame = {
                 "type": "req",
                 "id": req_id,
                 "method": method,
-                "params": params,
+                "params": frame_params,
             }
             channel.rpc.record_history_frame(
                 "browser", _json.dumps(browser_frame, ensure_ascii=False),

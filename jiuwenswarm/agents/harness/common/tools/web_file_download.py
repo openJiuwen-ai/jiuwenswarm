@@ -7,7 +7,7 @@
 
 协议：
 - 令牌格式: Base64URL(payload_json) + "." + Hex(HMAC-SHA256)
-- payload 包含: path, exp, session_id
+- payload 包含: path, exp, session_id；可选 name（下载展示名，可与磁盘 basename 不同）
 - 密钥来源: 环境变量 JIUWENSWARM_FILE_DOWNLOAD_SECRET 或自动生成并写入共享文件
 """
 
@@ -90,12 +90,18 @@ class WebFileDownloadManager:
         file_path: str,
         session_id: str = "",
         expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+        *,
+        file_name: str = "",
     ) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "path": file_path,
             "exp": int(time.time()) + expires_in,
             "sid": session_id,
         }
+        # 磁盘可能落成 ``{ts}_{name}``；展示/下载名单独进 token，供 Content-Disposition 使用。
+        clean_name = str(file_name or "").strip()
+        if clean_name:
+            payload["name"] = clean_name
         payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         payload_b64 = base64.urlsafe_b64encode(
             payload_json.encode("utf-8")
@@ -145,9 +151,11 @@ def generate_file_download_token(
     file_path: str,
     session_id: str = "",
     expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+    *,
+    file_name: str = "",
 ) -> str:
     return WebFileDownloadManager.get_instance().generate_token(
-        file_path, session_id, expires_in
+        file_path, session_id, expires_in, file_name=file_name
     )
 
 
@@ -161,7 +169,9 @@ def build_file_download_info(
     session_id: str = "",
     expires_in: int = _DEFAULT_EXPIRES_SECONDS,
 ) -> dict[str, Any]:
-    token = generate_file_download_token(file_path, session_id, expires_in)
+    token = generate_file_download_token(
+        file_path, session_id, expires_in, file_name=file_name
+    )
     download_url = WebFileDownloadManager.get_instance().generate_download_url(token)
 
     file_size = 0

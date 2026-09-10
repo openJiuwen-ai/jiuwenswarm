@@ -35,7 +35,7 @@ spec:
             - name: FRONTEND_HOST
               value: "0.0.0.0"
             - name: JIUWENSWARM_EDITION
-              value: "<<JIUWENSWARM_EDITION>>"
+              value: "enterprise"
             - name: LOGIN_AUTH_SIMULATE
               value: "<<APPLY_PATCH>>"
             - name: FRONTEND_PORT
@@ -66,6 +66,18 @@ spec:
               value: "<<WEB_DB_NAME>>"
             - name: TZ
               value: "<<TIMEZONE>>"
+            - name: OBS_URL
+              value: "<<OBS_URL>>"
+            - name: OBS_ACCESS_KEY
+              value: "<<OBS_ACCESS_KEY>>"
+            - name: OBS_BUCKET
+              value: "<<OBS_BUCKET>>"
+            - name: OBS_SECURE
+              value: "<<OBS_SECURE>>"
+            - name: OBS_PUBLIC_BASE_URL
+              value: "<<OBS_PUBLIC_BASE_URL>>"
+            - name: OBS_REGION
+              value: "<<OBS_REGION>>"
 
 ---
 # 集群内部访问： 提供稳定 DNS 域名

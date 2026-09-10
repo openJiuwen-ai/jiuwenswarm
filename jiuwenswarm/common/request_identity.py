@@ -22,8 +22,9 @@
    摊到 metadata 顶层；不要把 ``user_id`` 放进 ``routing``。
 
 4. **Gateway → Agent**
-   - REST（body 仅 params）：经 ``X-*`` 头透传，Agent 重建顶层 ``user_id`` + ``routing``
-   - 整封 E2A：带 ``user_id`` 与 ``channel_context.routing``
+   - REST（body 仅 params）：经 ``X-*`` 头透传，Agent 重建顶层 ``user_id`` + ``routing``；
+     企业租户另透传 ``X-Service-Id`` / ``X-Agent-Id`` / ``X-Workspace-Key``
+   - 整封 E2A：带 ``user_id`` 与 ``channel_context.routing``，以及顶层租户三字段
 
 5. **必填策略**
    - 个人版 Web：建议有顶层 ``user_id``；其余可缺
@@ -114,7 +115,7 @@ def apply_routing_metadata(
 
 
 def web_routing_identity(metadata: Mapping[str, Any] | None) -> dict[str, str]:
-    """读完整身份：顶层 ``user_id`` + ``metadata.routing`` 三字段（不读 ``routing.user_id``）。"""
+    """读完整身份：顶层 ``user_id`` + ``metadata.routing`` 三字段。"""
     if not isinstance(metadata, Mapping):
         return {}
     identity: dict[str, str] = {}

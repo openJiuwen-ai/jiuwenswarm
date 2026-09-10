@@ -65,6 +65,12 @@ class _FakeCron:
             raise KeyError(job_id)
         return {"run_id": f"run-{job_id}", "session_id": f"sess-{job_id}"}
 
+    async def run_now_with_session(self, job_id, **kwargs):
+        if job_id not in self.jobs:
+            raise KeyError(job_id)
+        self.run_calls.append(job_id)
+        return {"run_id": f"run-{job_id}", "session_id": f"sess-{job_id}"}
+
     async def run_now(self, job_id, **kwargs):
         if job_id not in self.jobs:
             raise KeyError(job_id)
@@ -268,3 +274,75 @@ def test_cron_job_full_path():
     r = client.post("/api/v1/cron/jobs/missing/actions/toggle", json={})
     assert r.status_code == 400
     assert r.json()["error"]["message"] == "enabled is required"
+
+
+class _FakeCronRegistry:
+    def __init__(self, cron: _FakeCron) -> None:
+        self.cron = cron
+        self.toggle_kwargs: list[dict] = []
+
+    async def get_controller(self, service_id: str, agent_id: str):
+        return self.cron
+
+    async def web_toggle_job(
+        self,
+        job_id: str,
+        enabled: bool,
+        service_id: str,
+        agent_id: str,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict:
+        self.toggle_kwargs.append(
+            {
+                "job_id": job_id,
+                "enabled": enabled,
+                "service_id": service_id,
+                "agent_id": agent_id,
+                "group_id": group_id,
+                "bot_id": bot_id,
+                "user_id": user_id,
+            }
+        )
+        return await self.cron.toggle_job(
+            job_id,
+            enabled,
+            group_id=group_id,
+            bot_id=bot_id,
+            user_id=user_id,
+        )
+
+
+def test_cron_job_toggle_passes_routing_triple_to_registry():
+    cron = _FakeCron()
+    registry = _FakeCronRegistry(cron)
+    channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, cron_controller=cron, cron_registry=registry),
+    )
+    client = TestClient(create_web_http_app(channel))
+
+    r = client.post(
+        "/api/v1/cron/jobs/job-1/actions/toggle",
+        json={"enabled": True},
+        headers={
+            "X-Group-Id": "g1",
+            "X-Bot-Id": "b1",
+            "X-User-Id": "u1",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["data"]["job"]["enabled"] is True
+    assert registry.toggle_kwargs == [
+        {
+            "job_id": "job-1",
+            "enabled": True,
+            "service_id": "default",
+            "agent_id": "default",
+            "group_id": "g1",
+            "bot_id": "b1",
+            "user_id": "u1",
+        }
+    ]

@@ -21,6 +21,21 @@ def normalize_channel_tenant_ids(
     return normalize_tenant_scope_id(service_id), normalize_tenant_scope_id(agent_id)
 
 
+def workspace_key_from_channel_ids(
+    service_id: str | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """Map Gateway routing ``(service_id, agent_id)`` to a disk ``workspace_key``.
+
+    Preserves prior 2D isolation under the single ``workspace_{key}/`` layout:
+    ``default``+``default`` → ``default``; otherwise ``{sid}_{aid}``.
+    """
+    sid, aid = normalize_channel_tenant_ids(service_id, agent_id)
+    if sid == "default" and aid == "default":
+        return "default"
+    return f"{sid}_{aid}"
+
+
 def tenant_ids_from_im_identity(
     chat_id: str,
     bot_id: str,
@@ -60,33 +75,21 @@ def tenant_ids_from_message(msg: Any) -> tuple[str, str]:
     return "default", "default"
 
 
-def resolve_channel_agent_workspace(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-    *,
-    workspace_key: str | None = None,
-) -> Path:
-    """``service_{sid}/agent_{aid}/agent/workspace`` (jiuwenswarm layout)."""
-    del workspace_key  # legacy kw; disk isolation is service_id + agent_id
-    sid, aid = normalize_channel_tenant_ids(service_id, agent_id)
-    base = get_multi_tenant_user_workspace_dir(sid, aid)
-    if base is None:
-        raise TypeError(
-            f"invalid tenant for channel workspace: service_id={sid!r}, agent_id={aid!r}"
-        )
-    return base / "agent" / "workspace"
+def resolve_channel_agent_workspace(workspace_key: str | None = None) -> Path:
+    """``<tenant_root>/agent/jiuwenclaw_workspace``（经 ``get_multi_tenant_user_workspace_dir``）。"""
+    wk = normalize_tenant_scope_id(workspace_key)
+    base = get_multi_tenant_user_workspace_dir(wk)
+    return base / "agent" / "jiuwenclaw_workspace"
 
 
-def resolve_channel_group_chat_memory_dir(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> Path:
+def resolve_channel_group_chat_memory_dir(workspace_key: str | None = None) -> Path:
     """Per-tenant group chat memory root under agent workspace."""
-    return resolve_channel_agent_workspace(service_id, agent_id) / "memory" / "group_chat"
+    return resolve_channel_agent_workspace(workspace_key) / "memory" / "group_chat"
 
 
 __all__ = [
     "normalize_channel_tenant_ids",
+    "workspace_key_from_channel_ids",
     "tenant_ids_from_im_identity",
     "tenant_ids_from_message",
     "resolve_channel_agent_workspace",

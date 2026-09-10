@@ -15,6 +15,7 @@ from .errors import safe_error_summary
 from .locks import KeyedLockPool
 from .models import (
     A2AOutboundAgent,
+    A2AOutboundAvailability,
     A2AOutboundDispatch,
     A2AOutboundDispatchStatus,
     TERMINAL_DISPATCH_STATUSES,
@@ -194,6 +195,16 @@ class A2AOutboundRepository:
                 key,
             )
 
+    async def update_runtime_state(
+        self,
+        agent_id: str,
+        availability: A2AOutboundAvailability | str,
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        """Persist runtime health when the repository provides a separate store."""
+        del agent_id, availability, error_code
+
     async def get_dispatch(self, dispatch_id: str) -> A2AOutboundDispatch | None:
         row = await self._store.get(
             A2A_OUTBOUND_DISPATCH_STORE_NAME,
@@ -215,6 +226,14 @@ class A2AOutboundRepository:
             offset=max(0, int(offset)),
         )
         return [self._codec.dispatch_from_record(row) for row in rows]
+
+    async def count_dispatches(self) -> int:
+        """Return the total matching record count, skipping row decoding."""
+        rows = await self._store.list(
+            A2A_OUTBOUND_DISPATCH_STORE_NAME,
+            filters=self._codec.list_filters(),
+        )
+        return len(rows)
 
     async def create_dispatch(
         self,
@@ -264,6 +283,11 @@ class A2AOutboundRepository:
             current = self._codec.dispatch_from_record(row)
             if current.status in TERMINAL_DISPATCH_STATUSES:
                 return current
+
+            # Lifecycle timestamps record the first observation and must not
+            # drift on later working/poll events.
+            if current.accepted_at is not None:
+                changes["accepted_at"] = current.accepted_at
 
             stamp = updated_at or utc_now_text()
             if normalized_status in TERMINAL_DISPATCH_STATUSES:

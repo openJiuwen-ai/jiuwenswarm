@@ -496,7 +496,7 @@ DescOptimizeIteration    # 描述优化的单轮迭代结果
 
 **存储路径**：
 ```
-~/.jiuwenswarm/agent/workspace/skilldev/{task_id}/state.json
+~/.jiuwenswarm/agent/jiuwenclaw_workspace/skilldev/{task_id}/state.json
 ```
 
 **核心接口**：
@@ -515,7 +515,7 @@ store.list_tasks()                          # 列出所有有效 task_id
 
 **目录结构**：
 ```
-~/.jiuwenswarm/agent/workspace/skilldev/{task_id}/
+~/.jiuwenswarm/agent/jiuwenclaw_workspace/skilldev/{task_id}/
 ├── state.json          ← StateStore 的 checkpoint 文件
 ├── resources/          ← 上传的资源文件（解压后的原始内容）
 ├── skill/              ← 生成的 Skill 目录（Agent 的写入区）
@@ -684,7 +684,7 @@ class MyStageHandler(StageHandler):
 
 ### 决策五：工作区路径统一
 **Why**：SkillDev 的任务目录必须在 JiuWenSwarm 的统一工作区下，避免数据散落在系统各处。
-**约定**：`~/.jiuwenswarm/agent/workspace/skilldev/{task_id}/`，由 `get_workspace_dir() / "skilldev"` 构造。
+**约定**：`~/.jiuwenswarm/agent/jiuwenclaw_workspace/skilldev/{task_id}/`，由 `get_workspace_dir() / "skilldev"` 构造。
 
 ---
 

@@ -146,6 +146,16 @@ test('sse frames keep A1 event names', () => {
   const event = sseFrameToWsEvent(frames[0]);
   assert.equal(event?.event, 'chat.delta');
   assert.equal(event?.payload.content, 'a');
+  assert.equal(event?.request_id, 'req_1');
+});
+
+test('SSE frame id restores request_id when data omits it', () => {
+  const { frames } = consumeSseBuffer(
+    'id: chat-42\nevent: chat.tool_result\ndata: {\"tool_result\":{\"tool_call_id\":\"tool-1\"}}\n\n'
+  );
+  const event = sseFrameToWsEvent(frames[0]);
+  assert.equal(event?.request_id, 'chat-42');
+  assert.equal(event?.payload.tool_result.tool_call_id, 'tool-1');
 });
 
 test('history JSON page becomes history.message events plus done', () => {
@@ -162,21 +172,28 @@ const ENTERPRISE_ASSEMBLE = [
   ['connection.status', 'GET', '/api/v1/connection/status', {}, 'unary'],
   ['session.list', 'GET', '/api/v1/sessions', { limit: 20, offset: 0 }, 'unary'],
   ['session.create', 'POST', '/api/v1/sessions', { mode: 'agent' }, 'unary'],
+  ['session.delete', 'DELETE', '/api/v1/sessions/sid', { session_id: 'sid' }, 'unary'],
+  ['session.rename', 'PATCH', '/api/v1/sessions/sid', { session_id: 'sid', name: 'renamed' }, 'unary'],
   ['history.get', 'GET', '/api/v1/sessions/sid/history', { session_id: 'sid', page_idx: 1 }, 'history-stream'],
   ['chat.send', 'POST', '/api/v1/chat/completions', { session_id: 'sid', query: 'hi' }, 'sse'],
   ['chat.interrupt', 'POST', '/api/v1/chat/sid/actions/interrupt', { session_id: 'sid', intent: 'pause' }, 'unary'],
   ['chat.user_answer', 'POST', '/api/v1/chat/sid/actions/answer', { session_id: 'sid', request_id: 'q', answers: {} }, 'unary'],
   ['config.get', 'GET', '/api/v1/config', {}, 'unary'],
   ['models.list', 'GET', '/api/v1/models', {}, 'unary'],
+  ['a2a.outbound.list', 'GET', '/api/v1/a2a/outbound/agents', {}, 'unary'],
+  ['a2a.outbound.enabled.update', 'PATCH', '/api/v1/a2a/outbound/agents/agent-1/enabled', { agent_id: 'agent-1', user_enabled: false }, 'unary'],
+  ['a2a.outbound.dispatch.list', 'GET', '/api/v1/a2a/outbound/dispatches', { limit: 200 }, 'unary'],
   ['locale.get_conf', 'GET', '/api/v1/locale', {}, 'unary'],
   ['locale.set_conf', 'PUT', '/api/v1/locale', { preferred_language: 'zh' }, 'unary'],
   ['cron.job.list', 'GET', '/api/v1/cron/jobs', {}, 'unary'],
+  ['cron.job.create', 'POST', '/api/v1/cron/jobs', { name: 'new-job' }, 'unary'],
   ['cron.job.get', 'GET', '/api/v1/cron/jobs/job-1', { id: 'job-1' }, 'unary'],
   ['cron.job.update', 'PATCH', '/api/v1/cron/jobs/job-1', { id: 'job-1', patch: { name: 'n' } }, 'unary'],
   ['cron.job.delete', 'DELETE', '/api/v1/cron/jobs/job-1', { id: 'job-1' }, 'unary'],
   ['cron.job.toggle', 'POST', '/api/v1/cron/jobs/job-1/actions/toggle', { id: 'job-1', enabled: true }, 'unary'],
   ['cron.job.preview', 'POST', '/api/v1/cron/jobs/job-1/actions/preview', { id: 'job-1', count: 3 }, 'unary'],
   ['cron.job.run_now', 'POST', '/api/v1/cron/jobs/job-1/actions/run-now', { id: 'job-1' }, 'unary'],
+  ['skills.list', 'GET', '/api/v1/skills', {}, 'unary'],
   ['skills.enterprise.list', 'GET', '/api/v1/skills/enterprise', {}, 'unary'],
   ['skills.enterprise.install', 'POST', '/api/v1/skills/enterprise/actions/install', { url: 'http://x' }, 'unary'],
   ['skills.enterprise.uninstall', 'POST', '/api/v1/skills/enterprise/actions/uninstall', { name: 's' }, 'unary'],
@@ -197,7 +214,7 @@ const ENTERPRISE_ASSEMBLE = [
 ];
 
 test('every enterprise mapped method assembles verb+url+kind', () => {
-  assert.equal(ENTERPRISE_ASSEMBLE.length, 35);
+  assert.equal(ENTERPRISE_ASSEMBLE.length, 42);
   const seen = new Set();
   for (const [method, verb, url, params, kind] of ENTERPRISE_ASSEMBLE) {
     seen.add(method);
@@ -305,14 +322,10 @@ test('unmapped A2 and personal methods stay null', () => {
     'files.get',
     'tts.synthesize',
     'command.goal',
-    'session.delete',
-    'session.rename',
-    'cron.job.create',
     'config.set',
     'chat.resume',
     'permissions.tools.get',
     'harness.packages',
-    'skills.list',
   ];
   for (const method of unmapped) {
     assert.equal(assembleWebRest(method, { session_id: 's', id: '1', name: 'n' }, BASE), null, method);

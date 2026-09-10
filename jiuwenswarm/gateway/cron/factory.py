@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any
 
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.utils import get_cron_jobs_path
 from jiuwenswarm.extensions.redis import (
     get_declared_deployment_mode,

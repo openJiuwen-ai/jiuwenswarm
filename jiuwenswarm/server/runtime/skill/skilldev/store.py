@@ -30,7 +30,7 @@ class StateStore:
         """
         Args:
             base_dir: SkillDev 工作区根目录，约定为 get_workspace_dir() / "skilldev"
-                      即 ~/.jiuwenswarm/agent/workspace/skilldev/
+                      即 ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skilldev/
         """
         self._base_dir = base_dir
 

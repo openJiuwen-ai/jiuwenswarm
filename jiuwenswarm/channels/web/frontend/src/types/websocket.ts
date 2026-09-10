@@ -32,6 +32,8 @@ export interface WsEvent {
   payload: Record<string, unknown>;
   seq?: number;
   stream_id?: string;
+  /** 后端在 chat.* 事件 payload 内注入的请求关联 id（chat.delta/final 不携带）。 */
+  request_id?: string;
 }
 
 export type WebMessage = WsRequest | WsResponse | WsEvent;
@@ -41,6 +43,8 @@ export interface WebRequestOptions {
   signal?: AbortSignal;
   /** 对应协议里请求消息的顶层 is_stream 字段（如 command.goal 的 set/resume） */
   isStream?: boolean;
+  /** 调用方指定请求 id，用于 chat.send/chat.interrupt 的流式事件关联与取消过滤。 */
+  requestId?: string;
 }
 
 export interface WebConnectOptions {
@@ -149,6 +153,9 @@ export interface AskUserQuestionPayload {
   request_id: string;
   questions: Question[];
   source?: string; // 来源标识，用于区分自进化确认和工具权限确认
+  agent_scope_id?: string; // 子 Agent 委托审批的严格关联标识
+  /** Skill 加载审批卡（可选；缺失时回退渲染 message markdown） */
+  skill_approval_card?: SkillApprovalCardPayload;
   approvalSchema?: string;
   evolutionMeta?: Record<string, unknown>;
   planApprovalKind?: string;
@@ -167,6 +174,8 @@ export interface UserAnswer {
   question?: string;
   selected_options: string[];
   custom_input?: string;
+  /** Skill 审批卡显式动作（approve_once/approve_session/continue_without_overlay），普通卡片无此字段 */
+  action?: string;
 }
 
 /** AskUser 交互的显式完成状态。缺失时后端按 answered 处理。 */
@@ -179,8 +188,44 @@ export interface UserAnswerPayload {
   request_id: string;
   status?: UserAnswerStatus;
   answers: UserAnswer[];
+  agent_scope_id?: string;
   evolution_meta?: Record<string, unknown>;
   plan_approval_kind?: string;
   plan_content?: string;
   plan_language?: 'cn' | 'en';
+}
+
+/**
+ * Skill 加载审批动作（与后端 SkillApprovalAction 契约一致）
+ */
+export type SkillApprovalAction =
+  | 'approve_once'
+  | 'approve_session'
+  | 'continue_without_overlay';
+
+/**
+ * Skill 权限差分（放宽项在前、收紧其次、被安全策略丢弃的单列）
+ */
+export interface SkillApprovalDiff {
+  widened: string[];
+  tightened: string[];
+  rejected: string[];
+}
+
+/**
+ * Skill 加载审批卡结构化 Payload（对应后端 SkillApprovalCard.to_dict()，
+ * 经 interrupt payload_schema["x-skill-approval-card"] 下发）
+ */
+export interface SkillApprovalCardPayload {
+  kind: 'skill_approval';
+  schema_version: 1;
+  skill_name: string;
+  source: string;
+  version?: string | null;
+  trust: 'builtin' | 'other';
+  permissions_hash: string;
+  agent_scope_id: string;
+  cached_decision?: 'local' | 'session' | null;
+  diff: SkillApprovalDiff;
+  actions: SkillApprovalAction[];
 }

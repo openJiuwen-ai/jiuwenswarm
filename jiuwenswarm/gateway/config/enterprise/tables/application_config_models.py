@@ -29,6 +29,12 @@ LOG_MASKING_RULE_TABLE_DEF = TableDefinition(
             default="******",
         ),
         ColumnDefinition("priority", "integer", nullable=False),
+        ColumnDefinition(
+            "with_fingerprint",
+            "boolean",
+            nullable=False,
+            default=False,
+        ),
         ColumnDefinition("source", "string", length=16, nullable=False),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("data", "json", nullable=True),
@@ -79,25 +85,6 @@ TASK_MEMORY_CONFIG_TABLE_DEF = TableDefinition(
         ColumnDefinition("api_base", "string", length=1024, nullable=True),
         ColumnDefinition("retrieval_algo", "string", length=64, nullable=True),
         ColumnDefinition("summary_algo", "string", length=64, nullable=True),
-        ColumnDefinition("created_at", "datetime", nullable=False),
-        ColumnDefinition("updated_at", "datetime", nullable=False),
-    ],
-    indexes=[],
-)
-
-PERMISSIONS_CONFIG_TABLE_DEF = TableDefinition(
-    table_name="permissions_config",
-    columns=[
-        ColumnDefinition(
-            "id",
-            "integer",
-            primary_key=True,
-            autoincrement=True,
-            nullable=False,
-        ),
-        ColumnDefinition("body", "json", nullable=True),
-        ColumnDefinition("source", "string", length=16, nullable=False, default="manager"),
-        ColumnDefinition("revision", "integer", nullable=False, default=1),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],

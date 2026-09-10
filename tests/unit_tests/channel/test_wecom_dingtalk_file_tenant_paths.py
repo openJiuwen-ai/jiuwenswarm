@@ -28,9 +28,9 @@ def test_wecom_file_service_tenant_scope_isolates(tmp_path, monkeypatch):
     with svc.tenant_scope("default", "default"):
         default_dir = Path(svc._get_download_dir("images"))
 
-    assert "agent_office" in str(office_dir)
-    assert "service_default" in str(office_dir)
-    assert "agent_default" in str(default_dir)
+    assert "workspace_default_office" in office_dir.parts
+    assert "workspace_default" in default_dir.parts
+    assert "workspace_default_office" not in default_dir.parts
     assert office_dir != default_dir
     assert office_dir.exists()
     assert default_dir.exists()
@@ -63,5 +63,5 @@ def test_dingtalk_file_service_tenant_scope_isolates(tmp_path, monkeypatch):
     with svc.tenant_scope("default", "default"):
         default_dir = Path(svc._get_download_dir("image"))
 
-    assert "agent_office" in str(office_dir)
+    assert "workspace_default_office" in office_dir.parts
     assert office_dir != default_dir

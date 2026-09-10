@@ -6,14 +6,50 @@ import inspect
 import sys
 import tempfile
 import warnings
-from importlib import import_module
+from importlib import import_module, invalidate_caches
 from pathlib import Path
 from types import ModuleType
 from typing import Generator
 
 import pytest
 
-from jiuwenswarm.common.openjiuwen_rail_compat import install_evolution_rail_kwargs_compat
+
+def _prefer_current_checkout() -> None:
+    """Keep an editable install from another worktree out of this test run."""
+    repo_root = Path(__file__).resolve().parent.parent
+    package_root = (repo_root / "jiuwenswarm").resolve()
+    repo_root_s = str(repo_root)
+    if not sys.path or sys.path[0] != repo_root_s:
+        sys.path.insert(0, repo_root_s)
+
+    stale_checkout_loaded = False
+    for name, module in list(sys.modules.items()):
+        if name != "jiuwenswarm" and not name.startswith("jiuwenswarm."):
+            continue
+        loaded_file = getattr(module, "__file__", None)
+        if loaded_file is not None and not Path(loaded_file).resolve().is_relative_to(
+            package_root
+        ):
+            stale_checkout_loaded = True
+            break
+    if not stale_checkout_loaded:
+        return
+
+    stale_modules = [
+        name
+        for name in sys.modules
+        if name == "jiuwenswarm" or name.startswith("jiuwenswarm.")
+    ]
+    for name in sorted(stale_modules, key=lambda item: item.count("."), reverse=True):
+        sys.modules.pop(name, None)
+    invalidate_caches()
+
+
+_prefer_current_checkout()
+
+install_evolution_rail_kwargs_compat = import_module(
+    "jiuwenswarm.common.openjiuwen_rail_compat"
+).install_evolution_rail_kwargs_compat
 
 
 def _install_missing_trajectory_processor_stub() -> None:
@@ -132,6 +168,11 @@ def _install_missing_openjiuwen_runtime_db_utils_stub() -> None:
         pass
 
     utils = _ensure_module("openjiuwen_runtime.foundation.db.utils")
+    # 标记父包，避免后续 ``from ...db.handler import ...`` 报
+    # ``'openjiuwen_runtime.foundation.db' is not a package``。
+    db_pkg = sys.modules.get("openjiuwen_runtime.foundation.db")
+    if db_pkg is not None and not hasattr(db_pkg, "__path__"):
+        db_pkg.__path__ = []  # type: ignore[attr-defined]
     if getattr(utils, "_jiuwenswarm_db_utils_stubbed", False):
         return
 

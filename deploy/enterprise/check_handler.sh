@@ -248,6 +248,7 @@ check_if_obs_up() {
     fi
 
     info "Use built-in Minio server"
+    DEPLOY_VARS["OBS_URL"]="${name}-headless.default:9000"
 }
 
 ensure_redis_up() {
@@ -326,6 +327,12 @@ check_if_rabbitmq_up() {
     info "Use built-in RABBITMQ server"
     url="${name}-headless.default:5672"
     DEPLOY_VARS["MANAGER_RABBITMQ_URL"]="amqp://${user}:${encoded_password}@${url}"
+}
+
+check_if_gateway_up() {
+    if ! check_k8s_resource_exists "deployment" "${DEPLOY_VARS["GATEWAY_NAME"]}" "${DEPLOY_VARS["NAMESPACE"]}"; then
+        error "GATEWAY is not deployed. Please deploy it first with: ./$(basename "$0") up gateway"
+    fi
 }
 
 check_nfs_up_dependency(){
@@ -442,7 +449,28 @@ check_jina_up_dependency() {
     info "JINA module has no dependencies"
 }
 
+check_proxy_up_dependency() {
+    info "PROXY module has no dependencies"
+}
+
 check_gateway_up_dependency(){
+    check_if_db_up
+    check_if_jina_up
+    ensure_redis_up
+    check_if_obs_up
+}
+
+check_web_up_dependency(){
+    check_if_db_up
+    check_if_obs_up
+    check_if_gateway_up
+}
+
+check_manager_up_dependency(){
+    check_if_db_up
+}
+
+check_runtime_up_dependency(){
     local jiuwenclaw_path="${DEPLOY_VARS["NFS_POD_PATH"]}/jiuwenclaw"
     local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
 
@@ -461,25 +489,20 @@ check_gateway_up_dependency(){
     fi
 
     check_if_db_up
-    check_if_jina_up
     ensure_redis_up
-}
 
-check_web_up_dependency(){
-    check_if_db_up
-    check_if_obs_up
-
-    if ! check_k8s_resource_exists "deployment" "${DEPLOY_VARS["GATEWAY_NAME"]}" "${DEPLOY_VARS["NAMESPACE"]}"; then
-        error "GATEWAY is not deployed. Please deploy it first with: ./$(basename "$0") up gateway"
+    if [[ "${DEPLOY_VARS["RENDER_ONLY"]}" != "true" && "${DEPLOY_VARS["APPLY_PATCH"]}" == "true" ]]; then
+        check_if_gateway_up
+        if [ -n "${DEPLOY_VARS["GATEWAY_CONFIG_HTTP_NODE_PORT"]:-}" ]; then
+            info "chenhui: No need to fetch GATEWAY_CONFIG_HTTP_NODE_PORT"
+            return
+        fi
+        local namespace="${DEPLOY_VARS["NAMESPACE"]}"
+        local gw_svc="${DEPLOY_VARS["GATEWAY_NAME"]}-nodeport"
+        local gw_port=$(kubectl get service "${gw_svc}" -n "${namespace}" -o jsonpath='{.spec.ports[?(@.name=="config-http")].nodePort}')
+        if [ -z "${gw_port}" ]; then
+            error "Failed to read nodePort (config-http) from service ${gw_svc} in namespace ${namespace}"
+        fi
+        DEPLOY_VARS["GATEWAY_CONFIG_HTTP_NODE_PORT"]="${gw_port}"
     fi
-}
-
-check_manager_up_dependency(){
-    #check_if_rabbitmq_up
-    check_if_db_up
-}
-
-check_runtime_up_dependency(){
-    check_if_db_up
-    ensure_redis_up
 }

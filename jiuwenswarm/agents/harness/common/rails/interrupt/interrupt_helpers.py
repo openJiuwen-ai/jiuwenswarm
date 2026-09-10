@@ -6,7 +6,7 @@ Provides utilities for converting interrupt payloads to frontend format
 and building permission rails.
 """
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import copy
 import json
@@ -63,6 +63,38 @@ def has_interrupt_resume_payload(params: Any) -> bool:
     return isinstance(answers, list) and bool(answers)
 
 
+def _has_active_skill_overlay() -> bool:
+    """当前 Skill 授权上下文是否存在 ACTIVE Grant（owner_scopes allow 回落判定）。
+
+    判定失败按存在处理（返回 True，强制回落 engine），不放宽权限。
+    """
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            get_effective_permissions_config,
+        )
+        from openjiuwen.harness.security.skill_authorization import (
+            get_skill_authorization_context,
+            get_skill_grant_store,
+            is_skill_authorization_enabled,
+        )
+
+        if not is_skill_authorization_enabled(get_effective_permissions_config()):
+            return False
+        authz = get_skill_authorization_context()
+        if authz is None or not authz.session_id or not authz.agent_scope_id:
+            return False
+        return (
+            get_skill_grant_store().get_active(authz.session_id, authz.agent_scope_id)
+            is not None
+        )
+    except Exception:  # noqa: BLE001 — 不确定时不允许绕过引擎
+        logger.warning(
+            "[InterruptHelpers] active Skill lookup failed; owner allow falls through to engine",
+            exc_info=True,
+        )
+        return True
+
+
 def is_interrupt_resume_payload(params: Any) -> bool:
     if not has_interrupt_resume_payload(params):
         return False
@@ -78,10 +110,319 @@ def is_interrupt_resume_payload(params: Any) -> bool:
     )
 
 
+_SUBAGENT_PERMISSION_APPROVAL_TIMEOUT = 120.0
+
+# Hosted cards need chat.ask_user_question rendering (web / OfficeClaw / TUI).
+# ACP keeps native session/request_permission JSON-RPC — do not hijack it.
+_HOSTED_PERMISSION_CHANNELS = frozenset({"web", "officeclaw", "tui"})
+
+_HOSTED_ALLOW_ONCE_LABELS = frozenset({
+    "本次允许",
+    "允许",
+    "Allow once",
+    "allow_once",
+    "allow-once",
+})
+_HOSTED_SESSION_REMEMBER_LABELS = frozenset({
+    "会话内记住",
+    "Session remember",
+    "allow_always_session",
+})
+_HOSTED_REJECT_LABELS = frozenset({
+    "拒绝",
+    "Reject",
+    "reject",
+    "reject-once",
+    "reject_once",
+})
+
+
+def _unwrap_session(session: Any) -> Any:
+    return getattr(session, "_parent", session) if session is not None else None
+
+
+def _session_id_of(session: Any) -> str | None:
+    if session is None:
+        return None
+    for attr_name in ("get_session_id", "session_id"):
+        attr = getattr(session, attr_name, None)
+        try:
+            value = attr() if callable(attr) else attr
+        except Exception:
+            value = None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def resolve_subagent_permission_parent_session(ctx: Any) -> Any | None:
+    """Return parent session when ``ctx`` is a nested agent under an outer tool.
+
+    Real trigger surface (not ``task_tool`` inheriting PermissionInterruptRail):
+    a child agent that still mounts its own permission rail, with
+    ``ctx.session`` id different from the parent session ContextVar bound by
+    ``StreamEventRail`` for the outer tool call (OfficeClaw worker / nested
+    agent). Same-session bindings must not take the hosted path.
+
+    ``PermissionInterruptRail`` on the *same* agent as the outer tool still
+    sees no foreign parent, so main-agent ASK stays on interrupt / ACP.
+    """
+    try:
+        from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
+            get_subagent_parent_session,
+        )
+
+        parent = get_subagent_parent_session()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[InterruptHelpers] subagent parent session read failed",
+            exc_info=True,
+        )
+        return None
+
+    parent = _unwrap_session(parent)
+    current = _unwrap_session(getattr(ctx, "session", None))
+    if parent is None or current is None or parent is current:
+        return None
+    parent_sid = _session_id_of(parent)
+    current_sid = _session_id_of(current)
+    if parent_sid and current_sid and parent_sid == current_sid:
+        return None
+    if not callable(getattr(parent, "write_stream", None)):
+        return None
+    return parent
+
+
+def _selected_option_labels(answer: Any) -> list[str]:
+    labels: list[str] = []
+    if isinstance(answer, list):
+        for item in answer:
+            labels.extend(_selected_option_labels(item))
+        return labels
+    if not isinstance(answer, dict):
+        return labels
+    selected = answer.get("selected_options")
+    if isinstance(selected, list):
+        for item in selected:
+            text = str(item).strip()
+            if text:
+                labels.append(text)
+    return labels
+
+
+def parse_hosted_permission_answer(answer: Any) -> Any:
+    """Map card answers to :class:`PermissionConfirmResponse` (or None if empty).
+
+    Enterprise never persists permanent-remember to local config.yaml (same
+    constraint as :func:`_default_interrupt_options`); those labels degrade to
+    session auto_confirm only.
+    """
+    from openjiuwen.harness.security.models import PermissionConfirmResponse
+
+    labels = _selected_option_labels(answer)
+    if not labels:
+        return None
+    if any(label in _HOSTED_REJECT_LABELS for label in labels):
+        return PermissionConfirmResponse(
+            approved=False,
+            auto_confirm=False,
+            persist_allow=False,
+            feedback="[PERMISSION_REJECTED] User rejected the request.",
+        )
+    if any(label in _PERMANENT_REMEMBER_LABELS for label in labels):
+        # 企业版：永久标签降级为会话内记住，不写本地 config。
+        persist = not is_enterprise()
+        return PermissionConfirmResponse(
+            approved=True,
+            auto_confirm=True,
+            persist_allow=persist,
+            feedback="",
+        )
+    if any(label in _HOSTED_SESSION_REMEMBER_LABELS for label in labels):
+        return PermissionConfirmResponse(
+            approved=True,
+            auto_confirm=True,
+            persist_allow=False,
+            feedback="",
+        )
+    if any(label in _HOSTED_ALLOW_ONCE_LABELS for label in labels):
+        return PermissionConfirmResponse(
+            approved=True,
+            auto_confirm=False,
+            persist_allow=False,
+            feedback="",
+        )
+    return None
+
+
+def _format_hosted_permission_question(
+    *,
+    tool_name: str,
+    tool_args: Any,
+    reason: str,
+    agent_scope_id: str,
+) -> str:
+    from jiuwenswarm.agents.harness.common.rails.subagent_permission_rail import (
+        _format_tool_args_preview,
+    )
+
+    parts = [
+        f"**工具 `{tool_name}` 需要授权才能执行**\n\n",
+        f"> 发起方：子 Agent `{agent_scope_id}`",
+        "\n\n**关键参数或命令：**\n\n",
+        _format_tool_args_preview(tool_name, tool_args),
+    ]
+    if reason:
+        parts.append(f"\n\n**权限原因：** {reason}")
+    return "".join(parts)
+
+
+async def request_subagent_hosted_permission_confirmation(
+    req: Any,
+    *,
+    parent_session: Any,
+    timeout: float = _SUBAGENT_PERMISSION_APPROVAL_TIMEOUT,
+) -> Any:
+    """Await parent-session card approval; never returns ``"interrupt"``."""
+    from openjiuwen.harness.security.models import PermissionConfirmResponse
+    from openjiuwen.harness.security.skill_authorization import (
+        SubagentApprovalKind,
+        get_subagent_approval_registry,
+    )
+    from openjiuwen.harness.security.skill_authorization.subagent_approval_registry import (
+        SubagentApprovalCancelled,
+        SubagentApprovalCapacityError,
+        SubagentApprovalTimeout,
+    )
+
+    from jiuwenswarm.agents.harness.common.rails.subagent_skill_authorization_rail import (
+        build_context_expiry_sender,
+        emit_subagent_approval,
+    )
+    from jiuwenswarm.openjiuwen_streaming_tool_patch import (
+        streaming_tool_wait_timeout_paused,
+    )
+
+    tool_call = req.tool_call
+    tool_name = str(getattr(tool_call, "name", "") or "").strip()
+    tool_call_id = str(
+        getattr(tool_call, "id", "") or f"permission_{tool_name or 'tool'}"
+    ).strip()
+    agent_scope_id = _session_id_of(getattr(req.ctx, "session", None))
+    parent_session_id = _session_id_of(parent_session)
+    if not agent_scope_id or not parent_session_id or not tool_call_id:
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission missing ids "
+            "parent=%s scope=%s tool_call=%s",
+            parent_session_id,
+            agent_scope_id,
+            tool_call_id,
+        )
+        return None
+
+    raw_args = getattr(tool_call, "arguments", None) if tool_call is not None else None
+    if isinstance(raw_args, str):
+        try:
+            tool_args = json.loads(raw_args) if raw_args.strip() else {}
+        except (TypeError, ValueError):
+            tool_args = {"_raw": raw_args}
+    elif isinstance(raw_args, dict):
+        tool_args = raw_args
+    else:
+        tool_args = {}
+
+    reason = str(getattr(getattr(req, "result", None), "reason", None) or "").strip()
+    question = _format_hosted_permission_question(
+        tool_name=tool_name,
+        tool_args=tool_args,
+        reason=reason or "Operation requires approval",
+        agent_scope_id=agent_scope_id,
+    )
+    # Session remember is stored on the child rail session; copy must not
+    # imply parent-session scope.
+    options = []
+    for opt in _default_interrupt_options():
+        item = dict(opt)
+        if item.get("label") in _HOSTED_SESSION_REMEMBER_LABELS:
+            item["description"] = "该子 Agent 委托内自动放行同类操作"
+        options.append(item)
+
+    async def _send(request: Any) -> None:
+        await emit_subagent_approval(
+            parent_session,
+            request,
+            header=f"权限审批: {tool_name}",
+            question=question,
+            options=options,
+        )
+
+    try:
+        async with streaming_tool_wait_timeout_paused():
+            answer = await get_subagent_approval_registry().request(
+                kind=SubagentApprovalKind.TOOL_PERMISSION,
+                session_id=parent_session_id,
+                agent_scope_id=agent_scope_id,
+                tool_call_id=tool_call_id,
+                payload={
+                    "tool_name": tool_name,
+                    "tool_args": tool_args,
+                    "reason": reason or "Operation requires approval",
+                    "auto_confirm_key": getattr(req, "auto_confirm_key", "") or "",
+                },
+                sender=_send,
+                expiry_sender=build_context_expiry_sender(),
+                timeout=timeout,
+            )
+    except SubagentApprovalTimeout:
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission timeout "
+            "session=%s scope=%s tool=%s",
+            parent_session_id,
+            agent_scope_id,
+            tool_name,
+        )
+        return PermissionConfirmResponse(
+            approved=False,
+            auto_confirm=False,
+            feedback="[PERMISSION_DENIED] 子 Agent 权限审批超时",
+        )
+    except (SubagentApprovalCancelled, SubagentApprovalCapacityError) as exc:
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission cancelled/capacity "
+            "session=%s scope=%s tool=%s error=%s",
+            parent_session_id,
+            agent_scope_id,
+            tool_name,
+            exc,
+        )
+        return PermissionConfirmResponse(
+            approved=False,
+            auto_confirm=False,
+            feedback="[PERMISSION_DENIED] 子 Agent 权限审批已取消或请求过多",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[InterruptHelpers] subagent hosted permission failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
+
+    parsed = parse_hosted_permission_answer(answer)
+    if parsed is not None:
+        return parsed
+    return PermissionConfirmResponse(
+        approved=False,
+        auto_confirm=False,
+        feedback="[PERMISSION_REJECTED] User rejected the request.",
+    )
+
+
 def build_permission_rail(
     config: dict[str, Any],
     llm: Any = None,
     model_name: str | None = None,
+    permission_config: dict[str, Any] | None = None,
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -89,6 +430,8 @@ def build_permission_rail(
         config: Agent config dict containing permissions section
         llm: LLM instance for risk assessment
         model_name: Model name for risk assessment
+        permission_config: Optional Agent-level permissions body (enterprise template).
+            When omitted, falls back to effective/global permissions config.
 
     Returns:
         PermissionInterruptRail instance or None if disabled
@@ -109,12 +452,24 @@ def build_permission_rail(
     from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
         get_base_permissions_config,
         get_effective_permissions_config,
+        merge_session_permissions_overlay,
     )
 
-    permission_config = get_effective_permissions_config()
+    if isinstance(permission_config, dict):
+        # Agent 模板 body：企业版仍叠加当前会话 overlay（若有）。
+        permission_config = (
+            merge_session_permissions_overlay(permission_config)
+            if is_enterprise()
+            else copy.deepcopy(permission_config)
+        )
+        config_source = "agent_template"
+    else:
+        permission_config = get_effective_permissions_config()
+        config_source = "effective"
     logger.info(
-        "[InterruptHelpers] build_permission_rail called: enabled=%s",
-        permission_config.get("enabled", False)
+        "[InterruptHelpers] build_permission_rail called: enabled=%s source=%s",
+        permission_config.get("enabled", False),
+        config_source,
     )
 
     if not permission_config.get("enabled", False):
@@ -175,7 +530,6 @@ def build_permission_rail(
             try:
                 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
                     get_base_permissions_config,
-                    is_enterprise,
                     persist_permissions_mutate,
                 )
                 from jiuwenswarm.common.config import _load_yaml_round_trip
@@ -227,7 +581,20 @@ def build_permission_rail(
         async def _request_permission_confirmation(
             req: PermissionConfirmationRequest,
         ) -> PermissionConfirmResponse | str | None:
-            channel = TOOL_PERMISSION_CHANNEL_ID.get() or "web"
+            channel = (TOOL_PERMISSION_CHANNEL_ID.get() or "web").strip() or "web"
+            parent_session = resolve_subagent_permission_parent_session(req.ctx)
+            # Hosted parent-card path: nested agent with own rail + different
+            # session id (e.g. OfficeClaw worker). Only channels that render
+            # chat.ask_user_question — never hijack ACP JSON-RPC.
+            if (
+                parent_session is not None
+                and channel in _HOSTED_PERMISSION_CHANNELS
+            ):
+                return await request_subagent_hosted_permission_confirmation(
+                    req,
+                    parent_session=parent_session,
+                )
+
             if channel != "acp":
                 return "interrupt"
 
@@ -394,10 +761,21 @@ def build_permission_rail(
             if owner_level is None:
                 return None
             if owner_level == "allow":
+                # 有 ACTIVE Skill overlay 时强制走 engine，避免 owner allow 绕过 overlay 收紧。
+                if _has_active_skill_overlay():
+                    return None
                 return ("approve",)
             return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
 
         def _get_permissions_snapshot():
+            # 企业版 Agent 模板 rail：工具校验跑在 DeepAgent supervisor Task
+            # （start_interaction 时 create_task），不会继承请求 Task 上的
+            # PERMISSIONS_AGENT_BASE；若这里再走 get_effective_permissions_config()
+            # 会回落 yaml（常为 enabled:false）并覆盖模板配置。
+            # 返回 None → 使用 _static_config（请求开头 _update_permission_rail
+            # 与 persist 的 update_config 会刷新它）。
+            if is_enterprise() and config_source == "agent_template":
+                return None
             return get_effective_permissions_config()
 
         host = ToolPermissionHost(
@@ -409,8 +787,46 @@ def build_permission_rail(
             permission_scene_hook=_permission_scene_hook,
         )
 
-        # skill_turbo 启用时使用子类，定制 skill_acceleration_exec 审批消息
+        workspace_root = None
+        try:
+            workspace_root = get_workspace_dir()
+        except Exception:
+            logger.warning(
+                "[InterruptHelpers] workspace_dir resolve failed for permission engine; "
+                "continue with workspace_root=None (same as PermissionInterruptRail default)",
+                exc_info=True,
+            )
+        from jiuwenswarm.agents.harness.common.rails.permissions.workspace_untrusted_policy import (
+            WorkspaceUntrustedPolicyEngine,
+        )
+
+        # 不在此写死 trusted_dirs：与 PermissionInterruptRail 默认引擎一致，
+        # 请求级白名单由 adapter 的 set_trusted_dirs → engine.update_trusted_dirs 注入。
+        permission_engine = WorkspaceUntrustedPolicyEngine(
+            config=permission_config,
+            llm=llm,
+            model_name=model_name,
+            workspace_root=workspace_root,
+        )
+
+        # Skill 动态授权协调：默认权限 Rail 叠加 gate-handled 短路
+        # （skill_tool/skill_complete 由 SkillAuthorizationRail 专属裁决，避免重复弹卡）。
         rail_cls = PermissionInterruptRail
+        try:
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+                SkillAuthorizationPermissionRail,
+            )
+
+            rail_cls = SkillAuthorizationPermissionRail
+        except Exception:
+            logger.debug(
+                "[InterruptHelpers] SkillAuthorizationPermissionRail switch failed, "
+                "fallback to PermissionInterruptRail",
+                exc_info=True,
+            )
+
+        # skill_turbo 启用时使用子类，定制 skill_acceleration_exec 审批消息
+        # （SkillTurboPermissionRail 继承 SkillAuthorizationPermissionRail，两种定制叠加）
         try:
             from jiuwenswarm.common.config import get_config as _get_cfg
             _cfg = _get_cfg()
@@ -431,6 +847,7 @@ def build_permission_rail(
 
         permission_rail = rail_cls(
             config=permission_config,
+            engine=permission_engine,
             tool_names=tool_names,
             llm=llm,
             model_name=model_name,
@@ -645,6 +1062,16 @@ def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | Non
             "questions": [question_data],
             "source": source,
         }
+        # Skill 动态授权审批卡：随事件顶层透传给前端结构化渲染（契约键冻结）。
+        payload_schema = _read_value_field(value_obj, "payload_schema", None)
+        if isinstance(payload_schema, dict):
+            from openjiuwen.harness.security.skill_authorization import (
+                SKILL_APPROVAL_CARD_EXTENSION_KEY,
+            )
+
+            card = payload_schema.get(SKILL_APPROVAL_CARD_EXTENSION_KEY)
+            if isinstance(card, dict):
+                payload[SKILL_APPROVAL_CARD_EXTENSION_KEY] = card
         if (
             source == "confirm_interrupt"
             and tool_name == "exit_plan_mode"
@@ -817,13 +1244,48 @@ def _normalize_question_preview(preview: Any) -> dict[str, Any] | None:
     return normalized
 
 
+_PERMANENT_REMEMBER_LABELS = frozenset({
+    "永久记住",
+    "总是允许",  # OfficeClaw PermissionBridge global scope 回传标签
+    "Always Allow",
+    "always_allow",
+    "allow_always",
+})
+
+_PERMANENT_REMEMBER_HINT_RE = re.compile(
+    r"[；;]?\s*选择「永久记住」[^。\n]*[。.]?",
+)
+
+
 def _default_interrupt_options() -> list[dict[str, str]]:
-    return [
+    """权限审批默认选项。
+
+    企业版不提供「永久记住」：该能力依赖写回本地 config.yaml / session overlay，
+    与 Agent permissions 模板权威源不一致，且当前 supervisor Task 下 session_id
+    常丢失导致落盘失败。长期策略请改 Manager permissions 模板。
+    """
+    options = [
         {"label": "本次允许", "description": "仅本次授权执行"},
         {"label": "会话内记住", "description": "本次会话内自动放行同类操作"},
-        {"label": "永久记住", "description": "写回磁盘，所有会话均自动放行"},
         {"label": "拒绝", "description": "拒绝执行此工具"},
     ]
+    if not is_enterprise():
+        options.insert(
+            2,
+            {"label": "永久记住", "description": "写回磁盘，所有会话均自动放行"},
+        )
+    return options
+
+
+def _is_permanent_remember_option(option: dict[str, Any]) -> bool:
+    label = str(option.get("label") or "").strip()
+    value = str(option.get("value") or "").strip()
+    return label in _PERMANENT_REMEMBER_LABELS or value in _PERMANENT_REMEMBER_LABELS
+
+
+def _strip_permanent_remember_hint(message: str) -> str:
+    cleaned = _PERMANENT_REMEMBER_HINT_RE.sub("", message or "")
+    return cleaned.strip()
 
 
 def _plan_approval_interrupt_options(
@@ -852,6 +1314,12 @@ def _question_options_from_ui_options(
         if normalized["label"]:
             options.append(normalized)
     if options:
+        # 仅过滤权限审批弹窗；技能演进等仍可保留「总是允许」。
+        if is_enterprise() and source == "permission_interrupt":
+            options = [
+                option for option in options
+                if not _is_permanent_remember_option(option)
+            ]
         return options
     return _plan_approval_interrupt_options(source, tool_name, message) or _default_interrupt_options()
 
@@ -930,6 +1398,8 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
     else:
         header = f"权限审批: {tool_name}" if tool_name else "权限审批"
         question = message
+        if is_enterprise() and source == "permission_interrupt":
+            question = _strip_permanent_remember_hint(question)
 
     return {
         "question": question,

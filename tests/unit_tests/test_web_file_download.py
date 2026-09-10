@@ -62,13 +62,41 @@ def _signed_token(secret: str, payload: object) -> str:
 
 def test_valid_token_is_accepted() -> None:
     manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=60)
+    token = manager.generate_token(
+        "/tmp/1788249651_222.txt",
+        "session-1",
+        expires_in=60,
+        file_name="222.txt",
+    )
 
     payload = manager.validate_token(token)
     assert payload is not None
-    assert payload["path"] == "/tmp/report.xlsx"
+    assert payload["path"] == "/tmp/1788249651_222.txt"
+    assert payload["name"] == "222.txt"
     assert payload["exp"] == pytest.approx(int(time.time()) + 60, abs=1)
     assert payload["sid"] == "session-1"
+
+
+def test_download_handler_prefers_token_display_name(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """磁盘名带时间戳时，Content-Disposition 仍用 token.name。"""
+    file_path = tmp_path / "1788249651_222.txt"
+    file_path.write_bytes(b"888")
+    monkeypatch.setenv("JIUWENSWARM_WEB_RECEIVED_FILES", str(file_path.parent))
+    monkeypatch.setattr(
+        web_file_download,
+        "validate_file_download_token",
+        lambda _token: {"path": str(file_path), "name": "222.txt"},
+    )
+    client = _download_client()
+    response = client.head("/file-api/download", params={"token": "signed-token"})
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == (
+        "attachment; filename*=UTF-8''222.txt"
+    )
 
 
 def test_missing_expiration_is_rejected() -> None:

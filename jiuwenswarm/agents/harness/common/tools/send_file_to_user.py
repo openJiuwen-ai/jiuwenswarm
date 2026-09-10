@@ -21,6 +21,8 @@ from typing import Any, List, Optional, Union
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
+from jiuwenswarm.edition import is_enterprise
+
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +324,28 @@ class SendFileToolkit:
             len(skipped_files),
         )
 
+        # 企业默认：OBS URL 经当前 chat SSE（不依赖 PushRegistry）。
+        # 个人版不进此分支，保持本机 path + send_push / 显式 file_transfer。
+        if self._should_use_obs_download():
+            return await self._send_file_via_obs(
+                valid_files,
+                missing_files,
+                skipped_files,
+                route,
+                target_channel_list,
+            )
+
+        from jiuwenswarm.common.file_transfer_config import get_file_transfer_config
+
+        if get_file_transfer_config().enabled:
+            return await self._send_file_distributed(
+                valid_files,
+                missing_files,
+                skipped_files,
+                route,
+                target_channel_list,
+            )
+
         try:
             from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
@@ -437,6 +461,234 @@ class SendFileToolkit:
                 str(e),
             )
             return f"提交文件失败: {str(e)}"
+
+    @staticmethod
+    def _escape_file_download_via_push() -> bool:
+        raw = os.getenv("JIUWENSWARM_FILE_DOWNLOAD_VIA_PUSH", "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _should_use_obs_download(cls) -> bool:
+        """Enterprise default: MinIO URL on current chat SSE (not file.download.*)."""
+        return bool(is_enterprise()) and not cls._escape_file_download_via_push()
+
+    async def _send_file_via_obs(
+        self,
+        valid_files: List[str],
+        missing_files: List[str],
+        skipped_files: List[str],
+        route: SendFileRoute,
+        target_channel_list: List[str],
+    ) -> str:
+        """Enterprise: put files to MinIO and emit chat.file(url) on request SSE."""
+        from openjiuwen.core.session.stream import OutputSchema
+
+        from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
+            get_subagent_parent_session,
+        )
+        from jiuwenswarm.channels.web.minio_upload import (
+            load_minio_upload_config,
+            upload_local_file_to_minio,
+        )
+
+        session = get_subagent_parent_session()
+        if session is None or not hasattr(session, "write_stream"):
+            return (
+                "发送文件失败：当前请求无可用的流式通道，无法投递企业下载链接。"
+                "请确认工具在对话流内执行（session.write_stream）。"
+            )
+
+        try:
+            minio_cfg = load_minio_upload_config()
+        except Exception as exc:
+            logger.warning("[SendFileToolkit] OBS 配置不可用: %s", exc)
+            return f"发送文件失败：对象存储未配置或不可用（{exc}）"
+
+        files_payload: list[dict[str, Any]] = []
+        failed_files: list[dict[str, str]] = []
+        sent_ok: list[str] = []
+
+        for file_path in valid_files:
+            try:
+                uploaded = upload_local_file_to_minio(
+                    minio_cfg,
+                    file_path,
+                    filename=os.path.basename(file_path),
+                    object_prefix="downloads",
+                )
+                files_payload.append(
+                    {
+                        "url": str(uploaded["url"]),
+                        "name": str(uploaded["name"]),
+                        "size": int(uploaded["size"]),
+                    }
+                )
+                sent_ok.append(file_path)
+                logger.info(
+                    "[SendFileToolkit] OBS 上传成功 file=%s url=%s",
+                    file_path,
+                    uploaded.get("url"),
+                )
+            except Exception as exc:
+                failed_files.append({"file": file_path, "error": str(exc)})
+                logger.exception(
+                    "[SendFileToolkit] OBS 上传失败 file=%s",
+                    file_path,
+                )
+
+        if not files_payload:
+            parts = ["发送文件失败：全部文件上传对象存储失败"]
+            for ff in failed_files:
+                parts.append(f"  - {ff['file']}: {ff['error']}")
+            return "\n".join(parts)
+
+        stream_payload: dict[str, Any] = {
+            "event_type": "chat.file",
+            "files": files_payload,
+        }
+        # Gateway materialize 识别 outbound url；target 提示与 push 路径对齐
+        if target_channel_list:
+            stream_payload["send_file_targets"] = list(target_channel_list)
+
+        try:
+            await session.write_stream(
+                OutputSchema(
+                    type="chat.file",
+                    index=0,
+                    payload=stream_payload,
+                )
+            )
+        except Exception as exc:
+            logger.exception(
+                "[SendFileToolkit] write_stream chat.file 失败 session_id=%s",
+                route.session_id,
+            )
+            return f"发送文件失败：写入对话流失败（{exc}）"
+
+        _mark_files_sent(route.session_id, sent_ok)
+        result_parts = [
+            f"已上传 {len(files_payload)} 个文件到对象存储，下载由 Gateway 代理对象存储"
+        ]
+        if failed_files:
+            result_parts.append(f"上传失败 {len(failed_files)} 个文件：")
+            for ff in failed_files:
+                result_parts.append(f"  - {ff['file']}: {ff['error']}")
+        if skipped_files:
+            result_parts.append("以下文件已在本次会话发送过，已跳过：")
+            for sf in skipped_files:
+                result_parts.append(f"  - {sf}")
+        if missing_files:
+            result_parts.append("以下文件不存在，未发送：")
+            for mf in missing_files:
+                result_parts.append(f"  - {mf}")
+        return "\n".join(result_parts)
+
+    async def _send_file_distributed(
+        self,
+        valid_files: List[str],
+        missing_files: List[str],
+        skipped_files: List[str],
+        route: SendFileRoute,
+        target_channel_list: List[str],
+    ) -> str:
+        """分布式模式：分片推送到 Gateway，由 Gateway 拼包后发 chat.file。"""
+        from jiuwenswarm.server.file_transfer_manager import get_file_transfer_manager
+
+        ft_manager = get_file_transfer_manager()
+        success_count = 0
+        failed_files: list[dict[str, str]] = []
+        sent_ok: list[str] = []
+
+        for file_path in valid_files:
+            try:
+                async def send_callback(
+                    event_type: str,
+                    params: dict,
+                    *,
+                    _route: SendFileRoute = route,
+                    _targets: List[str] = target_channel_list,
+                ) -> None:
+                    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+                    server = AgentWebSocketServer.get_instance()
+                    msg: dict[str, Any] = {
+                        "request_id": _route.request_id,
+                        "channel_id": _route.channel_id,
+                        "session_id": _route.session_id,
+                        "payload": {
+                            "event_type": event_type,
+                            **params,
+                        },
+                        "is_complete": False,
+                    }
+                    merged_meta: dict[str, Any] = {}
+                    if _route.metadata:
+                        merged_meta.update(_route.metadata)
+                    if _targets:
+                        merged_meta["send_file_targets"] = list(_targets)
+                    if merged_meta:
+                        msg["metadata"] = merged_meta
+                    delivered = await server.send_push(msg)
+                    if not isinstance(delivered, int) or delivered <= 0:
+                        raise RuntimeError(
+                            "推送通道无活跃订阅者或投递失败"
+                            f"（delivered={delivered!r}）。"
+                            "企业环境请走 OBS 下载主路径；逃生阀需有 Gateway PushRegistry 订户。"
+                        )
+
+                result = await ft_manager.send_file(
+                    file_path=file_path,
+                    send_callback=send_callback,
+                    session_id=route.session_id,
+                    channel_id=route.channel_id,
+                    request_id=route.request_id,
+                )
+                if result.get("success"):
+                    success_count += 1
+                    sent_ok.append(file_path)
+                    logger.info(
+                        "[SendFileToolkit] 分布式发送成功 file=%s transfer_id=%s",
+                        file_path,
+                        result.get("transfer_id"),
+                    )
+                else:
+                    failed_files.append(
+                        {
+                            "file": file_path,
+                            "error": str(result.get("error", "unknown error")),
+                        }
+                    )
+                    logger.warning(
+                        "[SendFileToolkit] 分布式发送失败 file=%s error=%s",
+                        file_path,
+                        result.get("error"),
+                    )
+            except Exception as e:
+                failed_files.append({"file": file_path, "error": str(e)})
+                logger.exception(
+                    "[SendFileToolkit] 分布式发送异常 file=%s",
+                    file_path,
+                )
+
+        if sent_ok:
+            _mark_files_sent(route.session_id, sent_ok)
+
+        result_parts: list[str] = []
+        if success_count > 0:
+            result_parts.append(f"成功发送 {success_count} 个文件")
+        if failed_files:
+            result_parts.append(f"发送失败 {len(failed_files)} 个文件：")
+            for ff in failed_files:
+                result_parts.append(f"  - {ff['file']}: {ff['error']}")
+        if skipped_files:
+            result_parts.append("以下文件已在本次会话发送过，已跳过：")
+            for sf in skipped_files:
+                result_parts.append(f"  - {sf}")
+        if missing_files:
+            result_parts.append("以下文件不存在，未发送：")
+            for mf in missing_files:
+                result_parts.append(f"  - {mf}")
+        return "\n".join(result_parts) if result_parts else "发送完成"
 
     def get_tools(self, *, tool_id: str | None = None) -> List[Tool]:
         """Return tools for registration in Runner.

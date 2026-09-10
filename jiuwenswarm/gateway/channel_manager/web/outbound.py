@@ -10,9 +10,9 @@ import logging
 import uuid
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
-logger = logging.getLogger(__name__)
+from jiuwenswarm.edition import is_enterprise
 
-_STREAM_END_EVENTS = frozenset({"chat.final", "chat.error"})
+logger = logging.getLogger(__name__)
 
 # Agent ``session.create`` rejects params.session_id (restore via session.switch).
 _METHODS_WITHOUT_PARAM_SESSION_ID = frozenset({"session.create"})
@@ -53,11 +53,26 @@ def bind_http_session(
     return envelope, out
 
 
-def _is_sse_end_frame(frame: dict[str, Any]) -> bool:
+def _is_sse_end_frame(frame: dict[str, Any], req_id: str = "") -> bool:
     ev = str(frame.get("event") or "")
-    if ev in _STREAM_END_EVENTS:
+    if ev == "chat.error":
         return True
+    # 企业版 HTTP/SSE 的 chat.final 只结束当前回复段，必须继续转发到
+    # processing_status(false)；个人版维持原有 chat.final 终止语义。
+    if ev == "chat.final":
+        if not is_enterprise():
+            return True
+        return False
     payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+    if ev == "chat.processing_status" and payload.get("is_processing") is False:
+        if not is_enterprise():
+            return False
+        # cancel-replace 时旧 rid 的 false 可能落到新 SSE；只结束本连接自己的流。
+        frame_rid = str(payload.get("request_id") or "").strip()
+        sse_rid = str(req_id or "").strip()
+        if sse_rid and frame_rid and frame_rid != sse_rid:
+            return False
+        return True
     return ev == "history.message" and payload.get("status") == "done"
 
 
@@ -316,7 +331,7 @@ class HttpSseOutbound(_HttpOutboundBase):
                 continue
             if ftype == "event":
                 yield frame
-                if _is_sse_end_frame(frame):
+                if _is_sse_end_frame(frame, req_id):
                     return
 
     async def close(self) -> None:

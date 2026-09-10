@@ -14,8 +14,8 @@ from ...infrastructure.repository_access import (
     require_cron_job_enterprise_repository,
     require_enterprise_repository,
     require_logging_repository,
-    require_permissions_repository,
 )
+from ..template.a2a_outbound_template import A2AOutboundTemplateService
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +25,19 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "model_template",
     "embedding_template",
     "extension_config_template",
-    "skill_whitelist_template",
-    "service_config_template",
+    "skill_prebuilt_template",
+    "mcp_template",
+    "permissions_template",
+    "a2a_outbound_template",
+    "a2a_access_policy_template",
+    "a2a_outbound_user_state",
+    "a2a_outbound_runtime_state",
+    "a2a_outbound_dispatch",
     "agent_template",
     "instance_agent_resource",
     "log_masking_rule",
     "logging_config",
     "task_memory_config",
-    "permissions_config",
     "memory_config",
     "cron_job",
 )
@@ -42,7 +47,6 @@ _MANAGER_SIGN_PUBKEY_TABLE = "manager_sign_pubkey"
 _EXCLUDED_FROM_ENTERPRISE_BULK_PURGE: frozenset[str] = frozenset({
     "channel_config",
     "logging_config",
-    "permissions_config",
     "cron_job",
     "task_memory_config",
 })
@@ -61,7 +65,22 @@ async def _purge_cron_job_table() -> int:
 
 
 async def _purge_enterprise_table(table: str) -> int:
+    if table == "a2a_outbound_template":
+        return await _purge_a2a_outbound_templates()
     return await _purge_enterprise_repository(require_enterprise_repository(table))
+
+
+async def _purge_a2a_outbound_templates() -> int:
+    repo = require_enterprise_repository("a2a_outbound_template")
+    service = A2AOutboundTemplateService()
+    deleted = 0
+    for row in await repo.list(limit=_LIST_ALL_CAP):
+        template_id = str(row.get("template_id") or "").strip()
+        if not template_id:
+            continue
+        await service.delete(template_id)
+        deleted += 1
+    return deleted
 
 
 async def _purge_enterprise_repository(repo: EnterpriseRecordRepository) -> int:
@@ -109,9 +128,6 @@ async def purge_gateway_instance_data() -> dict[str, int]:
 
     if await require_logging_repository().delete():
         deleted_counts["logging_config"] = 1
-
-    if await require_permissions_repository().delete():
-        deleted_counts["permissions_config"] = 1
 
     if await require_enterprise_repository("task_memory_config").delete():
         deleted_counts["task_memory_config"] = 1

@@ -35,6 +35,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
 from jiuwenswarm.common.schema.ask_user import (
     AskUserResponseError,
     ask_user_response_schema,
+    decode_user_input,
     parse_ask_user_response,
 )
 
@@ -428,10 +429,23 @@ class StructuredAskUserRail(AskUserRail):
 
         # Detect if this was a structured questions call by checking tool_args
         is_structured = questions_data is not None and len(questions_data) > 0
+        # user_input is the USER's response, not the model's tool-call args.
+        # Any parse failure (non-dict, missing fields, illegal status, non-array
+        # answers, etc.) means "the user did not provide a usable structured
+        # answer" -> treat as skipped and let the model decide. Do NOT hardcode
+        # [INVALID_ARGUMENT] here: that code semantically signals "the MODEL's
+        # tool-call args were invalid" and misleads the LLM into thinking the
+        # tool is broken, triggering fallback cascades and deadlocks.
+        decoded = decode_user_input(user_input)
         try:
-            response = parse_ask_user_response(user_input)
+            response = parse_ask_user_response(decoded)
         except AskUserResponseError as exc:
-            return self.reject(tool_result=f"[INVALID_ARGUMENT] {exc}")
+            logger.info(
+                "[StructuredAskUserRail] user_input parse failed (%s), "
+                "treating as skipped",
+                exc,
+            )
+            return self.reject(tool_result=self._build_skipped_tool_result())
 
         machine_payload = response.to_dict(include_original_request=False)
         if is_structured and return_json:

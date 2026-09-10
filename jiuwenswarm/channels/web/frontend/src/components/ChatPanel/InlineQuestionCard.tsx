@@ -15,9 +15,10 @@ import { UserAnswer, QuestionOption, Question } from '../../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { classifyPrompt } from '../InteractionSlot/promptRouting';
+import { isValidSkillApprovalCard, SkillApprovalCard } from './SkillApprovalCard';
 
 interface InlineQuestionCardProps {
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<void>;
 }
 
 // 后端会给带选项的问题末尾追加一个「自定义输入」选项（interrupt_helpers._build_multi_questions）。
@@ -155,10 +156,19 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
     pendingQuestion?.request_id?.startsWith('team_skill_evolve_')
   ) ?? false;
 
+  // Skill 加载审批卡：有结构化卡片时用 SkillApprovalCard 替换默认渲染
+  const skillApprovalCard = isValidSkillApprovalCard(pendingQuestion?.skill_approval_card)
+    ? pendingQuestion.skill_approval_card
+    : null;
+
   // 授权 / 交互类弹窗改由输入框上方的 InteractionSlot 承载；
-  // 此处仅保留 legacy（演进审批 / 计划审批）在消息流内渲染。
+  // 此处仅保留 legacy（演进审批 / 计划审批 / Skill 加载审批）在消息流内渲染。
   if (!pendingQuestion || classifyPrompt(pendingQuestion) !== 'legacy') {
     return null;
+  }
+
+  if (skillApprovalCard) {
+    return <SkillApprovalCard key={pendingQuestion.request_id} onSubmit={onSubmit} card={skillApprovalCard} />;
   }
 
   const borderColor = isEvolution

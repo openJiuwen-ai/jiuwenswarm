@@ -143,6 +143,8 @@ class _TestAdapter(JiuWenSwarmDeepAdapter):
             {"react": {"evolution": {"auto_save": auto_save}}},
         )
         setattr(adapter, "_pending_auto_rebuild_skills", [])
+        setattr(adapter, "_auto_rebuild_lock", asyncio.Lock())
+        setattr(adapter, "_auto_rebuild_task", None)
         # Minimal attrs so watcher → _queue_auto_rebuild_skill →
         # _should_auto_merge_evolved_skill → _resolve_skill_dirs works.
         setattr(adapter, "_agent_id", "test-agent")
@@ -397,7 +399,7 @@ async def test_normal_evolution_watcher_ends_on_auto_approved_progress(monkeypat
 async def test_normal_evolution_watcher_auto_rebuilds_after_auto_approved(
     monkeypatch,
 ):
-    """selfEvolution=auto: persisted experience (auto_approved) must schedule rebuild."""
+    """selfEvolution=auto: persist (auto_approved) schedules rebuild immediately."""
     _FakeTransport.pushes = []
     rail = _FakeEvolutionRail(
         [
@@ -435,6 +437,129 @@ async def test_normal_evolution_watcher_auto_rebuilds_after_auto_approved(
     assert rebuild_calls == [{"request_id": "stream-rid"}]
     assert adapter._pending_auto_rebuild_skills == []  # pylint: disable=protected-access
     assert rail.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_normal_evolution_watcher_auto_rebuilds_before_noop_outcome(
+    monkeypatch,
+):
+    """auto_approved schedules rebuild even if a later noop outcome arrives."""
+    _FakeTransport.pushes = []
+    rail = _FakeEvolutionRail(
+        [
+            [
+                _progress_event(
+                    "experience records auto-saved to 'demo-skill'",
+                    stage="auto_approved",
+                    skill_name="demo-skill",
+                )
+            ],
+            [_sdk_noop_outcome_event("demo-skill")],
+        ]
+    )
+    adapter = _TestAdapter.build_with_rail(rail, auto_save=True)
+    rebuild_calls: list[dict] = []
+
+    async def _capture_rebuild(*, request_id: str | None = None) -> None:
+        rebuild_calls.append({"request_id": request_id})
+        adapter._take_pending_auto_rebuild_skills()  # pylint: disable=protected-access
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
+        _FakeTransport,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "resolve_skill_evolution_action",
+        lambda skill_name, **_kwargs: "auto",
+    )
+    monkeypatch.setattr(adapter, "_run_auto_rebuild_skills_detached", _capture_rebuild)
+
+    await adapter.watch_evolution_and_push("stream-rid", "web", "sess-auto-then-noop")
+    await asyncio.sleep(0)
+
+    assert rebuild_calls == [{"request_id": "stream-rid"}]
+    assert adapter._pending_auto_rebuild_skills == []  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_evolution_watcher_timeout_schedules_pending_auto_rebuild(
+    monkeypatch,
+):
+    """Watcher timeout must flush any queued auto rebuild before exit."""
+    _FakeTransport.pushes = []
+    rail = _FakeEvolutionRail(batches=[[]])
+    adapter = _TestAdapter.build_with_rail(rail, auto_save=True)
+    adapter._pending_auto_rebuild_skills.append("demo-skill")  # pylint: disable=protected-access
+    rebuild_calls: list[dict] = []
+
+    async def _capture_rebuild(*, request_id: str | None = None) -> None:
+        rebuild_calls.append({"request_id": request_id})
+        adapter._take_pending_auto_rebuild_skills()  # pylint: disable=protected-access
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
+        _FakeTransport,
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "resolve_evolution_event_timeout_sec",
+        lambda rail, fallback_sec=30.0: 0.01,
+    )
+    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(adapter, "_run_auto_rebuild_skills_detached", _capture_rebuild)
+
+    await adapter.watch_evolution_and_push("stream-rid", "web", "sess-timeout-flush")
+    await asyncio.sleep(0)
+
+    assert rebuild_calls == [{"request_id": "stream-rid"}]
+    assert adapter._pending_auto_rebuild_skills == []  # pylint: disable=protected-access
+    assert rail.cleanup_calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_auto_rebuild_skills_detached_runs_serially(monkeypatch):
+    """Concurrent auto-rebuild tasks serialize on the adapter lock."""
+    adapter = _TestAdapter.build_with_rail(_FakeEvolutionRail(), auto_save=True)
+    order: list[str] = []
+    hold = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_merge(*, skill_name: str | None = None, **_kwargs):
+        name = str(skill_name or "")
+        order.append(f"start:{name}")
+        if name == "skill-a":
+            hold.set()
+            await release.wait()
+        order.append(f"end:{name}")
+        return {"success": True, "name": name}
+
+    monkeypatch.setattr(
+        interface_deep_module,
+        "resolve_skill_evolution_action",
+        lambda skill_name, **_kwargs: "auto",
+    )
+    monkeypatch.setattr(adapter, "generate_evolution_merge_version", _slow_merge)
+
+    async def _has_records(_name: str) -> bool:
+        return True
+
+    monkeypatch.setattr(adapter, "_skill_has_live_evolution_records", _has_records)
+
+    adapter._pending_auto_rebuild_skills = ["skill-a"]  # pylint: disable=protected-access
+    task_a = asyncio.create_task(
+        adapter._run_auto_rebuild_skills_detached(request_id="a")  # pylint: disable=protected-access
+    )
+    await hold.wait()
+    adapter._pending_auto_rebuild_skills = ["skill-b"]  # pylint: disable=protected-access
+    task_b = asyncio.create_task(
+        adapter._run_auto_rebuild_skills_detached(request_id="b")  # pylint: disable=protected-access
+    )
+    await asyncio.sleep(0)
+    assert order == ["start:skill-a"]
+    release.set()
+    await asyncio.gather(task_a, task_b)
+    assert order == ["start:skill-a", "end:skill-a", "start:skill-b", "end:skill-b"]
 
 
 @pytest.mark.asyncio

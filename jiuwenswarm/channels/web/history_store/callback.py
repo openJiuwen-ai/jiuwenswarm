@@ -23,6 +23,11 @@ logger = logging.getLogger("jiuwenswarm.web.history")
 _REQUEST_METHODS = frozenset({"chat.send", "chat.resume", "chat.user_answer"})
 _FINAL_EVENTS = frozenset({"chat.final", "chat.error"})
 
+# history.get 流式路径在 AgentServer 本地无历史文件时的固定报错。它不是 assistant
+# 回复，不能落库——此前 chat.error 分支会把它当成 assistant 消息写进 PG，
+# 会话列表的 last_preview 因此出现这行错误文本。
+_HISTORY_NOT_FOUND_SNIPPET = "invalid page_idx or session history not found"
+
 FrameCallback = Callable[[str, str, "str | None"], Awaitable[None]]
 
 
@@ -30,6 +35,15 @@ def make_history_callback(store: "ChatHistoryStore") -> FrameCallback:
     """产出 on_frame 回调：白名单 → pending 回填 → store.record_*。"""
     pending: dict[str, dict[str, Any]] = {}
     assistant_buf: dict[str, str] = {}
+
+    def _identity_from_params(params: dict[str, Any]) -> dict[str, Any]:
+        """从 browser 帧 params 提取身份/归属（由 WS/HTTP 入口注入的连接级权威值）。"""
+        fields: dict[str, Any] = {}
+        for key in ("group_id", "bot_id", "project_id", "cron_id", "work_mode"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                fields[key] = value.strip()
+        return fields
 
     async def _handle_browser(data: dict[str, Any]) -> None:
         if data.get("type") != "req":
@@ -50,13 +64,17 @@ def make_history_callback(store: "ChatHistoryStore") -> FrameCallback:
             user = None
         else:
             user = user.strip()
+        identity = _identity_from_params(params)
         ts = time.time()
         if isinstance(session_id, str) and session_id:
             await store.record_user(
                 request_id=request_id, session_id=session_id, query=query, ts=ts, user=user,
+                **identity,
             )
         else:
-            pending[request_id] = {"query": query, "ts": ts, "method": method, "user": user}
+            pending[request_id] = {
+                "query": query, "ts": ts, "method": method, "user": user, **identity,
+            }
             logger.debug(
                 "[history] 暂存 pending user(无 sid): rid=%s method=%s pending=%d",
                 request_id, method, len(pending),
@@ -81,6 +99,10 @@ def make_history_callback(store: "ChatHistoryStore") -> FrameCallback:
 
         if event not in _FINAL_EVENTS:
             return
+        if event == "chat.error" and _HISTORY_NOT_FOUND_SNIPPET in str(payload.get("error") or ""):
+            # history.get 的"本地无历史"报错不落库
+            logger.debug("[history] history.get 未命中报错不落库: rid=%s", request_id)
+            return
         session_id = payload.get("session_id")
         if not isinstance(session_id, str) or not session_id:
             logger.warning(
@@ -101,6 +123,9 @@ def make_history_callback(store: "ChatHistoryStore") -> FrameCallback:
             await store.record_user(
                 request_id=request_id, session_id=session_id,
                 query=p["query"], ts=p["ts"], user=p.get("user"),
+                group_id=p.get("group_id"), bot_id=p.get("bot_id"),
+                project_id=p.get("project_id"), cron_id=p.get("cron_id"),
+                work_mode=p.get("work_mode"),
             )
             logger.info("[history] pending 回填 user: rid=%s sid=%s", request_id, session_id)
         await store.record_assistant(

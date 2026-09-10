@@ -228,7 +228,7 @@ def _prepare_reload_adapter(
         events.append("reconcile:evolution")
 
     monkeypatch.setattr(
-        adapter, "_bind_request_env_overlay", MagicMock(return_value=(None, None))
+        adapter, "_bind_request_env_overlay", MagicMock(return_value=(None, None, None))
     )
     monkeypatch.setattr(adapter, "_apply_reload_config_snapshot", _apply_snapshot)
     monkeypatch.setattr(adapter, "_create_model", MagicMock(return_value=object()))

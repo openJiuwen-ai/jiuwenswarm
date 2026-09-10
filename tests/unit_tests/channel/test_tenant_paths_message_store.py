@@ -14,6 +14,7 @@ from jiuwenswarm.gateway.tenant_paths import (
     normalize_channel_tenant_ids,
     resolve_channel_group_chat_memory_dir,
     tenant_ids_from_message,
+    workspace_key_from_channel_ids,
 )
 from tests.unit_tests.tenant_workspace_test_helpers import (
     patch_multi_tenant_workspace_dirs,
@@ -24,6 +25,12 @@ def test_normalize_channel_tenant_ids_defaults():
     assert normalize_channel_tenant_ids(None, None) == ("default", "default")
     assert normalize_channel_tenant_ids("", "  ") == ("default", "default")
     assert normalize_channel_tenant_ids("svc", "office") == ("svc", "office")
+
+
+def test_workspace_key_from_channel_ids():
+    assert workspace_key_from_channel_ids(None, None) == "default"
+    assert workspace_key_from_channel_ids("default", "office") == "default_office"
+    assert workspace_key_from_channel_ids("svc", "bot") == "svc_bot"
 
 
 def test_message_store_lazy_paths_isolate_tenants(tmp_path, monkeypatch):
@@ -45,17 +52,16 @@ def test_message_store_lazy_paths_isolate_tenants(tmp_path, monkeypatch):
     )
 
     office_file = (
-        resolve_channel_group_chat_memory_dir("default", "office") / "chat_a.json"
+        resolve_channel_group_chat_memory_dir("default_office") / "chat_a.json"
     )
     default_file = (
-        resolve_channel_group_chat_memory_dir("default", "default") / "chat_a.json"
+        resolve_channel_group_chat_memory_dir("default") / "chat_a.json"
     )
     assert office_file.exists()
     assert default_file.exists()
     assert office_file != default_file
-    assert "agent_office" in str(office_file)
-    assert "service_default" in str(office_file)
-    assert "agent_default" in str(default_file)
+    assert office_file.parts[-6] == "workspace_default_office"
+    assert default_file.parts[-6] == "workspace_default"
 
     office_hist = store.load_memory(
         "chat_a", service_id="default", agent_id="office"
@@ -76,7 +82,7 @@ def test_message_store_omitted_tenant_uses_default_tree(tmp_path, monkeypatch):
         "chat_b",
         {"message_id": "1", "content": "x", "open_id": "", "timestamp": 1},
     )
-    path = resolve_channel_group_chat_memory_dir("default", "default") / "chat_b.json"
+    path = resolve_channel_group_chat_memory_dir("default") / "chat_b.json"
     assert path.exists()
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data[0]["content"] == "x"

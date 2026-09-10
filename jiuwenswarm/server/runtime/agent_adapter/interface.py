@@ -24,7 +24,8 @@ from typing import Any, AsyncIterator, Tuple
 from datetime import datetime, timedelta, timezone
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
-from jiuwenswarm.common.local_env_config import promote_staged_env, is_enterprise
+from jiuwenswarm.common.local_env_config import promote_staged_env
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.runtime.reload_result import ReloadResult
 from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     AgentAdapter,
@@ -43,6 +44,7 @@ from jiuwenswarm.server.runtime.session.permission_response_ledger import (
     PermissionResponseLedger,
 )
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.skill.workspace_provider import SkillWorkspaceProvider
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config, get_permissions_file_guard_workspace_access
 from jiuwenswarm.extensions.registry import ExtensionRegistry
@@ -592,6 +594,11 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_TEAMSKILLS_HUB_INSTALL: "handle_skills_team_skills_hub_install",
     ReqMethod.SKILLS_TEAMSKILLS_HUB_PUBLISH: "handle_skills_team_skills_hub_publish",
     ReqMethod.SKILLS_TEAMSKILLS_HUB_DELETE: "handle_skills_team_skills_hub_delete",
+    ReqMethod.SKILLS_SOURCE_PROVIDERS: "handle_skills_source_providers",
+    ReqMethod.SKILLS_SOURCE_SEARCH: "handle_skills_source_search",
+    ReqMethod.SKILLS_SOURCE_INSTALL: "handle_skills_source_install",
+    ReqMethod.SKILLS_UPDATES_CHECK: "handle_skills_updates_check",
+    ReqMethod.SKILLS_UPDATE: "handle_skills_update",
     ReqMethod.SKILLS_RETRIEVAL_STATUS: "handle_skills_retrieval_status",
     ReqMethod.SKILLS_RETRIEVAL_INDEX_BUILD: "handle_skills_retrieval_index_build",
     ReqMethod.SKILLS_RETRIEVAL_INDEX_CANCEL: "handle_skills_retrieval_index_cancel",
@@ -600,8 +607,11 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_EVOLUTION_STATUS: "handle_skills_evolution_status",
     ReqMethod.SKILLS_EVOLUTION_GET: "handle_skills_evolution_get",
     ReqMethod.SKILLS_EVOLUTION_SAVE: "handle_skills_evolution_save",
+    ReqMethod.SKILLS_ENTERPRISE_LIST: "handle_skills_enterprise_list",
     ReqMethod.SKILLS_ENTERPRISE_INSTALL: "handle_skills_web_install",
     ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: "handle_skills_web_uninstall",
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: "handle_skills_source_providers",
+    ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: "handle_skills_source_search",
 }
 
 # Evolution version RPCs (archives/rollback/rebuild) are handled by DeepAdapter.
@@ -618,6 +628,18 @@ _SKILLS_WEB_HANDLERS: frozenset[str] = frozenset(
     {
         "handle_skills_web_install",
         "handle_skills_web_uninstall",
+    }
+)
+
+_SKILL_SOURCE_POLICY_ROUTES: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.SKILLS_SOURCE_PROVIDERS,
+        ReqMethod.SKILLS_SOURCE_SEARCH,
+        ReqMethod.SKILLS_SOURCE_INSTALL,
+        ReqMethod.SKILLS_UPDATES_CHECK,
+        ReqMethod.SKILLS_UPDATE,
+        ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS,
+        ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH,
     }
 )
 
@@ -863,7 +885,7 @@ def _enterprise_file_download_hint(language: str) -> str:
 
 
 def _normalize_files_for_agent_prompt(files: dict | list | Any) -> dict | list | Any:
-    """企业态：有 url 时去掉 Gateway 本地 path，避免 Agent 优先 read_file 失败。"""
+    """企业态：有 url 且尚未预落盘时去掉 Gateway 本地 path，避免 Agent 优先 read_file 失败。"""
     if not is_enterprise():
         return files
     if isinstance(files, list):
@@ -874,7 +896,8 @@ def _normalize_files_for_agent_prompt(files: dict | list | Any) -> dict | list |
                 continue
             updated = dict(file_info)
             file_url = str(updated.get("url") or updated.get("uri") or "").strip()
-            if file_url:
+            # materializer 成功后保留 path，供工具直接读本地 uploads/
+            if file_url and not updated.get("_materialized"):
                 updated.pop("path", None)
             normalized.append(updated)
         return normalized
@@ -1018,14 +1041,23 @@ class JiuWenSwarm:
         user_workspace_dir: str | None = None,
         agent_id: str | None = None,
         service_id: str | None = None,
+        skill_manager: SkillManager | None = None,
     ) -> None:
         self._adapter: AgentAdapter | None = None
         self._sdk_name: str | None = None
-        # 多租户：user_workspace_dir 为租户根（service_{sid}/agent_{aid}），再拼相对 workspace/sessions
+        # 多租户：user_workspace_dir 为 workspace_key 对应的用户根，再拼相对 workspace/sessions。
         enterprise = is_enterprise()
         self._agent_id = agent_id if enterprise else None
         self._service_id = service_id if enterprise else None
         tenant_root = user_workspace_dir or (workspace_dir if enterprise else None)
+        if enterprise and not tenant_root:
+            from jiuwenswarm.server.runtime.skill.workspace_provider import (
+                SkillWorkspaceUnavailable,
+            )
+
+            raise SkillWorkspaceUnavailable(
+                "enterprise tenant workspace could not be resolved"
+            )
         if tenant_root:
             user_ws = Path(tenant_root)
             self._workspace_dir = str(
@@ -1039,7 +1071,24 @@ class JiuWenSwarm:
                 collapse_nested_agent_workspace_dir(get_agent_workspace_dir())
             )
             self._sessions_dir = None
-        self._skill_manager = SkillManager(workspace_dir=self._workspace_dir)
+        workspace_provider = SkillWorkspaceProvider()
+        ready_workspace = workspace_provider.ensure(
+            self._workspace_dir,
+            require_valid_state=enterprise,
+        )
+        self._workspace_dir = str(ready_workspace.workspace_dir)
+        if skill_manager is not None:
+            self._skill_manager = skill_manager
+        else:
+            self._skill_manager, _created = workspace_provider.get_or_create_manager(
+                self._workspace_dir,
+                require_valid_state=enterprise,
+                factory=lambda ready: SkillManager(
+                    workspace_dir=str(ready.workspace_dir),
+                    service_id=self._service_id,
+                    agent_id=self._agent_id,
+                ),
+            )
         self._session_manager = SessionManager()
         self._permission_response_ledger = PermissionResponseLedger()
         # SkillDev 模式：懒初始化，首次 skilldev.* 请求时构造
@@ -1121,9 +1170,54 @@ class JiuWenSwarm:
         user_ws = getattr(self, "_user_workspace_dir", None)
         if user_ws is not None:
             return str(
-                collapse_nested_agent_workspace_dir(Path(user_ws) / "agent" / "workspace")
+                collapse_nested_agent_workspace_dir(
+                    Path(user_ws) / "agent" / "jiuwenclaw_workspace"
+                )
             )
         return str(collapse_nested_agent_workspace_dir(get_agent_workspace_dir()))
+
+    async def _materialize_enterprise_attachments(
+        self,
+        request: AgentRequest,
+        session_id: str,
+    ) -> None:
+        """企业版：将 URL 附件预下载到工作区 uploads/，写入 path 供工具使用。"""
+        if not is_enterprise():
+            return
+        if not isinstance(request.params, dict):
+            return
+
+        files = request.params.get("files")
+        if files is None:
+            return
+
+        from jiuwenswarm.server.runtime.enterprise_attachment_materializer import (
+            enterprise_files_need_download,
+            materialize_url_attachments,
+        )
+
+        if not enterprise_files_need_download(files if isinstance(files, (list, dict)) else None):
+            return
+
+        workspace_dir = self._resolve_workspace_dir()
+        param_project_dir = request.params.get("project_dir")
+        if isinstance(param_project_dir, str) and param_project_dir.strip():
+            workspace_dir = param_project_dir.strip()
+
+        materialized = await materialize_url_attachments(
+            files if isinstance(files, (list, dict)) else [],
+            workspace_dir,
+            request_id=request.request_id or "",
+        )
+        if materialized is not files:
+            params = dict(request.params)
+            params["files"] = materialized
+            request.params = params
+            logger.info(
+                "[JiuWenSwarm] enterprise attachments materialized: request_id=%s session_id=%s",
+                request.request_id,
+                session_id,
+            )
 
     def _bind_tenant_request_context(self) -> tuple[Any, Any]:
         from jiuwenswarm.server.runtime.tenant_context import bind_tenant_workspace_dirs
@@ -1132,6 +1226,7 @@ class JiuWenSwarm:
             bind_memory_workspace_dir,
         )
         from jiuwenswarm.common.local_env_config import bind_agent_env_ns
+        from jiuwenswarm.server.runtime.tenant_context import bind_workspace_key
 
         ws = Path(self._resolve_workspace_dir())
         agent_root = ws.parent
@@ -1152,13 +1247,18 @@ class JiuWenSwarm:
             or getattr(self, "_service_id", None)
             or "default"
         )
+        mem_wk = getattr(self, "_workspace_key", None) or "default"
         mem_aid_token = bind_memory_agent_id(str(mem_aid))
         env_ns_token = bind_agent_env_ns(str(mem_sid), str(mem_aid))
-        return tenant_tokens, (mem_ws_token, mem_aid_token, env_ns_token)
+        wk_token = bind_workspace_key(str(mem_wk))
+        return tenant_tokens, (mem_ws_token, mem_aid_token, env_ns_token, wk_token)
 
     @staticmethod
     def _reset_tenant_request_context(tenant_tokens: Any, mem_token: Any) -> None:
-        from jiuwenswarm.server.runtime.tenant_context import reset_tenant_workspace_dirs
+        from jiuwenswarm.server.runtime.tenant_context import (
+            reset_tenant_workspace_dirs,
+            reset_workspace_key,
+        )
         from jiuwenswarm.agents.harness.common.tools.memory_tools import (
             reset_memory_agent_id,
             reset_memory_workspace_dir,
@@ -1166,7 +1266,11 @@ class JiuWenSwarm:
         from jiuwenswarm.common.local_env_config import reset_agent_env_ns
 
         if isinstance(mem_token, tuple):
-            if len(mem_token) == 3:
+            if len(mem_token) == 4:
+                mem_ws_token, mem_aid_token, env_ns_token, wk_token = mem_token
+                reset_workspace_key(wk_token)
+                reset_agent_env_ns(env_ns_token)
+            elif len(mem_token) == 3:
                 mem_ws_token, mem_aid_token, env_ns_token = mem_token
                 reset_agent_env_ns(env_ns_token)
             else:
@@ -1207,6 +1311,7 @@ class JiuWenSwarm:
         adapter = self._ensure_adapter(mode=mode)
         setattr(adapter, "_env_service_id", getattr(self, "_env_service_id", "default"))
         setattr(adapter, "_env_agent_id", getattr(self, "_env_agent_id", "default"))
+        setattr(adapter, "_workspace_key", getattr(self, "_workspace_key", "default"))
         create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
         if config_base is not None:
             create_kwargs["config_base"] = config_base
@@ -1442,6 +1547,12 @@ class JiuWenSwarm:
             )
             if answers or is_explicit_ask_user_response:
                 request_id = params.get("request_id", "")
+                # ask_user 卡片序号后缀（{call_id}#{n}，区分同一外层调用的第 n 次
+                # 中断）在此剥掉，恢复 harness 原始 tool_call id 用于对齐
+                if isinstance(request_id, str):
+                    _m = re.search(r"^(?P<base>.+)#\d+$", request_id.strip())
+                    if _m and _m.group("base").strip():
+                        request_id = _m.group("base").strip()
                 raw_original_request = params.get("original_request") if source == "ask_user_interrupt" else ""
                 original_request = raw_original_request.strip() if isinstance(raw_original_request, str) else ""
                 interactive_input = self._build_interactive_input_from_answers(
@@ -1784,7 +1895,46 @@ class JiuWenSwarm:
 
         value = selected_options[0] if selected_options else ""
 
-        if value in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
+        # Skill 动态授权三动作协议（SkillApprovalCard）：显式 action 原样透传，
+        # 由 SkillAuthorizationRail._parse_answer_to_action 裁决（无法识别即拒绝）。
+        is_permission_interrupt = source == "permission_interrupt"
+        explicit_action = answer.get("action") if isinstance(answer, dict) else None
+        if is_permission_interrupt and explicit_action == "approve_session":
+            confirm_payload = {
+                "action": "approve_session",
+                "approved": True,
+                "auto_confirm": False,
+                "feedback": "",
+            }
+        elif is_permission_interrupt and explicit_action == "continue_without_overlay":
+            confirm_payload = {
+                "action": "continue_without_overlay",
+                "approved": False,
+                "auto_confirm": False,
+                "feedback": custom_input or "用户选择仅加载不授权",
+            }
+        elif is_permission_interrupt and explicit_action == "approve_once":
+            confirm_payload = {
+                "action": "approve_once",
+                "approved": True,
+                "auto_confirm": False,
+                "feedback": "",
+            }
+        elif is_permission_interrupt and "会话内允许" in selected_options:
+            confirm_payload = {
+                "action": "approve_session",
+                "approved": True,
+                "auto_confirm": False,
+                "feedback": "",
+            }
+        elif is_permission_interrupt and "仅加载不授权" in selected_options:
+            confirm_payload = {
+                "action": "continue_without_overlay",
+                "approved": False,
+                "auto_confirm": False,
+                "feedback": custom_input or "用户选择仅加载不授权",
+            }
+        elif value in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
             confirm_payload = {"approved": True, "auto_confirm": False, "feedback": ""}
         elif value in ("session_allow", "会话内记住", "Session Allow"):
             confirm_payload = {
@@ -1913,6 +2063,11 @@ class JiuWenSwarm:
         handler_name = _SKILL_ROUTES[request.req_method]
         handler = getattr(self._skill_manager, handler_name)
         try:
+            if is_enterprise() and request.req_method in _SKILL_SOURCE_POLICY_ROUTES:
+                adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+                prepare_sources = getattr(adapter, "prepare_skill_source_config", None)
+                if callable(prepare_sources):
+                    await prepare_sources(request)
             params = dict(request.params) if isinstance(request.params, dict) else {}
             if handler_name in _SKILLS_WEB_HANDLERS and is_enterprise():
                 if self._service_id and not str(params.get("service_id") or "").strip():
@@ -1927,6 +2082,8 @@ class JiuWenSwarm:
                 "handle_skills_skillnet_install",
                 "handle_skills_clawhub_download",
                 "handle_skills_team_skills_hub_install",
+                "handle_skills_source_install",
+                "handle_skills_update",
             ]
             _enterprise_web_handler = handler_name in _SKILLS_WEB_HANDLERS
             if handler_name == "handle_skills_skillnet_install" and payload.get("pending"):
@@ -2432,20 +2589,63 @@ class JiuWenSwarm:
 
         tenant_tokens, mem_token = self._bind_tenant_request_context()
         try:
-            # 兜底：注入上一轮 SkillTurbo 中断时保存的节点产物摘要，让 LLM 知道
-            # 「已完成的工作」而非盲目从头重跑。失败不阻断主流程。
-            # dev-stable 无 plan_pause / interrupt_resume prepare 链，此处只做最小子集。
-            prepare_interrupt_artifacts = getattr(
-                adapter, "prepare_interrupt_artifacts_for_request", None
-            )
-            if callable(prepare_interrupt_artifacts):
+            await self._materialize_enterprise_attachments(request, session_id)
+            # 中断恢复 prepare hook 链
+            permission_key = _permission_response_key(request)
+            hook_adapter = adapter
+            if (
+                getattr(adapter, "_instance", None) is None
+                and callable(getattr(adapter, "_get_or_create_session_adapter", None))
+                and session_id
+            ):
                 try:
-                    await prepare_interrupt_artifacts(request)
+                    hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
+                        session_id, request=request
+                    )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarm] prepare_interrupt_artifacts failed "
-                        "session_id=%s: %s", session_id, exc, exc_info=True,
+                        "[JiuWenClaw] resolve session-scoped hook_adapter failed "
+                        "session_id=%s: %s (falling back to root adapter)",
+                        session_id, exc, exc_info=True,
                     )
+                    hook_adapter = adapter
+            _adapter_instance = getattr(hook_adapter, "_instance", None)
+            logger.info(
+                "[JiuWenClaw] prepare-hook loop: session_id=%s permission_key=%s "
+                "hook_adapter=%s _instance=%s",
+                session_id,
+                "none" if permission_key is None else "non-none",
+                type(hook_adapter).__name__,
+                "None" if _adapter_instance is None else "bound",
+            )
+            if permission_key is None:
+                for hook_name, log_name in (
+                    ("prepare_plan_pause_for_request", "prepare_plan_pause"),
+                    ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
+                    ("prepare_interrupt_artifacts_for_request", "prepare_interrupt_artifacts"),
+                    ("prepare_stale_todo_cleanup_for_new_request", "prepare_stale_todo_cleanup"),
+                ):
+                    hook = getattr(hook_adapter, hook_name, None)
+                    if not callable(hook):
+                        logger.debug(
+                            "[JiuWenClaw] prepare-hook %s: not callable on %s",
+                            log_name, type(hook_adapter).__name__,
+                        )
+                        continue
+                    try:
+                        logger.debug("[JiuWenClaw] prepare-hook %s: calling session_id=%s", log_name, session_id)
+                        await hook(request)
+                        logger.debug("[JiuWenClaw] prepare-hook %s: ok session_id=%s", log_name, session_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenClaw] prepare-hook %s failed session_id=%s: %s",
+                            log_name, session_id, exc, exc_info=True,
+                        )
+            else:
+                logger.debug(
+                    "[JiuWenClaw] prepare-hook loop SKIPPED (permission continuation) session_id=%s",
+                    session_id,
+                )
             try:
                 inputs, memory_mode, raw_query = self._build_inputs(request)
             except _TeamPlanApprovalPayloadError as exc:
@@ -2471,7 +2671,6 @@ class JiuWenSwarm:
                 memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
                 inputs["memory_block"] = memory_block
 
-            permission_key = _permission_response_key(request)
             permission_reservation = None
             if permission_key is not None:
                 permission_reservation = self._permission_response_ledger.reserve(
@@ -2727,21 +2926,64 @@ class JiuWenSwarm:
 
         rid = request.request_id
         cid = request.channel_id
+        await self._materialize_enterprise_attachments(request, session_id)
         try:
-            # 兜底：注入上一轮 SkillTurbo 中断时保存的节点产物摘要，让 LLM 知道
-            # 「已完成的工作」而非盲目从头重跑。失败不阻断主流程。
-            # dev-stable 无 plan_pause / interrupt_resume prepare 链，此处只做最小子集。
-            prepare_interrupt_artifacts = getattr(
-                adapter, "prepare_interrupt_artifacts_for_request", None
-            )
-            if callable(prepare_interrupt_artifacts):
+            # 中断恢复 prepare hook 链
+            stream_permission_key = _permission_response_key(request)
+            hook_adapter = adapter
+            if (
+                getattr(adapter, "_instance", None) is None
+                and callable(getattr(adapter, "_get_or_create_session_adapter", None))
+                and session_id
+            ):
                 try:
-                    await prepare_interrupt_artifacts(request)
+                    hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
+                        session_id, request=request
+                    )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarm] prepare_interrupt_artifacts failed "
-                        "session_id=%s: %s", session_id, exc, exc_info=True,
+                        "[JiuWenClaw] resolve session-scoped hook_adapter failed "
+                        "session_id=%s: %s (falling back to root adapter)",
+                        session_id, exc, exc_info=True,
                     )
+                    hook_adapter = adapter
+            _adapter_instance = getattr(hook_adapter, "_instance", None)
+            logger.info(
+                "[JiuWenClaw] stream prepare-hook loop: session_id=%s permission_key=%s "
+                "hook_adapter=%s _instance=%s",
+                session_id,
+                "none" if stream_permission_key is None else "non-none",
+                type(hook_adapter).__name__,
+                "None" if _adapter_instance is None else "bound",
+            )
+            if stream_permission_key is None:
+                for hook_name, log_name in (
+                    ("prepare_plan_pause_for_request", "prepare_plan_pause"),
+                    ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
+                    ("prepare_interrupt_artifacts_for_request", "prepare_interrupt_artifacts"),
+                    ("prepare_stale_todo_cleanup_for_new_request", "prepare_stale_todo_cleanup"),
+                ):
+                    hook = getattr(hook_adapter, hook_name, None)
+                    if not callable(hook):
+                        logger.debug(
+                            "[JiuWenClaw] prepare-hook %s: not callable on %s",
+                            log_name, type(hook_adapter).__name__,
+                        )
+                        continue
+                    try:
+                        logger.debug("[JiuWenClaw] prepare-hook %s: calling session_id=%s", log_name, session_id)
+                        await hook(request)
+                        logger.debug("[JiuWenClaw] prepare-hook %s: ok session_id=%s", log_name, session_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenClaw] prepare-hook %s failed session_id=%s: %s",
+                            log_name, session_id, exc, exc_info=True,
+                        )
+            else:
+                logger.debug(
+                    "[JiuWenClaw] stream prepare-hook loop SKIPPED (permission continuation) session_id=%s",
+                    session_id,
+                )
             inputs, memory_mode, raw_query = self._build_inputs(request)
         except _TeamPlanApprovalPayloadError as exc:
             yield AgentResponseChunk(

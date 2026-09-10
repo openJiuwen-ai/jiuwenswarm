@@ -3,7 +3,7 @@
 """Transport-agnostic Web RPC host: method registry, history capture, handler invoke."""
 
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import inspect
 import ipaddress

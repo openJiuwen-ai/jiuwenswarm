@@ -82,12 +82,32 @@ def test_envelope_from_dict_preserves_officeclaw_tenant_ids():
     assert req.service_id == "default"
 
 
-def test_envelope_from_dict_derives_agent_id_from_agent_ref():
+def test_envelope_from_dict_does_not_derive_agent_id_from_agent_ref():
+    """agent_ref.id 是路由维，不能提升为租户 agent_id。"""
     env = E2AEnvelope.from_dict(
         {
             "request_id": "r-agent-ref",
             "channel_id": "officeclaw",
             "agent_ref": {"mode": "code", "id": "office"},
+            "params": {"query": "hi"},
+            "is_stream": True,
+            "method": "chat.send",
+        }
+    )
+    assert env.agent_ref == {"mode": "code", "id": "office"}
+    assert env.agent_id is None
+    req = e2a_to_agent_request(env)
+    assert req.agent_id is None
+    assert req.agent_ref == {"mode": "code", "id": "office"}
+
+
+def test_envelope_from_dict_keeps_explicit_top_level_agent_id():
+    env = E2AEnvelope.from_dict(
+        {
+            "request_id": "r-agent-top",
+            "channel_id": "officeclaw",
+            "agent_id": "office",
+            "agent_ref": {"mode": "code", "id": "default"},
             "params": {"query": "hi"},
             "is_stream": True,
             "method": "chat.send",

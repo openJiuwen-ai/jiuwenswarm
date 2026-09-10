@@ -243,8 +243,12 @@ interface ChatState {
   updateToolProgress: (sessionId: string, toolCallId: string, progress: Partial<ToolResult>) => void;
   addToolResult: (sessionId: string, toolResult: ToolResult, options?: { updatedAt?: string }) => void;
   markTimedOutExecutions: (sessionId: string) => void;
+  /** 打断（pause/cancel）时把仍 pending 的工具行标记为 timeout，并注入 "Interrupted by user" 合成结果。 */
+  markInterruptedExecutions: (sessionId: string) => void;
   /** 历史回放常只有 tool_call、无 tool_result：把仍 pending 的工具按 startedAt 结算，避免超时巡检用 now 污染耗时 */
   settleHistoricalToolExecutions: (sessionId: string) => void;
+  /** 企业版 HTTP/SSE 实时任务收到终止状态时，兜底结算仍未收到结果的工具。 */
+  settlePendingToolExecutions: (sessionId: string) => void;
   updateSubtask: (sessionId: string, payload: SubtaskUpdatePayload) => void;
   clearSubtasks: (sessionId: string) => void;
   clearMessages: (sessionId: string) => void;
@@ -1184,6 +1188,79 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ...execution,
           status: 'timeout',
           timedOutAt: new Date(now).toISOString(),
+        });
+      }
+      if (!changed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, toolExecutions: nextExecutions },
+        },
+      };
+    });
+  },
+
+  markInterruptedExecutions: (sessionId) => {
+    const nowIso = new Date().toISOString();
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      let changed = false;
+      const nextExecutions = new Map(runtime.toolExecutions);
+      for (const [toolCallId, execution] of nextExecutions) {
+        if (execution.status !== 'pending') {
+          continue;
+        }
+        changed = true;
+        nextExecutions.set(toolCallId, {
+          ...execution,
+          status: 'timeout',
+          timedOutAt: nowIso,
+          updatedAt: nowIso,
+          result: execution.result ?? {
+            toolCallId,
+            toolName: execution.toolCall.name,
+            result: 'Interrupted by user',
+            success: false,
+            summary: 'Interrupted',
+          },
+        });
+      }
+      if (!changed) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            toolExecutions: nextExecutions,
+            activeSubtasks: new Map(),
+          },
+        },
+      };
+    });
+  },
+
+  settlePendingToolExecutions: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      let changed = false;
+      const nextExecutions = new Map(runtime.toolExecutions);
+      for (const [toolCallId, execution] of nextExecutions) {
+        if (execution.status !== 'pending') continue;
+        changed = true;
+        const result = execution.result ?? {
+          toolName: execution.toolCall.name,
+          result: '',
+          success: true,
+          toolCallId,
+          summary: 'Task completed without a separate tool result event',
+        };
+        nextExecutions.set(toolCallId, {
+          ...execution,
+          result,
+          status: 'completed',
+          updatedAt: execution.updatedAt || execution.startedAt,
         });
       }
       if (!changed) return state;

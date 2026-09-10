@@ -7,7 +7,6 @@ import uuid
 from typing import Any
 
 from jiuwenswarm.gateway.config.section import (
-    DbBodySectionCodec,
     SectionDocument,
     SectionDocumentRepository,
     YamlSectionCodec,
@@ -77,7 +76,7 @@ class PermissionsConfigRepository:
     def __init__(
         self,
         store: PersistentStore,
-        codec: YamlSectionCodec | DbBodySectionCodec,
+        codec: YamlSectionCodec,
         *,
         instance_id: str = "",
     ) -> None:
@@ -100,7 +99,7 @@ class PermissionsConfigRepository:
         *,
         source: str = "manager",
     ) -> SectionDocument:
-        """Manager WS upsert：整段替换 body 并递增 revision。"""
+        """企业配置 upsert：整段替换 body 并递增 revision。"""
         existing = await self.get()
         document = SectionDocument(
             body=dict(body),

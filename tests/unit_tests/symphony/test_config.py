@@ -7,14 +7,14 @@ def test_symphony_config_defaults_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(
         symphony_config,
         "get_agent_workspace_dir",
-        lambda: tmp_path / "agent" / "workspace",
+        lambda: tmp_path / "agent" / "jiuwenclaw_workspace",
     )
 
     cfg = symphony_config.symphony_config_from_dict({})
 
-    assert cfg.paths.skills_root == (tmp_path / "agent" / "workspace" / "skills").resolve()
+    assert cfg.paths.skills_root == (tmp_path / "agent" / "jiuwenclaw_workspace" / "skills").resolve()
     assert cfg.paths.score_dir == (
-        tmp_path / "agent" / "workspace" / "symphony" / "score"
+        tmp_path / "agent" / "jiuwenclaw_workspace" / "symphony" / "score"
     ).resolve()
     assert cfg.fingerprint.scan.max_depth is None
     assert cfg.fingerprint.extraction.body_limit is None

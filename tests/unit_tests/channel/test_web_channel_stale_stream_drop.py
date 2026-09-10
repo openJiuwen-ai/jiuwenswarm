@@ -1,6 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Stale ws_id stream events must not session-fallback into another peer."""
+"""Stale ws_id stream events must not session-fallback into another peer.
+
+Covers chat.delta and chat.processing_status (both request-scoped).
+"""
 
 from __future__ import annotations
 
@@ -109,7 +112,9 @@ async def test_live_ws_id_chat_delta_still_delivers():
 
 
 @pytest.mark.asyncio
-async def test_stale_ws_id_processing_status_still_session_fallbacks():
+async def test_stale_ws_id_processing_status_does_not_fallback_to_session_peer():
+    # 与 chat.delta 一致：旧 HTTP SSE 的 processing_status 不得 session 兜底进新 outbound，
+    # 否则企业版 SSE 会被异 rid 的 is_processing=false 误结束。
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     live = _FakeClient()
     routing_key = RoutingKey(
@@ -122,6 +127,27 @@ async def test_stale_ws_id_processing_status_still_session_fallbacks():
     await channel.register_ws(live, routing_key)
     try:
         await channel.send(_status_msg(session_id="sess-1", ws_id="dead-outbound"))
+        await asyncio.sleep(0.03)
+        assert live.frames == []
+    finally:
+        await channel.unregister_ws(live)
+
+
+@pytest.mark.asyncio
+async def test_live_ws_id_processing_status_still_delivers():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    live = _FakeClient()
+    routing_key = RoutingKey(
+        channel_id="web",
+        app_id="default",
+        user_id="u1",
+        session_id="sess-1",
+        agent_ref=None,
+    )
+    await channel.register_ws(live, routing_key)
+    try:
+        ws_id = str(getattr(live, "_jiuwen_ws_id", "") or "")
+        await channel.send(_status_msg(session_id="sess-1", ws_id=ws_id))
         await _flush(live)
         assert live.frames
         assert live.frames[0]["event"] == "chat.processing_status"

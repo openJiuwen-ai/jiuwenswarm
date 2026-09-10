@@ -176,7 +176,7 @@ def _parse_cli_path(output: str) -> str:
 def _normalize_ppt_session_parent(path: Path) -> Path:
     """PPT 时间戳目录的父路径：智能体工作空间本身，不再套一层 workspace。
 
-    智能体工作空间是 ``.../agent/workspace``（部分环境为 ``.../agent/jiuwenclaw_workspace``）。
+    智能体工作空间是 ``.../agent/jiuwenclaw_workspace``（历史布局为 ``.../agent/workspace``）。
     历史兜底 ``{cwd}/workspace`` 会在工作空间已叫 workspace 时变成
     ``.../agent/workspace/workspace``。
     """

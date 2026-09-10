@@ -109,6 +109,17 @@ def _required(value: Any, field_name: str) -> str:
     return text
 
 
+def _is_bool_network_policy(policy: Any) -> bool:
+    if policy is None:
+        return True
+    if not isinstance(policy, dict):
+        return False
+    for value in policy.values():
+        if not isinstance(value, bool):
+            return False
+    return True
+
+
 def _positive_seconds(value: Any) -> float:
     try:
         parsed = float(value)
@@ -212,8 +223,11 @@ class A2AOutboundAgent:
     pending_revision: dict[str, Any] | None = None
     created_at: str = ""
     updated_at: str = ""
+    network_policy: dict[str, bool] | None = None
 
     def validate(self) -> "A2AOutboundAgent":
+        if not _is_bool_network_policy(self.network_policy):
+            raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
         for name in (
             "agent_id",
             "display_name",
@@ -266,6 +280,7 @@ class A2AOutboundAgent:
                 card_fingerprint=str(record.get("card_fingerprint") or "").strip(),
                 card_revision=int(record.get("card_revision") or 0),
                 agent_card=dict(record.get("agent_card") or {}),
+                network_policy=record.get("network_policy"),
                 selected_interface=A2ACompatibleInterface.from_dict(
                     dict(record.get("selected_interface") or {})
                 ),
@@ -310,6 +325,8 @@ class A2AOutboundDispatch:
     source_session_id: str
     created_at: str
     updated_at: str
+    agent_name: str | None = None
+    source_resource_id: str | None = None
     remote_task_id: str | None = None
     remote_context_id: str | None = None
     accepted_at: str | None = None
@@ -367,6 +384,8 @@ class A2AOutboundDispatch:
                 source_session_id=str(record.get("source_session_id") or "").strip(),
                 created_at=str(record.get("created_at") or ""),
                 updated_at=str(record.get("updated_at") or ""),
+                agent_name=record.get("agent_name"),
+                source_resource_id=record.get("source_resource_id"),
                 remote_task_id=record.get("remote_task_id"),
                 remote_context_id=record.get("remote_context_id"),
                 accepted_at=record.get("accepted_at"),

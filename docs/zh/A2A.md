@@ -32,7 +32,7 @@
 | 项目 | Web | ACP | A2A（当前） |
 |------|-----|-----|-------------|
 | 绑定 | `WEB_HOST` / `WEB_PORT` / `WEB_PATH` | `ACP_GATEWAY_*` | `A2A_SERVER_*` |
-| 配置来源 | 环境变量 + CLI（`--host` 等） | 仅环境变量 | `.env` 兼容配置 + Web 管理 API |
+| 配置来源 | 环境变量 + CLI（`--host` 等） | 仅环境变量 | `.env` 配置 + Web 管理 API |
 | `.env` | `app_gateway` 启动时 `load_dotenv(get_env_file())`，即 `~/.jiuwenswarm/config/.env` | 同上 | 同上 |
 
 ---
@@ -62,6 +62,10 @@ uv sync --extra a2a
 | `A2A_SERVER_APP_DESCRIPTION` | `A2A ingress for JiuwenSwarm Gateway` | Agent Card `description` |
 | `A2A_SERVER_APP_VERSION` | `0.1.0` | Agent Card `version` |
 | `A2A_SERVER_EXPOSE_REASONING` | `true`（默认开启） | 开启后思考（reasoning）内容以 working 状态的 `TaskStatusUpdateEvent` 输出（见 §6.2）；设为 `false`/`0`/`no`/`off` 时直接丢弃 |
+| `A2A_SERVER_AUTH_TYPE` | `none` | `none` / `bearer` / `api_key` |
+| `A2A_SERVER_API_KEY_HEADER` | `X-API-Key` | API Key 使用的专用请求头名称 |
+| `A2A_SERVER_CARD_AUTH_REQUIRED` | `false` | 公开 Agent Card 是否也要求认证 |
+| `A2A_SERVER_API_KEY` | 空 | 安全凭据，沿用模型 API Key 的存储加解密机制 |
 
 AgentServer 连接仍由网关既有逻辑配置（例如 `AGENT_SERVER_URL` 等），与 A2A 监听端口独立。
 
@@ -92,6 +96,18 @@ Gateway Web HTTP 默认监听 `WEB_PORT + 2`（默认 `19002`），管理端点�
 | `POST` | `/api/v1/a2a/ingress:reload` | 使用已保存配置重建监听 |
 
 返回快照以 `desired_*` 表示持久化目标，以 `effective_*` 表示当前真实监听；异常时提供稳定错误码和可展示摘要。绑定 `0.0.0.0` 时页面会展示对外暴露告警。
+
+### 4.2 安全凭据
+
+在“入站配置 → 安全配置”选择 Bearer Token 或 API Key，输入或生成随机凭据。凭据要求 16–512 个可打印 ASCII 字符且不含空格；建议使用生成器产生的随机值。已保存凭据默认隐藏，点击输入框内的眼睛可查看或复制明文，刷新页面后仍可查看。存储沿用模型 API Key 的机制：配置了加密提供方时加密保存，否则保存原值。编辑界面通过专用 WebSocket 请求按需读取凭据；常规状态快照、HTTP GET 和失败响应不返回凭据，公开 Agent Card 不包含凭据或摘要，入站认证仅使用运行时摘要进行校验。
+
+- Bearer：调用方发送 `Authorization: Bearer <凭据>`。
+- API Key：调用方通过配置的专用请求头发送凭据，默认 `X-API-Key: <凭据>`。
+- 启用认证后，所有 JSON-RPC 操作（含流式、查询、取消）及扩展 Card 都需要认证。“允许匿名查看服务信息”默认开启，关闭后查看公开 Agent Card 也需要认证。Card 中会公布认证方案，不包含凭据。
+- 留空保留已有凭据；输入新值替换。要清除凭据，先选择“无认证”，再勾选清除。默认认证方式为无认证。
+- 页面“保存”统一执行保存并应用，正在运行的入站服务会重启并使用新凭据；“取消”放弃未保存的修改并恢复已保存配置及凭据。
+
+这是一组共享服务凭据，不提供调用方身份、逐任务访问隔离或 OAuth 登录。远程部署应通过 HTTPS 反向代理保护凭据传输。
 
 ---
 

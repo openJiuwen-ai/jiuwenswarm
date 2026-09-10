@@ -82,7 +82,7 @@ def e2a_to_agent_request(env: E2AEnvelope) -> AgentRequest:
         chat_id=env.chat_id,
         service_id=env.service_id,
         agent_id=env.agent_id,
-        workspace_dir=env.workspace_dir,
+        workspace_key=env.workspace_key,
         req_method=req_method,
         params=params,
         is_stream=bool(env.is_stream),

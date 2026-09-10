@@ -568,6 +568,77 @@ async def test_handle_command_mcp_list(server, fake_ws, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_handle_command_mcp_add_forbidden_in_enterprise(server, fake_ws, monkeypatch):
+    monkeypatch.setattr(mcp_handlers, "is_enterprise", lambda: True)
+    called = {"upsert": 0}
+
+    def _upsert(_payload):
+        called["upsert"] += 1
+        return _payload, True
+
+    patch_handler_name(monkeypatch, "upsert_mcp_server_in_config", _upsert)
+    request = AgentRequest(
+        request_id="req-mcp-add-ee",
+        channel_id="tui",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={
+            "action": "add",
+            "name": "demo",
+            "transport": "sse",
+            "url": "http://127.0.0.1:9000/sse",
+        },
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+
+    assert called["upsert"] == 0
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-mcp-add-ee",
+            "payload": {
+                "error": mcp_handlers._MCP_ENTERPRISE_FORBIDDEN,
+                "code": "MCP_FORBIDDEN",
+                "action": "add",
+            },
+            "ok": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_mcp_list_forbidden_in_enterprise(server, fake_ws, monkeypatch):
+    monkeypatch.setattr(mcp_handlers, "is_enterprise", lambda: True)
+    called = {"list": 0}
+
+    def _get_servers():
+        called["list"] += 1
+        return [{"name": "demo", "transport": "sse", "enabled": True}]
+
+    patch_handler_name(monkeypatch, "get_mcp_servers", _get_servers)
+    request = AgentRequest(
+        request_id="req-mcp-list-ee",
+        channel_id="tui",
+        req_method=ReqMethod.COMMAND_MCP,
+        params={"action": "list"},
+    )
+
+    await server.handle_command_mcp_for_test(fake_ws, request, asyncio.Lock())
+
+    assert called["list"] == 0
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-mcp-list-ee",
+            "payload": {
+                "error": mcp_handlers._MCP_ENTERPRISE_FORBIDDEN,
+                "code": "MCP_FORBIDDEN",
+                "action": "list",
+            },
+            "ok": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypatch):
     patch_handler_name(monkeypatch, "upsert_mcp_server_in_config", lambda payload: (payload, True),
     )

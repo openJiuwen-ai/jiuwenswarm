@@ -53,7 +53,11 @@ class MessageStore:
         service_id: str | None = None,
         agent_id: str | None = None,
     ) -> Path:
-        return resolve_channel_group_chat_memory_dir(service_id, agent_id)
+        from jiuwenswarm.gateway.tenant_paths import workspace_key_from_channel_ids
+
+        return resolve_channel_group_chat_memory_dir(
+            workspace_key_from_channel_ids(service_id, agent_id)
+        )
 
     def _get_memory_file_path(
         self,

@@ -1,9 +1,13 @@
 # Permissions 配置架构
 
-本文档描述 JiuWenClaw **工具权限（permissions）配置**的整体架构，涵盖标准版与企业版两种部署模式、**生效粒度**、配置读写链路、运行时判定框架，以及各模块职责对照。
+本文档描述 JiuWenSwarm **工具权限（permissions）配置**的整体架构：标准版 yaml、企业版 `permissions_template`、生效粒度、运行时判定框架。
 
 > 相关文档：[工具权限与安全防护](./工具权限与安全防护.md)  
-> 企业版 E2E 用例说明：[test_permissions_config.md](../../tests/system_tests/enterprise/test_permissions_config.md)
+> Manager ↔ Gateway 模板接口：[Gateway中和Manager交互的接口文档.md](./Gateway中和Manager交互的接口文档.md) §8
+
+> **迁移说明（2026-09）**：实例级表 / 应用配置 API `permissions_config` 已废弃。  
+> 企业策略改为 `permissions_template`，经 Agent `template_ref.permissions` 绑定到具体 Agent。  
+> Gateway yaml 段仍可能以 store 名 `permissions_config` 映射 `config.yaml::/permissions`（个人版读写），勿与已删的实例级 DB 表混淆。
 
 ---
 
@@ -12,164 +16,102 @@
 ```mermaid
 flowchart TB
     subgraph sources [配置来源]
-        YAML["config.yaml::permissions<br/>（默认 / 非企业 / DB 无记录时 fallback）"]
-        MDB[("manager.db<br/>permissions_config")]
-        GDB[("gateway.db / jiuwenswarm.db<br/>permissions_config")]
+        YAML["config.yaml::permissions<br/>标准版 / 无模板时 fallback"]
+        TPL[("permissions_template.body<br/>企业 Agent 级基线")]
+        OVL["session overlay<br/>企业会话内存叠加"]
     end
 
-    subgraph enterprise [企业版]
-        MREST["Claw Manager REST<br/>GET/PUT/DELETE /instances/{id}/permissions"]
-        MWS["Manager WS<br/>config.push permissions_config"]
-        MREST --> MDB
-        MDB --> MWS
-        MWS --> GDB
+    subgraph enterprise [企业版下发]
+        MREST["Manager REST<br/>/api/v1/permissions-templates"]
+        AREF["Agent template_ref.permissions"]
+        MREST --> TPL
+        AREF --> TPL
     end
 
     subgraph loader [统一加载层 config_loader.py]
+        AGENT["setup_permissions_agent_base(body)"]
         GET["get_effective_permissions_config()"]
-        RELOAD["reload_permissions_from_gateway_db()"]
+        BASE["get_base_permissions_config()"]
         APPLY["apply_permissions_config_payload()"]
         PERSIST["persist_permissions_mutate()"]
     end
 
-    subgraph entry [进程入口]
-        GW_START["app_gateway.py 冷启动"]
-        AS_START["app_agentserver.py 冷启动"]
-        GW_START --> RELOAD
-        AS_START --> RELOAD
-    end
+    TPL --> AGENT
+    AGENT --> BASE
+    YAML --> BASE
+    BASE --> GET
+    OVL --> GET
 
-    subgraph gw_ws [Gateway WS 热更新]
-        GWS_MOD["permissions_config.py<br/>写 GDB → _apply_permissions()"]
-        MWS --> GWS_MOD
-        GWS_MOD --> APPLY
-    end
-
-    GDB --> GET
-    GDB --> RELOAD
-    YAML --> GET
-    RELOAD --> APPLY
-
-    subgraph config_api [配置读写 API]
-        CFG["config.py<br/>get/update_permissions_*"]
-        RPC["config_rpc.py<br/>permissions.* RPC"]
-        WEB["app_web_handlers.py<br/>Web UI 转发"]
-        CFG --> PERSIST
-        RPC --> CFG
-        WEB --> RPC
-    end
-
-    PERSIST --> GDB
-    PERSIST --> YAML
-
-    subgraph runtime [运行时权限判定（仅 AgentServer 进程）]
-        INIT["init_permission_engine()"]
-        RAIL["PermissionInterruptRail<br/>工具调用前拦截"]
+    subgraph runtime [运行时权限判定（仅 AgentServer）]
+        RAIL["PermissionInterruptRail"]
         ENGINE["PermissionEngine.check_permission()"]
-        A["管线 A: tiered_policy<br/>工具档位 + Shell 规则"]
-        B["管线 B: file_guard<br/>文件路径三轴"]
-        CI["command_intent<br/>L1 shlex + L3 LLM"]
+        A["管线 A: tiered_policy"]
+        B["管线 B: file_guard"]
     end
 
-    GET --> INIT
-    GET --> CFG
-    APPLY --> ENGINE
-    PERSIST --> ENGINE
-    INIT --> ENGINE
+    GET --> RAIL
     RAIL --> ENGINE
     ENGINE --> A
     ENGINE --> B
-    CI --> B
     A --> DEC{"allow / ask / deny"}
     B --> DEC
-    DEC -->|ASK| HITL["审批卡 / ConfirmInterrupt"]
-    DEC -->|ALLOW| EXEC["执行工具"]
-    DEC -->|DENY| REJECT["拒绝"]
-    HITL -->|总是允许| PERSIST
 ```
-
-
 
 ---
 
 ## 二、两种部署模式
 
 
-| 模式      | 判定条件               | 读取来源                                                | 写入目标                                                                     |
-| ------- | ------------------ | --------------------------------------------------- | ------------------------------------------------------------------------ |
-| **标准版** | `JIUWENSWARM_EDITION` 非 `enterprise` | 仅 `config.yaml::permissions`                        | 写回 `config.yaml`                                                         |
-| **企业版** | `JIUWENSWARM_EDITION=enterprise` | `gateway.db` 有行 → 用 DB 整段 `body`；无行 → fallback YAML | Manager REST → `manager.db` → WS → `gateway.db`；运行时审批持久化直接写 `gateway.db` |
+| 模式 | 判定条件 | 读取来源 | 写入目标 |
+| --- | --- | --- | --- |
+| **标准版 / 单机** | `JIUWENSWARM_EDITION` 非 `enterprise` | `config.yaml::permissions` | 写回 `config.yaml` |
+| **企业版** | `JIUWENSWARM_EDITION=enterprise` | Agent 模板 `permissions` 槽位 body 优先；无模板回落 yaml；可叠加会话 overlay | 改策略写 `permissions_template`；会话 overlay 仅内存；base persist 不再写实例表 |
 
 
-**核心入口**：`jiuwenclaw/agentserver/permissions/config_loader.py`
+**核心入口**：`jiuwenswarm/agents/harness/common/rails/permissions/config_loader.py`
 
 
-| 函数                                     | 职责                                                                                       |
-| -------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `is_enterprise()`                      | 判断 `JIUWENSWARM_EDITION` 是否为 `enterprise`                                                |
-| `get_effective_permissions_config()`   | 返回当前生效的 permissions 段（带进程内缓存）；async 上下文且 `force_reload` 时不跨 loop 读 GDB，有缓存用缓存、无缓存回落 YAML |
-| `reload_permissions_from_gateway_db()` | **仅冷启动**：async 读 GDB → `apply_permissions_config_payload()`                              |
-| `apply_permissions_config_payload()`   | **热 apply**（同 `logging_config`）：直接用 payload / YAML fallback 更新缓存与引擎，**不在此路径二次读 GDB**     |
-| `persist_permissions_mutate()`         | 变更并持久化（企业写 GDB，标准写 YAML）                                                                 |
-| `clear_permissions_config_cache()`     | 写操作后清缓存                                                                                  |
+| 函数 | 职责 |
+| --- | --- |
+| `setup_permissions_agent_base()` | 绑定当前 Task 的 Agent 级模板 body |
+| `resolve_permissions_body_from_enterprise()` | 从企业配置 `permissions` 槽位取首个启用模板 body |
+| `get_base_permissions_config()` | Agent base 优先，否则 yaml（**不再读实例级 permissions_config 表**） |
+| `get_effective_permissions_config()` | 企业版：base + 会话 overlay；其他：yaml/base |
+| `apply_permissions_config_payload()` | 刷新进程缓存（显式 body 或 yaml fallback） |
+| `reload_permissions_from_gateway_db()` | 冷启动：仅刷新为 yaml fallback（模板在请求路径注入） |
+| `persist_permissions_mutate()` | 标准版写 yaml；企业 session 写 overlay；企业 base 仅内存 |
+| `clear_permissions_config_cache()` | 清进程缓存 |
 
 
 ---
 
 ## 三、生效粒度
 
-permissions **不是按单个 agent 配置**，而是按 **Gateway 实例（`jiuwenclaw_id`）/ AgentServer 进程** 生效。下表汇总各层级的粒度与职责边界。
+
+| 层级 | 粒度 | 说明 |
+| --- | --- | --- |
+| **企业配置存储** | `permissions_template` 行 | Manager / Gateway 模板表；经 Agent `template_ref.permissions` 引用 |
+| **标准配置存储** | 进程 yaml | `config.yaml::permissions`（Gateway store 名仍可能叫 `permissions_config`） |
+| **Agent 基线** | 每个 Agent 实例 | `interface_deep` 解析模板 body → `setup_permissions_agent_base` / `_agent_permissions_body` |
+| **会话 overlay** | 企业版 `session_id` | 内存叠加，不写实例表 |
+| **实际拦截** | 仅 AgentServer | `PermissionInterruptRail` → `check_permission()` |
 
 
-| 层级        | 粒度                           | 说明                                                                                             |
-| --------- | ---------------------------- | ---------------------------------------------------------------------------------------------- |
-| **配置存储**  | 每个 `jiuwenclaw_id` 一份        | 企业版：`gateway.db` / `jiuwenswarm.db` 的 `permissions_config.body`；标准版：`config.yaml::permissions` |
-| **配置缓存**  | 每个进程一份                       | `config_loader` 进程内缓存；Gateway 与 AgentServer 各自独立                                               |
-| **运行时引擎** | 每个 **AgentServer 进程** 一个全局单例 | `PermissionEngine`（`core.py` 中 `_permission_engine`）；同进程内所有 agent 共用                           |
-| **实际拦截**  | 仅 **AgentServer**            | `PermissionInterruptRail` → `check_permission()`；Gateway 只加载/同步配置，不校验工具调用                      |
+### 请求级叠加
 
 
-### 同进程内多个 agent
-
-一个 AgentServer 进程内即使有多个 agent（不同 session / 不同 `create_instance`），也**共享同一份** `permissions` 配置与同一个 `PermissionEngine`。`create_instance` 时调用 `init_permission_engine(get_effective_permissions_config())`，更新的是进程级单例，**不会**按 agent id 分叉配置。
-
-### 多个 AgentServer 进程
-
-同一 `jiuwenclaw_id` 下的多个 AgentServer 进程：
-
-- **持久化层**：共用 GDB（或标准版同一份 `config.yaml`）中的同一条 `permissions_config` 记录。
-- **内存层**：各进程各自持有 `config_loader` 缓存与 `PermissionEngine` 实例，**不共享**运行时对象。
-
-
-| 变更场景                            | 已在运行的 AgentServer 是否立刻一致                                    |
-| ------------------------------- | ----------------------------------------------------------- |
-| **冷启动**（新拉起进程）                  | ✅ 会 `reload_permissions_from_gateway_db()` 读到 GDB 最新 `body` |
-| **Manager PUT 热更新**             | ❌ 仅热更新 Gateway 进程；已在跑的 AgentServer **不订阅 Manager WS**       |
-| **某 AgentServer 审批「总是允许」写 GDB** | ❌ 其他已在跑的 AgentServer **不会**自动感知                             |
-| **本进程 `permissions.`* RPC**     | ✅ 仅更新发起 RPC 的该 AgentServer 进程内存                             |
-
-
-已在运行的 AgentServer 要与 Manager 下发或 GDB 最新内容对齐，需**重启该进程**，或经 Web `permissions.`* RPC / 本进程审批持久化更新本机引擎（见 [五、企业版配置同步链路](#五企业版配置同步链路)）。
-
-不同 `jiuwenclaw_id` 的 AgentServer 对应 GDB 中不同的 `permissions_config` 行，**不是同一份配置**。
-
-### 请求级差异化（非 per-agent）
-
-当前架构**不支持**「每个 agent 独立一套 permissions」。若需在同一实例内做差异化，仅在**请求上下文**层叠加，均基于同一份全局配置：
-
-
-| 机制               | 匹配维度                               | 作用                                |
-| ---------------- | ---------------------------------- | --------------------------------- |
-| `owner_scopes`   | `channel_id` + `principal_user_id` | 数字分身场景；与全局权限取交集，`ask` 可降级为 `deny` |
-| `channel_id` 白名单 | `PERMISSION_ENABLED_CHANNELS`      | 部分 channel 可跳过权限检查                |
-| `session_id`     | 单次会话                               | 审批状态 / 日志归因，不改变配置本身               |
+| 机制 | 匹配维度 | 作用 |
+| --- | --- | --- |
+| `owner_scopes` | `channel_id` + `principal_user_id` | 与基线取交集，`ask` 可降级为 `deny` |
+| `channel_id` 白名单 | `PERMISSION_ENABLED_CHANNELS` | 部分 channel 可跳过权限检查 |
+| `session_id` | 单次会话 | 企业 overlay / 审批归因 |
 
 
 ---
 
 ## 四、配置存储结构
 
-`permissions` 段在 **YAML** 与 **DB `body` JSON** 中结构一致：
+`permissions` 段在 **YAML** 与 **模板 `body` JSON** 中结构一致：
 
 ```yaml
 permissions:
@@ -193,19 +135,20 @@ permissions:
   external_directory: {...}    # 旧键，加载时自动迁移到 file_guard.global
 ```
 
-### 数据库表 `permissions_config`
+### 企业表 `permissions_template`（替代已废弃的 `permissions_config`）
 
 
-| 字段                          | 类型       | 说明                                              |
-| --------------------------- | -------- | ----------------------------------------------- |
-| `jiuwenclaw_id`             | string   | Gateway 实例 ID（唯一）                               |
-| `body`                      | json     | 完整 permissions 段                                |
-| `source`                    | string   | `manager` / `runtime_persist` / `cli_add_dir` 等 |
-| `revision`                  | integer  | 变更版本                                            |
-| `created_at` / `updated_at` | datetime | 时间戳                                             |
+| 字段 | 说明 |
+| --- | --- |
+| `template_id` | 模板唯一 ID |
+| `template_name` / `description` | 展示信息 |
+| `enabled` | 是否启用 |
+| `body` | 完整 permissions 段 |
+| `data` | 扩展元数据 |
 
 
-`manager.db` 与 `gateway.db` 同构；Manager 为权威写入源，Gateway 为运行时读库。
+接口细节见 [Gateway中和Manager交互的接口文档.md](./Gateway中和Manager交互的接口文档.md) §8。  
+实例级 `permissions_config` 表与 `/api/v1/instances/{id}/permissions` **已移除**。
 
 ---
 
@@ -213,77 +156,42 @@ permissions:
 
 ```mermaid
 sequenceDiagram
-    participant UI as Manager / Web UI
+    participant UI as Manager Web
     participant MREST as Manager REST
     participant MDB as manager.db
-    participant MWS as Manager WS
-    participant GWS as Gateway permissions_config
-    participant GDB as gateway.db / jiuwenswarm.db
-    participant CL as config_loader
-    participant GPE as Gateway PermissionEngine
-    participant AS as AgentServer 进程
-    participant APE as AgentServer PermissionEngine
+    participant GW as Gateway HTTP Receiver
+    participant GDB as gateway.db
+    participant AS as AgentServer
+    participant CL as config_loader / PermissionRail
 
-    Note over UI,APE: ① upsert 热更新（先 Manager DB，再 Gateway）
-    UI->>MREST: PUT /instances/{id}/permissions {body}
-    MREST->>MDB: upsert permissions_config
-    MREST->>MWS: push op=upsert
-    MWS->>GWS: config.push
-    GWS->>GDB: upsert permissions_config
-    GWS->>CL: apply_permissions_config_payload(body)
-    Note over CL: 不二次读 GDB，同 logging_config
-    CL->>GPE: update_config(body)
-    Note over AS,APE: 已在运行的 AgentServer 不接收 WS，内存不变
+    Note over UI,CL: ① 模板 CRUD / 推送
+    UI->>MREST: /api/v1/permissions-templates
+    MREST->>MDB: upsert permissions_template
+    MREST->>GW: HTTP 推送 permissions_templates
+    GW->>GDB: upsert permissions_template
 
-    Note over UI,APE: ② 冷启动（Gateway / 新 AgentServer）
-    AS->>CL: reload_permissions_from_gateway_db()
-    CL->>GDB: get by JIUWENCLAW_ID
-    alt DB 有 body
-        CL->>APE: apply payload → update_config
-    else DB 无记录 / 读库失败
-        CL->>APE: delete 语义 → YAML fallback
-    end
+    Note over UI,CL: ② Agent 绑定槽位
+    UI->>MREST: Agent template_ref.permissions = template_id
+    MREST->>GW: 推送 agent 资源 / 模板引用
+    AS->>CL: resolve body → setup_permissions_agent_base
+    CL->>CL: build/update PermissionRail
 
-    Note over UI,APE: ③ delete（先 Gateway，后 Manager DB）
-    UI->>MREST: DELETE /instances/{id}/permissions
-    MREST->>MWS: push op=delete
-    MWS->>GWS: config.push
-    GWS->>GDB: delete row
-    GWS->>CL: apply_permissions_config_payload(delete)
-    CL->>GPE: YAML fallback
-    MREST->>MDB: delete row
-
-    Note over UI,APE: ④ 运行时「总是允许」（AgentServer 写 GDB）
-    APE->>CL: persist_permissions_mutate()
-    CL->>GDB: upsert body（source=runtime_persist）
-    CL->>APE: update_config()
+    Note over UI,CL: ③ 无模板时
+    AS->>CL: 回落 config.yaml::permissions
 ```
 
+### Manager / Gateway 职责
 
 
-### Manager REST API
+| 职责 | Manager | Gateway | AgentServer |
+| --- | --- | --- | --- |
+| `permissions_template` CRUD / 推送 | ✅ | 收 HTTP 写 GDB | — |
+| Agent `template_ref.permissions` 绑定 | ✅ | 存 Agent 资源 | 解析 body 注入 Task |
+| 工具调用前校验 | — | ❌ | ✅ |
+| 标准版 yaml 读写 | — | store `/permissions` | `persist` 写 yaml |
 
 
-| 方法       | 路径                                              | 说明                                                     |
-| -------- | ----------------------------------------------- | ------------------------------------------------------ |
-| `GET`    | `/api/v1/instances/{jiuwenclaw_id}/permissions` | 读 manager.db；无记录 404                                   |
-| `PUT`    | `/api/v1/instances/{jiuwenclaw_id}/permissions` | body 为完整 permissions 段；写 MDB → WS → GDB                |
-| `DELETE` | `/api/v1/instances/{jiuwenclaw_id}/permissions` | push delete → Gateway 删 GDB + YAML fallback → 再删 MDB 行 |
-
-
-### Gateway 与 AgentServer 职责
-
-
-| 职责                                       | Gateway  | AgentServer                     |
-| ---------------------------------------- | -------- | ------------------------------- |
-| Manager WS 收包写 GDB                       | ✅        | —                               |
-| `apply_permissions_config_payload` 热更新   | ✅（WS 触发） | ❌（不订阅 WS）                       |
-| `reload_permissions_from_gateway_db` 冷启动 | ✅        | ✅                               |
-| 工具调用前 `PermissionInterruptRail` 校验       | ❌        | ✅                               |
-| 审批「总是允许」写 GDB                            | 一般不执行    | ✅（`persist_permissions_mutate`） |
-
-
-**多 AgentServer 实例**：持久化共享、内存独立及同步时机见 [三、生效粒度](#三生效粒度)。
+Bootstrap **不再**单独 push 实例级 permissions；模板随 `sync_referenced_templates_to_gateway` 与 Agent 资源下发。
 
 ---
 
@@ -538,22 +446,17 @@ FileOperation(
 ## 七、模块与功能对照
 
 
-| 模块             | 路径                                                              | 功能                                                                                          |
-| -------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| **配置加载器**      | `jiuwenclaw/agentserver/permissions/config_loader.py`           | 企业/标准分流；GDB↔YAML fallback；冷启动/热更新；统一持久化                                                     |
-| **配置 API**     | `jiuwenclaw/config.py`                                          | `get_permissions_`* / `update_permissions_`*；内部走 loader                                     |
-| **权限引擎**       | `jiuwenclaw/agentserver/permissions/core.py`                    | 编排管线 A+B；`check_permission()` 主入口                                                           |
-| **工具/命令策略**    | `jiuwenclaw/agentserver/permissions/tiered_policy.py`           | `tools` / `rules` / `approval_overrides` / 内置 deny                                          |
-| **文件路径守卫**     | `jiuwenclaw/agentserver/permissions/file_guard.py`              | `file_guard` 三轴；审批后写 `global` / `trusted_exec_directory`                                    |
-| **命令意图**       | `jiuwenclaw/agentserver/permissions/command_intent.py`          | 复杂 Shell 路径抽取（`command_intent.enabled`）                                                     |
-| **Shell 工具定义** | `jiuwenclaw/agentserver/permissions/shell_tools.py`             | `bash` / `mcp_exec_command` / `create_terminal`                                             |
-| **审批持久化**      | `jiuwenclaw/agentserver/permissions/patterns.py`                | 「总是允许」→ `approval_overrides` 或 `tools.`*                                                    |
-| **拦截 Rail**    | `jiuwenclaw/agentserver/deep_agent/rails/permission_rail.py`    | 工具调用前 HITL；读 effective config                                                               |
-| **RPC 入口**     | `jiuwenclaw/agentserver/permissions/config_rpc.py`              | Web/Agent `permissions.`* 方法                                                                |
-| **Manager 服务** | `packages/jiuwenclaw-ee/claw_manager/.../permissions_config.py` | REST 写 manager.db + WS 推送                                                                   |
-| **Gateway 同步** | `packages/jiuwenclaw-ee/gateway/.../permissions_config.py`      | WS 收包：先写 GDB，再 `_apply_permissions()` → `apply_permissions_config_payload()`（不 `reload` 读库） |
-| **冷启动**        | `jiuwenclaw/app_gateway.py` / `app_agentserver.py`              | 企业版时 `await reload_permissions_from_gateway_db()`                                    |
-| **权限校验进程**     | —                                                               | 仅 AgentServer：`PermissionInterruptRail` → `PermissionEngine`                                |
+| 模块 | 路径 | 功能 |
+| --- | --- | --- |
+| **配置加载器** | `jiuwenswarm/agents/harness/common/rails/permissions/config_loader.py` | Agent 模板 base / yaml fallback；会话 overlay；持久化 |
+| **权限 Rail 构建** | `jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py` | `build_permission_rail`；企业模板注入 |
+| **Agent 适配** | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | 解析 `template_ref.permissions` → Task 绑定 |
+| **RPC 入口** | `jiuwenswarm/agents/harness/common/rails/permissions/permissions_config_rpc.py` | Web/Agent `permissions.*` 方法 |
+| **审批持久化** | `jiuwenswarm/agents/harness/common/rails/permissions/permissions_persist.py` | 「总是允许」等写回 |
+| **yaml 段仓库** | `jiuwenswarm/gateway/config/permissions/` | store 名 `permissions_config` → `/permissions`（非实例表） |
+| **Manager 模板** | `manager_server/core/template/permissions_template.py` | `permissions_template` CRUD / 推送 |
+| **Gateway Receiver** | `packages/jiuwenclaw-ee/.../core/template/permissions_template.py` | HTTP 收模板写 GDB |
+| **权限校验进程** | — | 仅 AgentServer：`PermissionInterruptRail` → 判定引擎 |
 
 
 ---
@@ -592,24 +495,24 @@ FileOperation(
 flowchart TB
     subgraph read [读配置]
         R1["get_effective_permissions_config()"]
-        R2["config.get_permissions_tools() 等"]
-        R3["PermissionInterruptRail 首次判定读进程内缓存"]
-        R1 --> R2
+        R2["Agent template body / yaml"]
+        R3["PermissionInterruptRail"]
+        R2 --> R1
         R1 --> R3
     end
 
     subgraph write [写配置]
-        W1["Manager PUT /permissions"]
+        W1["Manager /api/v1/permissions-templates"]
         W2["Web UI permissions.* RPC"]
         W3["用户审批「总是允许」"]
         W4["CLI /add-dir"]
         W5["file_guard 路径审批记住"]
-        W1 --> GDB[(gateway.db)]
+        W1 --> TPL[(permissions_template)]
         W2 --> PERSIST["persist_permissions_mutate()"]
         W3 --> PERSIST
         W4 --> PERSIST
         W5 --> PERSIST
-        PERSIST --> STORE[GDB 或 config.yaml]
+        PERSIST --> STORE[会话 overlay / 内存 / config.yaml]
     end
 ```
 
@@ -617,23 +520,24 @@ flowchart TB
 
 ---
 
-## 十、进程栈（企业版 E2E）
+## 十、进程栈（企业版）
 
 ```
-Mock LLM ──HTTP──► AgentServer（子进程）
-                        ▲
-                        │ Runtime Process deploy
-Claw Manager ◄──WS──► Gateway ◄──WS──► 测试客户端 / Web UI
-     │                    │
-     │ REST               │ 共用 SQLite
-     ▼                    ▼
- manager.db          jiuwenswarm.db (GDB)
+Manager REST ──HTTP──► Gateway Receiver ──► gateway.db
+                              │
+                              │ WS / Runtime
+                              ▼
+                         AgentServer
+                              │
+                    template_ref.permissions
+                              ▼
+                    PermissionInterruptRail
 ```
 
-测试用例：`tests/system_tests/enterprise/test_permissions_config_process_e2e.py`
+企业模板接口见接口文档 §8；标准版仅 `config.yaml::permissions`。
 
 ---
 
 ## 十一、一句话总结
 
-**生效粒度**：按 `jiuwenclaw_id` 存一份配置，按 **AgentServer 进程** 加载一个 `PermissionEngine` 单例（**非 per-agent**）；同 `jiuwenclaw_id` 下多 AgentServer 共享 GDB、内存各自独立。**配置层**由 `config_loader` 统一做「企业 GDB 优先、YAML fallback」；热更新与 `logging_config` 同模式——**WS 路径只 `apply_permissions_config_payload`，冷启动才 `reload_permissions_from_gateway_db` 读 GDB**。**执行层**仅在 **AgentServer** 由 `PermissionEngine` 双管线判定；**企业版** Manager REST → MDB → WS → Gateway 写 GDB 并热更新 Gateway 内存，AgentServer 靠冷启动读共享 GDB（或本进程审批写库），**标准版**仍只读写 `config.yaml`。
+**企业版**：策略存在 `permissions_template`，经 Agent `template_ref.permissions` 绑定到具体 Agent，请求路径注入 `PERMISSIONS_AGENT_BASE`（可叠加会话 overlay）。**标准版 / 单机**：只读写 `config.yaml::permissions`。**执行层**仅在 AgentServer 由 PermissionRail / 引擎做 allow/ask/deny。实例级 `permissions_config` 表与对应 REST/WS 推送已废弃并移除。

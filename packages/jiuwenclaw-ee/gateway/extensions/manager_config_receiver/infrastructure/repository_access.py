@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from jiuwenswarm.gateway.config.enterprise.repository import EnterpriseRecordRepository
     from jiuwenswarm.gateway.config.logging.repository import LoggingConfigRepository
     from jiuwenswarm.gateway.config.memory.repository import MemoryConfigRepository
-    from jiuwenswarm.gateway.config.permissions.repository import PermissionsConfigRepository
 
 
 def require_enterprise_repository(store_name: str) -> EnterpriseRecordRepository:
@@ -27,7 +26,7 @@ def require_enterprise_repository(store_name: str) -> EnterpriseRecordRepository
         raise RuntimeError(
             f"EnterpriseRecordRepository {store_name!r} is not wired; "
             "ensure setup_gateway_storage_repositories / "
-            "wire_enterprise_manager_ws_store_async ran at Gateway startup"
+            "wire_enterprise_persistent_repositories_async ran at Gateway startup"
         )
     return repo
 
@@ -43,7 +42,7 @@ def require_cron_job_enterprise_repository() -> EnterpriseRecordRepository:
         return repo
     raise RuntimeError(
         "Enterprise cron_job repository is not wired; "
-        "ensure wire_enterprise_manager_ws_store_async ran at Gateway startup"
+        "ensure wire_enterprise_persistent_repositories_async ran at Gateway startup"
     )
 
 
@@ -57,20 +56,6 @@ def require_channel_repository() -> ChannelConfigRepository:
             "ChannelConfigRepository is not wired; "
             "ensure gateway.storage.repositories is enabled at startup"
         )
-    return repo
-
-
-def require_permissions_repository() -> PermissionsConfigRepository:
-    from jiuwenswarm.gateway.config.permissions.access import (
-        get_permissions_config_repository,
-    )
-    from jiuwenswarm.gateway.config.permissions.repository import (
-        PermissionsConfigRepository,
-    )
-
-    repo = get_permissions_config_repository()
-    if repo is None:
-        raise RuntimeError("PermissionsConfigRepository is not wired")
     return repo
 
 
@@ -100,5 +85,4 @@ __all__ = [
     "require_enterprise_repository",
     "require_logging_repository",
     "require_memory_repository",
-    "require_permissions_repository",
 ]

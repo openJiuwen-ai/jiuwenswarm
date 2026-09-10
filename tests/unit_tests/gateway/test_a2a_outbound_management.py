@@ -14,6 +14,9 @@ from jiuwenswarm.gateway.a2a_manager.outbound import (
     A2ADiscoveredAgent,
     A2AOutboundCredentialStore,
     A2AOutboundDiscoveryService,
+    A2AOutboundDispatch,
+    A2AOutboundDispatchMode,
+    A2AOutboundDispatchStatus,
     A2AOutboundError,
     A2AOutboundErrorCode,
     A2AOutboundRegistry,
@@ -38,6 +41,58 @@ class _SecretProbe:
 
     def delete(self, key: str) -> None:
         self.values.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_history_exposes_metadata_without_result_body() -> None:
+    registry, repository, _ = _registry()
+    await repository.create_dispatch(
+        A2AOutboundDispatch(
+            dispatch_id="disp-1",
+            agent_id="agent-1",
+            agent_revision=1,
+            mode=A2AOutboundDispatchMode.SYNC,
+            status=A2AOutboundDispatchStatus.COMPLETED,
+            request_message_id="msg-1",
+            source_session_id="session-1",
+            created_at="2026-08-27T01:00:00Z",
+            updated_at="2026-08-27T01:00:01Z",
+            finished_at="2026-08-27T01:00:01Z",
+            result={"text": "private response"},
+        )
+    )
+
+    history = await registry.list_dispatches(limit=200)
+
+    assert history["total"] == 1
+    assert history["items"][0]["dispatch_id"] == "disp-1"
+    assert history["items"][0]["updated_at"] == "2026-08-27T01:00:01Z"
+    assert "result" not in history["items"][0]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_history_total_counts_records_beyond_page_limit() -> None:
+    registry, repository, _ = _registry()
+    for index in range(2):
+        stamp = f"2026-08-27T01:00:0{index}Z"
+        await repository.create_dispatch(
+            A2AOutboundDispatch(
+                dispatch_id=f"disp-{index}",
+                agent_id="agent-1",
+                agent_revision=1,
+                mode=A2AOutboundDispatchMode.ASYNC,
+                status=A2AOutboundDispatchStatus.TIMED_OUT,
+                request_message_id=f"msg-{index}",
+                source_session_id="session-1",
+                created_at=stamp,
+                updated_at=stamp,
+            )
+        )
+
+    history = await registry.list_dispatches(limit=1)
+
+    assert len(history["items"]) == 1
+    assert history["total"] == 2
 
 
 class _FailingUpdateRepository(A2AOutboundRepository):
@@ -91,6 +146,10 @@ def _card(
 
 
 class _DiscoverySequence:
+    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+        self.allow_loopback = allow_loopback
+        self.allow_http = allow_http
+
     def __init__(self, *cards: DiscoveredCard) -> None:
         self.cards = list(cards)
 
@@ -257,6 +316,31 @@ async def test_noncritical_refresh_applies_new_card_revision_immediately() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_code", "availability"),
+    [
+        (A2AOutboundErrorCode.CARD_INVALID, "incompatible"),
+        (A2AOutboundErrorCode.CARD_FETCH_FAILED, "unreachable"),
+    ],
+)
+async def test_refresh_distinguishes_incompatible_from_unreachable(
+    monkeypatch, error_code, availability
+) -> None:
+    registry, _, _ = _registry(_card())
+    preview = await registry.discover("https://agent.example.com")
+    created = await registry.register({"discovery_id": preview["discovery_id"]})
+
+    async def fail_refresh(*_args, **_kwargs):
+        raise A2AOutboundError(error_code)
+
+    monkeypatch.setattr(registry._discovery, "discover", fail_refresh)
+    refreshed = await registry.refresh_agent(created["agent_id"])
+
+    assert refreshed["availability"] == availability
+    assert refreshed["last_error_code"] == error_code.value
+
+
+@pytest.mark.asyncio
 async def test_discovery_expiry_uses_injected_clock() -> None:
     now = [datetime(2026, 8, 26, tzinfo=timezone.utc)]
     registry, _, _ = _registry(_card(), now_factory=lambda: now[0])
@@ -282,12 +366,68 @@ async def test_credential_update_and_clear_are_persisted_together() -> None:
     assert persisted is not None
     assert updated["has_credential"] is True
     assert secrets.values[persisted.credential_ref] == "new-secret"
+    assert "credential" not in await registry.get_agent(created["agent_id"])
+    assert (await registry.edit_agent(created["agent_id"]))[
+        "credential"
+    ] == "new-secret"
+    assert "credential" not in (await registry.list_agents())["items"][0]
 
     cleared = await registry.update_agent(
         created["agent_id"], {"clear_credential": True}
     )
     assert cleared["has_credential"] is False
     assert secrets.values == {}
+    assert (await registry.edit_agent(created["agent_id"]))["credential"] == ""
+
+
+@pytest.mark.asyncio
+async def test_http_get_and_error_snapshots_never_include_saved_credentials():
+    from jiuwenswarm.gateway.a2a_manager import A2AIngressConfig, A2AManager
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+        WebHandlersBindParams,
+        _register_web_handlers,
+    )
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+        WebChannel,
+        WebChannelConfig,
+    )
+    from jiuwenswarm.gateway.channel_manager.web.web_http_app import create_web_http_app
+
+    secret = "test-http-secret-must-stay-private"
+    registry, _, _ = _registry(_card())
+    preview = await registry.discover("https://agent.example.com")
+    agent = await registry.register(
+        {"discovery_id": preview["discovery_id"], "credential": secret}
+    )
+    manager = A2AManager(
+        object(),
+        object(),
+        A2AIngressConfig().with_patch({"auth_type": "bearer", "credential": secret}),
+        outbound_registry=registry,
+    )
+    channel = WebChannel(
+        WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter()
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
+    transport = httpx.ASGITransport(app=create_web_http_app(channel))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        for path in [
+            "/a2a/ingress",
+            "/a2a/outbound/agents",
+            f"/a2a/outbound/agents/{agent['agent_id']}",
+        ]:
+            response = await http.get(f"/api/v1{path}")
+            assert response.status_code == 200
+            assert secret not in response.text
+            assert '"credential"' not in response.text
+            assert '"desired_credential"' not in response.text
+        failed = await http.patch(
+            "/api/v1/a2a/ingress", json={"config": {"rpc_path": "invalid"}}
+        )
+        assert failed.json()["ok"] is False
+        assert secret not in failed.text
+        assert '"credential"' not in failed.text
 
 
 @pytest.mark.asyncio
@@ -335,6 +475,48 @@ async def test_discovery_blocks_private_and_plain_http_targets() -> None:
     with pytest.raises(A2AOutboundError) as plain_error:
         await plain_service.discover("http://example.com")
     assert plain_error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("address,scheme,policy,allowed", [
+    ("192.168.1.27", "http", {"allow_http": True, "allow_private_network": True}, True),
+    ("192.168.1.27", "http", {"allow_private_network": True}, False),
+    ("192.168.1.27", "http", {"allow_http": True}, False),
+    ("10.0.0.8", "https", {"allow_private_network": True}, True),
+    ("127.0.0.1", "http", {"allow_http": True, "allow_private_network": True}, False),
+    ("127.0.0.1", "http", {"allow_http": True, "allow_loopback": True}, False),
+    ("93.184.216.34", "https", {}, True),
+    ("93.184.216.34", "http", {"allow_http": True}, False),
+    ("93.184.216.34", "http", {"allow_http": True, "allow_public_http": True}, True),
+    ("169.254.169.254", "http", {"allow_http": True, "allow_private_network": True}, False),
+    ("0.0.0.0", "https", {"allow_private_network": True}, False),
+    ("2001:4860:4860::8888", "https", {}, True),
+    ("2001:4860:4860::8888", "http", {}, False),
+    ("fc00::1", "https", {"allow_private_network": True}, False),
+    ("::ffff:192.168.1.1", "https", {"allow_private_network": True}, False),
+    ("::1", "http", {"allow_http": True, "allow_loopback": True}, False),
+    (["2001:4860:4860::8888", "93.184.216.34"], "https", {}, True),
+    (["93.184.216.34", "192.168.1.27"], "https", {"allow_private_network": True}, False),
+    (["2001:4860:4860::8888", "192.168.1.27"], "https", {"allow_private_network": True}, False),
+])
+async def test_enterprise_network_policy(address, scheme, policy, allowed):
+    addresses = address if isinstance(address, list) else [address]
+
+    async def resolver(host, port):
+        return addresses
+
+    service = A2AOutboundDiscoveryService(address_resolver=resolver, allow_loopback=True, allow_http=True)
+    if allowed:
+        target = await service.validate_network_target(
+            f"{scheme}://weather.example.com/a2a", network_policy=policy
+        )
+        assert target.pinned_address == addresses[0]
+    else:
+        with pytest.raises(A2AOutboundError) as error:
+            await service.validate_network_target(
+                f"{scheme}://weather.example.com/a2a", network_policy=policy
+            )
+        assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
 
 
 @pytest.mark.asyncio
@@ -543,3 +725,27 @@ def test_app_gateway_wires_outbound_repository_without_removed_edition_module():
     from jiuwenswarm.gateway.storage_assembly import create_a2a_outbound_repository
 
     assert callable(create_a2a_outbound_repository)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow_loopback", [False, True])
+@pytest.mark.parametrize("allow_http", [False, True])
+@pytest.mark.parametrize("scheme", ["http", "https"])
+@pytest.mark.parametrize("address", ["93.184.216.34", "127.0.0.1", "::1", "192.168.1.27"])
+async def test_personal_network_switches_are_independent(address, scheme, allow_loopback, allow_http):
+    async def resolver(host, port):
+        return [address]
+
+    service = A2AOutboundDiscoveryService(address_resolver=resolver)
+    service.set_network_settings(allow_loopback=allow_loopback, allow_http=allow_http)
+    allowed = (
+        (address == "93.184.216.34" or (allow_loopback and address in {"127.0.0.1", "::1"}))
+        and (scheme == "https" or allow_http)
+    )
+    if allowed:
+        target = await service.validate_network_target(f"{scheme}://agent.example.com/a2a")
+        assert target.pinned_address == address
+    else:
+        with pytest.raises(A2AOutboundError) as error:
+            await service.validate_network_target(f"{scheme}://agent.example.com/a2a")
+        assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED

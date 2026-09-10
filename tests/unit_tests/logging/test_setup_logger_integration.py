@@ -44,12 +44,21 @@ def test_dual_mode_creates_both(monkeypatch):
     assert "gateway.log" in names and "gateway.json" in names
 
 
-def test_file_handlers_have_identity_filter(monkeypatch):
+def test_queue_handler_has_identity_and_privacy_filters(monkeypatch):
+    """Identity / 脱敏必须挂在 QueueHandler（emit 线程），不能挂在 listener 文件 handler。"""
+    from jiuwenswarm.infrastructure.log_masking import SensitiveDataFilter
+
     monkeypatch.setenv("JIUWENSWARM_LOG_FORMAT", "text")
-    setup_logger()
+    root = setup_logger()
+    assert len(root.handlers) == 1
+    queue_handler = root.handlers[0]
+    assert type(queue_handler).__name__ == "QueueHandler"
+    assert any(isinstance(f, IdentityFieldFilter) for f in queue_handler.filters)
+    assert any(isinstance(f, SensitiveDataFilter) for f in queue_handler.filters)
     for h in utils._iter_log_output_handlers():
         if hasattr(h, "baseFilename"):
-            assert any(isinstance(f, IdentityFieldFilter) for f in h.filters)
+            assert not any(isinstance(f, IdentityFieldFilter) for f in h.filters)
+            assert not any(isinstance(f, SensitiveDataFilter) for f in h.filters)
 
 
 def test_text_file_handlers_have_user_visible_filter(monkeypatch):

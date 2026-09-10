@@ -813,6 +813,9 @@ class OfficeClawMcpRegistration:
     tool_ids: tuple[str, ...]
     tool_names: tuple[str, ...]
     tool_instances: tuple[RequestScopedOfficeClawMcpTool, ...] = ()
+    # Relay callback invocation id pinned into the MCP subprocess env for this
+    # request (OFFICE_CLAW_INVOCATION_ID). Empty when unknown / not office-claw.
+    invocation_id: str = ""
 
 
 # Request-scoped long-lived MCP worker pool
@@ -1320,6 +1323,45 @@ def get_live_office_claw_allowlist_for_tool_instance(
         return _live_office_claw_tool_instances.get(tool)
 
 
+def _office_claw_invocation_id_from_params(params: Mapping[str, Any] | None) -> str:
+    """Extract OFFICE_CLAW_INVOCATION_ID from MCP connect params, if present."""
+
+    if not isinstance(params, Mapping):
+        return ""
+    env = params.get("env")
+    if not isinstance(env, Mapping):
+        return ""
+    return str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
+
+
+def resolve_active_office_claw_invocation_id() -> str | None:
+    """Return the callback invocation id owned by the active allowlist, if known.
+
+    Looks up live request-scoped tool instances whose registered allowlist matches
+    the ContextVar binding. Used to refuse invokes whose subprocess env was pinned
+    to a different Relay invocation (cross-session credential mix-ups).
+    """
+
+    allowed = get_active_office_claw_mcp_tool_ids()
+    if not allowed:
+        return None
+    allowed_ids = frozenset(allowed)
+    exact_match: str | None = None
+    card_match: str | None = None
+    with _live_office_claw_allowlist_lock:
+        for tool, ids in _live_office_claw_tool_instances.items():
+            inv = _office_claw_invocation_id_from_params(getattr(tool, "_params", None))
+            if not inv:
+                continue
+            if ids == allowed_ids:
+                exact_match = inv
+                break
+            tool_id = str(getattr(getattr(tool, "_card", None), "id", "") or "")
+            if card_match is None and tool_id in allowed_ids:
+                card_match = inv
+    return exact_match or card_match
+
+
 def _clear_live_office_claw_allowlists_for_tests() -> None:
     with _live_office_claw_allowlist_lock:
         _live_office_claw_allowlists_by_tool_id.clear()
@@ -1437,6 +1479,22 @@ def ensure_request_scoped_office_claw_tool_allowed(tool_id: str) -> None:
     if normalized not in allowed:
         raise RuntimeError(
             "OfficeClaw MCP tool is bound to another request; refusing cross-request invoke"
+        )
+
+
+def ensure_office_claw_tool_invocation_matches_active(
+    tool: RequestScopedOfficeClawMcpTool,
+) -> None:
+    """Refuse when the tool's MCP env invocation disagrees with the active allowlist."""
+
+    expected = resolve_active_office_claw_invocation_id()
+    if not expected:
+        return
+    actual = _office_claw_invocation_id_from_params(getattr(tool, "_params", None))
+    if actual and actual != expected:
+        raise RuntimeError(
+            "OfficeClaw MCP tool env invocation mismatches active request binding; "
+            "refusing cross-request invoke"
         )
 
 
@@ -1968,7 +2026,13 @@ class RequestScopedOfficeClawMcpTool(Tool):
         server_name: str = "",
     ) -> None:
         super().__init__(card)
-        self._params = dict(params)
+        # Deep-copy env so concurrent registrations cannot mutate each other's
+        # OFFICE_CLAW_INVOCATION_ID via a shared nested dict reference.
+        copied = dict(params)
+        env = copied.get("env")
+        if isinstance(env, Mapping):
+            copied["env"] = dict(env)
+        self._params = copied
         self._request_id = str(request_id or "")
         self._server_name = str(server_name or "")
 
@@ -2022,6 +2086,7 @@ class RequestScopedOfficeClawMcpTool(Tool):
         tool_id = str(getattr(self._card, "id", "") or "")
         try:
             ensure_request_scoped_office_claw_tool_allowed(tool_id)
+            ensure_office_claw_tool_invocation_matches_active(self)
         except RuntimeError as exc:
             raise build_error(
                 StatusCode.TOOL_MCP_EXECUTION_ERROR,
@@ -2074,6 +2139,7 @@ __all__ = [
     "build_enabled_mcp_server_configs",
     "build_mcp_server_config",
     "create_mcp_tool",
+    "ensure_office_claw_tool_invocation_matches_active",
     "ensure_request_scoped_office_claw_tool_allowed",
     "extract_enabled_mcp_server_entries",
     "extract_office_claw_mcp",
@@ -2089,6 +2155,7 @@ __all__ = [
     "publish_live_office_claw_allowlist",
     "register_live_office_claw_tool_instance",
     "release_request_scoped_mcp_sessions",
+    "resolve_active_office_claw_invocation_id",
     "resolve_active_office_claw_tool_id",
     "revoke_live_office_claw_allowlist",
     "unregister_live_office_claw_tool_instance",

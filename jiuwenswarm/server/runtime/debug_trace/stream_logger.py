@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from jiuwenswarm.server.runtime.debug_trace.config import DebugTraceSettings
-from jiuwenswarm.common.utils import _sanitize_log_text, _masked_with_fp
+from jiuwenswarm.common.utils import _sanitize_log_text
+from jiuwenswarm.infrastructure.utils import masked_with_fp
 
 _logger = logging.getLogger(__name__)
 
@@ -114,15 +115,15 @@ def _mask_secrets(value: Any) -> Any:
 
     Returns a shallow-ish copy for dicts/lists so the caller's payload is
     untouched. Non-container values pass through unchanged. 命中敏感键名的
-    值替换为 ``******(fp:xxxxxxxx)``（与主 ``SensitiveDataFilter`` 指纹算法一致），
-    便于 trace 文件与其他日志跨文件关联同一 key。字符串值里夹带的凭证由
-    ``_write_raw`` 落盘前统一经 ``_sanitize_log_text`` 兜底脱敏。
+    值替换为 ``******(fp:xxxxxxxx)``（按键名结构化脱敏，便于 trace 与其他
+    日志跨文件关联同一 key）。字符串值里夹带的凭证由 ``_write_raw`` 落盘前
+    统一经 ``_sanitize_log_text``（LogMaskingEngine）兜底脱敏。
     """
     if isinstance(value, dict):
         out: dict[str, Any] = {}
         for k, v in value.items():
             if isinstance(k, str) and _looks_secret(k):
-                out[k] = _masked_with_fp(v)
+                out[k] = masked_with_fp(v)
             else:
                 out[k] = _mask_secrets(v)
         return out

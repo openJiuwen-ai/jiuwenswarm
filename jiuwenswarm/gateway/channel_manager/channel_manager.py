@@ -85,7 +85,7 @@ class ChannelManager(ABC):
         self._pending_channel_restart.clear()
         return out
 
-    def _on_channel_message(self, msg: "Message") -> None:
+    def _on_channel_message(self, msg: "Message") -> asyncio.Task[None] | None:
         """Channel on_message 回调：转异步交给 MessageHandler 处理。
 
         注意: 回调本身保持同步签名，避免旧 Channel 调用方（如飞书 webhook）
@@ -102,9 +102,14 @@ class ChannelManager(ABC):
         )
         if not self._get_channel_by_id(msg.channel_id):
             logger.info(f"[ChannelManager] Channel: {msg.channel_id} closed, cancel this user message.")
-            return
+            return None
 
-        asyncio.create_task(self._message_handler.handle_message(msg))
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        handler = self._message_handler.handle_message
+        if msg.channel_id == "a2a" and msg.req_method == ReqMethod.CHAT_CANCEL:
+            handler = self._message_handler.handle_external_channel_cancel
+        return asyncio.create_task(handler(msg))
 
     def register_channel(self, channel: "BaseChannel") -> None:
         """注册 Channel，并为其注册「收到消息时转发给 MessageHandler」的回调."""

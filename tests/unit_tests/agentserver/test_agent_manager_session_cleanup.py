@@ -121,9 +121,13 @@ async def test_concurrent_get_agent_creates_one_cached_root() -> None:
 
 @pytest.mark.asyncio
 async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
+    from jiuwenswarm.server.runtime.agent_manager import _make_agent_cache_key
+
     manager = _SlowCreateAgentManager()
     old_agent = _BlockingRootCleanupAgent()
-    cache_key = "code:normal:/tmp/shared-project"
+    # 与 get_agent 内部使用相同的缓存 key 生成逻辑，避免 Windows 下路径
+    # 规范化（normcase/abspath）后 key 不匹配、创建锁无法复用。
+    cache_key = _make_agent_cache_key("code", "normal", "/tmp/shared-project")
     manager.agents["tui"] = {cache_key: old_agent}
 
     cleanup_task = asyncio.create_task(
@@ -306,3 +310,17 @@ async def test_cleanup_session_runtime_rejects_retained_session_state() -> None:
             channel_id="tui",
             session_id="tui_busy_session",
         )
+
+
+@pytest.mark.asyncio
+async def test_create_session_cron_channel_uses_path_safe_prefix() -> None:
+    from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
+    from jiuwenswarm.server.runtime.session.session_metadata import resolve_session_subdir
+
+    manager = AgentManager()
+    session_id = await manager.create_session(channel_id="__cron__")
+
+    assert session_id.startswith("cron_")
+    assert not session_id.startswith("__cron__")
+    assert sanitize_session_id(session_id) == session_id
+    assert resolve_session_subdir(session_id) is not None

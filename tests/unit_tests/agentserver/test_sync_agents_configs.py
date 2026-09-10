@@ -128,13 +128,10 @@ class TestEnvNsKeyHelpers:
             normalize_env_ns_id(value)
 
     @staticmethod
-    @pytest.mark.parametrize(
-        ("service_id", "agent_id"),
-        [("../escape", "agent"), ("service", "..\\escape")],
-    )
-    def test_tenant_sessions_dir_rejects_path_syntax(service_id: str, agent_id: str):
-        with pytest.raises(EnvNsIdError, match="path"):
-            resolve_tenant_sessions_dir(service_id, agent_id)
+    @pytest.mark.parametrize("workspace_key", ["../escape", "..\\escape", "bad__id"])
+    def test_tenant_sessions_dir_rejects_path_syntax(workspace_key: str):
+        with pytest.raises(EnvNsIdError, match="path|__"):
+            resolve_tenant_sessions_dir(workspace_key)
 
     @staticmethod
     def test_logical_key_with_double_underscore_raises():

@@ -272,8 +272,6 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
         inner_val = (
             getattr(inner_t, "value", inner_t) if inner_t is not None else None
         )
-        if inner_val == "task_completion":
-            return None
         if inner_val == "task_failed":
             data = getattr(payload, "data", None)
             if data is None and isinstance(payload, dict):
@@ -296,10 +294,23 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                     "任务执行失败",
                 )
             return {"event_type": "chat.error", "error": error}
+        # Close the enum: do not stringify ControllerOutputPayload as visible text.
+        if inner_val not in (
+            "task_completion",
+            "task_interaction",
+            "processing",
+            "all_tasks_processed",
+        ):
+            logger.debug(
+                "[stream_utils] drop unhandled controller_output type=%r",
+                inner_val,
+            )
+        return None
 
     if chunk_type == "llm_output":
+        # openjiuwen streams payload.output; SkillTurbo uses payload.content.
         content = (
-            payload.get("content", "")
+            (payload.get("content", "") or payload.get("output", ""))
             if isinstance(payload, dict)
             else str(payload)
         )

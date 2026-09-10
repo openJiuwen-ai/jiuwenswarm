@@ -60,7 +60,7 @@ def row_snapshot(table: str, rows: list[dict[str, Any]]) -> dict[str, str]:
 
 
 async def list_table_records(table: str) -> list[dict[str, Any]]:
-    """拉取 poll 表全行：优先 ``PersistentStore``，否则 ``gateway_db`` reader。"""
+    """拉取 poll 表全行：优先 ``PersistentStore``，否则 ``db_queries`` reader。"""
     if table not in _POLL_TABLES:
         logger.warning("[ConfigPoll] unsupported table: %s", table)
         return []
@@ -73,6 +73,6 @@ async def list_table_records(table: str) -> list[dict[str, Any]]:
         rows = await store.list(table)
         return [dict(row) for row in rows or []]
 
-    from jiuwenswarm.server.runtime.enterprise_config import gateway_db
+    from jiuwenswarm.server.runtime.enterprise_config import db_queries
 
-    return await gateway_db.list_records(table)
+    return await db_queries.list_records(table)

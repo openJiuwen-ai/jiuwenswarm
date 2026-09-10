@@ -3,7 +3,7 @@
 """MessageHandler - 消息处理抽象与双队列实现（入队经 AgentServerClient 发往 AgentServer）."""
 
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import logging
 import asyncio
@@ -22,7 +22,9 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
     E2A_WIRE_INTERNAL_METADATA_KEYS,
+    FILE_TRANSFER_EVENT_TYPES,
 )
+from jiuwenswarm.gateway.message_handler.file_transfer_mixin import FileTransferMixin
 from jiuwenswarm.common.config import get_evolution_auto_save_enabled
 from jiuwenswarm.gateway.routing.session_map import SessionMap
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
@@ -179,7 +181,7 @@ if TYPE_CHECKING:
 
 
 # ---------- 双队列实现：入队经 AgentServerClient 发往 AgentServer ----------
-class MessageHandler(ABC):
+class MessageHandler(FileTransferMixin, ABC):
     """
     维护两个异步消息队列，入队消息通过 AgentServerClient 发送给 AgentServer：
 
@@ -214,6 +216,10 @@ class MessageHandler(ABC):
         self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._running = False
+        self._a2a_outbound_tool_manager: Any | None = None
+        self._active_a2a_outbound_tool_tasks: dict[
+            str, tuple[asyncio.Task[Any], str, str]
+        ] = {}
         self._forward_task: asyncio.Task | None = None
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
         self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
@@ -243,6 +249,8 @@ class MessageHandler(ABC):
         self._acp_session_alias_lock = asyncio.Lock()
         self._external_session_aliases: dict[tuple[str, str], str] = {}
         self._external_session_alias_lock = asyncio.Lock()
+        self._external_cancel_waiters: dict[str, asyncio.Future[None]] = {}
+        self._external_cancel_ack_timeout_seconds = 5.0
 
         # per-channel 控制状态：支持 \new_session / \mode 指令。
         # 使用 ChannelType 的 value 作为标准键，避免散落的硬编码字符串。
@@ -279,6 +287,9 @@ class MessageHandler(ABC):
         except Exception as e:
             logger.warning("[MessageHandler] Failed to init GatewayHookHandler: %s", e)
             self._gateway_hook_handler = None
+
+        # 文件传输处理器（延迟初始化；默认关闭，见 resolve_file_transfer_enabled）
+        self._file_transfer_handler = None
 
     def get_session_sharing_registry(self) -> SessionSharingRegistry:
         """返回 SessionSharingRegistry 实例，供 V2 共享会话路由使用."""
@@ -389,6 +400,80 @@ class MessageHandler(ABC):
             "[MessageHandler] _user_messages 入队: id=%s channel_id=%s session_id=%s",
             msg.id, msg.channel_id, msg.session_id,
         )
+
+    async def handle_external_channel_cancel(self, msg: "Message") -> None:
+        """Queue an A2A cancel in order and wait for AgentServer acknowledgement."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        if msg.channel_id != "a2a" or msg.req_method != ReqMethod.CHAT_CANCEL:
+            raise ValueError("external channel cancel requires an A2A CHAT_CANCEL message")
+        request_id = str(msg.id)
+        waiter = asyncio.get_running_loop().create_future()
+        if request_id in self._external_cancel_waiters:
+            raise RuntimeError(f"duplicate external cancel request: {request_id}")
+        self._external_cancel_waiters[request_id] = waiter
+        try:
+            await self.handle_message(msg)
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(waiter),
+                    timeout=self._external_cancel_ack_timeout_seconds,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "[MessageHandler] A2A cancel acknowledgement timed out after %.1fs; "
+                    "releasing caller while downstream cancellation continues: "
+                    "id=%s session_id=%s",
+                    self._external_cancel_ack_timeout_seconds,
+                    request_id,
+                    msg.session_id,
+                )
+        finally:
+            self._external_cancel_waiters.pop(request_id, None)
+            if not waiter.done():
+                waiter.cancel()
+
+    def _finish_external_channel_cancel(
+        self, request_id: str, error: BaseException | None = None
+    ) -> None:
+        waiter = self._external_cancel_waiters.get(str(request_id))
+        if waiter is None or waiter.done():
+            return
+        if error is None:
+            waiter.set_result(None)
+        else:
+            waiter.set_exception(error)
+
+    @staticmethod
+    def _is_external_channel_cancel(msg: "Message | None") -> bool:
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        return (
+            msg is not None
+            and msg.channel_id == "a2a"
+            and msg.req_method == ReqMethod.CHAT_CANCEL
+        )
+
+    def _schedule_external_channel_cancel(self, msg: "Message") -> None:
+        async def cancel_and_finish() -> None:
+            try:
+                cancelled = await self._cancel_agent_work_for_session(
+                    msg,
+                    msg.session_id,
+                    agent_notify="await",
+                )
+                if not cancelled:
+                    raise RuntimeError("AgentServer rejected A2A cancellation")
+            except BaseException as exc:
+                self._finish_external_channel_cancel(msg.id, exc)
+            else:
+                self._finish_external_channel_cancel(msg.id)
+
+        task = asyncio.create_task(
+            cancel_and_finish(), name=f"gw-a2a-cancel-{str(msg.id)[:24]}"
+        )
+        self._fire_and_forget_tasks.add(task)
+        task.add_done_callback(self._fire_and_forget_tasks.discard)
 
     async def _maybe_register_godview(self, msg: "Message") -> None:
         """V2: auto-register a GodView subscriber for the channel.
@@ -1150,13 +1235,19 @@ class MessageHandler(ABC):
 
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         if payload.get("event_type") == "chat.interrupt_result":
+            # resp.ok only reflects transport-level success; the payload's own
+            # "success" (e.g. AgentServer found nothing to cancel) determines
+            # whether the interrupt actually happened. Only treat a missing/True
+            # value as success so callers don't get a false-positive ack.
+            interrupt_succeeded = bool(resp.ok) and payload.get("success") is not False
             if not publish_interrupt_result:
                 logger.info(
-                    "[MessageHandler] 已静默 AgentServer 中断结果: request_id=%s ok=%s",
+                    "[MessageHandler] 已静默 AgentServer 中断结果: request_id=%s ok=%s success=%s",
                     resp.request_id,
                     resp.ok,
+                    interrupt_succeeded,
                 )
-                return bool(resp.ok)
+                return interrupt_succeeded
             out = self._response_to_message(
                 resp,
                 sid_for_agent,
@@ -1165,16 +1256,17 @@ class MessageHandler(ABC):
             )
             await self.publish_robot_messages(out)
             logger.info(
-                "[MessageHandler] 已转发 AgentServer 中断结果: request_id=%s ok=%s",
+                "[MessageHandler] 已转发 AgentServer 中断结果: request_id=%s ok=%s success=%s",
                 resp.request_id,
                 resp.ok,
+                interrupt_succeeded,
             )
 
             # 发送被中断工具的 tool_result 给前端
             await self._send_cancelled_tool_results(
                 msg.channel_id, sid_for_agent, payload, msg.metadata
             )
-            return bool(resp.ok)
+            return interrupt_succeeded
 
         error_message = "任务终止失败"
         if isinstance(payload, dict):
@@ -2846,9 +2938,14 @@ class MessageHandler(ABC):
             session_id: str | None = str(sid_raw)
         else:
             session_id = self._stream_sessions.get(rid)
-        
-        # 获取原始请求的 metadata，用于合并
         request_metadata = self._stream_metadata.get(rid)
+
+        if await self._handle_a2a_outbound_tool_push(
+            chunk=chunk,
+            session_id=session_id,
+            request_metadata=request_metadata,
+        ):
+            return
         
         # 获取 AgentServer 返回的 metadata
         wmd = wire.get("metadata")
@@ -2866,6 +2963,25 @@ class MessageHandler(ABC):
 
         if chunk.channel_id == _ACP_CHANNEL_ID:
             session_id = self._resolve_acp_external_session_id(session_id, bus_metadata)
+
+        # AgentServer → Gateway 分块文件下载（file.download.*）
+        if isinstance(chunk.payload, dict):
+            event_type = chunk.payload.get("event_type", "")
+            if event_type in FILE_TRANSFER_EVENT_TYPES:
+                await self._handle_file_transfer_event(
+                    event_type,
+                    dict(chunk.payload),
+                    session_id,
+                    chunk.channel_id or "",
+                    bus_metadata,
+                )
+                logger.info(
+                    "[MessageHandler] server_push 文件下载事件已处理: request_id=%s event_type=%s",
+                    rid,
+                    event_type,
+                )
+                return
+
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "cron.response":
             await self._handle_cron_push_payload(
                 payload=dict(chunk.payload),
@@ -2909,6 +3025,218 @@ class MessageHandler(ABC):
             chunk.channel_id,
             _push_app_id,
         )
+
+    def set_a2a_outbound_tool_manager(self, manager: Any | None) -> None:
+        """Bind the Gateway-owned Manager used by private Agent tool RPC."""
+        self._a2a_outbound_tool_manager = manager
+        if not hasattr(self, "_active_a2a_outbound_tool_tasks"):
+            self._active_a2a_outbound_tool_tasks = {}
+
+    async def _handle_a2a_outbound_tool_push(
+        self,
+        *,
+        chunk: Any,
+        session_id: str | None,
+        request_metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        from jiuwenswarm.common.e2a.adapters import build_acp_tool_response_message
+        from jiuwenswarm.gateway.a2a_manager.outbound import (
+            A2AOutboundError,
+            A2AOutboundErrorCode,
+            safe_error_summary,
+        )
+        from jiuwenswarm.gateway.a2a_manager.tool_rpc import (
+            A2A_TOOL_CANCEL_CALL,
+            A2A_TOOL_DISPATCH_TASK,
+            A2A_TOOL_FIND_AGENTS,
+            A2A_TOOL_GET_DISPATCH,
+            A2A_TOOL_METHODS,
+        )
+
+        payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+        # ``acp.output_request`` is normalized from E2A as
+        # {"event_type": "acp.output_request", "jsonrpc": {...}}. Keep
+        # accepting the legacy flat shape, but route the canonical wire shape
+        # through its nested JSON-RPC envelope.
+        nested_jsonrpc = payload.get("jsonrpc")
+        rpc_payload = (
+            dict(nested_jsonrpc)
+            if payload.get("event_type") == "acp.output_request"
+            and isinstance(nested_jsonrpc, dict)
+            else payload
+        )
+        method = str(rpc_payload.get("method") or "").strip()
+        if method not in A2A_TOOL_METHODS:
+            return False
+        jsonrpc_id = str(rpc_payload.get("id") or "").strip()
+        params = rpc_payload.get("params")
+        params = dict(params) if isinstance(params, dict) else {}
+        manager = self._a2a_outbound_tool_manager
+        current_task = asyncio.current_task()
+        trusted_session_id = str(session_id or "").strip()
+        source_resource_id = ""
+        resource_identity_invalid = False
+        if is_enterprise():
+            from jiuwenswarm.common.request_identity import web_routing_identity
+
+            # Reverse RPC has its own request_id. Resolve identity from the
+            # Gateway's active conversation, never from tool-supplied metadata.
+            source_identity = web_routing_identity(request_metadata)
+            if request_metadata is None and trusted_session_id:
+                identities = []
+                for active_rid, active_sid in getattr(self, "_stream_sessions", {}).items():
+                    if active_sid != trusted_session_id:
+                        continue
+                    if self._stream_channels.get(active_rid) != chunk.channel_id:
+                        continue
+                    identities.append(
+                        web_routing_identity(self._stream_metadata.get(active_rid))
+                    )
+                if identities and all(item == identities[0] for item in identities):
+                    source_identity = identities[0]
+            source_resource_id = str(source_identity.get("bot_id") or "").strip()
+            requested_resource_id = str(params.get("resource_id") or "").strip()
+            missing_source = not source_resource_id
+            if method == A2A_TOOL_CANCEL_CALL:
+                # Cancel payloads only include jsonrpc_id; bind via active_calls.
+                resource_identity_invalid = missing_source
+            else:
+                resource_identity_invalid = bool(
+                    missing_source or requested_resource_id != source_resource_id
+                )
+            if resource_identity_invalid:
+                logger.warning(
+                    "[A2A] reverse RPC identity missing or mismatched: method=%s session_id=%s "
+                    "channel_id=%s gateway_bot_id=%r tool_resource_id=%r",
+                    method, trusted_session_id, chunk.channel_id,
+                    source_resource_id, requested_resource_id,
+                )
+        active_calls = getattr(self, "_active_a2a_outbound_tool_tasks", None)
+        if active_calls is None:
+            active_calls = self._active_a2a_outbound_tool_tasks = {}
+        if method == A2A_TOOL_CANCEL_CALL:
+            target_id = str(params.get("jsonrpc_id") or "").strip()
+            active = active_calls.get(target_id)
+            target = active[0] if active is not None else None
+            canceled = bool(
+                active is not None
+                and not resource_identity_invalid
+                and active[1] == trusted_session_id
+                and active[2] == source_resource_id
+                and target is not current_task
+            )
+            if canceled:
+                target.cancel()
+            response = {
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "result": {"canceled": canceled},
+            }
+            reply = build_acp_tool_response_message(
+                jsonrpc_id,
+                response,
+                str(session_id or "") or None,
+                channel_id=str(chunk.channel_id or "default"),
+            )
+            await self.publish_user_messages(reply)
+            return True
+        if jsonrpc_id and current_task is not None:
+            active_calls[jsonrpc_id] = (
+                current_task,
+                trusted_session_id,
+                source_resource_id,
+            )
+        try:
+            if resource_identity_invalid:
+                raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
+            if manager is None:
+                raise A2AOutboundError(A2AOutboundErrorCode.MANAGER_UNAVAILABLE)
+            source_session_id = trusted_session_id
+            if not source_session_id:
+                raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_REJECTED)
+            if method == A2A_TOOL_FIND_AGENTS:
+                required = params.get("required_skills")
+                if required is not None and not isinstance(required, list):
+                    raise A2AOutboundError(A2AOutboundErrorCode.TASK_INVALID)
+                call_params = {
+                    "query": str(params.get("query") or ""),
+                    "required_skills": required,
+                    "limit": int(params.get("limit") or 5),
+                }
+                if source_resource_id:
+                    call_params["source_resource_id"] = source_resource_id
+                result = await manager.outbound_find_agents(**call_params)
+            elif method == A2A_TOOL_DISPATCH_TASK:
+                call_params = {
+                    "agent_id": str(params.get("agent_id") or ""),
+                    "task": str(params.get("task") or ""),
+                    "mode": str(params.get("mode") or ""),
+                    "source_session_id": source_session_id,
+                    "reason": str(params.get("reason") or "") or None,
+                }
+                if source_resource_id:
+                    call_params["source_resource_id"] = source_resource_id
+                result = await manager.outbound_dispatch_task(**call_params)
+            elif method == A2A_TOOL_GET_DISPATCH:
+                call_params = {
+                    "dispatch_id": str(params.get("dispatch_id") or ""),
+                    "source_session_id": source_session_id,
+                }
+                if source_resource_id:
+                    call_params["source_resource_id"] = source_resource_id
+                result = await manager.outbound_get_dispatch(**call_params)
+            response = {"jsonrpc": "2.0", "id": jsonrpc_id, "result": result}
+        except A2AOutboundError as exc:
+            response = {
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "error": {
+                    "code": -32060,
+                    "message": exc.summary,
+                    "data": {"code": exc.code.value},
+                },
+            }
+        except (TypeError, ValueError):
+            code = A2AOutboundErrorCode.TASK_INVALID
+            response = {
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "error": {
+                    "code": -32602,
+                    "message": safe_error_summary(code),
+                    "data": {"code": code.value},
+                },
+            }
+        except Exception:
+            logger.exception(
+                "[MessageHandler] A2A outbound tool RPC failed: method=%s session_id=%s",
+                method,
+                session_id,
+            )
+            code = A2AOutboundErrorCode.MANAGER_UNAVAILABLE
+            response = {
+                "jsonrpc": "2.0",
+                "id": jsonrpc_id,
+                "error": {
+                    "code": -32061,
+                    "message": safe_error_summary(code),
+                    "data": {"code": code.value},
+                },
+            }
+        finally:
+            if (
+                jsonrpc_id
+                and active_calls.get(jsonrpc_id, (None, ""))[0] is current_task
+            ):
+                active_calls.pop(jsonrpc_id, None)
+        reply = build_acp_tool_response_message(
+            jsonrpc_id,
+            response,
+            str(session_id or "") or None,
+            channel_id=str(chunk.channel_id or "default"),
+        )
+        await self.publish_user_messages(reply)
+        return True
 
     async def _push_file_to_web_and_get_token(
         self,
@@ -3154,6 +3482,66 @@ class MessageHandler(ABC):
         payload = getattr(chunk, "payload", None)
         if isinstance(payload, dict) and payload.get("event_type") == "keepalive":
             return False
+        # 分布式文件下载事件：拼包后发 chat.file，不转发原始分片到 Channel
+        if isinstance(payload, dict):
+            event_type = payload.get("event_type", "")
+            if event_type in FILE_TRANSFER_EVENT_TYPES:
+                await self._handle_file_transfer_event(
+                    event_type,
+                    dict(payload),
+                    session_id,
+                    getattr(chunk, "channel_id", "") or "",
+                    request_metadata,
+                )
+                return False
+            # 企业 OBS 出站：chat.file 仅含 MinIO url → 改写为 Gateway 代理 href（不落盘、无 HMAC）
+            from jiuwenswarm.gateway.message_handler.outbound_file_materialize import (
+                chat_file_needs_obs_materialize,
+                materialize_outbound_files,
+            )
+
+            if chat_file_needs_obs_materialize(payload):
+                channel_id = getattr(chunk, "channel_id", "") or ""
+                files_in = payload.get("files") if isinstance(payload.get("files"), list) else []
+                tokenized = materialize_outbound_files(files_in)
+                if not tokenized:
+                    logger.error(
+                        "[MessageHandler] OBS 出站 URL 改写失败，跳过 chat.file "
+                        "session_id=%s request_id=%s",
+                        session_id,
+                        getattr(chunk, "request_id", ""),
+                    )
+                    return False
+                from jiuwenswarm.common.schema.message import EventType, Message
+
+                meta: dict[str, Any] = {}
+                if isinstance(request_metadata, dict):
+                    meta.update(request_metadata)
+                targets = payload.get("send_file_targets")
+                if targets:
+                    meta["send_file_targets"] = targets
+                file_msg = Message(
+                    id=f"file_obs_{getattr(chunk, 'request_id', '') or int(time.time() * 1000)}",
+                    type="event",
+                    channel_id=channel_id,
+                    session_id=session_id,
+                    params={},
+                    timestamp=time.time(),
+                    ok=True,
+                    payload={
+                        "event_type": EventType.CHAT_FILE.value,
+                        "files": tokenized,
+                    },
+                    event_type=EventType.CHAT_FILE,
+                    metadata=meta or None,
+                )
+                await self.publish_robot_messages(file_msg)
+                logger.info(
+                    "[MessageHandler] OBS 出站已改写为 Gateway 代理 URL channel_id=%s count=%d",
+                    channel_id,
+                    len(tokenized),
+                )
+                return False
         if not await self._handle_evolution_chunk(chunk, session_id, request_metadata):
             return False
         out = self._chunk_to_message(
@@ -3421,6 +3809,7 @@ class MessageHandler(ABC):
                 msg.channel_id,
                 is_processing=False,
                 app_id=msg.app_id or "",
+                metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
             )
             return
 
@@ -3460,6 +3849,7 @@ class MessageHandler(ABC):
             msg.channel_id,
             is_processing=False,
             app_id=msg.app_id or "",
+            metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
         )
 
     @staticmethod
@@ -3746,6 +4136,18 @@ class MessageHandler(ABC):
                 resp.request_id,
                 resp.channel_id,
             )
+            # remote 模式下 session.delete 成功后从索引移除
+            if env.method == "session.delete" and getattr(resp, "ok", False):
+                try:
+                    from jiuwenswarm.gateway.routing.session_index import is_remote_storage, remove_async
+                    if is_remote_storage():
+                        del_session_id = msg.session_id
+                        if isinstance(msg.params, dict):
+                            del_session_id = msg.params.get("session_id") or msg.session_id
+                        if del_session_id:
+                            await remove_async(del_session_id)
+                except Exception:
+                    logger.debug("[MessageHandler] session_index remove skipped", exc_info=True)
             if (
                 self._is_interrupt_evolution_approval_chat_send(msg, method=env.method)
                 and self._approval_response_resolved(resp)
@@ -3793,6 +4195,9 @@ class MessageHandler(ABC):
         from jiuwenswarm.common.schema.message import ReqMethod
 
         while self._running:
+            msg: Message | None = None
+            external_cancel_handed_off = False
+            external_cancel_error: BaseException | None = None
             try:
                 msg = await self.consume_user_messages(timeout=None)
                 if msg is None:
@@ -3805,8 +4210,18 @@ class MessageHandler(ABC):
                     continue
 
                 # 将当前 Channel 的控制状态应用到消息上
-                await self._resolve_external_channel_session(msg)
-                self._apply_channel_state(msg)
+                try:
+                    await self._resolve_external_channel_session(msg)
+                    self._apply_channel_state(msg)
+                except Exception as exc:
+                    if msg.channel_id == "a2a" and msg.req_method == ReqMethod.CHAT_CANCEL:
+                        self._finish_external_channel_cancel(msg.id, exc)
+                        logger.exception(
+                            "[MessageHandler] A2A cancel session resolution failed: id=%s",
+                            msg.id,
+                        )
+                        continue
+                    raise
                 channel_type = self._resolve_control_channel_type(msg)
                 if (
                     channel_type in self._control_channel_types
@@ -4063,13 +4478,17 @@ class MessageHandler(ABC):
                         _supp_task.add_done_callback(_enqueue_supplement_after_interrupt)
 
                     elif intent == "cancel":
-                        # fire_and_forget：避免慢 cancel 阻塞 _forward_loop，
-                        # 导致后续 session.create 等请求在队列中等待、前端超时。
-                        await self._cancel_agent_work_for_session(
-                            msg,
-                            msg.session_id,
-                            agent_notify="fire_and_forget",
-                        )
+                        if msg.channel_id == "a2a":
+                            self._schedule_external_channel_cancel(msg)
+                            external_cancel_handed_off = True
+                        else:
+                            # Other channels stay non-blocking so a slow interrupt
+                            # cannot stall unrelated sessions in _forward_loop.
+                            await self._cancel_agent_work_for_session(
+                                msg,
+                                msg.session_id,
+                                agent_notify="fire_and_forget",
+                            )
 
                     elif intent in ("pause", "resume"):
                         # 暂停/恢复：不取消流式任务，转发给 AgentServer 处理 ReAct 循环
@@ -4260,6 +4679,18 @@ class MessageHandler(ABC):
                 agent_msg = await self._prepare_agent_dispatch_message(msg)
                 await self._trigger_before_chat_request_hook(agent_msg)
                 env = self.message_to_e2a(agent_msg)
+
+                # 分布式文件传输：Gateway 本地文件 → AgentServer（默认关闭；企业版走 URL）
+                try:
+                    if self._should_transfer_files(env):
+                        env = await self._transfer_files_to_agent_server(env, msg)
+                except Exception as e:
+                    logger.exception(
+                        "[MessageHandler] 文件传输过程异常: request_id=%s error=%s, 继续使用原路径",
+                        env.request_id,
+                        e,
+                    )
+
                 stream_rid = env.request_id or msg.id
                 try:
                     if env.is_stream:
@@ -4316,7 +4747,28 @@ class MessageHandler(ABC):
                         msg.id, msg.channel_id,
                     )
             except asyncio.CancelledError:
+                external_cancel_error = RuntimeError(
+                    "MessageHandler stopped before A2A cancellation completed"
+                )
                 break
+            except Exception as exc:
+                external_cancel_error = exc
+                if self._is_external_channel_cancel(msg):
+                    logger.exception(
+                        "[MessageHandler] A2A cancel preprocessing failed: id=%s",
+                        msg.id,
+                    )
+                    continue
+                raise
+            finally:
+                if self._is_external_channel_cancel(
+                    msg
+                ) and not external_cancel_handed_off:
+                    self._finish_external_channel_cancel(
+                        msg.id,
+                        external_cancel_error
+                        or RuntimeError("A2A cancellation was not dispatched"),
+                    )
 
     async def process_stream(
         self,
@@ -4536,6 +4988,7 @@ class MessageHandler(ABC):
                     await self._send_processing_status(
                         rid, session_id, channel_id,
                         is_processing=False, app_id=stream_app_id,
+                        metadata=request_metadata if isinstance(request_metadata, dict) else None,
                     )
                     logger.info(
                         "[MessageHandler] 该 session 流式任务已结束（cancelled=%s），已发送 is_processing=false: session_id=%s",
@@ -4595,6 +5048,7 @@ class MessageHandler(ABC):
                 msg.channel_id,
                 is_processing=True,
                 app_id=msg.app_id or "",
+                metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
             )
         task = asyncio.create_task(
             self.process_stream(
@@ -4703,6 +5157,7 @@ class MessageHandler(ABC):
     async def _send_processing_status(
         self, request_id: str, session_id: str | None, channel_id: str, *,
         is_processing: bool, app_id: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """发送 chat.processing_status 事件到客户端。"""
         from jiuwenswarm.common.schema.message import Message, EventType
@@ -4723,7 +5178,9 @@ class MessageHandler(ABC):
                 "is_complete": not is_processing
             },
             event_type=EventType.CHAT_PROCESSING_STATUS,
-            metadata=None,
+            # 带上入站 ws_id，避免 HTTP cancel-replace 时旧 false 经 session
+            # 兜底打进新 SSE（与 chat.delta/final 的 request-scoped 路由对齐）。
+            metadata=dict(metadata) if isinstance(metadata, dict) else None,
         )
         await self.publish_robot_messages(status_msg)
         # 广播全局运行态快照给所有 ws 客户端（不按 session 路由），用于多窗口配置保存锁。
@@ -4818,10 +5275,12 @@ class MessageHandler(ABC):
         self._running = True
         self._forward_task = asyncio.create_task(self._forward_loop())
         logger.info("[MessageHandler] 转发循环已启动 (_user_messages -> AgentServer -> _robot_messages)")
+        await self._maybe_start_file_transfer_cleanup()
 
     async def stop_forwarding(self) -> None:
         """停止转发任务."""
         self._running = False
+        await self._maybe_stop_file_transfer_cleanup()
 
         # 取消所有流式任务
         # 注意：原实现 ``await task`` 无超时。流式任务在 ``async for chunk`` 循环中

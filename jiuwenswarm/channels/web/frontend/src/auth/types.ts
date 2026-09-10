@@ -1,19 +1,13 @@
-import type {
-  EnterpriseAgent,
-  EnterpriseGateway,
-  EnterpriseOrg,
-  EnterpriseUser,
-} from '../services/enterpriseContext';
+import type { EnterpriseAgentContext, EnterpriseUser } from '../services/enterpriseContext';
 
 export interface EnterpriseAuthProvider {
   readonly id: 'manager' | 'simulate';
   readonly startupMessage: string;
   isAuthenticated(): boolean;
-  redirectToLogin(): void;
+  /** Return false when the User Web itself has already fallen back to /auth. */
+  redirectToLogin(): boolean;
   getCurrentUser(): Promise<EnterpriseUser>;
-  listOrganizations(): Promise<EnterpriseOrg[]>;
-  listGateways(): Promise<EnterpriseGateway[]>;
-  listAgents(groupId: string, gatewayId: string): Promise<EnterpriseAgent[]>;
+  listAgentContexts(): Promise<EnterpriseAgentContext[]>;
   logout(): Promise<void>;
 }
 

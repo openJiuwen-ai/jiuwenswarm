@@ -48,7 +48,7 @@ def test_configure_code_team_member_uses_agent_workspace_coding_memory_path(monk
     monkeypatch.setattr(
         interface_code.JiuwenSwarmCodeAdapter,
         "_build_agent_rails",
-        lambda self, react_config, config_base, mode: [],
+        lambda self, react_config, config_base, *, mode="code", sub_mode=None: [],
     )
     monkeypatch.setattr(
         interface_code.JiuwenSwarmCodeAdapter,

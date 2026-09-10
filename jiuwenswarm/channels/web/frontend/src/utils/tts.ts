@@ -3,6 +3,7 @@
  */
 
 import { webRequest } from '../services/webClient';
+import { stripResidualInlineToolProtocol } from './toolProtocol';
 
 interface TtsResponse {
   success: boolean;
@@ -34,7 +35,7 @@ export function sanitizeTtsText(
     return '';
   }
 
-  const sanitized = input
+  const sanitized = stripResidualInlineToolProtocol(input)
     .replace(CODE_BLOCK_RE, '代码块已省略')
     .replace(INLINE_CODE_RE, '')
     .replace(MEDIA_BRACE_RE, '')

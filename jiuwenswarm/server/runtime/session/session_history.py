@@ -439,8 +439,8 @@ def get_read_history_path(session_id: str, sessions_root: str | None = None) -> 
     return jsonl_path
 
 
-def history_exists(session_id: str) -> bool:
-    return get_read_history_path(session_id).exists()
+def history_exists(session_id: str, sessions_root: str | None = None) -> bool:
+    return get_read_history_path(session_id, sessions_root=sessions_root).exists()
 
 
 def get_history_mtime(session_id: str) -> float | None:
@@ -531,8 +531,8 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def load_history_records(session_id: str) -> list[dict[str, Any]]:
-    return _read_history(get_read_history_path(session_id))
+def load_history_records(session_id: str, sessions_root: str | None = None) -> list[dict[str, Any]]:
+    return _read_history(get_read_history_path(session_id, sessions_root=sessions_root))
 
 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:

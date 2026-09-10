@@ -7,8 +7,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+    SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
     TaskExecutionRail,
     get_current_task_id,
 )
@@ -115,6 +117,39 @@ async def test_lazy_start_opens_deferred_in_progress_on_work_tool(monkeypatch) -
     assert _event_types(session) == ["task.start", "task.update"]
     assert "sync_weekly_report_0831" in rail._todo_started
     assert "todo:sync_weekly_report_0831" in rail._active_tasks
+
+
+@pytest.mark.asyncio
+async def test_skill_turbo_tool_call_exports_outer_todo_display_ownership() -> None:
+    rail = TaskExecutionRail()
+    rail._todo_map = {
+        "create_ppt": {
+            "content": "生成 PPT",
+            "status": "pending",
+            "index": 0,
+            "total": 1,
+        },
+    }
+    tool_call = SimpleNamespace(
+        id="call-skill-turbo",
+        name="skill_acceleration_exec",
+        arguments={"query": "生成 PPT"},
+    )
+    ctx = SimpleNamespace(
+        session=_FakeSession(),
+        inputs=ToolCallInputs(
+            tool_call=tool_call,
+            tool_name=tool_call.name,
+            tool_args=tool_call.arguments,
+            tool_result=None,
+        ),
+        extra={},
+    )
+
+    await rail.before_tool_call(ctx)
+
+    assert get_current_task_id() == "todo:create_ppt"
+    assert ctx.extra[SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY] is True
 
 
 @pytest.mark.asyncio

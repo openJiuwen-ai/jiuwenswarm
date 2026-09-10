@@ -36,6 +36,11 @@ export function isPlanApprovalPrompt(pq: AskUserQuestionPayload | null | undefin
 
 export function classifyPrompt(pq: AskUserQuestionPayload | null | undefined): PromptKind {
   if (!pq) return 'none';
+  // Skill 加载审批卡：走消息流内的 SkillApprovalCard（InlineQuestionCard 分支），
+  // 不进输入框上方的授权条，避免两处同时渲染。
+  if ((pq.skill_approval_card as { kind?: unknown } | undefined)?.kind === 'skill_approval') {
+    return 'legacy';
+  }
   // 技能演进审批（evolution_interrupt）协议已冻结为与 permission_interrupt 一致的
   // allow_once/allow_always/reject 三选一，改走 AuthorizationPrompt；legacy source
   // 别名 skill_evolution_approval（自动接受场景，基本不会真正弹出）维持原状不动。

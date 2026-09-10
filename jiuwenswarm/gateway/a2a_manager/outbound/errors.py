@@ -16,14 +16,21 @@ class A2AOutboundErrorCode(str, Enum):
     AGENT_NOT_REGISTERED = "A2A_AGENT_NOT_REGISTERED"
     AGENT_DISABLED = "A2A_AGENT_DISABLED"
     AGENT_UNAVAILABLE = "A2A_AGENT_UNAVAILABLE"
+    AGENT_NOT_AUTHORIZED = "A2A_AGENT_NOT_AUTHORIZED"
+    AGENT_USER_DISABLED = "A2A_AGENT_USER_DISABLED"
+    AGENT_MANAGER_DISABLED = "A2A_AGENT_MANAGER_DISABLED"
     AGENT_REVIEW_REQUIRED = "A2A_AGENT_REVIEW_REQUIRED"
     AUTH_REQUIRED = "A2A_AUTH_REQUIRED"
+    AUTH_SCHEME_MISSING = "A2A_AUTH_SCHEME_MISSING"
     DISPATCH_NOT_FOUND = "A2A_DISPATCH_NOT_FOUND"
     DISPATCH_REJECTED = "A2A_DISPATCH_REJECTED"
     DISPATCH_TIMEOUT = "A2A_DISPATCH_TIMEOUT"
     DISPATCH_CONFLICT = "A2A_DISPATCH_CONFLICT"
     REMOTE_STATUS_UNKNOWN = "A2A_REMOTE_STATUS_UNKNOWN"
     OUTBOUND_BUSY = "A2A_OUTBOUND_BUSY"
+    TASK_INVALID = "A2A_OUTBOUND_TASK_INVALID"
+    MODE_INVALID = "A2A_OUTBOUND_MODE_INVALID"
+    MANAGER_UNAVAILABLE = "A2A_OUTBOUND_MANAGER_UNAVAILABLE"
     STORE_INVALID = "A2A_OUTBOUND_STORE_INVALID"
 
 
@@ -38,14 +45,21 @@ _SAFE_SUMMARIES: dict[A2AOutboundErrorCode, str] = {
     A2AOutboundErrorCode.AGENT_NOT_REGISTERED: "指定的第三方 Agent 尚未注册。",
     A2AOutboundErrorCode.AGENT_DISABLED: "指定的第三方 Agent 已停用。",
     A2AOutboundErrorCode.AGENT_UNAVAILABLE: "指定的第三方 Agent 当前不可用。",
+    A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED: "当前 Agent 无权调用该第三方 Agent。",
+    A2AOutboundErrorCode.AGENT_USER_DISABLED: "该第三方 Agent 已被用户停用。",
+    A2AOutboundErrorCode.AGENT_MANAGER_DISABLED: "该第三方 Agent 已被管理员停用。",
     A2AOutboundErrorCode.AGENT_REVIEW_REQUIRED: "第三方 Agent 配置变化需要确认。",
     A2AOutboundErrorCode.AUTH_REQUIRED: "第三方 Agent 需要有效凭据。",
+    A2AOutboundErrorCode.AUTH_SCHEME_MISSING: "已配置凭据，但 Agent Card 未声明认证方式。请让对方补充认证声明后刷新 Card，或清除不需要的凭据。",
     A2AOutboundErrorCode.DISPATCH_NOT_FOUND: "未找到指定的出站请求。",
     A2AOutboundErrorCode.DISPATCH_REJECTED: "第三方 Agent 拒绝了本次请求。",
     A2AOutboundErrorCode.DISPATCH_TIMEOUT: "等待第三方 Agent 回复超时。",
     A2AOutboundErrorCode.DISPATCH_CONFLICT: "出站请求状态已发生变化。",
     A2AOutboundErrorCode.REMOTE_STATUS_UNKNOWN: "暂时无法确认第三方请求状态。",
     A2AOutboundErrorCode.OUTBOUND_BUSY: "A2A 出站服务当前繁忙。",
+    A2AOutboundErrorCode.TASK_INVALID: "A2A 出站任务文本无效。",
+    A2AOutboundErrorCode.MODE_INVALID: "A2A 出站派发模式无效。",
+    A2AOutboundErrorCode.MANAGER_UNAVAILABLE: "A2A 出站管理服务当前不可用。",
     A2AOutboundErrorCode.STORE_INVALID: "A2A 出站数据无效。",
 }
 

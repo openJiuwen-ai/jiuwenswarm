@@ -76,7 +76,7 @@ class AgentRequest:
     service_id: str | None = None
     agent_id: str | None = None
     # 数据目录逻辑键（Runtime 解析后可为明文；发往 AgentServer 前一般为 MD5 hex）
-    workspace_dir: str | None = None
+    workspace_key: str | None = None
     req_method: ReqMethod | None = None
     params: dict = field(default_factory=dict)
     is_stream: bool = False

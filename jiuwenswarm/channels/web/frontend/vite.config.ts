@@ -56,10 +56,9 @@ function setIntersect(a: Set<string>, b: Set<string>): boolean {
 
 /**
  * 凭证值形态：即便没有敏感键名上下文，值本身是已知前缀的凭证（OpenAI/Bearer/JWT/
- * GitHub/GitLab token）也要脱敏。与后端 _SENSITIVE_PATTERNS 对齐。
+ * GitHub/GitLab token）也要脱敏。
  *
- * Bearer 用后行断言只捕获令牌值本体（不含 "Bearer " 前缀），使指纹与后端
- * _BEARER_SENSITIVE_PATTERN 的 group(2)（token 本体）一致，跨端可关联。
+ * Bearer 用后行断言只捕获令牌值本体（不含 "Bearer " 前缀），便于跨端指纹关联。
  */
 const SENSITIVE_VALUE_PATTERNS: { re: RegExp }[] = [
   { re: /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g }, // JWT
@@ -71,11 +70,11 @@ const SENSITIVE_VALUE_PATTERNS: { re: RegExp }[] = [
 
 /**
  * 对单个敏感值做带指纹的脱敏：``******(fp:xxxxxxxx)``。
- * 指纹 = SHA256(值) 前 4 字节（8 位 hex），与后端 _fingerprint 算法一致，
+ * 指纹 = SHA256(值) 前 4 字节（8 位 hex），与后端 fingerprint 算法一致，
  * 同一 key 在前后端两套日志中指纹相同，便于跨端关联排查。不可逆。
  *
  * 若 value 本身已是脱敏产物（``******`` 或 ``******(fp:..)``），原样返回不重算，
- * 与后端 _masked_with_fp 的 _is_already_masked 判断一致——避免对"指纹值"再算
+ * 与后端 masked_with_fp / is_already_masked 判断一致——避免对"指纹值"再算
  * 指纹导致跨日志关联失效。
  */
 const ALREADY_MASKED_RE = new RegExp(
@@ -368,7 +367,7 @@ function loginAuthStartupCheck(): Plugin {
       console.info('[jiuwenswarm-web] 【正式身份认证模式，依赖manager ID认证服务】')
       const targets = [
         { name: 'manager ID认证服务', env: 'USER_WEB_IDP_TARGET', target: process.env.USER_WEB_IDP_TARGET, path: '/v1/auth/me' },
-        { name: 'Manager业务接口', env: 'USER_WEB_MANAGER_TARGET', target: process.env.USER_WEB_MANAGER_TARGET, path: '/api/v1/user-console/gateways' },
+        { name: 'Manager业务接口', env: 'USER_WEB_MANAGER_TARGET', target: process.env.USER_WEB_MANAGER_TARGET, path: '/api/v1/user-console/agent-contexts' },
       ]
       const missing = targets.filter(({ target }) => !target).map(({ env }) => env)
       if (missing.length > 0) {

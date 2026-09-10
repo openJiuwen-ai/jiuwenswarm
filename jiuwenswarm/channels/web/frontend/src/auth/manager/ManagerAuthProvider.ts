@@ -1,27 +1,17 @@
-import type {
-  EnterpriseAgent,
-  EnterpriseGateway,
-  EnterpriseOrg,
-  EnterpriseUser,
-} from '../../services/enterpriseContext';
+import type { EnterpriseAgentContext, EnterpriseUser } from '../../services/enterpriseContext';
 import { EnterpriseAuthError, type EnterpriseAuthProvider } from '../types';
-
-const ACCESS_KEY = 'openjiuwen_access_token';
-const REFRESH_KEY = 'openjiuwen_refresh_token';
+import {
+  clearManagerTokens,
+  getManagerAccessToken,
+  getManagerRefreshToken,
+  managerAuthenticatedFetch,
+  redirectToManagerLogin,
+} from './authSession';
 
 interface ManagerResponse<T> {
   code: number;
   message?: string;
   data: T;
-}
-
-function accessToken(): string | null {
-  return typeof localStorage === 'undefined' ? null : localStorage.getItem(ACCESS_KEY);
-}
-
-function authHeaders(): HeadersInit {
-  const token = accessToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function requestMessage(body: unknown, fallback: string): string {
@@ -36,7 +26,7 @@ function requestMessage(body: unknown, fallback: string): string {
 async function requestJson<T>(path: string): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(path, { headers: authHeaders() });
+    response = await managerAuthenticatedFetch(path);
   } catch (error) {
     throw new EnterpriseAuthError(0, `网络请求失败：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -50,53 +40,40 @@ async function requestJson<T>(path: string): Promise<T> {
   return body as T;
 }
 
-function clearLogin(): void {
-  if (typeof localStorage !== 'undefined') {
-    localStorage.removeItem(ACCESS_KEY);
-    localStorage.removeItem(REFRESH_KEY);
-  }
-  if (typeof document !== 'undefined') {
-    document.cookie = `${ACCESS_KEY}=; Path=/; Max-Age=0; SameSite=Strict`;
-  }
-}
-
 export const managerAuthProvider: EnterpriseAuthProvider = {
   id: 'manager',
   startupMessage: '【正式身份认证模式，依赖manager ID认证服务】',
-  isAuthenticated: () => Boolean(accessToken()),
+  isAuthenticated: () => Boolean(getManagerAccessToken()),
   redirectToLogin() {
-    clearLogin();
-    window.location.replace('/auth');
+    return redirectToManagerLogin();
   },
   getCurrentUser: () => requestJson<EnterpriseUser>('/idp/v1/auth/me'),
-  async listOrganizations() {
-    const result = await requestJson<{ orgs: EnterpriseOrg[] }>('/idp/v1/auth/me/orgs');
-    return result.orgs ?? [];
-  },
-  async listGateways() {
-    const result = await requestJson<ManagerResponse<{ gateways: EnterpriseGateway[] }>>('/manager-api/v1/user-console/gateways');
-    if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || '加载组网失败');
-    return result.data?.gateways ?? [];
-  },
-  async listAgents(groupId, gatewayId) {
-    const query = new URLSearchParams({ group_id: groupId, jiuwenclaw_id: gatewayId });
-    const result = await requestJson<ManagerResponse<{ agents: EnterpriseAgent[] }>>(`/manager-api/v1/user-console/agents?${query.toString()}`);
-    if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || '加载 Agent 失败');
-    return result.data?.agents ?? [];
+  async listAgentContexts() {
+    const result = await requestJson<ManagerResponse<{ contexts: EnterpriseAgentContext[] }>>(
+      '/manager-api/v1/user-console/agent-contexts',
+    );
+    if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || '加载 Agent 上下文失败');
+    return result.data?.contexts ?? [];
   },
   async logout() {
-    const refreshToken = typeof localStorage === 'undefined' ? null : localStorage.getItem(REFRESH_KEY);
+    const refreshToken = getManagerRefreshToken();
     if (refreshToken) {
       try {
         await fetch('/idp/v1/auth/logout', {
           method: 'POST',
-          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          headers: {
+            ...(getManagerAccessToken()
+              ? { Authorization: `Bearer ${getManagerAccessToken()}` }
+              : {}),
+            'Content-Type': 'application/json',
+          },
           body: JSON.stringify({ refresh_token: refreshToken }),
         });
       } catch {
         // Local logout must still complete when the identity service is unavailable.
       }
     }
+    clearManagerTokens();
     this.redirectToLogin();
   },
 };

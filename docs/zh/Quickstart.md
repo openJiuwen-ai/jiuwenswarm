@@ -342,7 +342,7 @@ cd jiuwenswarm
 
 记忆文件存储路径：
 - **Windows**：`C:\Users\<你的用户名>\.jiuwenswarm\agent\workspace\memory\`
-- **Linux/Mac**：`~/.jiuwenswarm/agent/workspace/memory/`
+- **Linux/Mac**：`~/.jiuwenswarm/agent/jiuwenclaw_workspace/memory/`
 
 **方式一：通过 Agent 删除**
 直接告诉 JiuwenSwarm："请删除所有记忆文件" 或 "清空我的记忆"，Agent 会调用文件工具删除 memory 目录下的文件。

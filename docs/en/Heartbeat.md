@@ -142,7 +142,7 @@ A: Set `heartbeat.active_hours.start` / `end`, e.g., `start: 09:00`, `end: 18:00
 A: Set the `HEARTBEAT_TIMEOUT` environment variable (seconds). On timeout, the beat is marked failed and a WARNING is logged.
 
 **Q: Where must `HEARTBEAT.md` live?**  
-A: At the DeepAgent workspace root: `~/.jiuwenswarm/agent/workspace/HEARTBEAT.md`. Otherwise, it is treated as "no custom tasks" and only `HEARTBEAT_OK` is returned.
+A: At the DeepAgent workspace root: `~/.jiuwenswarm/agent/jiuwenclaw_workspace/HEARTBEAT.md`. Otherwise, it is treated as "no custom tasks" and only `HEARTBEAT_OK` is returned.
 
 ---
 

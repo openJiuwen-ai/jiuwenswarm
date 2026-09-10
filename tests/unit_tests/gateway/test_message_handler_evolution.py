@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import EventType, ReqMethod
+from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
+    A2AChannel,
+    A2AChannelConfig,
+)
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 
 
@@ -142,8 +147,8 @@ class _TestMessageHandler(MessageHandler):
         *,
         publish_interrupt_result: bool = True,
         agent_notify: str = "await",
-    ) -> None:
-        await self._cancel_agent_work_for_session(
+    ) -> bool:
+        return await self._cancel_agent_work_for_session(
             msg,
             old_sid,
             publish_interrupt_result=publish_interrupt_result,
@@ -173,6 +178,177 @@ class _TestMessageHandler(MessageHandler):
 
     async def prepare_agent_dispatch_message(self, msg: Message) -> Message:
         return await self._prepare_agent_dispatch_message(msg)
+
+
+@pytest.mark.asyncio
+async def test_a2a_cancel_waits_for_mapped_agent_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _TestMessageHandler.create()
+    handler._external_session_aliases[("a2a", "external-context")] = "product-session"
+    channel = A2AChannel(A2AChannelConfig(), SimpleNamespace())
+    channel_manager = ChannelManager(handler)
+    channel_manager.register_channel(channel)
+    cancel_started = asyncio.Event()
+    release_cancel = asyncio.Event()
+
+    async def blocked_cancel(env: object) -> SimpleNamespace:
+        _FakeAgentClient.sent_requests.append(env)
+        cancel_started.set()
+        await release_cancel.wait()
+        return SimpleNamespace(
+            request_id="interrupt-a2a",
+            channel_id="a2a",
+            ok=True,
+            payload={"event_type": "chat.interrupt_result", "success": True},
+            metadata=None,
+        )
+
+    monkeypatch.setattr(_FakeAgentClient, "send_request", staticmethod(blocked_cancel))
+    await handler.start_forwarding()
+    try:
+        await channel.dispatch_a2a_request(
+            request_id="a2a-task",
+            session_id="external-context",
+            query="work",
+        )
+
+        cancel_task = asyncio.create_task(channel.cancel_pending_request("a2a-task"))
+        await cancel_started.wait()
+        assert cancel_task.done() is False
+        assert len(_FakeAgentClient.sent_requests) == 1
+        interrupt = _FakeAgentClient.sent_requests[0]
+        assert interrupt.session_id == "product-session"
+        assert interrupt.params["session_id"] == "product-session"
+
+        release_cancel.set()
+        assert await cancel_task is True
+        channel.clear_pending_request("a2a-task")
+    finally:
+        release_cancel.set()
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
+async def test_a2a_cancel_timeout_releases_executor_while_agent_cancel_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _TestMessageHandler.create()
+    handler._external_cancel_ack_timeout_seconds = 0.01
+    handler._external_session_aliases[("a2a", "external-timeout")] = "product-timeout"
+    channel = A2AChannel(A2AChannelConfig(), SimpleNamespace())
+    ChannelManager(handler).register_channel(channel)
+    cancel_started = asyncio.Event()
+    release_cancel = asyncio.Event()
+    warnings: list[str] = []
+
+    def capture_warning(message: str, *args: object, **_kwargs: object) -> None:
+        warnings.append(message % args)
+
+    async def blocked_cancel(env: object) -> SimpleNamespace:
+        cancel_started.set()
+        await release_cancel.wait()
+        return SimpleNamespace(
+            request_id="interrupt-timeout",
+            channel_id="a2a",
+            ok=True,
+            payload={"event_type": "chat.interrupt_result", "success": True},
+            metadata=None,
+        )
+
+    monkeypatch.setattr(_FakeAgentClient, "send_request", staticmethod(blocked_cancel))
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.message_handler.message_handler.logger.warning",
+        capture_warning,
+    )
+    await handler.start_forwarding()
+    try:
+        pending = await channel.dispatch_a2a_request(
+            request_id="a2a-timeout",
+            session_id="external-timeout",
+            query="work",
+        )
+
+        cancel_task = asyncio.create_task(
+            channel.cancel_pending_request("a2a-timeout")
+        )
+        await cancel_started.wait()
+        assert await asyncio.wait_for(cancel_task, timeout=1.0) is True
+        assert (await pending.queue.get()).event_type == EventType.CHAT_INTERRUPT_RESULT
+        assert any("A2A cancel acknowledgement timed out" in item for item in warnings)
+        assert handler._fire_and_forget_tasks
+
+        release_cancel.set()
+        await asyncio.gather(*list(handler._fire_and_forget_tasks))
+        channel.clear_pending_request("a2a-timeout")
+    finally:
+        release_cancel.set()
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
+async def test_a2a_cancel_resolution_failure_is_acknowledged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _TestMessageHandler.create()
+
+    async def fail_resolution(_msg: Message) -> None:
+        raise RuntimeError("session mapping failed")
+
+    monkeypatch.setattr(handler, "_resolve_external_channel_session", fail_resolution)
+    cancel = Message(
+        id="a2a-cancel-failed",
+        type="req",
+        channel_id="a2a",
+        session_id="external-context",
+        params={"intent": "cancel"},
+        timestamp=0.0,
+        ok=True,
+        req_method=ReqMethod.CHAT_CANCEL,
+        is_stream=False,
+    )
+    await handler.start_forwarding()
+    try:
+        with pytest.raises(RuntimeError, match="session mapping failed"):
+            await asyncio.wait_for(
+                handler.handle_external_channel_cancel(cancel), timeout=1.0
+            )
+    finally:
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
+async def test_a2a_cancel_preprocessing_failure_finishes_waiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _TestMessageHandler.create()
+    handler._external_session_aliases[("a2a", "external-context")] = "product-session"
+
+    async def fail_godview(_msg: Message) -> None:
+        raise RuntimeError("godview failed")
+
+    monkeypatch.setattr(handler, "_maybe_register_godview", fail_godview)
+    cancel = Message(
+        id="a2a-cancel-preprocessing-failed",
+        type="req",
+        channel_id="a2a",
+        session_id="external-context",
+        params={"intent": "cancel"},
+        timestamp=0.0,
+        ok=True,
+        req_method=ReqMethod.CHAT_CANCEL,
+        is_stream=False,
+    )
+    await handler.start_forwarding()
+    try:
+        with pytest.raises(RuntimeError, match="godview failed"):
+            await asyncio.wait_for(
+                handler.handle_external_channel_cancel(cancel), timeout=1.0
+            )
+        assert handler._forward_task is not None
+        assert not handler._forward_task.done()
+    finally:
+        await handler.stop_forwarding()
 
 
 def _message(req_method: ReqMethod) -> Message:
@@ -940,6 +1116,20 @@ async def test_default_cancel_publishes_interrupt_result() -> None:
     out = await handler.consume_robot_messages(timeout=0)
     assert out is not None
     assert out.payload == _FakeAgentClient.response_payload
+
+
+@pytest.mark.asyncio
+async def test_cancel_ack_checks_payload_success_not_just_transport_ok() -> None:
+    """Regression: AgentServer HTTP 200 (resp.ok) with payload success=False
+    (e.g. nothing to cancel) must not be reported as a successful interrupt."""
+    handler = _TestMessageHandler.create()
+
+    cancelled = await handler.cancel_agent_work_for_session(
+        _control_message(), "sess-1"
+    )
+
+    assert _FakeAgentClient.response_payload["success"] is False
+    assert cancelled is False
 
 
 @pytest.mark.asyncio

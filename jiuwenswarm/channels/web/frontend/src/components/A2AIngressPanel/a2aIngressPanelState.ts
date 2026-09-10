@@ -15,16 +15,26 @@ export interface A2AIngressSnapshot {
   desired_expose_reasoning: boolean;
   desired_rpc_url: string;
   desired_card_url: string;
+  desired_extended_card_url: string;
   effective_host: string | null;
   effective_port: number | null;
   effective_rpc_path: string | null;
   effective_card_path: string | null;
+  effective_extended_card_path: string | null;
   effective_rpc_url: string | null;
   effective_card_url: string | null;
+  effective_extended_card_url: string | null;
   exposure_warning: string | null;
   started_at: number | null;
   last_error: string | null;
   config_revision: number;
+  desired_auth_type: 'none' | 'bearer' | 'api_key';
+  desired_api_key_header: string;
+  desired_card_auth_required: boolean;
+  credential_configured: boolean;
+  effective_auth_type: string | null;
+  effective_card_auth_required: boolean | null;
+  security_pending_apply: boolean;
 }
 
 export interface A2AIngressDraft {
@@ -38,6 +48,12 @@ export interface A2AIngressDraft {
   app_description: string;
   app_version: string;
   expose_reasoning: boolean;
+  auth_type: 'none' | 'bearer' | 'api_key';
+  api_key_header: string;
+  card_auth_required: boolean;
+  credential: string;
+  credential_configured: boolean;
+  clear_credential: boolean;
 }
 
 export type A2AIngressRequestStatus = 'processing' | 'completed' | 'failed' | 'canceled';
@@ -59,6 +75,60 @@ export interface A2AIngressHistory {
   total: number;
 }
 
+export type A2AOutboundDispatchStatus =
+  | 'created'
+  | 'submitting'
+  | 'accepted'
+  | 'working'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'rejected'
+  | 'input_required'
+  | 'auth_required'
+  | 'unknown'
+  | 'timed_out'
+  | 'dispatch_failed';
+
+export interface A2AOutboundDispatchRecord {
+  dispatch_id: string;
+  agent_id: string;
+  agent_name: string;
+  mode: 'sync' | 'async';
+  status: A2AOutboundDispatchStatus;
+  remote_task_id: string | null;
+  created_at: string;
+  updated_at: string;
+  accepted_at: string | null;
+  finished_at: string | null;
+  error_code: string | null;
+  error_summary: string | null;
+}
+
+export interface A2AOutboundDispatchHistory {
+  items: A2AOutboundDispatchRecord[];
+  total: number;
+}
+
+export const DEFAULT_API_KEY_HEADER = 'X-API-Key';
+const RESERVED_API_KEY_HEADERS = [
+  'authorization',
+  'host',
+  'content-length',
+  'content-type',
+  'connection',
+  'transfer-encoding',
+  'cookie',
+  'set-cookie',
+  'accept',
+  'origin',
+];
+
+export function isValidA2AIngressApiKeyHeader(value: string): boolean {
+  const header = value.trim();
+  return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header) && !RESERVED_API_KEY_HEADERS.includes(header.toLowerCase());
+}
+
 const DEFAULT_DRAFT: A2AIngressDraft = {
   host: '127.0.0.1',
   port: '19100',
@@ -70,6 +140,12 @@ const DEFAULT_DRAFT: A2AIngressDraft = {
   app_description: 'A2A ingress for JiuwenSwarm Gateway',
   app_version: '0.1.0',
   expose_reasoning: true,
+  auth_type: 'none',
+  api_key_header: DEFAULT_API_KEY_HEADER,
+  card_auth_required: false,
+  credential: '',
+  credential_configured: false,
+  clear_credential: false,
 };
 
 function asString(value: unknown, fallback = ''): string {
@@ -101,16 +177,26 @@ export function normalizeA2AIngressSnapshot(value: unknown): A2AIngressSnapshot 
     desired_expose_reasoning: payload.desired_expose_reasoning !== false,
     desired_rpc_url: asString(payload.desired_rpc_url),
     desired_card_url: asString(payload.desired_card_url),
+    desired_extended_card_url: asString(payload.desired_extended_card_url),
     effective_host: typeof payload.effective_host === 'string' ? payload.effective_host : null,
     effective_port: typeof payload.effective_port === 'number' ? payload.effective_port : null,
     effective_rpc_path: typeof payload.effective_rpc_path === 'string' ? payload.effective_rpc_path : null,
     effective_card_path: typeof payload.effective_card_path === 'string' ? payload.effective_card_path : null,
+    effective_extended_card_path: typeof payload.effective_extended_card_path === 'string' ? payload.effective_extended_card_path : null,
     effective_rpc_url: typeof payload.effective_rpc_url === 'string' ? payload.effective_rpc_url : null,
     effective_card_url: typeof payload.effective_card_url === 'string' ? payload.effective_card_url : null,
+    effective_extended_card_url: typeof payload.effective_extended_card_url === 'string' ? payload.effective_extended_card_url : null,
     exposure_warning: typeof payload.exposure_warning === 'string' ? payload.exposure_warning : null,
     started_at: typeof payload.started_at === 'number' ? payload.started_at : null,
     last_error: typeof payload.last_error === 'string' ? payload.last_error : null,
     config_revision: asNumber(payload.config_revision),
+    desired_auth_type: payload.desired_auth_type === 'bearer' || payload.desired_auth_type === 'api_key' ? payload.desired_auth_type : 'none',
+    desired_api_key_header: asString(payload.desired_api_key_header, 'X-API-Key'),
+    desired_card_auth_required: payload.desired_card_auth_required === true,
+    credential_configured: payload.credential_configured === true,
+    effective_auth_type: typeof payload.effective_auth_type === 'string' ? payload.effective_auth_type : null,
+    effective_card_auth_required: typeof payload.effective_card_auth_required === 'boolean' ? payload.effective_card_auth_required : null,
+    security_pending_apply: payload.security_pending_apply === true,
   };
 }
 
@@ -121,12 +207,12 @@ export function normalizeA2AIngressHistory(value: unknown): A2AIngressHistory | 
   const statuses = new Set<A2AIngressRequestStatus>(['processing', 'completed', 'failed', 'canceled']);
   const items: A2AIngressRequestRecord[] = [];
   for (const rawItem of payload.items) {
-    if (!rawItem || typeof rawItem !== 'object') return null;
+    if (!rawItem || typeof rawItem !== 'object') continue;
     const item = rawItem as Record<string, unknown>;
     const requestId = asString(item.request_id).trim();
     const status = asString(item.status) as A2AIngressRequestStatus;
     const startedAt = asNumber(item.started_at, Number.NaN);
-    if (!requestId || !statuses.has(status) || !Number.isFinite(startedAt)) return null;
+    if (!requestId || !statuses.has(status) || !Number.isFinite(startedAt)) continue;
     items.push({
       request_id: requestId,
       context_id: typeof item.context_id === 'string' ? item.context_id : null,
@@ -142,7 +228,55 @@ export function normalizeA2AIngressHistory(value: unknown): A2AIngressHistory | 
   return { items, total: asNumber(payload.total, items.length) };
 }
 
-export function draftFromA2AIngressSnapshot(snapshot: A2AIngressSnapshot): A2AIngressDraft {
+export function normalizeA2AOutboundDispatchHistory(value: unknown): A2AOutboundDispatchHistory | null {
+  if (!value || typeof value !== 'object') return null;
+  const payload = value as Record<string, unknown>;
+  if (!Array.isArray(payload.items)) return null;
+  const statuses = new Set<A2AOutboundDispatchStatus>([
+    'created',
+    'submitting',
+    'accepted',
+    'working',
+    'completed',
+    'failed',
+    'canceled',
+    'rejected',
+    'input_required',
+    'auth_required',
+    'unknown',
+    'timed_out',
+    'dispatch_failed',
+  ]);
+  const items: A2AOutboundDispatchRecord[] = [];
+  for (const rawItem of payload.items) {
+    if (!rawItem || typeof rawItem !== 'object') continue;
+    const item = rawItem as Record<string, unknown>;
+    const dispatchId = asString(item.dispatch_id).trim();
+    const agentId = asString(item.agent_id).trim();
+    const mode = asString(item.mode);
+    const status = asString(item.status) as A2AOutboundDispatchStatus;
+    const createdAt = asString(item.created_at);
+    const updatedAt = asString(item.updated_at, createdAt);
+    if (!dispatchId || !agentId || !['sync', 'async'].includes(mode) || !statuses.has(status) || !createdAt) continue;
+    items.push({
+      dispatch_id: dispatchId,
+      agent_id: agentId,
+      agent_name: asString(item.agent_name).trim() || agentId,
+      mode: mode as 'sync' | 'async',
+      status,
+      remote_task_id: typeof item.remote_task_id === 'string' ? item.remote_task_id : null,
+      created_at: createdAt,
+      updated_at: updatedAt,
+      accepted_at: typeof item.accepted_at === 'string' ? item.accepted_at : null,
+      finished_at: typeof item.finished_at === 'string' ? item.finished_at : null,
+      error_code: typeof item.error_code === 'string' ? item.error_code : null,
+      error_summary: typeof item.error_summary === 'string' ? item.error_summary : null,
+    });
+  }
+  return { items, total: asNumber(payload.total, items.length) };
+}
+
+export function draftFromA2AIngressSnapshot(snapshot: A2AIngressSnapshot, credential = ''): A2AIngressDraft {
   return {
     host: snapshot.desired_host,
     port: String(snapshot.desired_port),
@@ -154,10 +288,21 @@ export function draftFromA2AIngressSnapshot(snapshot: A2AIngressSnapshot): A2AIn
     app_description: snapshot.desired_app_description,
     app_version: snapshot.desired_app_version,
     expose_reasoning: snapshot.desired_expose_reasoning,
+    auth_type: snapshot.desired_auth_type,
+    api_key_header: snapshot.desired_api_key_header,
+    card_auth_required: snapshot.desired_card_auth_required,
+    credential,
+    credential_configured: snapshot.credential_configured,
+    clear_credential: false,
   };
 }
 
 export function validateA2AIngressDraft(draft: A2AIngressDraft): string | null {
+  if (!['none', 'bearer', 'api_key'].includes(draft.auth_type)) return 'auth_type';
+  if (draft.credential && (!/^[!-~]{16,512}$/.test(draft.credential) || draft.clear_credential)) return 'credential';
+  if (draft.auth_type !== 'none' && !draft.credential && (!draft.credential_configured || draft.clear_credential)) return 'credential';
+  if (draft.card_auth_required && draft.auth_type === 'none') return 'card_auth_required';
+  if (draft.auth_type === 'api_key' && !isValidA2AIngressApiKeyHeader(draft.api_key_header)) return 'api_key_header';
   if (!draft.host.trim()) return 'host';
   const port = Number(draft.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return 'port';
@@ -178,6 +323,14 @@ export function toA2AIngressPatch(draft: A2AIngressDraft): Record<string, string
     app_description: draft.app_description.trim(),
     app_version: draft.app_version.trim(),
     expose_reasoning: draft.expose_reasoning,
+    auth_type: draft.auth_type,
+    api_key_header:
+      draft.auth_type === 'api_key' || isValidA2AIngressApiKeyHeader(draft.api_key_header)
+        ? draft.api_key_header.trim()
+        : DEFAULT_API_KEY_HEADER,
+    card_auth_required: draft.card_auth_required,
+    ...(draft.credential ? { credential: draft.credential } : {}),
+    ...(draft.clear_credential ? { clear_credential: true } : {}),
   };
 }
 

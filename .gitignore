@@ -98,3 +98,7 @@ packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui-bin/
 
 # Build-time Node runtime cache used by packaging scripts.
 vendor/node/
+
+# Local smoke / verification scratch scripts (not part of the PR).
+_smoke_*.py
+_verify_*.py

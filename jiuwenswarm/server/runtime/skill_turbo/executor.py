@@ -20,6 +20,7 @@ from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from openjiuwen.core.single_agent import create_agent_session
@@ -31,6 +32,7 @@ from openjiuwen.core.single_agent.rail.base import (
     ToolCallInputs,
 )
 
+from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.server.runtime.agent_adapter.llm_io_trace import (
     begin_tool_trace_event,
@@ -56,6 +58,10 @@ from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
 )
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 from jiuwenswarm.server.runtime.skill_turbo.json_utils import extract_llm_json
+from jiuwenswarm.server.runtime.skill_turbo.markdown_stream import (
+    markdown_stream_incoming,
+    terminate_dangling_markdown_fence,
+)
 from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import FallbackContractError
 from jiuwenswarm.server.runtime.skill_turbo.interactive_ask import (
     resolve_interactive_ask_from_inputs,
@@ -188,6 +194,9 @@ _SKILL_TURBO_STREAM_FLUSH_INTERVAL_SECONDS: float = 3.0
 
 # 需要缓冲的事件类型
 _BUFFERABLE_EVENT_TYPES: frozenset[str] = frozenset({"chat.delta", "chat.reasoning"})
+# 主回答气泡进度横幅：由 PPT root 标记，经过 Executor 时立即发送；
+# 父会话包装层识别后会移除该内部字段。
+_BUBBLE_PROGRESS_FIELD = "_bubble_progress"
 
 # Request上下文
 _request_id_var: ContextVar[str] = ContextVar("skill_turbo_request_id", default="")
@@ -368,6 +377,9 @@ class _StreamBufferState:
     """
 
     buckets: dict[tuple[str | None, str], _StreamBufferBucket] = field(default_factory=dict)
+    # Survives bucket pop/flush so the next chat.delta can be separated from a
+    # fence that already went out (frontend concatenates adjacent streamText).
+    last_emitted: dict[tuple[str | None, str], str] = field(default_factory=dict)
 
     def get_bucket(
         self, source_id: str | None, event_type: str
@@ -465,12 +477,18 @@ class SkillTurboExecutor:
         # resume 时把用户作答按前端 answers 结构回填给 skill_code。
         self._ask_user_rail = self._build_ask_user_rail()
 
+        # LLM 重复输出 / 流超时 / 瞬时错误重试（与 DeepAgent 共用 config.yaml execution_guard）。
+        # 检测算法在 openjiuwen LLMRetryRail；此处只负责挂载、消费 inspector、以及重试循环。
+        self._llm_retry_rail = self._build_llm_retry_rail()
+
         # Rail列表（按优先级排序）
         self._rails = [self._stream_event_rail]
         if self._ask_user_rail is not None:
             self._rails.append(self._ask_user_rail)
         if permission_rail is not None:
             self._rails.append(permission_rail)
+        if self._llm_retry_rail is not None:
+            self._rails.append(self._llm_retry_rail)
         self._rails.append(self._artifact_rail)
 
         # 按优先级排序（priority越小越先执行）
@@ -502,6 +520,11 @@ class SkillTurboExecutor:
         # 当前任务状态（用于跨协程共享当前 task_id，解决 asyncio.create_task 复制 ContextVar 的问题）
         self._current_task_id_holder: dict[str, str | None] = {"task_id": None}
         self._task_states_holder: dict[str, dict[str, Any]] = {}
+        # PPT 开始横幅必须先于 task.start 进入输出流。before_subplan 先把
+        # start/update 暂存于此，等 start 横幅入队后再 flush，避免
+        # produce_node_output 与 drain_session_stream 双排空时 start 反超横幅。
+        self._deferred_task_lifecycle_events: list[dict[str, Any]] = []
+        self._task_event_drain_lock = asyncio.Lock()
 
         # 节点产物记录 holder：plan_name → 产物 dict。
         # 运行期在 _after_subplan_execute 中累积，仅在中断前/流末 finally 落盘，
@@ -762,6 +785,20 @@ class SkillTurboExecutor:
                     plan_failed = True
                     plan_error = str(payload.get("error") or "") or None
 
+                # PPT stage 的开始/完成横幅属于主回答气泡。它们必须保持在
+                # task.start 之前 / task.complete 之后立即发送，不能进入通用
+                # chat.delta 缓冲桶，否则跨阶段 flush 时会被当前 task 栈误归组，
+                # 或在右侧 task_progress 已推进后仍滞留旧 Stage。
+                if event_type == "chat.delta" and payload.get(
+                    _BUBBLE_PROGRESS_FIELD, False
+                ):
+                    async for flushed in self._flush_all_buffer_chunks(
+                        buffer_state, request_id, channel_id
+                    ):
+                        yield flushed
+                    yield chunk
+                    continue
+
                 # 非缓冲事件类型：先 flush 所有缓冲，再透传当前事件
                 if event_type not in _BUFFERABLE_EVENT_TYPES:
                     async for flushed in self._flush_all_buffer_chunks(
@@ -791,20 +828,30 @@ class SkillTurboExecutor:
                         yield flushed
 
                 bucket = buffer_state.get_bucket(source_id, event_type)
+                bucket_key = (source_id, event_type)
+                piece = markdown_stream_incoming(
+                    buffer_state.last_emitted.get(bucket_key, ""),
+                    str(content),
+                )
+                buffer_state.last_emitted[bucket_key] = piece
 
                 # 首个 chunk 立即发送，保证低首字延迟（与 subagent_executor 一致）
                 if not bucket.first_chunk_sent:
                     bucket.first_chunk_sent = True
+                    if piece != str(content) and isinstance(chunk.payload, dict):
+                        chunk.payload = {**chunk.payload, "content": piece}
+                    if bucket.plan_name is None:
+                        bucket.plan_name = payload.get("plan_name")
                     yield chunk
                     continue
 
                 # 累加到缓冲桶
-                bucket.parts.append(str(content))
+                bucket.parts.append(piece)
                 bucket.since = bucket.since or time.monotonic()
                 if bucket.plan_name is None:
                     bucket.plan_name = payload.get("plan_name")
 
-                # 60s 到期 flush
+                # 到期 flush
                 if time.monotonic() - bucket.since >= _SKILL_TURBO_STREAM_FLUSH_INTERVAL_SECONDS:
                     async for flushed in self._flush_bucket_chunks(
                         buffer_state, (source_id, event_type), request_id, channel_id
@@ -935,6 +982,85 @@ class SkillTurboExecutor:
                 "[SkillTurboExecutor] build_ask_user_rail failed: %s", exc
             )
             return None
+
+    @staticmethod
+    def _build_llm_retry_rail() -> NotifyingLLMRetryRail | None:
+        """构建 NotifyingLLMRetryRail；关闭或构建失败时返回 None。
+
+        配置与 DeepAgent 一致：``execution_guard.llm_retry_rail``（get_config）。
+        """
+        try:
+            from jiuwenswarm.common.config import get_config
+
+            config_base = get_config()
+            guard_cfg = (
+                config_base.get("execution_guard", {})
+                if isinstance(config_base, dict)
+                else {}
+            )
+            retry_cfg = (
+                guard_cfg.get("llm_retry_rail", {})
+                if isinstance(guard_cfg, dict)
+                else {}
+            )
+            if retry_cfg.get("enabled", False) is not True:
+                logger.info(
+                    "[SkillTurboExecutor] LLMRetryRail disabled by config"
+                )
+                return None
+            rail = NotifyingLLMRetryRail(
+                max_retries=retry_cfg.get("max_retries", 2),
+                repeat_min_pattern_chars=retry_cfg.get(
+                    "repeat_min_pattern_chars", 2
+                ),
+                repeat_max_pattern_chars=retry_cfg.get(
+                    "repeat_max_pattern_chars", 64
+                ),
+                repeat_min_count=retry_cfg.get("repeat_min_count", 6),
+                repeat_min_total_chars=retry_cfg.get(
+                    "repeat_min_total_chars", 160
+                ),
+                repeat_window_chars=retry_cfg.get("repeat_window_chars", 1024),
+                single_char_repeat_count=retry_cfg.get(
+                    "single_char_repeat_count", 100
+                ),
+                retry_transient_invoke_errors=retry_cfg.get(
+                    "retry_transient_invoke_errors", True
+                ),
+                notify_user_on_retry=retry_cfg.get("notify_user_on_retry", True),
+                notify_user_on_exhausted=retry_cfg.get(
+                    "notify_user_on_exhausted", True
+                ),
+            )
+            logger.info(
+                "[SkillTurboExecutor] NotifyingLLMRetryRail create success"
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[SkillTurboExecutor] LLMRetryRail create failed: %s", exc
+            )
+            return None
+
+    @staticmethod
+    async def _run_stream_chunk_inspectors(
+        ctx: AgentCallbackContext,
+        chunk: Any,
+    ) -> None:
+        """直接调用 ``ctx.extra['_stream_chunk_inspectors']``（不可走 ``_run_rail_hook``）。
+
+        ``_run_rail_hook`` 会吞掉非 AbortError；inspector 抛出的重复输出异常必须向上传播，
+        才能由 call_llm / stream_llm 的重试循环消费 ``request_retry``。
+        """
+        inspectors = ctx.extra.get("_stream_chunk_inspectors") or []
+        if isinstance(inspectors, dict):
+            inspectors = list(inspectors.values())
+        for inspector in list(inspectors):
+            if not callable(inspector):
+                continue
+            inspect_result = inspector(ctx, chunk)
+            if asyncio.iscoroutine(inspect_result):
+                await inspect_result
 
     async def _run_rail_hook(
         self,
@@ -1465,11 +1591,14 @@ class SkillTurboExecutor:
         )
         if fallback_match:
             user_input = pending.get("user_input")
-            logger.warning(
+            # request_id 混入 _next_tool_call_id 后，resume 重放时 request_id 变化
+            # 使精确匹配必然失效，name+idx 对齐命中是预期路径，记 info 避免告警噪声；
+            # 仅 name/idx 均不匹配（真实异常）才保留 warning。
+            logger.info(
                 "[SkillTurboExecutor] resume tool_call_id mismatch fallback: "
                 "current_tcid=%s expected_tcid=%s tool_name=%s; "
                 "aligning to expected_tcid to inject user_input "
-                "(likely non-deterministic ask_user args on replay)",
+                "(expected: request_id mixed into _next_tool_call_id differs on replay)",
                 current_tool_call_id,
                 expected_id,
                 current_tool_name,
@@ -1482,19 +1611,24 @@ class SkillTurboExecutor:
         return None, current_tool_call_id
 
     def _next_tool_call_id(self, tool_name: str, kwargs: dict[str, Any]) -> str:
-        """生成确定性 tool_call_id：基于 (tool_name, canonical_args, call_index) 哈希。
+        """生成 tool_call_id：基于 (request_id, tool_name, canonical_args, call_index) 哈希。
 
+        - request_id：当前请求 id（``_request_id_var``），使不同会话/请求对相同
+          ask_user 参数生成不同 id，避免跨会话卡片 request_id 碰撞导致作答串台。
+          resume 重放时 request_id 会变，精确匹配失效，由
+          ``_consume_pending_resume_input`` 的 idx 回退命中（与「重放时非确定性
+          ask_user 参数」同一既有路径）。
         - canonical_args：``json.dumps(sort_keys, default=str)`` 后取 sha1[:8]
         - call_index：本次执行内同 (name, args) 的第几次调用（从 0 起算）
-
-        重放时只要 plan_code+inputs 一致，相同顺序的同名同参调用必然得到同样的 id；
-        与 ``PermissionInterruptRail`` 的 ``user_inputs[tool_call_id]`` 对应即可命中。
         """
+        request_id = str(_request_id_var.get() or "")
         try:
             args_canonical = json.dumps(kwargs, sort_keys=True, default=str)
         except (TypeError, ValueError):
             args_canonical = repr(sorted(kwargs.items()))
-        args_hash = hashlib.sha1(args_canonical.encode("utf-8")).hexdigest()[:8]
+        args_hash = hashlib.sha1(
+            f"{request_id}|{args_canonical}".encode("utf-8")
+        ).hexdigest()[:8]
         key = f"{tool_name}|{args_hash}"
         idx = self._tool_call_counter.get(key, 0)
         self._tool_call_counter[key] = idx + 1
@@ -1839,95 +1973,129 @@ class SkillTurboExecutor:
 
         thinking_kwargs = resolve_skill_turbo_thinking_kwargs(thinking, client)
 
+        # 每次 call_llm 独立重置重试计数，避免整份 plan 共享 2 次额度。
+        await self._run_rail_hook("before_invoke", ctx)
+
         trace_session_token = self._set_llm_interface_log_session()
         try:
-            await self._run_rail_hook('before_model_call', ctx)
-
-            # 使用 Model.invoke() 调用 LLM（受实例级 Semaphore 限流保护）
-            logger.debug("[SkillTurboExecutor] call_llm max_tokens=%s node=%s", _DEFAULT_LLM_MAX_TOKENS, node_name)
-            async with self._llm_concurrency_guard():
+            while True:
+                ctx.consume_retry_request()
+                ctx.exception = None
                 try:
-                    response = await client.invoke(
-                        messages,
-                        max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                        **thinking_kwargs,
+                    await self._run_rail_hook("before_model_call", ctx)
+
+                    # 使用 Model.invoke() 调用 LLM（受实例级 Semaphore 限流保护）
+                    logger.debug(
+                        "[SkillTurboExecutor] call_llm max_tokens=%s node=%s",
+                        _DEFAULT_LLM_MAX_TOKENS,
+                        node_name,
                     )
-                except Exception as inv_exc:
-                    if thinking_kwargs and is_skill_turbo_thinking_param_error(inv_exc):
-                        logger.warning(
-                            "[SkillTurboExecutor] thinking params rejected, bare retry once: %s",
-                            inv_exc,
-                        )
-                        response = await client.invoke(
-                            messages,
-                            max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                        )
-                    else:
+                    async with self._llm_concurrency_guard():
+                        try:
+                            response = await client.invoke(
+                                messages,
+                                max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                **thinking_kwargs,
+                            )
+                        except Exception as inv_exc:
+                            if thinking_kwargs and is_skill_turbo_thinking_param_error(
+                                inv_exc
+                            ):
+                                logger.warning(
+                                    "[SkillTurboExecutor] thinking params rejected, "
+                                    "bare retry once: %s",
+                                    inv_exc,
+                                )
+                                response = await client.invoke(
+                                    messages,
+                                    max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                )
+                            else:
+                                raise
+
+                    # AssistantMessage 有两个属性：
+                    # - content: 普通文本内容
+                    # - reasoning_content: 推理过程内容（与 DeepAgent 保持一致）
+                    reasoning_content = getattr(response, "reasoning_content", None)
+                    result = response.content
+
+                    # 非流式路径无 chunk 循环：用合成 chunk 跑同一套 inspector（写前端 / 发 usage 之前）。
+                    # 顺序与 stream_llm 一致：先 inspector，通过后再发 usage，避免失败轮重复用量。
+                    await self._run_stream_chunk_inspectors(
+                        ctx,
+                        SimpleNamespace(
+                            content=result or "",
+                            reasoning_content=reasoning_content or "",
+                        ),
+                    )
+
+                    # llm_usage 事件注入 source_id（仅成功通过 inspector 后发送）
+                    await self._emit_llm_usage(
+                        session,
+                        getattr(response, "usage_metadata", None),
+                        node_name=node_name,
+                        stream_source_id=source_id,
+                    )
+
+                    # 处理 reasoning_content（推理过程）并注入 source_id
+                    if reasoning_content and session:
+                        payload: dict[str, Any] = {
+                            "content": str(reasoning_content),
+                            "plan_name": self._display_name(node_name),
+                        }
+                        if source_id is not None:
+                            payload[STREAM_SOURCE_ID_FIELD] = source_id
+                        try:
+                            await session.write_stream(
+                                OutputSchema(
+                                    type="llm_reasoning", index=0, payload=payload
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "[SkillTurboExecutor] Failed to send llm_reasoning event: %s",
+                                e,
+                            )
+
+                    # 处理正文内容并注入 source_id（与 reasoning 保持一致）
+                    if result and session:
+                        output_payload: dict[str, Any] = {
+                            "content": str(result),
+                            "plan_name": self._display_name(node_name),
+                        }
+                        if source_id is not None:
+                            output_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                        try:
+                            await session.write_stream(
+                                OutputSchema(
+                                    type="llm_output",
+                                    index=0,
+                                    payload=output_payload,
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "[SkillTurboExecutor] Failed to send llm_output event: %s",
+                                e,
+                            )
+
+                    # 设置response（供after回调使用）
+                    ctx.inputs.response = result
+                    return result
+                except AbortError:
+                    raise
+                except Exception as e:
+                    ctx.exception = e
+                    await self._run_rail_hook("on_model_exception", ctx)
+                    retry_request = ctx.consume_retry_request()
+                    if not retry_request:
                         raise
-
-            # llm_usage 事件注入 source_id
-            await self._emit_llm_usage(
-                session,
-                getattr(response, "usage_metadata", None),
-                node_name=node_name,
-                stream_source_id=source_id,
-            )
-
-            # AssistantMessage 有两个属性：
-            # - content: 普通文本内容
-            # - reasoning_content: 推理过程内容（与 DeepAgent 保持一致）
-
-            # 处理 reasoning_content（推理过程）并注入 source_id
-            reasoning_content = getattr(response, "reasoning_content", None)
-            if reasoning_content and session:
-                payload: dict[str, Any] = {
-                    "content": str(reasoning_content),
-                    "plan_name": self._display_name(node_name),
-                }
-                if source_id is not None:
-                    payload[STREAM_SOURCE_ID_FIELD] = source_id
-                try:
-                    await session.write_stream(
-                        OutputSchema(type="llm_reasoning", index=0, payload=payload)
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[SkillTurboExecutor] Failed to send llm_reasoning event: %s",
-                        e,
-                    )
-
-            # AssistantMessage.content 是响应文本
-            result = response.content
-
-            # 处理正文内容并注入 source_id（与 reasoning 保持一致）
-            if result and session:
-                output_payload: dict[str, Any] = {
-                    "content": str(result),
-                    "plan_name": self._display_name(node_name),
-                }
-                if source_id is not None:
-                    output_payload[STREAM_SOURCE_ID_FIELD] = source_id
-                try:
-                    await session.write_stream(
-                        OutputSchema(type="llm_output", index=0, payload=output_payload)
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "[SkillTurboExecutor] Failed to send llm_output event: %s",
-                        e,
-                    )
-
-            # 设置response（供after回调使用）
-            ctx.inputs.response = result
-
-            return result
-        except Exception as e:
-            ctx.exception = e
-            await self._run_rail_hook('on_model_exception', ctx)
-            raise
+                    if retry_request.delay_seconds > 0:
+                        await asyncio.sleep(retry_request.delay_seconds)
+                finally:
+                    await self._run_rail_hook("after_model_call", ctx)
         finally:
             self._reset_llm_interface_log_session(trace_session_token)
-            await self._run_rail_hook('after_model_call', ctx)
 
     async def stream_llm(
         self,
@@ -1955,8 +2123,12 @@ class SkillTurboExecutor:
             str: 流式文本片段（普通文本内容）
             
         内部机制：
-            - reasoning 事件会通过 session stream 实时发送
+            - reasoning / 正文事件经 session stream **实时**刷出（与 DeepAgent 对齐；
+              失败轮前端可能留下脏前缀，随后由重试通知 / 成功轮覆盖）
             - 业务代码只看到普通文本，无需关心 reasoning
+            - 重复输出等可重试失败时，本轮已缓冲的业务正文会丢弃并整轮重试；
+              成功轮结束后再向业务 yield，避免 stream_llm_collect 拼到脏前缀
+            - llm_usage 仅在成功轮发送，避免失败轮中途 usage 泄漏后成功轮再计一次
         """
         ctx = self._build_model_call_context()
         session = ctx.session
@@ -1988,117 +2160,143 @@ class SkillTurboExecutor:
 
         thinking_kwargs = resolve_skill_turbo_thinking_kwargs(thinking, client)
 
-        accumulated_message = ""
+        # 每次 stream_llm 独立重置重试计数。
+        await self._run_rail_hook("before_invoke", ctx)
+
         trace_session_token = self._set_llm_interface_log_session()
         try:
-            await self._run_rail_hook('before_model_call', ctx)
-            
-            # 使用 Model.stream() 流式调用 LLM
-            # 流式调用整个生命周期都占用一个 LLM "槽位"，因此用 Semaphore 包裹整个流。
-            async with self._llm_concurrency_guard():
-                async def _iter_chunks():
-                    try:
-                        async for chunk in client.stream(
-                            messages,
-                            max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                            **thinking_kwargs,
-                        ):
-                            yield chunk
-                    except Exception as stream_exc:
-                        if thinking_kwargs and is_skill_turbo_thinking_param_error(stream_exc):
-                            logger.warning(
-                                "[SkillTurboExecutor] thinking params rejected, "
-                                "bare retry once: %s",
-                                stream_exc,
-                            )
-                            async for chunk in client.stream(
-                                messages,
-                                max_tokens=_DEFAULT_LLM_MAX_TOKENS,
-                            ):
-                                yield chunk
-                        else:
-                            raise
+            while True:
+                ctx.consume_retry_request()
+                ctx.exception = None
+                accumulated_message = ""
+                # 业务侧缓冲：失败轮丢弃，成功轮再 yield，避免 collect 拼到脏前缀。
+                buffered_chunks: list[str] = []
+                # usage 成功轮才发（与 call_llm 对齐）；中途 chunk 可能已带 usage。
+                pending_usage: Any = None
+                try:
+                    await self._run_rail_hook("before_model_call", ctx)
 
-                async for chunk in _iter_chunks():
-                    # usage_metadata 通常只在最后一个 chunk 有值，避免对每个 chunk 都调用
-                    chunk_usage = getattr(chunk, "usage_metadata", None)
-                    if chunk_usage:
-                        await self._emit_llm_usage(
-                            session,
-                            chunk_usage,
-                            node_name=node_name,
-                            stream_source_id=source_id,
-                        )
-                    # AssistantMessageChunk 有两个属性：
-                    # - content: 普通文本内容
-                    # - reasoning_content: 推理过程内容
-                    
-                    # ──────────────────────── 自动处理 reasoning_content ────────────────────────
-                    # 框架层面自动发送 reasoning 事件，业务代码无需关心
-                    reasoning_content = getattr(chunk, "reasoning_content", None)
-                    if reasoning_content:
-                        if session:
-                            reasoning_payload: dict[str, Any] = {
-                                "content": str(reasoning_content),
-                                "plan_name": self._display_name(node_name),
-                            }
-                            if source_id is not None:
-                                reasoning_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                    # 使用 Model.stream() 流式调用 LLM
+                    # 流式调用整个生命周期都占用一个 LLM "槽位"，因此用 Semaphore 包裹整个流。
+                    async with self._llm_concurrency_guard():
+                        async def _iter_chunks():
                             try:
-                                await session.write_stream(
-                                    OutputSchema(
-                                        type="llm_reasoning",
-                                        index=0,
-                                        payload=reasoning_payload,
+                                async for chunk in client.stream(
+                                    messages,
+                                    max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    **thinking_kwargs,
+                                ):
+                                    yield chunk
+                            except Exception as stream_exc:
+                                if thinking_kwargs and is_skill_turbo_thinking_param_error(
+                                    stream_exc
+                                ):
+                                    logger.warning(
+                                        "[SkillTurboExecutor] thinking params rejected, "
+                                        "bare retry once: %s",
+                                        stream_exc,
                                     )
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "[SkillTurboExecutor] Failed to send stream llm_reasoning event: %s",
-                                    e,
-                                )
-                    
-                    # ──────────────────────── 处理普通文本内容 ────────────────────────
-                    text_chunk = chunk.content
-                    if text_chunk:
-                        # 累积消息（供after回调使用）
-                        accumulated_message += text_chunk
+                                    async for chunk in client.stream(
+                                        messages,
+                                        max_tokens=_DEFAULT_LLM_MAX_TOKENS,
+                                    ):
+                                        yield chunk
+                                else:
+                                    raise
 
-                        # 通过 session stream 发送正文 delta（与 reasoning 保持一致）
-                        if session:
-                            output_payload: dict[str, Any] = {
-                                "content": str(text_chunk),
-                                "plan_name": self._display_name(node_name),
-                            }
-                            if source_id is not None:
-                                output_payload[STREAM_SOURCE_ID_FIELD] = source_id
-                            try:
-                                await session.write_stream(
-                                    OutputSchema(
-                                        type="llm_output",
-                                        index=0,
-                                        payload=output_payload,
+                        async for chunk in _iter_chunks():
+                            # 先跑 inspector，再刷前端 / 缓冲业务正文。
+                            await self._run_stream_chunk_inspectors(ctx, chunk)
+
+                            # 记下 usage，成功轮再发；避免失败轮中途泄漏后成功轮重复计费。
+                            chunk_usage = getattr(chunk, "usage_metadata", None)
+                            if chunk_usage:
+                                pending_usage = chunk_usage
+                            # AssistantMessageChunk 有两个属性：
+                            # - content: 普通文本内容
+                            # - reasoning_content: 推理过程内容
+
+                            # ──────────────────────── 实时刷 reasoning_content ────────────────────────
+                            reasoning_content = getattr(chunk, "reasoning_content", None)
+                            if reasoning_content and session:
+                                reasoning_payload: dict[str, Any] = {
+                                    "content": str(reasoning_content),
+                                    "plan_name": self._display_name(node_name),
+                                }
+                                if source_id is not None:
+                                    reasoning_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                                try:
+                                    await session.write_stream(
+                                        OutputSchema(
+                                            type="llm_reasoning",
+                                            index=0,
+                                            payload=reasoning_payload,
+                                        )
                                     )
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "[SkillTurboExecutor] Failed to send stream llm_output event: %s",
-                                    e,
-                                )
+                                except Exception as e:
+                                    logger.warning(
+                                        "[SkillTurboExecutor] Failed to send stream "
+                                        "llm_reasoning event: %s",
+                                        e,
+                                    )
 
-                        # 返回普通文本（业务代码只看到普通文本）
+                            # ──────────────────────── 实时刷前端 + 缓冲业务正文 ────────────────────────
+                            text_chunk = chunk.content
+                            if text_chunk:
+                                # 累积消息（供after回调使用）
+                                accumulated_message += text_chunk
+                                # 先缓冲；整轮成功后再 yield，保证重试时业务侧看不到脏前缀
+                                buffered_chunks.append(str(text_chunk))
+
+                                if session:
+                                    output_payload: dict[str, Any] = {
+                                        "content": str(text_chunk),
+                                        "plan_name": self._display_name(node_name),
+                                    }
+                                    if source_id is not None:
+                                        output_payload[STREAM_SOURCE_ID_FIELD] = source_id
+                                    try:
+                                        await session.write_stream(
+                                            OutputSchema(
+                                                type="llm_output",
+                                                index=0,
+                                                payload=output_payload,
+                                            )
+                                        )
+                                    except Exception as e:
+                                        logger.warning(
+                                            "[SkillTurboExecutor] Failed to send stream "
+                                            "llm_output event: %s",
+                                            e,
+                                        )
+
+                    # 成功轮：发 usage，再向业务 yield。
+                    await self._emit_llm_usage(
+                        session,
+                        pending_usage,
+                        node_name=node_name,
+                        stream_source_id=source_id,
+                    )
+
+                    # 设置response（供after回调使用）
+                    ctx.inputs.response = accumulated_message
+                    for text_chunk in buffered_chunks:
                         yield text_chunk
-            
-            # 设置response（供after回调使用）
-            ctx.inputs.response = accumulated_message
-            
-        except Exception as e:
-            ctx.exception = e
-            await self._run_rail_hook('on_model_exception', ctx)
-            raise
+                    return
+                except AbortError:
+                    raise
+                except Exception as e:
+                    ctx.exception = e
+                    await self._run_rail_hook("on_model_exception", ctx)
+                    retry_request = ctx.consume_retry_request()
+                    if not retry_request:
+                        raise
+                    if retry_request.delay_seconds > 0:
+                        await asyncio.sleep(retry_request.delay_seconds)
+                finally:
+                    await self._run_rail_hook("after_model_call", ctx)
         finally:
             self._reset_llm_interface_log_session(trace_session_token)
-            await self._run_rail_hook('after_model_call', ctx)
 
     async def fallback(
         self,
@@ -2210,33 +2408,65 @@ class SkillTurboExecutor:
         session = _session_var.get()
 
         async def enqueue_chunk(chunk: Any) -> None:
-            async for task_chunk in self._drain_task_event_chunks():
-                await output_queue.put(task_chunk)
-            current_task_id = self._current_task_id()
+            is_bubble = isinstance(chunk, dict) and bool(
+                chunk.get(_BUBBLE_PROGRESS_FIELD)
+            )
+            bubble_done = bool(chunk.get("_bubble_progress_done")) if is_bubble else False
 
-            # 处理 fallback_stream 返回的 dict 格式（包含 event_type）
-            if isinstance(chunk, dict) and "event_type" in chunk:
-                await output_queue.put(
-                    self._make_event_chunk(request_id, channel_id, chunk, current_task_id)
+            async with self._task_event_drain_lock:
+                if is_bubble and not bubble_done:
+                    # 先排空上一阶段残留的 complete/update，再发开始横幅。
+                    # 本阶段的 task.start 仍由 before_subplan 延期，等横幅入队后再 flush。
+                    self._flush_deferred_task_lifecycle_events()
+                    async for task_chunk in self._drain_task_event_chunks():
+                        await output_queue.put(task_chunk)
+                    await output_queue.put(
+                        self._make_node_delta_chunk(
+                            request_id, channel_id, node, chunk, None
+                        )
+                    )
+                    return
+
+                self._flush_deferred_task_lifecycle_events()
+                async for task_chunk in self._drain_task_event_chunks():
+                    await output_queue.put(task_chunk)
+
+                current_task_id = (
+                    None if is_bubble else self._current_task_id()
                 )
-            else:
-                await output_queue.put(
-                    self._make_node_delta_chunk(request_id, channel_id, node, chunk, current_task_id)
-                )
+                if isinstance(chunk, dict) and "event_type" in chunk:
+                    await output_queue.put(
+                        self._make_event_chunk(
+                            request_id, channel_id, chunk, current_task_id
+                        )
+                    )
+                else:
+                    await output_queue.put(
+                        self._make_node_delta_chunk(
+                            request_id, channel_id, node, chunk, current_task_id
+                        )
+                    )
 
         async def drain_session_stream() -> None:
             if session is None:
                 return
             async for stream_chunk in session.stream_iterator():
                 # 先发送 task 事件（确保 task.start 在 chat 事件之前）
-                async for task_chunk in self._drain_task_event_chunks():
-                    await output_queue.put(task_chunk)
-                payload = parse_stream_chunk(stream_chunk)
-                if payload is None:
-                    continue
-                await output_queue.put(
-                    self._make_session_event_chunk(request_id, channel_id, payload, self._current_task_id())
-                )
+                async with self._task_event_drain_lock:
+                    self._flush_deferred_task_lifecycle_events()
+                    async for task_chunk in self._drain_task_event_chunks():
+                        await output_queue.put(task_chunk)
+                    payload = parse_stream_chunk(stream_chunk)
+                    if payload is None:
+                        continue
+                    await output_queue.put(
+                        self._make_session_event_chunk(
+                            request_id,
+                            channel_id,
+                            payload,
+                            self._current_task_id(),
+                        )
+                    )
 
         async def produce_node_output() -> None:
             try:
@@ -2245,8 +2475,10 @@ class SkillTurboExecutor:
                 ))
                 async for chunk in node.run_stream(inputs):
                     await enqueue_chunk(chunk)
-                async for task_chunk in self._drain_task_event_chunks():
-                    await output_queue.put(task_chunk)
+                async with self._task_event_drain_lock:
+                    self._flush_deferred_task_lifecycle_events()
+                    async for task_chunk in self._drain_task_event_chunks():
+                        await output_queue.put(task_chunk)
                 await output_queue.put(self._make_node_finished_chunk(
                     request_id, channel_id, node, self._current_task_id()
                 ))
@@ -2269,6 +2501,7 @@ class SkillTurboExecutor:
                         "[SkillTurboExecutor] _execute_node_stream FallbackLimitExceededError: %s",
                         item,
                     )
+                    self._flush_deferred_task_lifecycle_events()
                     async for task_chunk in self._drain_task_event_chunks():
                         yield task_chunk
                     raise item
@@ -2300,10 +2533,12 @@ class SkillTurboExecutor:
                             "[SkillTurboExecutor] _execute_node_stream propagate HITL AbortError: %s",
                             item,
                         )
+                        self._flush_deferred_task_lifecycle_events()
                         async for task_chunk in self._drain_task_event_chunks():
                             yield task_chunk
                         raise item
                     logger.error("[SkillTurboExecutor] _execute_node_stream error: %s", item)
+                    self._flush_deferred_task_lifecycle_events()
                     async for task_chunk in self._drain_task_event_chunks():
                         yield task_chunk
                     yield self._make_node_error_chunk(
@@ -2341,9 +2576,10 @@ class SkillTurboExecutor:
         if bucket is None or not bucket.parts:
             return
 
-        merged_content = "".join(bucket.parts)
+        merged_content = terminate_dangling_markdown_fence("".join(bucket.parts))
         if not merged_content:
             return
+        buffer_state.last_emitted[bucket_key] = merged_content
 
         payload: dict[str, Any] = {
             "event_type": event_type,
@@ -2538,7 +2774,14 @@ class SkillTurboExecutor:
         # 提取实际内容和正确的 plan_name
         actual_content = content
         plan_name = node.plan_name  # 默认使用传入的 node
-        data_payload = content if isinstance(content, dict) else None
+        data_payload = dict(content) if isinstance(content, dict) else None
+        bubble_progress = bool(
+            data_payload.pop(_BUBBLE_PROGRESS_FIELD, False)
+            if data_payload is not None
+            else False
+        )
+        if data_payload is not None:
+            data_payload.pop("_bubble_progress_done", None)
         
         if isinstance(content, dict):
             # 从 chunk 中提取正确的 plan_name（如果存在），并转为显示名
@@ -2560,9 +2803,8 @@ class SkillTurboExecutor:
             if chunk_status in ("progress", "ok") and actual_content:
                 actual_content = actual_content.rstrip("\n") + "\n"
 
-            # 将 data_payload 中的 current_node 转为显示名（浅拷贝避免修改原始 chunk）
+            # 将 data_payload 中的 current_node 转为显示名（已浅拷贝，避免修改原始 chunk）
             if data_payload is not None and "current_node" in data_payload:
-                data_payload = dict(data_payload)
                 data_payload["current_node"] = self._display_name(data_payload["current_node"])
         
         payload = {
@@ -2572,7 +2814,10 @@ class SkillTurboExecutor:
         }
         if data_payload is not None:
             payload["data"] = data_payload
-        if task_id:
+        if bubble_progress:
+            payload[_BUBBLE_PROGRESS_FIELD] = True
+        # 气泡进度横幅绝不能带 task_id，否则可能被归入左上 taskRuns。
+        if task_id and not bubble_progress:
             payload["task_id"] = task_id
         return self._make_chunk(request_id, channel_id, payload)
 
@@ -2627,6 +2872,17 @@ class SkillTurboExecutor:
             self._normalize_task_event_type(task_event)
             yield self._make_task_event_chunk(task_event)
 
+    def _flush_deferred_task_lifecycle_events(self) -> None:
+        """将延期的 task.start/update 追加到 FIFO，供下一次 drain 发送。"""
+        if not self._deferred_task_lifecycle_events:
+            return
+        events_queue = _task_events_queue_var.get()
+        if events_queue is None:
+            self._deferred_task_lifecycle_events.clear()
+            return
+        events_queue.extend(self._deferred_task_lifecycle_events)
+        self._deferred_task_lifecycle_events.clear()
+
     @staticmethod
     def _normalize_task_event_type(task_event: dict[str, Any]) -> None:
         payload = task_event.get("payload", {})
@@ -2647,6 +2903,7 @@ class SkillTurboExecutor:
 
         # 清空实例属性（新请求开始）
         self._task_states_holder.clear()
+        self._deferred_task_lifecycle_events.clear()
         self._current_task_id_holder["task_id"] = None
 
         saved = self._take_resume_task_states()
@@ -2752,6 +3009,13 @@ class SkillTurboExecutor:
             )
             return
 
+        events_queue.append(self._build_task_update_event(task_states))
+
+    @staticmethod
+    def _build_task_update_event(
+        task_states: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        """构建 task.update 事件（不入队）。"""
         # 深拷贝任务状态（避免后续修改影响已发送的事件）；按 index 排序保证前端稳定
         all_tasks = sorted(
             (copy.deepcopy(state) for state in task_states.values()),
@@ -2796,14 +3060,12 @@ class SkillTurboExecutor:
             status_preview,
         )
 
-        # 添加到事件队列
-        task_update_event = {
+        return {
             "request_id": _request_id_var.get(),
             "channel_id": _channel_id_var.get(),
             "payload": payload,
             "is_complete": False,
         }
-        events_queue.append(task_update_event)
 
     async def _should_skip_subplan_execute(
         self,
@@ -2943,10 +3205,13 @@ class SkillTurboExecutor:
             subplan.depth,
         )
 
-        events_queue.append(
+        # 延期到开始横幅入队后再写入 FIFO，避免双协程排空时 start 抢在横幅前。
+        self._deferred_task_lifecycle_events.append(
             self._build_task_start_event(subplan, task_id, task_state, task_states, timestamp)
         )
-        await self._emit_task_update_event()
+        self._deferred_task_lifecycle_events.append(
+            self._build_task_update_event(task_states)
+        )
 
     async def _after_subplan_execute(
         self,
@@ -3033,6 +3298,10 @@ class SkillTurboExecutor:
                 result_or_error if is_error else None,
             )
 
+        # 子节点若未 yield 任何 chunk 就结束，enqueue_chunk 不会触发 flush；
+        # 必须先释放延期的 task.start，再入队 complete，避免 complete 抢在 start 前。
+        self._flush_deferred_task_lifecycle_events()
+
         events_queue.append(
             self._build_task_complete_event(
                 TaskCompleteEventData(
@@ -3088,13 +3357,17 @@ class SkillTurboExecutor:
             node_status = "completed"
             info = artifact.get("info") if isinstance(artifact.get("info"), dict) else {}
             files = artifact.get("files") if isinstance(artifact.get("files"), list) else []
-        self._node_artifacts_holder[subplan.plan_name] = {
+        artifact_entry: dict[str, Any] = {
             "task_id": task_id,
             "status": node_status,
             "info": info,
             "files": files,
             "finished_at": timestamp,
         }
+        delivery_summary = artifact.get("delivery_summary")
+        if isinstance(delivery_summary, str) and delivery_summary.strip():
+            artifact_entry["delivery_summary"] = delivery_summary.strip()
+        self._node_artifacts_holder[subplan.plan_name] = artifact_entry
         logger.debug(
             "[SkillTurboExecutor] node_artifact collected: plan_name=%s status=%s has_artifact=%s",
             subplan.plan_name,

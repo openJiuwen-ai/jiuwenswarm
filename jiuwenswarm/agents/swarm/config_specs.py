@@ -100,6 +100,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
+    registry.A2A_OUTBOUND_TOOLKIT,
     registry.DISABLED_TOOLS,
 )
 
@@ -147,6 +148,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_SKILL_USE,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
+    registry.A2A_OUTBOUND_TOOLKIT,
     registry.DISABLED_TOOLS,
 )
 

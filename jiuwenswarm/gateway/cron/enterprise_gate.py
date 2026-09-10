@@ -9,7 +9,7 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.deployment_mode import MODE_DISTRIBUTED, normalize_deployment_mode
 
 logger = logging.getLogger(__name__)
@@ -32,11 +32,19 @@ def _resolve_deployment_mode() -> str:
 
 
 def enterprise_cron_enabled(*, deployment_mode: str | None = None) -> bool:
-    """企业 cron 真正开门：企业版且非 distributed（每网关独立 DB）。"""
+    """企业 cron 开门：企业版启用。
+
+    standalone / active-standby：保持历史行为。
+    distributed：多副本时需 ``GATEWAY_DB_HOST``，由库表认领避免重复调度。
+    """
     if not is_enterprise():
         return False
-    mode = deployment_mode if deployment_mode is not None else _resolve_deployment_mode()
-    return normalize_deployment_mode(mode) != MODE_DISTRIBUTED
+    mode = normalize_deployment_mode(
+        deployment_mode if deployment_mode is not None else _resolve_deployment_mode()
+    )
+    if mode == MODE_DISTRIBUTED:
+        return bool(os.getenv("GATEWAY_DB_HOST", "").strip())
+    return True
 
 
 def coerce_routing_id(value: Any) -> str | None:

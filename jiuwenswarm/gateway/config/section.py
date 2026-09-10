@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from jiuwenswarm.gateway.storage.protocols.persistent import PersistentStore
+from jiuwenswarm.infrastructure.utils import utc_now
 
 
 @dataclass
@@ -84,10 +85,13 @@ class DbBodySectionCodec:
         document: SectionDocument, *, instance_id: str = ""
     ) -> dict[str, Any]:
         _ = instance_id
+        now = utc_now()
         return {
             "body": dict(document.body),
             "source": document.source or "local",
             "revision": int(document.revision or 1),
+            "created_at": now,
+            "updated_at": now,
         }
 
     @staticmethod
@@ -96,6 +100,7 @@ class DbBodySectionCodec:
             "body": dict(document.body),
             "source": document.source or "local",
             "revision": int(document.revision or 1),
+            "updated_at": utc_now(),
         }
 
 
@@ -122,19 +127,24 @@ class DbFlatSectionCodec:
         self, document: SectionDocument, *, instance_id: str = ""
     ) -> dict[str, Any]:
         _ = instance_id
+        now = utc_now()
         row: dict[str, Any] = {
             key: document.body.get(key) for key in self._fields if key in document.body
         }
         if "level" not in row:
             row["level"] = document.body.get("level") or "INFO"
+        row["created_at"] = now
+        row["updated_at"] = now
         return row
 
     def to_updates(self, document: SectionDocument) -> dict[str, Any]:
-        return {
+        updates = {
             key: document.body.get(key)
             for key in self._fields
             if key in document.body
         }
+        updates["updated_at"] = utc_now()
+        return updates
 
 
 class SectionDocumentRepository:

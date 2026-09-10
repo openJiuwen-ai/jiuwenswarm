@@ -104,6 +104,8 @@ export interface ToolCall {
   description?: string;  // 操作描述，如 "创建 3 个任务"
   formatted_args?: string;  // 格式化参数摘要
   display_name?: string;  // 后端下发的可读展示名，前端优先直接展示
+  /** 触发该工具时激活的技能名（由后端 current_skill 归因）。 */
+  source_skill?: string;
   memberName?: string;
 }
 

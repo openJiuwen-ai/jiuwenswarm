@@ -27,6 +27,22 @@ interface PendingRequest {
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
 
+/** 暂停期间暂存、恢复后回放的流式事件 */
+export const PAUSABLE_STREAM_EVENTS = new Set([
+  'chat.delta', 'chat.final', 'chat.media', 'chat.file',
+  'chat.tool_call', 'chat.tool_result', 'chat.tool_update',
+  // 暂停期间 reasoning 增量也需缓冲，否则 shouldRecoverProcessingFromReasoning
+  // 会把 processing 翻回 true，暂停中的 thinking 面板"复活"。
+  'chat.reasoning',
+  'todo.updated', 'context.compressed', 'context.usage',
+  'chat.subtask_update', 'chat.usage_summary',
+]);
+
+export interface PauseBufferHook {
+  isActive: () => boolean;
+  onBuffer: (event: WsEvent) => void;
+}
+
 const LEGACY_EVENT_MAP: Record<string, string> = {
   connection_ack: 'connection.ack',
   content_chunk: 'chat.delta',
@@ -88,6 +104,8 @@ class WebClient {
   private connectPromise: Promise<void> | null = null;
   private lastConnectOptions: WebConnectOptions = {};
   private requestSeq = 0;
+  private streamEventFilter: ((event: WsEvent) => boolean) | null = null;
+  private pauseBufferHook: PauseBufferHook | null = null;
 
   getState(): WebConnectionState {
     return this.state;
@@ -123,6 +141,21 @@ class WebClient {
         this.handlers.delete(eventName);
       }
     };
+  }
+
+  /** 丢弃已 cancel 的 chat/context 流式事件（在 dispatch 前统一过滤） */
+  setStreamEventFilter(filter: ((event: WsEvent) => boolean) | null): void {
+    this.streamEventFilter = filter;
+  }
+
+  /** 暂停期间将流式输出写入暂存区，恢复后通过 replayBufferedEvent 回放 */
+  setPauseBufferHook(hook: PauseBufferHook | null): void {
+    this.pauseBufferHook = hook;
+  }
+
+  /** 回放暂存的事件——直接派发给 handler，绕过 filter 和 buffer */
+  replayBufferedEvent(event: WsEvent): void {
+    this.dispatchEventToHandlers(event);
   }
 
   async connect(options: WebConnectOptions = {}): Promise<void> {
@@ -255,7 +288,7 @@ class WebClient {
       throw this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_NOT_READY', undefined, true);
     }
 
-    const id = this.generateRequestId();
+    const id = options.requestId ?? this.generateRequestId();
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const message: WsRequest = {
       type: 'req',
@@ -372,6 +405,14 @@ class WebClient {
       data: message,
     });
 
+    if (
+      message.type === 'event' &&
+      this.streamEventFilter &&
+      !this.streamEventFilter(message)
+    ) {
+      return;
+    }
+
     if (message.type === 'res') {
       this.resolvePending(message);
       return;
@@ -405,12 +446,14 @@ class WebClient {
       if (!eventName) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
         event: eventName,
-        payload: this.normalizePayload(msg.payload),
+        payload,
         seq: typeof msg.seq === 'number' ? msg.seq : undefined,
         stream_id: typeof msg.stream_id === 'string' ? msg.stream_id : undefined,
+        request_id: this.extractRequestId(msg, payload),
       };
     }
 
@@ -419,10 +462,12 @@ class WebClient {
       if (!mappedEvent) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
         event: mappedEvent,
-        payload: this.normalizePayload(msg.payload),
+        payload,
+        request_id: this.extractRequestId(msg, payload),
       };
     }
 
@@ -434,6 +479,19 @@ class WebClient {
       return {};
     }
     return payload as Record<string, unknown>;
+  }
+
+  /** 后端 WS 路径把 request_id 放在 payload 内部；HTTP/SSE 路径放在顶层。两者都兼容。 */
+  private extractRequestId(
+    msg: Record<string, unknown>,
+    payload: Record<string, unknown>
+  ): string | undefined {
+    const top = typeof msg.request_id === 'string' ? msg.request_id : undefined;
+    if (top) return top;
+    const inner = typeof payload.request_id === 'string' ? payload.request_id : undefined;
+    if (inner) return inner;
+    const rid = typeof payload.rid === 'string' ? payload.rid : undefined;
+    return rid;
   }
 
   private resolvePending(message: WsResponse): void {
@@ -460,6 +518,20 @@ class WebClient {
   }
 
   private dispatchEvent(event: WsEvent): void {
+    const hook = this.pauseBufferHook;
+    if (hook?.isActive()) {
+      if (event.event === 'chat.processing_status') {
+        return;
+      }
+      if (PAUSABLE_STREAM_EVENTS.has(event.event)) {
+        hook.onBuffer(event);
+        return;
+      }
+    }
+    this.dispatchEventToHandlers(event);
+  }
+
+  private dispatchEventToHandlers(event: WsEvent): void {
     const handlers = this.handlers.get(event.event);
     if (!handlers || handlers.size === 0) {
       return;

@@ -45,6 +45,7 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
+import { uploadFileToObs } from '../../services/obsUpload';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
 import sendIcon from '../../assets/send.svg';
 import sendActiveIcon from '../../assets/send_active.svg';
@@ -63,6 +64,8 @@ type InputAreaSkillItem = {
   is_builtin?: boolean;
   is_builtin_source?: boolean;
   enabled?: boolean;
+  installed?: boolean;
+  source_type?: 'prebuilt' | 'user' | string;
 };
 
 /** 已安装插件信息（用于判定技能是否已安装） */
@@ -281,6 +284,8 @@ interface AttachmentDraft {
   file?: File;
   /** Absolute local path from desktop native picker (WebView2 has no File.path). */
   localPath?: string;
+  /** Enterprise MinIO object URL after upload-obs (no local absolute path). */
+  obsUrl?: string;
 }
 
 interface AttachmentAlert {
@@ -325,13 +330,15 @@ function attachmentToMediaItem(attachment: AttachmentDraft): MediaItem {
   const mimeType = pickString(persisted?.mime_type, persisted?.mimeType) || attachment.mimeType;
   const sizeBytes = pickNumber(persisted?.size_bytes, persisted?.sizeBytes) ?? attachment.size;
   const path = pickString(persisted?.path);
+  const url = pickString(persisted?.url) || attachment.obsUrl;
   // After persist, only send path metadata — never re-send base64 on chat.send.
+  // Enterprise upload-obs: send url metadata for Agent materializer.
   return {
     type: attachment.kind,
     mimeType,
     mime_type: mimeType,
     filename,
-    ...(path ? { path } : { base64Data: attachment.base64Data }),
+    ...(path ? { path } : url ? { url } : { base64Data: attachment.base64Data }),
     sizeBytes,
     size_bytes: sizeBytes,
   };
@@ -416,7 +423,7 @@ function clearAttachmentAlertTimers(timers: Map<string, number>): void {
 
 function getDocumentValidationError(
   file: File | undefined,
-  options?: { filename?: string; localPath?: string },
+  options?: { filename?: string; localPath?: string; allowWithoutLocalPath?: boolean },
 ): string | null {
   const filename = options?.filename || file?.name || '未命名文件';
   if (file && isForbiddenDocumentFile(file)) {
@@ -425,7 +432,7 @@ function getDocumentValidationError(
   if (file && !isDocumentFile(file)) {
     return `文件类型不支持：${filename}`;
   }
-  if (!getLocalFilePath(file, options?.localPath)) {
+  if (!options?.allowWithoutLocalPath && !getLocalFilePath(file, options?.localPath)) {
     return `无法获取本地文件路径：${filename}（请使用桌面端选择文件）`;
   }
   return null;
@@ -576,8 +583,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isAutoHarnessMode = mode === 'auto_harness';
   const isWorkContextLocked = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const showWorkContextRow = !isEnterprise() && activeSessionId === NEW_CONVERSATION_ID;
-  /** Goal 入口是否适用于当前上下文（agent 模式 + 已接入 onSetGoal，如欢迎页新会话就不适用） */
-  const canUseGoalMenu = isAgentMode && Boolean(onSetGoal);
+  const enterpriseLocked = isEnterprise();
+  const modeLocked = enterpriseLocked || hasHistory || isProcessing;
+  /** Goal 入口仅个人版展示；企业版用户面隐藏，个人版保持原有可用条件。 */
+  const canUseGoalMenu = !enterpriseLocked && isAgentMode && Boolean(onSetGoal);
   // 只跟 armed 挂钩：这个 tag 是"下一条消息将用于设置目标"的过渡态指示，发送后 armed 变 false
   // 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、编辑/暂停/删除，已经由
   // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
@@ -695,7 +704,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       attachments.filter(
         (attachment) =>
           attachment.status === 'ready' &&
-          (Boolean(pickString(attachment.persistedMediaItem?.path)) || Boolean(attachment.base64Data)),
+          (Boolean(pickString(attachment.persistedMediaItem?.path)) ||
+            Boolean(attachment.obsUrl) ||
+            Boolean(pickString(attachment.persistedMediaItem?.url)) ||
+            Boolean(attachment.base64Data)),
       ),
     [attachments],
   );
@@ -824,16 +836,60 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         ? getDocumentValidationError(attachment.file, {
             filename: attachment.filename,
             localPath: attachment.localPath,
+            allowWithoutLocalPath: isEnterprise(),
           })
         : attachment.file
           ? getImageValidationError(attachment.file)
-          : (attachment.base64Data ? null : `文件类型不支持：${attachment.filename || '未命名文件'}`);
+          : (attachment.base64Data || attachment.obsUrl
+              ? null
+              : `文件类型不支持：${attachment.filename || '未命名文件'}`);
     if (validationError) {
       pushAttachmentAlert(validationError);
       updateAttachment(attachment.id, { status: 'error', error: validationError });
       return;
     }
     updateAttachment(attachment.id, { status: 'uploading', error: undefined });
+
+    // Enterprise browser shell: upload bytes to MinIO; chat.send carries url only.
+    if (isEnterprise()) {
+      if (!attachment.file) {
+        const error = '上传失败，请重试';
+        pushAttachmentAlert(error);
+        updateAttachment(attachment.id, { status: 'error', error });
+        return;
+      }
+      void (async () => {
+        try {
+          const uploaded = await uploadFileToObs(attachment.file!);
+          updateAttachment(attachment.id, {
+            filename: uploaded.name || attachment.filename,
+            size: uploaded.size,
+            obsUrl: uploaded.url,
+            persistedMediaItem: {
+              type: attachment.kind,
+              filename: uploaded.name || attachment.filename,
+              mime_type: attachment.mimeType,
+              url: uploaded.url,
+              size_bytes: uploaded.size,
+            },
+            status: 'ready',
+            error: undefined,
+          });
+        } catch (error) {
+          console.error('企业附件上传失败:', error);
+          const raw = error instanceof Error ? error.message : 'upload_failed';
+          const message =
+            raw === 'file_too_large'
+              ? '文件过大（上限 50MB）'
+              : raw === 'empty_file'
+                ? '空文件无法上传'
+                : '上传失败，请重试';
+          pushAttachmentAlert(message);
+          updateAttachment(attachment.id, { status: 'error', error: message });
+        }
+      })();
+      return;
+    }
 
     // Documents: validate local path only — no base64 transfer / no disk persist / no parse.
     if (attachment.kind === 'document') {
@@ -1008,7 +1064,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       };
       const validationError =
         kind === 'document'
-          ? getDocumentValidationError(file, { filename: base.filename, localPath })
+          ? getDocumentValidationError(file, {
+              filename: base.filename,
+              localPath,
+              allowWithoutLocalPath: isEnterprise(),
+            })
           : getImageValidationError(file);
       if (validationError) {
         pushAttachmentAlert(validationError);
@@ -1087,6 +1147,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const openAttachmentPicker = useCallback(async () => {
     if (imageInputDisabled) return;
     setAttachMenuOpen(false);
+    // Enterprise browser shell: use HTML file input → MinIO upload-obs (no File.path).
+    if (isEnterprise()) {
+      fileInputRef.current?.click();
+      return;
+    }
     // 文档上传依赖本机绝对路径：桌面 pywebview 或浏览器后端 path.select_files。
     // 不要回落 HTML <input type="file">，浏览器拿不到 File.path，只会得到
     // 「无法获取本地文件路径」的假失败。
@@ -1296,7 +1361,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const readyDrafts = attachments.filter(
       (attachment) =>
         attachment.status === 'ready' &&
-        (Boolean(pickString(attachment.persistedMediaItem?.path)) || Boolean(attachment.base64Data)),
+        (Boolean(pickString(attachment.persistedMediaItem?.path)) ||
+          Boolean(attachment.obsUrl) ||
+          Boolean(pickString(attachment.persistedMediaItem?.url)) ||
+          Boolean(attachment.base64Data)),
     );
     const trimmed = buildSubmitContent(trimmedBase, readyDrafts);
     // Require typed/voice text — attachments alone must not enable send.
@@ -2245,7 +2313,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               type="button"
               className="chat-mode-select__trigger"
               onClick={() => {
-                if (hasHistory || isProcessing) return;
+                if (modeLocked) return;
                 if (!isModeMenuOpen && modeMenuRef.current) {
                   const rect = modeMenuRef.current.getBoundingClientRect();
                   const spaceBelow = window.innerHeight - rect.bottom;
@@ -2258,7 +2326,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               aria-haspopup="menu"
               aria-expanded={isModeMenuOpen}
               data-testid={`chat-mode-${currentMode.value}`}
-              style={(hasHistory || isProcessing) ? { cursor: 'default' } : undefined}
+              style={modeLocked ? { cursor: 'default' } : undefined}
             >
               <span className="chat-mode-select__value">
                 <span className="chat-mode-select__icon" aria-hidden="true">
@@ -2266,7 +2334,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 </span>
                 <span className="chat-mode-select__label">{t(currentMode.i18nKey)}</span>
               </span>
-              {!hasHistory && !isProcessing && (
+              {!modeLocked && (
                 <svg className="chat-mode-select__chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.8} aria-hidden="true">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 8l4 4 4-4" />
                 </svg>
@@ -2327,7 +2395,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               document.body
             )}
           </div>
-          <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+          {!isEnterprise() && (
+            <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+          )}
 
           {!isTeamMode && <SkillSelector
             onNavigateToSkills={onNavigateToSkills}
@@ -2396,8 +2466,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           )} */}
 
           <ModelSelector
-            disabled={isTeamMode || isProcessing}
-            lockedToDefault={isTeamMode}
+            disabled={enterpriseLocked || isTeamMode || isProcessing}
+            lockedToDefault={enterpriseLocked || isTeamMode}
           />
 
           <button
@@ -3000,6 +3070,7 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
 
   const isSkillInstalled = useCallback(
     (skill: InputAreaSkillItem): boolean =>
+      skill.installed === true ||
       installedSkillMap.has(skill.name) ||
       skill.source === 'local' ||
       skill.source === 'project',
@@ -3033,7 +3104,7 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
         plugins?: InputAreaInstalledPlugin[];
       }>(
         'skills.list',
-        { with_installed: true },
+        { session_id: activeSessionId, with_installed: true },
         { timeoutMs: 30_000 },
       );
       setSkills(data.skills || []);

@@ -250,19 +250,43 @@ class CronTenantRegistry:
         return data
 
     async def web_update_job(
-        self, job_id: str, patch: dict[str, Any], service_id: str, agent_id: str
+        self,
+        job_id: str,
+        patch: dict[str, Any],
+        service_id: str,
+        agent_id: str,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         data = await (await self.get_controller(service_id, agent_id)).update_job(
-            job_id, patch
+            job_id,
+            patch,
+            group_id=group_id,
+            bot_id=bot_id,
+            user_id=user_id,
         )
         await self._mirror_after_mutation(
             service_id=service_id, agent_id=agent_id, job=data
         )
         return data
 
-    async def web_delete_job(self, job_id: str, service_id: str, agent_id: str) -> bool:
+    async def web_delete_job(
+        self,
+        job_id: str,
+        service_id: str,
+        agent_id: str,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        user_id: str | None = None,
+    ) -> bool:
         deleted = await (await self.get_controller(service_id, agent_id)).delete_job(
-            job_id
+            job_id,
+            group_id=group_id,
+            bot_id=bot_id,
+            user_id=user_id,
         )
         if deleted:
             await self._mirror_after_mutation(
@@ -271,10 +295,22 @@ class CronTenantRegistry:
         return deleted
 
     async def web_toggle_job(
-        self, job_id: str, enabled: bool, service_id: str, agent_id: str
+        self,
+        job_id: str,
+        enabled: bool,
+        service_id: str,
+        agent_id: str,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         data = await (await self.get_controller(service_id, agent_id)).toggle_job(
-            job_id, enabled
+            job_id,
+            enabled,
+            group_id=group_id,
+            bot_id=bot_id,
+            user_id=user_id,
         )
         await self._mirror_after_mutation(
             service_id=service_id, agent_id=agent_id, job=data

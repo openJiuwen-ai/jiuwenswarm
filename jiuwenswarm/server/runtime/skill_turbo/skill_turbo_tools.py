@@ -24,15 +24,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── 停止提示：追加到工具返回值，引导 LLM 总结并结束 ──
-_SKILL_TURBO_STOP_HINT = (
-    "\n\n[SYSTEM] The skill_acceleration_exec task is complete and the artifact has already been "
-    "generated. The file(s) have ALREADY been sent to the user by the internal "
-    "delivery pipeline - do NOT call send_file_to_user again. You should now "
-    "summarize this result to the user and finish your turn. Do NOT call "
-    "skill_acceleration_exec, skill_tool, or send_file_to_user again for this task - the "
-    "work is already done; calling any of them again would duplicate the work."
+# 中立收尾
+_SKILL_TURBO_STOP_HINT_NEUTRAL = (
+    "\n\n[SYSTEM] The skill_acceleration_exec task has finished, but the internal "
+    "delivery pipeline did NOT confirm that the file(s) were generated and sent "
+    "to the user. You should now summarize this result to the user HONESTLY "
+    "based on the artifact summary above: clearly state which parts are "
+    "incomplete or failed and that the file has NOT been delivered. Do NOT "
+    "claim the file was sent. Do NOT call skill_acceleration_exec or skill_tool "
+    "again for this task unless the user asks for a retry. Do NOT call "
+    "send_file_to_user either; file delivery is handled by the internal pipeline."
 )
+
+_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = (
+    "\n\n[SYSTEM] PPT 交付总结骨架将由系统在本工具结果之后通过流式通道发送给用户，"
+    "无需在本回合重复输出交付总结。禁止 tool_call，禁止再调 "
+    "send_file_to_user / skill_tool / skill_acceleration_exec。"
+)
+
+# HITL 续跑没有外层 tool_result / DeliverySummaryRail；可见终稿用骨架或安全短句，
+# 禁止把产物摘要账本发给用户。
+# HITL 续跑无 P10 骨架（交付未确认）时的用户可见终稿。
+PPT_TURBO_UNCONFIRMED_FINISH_TEXT = (
+    "PPT 任务已结束，但未能确认文件已生成并发送，部分环节可能未完成。"
+    "请查看上方过程信息，或让我重试补齐。"
+)
+_SKILL_TURBO_ARTIFACT_SUMMARY_MARKER = "[SkillAccelerationExec 产物摘要]"
 
 # 工具返回值会先被 AbilityManager 收成 ToolMessage。after_tool_call 再用
 # StreamEventRail._tool_interrupted_message（随 prompt 语言中/英）覆写 tool_msg。
@@ -41,6 +58,15 @@ _SKILL_TURBO_STOP_HINT = (
 # str(dict) 进 ToolMessage 后模型会当成加速失败并回退 skill_tool。
 _SKILL_TURBO_HITL_PLACEHOLDER = (
     "[工具执行被中断] 工具 skill_acceleration_exec 执行过程中被用户打断，没有执行结果。"
+)
+
+# ── 待在外层 tool_result 之后发出的 PPT 交付总结 ──
+# 不可在 ppt_gen_root / 工具执行中途以 chat.delta 发出：那时无 task_id，会与过程尾
+# 同桶；且早于 skill_acceleration_exec 的 tool_result，RelayClaw 收集窗口会清空。
+# 由 SkillTurboDeliverySummaryRail.after_tool_call（晚于 StreamEventRail 发
+# tool_result）读取并发出。
+_pending_ppt_delivery_summary: ContextVar[str | None] = ContextVar(
+    "pending_ppt_delivery_summary", default=None
 )
 
 # ── SkillTurbo event_type -> DeepAgent OutputSchema.type 反向映射 ──
@@ -58,6 +84,7 @@ _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE: dict[str, str] = {
     "chat.tool_calls.delta": "tool_calls.delta",
     "chat.error": "error",
 }
+_BUBBLE_PROGRESS_FIELD = "_bubble_progress"
 
 # ── 不转发给父会话的事件类型 ──
 # plan/node 生命周期事件：前端无对应 handler，DeepAgent 也无显式处理。
@@ -81,10 +108,122 @@ _SKILL_TURBO_TASK_EVENT_TYPES: frozenset[str] = frozenset({
     "task.update",
 })
 
+# 仅 task.update 可带外推送：它是全量 taskProgress 快照，后到 FIFO 覆盖先到，幂等。
+# task.start/task.complete 驱动前端 taskStack，必须与 chat.* 保持 FIFO 顺序；
+# 带外抢先 complete 会导致迟到的思考/工具调用丢 segment（见外层 todo 注释）。
+_SKILL_TURBO_OOB_TASK_EVENT_TYPES: frozenset[str] = frozenset({"task.update"})
+
+
+def _without_inner_task_routing(payload: dict[str, Any]) -> dict[str, Any]:
+    """Copy a parent-bound event without its SkillTurbo-only task id."""
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id.startswith("task_"):
+        return payload
+    cleaned = dict(payload)
+    cleaned.pop("task_id", None)
+    return cleaned
+
+
+def _prepare_parent_stream_output(
+    event_type: str, payload: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Map a SkillTurbo event to the parent stream without delaying bubble progress."""
+    if event_type == "chat.delta" and payload.get(_BUBBLE_PROGRESS_FIELD):
+        cleaned = dict(payload)
+        cleaned.pop(_BUBBLE_PROGRESS_FIELD, None)
+        cleaned.pop("task_id", None)
+        return "content_chunk", cleaned
+    return _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE.get(event_type, event_type), payload
+
+
+async def _push_task_event_out_of_band(
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    request_id: str,
+    channel_id: str,
+    session_id: str,
+) -> None:
+    """Bypass the parent stream FIFO for task.update snapshots only.
+
+    ``chat.file`` already uses PushRegistry, so PPT can appear while
+    ``write_stream`` is still draining thousands of page-gen deltas. The
+    right-hand task list is driven by ``task.update`` snapshots that used
+    only that FIFO, leaving Stage 11 in_progress after delivery. Later FIFO
+    ``task.update`` snapshots remain idempotent. ``task.start`` /
+    ``task.complete`` stay on the FIFO so they keep pace with ``chat.*``.
+    """
+    if event_type not in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
+        return
+    if not request_id or not channel_id or not session_id:
+        logger.debug(
+            "[SkillTurboTool] skip send_push %s: missing ids request_id=%s "
+            "channel_id=%s session_id=%s",
+            event_type,
+            bool(request_id),
+            bool(channel_id),
+            bool(session_id),
+        )
+        return
+    try:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.get_instance()
+    except Exception:
+        logger.debug(
+            "[SkillTurboTool] skip send_push %s: AgentWebSocketServer unavailable",
+            event_type,
+            exc_info=True,
+        )
+        return
+
+    push_payload = dict(payload)
+    push_payload.setdefault("event_type", event_type)
+    msg = {
+        "request_id": request_id,
+        "channel_id": channel_id,
+        "session_id": session_id,
+        "payload": push_payload,
+        "is_complete": False,
+    }
+    try:
+        delivered = await server.send_push(msg)
+        logger.info(
+            "[SkillTurboTool] send_push %s delivered=%s request_id=%s session_id=%s",
+            event_type,
+            delivered,
+            request_id,
+            session_id,
+        )
+    except Exception:
+        logger.warning(
+            "[SkillTurboTool] send_push %s failed request_id=%s",
+            event_type,
+            request_id,
+            exc_info=True,
+        )
+
+
 # ── ContextVar：在 before_tool_call 中注入，供工具函数读取 ──
 _current_skill_turbo_adapter: ContextVar[Any] = ContextVar(
     "current_skill_turbo_adapter", default=None
 )
+_skill_turbo_outer_todo_active: ContextVar[bool | None] = ContextVar(
+    "skill_turbo_outer_todo_active", default=None
+)
+
+
+def set_skill_turbo_outer_todo_active(active: bool) -> Token:
+    """Bind whether the parent task list owns this tool call's display."""
+    return _skill_turbo_outer_todo_active.set(active)
+
+
+def get_skill_turbo_outer_todo_active() -> bool | None:
+    return _skill_turbo_outer_todo_active.get()
+
+
+def reset_skill_turbo_outer_todo_active(token: Token) -> None:
+    _skill_turbo_outer_todo_active.reset(token)
 
 # ── ContextVar：SkillTurbo HITL 中断信号 ──
 # skill_turbo_tools catch AbortError 后提取 ToolInterruptException 存入此 ContextVar，
@@ -99,6 +238,60 @@ def set_skill_turbo_hitl_tic(tic: Any) -> Token:
 
 def get_skill_turbo_hitl_tic() -> Any:
     return _skill_turbo_hitl_tic.get()
+
+
+def set_pending_ppt_delivery_summary(summary: str) -> None:
+    text = str(summary or "").strip()
+    _pending_ppt_delivery_summary.set(text or None)
+
+
+def clear_pending_ppt_delivery_summary() -> None:
+    _pending_ppt_delivery_summary.set(None)
+
+
+def take_pending_ppt_delivery_summary() -> str:
+    text = str(_pending_ppt_delivery_summary.get() or "").strip()
+    _pending_ppt_delivery_summary.set(None)
+    return text
+
+
+async def emit_pending_ppt_delivery_summary(session: "Session") -> bool:
+    """在外层 tool_result 之后发出无 task_id 的交付总结 chat.delta。
+
+    返回是否实际发出。session 为 None 或骨架非法时静默跳过。
+    """
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary import (
+        DELIVERY_SUMMARY_START,
+    )
+    from openjiuwen.core.session.stream.base import OutputSchema
+
+    summary = take_pending_ppt_delivery_summary()
+    if not summary.startswith(DELIVERY_SUMMARY_START):
+        return False
+    if session is None:
+        logger.warning(
+            "[SkillTurboTool] pending PPT delivery summary dropped: parent session is None"
+        )
+        return False
+    try:
+        await session.write_stream(
+            OutputSchema(
+                type="llm_output",
+                index=0,
+                payload={"content": summary},
+            )
+        )
+        logger.info(
+            "[SkillTurboTool] emitted PPT delivery summary after tool_result chars=%d",
+            len(summary),
+        )
+        return True
+    except Exception:
+        logger.warning(
+            "[SkillTurboTool] emit PPT delivery summary after tool_result failed",
+            exc_info=True,
+        )
+        return False
 
 
 def set_current_skill_turbo_adapter(adapter: Any) -> Token:
@@ -163,6 +356,63 @@ def _resume_user_input_from_raw(
     return raw
 
 
+# ────────────────── 中断恢复 hint（一次性 fresh 调用守卫） ──────────────────
+# prepare_interrupt_artifacts_for_request 注入产物摘要时，会在 request.metadata 上
+# 挂一份结构化 hint。本请求内 skill_acceleration_exec 若被全新调用（非 HITL resume），
+# 工具层守卫据此先拒绝一次并附上产物摘要，引导 LLM 走非 skillTurbo 流程基于已有
+# 产物继续；LLM 明确重试（视为全新任务）时 hint 已被消费，放行。
+# request.metadata 经 _update_runtime_config 浅拷贝进 rail metadata（内部 dict 共享
+# 引用），故 consumed 标记在原地标记即可对所有副本生效。
+
+SKILL_TURBO_INTERRUPT_RECOVERY_KEY = "skill_turbo_interrupt_recovery"
+
+
+def set_interrupt_recovery_hint(request: Any, *, summary: str, skill: str = "") -> None:
+    """把一次性中断恢复 hint 挂到 request.metadata（仅注入产物摘要的请求调用）。"""
+    metadata = getattr(request, "metadata", None)
+    if not isinstance(metadata, dict):
+        # metadata 缺失时无处挂载：放弃 hint，守卫对本请求不生效（降级，不影响主流程）
+        return
+    metadata[SKILL_TURBO_INTERRUPT_RECOVERY_KEY] = {
+        "summary": summary,
+        "skill": skill,
+        "request_id": str(getattr(request, "request_id", "") or ""),
+        "consumed": False,
+    }
+
+
+def _pending_interrupt_recovery_hint(request_metadata: Any) -> dict[str, Any] | None:
+    """读取本请求未消费的中断恢复 hint；无 hint 或已消费返回 None。"""
+    if not isinstance(request_metadata, dict):
+        return None
+    hint = request_metadata.get(SKILL_TURBO_INTERRUPT_RECOVERY_KEY)
+    if isinstance(hint, dict) and hint.get("summary") and not hint.get("consumed"):
+        return hint
+    return None
+
+
+def _consume_interrupt_recovery_hint(hint: dict[str, Any]) -> None:
+    """标记 hint 已消费：同请求内的下一次 fresh 调用放行（视为明确的全新任务）。"""
+    hint["consumed"] = True
+
+
+def _build_interrupt_recovery_reject(hint: dict[str, Any]) -> dict[str, Any]:
+    """构造 fresh 调用守卫的一次性拒绝结果（success=False，引导非 skillTurbo 继续）。"""
+    summary = str(hint.get("summary") or "").strip()
+    error = (
+        "检测到上一轮被中断的 SkillAccelerationExec 任务仍有可复用的已完成产物：\n\n"
+        f"{summary}\n\n"
+        "全新调用 skill_acceleration_exec 会丢弃以上产物并从 p0 重新规划执行，"
+        "导致已完成的工作被重复执行。\n"
+        "- 若用户想继续或完成被中断的任务：请勿调用 skill_acceleration_exec，"
+        "改用 skill_tool 走标准流程（可基于以上产物文件继续），"
+        "或用 read_file / edit_file 等工具直接处理产物文件；\n"
+        "- 若用户明确要求与已有产物无关的全新任务：请直接再次调用 "
+        "skill_acceleration_exec，本次将被放行（该提示仅生效一次）。"
+    )
+    return {"success": False, "error": error}
+
+
 def _resolve_skill_turbo_resume_session_id(
     external_session_id: Any,
     parent_session: Any,
@@ -215,7 +465,7 @@ def _build_artifact_summary(holder: dict[str, Any]) -> str:
     """
     if not holder:
         return ""
-    lines = ["[SkillAccelerationExec 产物摘要]"]
+    lines = [_SKILL_TURBO_ARTIFACT_SUMMARY_MARKER]
     for plan_name, node_info in holder.items():
         if not isinstance(node_info, dict):
             continue
@@ -238,6 +488,54 @@ def _build_artifact_summary(holder: dict[str, Any]) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+def _ppt_delivery_summary(artifact_holder: dict[str, Any] | None) -> str:
+    node = (artifact_holder or {}).get("p10_delivery")
+    if not isinstance(node, dict):
+        return ""
+    text = node.get("delivery_summary")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _ppt_delivery_failed_error(artifact_holder: dict[str, Any] | None) -> str:
+    """P10 明确交付失败时，禁止把 skill_acceleration_exec 收成 success。"""
+    node = (artifact_holder or {}).get("p10_delivery")
+    if not isinstance(node, dict):
+        return ""
+    info = node.get("info") if isinstance(node.get("info"), dict) else {}
+    if str(info.get("delivery_status") or "") != "failed":
+        return ""
+    return (
+        "PPT 生成失败：未产出可交付的 pptx 文件。"
+        "请根据流水线失败阶段重试，不要告知用户已经生成成功。"
+    )
+
+
+def visible_ppt_turbo_finish_text(
+    holder: dict[str, Any] | None,
+    *,
+    success: bool,
+    detail: str = "",
+) -> str:
+    """HITL 续跑的用户可见终稿（无外层 skill_acceleration_exec 工具循环）。
+
+    成功时优先发 P10 已填好的交付骨架；没有骨架则用交付未确认的中立短句。
+    失败只回可读错误。产物账本不得出现在返回值里。
+    """
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary import (
+        DELIVERY_SUMMARY_START,
+    )
+
+    if success:
+        skeleton = _ppt_delivery_summary(holder)
+        if skeleton.startswith(DELIVERY_SUMMARY_START):
+            return skeleton
+        return PPT_TURBO_UNCONFIRMED_FINISH_TEXT
+    text = str(detail or "").strip() or "任务未完成"
+    if _SKILL_TURBO_ARTIFACT_SUMMARY_MARKER in text:
+        return "任务未完成"
+    return text
+
+
 def _wrap_skill_turbo_result(
     result_dict: dict[str, Any],
     artifact_holder: dict[str, Any] | None = None,
@@ -248,13 +546,23 @@ def _wrap_skill_turbo_result(
     若此处追加 "finish your turn" 会与之矛盾。
     """
     artifact_text = _build_artifact_summary(artifact_holder or {})
+    ppt_summary = _ppt_delivery_summary(artifact_holder)
     if result_dict.get("success"):
         parts = [result_dict.get("result") or ""]
         if artifact_text:
             parts.append(artifact_text)
-        parts.append(_SKILL_TURBO_STOP_HINT)
+        if ppt_summary:
+            # 骨架不进 tool_result 正文、也不在流水线内提前 chat.delta；
+            # 挂到 ContextVar，由 after_tool_call 在外层 tool_result 之后流式发出。
+            set_pending_ppt_delivery_summary(ppt_summary)
+            parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT)
+        else:
+            clear_pending_ppt_delivery_summary()
+            # 无 P10 骨架 = 交付未确认，不宣称文件已发送。
+            parts.append(_SKILL_TURBO_STOP_HINT_NEUTRAL)
         result_dict["result"] = "\n\n".join(p for p in parts if p)
     else:
+        clear_pending_ppt_delivery_summary()
         parts = [result_dict.get("error") or ""]
         if artifact_text:
             parts.append(artifact_text)
@@ -376,11 +684,18 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
     # chat.* 事件自然归到外层 todo 步骤的 segment 下渲染。
     # 无活跃 todo 时：PPT 的 task 事件正常转发，独立展示步骤列表。
     outer_task_id = get_current_task_id()
-    has_outer_todo = outer_task_id is not None
+    rebound_outer_todo = get_skill_turbo_outer_todo_active()
+    has_outer_todo = (
+        rebound_outer_todo
+        if rebound_outer_todo is not None
+        else outer_task_id is not None
+    )
     logger.info(
-        "[SkillTurboTool] outer todo active=%s outer_task_id=%s parent_session=%s, "
+        "[SkillTurboTool] outer todo active=%s rebound=%s outer_task_id=%s "
+        "parent_session=%s, "
         "task events will be %s",
         has_outer_todo,
+        rebound_outer_todo,
         outer_task_id,
         type(parent_session).__name__ if parent_session is not None else None,
         "skipped" if has_outer_todo else "forwarded as-is",
@@ -526,6 +841,20 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                 task_states=resume_ctx.get("task_states"),
             )
         else:
+            # fresh 调用守卫：本请求注入过"中断恢复 hint"（上一轮中断任务有未消费产物）
+            # 时，先一次性拒绝并附产物摘要，避免新 executor 从 p0 清盘重跑（产物已在
+            # prepare_interrupt_artifacts_for_request 注入时落盘清空，此处只拦 LLM 的
+            # 盲目重启）。LLM 重试（明确全新任务）时 hint 已消费，直接放行。
+            recovery_hint = _pending_interrupt_recovery_hint(request_metadata)
+            if recovery_hint is not None:
+                _consume_interrupt_recovery_hint(recovery_hint)
+                logger.info(
+                    "[SkillTurboTool] interrupt recovery guard: reject fresh "
+                    "run_stream once (unconsumed artifacts from interrupted task)"
+                )
+                return _wrap_skill_turbo_result(
+                    _build_interrupt_recovery_reject(recovery_hint)
+                )
             stream = skill_turbo_inst.run_stream(
                 query, inputs, request_id, channel_id
             )
@@ -551,16 +880,25 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
             if has_outer_todo and event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
                 continue
 
+            payload = chunk.payload
+            if has_outer_todo and isinstance(payload, dict):
+                # Internal task ids are meaningful to SkillTurbo itself, but
+                # become untitled task rows in the parent UI.  The original
+                # chunk remains untouched for execution/resume diagnostics.
+                payload = _without_inner_task_routing(payload)
+
             # 转发 chunk 到父会话 stream（前端实时可见）
             if parent_session is not None:
                 # SkillTurbo executor 产出的 event_type 带 "chat." 前缀（如 "chat.tool_call"），
                 # 但 DeepAgent 的 _parse_stream_chunk 期望原始 OutputSchema.type（如 "tool_call"）。
                 # 若直接用 event_type 作 type，会因类型不匹配被静默丢弃，需反向映射回原始 type。
-                output_type = _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE.get(event_type, event_type)
+                output_type, payload = _prepare_parent_stream_output(
+                    event_type, payload
+                )
                 output = OutputSchema(
                     type=output_type,
                     index=0,
-                    payload=chunk.payload,
+                    payload=payload,
                 )
                 try:
                     await parent_session.write_stream(output)
@@ -581,6 +919,17 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                         event_type,
                         exc_info=True,
                     )
+                    continue
+                if event_type in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
+                    await _push_task_event_out_of_band(
+                        event_type,
+                        payload,
+                        request_id=str(request_id or ""),
+                        channel_id=str(channel_id or ""),
+                        session_id=_resolve_skill_turbo_resume_session_id(
+                            external_session_id, parent_session
+                        ),
+                    )
             elif event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
                 logger.warning(
                     "[SkillTurboTool] drop %s: parent_session is None "
@@ -588,8 +937,15 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                     event_type,
                 )
 
-        # 过程输出已通过 write_stream 实时推给前端，tool result 仅返回精简完成信号 + 产物摘要
+        # 过程输出已通过 write_stream 实时推给前端。交付失败时不得返回 success，
+        # 否则外层 LLM / 前端会把「任务已完成」当成 PPT 已生成。
         release_checkpoint = True
+        ppt_fail = _ppt_delivery_failed_error(skill_turbo_inst.artifact_holder)
+        if ppt_fail:
+            return _wrap_skill_turbo_result(
+                {"success": False, "error": ppt_fail},
+                artifact_holder=skill_turbo_inst.artifact_holder,
+            )
         return _wrap_skill_turbo_result(
             {"success": True, "result": "任务已完成"},
             artifact_holder=skill_turbo_inst.artifact_holder,

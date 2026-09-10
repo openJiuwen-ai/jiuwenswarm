@@ -13,7 +13,16 @@
     "ok": "OK",
     "and": "and",
     "modify": "Modify",
-    "delete": "Delete"
+    "delete": "Delete",
+    "update": "Update",
+    "pagination": {
+      "total": "{{count}} total",
+      "prev": "Previous",
+      "next": "Next",
+      "pageSize": "Per page",
+      "jumpTo": "Go to",
+      "go": "Go"
+    }
   },
   "a2ui": {
     "generating": "Generating A2UI interface...",
@@ -310,7 +319,7 @@
       "placeholder": "Select Model"
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
-    "modeSwitchDisabledProcessing":"This conversation is running. Start a new conversation to choose another mode",
+    "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "skills": "Skills",
@@ -502,6 +511,7 @@
     "folder": "Folder",
     "notPreviewable": "Not previewable",
     "selectFile": "Select a file to view",
+    "remoteFilesUnavailable": "In distributed mode, only session history restore is supported for now; browsing gateway-local session files is unavailable.",
     "noneSelected": "No session selected",
     "unknownSession": "Unknown session-unknown time",
     "unknownTime": "unknown time",
@@ -534,38 +544,235 @@
     "connectionStatus": "Connection Status",
     "version": "Version",
     "language": "Language",
-    "moreSettings": "More Settings"
+    "moreSettings": "More Settings",
+    "enterpriseContext": {
+      "user": "User",
+      "userContext": "User context",
+      "modeAria": "Context setup mode",
+      "selectAgent": "Select Agent",
+      "custom": "Custom",
+      "agentOrgLabel": "Agent name - Organization name",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "apply": "Apply",
+      "switching": "Switching...",
+      "logout": "Sign out",
+      "customRequired": "Please fill in bot_id, group_id, and user_id",
+      "noMatch": "No matches",
+      "pleaseSelect": "Please select"
+    }
   },
   "a2aIngress": {
+    "security": {
+      "title": "Security",
+      "description": "Configure caller authentication and response visibility. Use an HTTPS reverse proxy for remote access.",
+      "types": {
+        "none": "No authentication",
+        "bearer": "Bearer Token",
+        "api_key": "API Key (header)"
+      },
+      "configured": "Credential saved",
+      "notConfigured": "No credential saved",
+      "credentialPlaceholder": "Enter security credential",
+      "credentialHint": "16–512 printable ASCII characters without spaces. You can generate a random credential. After saving, use the eye icon to view or copy it. Blank input keeps the saved credential; select Clear to remove it.",
+      "generate": "Generate credential",
+      "show": "Show credential",
+      "hide": "Hide credential",
+      "clear": "Clear saved credential (select no authentication first)",
+      "cardHint": "When enabled, anyone can view the service name, capabilities, and endpoint addresses (Agent Card) without credentials. When disabled, viewing this information also requires authentication. Once authentication is configured, all actual calls always require credentials.",
+      "effective": "Active authentication: {{method}}",
+      "pendingApply": "Stored security settings differ from the running configuration. Save applies them immediately and restarts the running ingress service."
+    },
     "title": "A2A Control Center",
     "subtitle": "Manage the A2A service exposed by JiuwenSwarm.",
-    "tabs": { "ariaLabel": "A2A Control Center pages", "config": "Ingress Configuration", "outbound": "Outbound Configuration", "history": "Processing History" },
-    "enable": "Enable service", "enabling": "Enabling...", "disable": "Disable service", "disabling": "Disabling...", "reload": "Reload", "reloading": "Reloading...",
-    "save": "Save configuration", "saveAndApply": "Save and apply", "applying": "Applying...", "saved": "Configuration saved; it has not been applied to the running service.", "savedAndApplied": "Configuration saved and applied.",
+    "enterpriseSubtitle": "View administrator-assigned A2A Agents and manage your enabled state and processing history.",
+    "tabs": {
+      "ariaLabel": "A2A Control Center pages",
+      "config": "Ingress Configuration",
+      "outbound": "Outbound Configuration",
+      "history": "Processing History"
+    },
+    "enable": "Enable service",
+    "enabling": "Enabling...",
+    "disable": "Disable service",
+    "disabling": "Disabling...",
+    "restart": "Restart service",
+    "restarting": "Restarting...",
+    "restartHint": "Stop and restart the ingress service. Existing connections may be briefly interrupted.",
+    "refreshStatus": "Refresh status",
+    "refreshHint": "Fetch the latest status and configuration without restarting the service.",
+    "save": "Save",
+    "saved": "Configuration saved and applied.",
     "disconnected": "Gateway is disconnected, so the A2A service cannot be read or changed.",
-    "saveBeforeLifecycleAction": "Configuration has unsaved changes. Save it before enabling, disabling, or reloading the service.",
+    "saveBeforeLifecycleAction": "Configuration has unsaved changes. Save or cancel them before enabling, disabling, or restarting the service.",
     "states": { "disabled": "Disabled", "starting": "Starting", "running": "Running", "stopping": "Stopping", "error": "Error" },
-    "status": { "title": "Service status", "configRevision": "Configuration revision: {{revision}}", "effectiveRpcUrl": "Effective JSON-RPC URL", "effectiveCardUrl": "Effective Agent Card URL", "notListening": "Not listening" },
-    "config": { "title": "Ingress configuration", "description": "Save updates the desired configuration only; Save and apply reloads the running service." },
+    "status": {
+      "title": "Service status",
+      "configRevision": "Configuration revision: {{revision}}",
+      "effectiveRpcUrl": "Effective JSON-RPC URL",
+      "effectiveCardUrl": "Effective Agent Card URL",
+      "notListening": "Not listening"
+    },
+    "config": {
+      "title": "Ingress configuration",
+      "description": "Save applies changes immediately and restarts the service if running. Cancel discards your edits."
+    },
     "outbound": {
-      "discovery": { "title": "Discover a third-party Agent", "description": "Discovery only fetches and previews the Agent Card. JiuwenSwarm can call the Agent only after explicit registration.", "action": "Discover Agent", "discovering": "Discovering...", "previewOnly": "Preview only, not registered", "previewReady": "Discovery succeeded. Review and explicitly register this candidate before it can be called." },
-      "list": { "title": "Registered Agents", "total": "{{count}} total", "empty": "No third-party Agents are registered" },
-      "fields": { "version": "Version", "endpoint": "Effective endpoint", "protocol": "Protocol", "expiresAt": "Candidate expires", "displayName": "Display name", "credential": "API Key / Bearer (optional, never displayed)", "revision": "Card revision", "credentialState": "Credential", "lastChecked": "Last checked", "connectTimeout": "Connect timeout (seconds)", "syncWait": "Sync wait timeout (seconds)", "replaceCredential": "Replace credential (leave blank to keep)" },
+      "credentialHelp": {
+        "method": "Authentication declared by the Agent Card: {{method}}.",
+        "value": "Enter the credential supplied by the remote service. It is sent using the declared authentication method. Use the eye icon to view the saved value. Blank input keeps it; select Clear to remove it.",
+        "header": "header",
+        "query": "query parameter",
+        "cookie": "cookie",
+        "unknown": "Unrecognized authentication method",
+        "undeclared": "No authentication method declared; dispatch fails if a credential is configured",
+        "or": " or "
+      },
+      "localDebug": {
+        "title": "Network access settings",
+        "description": "Allow access to loopback addresses such as localhost.",
+        "allow": "Allow loopback addresses",
+        "warning": "Risk: Loopback access may expose Gateway-local services. Use only trusted Agents.",
+        "httpWarning": "Risk: HTTP permits plaintext traffic over public networks, exposing credentials and task data.",
+        "saving": "Saving...",
+        "saved": "Outbound network settings were saved and applied immediately.",
+        "allowHttp": "Allow HTTP",
+        "httpDescription": "Allow plaintext HTTP. Loopback access also requires the switch above."
+      },
+      "discovery": {
+        "title": "Discover a third-party Agent",
+        "description": "Discovery only fetches and previews the Agent Card. JiuwenSwarm can call the Agent only after explicit registration.",
+        "urlLabel": "Agent Card URL",
+        "action": "Discover Agent",
+        "discovering": "Discovering...",
+        "previewOnly": "Preview only, not registered",
+        "previewReady": "Discovery succeeded. Review and explicitly register this candidate before it can be called.",
+        "candidateTitle": "Agent awaiting registration",
+        "candidateDescription": "Review the discovery result and complete the registration details before adding it to the callable list.",
+        "registrationTitle": "Registration details",
+        "registrationDescription": "Set the display name in JiuwenSwarm and provide call credentials when required.",
+        "advanced": "Advanced settings"
+      },
+      "list": {
+        "title": "Registered Agents",
+        "description": "Manage availability, connection settings, and Agent Card updates.",
+        "enterpriseDescription": "Agent configuration is managed by administrators. You can choose which available Agents to enable.",
+        "enterpriseEmpty": "No A2A Agents have been assigned to this instance by an administrator",
+        "empty": "No third-party Agents are registered"
+      },
+      "fields": {
+        "version": "Version",
+        "endpoint": "Effective endpoint",
+        "protocol": "Protocol",
+        "expiresAt": "Candidate expires",
+        "displayName": "Display name",
+        "credential": "Security credential",
+        "revision": "Card revision",
+        "credentialState": "Credential",
+        "lastChecked": "Last checked",
+        "connectTimeout": "Connect timeout (seconds)",
+        "syncWait": "Sync wait timeout (seconds)",
+        "replaceCredential": "Replace credential (leave blank to keep)"
+      },
       "availability": { "available": "Available", "unreachable": "Unreachable", "incompatible": "Incompatible", "review_required": "Review required" },
-      "register": "Register", "registering": "Registering...", "registered": "The third-party Agent is registered and can now participate in outbound calls when enabled and available.",
-      "enabled": "Enabled", "disabled": "Disabled", "enable": "Enable", "disable": "Disable", "refresh": "Refresh Card",
-      "configured": "Configured", "notConfigured": "Not configured", "settings": "Settings", "saved": "Registration settings saved.", "clearCredential": "Clear saved credential", "reviewRequired": "A critical endpoint, protocol, security, or identity change was detected. New calls are paused until confirmation.", "endpointChange": "Endpoint change",
-      "confirm": "Confirm and apply", "reject": "Reject change", "deleteConfirm": "Delete this registration? Existing dispatch history is retained, but new calls will be rejected immediately.",
-      "errors": { "invalidResponse": "The A2A outbound manager returned invalid data.", "invalidSettings": "Enter a valid display name and timeout values greater than zero." }
+      "register": "Register",
+      "registering": "Registering...",
+      "registered": "The third-party Agent is registered and can now participate in outbound calls when enabled and available.",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "managerDisabled": "Disabled by administrator",
+      "userToggle": "Toggle personal enabled state",
+      "enable": "Enable",
+      "disable": "Disable",
+      "refresh": "Refresh Card",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "settings": "Settings",
+      "saved": "Registration settings saved.",
+      "clearCredential": "Clear saved credential",
+      "reviewRequired": "A critical endpoint, protocol, security, or identity change was detected. New calls are paused until confirmation.",
+      "endpointChange": "Endpoint change",
+      "confirm": "Confirm and apply",
+      "reject": "Reject change",
+      "deleteConfirm": "Delete this registration? Existing dispatch history is retained, but new calls will be rejected immediately.",
+      "errors": {
+        "invalidResponse": "The A2A outbound manager returned invalid data.",
+        "invalidSettings": "Enter a valid display name and timeout values greater than zero."
+      }
     },
     "history": {
-      "title": "Ingress request history", "description": "Shows the latest 200 A2A ingress requests in this Gateway process without retaining request bodies.", "total": "{{count}} total", "empty": "No processing history", "emptyDescription": "Incoming A2A request statuses will appear here.", "processing": "Processing",
+      "tabs": { "ariaLabel": "A2A request history direction", "ingress": "Ingress", "outbound": "Outbound" },
+      "copy": "Click to copy",
+      "copied": "Copied",
+      "copyFailed": "Copy failed. Check the browser clipboard permission.",
+      "ingress": {
+        "title": "Ingress request history",
+        "description": "Shows the latest 200 A2A ingress requests in this Gateway process without retaining request bodies.",
+        "empty": "No ingress history",
+        "emptyDescription": "Incoming A2A request statuses will appear here."
+      },
+      "outbound": {
+        "title": "Outbound request history",
+        "description": "Shows the latest 200 A2A outbound dispatches without request or response bodies.",
+        "empty": "No outbound history",
+        "emptyDescription": "Dispatch statuses will appear after requests are sent to third-party Agents.",
+        "modes": { "sync": "Sync", "async": "Async" },
+        "statuses": {
+          "created": "Created",
+          "submitting": "Submitting",
+          "accepted": "Accepted",
+          "working": "Working",
+          "completed": "Completed",
+          "failed": "Failed",
+          "canceled": "Canceled",
+          "rejected": "Rejected",
+          "input_required": "Input required",
+          "auth_required": "Authentication required",
+          "unknown": "Unknown",
+          "timed_out": "Timed out",
+          "dispatch_failed": "Dispatch failed"
+        }
+      },
+      "processing": "Processing",
       "statuses": { "processing": "Processing", "completed": "Completed", "failed": "Failed", "canceled": "Canceled" },
       "operations": { "message": "Message" },
-      "columns": { "status": "Status", "operation": "Request type", "requestId": "Request ID", "contextId": "Context ID", "startedAt": "Started", "duration": "Duration", "error": "Error" }
+      "columns": {
+        "status": "Status",
+        "operation": "Request type",
+        "requestId": "Request ID",
+        "contextId": "Context ID",
+        "mode": "Mode",
+        "agentId": "Agent ID",
+        "agent": "Agent",
+        "dispatchId": "Dispatch ID",
+        "remoteTaskId": "Remote task ID",
+        "startedAt": "Started",
+        "duration": "Duration",
+        "error": "Error"
+      }
     },
-    "fields": { "host": "Bind host", "port": "Bind port", "rpc_path": "RPC path", "card_path": "Agent Card path", "extended_card_path": "Extended Card path", "protocol_version": "Protocol version", "app_name": "Agent name", "app_description": "Agent description", "app_version": "Agent version", "expose_reasoning": "Expose reasoning in A2A responses" },
-    "errors": { "invalidResponse": "The A2A service returned an invalid status.", "invalidHistoryResponse": "The A2A service returned invalid processing history.", "invalidField": "Please check: {{field}}" }
+    "fields": {
+      "auth_type": "Authentication method",
+      "api_key_header": "API Key header name",
+      "credential": "Security credential",
+      "card_auth_required": "Allow anonymous access to service information",
+      "host": "Bind host",
+      "port": "Bind port",
+      "rpc_path": "RPC path",
+      "card_path": "Agent Card path",
+      "extended_card_path": "Extended Agent Card path",
+      "protocol_version": "Protocol version",
+      "app_name": "Agent name",
+      "app_description": "Agent description",
+      "app_version": "Agent version",
+      "expose_reasoning": "Expose reasoning in A2A responses"
+    },
+    "errors": {
+      "invalidResponse": "The A2A service returned an invalid status.",
+      "invalidHistoryResponse": "The A2A service returned invalid processing history.",
+      "invalidField": "Please check: {{field}}"
+    }
   },
   "offloadFiles": {
     "title": "Offload Files",
@@ -1068,7 +1275,10 @@
       "memory": { "label": "Memory Sensitive Info Filter", "hint": "Configure sensitive content types forbidden from memory" },
       "email": { "label": "Email Settings", "hint": "Email account and token settings" },
       "other": { "label": "Other Settings", "hint": "Unclassified extended parameters" },
-      "proactive": { "label": "Proactive Recommendation", "hint": "Automatically analyze user needs and proactively offer suggestions; adjust the schedule in the Cron panel" }
+      "proactive": {
+        "label": "Proactive Recommendation",
+        "hint": "Automatically analyze user needs and proactively offer suggestions; adjust the schedule in the Cron panel"
+      }
     },
     "booleanLabels": {
       "evolutionEnabled": "Enable skill self-evolution",
@@ -1484,7 +1694,10 @@
     "mySkillsTabs": {
       "all": "All",
       "enabled": "Enabled",
-      "disabled": "Disabled"
+      "disabled": "Disabled",
+      "builtin": "Built-in",
+      "prebuilt": "Enterprise prebuilt",
+      "user": "User-installed"
     },
     "enable": "Enable",
     "noDisabledSkills": "No disabled skills",
@@ -1529,6 +1742,8 @@
       "disabling": "Disabling..."
     },
     "builtIn": "Built-in",
+    "enterprisePrebuilt": "Enterprise prebuilt",
+    "enterpriseManagedHint": "This skill is managed by an administrator and cannot be removed or toggled",
     "status": {
       "installed": "Installed",
       "notInstalled": "Not installed",
@@ -1541,7 +1756,31 @@
       "clawhub": "ClawHub",
       "skillnet": "SkillNet",
       "teamskillshub": "TeamSkillsHub",
-      "unknown": "Unknown"
+      "swarmskillhub": "SwarmSkillHub",
+      "unknown": "Unknown",
+      "author": "Author",
+      "rating": "Rating",
+      "downloads": "Downloads",
+      "localVersion": "Local version",
+      "updatedAt": "Updated",
+      "searchPlaceholder": "Search skills",
+      "noResults": "No matching skills",
+      "noSources": "No skill sources available. Contact your administrator.",
+      "checkUpdates": "Check updates",
+      "prev": "Previous",
+      "next": "Next",
+      "replaceConfirm": "Skill {{name}} is already installed. Overwrite?",
+      "replaceConfirmTitle": "Confirm overwrite",
+      "errors": {
+        "loadFailed": "Failed to load skill sources",
+        "searchFailed": "Search failed",
+        "installFailed": "Install failed",
+        "updateFailed": "Update failed"
+      },
+      "messages": {
+        "installed": "Installed: {{name}}",
+        "updated": "Updated: {{name}}"
+      }
     },
     "sourceLabel": "Source",
     "statusLabel": "Status",
@@ -1865,6 +2104,7 @@
       "install": "Install",
       "replaceConfirm": "A skill named \"{{name}}\" is already installed. Continuing will uninstall the current version and replace it with the selected one. Continue?",
       "installing": "Installing…",
+      "updating": "Updating…",
       "updatedAt": "Updated {{date}}",
       "configTitle": "Configure",
       "configDescription": "Enter the CLI Token from the ClawHub platform to access the ClawHub skill library.",
@@ -1892,13 +2132,16 @@
       "searchPlaceholder": "Search TeamSkills by keyword",
       "noResults": "No matching skills. Try different keywords.",
       "installing": "Installing…",
+      "updating": "Updating…",
       "replaceConfirm": "A skill named \"{{name}}\" is already installed. Continuing will uninstall the current version and replace it with the selected one. Continue?",
       "messages": {
-        "installed": "Installed: {{name}}"
+        "installed": "Installed: {{name}}",
+        "updated": "Updated: {{name}}"
       },
       "errors": {
         "searchFailed": "Search failed",
         "installFailed": "Install failed",
+        "updateFailed": "Update failed",
         "skillAlreadyInstalled": "This skill is already installed."
       }
     },
@@ -1918,6 +2161,7 @@
     "marketplacesDefault": "Default marketplace: anthropics",
     "installPrompt": "Enter plugin spec (plugin@marketplace)",
     "importPrompt": "Enter a local skill path on the server (SKILL.md or directory)",
+    "uninstallConfirmTitle": "Uninstall",
     "uninstallConfirm": "Uninstall {{pluginName}}?",
     "messages": {
       "installing": "Installing: {{name}}...",
@@ -1958,7 +2202,7 @@
     "markdownOnly": "Only Markdown/JSON (.md/.mdx/.json) preview is supported",
     "errors": {
       "refreshFailed": "Refresh failed: unable to rebuild the agent file index. Check the generator script logs.",
-      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated."
+      "loadFailed": "Unable to read the agent file list. Check whether agent/jiuwenclaw_workspace/agent-data.json has been generated."
     }
   },
   "fileViewer": {
@@ -2035,6 +2279,8 @@
       "timeout": "Execution timed out",
       "running": "Running...",
       "toolName": "Tool name",
+      "sourceSkill": "Source skill",
+      "sourceSkillInline": "{{label}} (skill: {{skill}})",
       "arguments": "Arguments",
       "result": "Result",
       "truncated": "result truncated"
@@ -2093,6 +2339,26 @@
       "acceptAll": "Accept all",
       "submit": "Submit",
       "entryCount": "{{count}} entries total"
+    },
+    "skillApproval": {
+      "title": "Skill load approval",
+      "trustBuiltin": "builtin",
+      "versionLocal": "local (no version)",
+      "source": "Source",
+      "version": "Version",
+      "hash": "Permissions hash",
+      "cached": "This skill was already approved in this session (previous decision: {{decision}}); confirm to reuse it.",
+      "cachedLocal": "allow once",
+      "cachedSession": "allow for session",
+      "widened": "Permission increases (effective after approval)",
+      "tightened": "Restrictions (applied after approval)",
+      "rejected": "Declarations dropped by security policy (deny cannot be overridden)",
+      "approveOnce": "Allow once",
+      "approveOnceDesc": "Only for this skill activation",
+      "approveSession": "Allow for session",
+      "approveSessionDesc": "Approval cached for this session; revoked when the skill ends",
+      "continueWithout": "Continue without extra permissions",
+      "continueWithoutDesc": "Load the skill without granting additional permissions"
     }
   },
   "share": {
@@ -2259,7 +2525,7 @@
     "helpTitle": "Usage Guide",
     "help0": "Extension folder must contain rail.py as the entry file",
     "help1": "Rail extension files must inherit from DeepAgentRail or AgentRail base class",
-    "help2": "Extension files are saved to ~/.jiuwenswarm/agent/workspace/extensions/ directory",
+    "help2": "Extension files are saved to ~/.jiuwenswarm/agent/jiuwenclaw_workspace/extensions/ directory",
     "errors": {
       "missingFolderPath": "Missing folder_path parameter",
       "folderNotFound": "Folder does not exist or is not a directory: {{path}}",
@@ -2406,6 +2672,8 @@
     "confirm": "Confirm",
     "customOption": "Custom",
     "customPlaceholder": "No suitable option? Type your answer...",
+    "customRequired": "Please enter a custom answer.",
+    "selectionRequired": "Select at least one option or enter a custom answer.",
     "skippedSummary": "Skipped"
   },
   "qaSummary": {

@@ -1,5 +1,5 @@
 /**
- * 北向 A2 HTTP/SSE 客户端（``VITE_WEB_TRANSPORT=http`` / ``a2``）。
+ * 北向 A2 HTTP/SSE 客户端（``getWebTransport()==='http'``：显式 transport 或企业默认）。
  * 对外口与 WebClient 相同：connect / request / on。映射与泵流只发生在这里。
  */
 import {
@@ -10,8 +10,14 @@ import {
   WsEvent,
 } from '../types';
 import { getGatewayHttpBase } from '../utils/env';
+import { isEnterprise } from '../edition';
+import {
+  hasManagerSessionCredentials,
+  managerAuthenticatedFetch,
+} from '../auth/manager/authSession';
 import i18n from '../i18n';
 import { buildRuntimeIdentityHeaders } from './runtimeScope';
+import { PauseBufferHook, PAUSABLE_STREAM_EVENTS } from './webClient';
 
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
@@ -64,21 +70,47 @@ const ROUTES: Record<string, RouteRow> = {
   'connection.status': { verb: 'GET', path: '/connection/status', kind: 'unary' },
   'session.list': { verb: 'GET', path: '/sessions', kind: 'unary' },
   'session.create': { verb: 'POST', path: '/sessions', kind: 'unary' },
+  'session.get_metadata': { verb: 'GET', path: '/sessions/{session_id}', kind: 'unary' },
+  'session.rename': { verb: 'PATCH', path: '/sessions/{session_id}', kind: 'unary' },
+  'session.pin': { verb: 'PATCH', path: '/sessions/{session_id}', kind: 'unary' },
+  'session.delete': { verb: 'DELETE', path: '/sessions/{session_id}', kind: 'unary' },
   'history.get': { verb: 'GET', path: '/sessions/{session_id}/history', kind: 'history-stream' },
   'chat.send': { verb: 'POST', path: '/chat/completions', kind: 'sse' },
   'chat.interrupt': { verb: 'POST', path: '/chat/{session_id}/actions/interrupt', kind: 'unary' },
   'chat.user_answer': { verb: 'POST', path: '/chat/{session_id}/actions/answer', kind: 'unary' },
   'config.get': { verb: 'GET', path: '/config', kind: 'unary' },
   'models.list': { verb: 'GET', path: '/models', kind: 'unary' },
+  'a2a.outbound.list': { verb: 'GET', path: '/a2a/outbound/agents', kind: 'unary' },
+  'a2a.outbound.enabled.update': { verb: 'PATCH', path: '/a2a/outbound/agents/{agent_id}/enabled', kind: 'unary' },
+  'a2a.outbound.dispatch.list': { verb: 'GET', path: '/a2a/outbound/dispatches', kind: 'unary' },
   'locale.get_conf': { verb: 'GET', path: '/locale', kind: 'unary' },
   'locale.set_conf': { verb: 'PUT', path: '/locale', kind: 'unary' },
   'cron.job.list': { verb: 'GET', path: '/cron/jobs', kind: 'unary' },
+  'cron.job.create': { verb: 'POST', path: '/cron/jobs', kind: 'unary' },
+  'cron.job.meta': { verb: 'GET', path: '/cron/jobs/meta', kind: 'unary' },
   'cron.job.get': { verb: 'GET', path: '/cron/jobs/{id}', kind: 'unary' },
   'cron.job.update': { verb: 'PATCH', path: '/cron/jobs/{id}', kind: 'unary' },
   'cron.job.delete': { verb: 'DELETE', path: '/cron/jobs/{id}', kind: 'unary' },
   'cron.job.toggle': { verb: 'POST', path: '/cron/jobs/{id}/actions/toggle', kind: 'unary' },
   'cron.job.preview': { verb: 'POST', path: '/cron/jobs/{id}/actions/preview', kind: 'unary' },
   'cron.job.run_now': { verb: 'POST', path: '/cron/jobs/{id}/actions/run-now', kind: 'unary' },
+  'skills.list': { verb: 'GET', path: '/skills', kind: 'unary' },
+  'skills.installed': { verb: 'GET', path: '/skills/installed', kind: 'unary' },
+  'skills.get': { verb: 'GET', path: '/skills/{name}', kind: 'unary' },
+  'skills.install': { verb: 'POST', path: '/skills/actions/install', kind: 'unary' },
+  'skills.uninstall': { verb: 'POST', path: '/skills/actions/uninstall', kind: 'unary' },
+  'skills.toggle': { verb: 'POST', path: '/skills/actions/toggle', kind: 'unary' },
+  'skills.import_local': { verb: 'POST', path: '/skills/actions/import-local', kind: 'unary' },
+  'skills.source.providers': { verb: 'GET', path: '/skills/sources', kind: 'unary' },
+  'skills.source.search': { verb: 'GET', path: '/skills/sources/search', kind: 'unary' },
+  'skills.source.install': { verb: 'POST', path: '/skills/sources/actions/install', kind: 'unary' },
+  'skills.updates.check': { verb: 'GET', path: '/skills/updates', kind: 'unary' },
+  'skills.update': { verb: 'POST', path: '/skills/actions/update', kind: 'unary' },
+  'skills.teamskillshub.info': { verb: 'GET', path: '/skills/teamskillshub', kind: 'unary' },
+  'skills.retrieval.status': { verb: 'GET', path: '/skills/retrieval/status', kind: 'unary' },
+  'skills.retrieval.tree': { verb: 'GET', path: '/skills/retrieval/tree', kind: 'unary' },
+  'skills.retrieval.index_build': { verb: 'POST', path: '/skills/retrieval/actions/index-build', kind: 'unary' },
+  'skills.retrieval.index_cancel': { verb: 'POST', path: '/skills/retrieval/actions/index-cancel', kind: 'unary' },
   'skills.enterprise.list': { verb: 'GET', path: '/skills/enterprise', kind: 'unary' },
   'skills.enterprise.install': { verb: 'POST', path: '/skills/enterprise/actions/install', kind: 'unary' },
   'skills.enterprise.uninstall': { verb: 'POST', path: '/skills/enterprise/actions/uninstall', kind: 'unary' },
@@ -96,6 +128,16 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.skillnet.evaluate': { verb: 'POST', path: '/skills/skillnet/actions/evaluate', kind: 'unary' },
   'skills.evolution.get': { verb: 'GET', path: '/skills/evolution', kind: 'unary' },
   'skills.evolution.save': { verb: 'PUT', path: '/skills/evolution', kind: 'unary' },
+  'project.list': { verb: 'GET', path: '/projects', kind: 'unary' },
+  'project.info': { verb: 'GET', path: '/projects/{project_id}', kind: 'unary' },
+  'project.get_sessions': { verb: 'GET', path: '/projects/{project_id}/sessions', kind: 'unary' },
+  'project.get_cron_sessions': { verb: 'GET', path: '/projects/{project_id}/cron-sessions', kind: 'unary' },
+  'project.create': { verb: 'POST', path: '/projects', kind: 'unary' },
+  'project.rename': { verb: 'PATCH', path: '/projects/{project_id}', kind: 'unary' },
+  'project.pin': { verb: 'POST', path: '/projects/{project_id}/actions/pin', kind: 'unary' },
+  'project.remove': { verb: 'DELETE', path: '/projects/{project_id}', kind: 'unary' },
+  'project.restore': { verb: 'POST', path: '/projects/actions/restore', kind: 'unary' },
+  'project.pinned_sessions': { verb: 'GET', path: '/projects/pinned-sessions', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
@@ -251,7 +293,7 @@ function errorFields(error: unknown): { message: string; code?: string } {
   return { message: 'request failed' };
 }
 
-export function unwrapHttpUnary(input: unknown): UnaryResult {
+export function unwrapHttpUnary(input: unknown, status?: number): UnaryResult {
   if (!isRecord(input)) {
     return { ok: false, message: 'empty http response', code: 'HTTP_ERROR' };
   }
@@ -266,6 +308,18 @@ export function unwrapHttpUnary(input: unknown): UnaryResult {
   }
   if (input.agent_ready !== undefined) {
     return { ok: true, payload: input, requestId };
+  }
+  // 鉴权代理层（manager-web 同源反代等）返回 FastAPI/Starlette 的 {"detail": ...}
+  // 错误形状——不是标准信封，但要给出真实原因而非笼统的 "invalid http envelope"。
+  if (input.detail !== undefined) {
+    const detail = input.detail;
+    const message =
+      typeof detail === 'string' && detail.trim()
+        ? detail
+        : 'request rejected';
+    const code =
+      status === 401 ? 'UNAUTHORIZED' : status === 403 ? 'FORBIDDEN' : 'HTTP_ERROR';
+    return { ok: false, message, code, requestId };
   }
   return { ok: false, message: 'invalid http envelope', code: 'HTTP_ERROR', requestId };
 }
@@ -313,37 +367,64 @@ export function consumeSseBuffer(buffer: string): { frames: SseFrame[]; rest: st
   return { frames, rest };
 }
 
-function payloadFromData(data: string | undefined): Record<string, unknown> {
+function payloadFromData(
+  data: string | undefined
+): { payload: Record<string, unknown>; raw: Record<string, unknown> | null } {
   if (!data) {
-    return {};
+    return { payload: {}, raw: null };
   }
   try {
     const parsed: unknown = JSON.parse(data);
     if (isRecord(parsed)) {
       if (isRecord(parsed.payload)) {
-        return parsed.payload;
+        return { payload: parsed.payload, raw: parsed };
       }
-      return parsed;
+      return { payload: parsed, raw: parsed };
     }
-    return { value: parsed };
+    return { payload: { value: parsed }, raw: null };
   } catch {
-    return { raw: data };
+    return { payload: { raw: data }, raw: null };
   }
+}
+
+function extractSseRequestId(
+  raw: Record<string, unknown> | null,
+  payload: Record<string, unknown>,
+  frameId?: string
+): string | undefined {
+  if (raw) {
+    const top = typeof raw.request_id === 'string' ? raw.request_id : undefined;
+    if (top) return top;
+  }
+  const inner = typeof payload.request_id === 'string' ? payload.request_id : undefined;
+  if (inner) return inner;
+  const rid = typeof payload.rid === 'string' ? payload.rid : undefined;
+  if (rid) return rid;
+  const id = typeof frameId === 'string' ? frameId.trim() : '';
+  return id || undefined;
 }
 
 export function sseFrameToWsEvent(frame: SseFrame): WsEvent | null {
   let eventName = frame.event?.trim() ?? '';
-  const payload = payloadFromData(frame.data);
+  const { payload, raw } = payloadFromData(frame.data);
   if (!eventName && typeof payload.event === 'string') {
     eventName = payload.event;
   }
   if (!eventName) {
     return null;
   }
+  // SSE 标准 id 字段承载 Gateway 生成的 request_id；HTTP 模式下 data
+  // 往往不重复携带该字段，必须保留它才能恢复 WS 帧的请求关联语义。
+  const requestId = extractSseRequestId(
+    raw,
+    payload,
+    isEnterprise() ? frame.id : undefined
+  );
   return {
     type: 'event',
     event: eventName,
     payload,
+    ...(requestId ? { request_id: requestId } : {}),
   };
 }
 
@@ -384,21 +465,34 @@ function isSseContentType(contentType: string | null | undefined): boolean {
   return Boolean(contentType && contentType.toLowerCase().includes('text/event-stream'));
 }
 
-function isChatSseTerminal(eventName: string): boolean {
-  return eventName === 'chat.final' || eventName === 'chat.error';
+function isChatSseTerminal(event: WsEvent): boolean {
+  // 仅企业版使用任务级 SSE 生命周期：chat.final 只是回复段结束，
+  // 必须继续读到 processing_status(false)，避免工具状态停在 pending。
+  // 个人版保持原有 chat.final 即结束的协议，避免改变个人版行为。
+  if (!isEnterprise()) {
+    return event.event === 'chat.final' || event.event === 'chat.error';
+  }
+  return (
+    event.event === 'chat.processing_status' &&
+    isRecord(event.payload) &&
+    event.payload.is_processing === false
+  );
 }
 
 /**
  * HTTP unary ``chat.interrupt`` 把 ``accepted`` 与 ``interrupt_result`` 合在同一 JSON body。
  * 只在 Gateway 明确给出 ``event_type`` 时映射为 WS 事件，前端不伪造 success。
  */
-export function interruptUnaryToEvents(payload: unknown): WsEvent | null {
+export function interruptUnaryToEvents(payload: unknown, requestId?: string): WsEvent | null {
   if (!isRecord(payload) || payload.event_type !== 'chat.interrupt_result') {
     return null;
   }
   return {
     type: 'event',
     event: 'chat.interrupt_result',
+    // HTTP 合成事件补上 interrupt 请求 id：interrupt_result 处理器按
+    // event.request_id 清理 pendingInterruptRequestIdsRef，缺失会缓慢泄漏。
+    ...(requestId ? { request_id: requestId } : {}),
     payload: { ...payload },
   };
 }
@@ -429,6 +523,8 @@ export class WebHttpClient {
   private connectPromise: Promise<void> | null = null;
   private lastConnectOptions: WebConnectOptions = {};
   private requestSeq = 0;
+  private streamEventFilter: ((event: WsEvent) => boolean) | null = null;
+  private pauseBufferHook: PauseBufferHook | null = null;
 
   getState(): WebConnectionState {
     return this.state;
@@ -443,6 +539,21 @@ export class WebHttpClient {
     return () => {
       this.stateHandlers.delete(handler);
     };
+  }
+
+  /** 丢弃已 cancel 的 chat/context 流式事件（在 dispatch 前统一过滤） */
+  setStreamEventFilter(filter: ((event: WsEvent) => boolean) | null): void {
+    this.streamEventFilter = filter;
+  }
+
+  /** 暂停期间将流式输出写入暂存区，恢复后通过 replayBufferedEvent 回放 */
+  setPauseBufferHook(hook: PauseBufferHook | null): void {
+    this.pauseBufferHook = hook;
+  }
+
+  /** 回放暂存的事件——直接派发给 handler，绕过 filter 和 buffer */
+  replayBufferedEvent(event: WsEvent): void {
+    this.dispatchEventToHandlers(event);
   }
 
   on<TPayload = Record<string, unknown>>(
@@ -507,7 +618,7 @@ export class WebHttpClient {
       );
     }
 
-    const requestId = this.generateRequestId();
+    const requestId = options.requestId ?? this.generateRequestId();
     let assembled;
     try {
       assembled = assembleWebRest(method, params, getGatewayHttpBase());
@@ -566,7 +677,7 @@ export class WebHttpClient {
       if (assembled.jsonBody) {
         headers['Content-Type'] = 'application/json';
       }
-      const response = await fetch(appendQuery(assembled.url, assembled.query), {
+      const response = await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers,
         body: assembled.jsonBody ? JSON.stringify(assembled.jsonBody) : undefined,
@@ -577,7 +688,7 @@ export class WebHttpClient {
       if (assembled.kind === 'sse' || assembled.kind === 'history-stream') {
         if (isSseContentType(response.headers.get('content-type'))) {
           if (!response.ok) {
-            const unwrapped = unwrapHttpUnary(await this.readJson(response));
+            const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
             throw this.createWebError(
               unwrapped.ok ? i18n.t('network.requestFailed') : unwrapped.message,
               unwrapped.ok ? 'HTTP_ERROR' : unwrapped.code,
@@ -615,7 +726,7 @@ export class WebHttpClient {
       const payload = await this.readUnaryPayload(response, requestId);
       this.inflight.delete(requestId);
       if (method === 'chat.interrupt') {
-        const event = interruptUnaryToEvents(payload);
+        const event = interruptUnaryToEvents(payload, requestId);
         if (event) {
           this.dispatchEvent(event);
           if (event.payload.success === true && interruptIntentOf(event.payload) === 'cancel') {
@@ -692,12 +803,12 @@ export class WebHttpClient {
     this.connectAbort = new AbortController();
     const url = `${getGatewayHttpBase().replace(/\/+$/, '')}/connection/status`;
     try {
-      const response = await fetch(url, {
+      const response = await this.authenticatedFetch(url, {
         method: 'GET',
         headers: this.identityHeaders(requestId, {}),
         signal: this.connectAbort.signal,
       });
-      const unwrapped = unwrapHttpUnary(await this.readJson(response));
+      const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
       if (!unwrapped.ok) {
         throw this.createWebError(
           unwrapped.message,
@@ -748,9 +859,21 @@ export class WebHttpClient {
     }
     const decoder = new TextDecoder();
     let buffer = '';
+    let sawChatError = false;
+    let sawTaskEnd = false;
+    let readAborted = false;
+    const dispatchFrame = (frame: SseFrame): boolean => {
+      const event = sseFrameToWsEvent(frame);
+      if (!event) return false;
+      sawChatError ||= event.event === 'chat.error';
+      this.dispatchEvent(event);
+      sawTaskEnd ||= event.event === 'chat.processing_status' && event.payload.is_processing === false;
+      return kind === 'sse' ? isChatSseTerminal(event) : isHistorySseDone(event.payload);
+    };
     try {
       while (!controller.signal.aborted) {
         const { done, value } = await reader.read();
+        if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
         if (done) {
           break;
         }
@@ -758,16 +881,8 @@ export class WebHttpClient {
         const consumed = consumeSseBuffer(buffer);
         buffer = consumed.rest;
         for (const frame of consumed.frames) {
-          const event = sseFrameToWsEvent(frame);
-          if (!event) {
-            continue;
-          }
-          this.dispatchEvent(event);
-          if (kind === 'sse' && isChatSseTerminal(event.event)) {
-            await reader.cancel().catch(() => undefined);
-            return;
-          }
-          if (kind === 'history-stream' && isHistorySseDone(event.payload)) {
+          if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
+          if (dispatchFrame(frame)) {
             await reader.cancel().catch(() => undefined);
             return;
           }
@@ -775,18 +890,47 @@ export class WebHttpClient {
       }
       if (buffer.trim()) {
         for (const frame of consumeSseBuffer(`${buffer}\n\n`).frames) {
-          const event = sseFrameToWsEvent(frame);
-          if (event) {
-            this.dispatchEvent(event);
-          }
+          if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
+          if (dispatchFrame(frame)) return;
         }
       }
-    } catch {
-      // abort / 断流：hook 靠现有 on(chat.error) 或 inflight 归零
+    } catch (error) {
+      readAborted = error instanceof Error && error.name === 'AbortError';
+      if (!readAborted && !controller.signal.aborted && !this.sseSuperseded.has(requestId)) {
+        console.warn('[WebHttpClient] SSE read/dispatch failed', requestId, error);
+      }
     } finally {
-      this.inflight.delete(requestId);
-      this.sseInflight.delete(requestId);
-      this.sseSuperseded.delete(requestId);
+      try {
+        // 错误流正常结束或读流失败均收尾；主动取消/替换仍由对应请求处理。
+        if (
+          kind === 'sse' &&
+          isEnterprise() &&
+          sawChatError &&
+          !sawTaskEnd &&
+          sessionId &&
+          !readAborted &&
+          !controller.signal.aborted &&
+          !this.sseSuperseded.has(requestId)
+        ) {
+          this.dispatchEvent({
+            type: 'event',
+            event: 'chat.processing_status',
+            request_id: requestId,
+            payload: {
+              session_id: sessionId,
+              request_id: requestId,
+              is_processing: false,
+              source: 'http_error_eof',
+            },
+          });
+        }
+      } catch (error) {
+        console.warn('[WebHttpClient] Failed to settle errored SSE', requestId, error);
+      } finally {
+        this.inflight.delete(requestId);
+        this.sseInflight.delete(requestId);
+        this.sseSuperseded.delete(requestId);
+      }
     }
   }
 
@@ -800,7 +944,7 @@ export class WebHttpClient {
       if (!assembled) {
         return;
       }
-      await fetch(appendQuery(assembled.url, assembled.query), {
+      await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers: {
           ...this.identityHeaders(requestId, { session_id: sessionId }),
@@ -814,7 +958,7 @@ export class WebHttpClient {
   }
 
   private async readUnaryPayload(response: Response, requestId: string): Promise<unknown> {
-    const unwrapped = unwrapHttpUnary(await this.readJson(response));
+    const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
     if (!unwrapped.ok) {
       throw this.createWebError(
         unwrapped.message,
@@ -853,7 +997,39 @@ export class WebHttpClient {
     return buildRuntimeIdentityHeaders(requestId, params);
   }
 
+  private authenticatedFetch(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+    if (isEnterprise() && hasManagerSessionCredentials()) {
+      return managerAuthenticatedFetch(input, init);
+    }
+    return fetch(input, init);
+  }
+
   private dispatchEvent(event: WsEvent): void {
+    if (this.streamEventFilter && !this.streamEventFilter(event)) {
+      return;
+    }
+    const hook = this.pauseBufferHook;
+    if (hook?.isActive()) {
+      // 企业版错误与终态按序回放；恢复时不能只剩 final 而丢失失败收尾。
+      if (
+        isEnterprise() &&
+        (event.event === 'chat.error' || (event.event === 'chat.processing_status' && event.payload.is_processing === false))
+      ) {
+        hook.onBuffer(event);
+        return;
+      }
+      if (event.event === 'chat.processing_status') {
+        return;
+      }
+      if (PAUSABLE_STREAM_EVENTS.has(event.event)) {
+        hook.onBuffer(event);
+        return;
+      }
+    }
+    this.dispatchEventToHandlers(event);
+  }
+
+  private dispatchEventToHandlers(event: WsEvent): void {
     const handlers = this.handlers.get(event.event);
     if (!handlers || handlers.size === 0) {
       return;

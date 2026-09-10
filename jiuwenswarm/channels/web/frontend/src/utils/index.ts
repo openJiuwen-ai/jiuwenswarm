@@ -10,3 +10,4 @@ export * from './chatFinalProtocol';
 export * from './timestamp';
 export * from './harnessErrors';
 export * from './fileDownloadDedup';
+export { stripInlineToolProtocol, stripResidualInlineToolProtocol } from './toolProtocol';

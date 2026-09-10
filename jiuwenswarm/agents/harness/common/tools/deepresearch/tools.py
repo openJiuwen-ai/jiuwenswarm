@@ -291,6 +291,7 @@ def push_deepresearch_route(
     *,
     service_id: str = "default",
     agent_id: str = "default",
+    workspace_key: str = "default",
     output_dir: str = "",
 ) -> contextvars.Token:
     """Bind request routing and its trusted DeepResearch artifact root."""
@@ -301,6 +302,7 @@ def push_deepresearch_route(
             "session_id": session_id or "",
             "service_id": (service_id or "default").strip() or "default",
             "agent_id": (agent_id or "default").strip() or "default",
+            "workspace_key": (workspace_key or "default").strip() or "default",
             "output_dir": str(output_dir or "").strip(),
         }
     )
@@ -2160,8 +2162,7 @@ async def _consume_stream(
         try:
             todo_path = deepresearch_todo_path(
                 session_id=str(route["session_id"]),
-                service_id=str(route.get("service_id") or "default"),
-                agent_id=str(route.get("agent_id") or "default"),
+                workspace_key=str(route.get("workspace_key") or "default"),
             )
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning(

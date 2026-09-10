@@ -1,4 +1,7 @@
-import type { EnterpriseContextSnapshot } from '../../services/enterpriseContext';
+import {
+  type EnterpriseAgentContext,
+  type EnterpriseContextSnapshot,
+} from '../../services/enterpriseContext';
 import { parseRuntimeScope } from '../../services/runtimeScope';
 import type { EnterpriseAuthProvider } from '../types';
 
@@ -8,26 +11,31 @@ const DEFAULTS = {
   groupId: 'default',
   groupName: 'Debug Organization',
   gatewayId: 'debug-gateway',
-  gatewayName: 'Debug Gateway',
   botId: 'default',
-  botName: 'Debug Agent',
+  agentName: 'Debug Agent',
 } as const;
 
-export function buildSimulatedEnterpriseContext(search = ''): EnterpriseContextSnapshot {
+function buildContext(search = ''): EnterpriseAgentContext {
   const preferred = parseRuntimeScope(search);
-  const user = { user_id: preferred.userId || DEFAULTS.userId, display_name: DEFAULTS.displayName };
-  const org = { group_id: preferred.groupId || DEFAULTS.groupId, name: DEFAULTS.groupName };
-  const gateway = {
-    jiuwenclaw_id: preferred.gatewayId || DEFAULTS.gatewayId,
-    jiuwenclaw_name: DEFAULTS.gatewayName,
-    gateway_endpoint: null,
+  const botId = preferred.botId || DEFAULTS.botId;
+  const groupId = preferred.groupId || DEFAULTS.groupId;
+  return {
+    bot_id: botId,
+    group_id: groupId,
+    user_id: preferred.userId || DEFAULTS.userId,
+    jiuwenclaw_id: DEFAULTS.gatewayId,
+    agent_name: DEFAULTS.agentName,
+    group_name: DEFAULTS.groupName,
   };
-  const agent = {
-    template_id: preferred.botId || DEFAULTS.botId,
-    template_name: DEFAULTS.botName,
-    resource_id: preferred.botId || DEFAULTS.botId,
+}
+
+export function buildSimulatedEnterpriseContext(search = ''): EnterpriseContextSnapshot {
+  const selected = buildContext(search);
+  return {
+    user: { user_id: selected.user_id, display_name: DEFAULTS.displayName },
+    contexts: [selected],
+    selected,
   };
-  return { user, org, orgs: [org], gateway, gateways: [gateway], agents: [agent], selectedBot: agent.resource_id };
 }
 
 function entryPath(): string {
@@ -36,13 +44,14 @@ function entryPath(): string {
 
 export const simulatedAuthProvider: EnterpriseAuthProvider = {
   id: 'simulate',
-  startupMessage: '【登录认证模拟调试模式已开启】使用默认用户、组织、组网和 Agent 候选值',
+  startupMessage: '【登录认证模拟调试模式已开启】使用默认 Agent 上下文候选值',
   isAuthenticated: () => true,
-  redirectToLogin: () => window.location.replace(entryPath()),
+  redirectToLogin: () => {
+    window.location.replace(entryPath());
+    return true;
+  },
   getCurrentUser: async () => buildSimulatedEnterpriseContext(window.location.search).user,
-  listOrganizations: async () => buildSimulatedEnterpriseContext(window.location.search).orgs,
-  listGateways: async () => buildSimulatedEnterpriseContext(window.location.search).gateways,
-  listAgents: async () => buildSimulatedEnterpriseContext(window.location.search).agents,
+  listAgentContexts: async () => buildSimulatedEnterpriseContext(window.location.search).contexts,
   async logout() {
     window.location.replace(entryPath());
   },

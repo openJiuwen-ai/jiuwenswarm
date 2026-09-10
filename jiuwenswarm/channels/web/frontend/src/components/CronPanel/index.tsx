@@ -517,6 +517,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
     try {
+      const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
       await webRequest<{ job: CronJobDTO }>('cron.job.create', {
         name: value.name.trim(),
         description: value.description.trim(),
@@ -539,6 +540,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         ...(value.modelName ? { model_name: value.modelName } : {}),
         mode: value.mode,
         session_id: sessionId,
+        ...(isOnce ? { delete_after_run: true } : {}),
       });
       setSuccess(t('cron.success.created'));
       setDrawer(null);
@@ -564,6 +566,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
     try {
       const isProactive = jobId === PROACTIVE_AUTO_JOB_ID;
+      const isOnce = cronExprToSchedule(value.cronExpr.trim())?.kind === 'once';
       // proactive 自动维护 job 只允许改 cron_expr 和 timezone；enabled/mode/name/description/
       // targets/model_name 由 ConfigPanel/cron_sync 管理，不能带，否则会跟 proactive.tick 的
       // 调度逻辑冲突（沿用 upstream 提交 e64dcf51/59cf6de7 的约束）。
@@ -579,6 +582,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
             ...(value.modelName ? { model_name: value.modelName } : {}),
             mode: value.mode,
+            delete_after_run: isOnce,
           };
       await webRequest<{ job: CronJobDTO }>('cron.job.update', {
         id: jobId,

@@ -32,7 +32,7 @@ This page explains the Gateway-side **A2A ingress service**: its management surf
 | Item | Web | ACP | A2A (current) |
 |------|-----|-----|-------------|
 | Bindings | `WEB_HOST` / `WEB_PORT` / `WEB_PATH` | `ACP_GATEWAY_*` | `A2A_SERVER_*` |
-| Config source | Env + CLI (`--host`, etc.) | Env only | `.env` compatibility + Web management API |
+| Config source | Env + CLI (`--host`, etc.) | Env only | `.env` configuration + Web management API |
 | `.env` loading | `app_gateway` calls `load_dotenv(get_env_file())`, i.e. `~/.jiuwenswarm/config/.env` | same | same |
 
 ---
@@ -62,6 +62,10 @@ uv sync --extra a2a
 | `A2A_SERVER_APP_DESCRIPTION` | `A2A ingress for JiuwenSwarm Gateway` | Agent Card `description` |
 | `A2A_SERVER_APP_VERSION` | `0.1.0` | Agent Card `version` |
 | `A2A_SERVER_EXPOSE_REASONING` | `true` (enabled by default) | when enabled, reasoning (thinking) content is emitted as working-state `TaskStatusUpdateEvent` (see §6.2); set to `false`/`0`/`no`/`off` to drop it |
+| `A2A_SERVER_AUTH_TYPE` | `none` | `none` / `bearer` / `api_key` |
+| `A2A_SERVER_API_KEY_HEADER` | `X-API-Key` | Dedicated API key request header |
+| `A2A_SERVER_CARD_AUTH_REQUIRED` | `false` | Require authentication for the public Agent Card |
+| `A2A_SERVER_API_KEY` | empty | Security credential; uses the model API Key storage encryption mechanism |
 
 AgentServer connectivity still follows existing gateway config (for example `AGENT_SERVER_URL`) and is independent from the A2A listening endpoint.
 
@@ -92,6 +96,18 @@ Gateway Web HTTP listens on `WEB_PORT + 2` by default (`19002`). Its ingress man
 | `POST` | `/api/v1/a2a/ingress:reload` | Rebuild the listener from persisted config |
 
 Snapshots use `desired_*` for persisted targets and `effective_*` for the actual listener. Failures include stable error codes and display-safe summaries. Binding to `0.0.0.0` produces an exposure warning in the UI.
+
+### 4.2 Security credentials
+
+Under **Ingress → Security**, select Bearer Token or API Key and enter or generate a random credential. Credentials require 16–512 printable ASCII characters without spaces. Saved credentials are masked by default; use the eye icon to view or copy them, including after refreshing the page. Storage follows model API Key behavior: encrypted when a crypto provider is configured, otherwise stored as supplied. The editor retrieves credentials on demand through a dedicated WebSocket request; ordinary snapshots, HTTP GET responses, and error responses omit credentials; public Agent Cards contain neither credentials nor digests, and ingress authentication uses only a runtime digest.
+
+- Bearer callers send `Authorization: Bearer <credential>`.
+- API Key callers use the configured dedicated header, defaulting to `X-API-Key: <credential>`.
+- With authentication enabled, all JSON-RPC operations (including streams, queries, and cancellation) and the extended Card require credentials. **Allow anonymous access to service information** is enabled by default; disabling it also requires authentication to view the public Agent Card. Cards advertise the authentication scheme without credentials.
+- Blank input preserves the saved credential; a new value replaces it. To clear it, select **No authentication**, then check **Clear saved credential**. The default authentication method is none.
+- **Save** persists and applies changes immediately, restarting a running ingress service with the new credential. **Cancel** discards unsaved edits and restores the saved configuration and credential.
+
+This is a shared service credential, without caller identities, per-task access isolation, or OAuth login. Use an HTTPS reverse proxy to protect credentials in transit for remote deployments.
 
 ---
 

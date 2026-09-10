@@ -1,39 +1,15 @@
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+ARG IMAGE_VERSION
+FROM ${BASE_IMAGE}:${IMAGE_VERSION}
 
-ARG AGENT_RUNTIME_REPOS
-ARG AGENT_RUNTIME_BRANCH
-ARG PIP_EXTRA_ARGS
-ARG VITE_PRODUCT_NAME=JiuwenSwarm
-ENV VITE_PRODUCT_NAME=${VITE_PRODUCT_NAME}
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 
-# 创建 app 用户
-RUN useradd --create-home --shell /bin/bash app
-RUN mkdir -p /app
-
-# 拷贝代码（所有权直接给 app）
-COPY --chown=app:app . /app/jiuwenswarm/
-
-# 先用 ROOT 全局安装 Python 包
-WORKDIR /app/jiuwenswarm
-RUN sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml
-RUN sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml
-
-RUN pip install -e . \
-    git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation \
-    --no-cache-dir \
-    ${PIP_EXTRA_ARGS}
-
-# 切换成 app 用户，再执行 npm 构建
-USER app
 WORKDIR /app/jiuwenswarm/jiuwenswarm/channels/web/frontend
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 RUN npm install
 RUN npm run build
 
-# 配置环境变量
 WORKDIR /app/jiuwenswarm
-ENV PATH=$PATH:/home/app/.local/bin
 
-# 暴露端口 + 启动
 EXPOSE 5173
 CMD ["jiuwenswarm-start", "web"]

@@ -20,6 +20,8 @@ Tip formula B (effective tip)::
     active[(sid, aid)] ∪ staged[(sid, aid)]   # staged wins on key clash
 
 Task seal: when overlay is bound (including ``{}``), readers only see overlay.
+Same-request ``set_os_environ`` writes also patch the bound overlay so apply_* /
+enterprise merge paths remain visible to ``read_env`` within that seal.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from typing import Any
+from jiuwenswarm.edition import is_enterprise
 
 DEFAULT_HEADERS_ENV_KEY = "default_headers"
 _DEFAULT_HEADERS_ALIASES = (
@@ -671,6 +674,7 @@ def build_effective_env_overlay(
 
 
 def bind_agent_env_ns(service_id: str, agent_id: str) -> Token:
+    """Bind tip env ns ``(service_id, agent_id)`` for this task."""
     key = resolve_env_ns(service_id, agent_id)
     return _agent_env_ns.set(key)
 
@@ -774,6 +778,44 @@ ENV_CONFIG_DICT: MutableMapping[str, Any] = _ActiveEnvDict()
 # ---------------------------------------------------------------------------
 
 
+def _sync_bound_overlay_write(
+    name: str,
+    value: str | None,
+    *,
+    ns: EnvNsKey | None = None,
+) -> None:
+    """Keep the sealed task overlay aligned with in-request tip writes.
+
+    Overlay seal intentionally hides live tip from readers, but writers in the
+    same request (e.g. ``apply_vision_model_config_from_yaml`` after enterprise
+    model merge) must still be visible to subsequent ``read_env`` calls.
+
+    Only patches when ``ns`` matches the currently bound agent env ns, so an
+    explicit cross-ns ``set_os_environ`` cannot leak values into another
+    request's overlay.
+    """
+    overlay = _task_env_overlay.get()
+    if overlay is _UNBOUND:
+        return
+    bound_ns = _agent_env_ns.get()
+    if ns is not None and ns != bound_ns:
+        logger.warning(
+            "set_os_environ 跨 ns 写入不同步当前 overlay: write_ns=%s bound_ns=%s key=%s",
+            ns,
+            bound_ns,
+            name,
+        )
+        return
+    key = canonical_product_env_key(str(name))
+    if value is None:
+        overlay.pop(key, None)
+        legacy = legacy_product_env_key(key)
+        if legacy is not None:
+            overlay.pop(legacy, None)
+        return
+    overlay[key] = value
+
+
 def set_os_environ(
     name: str,
     value: Any,
@@ -781,18 +823,26 @@ def set_os_environ(
     service_id: str | None = None,
     agent_id: str | None = None,
 ) -> None:
-    """Write Track B active tip only (plaintext). Does not touch ``os.environ``."""
+    """Write Track B active tip only (plaintext). Does not touch ``os.environ``.
+
+    When a task overlay is bound for the same env ns, also patch that overlay so
+    same-request readers observe the write despite seal-miss semantics.
+    """
     if name in SPAWN_ENV_KEYS:
         logger.warning("拒绝 set_os_environ 轨道 A 键: %s", name)
         return
     key = resolve_env_ns(service_id, agent_id)
     sid, aid = key
     active = _bag(_active_bags, key)
+    env_name = str(name)
     if value is None:
-        active.pop(str(name), None)
-        _pop_bare_if_default_default(sid, aid, str(name))
+        active.pop(env_name, None)
+        _pop_bare_if_default_default(sid, aid, env_name)
+        _sync_bound_overlay_write(env_name, None, ns=key)
         return
-    active[str(name)] = _plaintext_tip_value(str(name), value)
+    plain = _plaintext_tip_value(env_name, value)
+    active[env_name] = plain
+    _sync_bound_overlay_write(env_name, plain, ns=key)
 
 
 def get_os_environ(
@@ -927,11 +977,6 @@ def hydrate_default_tip_from_baseline() -> None:
         _DEFAULT_AGENT_ID,
         reserved_keys=(),
     )
-
-
-def is_enterprise() -> bool:
-    """True if JIUWENSWARM_EDITION is 'enterprise' (企业版)."""
-    return os.getenv("JIUWENSWARM_EDITION", "").strip().lower() == "enterprise"
 
 
 def should_hydrate_default_tip() -> bool:

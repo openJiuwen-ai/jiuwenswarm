@@ -3,7 +3,7 @@
 """Mount legacy ``/file-api/*`` and ``/share-api/*`` on Gateway Web HTTP."""
 
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import logging
 import os
@@ -28,6 +28,7 @@ from jiuwenswarm.gateway.channel_manager.web.file_http import (
     read_file_text,
     resolve_raw_file_path,
     save_pushed_file,
+    safe_filename,
     write_markdown_content,
 )
 
@@ -76,7 +77,7 @@ def catalog_file_compat_entries() -> list[dict[str, Any]]:
         ("GET", "/file-api/file-content", "读文本"),
         ("POST", "/file-api/file-content", "写 markdown"),
         ("GET", "/file-api/raw-file", "原始字节"),
-        ("GET", "/file-api/download", "token 下载"),
+        ("GET", "/file-api/download", "token 或 OBS 代理下载"),
         ("GET", "/file-api/ws-debug-config", "WS 调试读"),
         ("POST", "/file-api/ws-debug-config", "WS 调试写"),
         ("POST", "/file-api/rebuild-agent-data", "重建 agent-data"),
@@ -210,30 +211,56 @@ def register_file_compat_routes(app: FastAPI) -> None:
     @app.get(
         "/file-api/download",
         tags=[_OPENAPI_TAG],
-        summary="token 下载（支持 Range）",
+        summary="token 或 OBS 代理下载（支持 Range）",
     )
     async def file_download_get(
         request: Request,
         token: str = Query(""),
+        url: str = Query(""),
+        name: str = Query(""),
         inline: str = Query(""),
     ) -> Response:
-        return _file_download_response(request, token, inline, head=False)
+        return await _file_download_response(
+            request, token, inline, head=False, obs_url=url, file_name=name
+        )
 
     @app.head("/file-api/download", include_in_schema=False)
     async def file_download_head(
         request: Request,
         token: str = Query(""),
+        url: str = Query(""),
+        name: str = Query(""),
         inline: str = Query(""),
     ) -> Response:
-        return _file_download_response(request, token, inline, head=True)
+        return await _file_download_response(
+            request, token, inline, head=True, obs_url=url, file_name=name
+        )
 
-    def _file_download_response(
+    async def _file_download_response(
         request: Request,
         token: str,
         inline: str,
         *,
         head: bool,
+        obs_url: str = "",
+        file_name: str = "",
     ) -> Response:
+        obs = (obs_url or "").strip()
+        if obs:
+            # Mirror upload-obs / push: personal edition must not expose OBS proxy.
+            if not is_enterprise():
+                return _json(404, {"error": "not_available"})
+            from jiuwenswarm.gateway.message_handler.outbound_file_materialize import (
+                proxy_obs_download_response_async,
+            )
+
+            return await proxy_obs_download_response_async(
+                obs_url=obs,
+                filename=file_name,
+                inline=inline.lower() in {"1", "true"},
+                head=head,
+                range_header=request.headers.get("range") or request.headers.get("Range"),
+            )
         if not token:
             return _json(400, {"error": "missing_token"})
         try:
@@ -254,7 +281,11 @@ def register_file_compat_routes(app: FastAPI) -> None:
             return _json(403, {"error": "forbidden_path"})
 
         file_size = os.path.getsize(file_path)
-        file_name = os.path.basename(file_path)
+        # 优先用 token 内展示名（save_pushed_file 磁盘名为 ``{ts}_{name}``）。
+        token_name = str(payload.get("name") or "").strip()
+        file_name = (
+            safe_filename(token_name) if token_name else os.path.basename(file_path)
+        )
         mime_type = guess_mime(file_name)
         inline_flag = inline.lower() in {"1", "true"}
         range_header = request.headers.get("range") or request.headers.get("Range")

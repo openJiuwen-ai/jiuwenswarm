@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import re
-from typing import Annotated, Any
-from urllib.parse import urlparse
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from urllib.parse import unquote, urlparse, urlsplit
 
 from croniter import croniter
 from pydantic import (
@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    field_validator,
     model_validator,
 )
 
@@ -55,11 +56,55 @@ def _validate_http_url(value: str) -> str:
     return value
 
 
+def _optional_skill_source_url(value: Any) -> str | None:
+    """空字符串视为未填；有值则按 http(s) URL 校验。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > 2048:
+        raise ValueError("package_url must be at most 2048 characters")
+    return _validate_http_url(text)
+
+
 SkillSourceUrl = Annotated[
     str,
     Field(min_length=1, max_length=2048),
     AfterValidator(_validate_http_url),
 ]
+OptionalSkillSourceUrl = Annotated[
+    str | None,
+    BeforeValidator(_optional_skill_source_url),
+]
+
+
+def _validate_a2a_card_path(value: str) -> str:
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        raise ValueError("must be an absolute same-origin path")
+    parsed = urlsplit(value)
+    decoded = unquote(parsed.path)
+    # G.CTL.03: if 内布尔条件不超过 3 个
+    if parsed.scheme or parsed.netloc or parsed.query:
+        raise ValueError("must not contain a scheme, host, query, or fragment")
+    if parsed.fragment:
+        raise ValueError("must not contain a scheme, host, query, or fragment")
+    if decoded.startswith("//") or "\\" in decoded or ".." in decoded.split("/"):
+        raise ValueError("must remain a same-origin path")
+    return value
+
+
+A2ASourceUrl = Annotated[
+    str,
+    Field(min_length=1, max_length=2048),
+    AfterValidator(_validate_http_url),
+]
+A2ACardPath = Annotated[
+    str,
+    Field(min_length=1, max_length=512),
+    AfterValidator(_validate_a2a_card_path),
+]
+TemplateId = Annotated[str, Field(min_length=1, max_length=100)]
 
 
 class HookConfig(BaseModel):
@@ -148,175 +193,97 @@ class ExtensionConfigTemplateCreateRequest(ExtensionConfigTemplateUpdateRequest)
     hook_type: str = Field(..., min_length=1, max_length=32)
 
 
-class SkillWhitelistTemplateUpdateRequest(SafeTextMixin):
+class SkillPrebuiltTemplateUpdateRequest(SafeTextMixin):
     template_name: str | None = Field(default=None, max_length=128)
     description: str | None = Field(default=None, max_length=512)
     skill_id: str | None = Field(default=None, max_length=512)
-    skill_version: str | None = Field(default=None, max_length=64)
-    skill_source: SkillSourceUrl | None = None
+    package_url: OptionalSkillSourceUrl = None
+    source_id: str | None = Field(default=None, max_length=64)
+    version_id: str | None = Field(default=None, max_length=128)
     enabled: bool | None = None
     data: dict[str, Any] | None = None
 
 
-class SkillWhitelistTemplateCreateRequest(SkillWhitelistTemplateUpdateRequest):
+class SkillPrebuiltTemplateCreateRequest(SkillPrebuiltTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     skill_id: str = Field(..., min_length=1, max_length=512)
 
 
-# 与 Manager / 库表类型上限一致：integer → 有符号 32 位；autoscale_interval → DECIMAL(10,3)
-_SERVICE_INT_MAX = 2_147_483_647
-_SERVICE_DECIMAL_MAX = 9_999_999.999
-
-# K8s resource quantity：CPU 如 500m / 2 / 0.5；内存须带单位 Ki/Mi/Gi/K/M/G
-_K8S_CPU_RE = re.compile(r"^(?:(?:0|[1-9]\d*)(?:\.\d+)?|\.\d+)m?$")
-_K8S_MEMORY_RE = re.compile(
-    r"^(?:(?:0|[1-9]\d*)(?:\.\d+)?|\.\d+)(?:Ki|Mi|Gi|K|M|G)$"
-)
+_VALID_MCP_TRANSPORTS = frozenset({
+    "stdio",
+    "sse",
+    "http",
+    "streamable-http",
+    "streamable_http",
+})
 
 
-def _normalize_resource_quantity(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _validate_k8s_cpu(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if len(value) > 32:
-        raise ValueError("at most 32 characters")
-    if not _K8S_CPU_RE.fullmatch(value):
+def validate_mcp_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """校验 MCP 模板 ``mcp_entry``；丢弃条目级 ``enabled``（开关只认模板行）。"""
+    if not isinstance(entry, dict):
+        raise ValueError("mcp_entry must be a JSON object")
+    normalized = dict(entry)
+    normalized.pop("enabled", None)
+    name = str(normalized.get("name", "")).strip()
+    if not name:
+        raise ValueError("mcp_entry.name is required")
+    transport = str(normalized.get("transport", "")).strip().lower()
+    if transport not in _VALID_MCP_TRANSPORTS:
         raise ValueError(
-            "must be a valid Kubernetes CPU quantity (e.g. '500m', '2', '0.5')"
+            "mcp_entry.transport must be one of: "
+            + ", ".join(sorted(_VALID_MCP_TRANSPORTS))
         )
-    return value
+    if transport == "stdio":
+        command = str(normalized.get("command", "")).strip()
+        if not command:
+            raise ValueError("mcp_entry.command is required for stdio transport")
+    else:
+        url = str(normalized.get("url", "")).strip()
+        if not url:
+            raise ValueError("mcp_entry.url is required for remote MCP transport")
+    normalized["name"] = name
+    normalized["transport"] = transport
+    return normalized
 
 
-def _validate_k8s_memory(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if len(value) > 32:
-        raise ValueError("at most 32 characters")
-    if not _K8S_MEMORY_RE.fullmatch(value):
-        raise ValueError(
-            "must be a Kubernetes memory quantity with unit "
-            "Ki/Mi/Gi/K/M/G (e.g. '512Mi', '2Gi', '128M')"
-        )
-    return value
-
-
-K8sCpuQuantity = Annotated[
-    str | None,
-    BeforeValidator(_normalize_resource_quantity),
-    AfterValidator(_validate_k8s_cpu),
-]
-K8sMemoryQuantity = Annotated[
-    str | None,
-    BeforeValidator(_normalize_resource_quantity),
-    AfterValidator(_validate_k8s_memory),
-]
-
-
-def is_valid_unix_abs_path(value: str) -> bool:
-    """校验绝对 Unix 路径：以 / 开头，禁止 \\、空段、. 与 ..。"""
-    if not value or len(value) > 512:
-        return False
-    if "\0" in value or "\\" in value:
-        return False
-    if not value.startswith("/"):
-        return False
-    if value == "/":
-        return True
-    core = value.rstrip("/")
-    if not core.startswith("/"):
-        return False
-    for segment in core[1:].split("/"):
-        if not segment or segment in (".", ".."):
-            return False
-    return True
-
-
-def _normalize_optional_unix_path(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _validate_optional_unix_path(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if not is_valid_unix_abs_path(value):
-        raise ValueError(
-            "must be an absolute Unix path (e.g. '/mnt/nfs')"
-        )
-    return value
-
-
-OptionalUnixAbsPath = Annotated[
-    str | None,
-    BeforeValidator(_normalize_optional_unix_path),
-    AfterValidator(_validate_optional_unix_path),
-]
-
-
-class ServiceConfigTemplateUpdateRequest(SafeTextMixin):
+class McpTemplateUpdateRequest(SafeTextMixin):
     template_name: str | None = Field(default=None, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    agent_image: str | None = Field(default=None, max_length=512)
-    namespace: str | None = Field(default=None, max_length=128)
-    pod_name: str | None = Field(default=None, max_length=128)
-    container_name: str | None = Field(default=None, max_length=128)
-    container_port: int | None = Field(default=None, ge=1, le=65535)
-    port_name: str | None = Field(default=None, max_length=64)
-    image_pull_policy: str | None = Field(default=None, max_length=32)
-    replicas: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    kubeconfig: str | None = Field(default=None, max_length=512)
-    agent_runtime: str | None = Field(default=None, max_length=128)
-    readiness_initial_delay: int | None = Field(default=None, ge=0, le=_SERVICE_INT_MAX)
-    readiness_period: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    ready_timeout: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    ready_poll_interval: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    nfs_server: str | None = Field(default=None, max_length=256)
-    nfs_path: OptionalUnixAbsPath = None
-    nfs_mount_path: OptionalUnixAbsPath = None
-    agent_cpu_request: K8sCpuQuantity = None
-    agent_memory_request: K8sMemoryQuantity = None
-    agent_cpu_limit: K8sCpuQuantity = None
-    agent_memory_limit: K8sMemoryQuantity = None
-    jiuwenbox_cpu_request: K8sCpuQuantity = None
-    jiuwenbox_memory_request: K8sMemoryQuantity = None
-    jiuwenbox_cpu_limit: K8sCpuQuantity = None
-    jiuwenbox_memory_limit: K8sMemoryQuantity = None
-    min_idle_services: int | None = Field(default=None, ge=0, le=_SERVICE_INT_MAX)
-    max_services: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    service_concurrency: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    service_ttl: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    autoscale_interval: float | None = Field(
-        default=None, gt=0, le=_SERVICE_DECIMAL_MAX
-    )
-    message_timeout: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    session_concurrency: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
-    session_ttl: int | None = Field(default=None, ge=1, le=_SERVICE_INT_MAX)
+    mcp_entry: dict[str, Any] | None = None
     enabled: bool | None = None
     data: dict[str, Any] | None = None
 
     @model_validator(mode="after")
-    def _validate_pool_range(self) -> ServiceConfigTemplateUpdateRequest:
-        if (
-            self.min_idle_services is not None
-            and self.max_services is not None
-            and self.min_idle_services > self.max_services
-        ):
-            raise ValueError("min_idle_services must be <= max_services")
+    def _validate_entry(self) -> McpTemplateUpdateRequest:
+        if self.mcp_entry is not None:
+            validate_mcp_entry(self.mcp_entry)
         return self
 
 
-class ServiceConfigTemplateCreateRequest(ServiceConfigTemplateUpdateRequest):
+class McpTemplateCreateRequest(McpTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
+    mcp_entry: dict[str, Any]
+
+
+class PermissionsTemplateUpdateRequest(SafeTextMixin):
+    template_name: str | None = Field(default=None, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    enabled: bool | None = None
+    body: dict[str, Any] | None = None
+    data: dict[str, Any] | None = None
+
+
+class PermissionsTemplateCreateRequest(PermissionsTemplateUpdateRequest):
+    template_id: str = Field(..., min_length=1, max_length=100)
+    template_name: str = Field(..., min_length=1, max_length=128)
+    body: dict[str, Any] = Field(
+        ...,
+        description=(
+            "完整 permissions 段，结构与 config.yaml::permissions 一致"
+        ),
+    )
 
 
 class AgentTemplateUpdateRequest(SafeTextMixin):
@@ -342,3 +309,112 @@ class AgentTemplateCreateRequest(AgentTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     template_ref: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class A2ACredentialOperation(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    operation: Literal["keep", "replace", "clear"]
+    value: str | None = Field(default=None, max_length=4096)
+
+    @model_validator(mode="after")
+    def _validate_operation(self) -> A2ACredentialOperation:
+        if self.operation == "replace":
+            if not self.value:
+                raise ValueError("credential.value is required for replace")
+            if self.value.startswith("ENC:v1:"):
+                raise ValueError("encrypted credential envelopes are not supported")
+        elif self.value is not None:
+            raise ValueError("credential.value is only valid for replace")
+        return self
+
+
+class A2AOutboundTemplateUpdateRequest(SafeTextMixin):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    template_name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    a2a_tags: list[str] | None = None
+    source_url: A2ASourceUrl | None = None
+    card_path: A2ACardPath | None = None
+    agent_card: dict[str, Any] | None = None
+    card_fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
+    card_revision: int | None = Field(default=None, ge=1)
+    selected_interface: dict[str, Any] | None = None
+    connect_timeout_seconds: float | None = Field(default=None, gt=0)
+    sync_wait_seconds: float | None = Field(default=None, gt=0)
+    enabled: bool | None = None
+    credential: A2ACredentialOperation | None = None
+    data: dict[str, Any] | None = None
+    updated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_card_and_interface(self) -> A2AOutboundTemplateUpdateRequest:
+        if self.agent_card is not None and not str(self.agent_card.get("name") or "").strip():
+            raise ValueError("agent_card.name is required")
+        if self.selected_interface is not None:
+            protocol_binding = str(
+                self.selected_interface.get("protocol_binding") or ""
+            ).strip()
+            protocol_version = str(
+                self.selected_interface.get("protocol_version") or ""
+            ).strip()
+            if not protocol_binding:
+                raise ValueError("selected_interface.protocol_binding is required")
+            if not protocol_version:
+                raise ValueError("selected_interface.protocol_version is required")
+            interface_url = str(self.selected_interface.get("url") or "").strip()
+            if not interface_url:
+                raise ValueError("selected_interface.url is required")
+            _validate_http_url(interface_url)
+        return self
+
+
+class A2AOutboundTemplateCreateRequest(A2AOutboundTemplateUpdateRequest):
+    template_id: TemplateId
+    template_name: str = Field(..., min_length=1, max_length=128)
+    source_url: A2ASourceUrl
+    card_path: A2ACardPath
+    agent_card: dict[str, Any]
+    card_fingerprint: str = Field(..., min_length=1, max_length=128)
+    card_revision: int = Field(..., ge=1)
+    selected_interface: dict[str, Any]
+    connect_timeout_seconds: float = Field(..., gt=0)
+    sync_wait_seconds: float = Field(..., gt=0)
+    enabled: bool
+    credential: A2ACredentialOperation
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def _require_bootstrap_credential(self) -> A2AOutboundTemplateCreateRequest:
+        if self.credential.operation == "keep":
+            raise ValueError("credential keep is not valid for A2A Agent upsert")
+        return self
+
+
+class A2AAccessPolicyTemplateUpdateRequest(SafeTextMixin):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    policy_name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    mode: Literal["allowlist", "denylist"] | None = None
+    member_template_ids: list[TemplateId] | None = None
+    enabled: bool | None = None
+    revision: int | None = Field(default=None, ge=1)
+    data: dict[str, Any] | None = None
+    updated_at: datetime | None = None
+
+    @field_validator("member_template_ids")
+    @classmethod
+    def _deduplicate_members(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else list(dict.fromkeys(value))
+
+
+class A2AAccessPolicyTemplateCreateRequest(A2AAccessPolicyTemplateUpdateRequest):
+    policy_id: TemplateId
+    policy_name: str = Field(..., min_length=1, max_length=128)
+    mode: Literal["allowlist", "denylist"]
+    member_template_ids: list[TemplateId] = Field(default_factory=list)
+    enabled: bool
+    revision: int = Field(..., ge=1)
+    updated_at: datetime

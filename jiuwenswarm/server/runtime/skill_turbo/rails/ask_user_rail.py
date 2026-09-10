@@ -25,6 +25,7 @@ from typing import Any, Optional
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
+from jiuwenswarm.common.schema.ask_user import decode_user_input
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,10 @@ class SkillTurboAskUserRail(StructuredAskUserRail):
                 )
             return self.interrupt(self._build_ask_request(tool_call))
 
-        answers = self._parse_user_answers(user_input)
+        # 与父类 resolve_interrupt 对齐：JSON 字符串（传输层双重编码）/ pydantic
+        # model 形态先归一为 dict/list，避免误判为不认识形态而 re-interrupt
+        # （重放时确定性 tool_call_id 相同，重问帧会被 sidecar dedup 吞掉）。
+        answers = self._parse_user_answers(decode_user_input(user_input))
         if answers is None:
             # 无法解析（不认识的 user_input 形态）→ 重新中断等待
             logger.warning(

@@ -8,6 +8,8 @@ function decodeQuotedPythonLikeString(raw: string): string {
     .replace(/\\\\/g, '\\');
 }
 
+import { stripResidualInlineToolProtocol } from './toolProtocol';
+
 /** 字面量 `\\n` 明显多于真换行时还原，避免 GFM 表格解析失败。 */
 export function unescapeLiteralNewlines(text: string): string {
   const realNl = (text.match(/\n/g) || []).length;
@@ -114,7 +116,9 @@ export function normalizeFinalContent(payload: Record<string, unknown>): string 
     return '';
   }
 
-  const trimmed = rawContent.trim();
+  const cleaned = stripResidualInlineToolProtocol(rawContent);
+
+  const trimmed = cleaned.trim();
 
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
     try {
@@ -139,18 +143,18 @@ export function normalizeFinalContent(payload: Record<string, unknown>): string 
     } catch {
       // ignore
     }
-    return normalizeFinalDisplayText(rawContent);
+    return normalizeFinalDisplayText(cleaned);
   }
 
-  const singleQuoted = rawContent.match(/['"]output['"]\s*:\s*'((?:\\'|[^'])*)'/s);
+  const singleQuoted = cleaned.match(/['"]output['"]\s*:\s*'((?:\\'|[^'])*)'/s);
   if (singleQuoted?.[1] != null) {
     return normalizeFinalDisplayText(decodeQuotedPythonLikeString(singleQuoted[1]));
   }
 
-  const doubleQuoted = rawContent.match(/['"]output['"]\s*:\s*"((?:\\"|[^"])*)"/s);
+  const doubleQuoted = cleaned.match(/['"]output['"]\s*:\s*"((?:\\"|[^"])*)"/s);
   if (doubleQuoted?.[1] != null) {
     return normalizeFinalDisplayText(decodeQuotedPythonLikeString(doubleQuoted[1]));
   }
 
-  return normalizeFinalDisplayText(rawContent);
+  return normalizeFinalDisplayText(cleaned);
 }

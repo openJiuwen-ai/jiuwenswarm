@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
 
 import pytest
@@ -25,7 +26,7 @@ from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebC
 def file_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     agent_root = tmp_path / "agent"
-    workspace = agent_root / "workspace"
+    workspace = agent_root / "jiuwenclaw_workspace"
     workspace.mkdir(parents=True)
     (workspace / "hello.md").write_text("# hi\n", encoding="utf-8")
     image_path = agent_root / "sessions" / "s1" / "uploads" / "image.png"
@@ -52,17 +53,32 @@ def file_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_list_and_read_markdown(file_client):
     client, _roots, _img, _bytes = file_client
-    r = client.get("/file-api/list-files", params={"dir": "agent/workspace"})
+    r = client.get("/file-api/list-files", params={"dir": "agent/jiuwenclaw_workspace"})
     assert r.status_code == 200
     names = {f["name"] for f in r.json()["files"]}
     assert "hello.md" in names
 
     r = client.get(
         "/file-api/file-content",
-        params={"path": "agent/workspace/hello.md", "encoding": "utf-8"},
+        params={"path": "agent/jiuwenclaw_workspace/hello.md", "encoding": "utf-8"},
     )
     assert r.status_code == 200
     assert r.text.startswith("# hi")
+
+
+def test_legacy_agent_data_path_returns_generated_content(file_client):
+    """Old pre-rename path ``agent/workspace/agent-data.json`` must serve generated data."""
+    client, roots, _img, _bytes = file_client
+    assert not (roots.project_root / "agent" / "workspace").exists()
+
+    r = client.get(
+        "/file-api/file-content",
+        params={"path": "agent/workspace/agent-data.json", "encoding": "utf-8"},
+    )
+    assert r.status_code == 200
+    # generated at the new path and served from there
+    assert (roots.workspace_root / "jiuwenclaw_workspace" / "agent-data.json").is_file()
+    assert "hello.md" in r.text
 
 
 def test_raw_file(file_client):
@@ -81,9 +97,9 @@ def test_path_traversal_forbidden(file_client):
 
 
 def test_default_roots_allow_legacy_agent_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Personal layout: ``agent/workspace`` under user workspace, not only multi-tenant agent root."""
+    """Personal layout: ``agent/jiuwenclaw_workspace`` under user workspace, not only multi-tenant agent root."""
     user_root = tmp_path / "home" / ".jiuwenswarm"
-    agent_ws = user_root / "agent" / "workspace"
+    agent_ws = user_root / "agent" / "jiuwenclaw_workspace"
     agent_ws.mkdir(parents=True)
     (agent_ws / "note.md").write_text("ok", encoding="utf-8")
     tenant_agent = user_root / "service_default" / "agent_default" / "agent"
@@ -101,7 +117,7 @@ def test_default_roots_allow_legacy_agent_workspace(tmp_path: Path, monkeypatch:
     from jiuwenswarm.gateway.channel_manager.web.file_http import default_file_http_roots, list_files
 
     roots = default_file_http_roots()
-    code, payload = list_files(roots, "agent/workspace")
+    code, payload = list_files(roots, "agent/jiuwenclaw_workspace")
     assert code == 200
     assert any(f["name"] == "note.md" for f in payload["files"])
 
@@ -208,3 +224,94 @@ def test_catalog_includes_file_routes(file_client):
     paths = {row["path"] for row in r.json()["data"]["routes"]}
     assert "/file-api/list-files" in paths
     assert "/share-api/snapshot" in paths
+
+
+def test_download_obs_proxy_streams(file_client, monkeypatch: pytest.MonkeyPatch):
+    client, *_ = file_client
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+
+    class _Cfg:
+        endpoint = "127.0.0.1:9000"
+        public_base_url = ""
+
+    class _Resp:
+        status_code = 200
+        headers = {"Content-Type": "text/plain", "Content-Length": "5"}
+
+        def iter_content(self, chunk_size=65536):
+            yield b"hello"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "jiuwenswarm.channels.web.minio_upload.load_minio_upload_config",
+        lambda: _Cfg(),
+    )
+    with patch(
+        "jiuwenswarm.gateway.message_handler.outbound_file_materialize.requests.get",
+        return_value=_Resp(),
+    ) as get_obs:
+        r = client.get(
+            "/file-api/download",
+            params={
+                "url": "http://127.0.0.1:9000/b/downloads/x.txt",
+                "name": "x.txt",
+            },
+        )
+    assert r.status_code == 200
+    assert r.content == b"hello"
+    get_obs.assert_called_once()
+    assert get_obs.call_args.kwargs.get("allow_redirects") is False
+
+    with patch(
+        "jiuwenswarm.gateway.message_handler.outbound_file_materialize.requests.get",
+        return_value=_Resp(),
+    ):
+        h = client.head(
+            "/file-api/download",
+            params={"url": "http://127.0.0.1:9000/b/downloads/x.txt", "name": "x.txt"},
+        )
+    assert h.status_code == 200
+
+
+def test_download_obs_proxy_personal_not_available(
+    file_client, monkeypatch: pytest.MonkeyPatch
+):
+    client, *_ = file_client
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+
+    class _Cfg:
+        endpoint = "127.0.0.1:9000"
+        public_base_url = ""
+
+    monkeypatch.setattr(
+        "jiuwenswarm.channels.web.minio_upload.load_minio_upload_config",
+        lambda: _Cfg(),
+    )
+    r = client.get(
+        "/file-api/download",
+        params={"url": "http://127.0.0.1:9000/b/downloads/x.txt", "name": "x.txt"},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"] == "not_available"
+
+
+def test_download_obs_proxy_rejects_foreign_host(file_client, monkeypatch: pytest.MonkeyPatch):
+    client, *_ = file_client
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+
+    class _Cfg:
+        endpoint = "127.0.0.1:9000"
+        public_base_url = ""
+
+    monkeypatch.setattr(
+        "jiuwenswarm.channels.web.minio_upload.load_minio_upload_config",
+        lambda: _Cfg(),
+    )
+    r = client.get(
+        "/file-api/download",
+        params={"url": "http://evil.example/steal", "name": "x.txt"},
+    )
+    assert r.status_code == 403
+    assert r.json()["error"] == "forbidden_path"

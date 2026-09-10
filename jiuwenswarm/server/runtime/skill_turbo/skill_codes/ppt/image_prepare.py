@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,7 @@ from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNod
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils import (
     BashExecError,
+    cli_path,
     quote_path,
     run_bash,
 )
@@ -49,9 +52,19 @@ def _build_step0_prompt(outline: str, research: str) -> str:
         "4. 关键词必须是专有名词，禁止泛词（如'美食''景点''技术'）\n"
         "5. 跳过不需要图片的页\n"
         "6. imageSize 必须大于最低分辨率：cover ≥ 1920×1080，content ≥ 800×600\n"
-        "   格式为 \"宽*高\"，如 \"1920*1080\" 或 \"1024*1024\"\n\n"
+        "   格式为 \"宽*高\"，如 \"1920*1080\" 或 \"1024*1024\"\n"
+        "7. 每个需要图片的页必须给出与 needCount 等长的 imageSlots，\n"
+        "   每槽至少含 slotId/prompt/keywords/targetAspectRatio/fit/subjectPosition\n"
+        "8. 槽位比例先于生图确定并与计划版式一致（横条/竖栏/卡片/背景各用对应比例，\n"
+        "   不得全部默认 16:9）；未指定时封面背景回退 16:9、普通内容图回退 4:3\n"
+        "9. fit：场景/背景/氛围配图默认 cover；产品/人物/界面截图等必须完整展示用 contain\n"
+        "10. 大纲或研究中出现的用户画面要求（如'不出现人像''包含风电场景'）\n"
+        "    必须写进对应槽位的 prompt\n\n"
         '输出 JSON：{"pages":[{"page":1,"type":"cover","title":"...","keywords":["实体1"],'
-        '"needCount":1,"visualStrategy":"大图背景","imageSize":"1920*1080"}],"totalNeed":N}'
+        '"needCount":1,"visualStrategy":"大图背景","imageSize":"1920*1080",'
+        '"imageSlots":[{"slotId":"image-1","prompt":"...","keywords":["实体1"],'
+        '"targetAspectRatio":"16:9","fit":"cover","subjectPosition":"center"}]}],'
+        '"totalNeed":N}'
     )
 
 
@@ -91,12 +104,60 @@ def _build_a3_prompt(page_info: str, local_info: str) -> str:
     )
 
 
-def _build_ai_prompt(keywords: list, topic: str, style_id: str, usage: str) -> str:
-    kw = " ".join(keywords) if keywords else topic
+_FIT_PROMPT_SUFFIX = {
+    "cover": "full-bleed, edge-to-edge, no border, no black bars, no letterboxing, crop-safe composition",
+    "contain": "complete subject visible, clean natural background, no frame, no black bars",
+}
+
+
+@dataclass
+class _AiPromptSlot:
+    """单槽位生图 prompt 输入（G.FNM.03：相关参数具名封装）。
+
+    keywords/usage/fit/slot_prompt 均来自同一 imageSlots 条目，
+    与页级 topic/style_id 分离避免 6 参数长签名。
+    """
+
+    keywords: list
+    usage: str
+    fit: str = "cover"
+    slot_prompt: str = ""
+
+
+def _build_ai_prompt(slot: _AiPromptSlot, topic: str, style_id: str) -> str:
+    kw = " ".join(slot.keywords) if slot.keywords else topic
+    base = f"{slot.slot_prompt}，{kw}" if slot.slot_prompt else kw
     style_hint = f"，风格：{style_id}" if style_id else ""
-    if usage == "cover":
-        return f"{kw}，{topic}，background full-bleed 16:9 no text{style_hint}"
-    return f"{kw}，{topic}，illustration conceptual no text{style_hint}"
+    fit_suffix = _FIT_PROMPT_SUFFIX.get(slot.fit, _FIT_PROMPT_SUFFIX["cover"])
+    scene = "background" if slot.usage == "cover" else "illustration"
+    return f"{base}，{topic}，{scene} {fit_suffix}，no text{style_hint}"
+
+
+def _is_positive_number(value: Any) -> bool:
+    """数值且 > 0（bool 是 int 子类，显式排除）。"""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+    )
+
+
+def _resolve_slot_size(slot: dict, page_size: str, usage: str) -> str:
+    """槽位优先：targetWidth×targetHeight → 页级 imageSize → usage 默认值。"""
+    w, h = slot.get("targetWidth"), slot.get("targetHeight")
+    if _is_positive_number(w) and _is_positive_number(h):
+        return f"{int(w)}*{int(h)}"
+    if page_size:
+        return page_size
+    return "1920*1080" if usage == "cover" else "1024*1024"
+
+
+def _to_absolute_win_path(path: str) -> str:
+    """git-bash 风格 /c/... 转 Windows 绝对路径，其余原样返回。"""
+    m = re.match(r"^/([a-zA-Z])/(.+)$", path)
+    if m:
+        return f"{m.group(1).upper()}:/{m.group(2)}"
+    return path
 
 
 def _extract_tool_text(result: Any, keys: tuple[str, ...]) -> str:
@@ -145,7 +206,7 @@ def _parse_image_paths(text: str) -> list[str]:
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("- ") and len(line) > 2:
-            paths.append(line[2:].strip())
+            paths.append(line[2:].strip().strip('"'))
     if not paths:
         logger.warning("[P6.5] _parse_image_paths 未解析到图片路径，raw=%s", text[:200])
     return paths
@@ -424,21 +485,30 @@ class ImagePrepareNode(PlanNode):
             logger.warning("[P6.5] generate_image 工具不可用，跳过 ai 源")
             return
 
-        # prod: 改用 cli stage-ai-image 替代旧 ai-plan.js（含 SHA-256 精确复制）
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils import cli_path as _cli_path
+        # 与 skill Stage 5 对齐：用 ai-plan.js 生成生图计划
+        # （能力门控读 imagegen_status.json + 成本上限 + 槽位缺口计算）
+        plan_script = Path(pptx_root) / "image-insert" / "scripts" / "ai-plan.js"
+        if not plan_script.is_file():
+            logger.warning("[P6.5] ai-plan.js 不存在: %s，跳过 ai 源", plan_script)
+            return
         sources_csv = ",".join(image_sources)
-        cmd = (
-            f"{_cli_path('stage-ai-image', pptx_root)} "
-            f"--output-dir {quote_path(output_dir)} "
-            f"--sources {sources_csv}"
+        plan_cmd = (
+            f"node {quote_path(str(plan_script))} "
+            f"{quote_path(output_dir)} {sources_csv}"
         )
         try:
-            result = await run_bash(self, cmd, workdir=pptx_root, required=False)
-            logger.info("[P6.5] stage-ai-image: %s", (result.stdout or "")[:300])
+            plan_result = await run_bash(self, plan_cmd, workdir=pptx_root, required=False)
+            if plan_result.exit_code != 0:
+                logger.warning(
+                    "[P6.5] ai-plan.js exit=%d: %s",
+                    plan_result.exit_code, plan_result.stderr or plan_result.stdout or "",
+                )
+                return
+            logger.info("[P6.5] ai-plan.js: %s", (plan_result.stdout or "")[:300])
         except Exception as e:
             if isinstance(e, AbortError):
                 raise
-            logger.warning("[P6.5] stage-ai-image 失败，降级跳过 ai 源: %s", e)
+            logger.warning("[P6.5] ai-plan.js 失败，降级跳过 ai 源: %s", e)
             return
 
         ai_plan_raw = await PptCommon.read_file(
@@ -450,13 +520,12 @@ class ImagePrepareNode(PlanNode):
         if not isinstance(ai_plan, list) or not ai_plan:
             return
 
-        images_dir = Path(output_dir) / "images"
-        # 循环外创建 images 目录（Windows mkdir 不支持 -p，循环内重复调用会失败）
-        await run_bash(
-            self,
-            f"mkdir {quote_path(str(images_dir))}",
-            required=False, workdir=output_dir,
-        )
+        try:
+            stage_cmd_prefix = cli_path("stage-ai-image", pptx_root)
+        except BashExecError as e:
+            logger.warning("[P6.5] 定位 cli.js 失败，跳过 ai 源: %s", e)
+            return
+
         temp_map = await self._read_temp_map(output_dir)
 
         # 从 page_image_info.json 读取 LLM 动态返回的图片分辨率
@@ -475,17 +544,29 @@ class ImagePrepareNode(PlanNode):
             if not isinstance(item, dict):
                 continue
             page = item.get("page")
-            count = item.get("count", 0)
             keywords = item.get("keywords", [])
             usage = item.get("usage", "content")
-            if not page or not count:
+            if not page:
                 continue
-            # 优先用 LLM 返回的 imageSize，兜底按 usage 取默认值
-            size = page_size_map.get(str(page), "")
-            if not size:
-                size = "1920*1080" if usage == "cover" else "1024*1024"
-            for i in range(count):
-                prompt = _build_ai_prompt(keywords, topic, style_id, usage)
+            # 逐槽生成（skill 契约：一槽一图）；无 slots 的旧计划按 count 合成
+            raw_slots = item.get("slots")
+            slots = raw_slots if isinstance(raw_slots, list) else []
+            if not slots:
+                count = int(item.get("count", 0) or 0)
+                slots = [{"slotId": f"image-{i + 1}"} for i in range(count)]
+            for i, slot in enumerate(slots):
+                if not isinstance(slot, dict):
+                    continue
+                slot_id = str(slot.get("slotId") or f"image-{i + 1}")
+                slot_keywords = slot.get("keywords") or keywords
+                prompt_slot = _AiPromptSlot(
+                    keywords=slot_keywords,
+                    usage=usage,
+                    fit=str(slot.get("fit") or "cover"),
+                    slot_prompt=str(slot.get("prompt") or "").strip(),
+                )
+                prompt = _build_ai_prompt(prompt_slot, topic, style_id)
+                size = _resolve_slot_size(slot, page_size_map.get(str(page), ""), usage)
                 try:
                     raw = await self.call_tool(
                         "generate_image", inputs={"prompt": prompt, "size": size, "n": 1},
@@ -493,38 +574,67 @@ class ImagePrepareNode(PlanNode):
                     paths = _parse_image_paths(str(raw))
                     if not paths:
                         continue
-                    src = paths[0]
-                    ext = Path(src).suffix or ".png"
-                    dest = images_dir / f"page_{page}_ai_{i + 1}{ext}"
-                    # prod: 用 stage-ai-image 的精确复制（含 SHA-256），但当前固化代码用 cp 兜底
-                    cp_result = await run_bash(
-                        self,
-                        f"cp {quote_path(src)} {quote_path(str(dest))}",
-                        required=False, workdir=output_dir,
-                    )
-                    if cp_result.exit_code != 0:
+                    src = _to_absolute_win_path(paths[0])
+                    if not Path(src).is_absolute():
                         logger.warning(
-                            "[P6.5] AI 生图复制失败 page=%s i=%d exit=%d: %s",
-                            page, i + 1, cp_result.exit_code,
-                            cp_result.stderr or cp_result.stdout,
+                            "[P6.5] 生图返回非绝对路径，跳过 page=%s slot=%s: %s",
+                            page, slot_id, src,
                         )
+                        continue
+                    # 与 skill 对齐：stage-ai-image 精确复制（字节数 + SHA-256 校验），禁止裸 cp
+                    copy_cmd = (
+                        f"{stage_cmd_prefix} "
+                        f"--source {quote_path(src)} "
+                        f"--output-dir {quote_path(output_dir)} "
+                        f"--page {page} --index {i + 1}"
+                    )
+                    copy_result = await run_bash(
+                        self, copy_cmd, workdir=pptx_root, required=False,
+                    )
+                    if copy_result.exit_code != 0:
+                        logger.warning(
+                            "[P6.5] stage-ai-image 失败 page=%s slot=%s exit=%d: %s",
+                            page, slot_id, copy_result.exit_code,
+                            copy_result.stderr or copy_result.stdout or "",
+                        )
+                        continue
+                    payload = PptCommon.parse_json_payload(copy_result.stdout or "")
+                    # 兜底：bash 工具返回纯 JSON 文本时 parse_bash_payload 会把
+                    # stage-ai-image 的输出对象当命令 payload 解析（stdout 为空），
+                    # 此时从 raw 原始文本恢复
+                    if not isinstance(payload, dict):
+                        payload = PptCommon.parse_json_payload(copy_result.raw or "")
+                    if not isinstance(payload, dict) or payload.get("verified") is not True:
+                        logger.warning(
+                            "[P6.5] stage-ai-image 校验未通过 page=%s slot=%s", page, slot_id,
+                        )
+                        continue
+                    dest = str(payload.get("path") or "")
+                    if not dest:
                         continue
                     page_key = str(page)
                     if page_key not in temp_map:
                         temp_map[page_key] = []
                     temp_map[page_key].append({
-                        "path": str(dest),
+                        "path": dest,
                         "type": "ai",
-                        "description": " ".join(keywords),
-                        "entities": keywords,
-                        "matchedKeywords": keywords,
+                        "description": " ".join(slot_keywords) or topic,
+                        "entities": slot_keywords,
+                        "matchedKeywords": slot_keywords,
                         "score": 0.9,
                         "usage": usage,
+                        "slotId": slot_id,
+                        "targetAspectRatio": slot.get("targetAspectRatio")
+                        or ("16:9" if usage == "cover" else "4:3"),
+                        "targetWidth": slot.get("targetWidth"),
+                        "targetHeight": slot.get("targetHeight"),
+                        "fit": prompt_slot.fit,
+                        "subjectPosition": slot.get("subjectPosition") or "center",
                     })
                 except Exception as e:
                     if isinstance(e, AbortError):
                         raise
-                    logger.warning("[P6.5] AI 生图失败 page=%s i=%d: %s", page, i + 1, e)
+                    logger.warning("[P6.5] AI 生图失败 page=%s slot=%s: %s", page, slot_id, e)
 
         await self._write_json(f"{output_dir}/temp_image_map.json", temp_map)
 

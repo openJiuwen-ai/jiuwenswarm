@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -206,3 +207,28 @@ def parse_ask_user_response(value: Any) -> AskUserResponse:
         answers=value["answers"],
         original_request=value.get("original_request"),
     )
+
+
+def decode_user_input(value: Any) -> Any:
+    """Decode user_input into a canonical form before strict parsing.
+
+    Handles two accidental encodings that leak into resolve_interrupt:
+    1. JSON string (double-encoded by transport layer) -> dict via json.loads.
+    2. pydantic model with model_dump -> dict.
+
+    Anything else is returned as-is so callers (e.g. StructuredAskUserRail)
+    can treat non-Mapping values as "user did not provide a structured answer"
+    rather than raising INVALID_ARGUMENT on the model's behalf.
+    """
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return value
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return model_dump(mode="json")
+        except TypeError:
+            return model_dump()
+    return value

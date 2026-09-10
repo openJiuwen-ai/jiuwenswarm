@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+import os
+import socket
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel
 from jiuwenswarm.common.e2a.acp.acp_tool_updates import is_reasoning_event
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
-from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from .security import (
+    A2AAuthenticationMiddleware,
+    agent_card_security,
+    validate_security,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,16 @@ except ImportError:
 # first-class thought field; `Part.metadata` is the official extension point.
 A2A_THOUGHT_METADATA_KEY = "jiuwen_thought"
 
+# Only inert observability fields may cross the untrusted A2A ingress boundary.
+# Gateway control metadata (cwd, user_id, ws_id, member_name, memory flags, ...)
+# is deliberately never accepted from an A2A caller.
+_A2A_INGRESS_METADATA_ALLOWLIST = frozenset(
+    {"correlation_id", "trace_id", "traceparent", "tracestate"}
+)
+_A2A_INGRESS_METADATA_VALUE_MAX_LENGTH = 512
+_A2A_SERVER_START_TIMEOUT_SECONDS = 10.0
+_A2A_SERVER_START_POLL_SECONDS = 0.01
+
 
 class A2ADependencyMissingError(RuntimeError):
     """Raised when the optional A2A SDK extra is unavailable."""
@@ -33,7 +50,7 @@ class A2ADependencyMissingError(RuntimeError):
 def _raise_missing_a2a_sdk(exc: ImportError) -> None:
     raise A2ADependencyMissingError(
         "A2A server is enabled but optional dependency `a2a-sdk[http-server]>=1.0.0` "
-        "is not installed. Install with `pip install -e \".[a2a]\"` or `uv sync --extra a2a`."
+        'is not installed. Install with `pip install -e ".[a2a]"` or `uv sync --extra a2a`.'
     ) from exc
 
 
@@ -67,11 +84,16 @@ class A2AChannelConfig:
     # dropped. Reasoning is never written into the final `response` artifact
     # either way.
     expose_reasoning: bool = True
+    auth_type: str = "none"
+    api_key_header: str = "X-API-Key"
+    card_auth_required: bool = False
+    credential_hash: str = field(default="", repr=False)
 
 
 @dataclass
 class _PendingA2ARequest:
     queue: asyncio.Queue[Message]
+    session_id: str
 
 
 class _A2AAgentExecutor(_AgentExecutorBase):
@@ -171,7 +193,7 @@ class _A2AAgentExecutor(_AgentExecutorBase):
                 session_id=context_id,
                 query=query,
                 files=files,
-                metadata=dict(context.metadata or {}),
+                metadata=self._channel.filter_ingress_metadata(context.metadata),
             )
             artifact_id = f"{task_id}_response"
             artifact_started = False
@@ -293,7 +315,9 @@ class _A2AAgentExecutor(_AgentExecutorBase):
             )
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.exception("[A2AChannel] execution failed: request_id=%s err=%s", request_id, exc)
+            logger.exception(
+                "[A2AChannel] execution failed: request_id=%s err=%s", request_id, exc
+            )
             self._channel.notify_request_observer(
                 request_id=request_id,
                 context_id=context_id,
@@ -352,6 +376,10 @@ class A2AChannel(BaseChannel):
         self._pending: dict[str, _PendingA2ARequest] = {}
         self._uvicorn_server: Any | None = None
         self._server_task: asyncio.Task | None = None
+        self._listen_socket: socket.socket | None = None
+        self._runtime_error_observer = None
+        self._runtime_error_tasks: set[asyncio.Future[Any]] = set()
+        self._stopping = False
 
     @property
     def channel_id(self) -> str:
@@ -363,6 +391,10 @@ class A2AChannel(BaseChannel):
     def set_request_observer(self, callback) -> None:
         """Observe request lifecycle metadata without retaining request bodies."""
         self._request_observer = callback
+
+    def set_runtime_error_observer(self, callback) -> None:
+        """Observe an unexpected server exit after the listen socket is ready."""
+        self._runtime_error_observer = callback
 
     def notify_request_observer(self, **event: Any) -> None:
         if self._request_observer is None:
@@ -381,15 +413,28 @@ class A2AChannel(BaseChannel):
 
         try:
             from a2a.server.request_handlers import DefaultRequestHandler
-            from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-            from a2a.server.tasks import InMemoryPushNotificationConfigStore, InMemoryTaskStore
-            from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+            from a2a.server.routes import (
+                create_agent_card_routes,
+                create_jsonrpc_routes,
+            )
+            from a2a.server.tasks import (
+                InMemoryPushNotificationConfigStore,
+                InMemoryTaskStore,
+            )
+            from a2a.types import (
+                AgentCapabilities,
+                AgentCard,
+                AgentInterface,
+                AgentSkill,
+            )
             from fastapi import FastAPI
         except ImportError as exc:
             _raise_missing_a2a_sdk(exc)
         import uvicorn
 
+        validate_security(self.config)
         agent_card = AgentCard(
+            **agent_card_security(self.config),
             name=self.config.app_name,
             description=self.config.app_description,
             version=self.config.app_version,
@@ -400,7 +445,10 @@ class A2AChannel(BaseChannel):
                     protocol_version=self.config.protocol_version,
                 )
             ],
-            capabilities=AgentCapabilities(streaming=True, push_notifications=False),
+            capabilities=AgentCapabilities(
+                streaming=True,
+                push_notifications=False,
+            ),
             default_input_modes=["text/plain"],
             default_output_modes=["text/plain"],
             skills=[
@@ -425,7 +473,17 @@ class A2AChannel(BaseChannel):
             *create_agent_card_routes(agent_card, card_url=self.config.card_path),
             *create_jsonrpc_routes(request_handler, rpc_url=self.config.rpc_path),
         ]
-        fastapi_app = FastAPI(routes=routes)
+        if self.config.extended_card_path != self.config.card_path:
+            routes.extend(
+                create_agent_card_routes(
+                    agent_card,
+                    card_url=self.config.extended_card_path,
+                )
+            )
+        fastapi_app = FastAPI(
+            routes=routes, docs_url=None, redoc_url=None, openapi_url=None
+        )
+        fastapi_app.add_middleware(A2AAuthenticationMiddleware, config=self.config)
 
         uv_cfg = uvicorn.Config(
             app=fastapi_app,
@@ -435,13 +493,43 @@ class A2AChannel(BaseChannel):
             access_log=False,
         )
         self._uvicorn_server = uvicorn.Server(uv_cfg)
-        self._server_task = asyncio.create_task(self._uvicorn_server.serve(), name="a2a-channel-server")
-        await asyncio.sleep(0.2)
-        if self._server_task.done():
-            exc = self._server_task.exception()
-            if exc:
-                raise exc
+        self._stopping = False
+        # getaddrinfo() (DNS resolution) inside _bind_listen_socket is blocking;
+        # run it off the event loop so a slow lookup doesn't stall other coroutines.
+        listen_socket = await asyncio.to_thread(
+            self._bind_listen_socket, self.config.host, self.config.port
+        )
+        self._listen_socket = listen_socket
+        server_task = asyncio.create_task(
+            self._uvicorn_server.serve(sockets=[listen_socket]),
+            name="a2a-channel-server",
+        )
+        self._server_task = server_task
+        try:
+            async with asyncio.timeout(_A2A_SERVER_START_TIMEOUT_SECONDS):
+                while not bool(getattr(self._uvicorn_server, "started", False)):
+                    if server_task.done():
+                        server_task.result()
+                        raise RuntimeError(
+                            "A2A server stopped before binding its listen socket"
+                        )
+                    await asyncio.sleep(_A2A_SERVER_START_POLL_SECONDS)
+        except BaseException:
+            self._uvicorn_server.should_exit = True
+            if not server_task.done():
+                server_task.cancel()
+            try:
+                await server_task
+            # The original startup exception is the actionable one.
+            except BaseException:
+                pass
+            listen_socket.close()
+            self._listen_socket = None
+            self._uvicorn_server = None
+            self._server_task = None
+            raise
         self._running = True
+        server_task.add_done_callback(self._on_server_done)
         logger.info(
             "a2a.ingress started: http://%s:%s%s",
             self.config.host,
@@ -450,35 +538,100 @@ class A2AChannel(BaseChannel):
         )
 
     async def stop(self) -> None:
+        self._stopping = True
         self._running = False
-        if self._uvicorn_server is not None:
-            self._uvicorn_server.should_exit = True
-        if self._server_task is not None:
-            try:
-                await self._server_task
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("a2a.ingress shutdown with error: %s", exc)
-        self._uvicorn_server = None
-        self._server_task = None
-        for pending in list(self._pending.values()):
-            # Wake waiting executors during shutdown.
-            await pending.queue.put(
-                Message(
-                    id="a2a_shutdown",
-                    type="event",
-                    channel_id=self.channel_id,
-                    session_id=None,
-                    params={},
-                    timestamp=time.time(),
-                    ok=False,
-                    payload={"error": "a2a channel stopped", "is_complete": True},
-                    event_type=EventType.CHAT_ERROR,
+        try:
+            pending_ids = list(self._pending)
+            if pending_ids:
+                # Cancel concurrently: sequential awaits could each block up to the
+                # per-request ack timeout, making stop() take up to N x timeout.
+                results = await asyncio.gather(
+                    *(
+                        self.cancel_pending_request(request_id)
+                        for request_id in pending_ids
+                    ),
+                    return_exceptions=True,
                 )
-            )
-        self._pending.clear()
+                for request_id, result in zip(pending_ids, results):
+                    if isinstance(result, Exception):
+                        logger.error(
+                            "[A2AChannel] failed to cancel downstream request during shutdown: %s",
+                            request_id,
+                            exc_info=result,
+                        )
+            self._pending.clear()
+            if self._uvicorn_server is not None:
+                self._uvicorn_server.should_exit = True
+            if self._server_task is not None:
+                try:
+                    await self._server_task
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("a2a.ingress shutdown with error: %s", exc)
+        finally:
+            self._uvicorn_server = None
+            self._server_task = None
+            if self._listen_socket is not None:
+                self._listen_socket.close()
+                self._listen_socket = None
+            self._stopping = False
         logger.info("a2a.ingress stopped")
 
-    async def send(self, msg: Message, *, routing_target: RoutingTarget | None = None) -> None:
+    @staticmethod
+    def _bind_listen_socket(host: str, port: int) -> socket.socket:
+        """Bind before reporting startup so address conflicts fail synchronously."""
+        last_error: OSError | None = None
+        for family, socktype, proto, _, address in socket.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM,
+            flags=socket.AI_PASSIVE,
+        ):
+            listen_socket = socket.socket(family, socktype, proto)
+            try:
+                if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                    listen_socket.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1
+                    )
+                else:
+                    listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listen_socket.bind(address)
+                listen_socket.listen(2048)
+                listen_socket.setblocking(False)
+                return listen_socket
+            except OSError as exc:
+                last_error = exc
+                listen_socket.close()
+        if last_error is not None:
+            raise last_error
+        raise OSError(f"Unable to resolve A2A listen address: {host}:{port}")
+
+    def _on_server_done(self, task: asyncio.Task) -> None:
+        if self._stopping or not self._running:
+            return
+        self._running = False
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            error = RuntimeError("A2A server task was canceled unexpectedly")
+        if error is None:
+            error = RuntimeError("A2A server stopped unexpectedly")
+        logger.error("a2a.ingress server exited unexpectedly: %s", error)
+        if self._runtime_error_observer is None:
+            return
+        try:
+            result = self._runtime_error_observer(error)
+            if inspect.isawaitable(result):
+                observer_task = asyncio.ensure_future(result)
+                if isinstance(observer_task, asyncio.Task):
+                    observer_task.set_name("a2a-channel-runtime-error")
+                self._runtime_error_tasks.add(observer_task)
+                observer_task.add_done_callback(self._runtime_error_tasks.discard)
+        except Exception:  # noqa: BLE001
+            logger.exception("[A2AChannel] runtime error observer failed")
+
+    async def send(
+        self, msg: Message, *, routing_target: RoutingTarget | None = None
+    ) -> None:
         pending = self._pending.get(str(msg.id))
         if pending is None:
             return
@@ -495,14 +648,18 @@ class A2AChannel(BaseChannel):
     ) -> _PendingA2ARequest:
         if self._on_message_cb is None:
             raise RuntimeError("A2AChannel on_message callback is not set")
-        pending = _PendingA2ARequest(queue=asyncio.Queue())
+        normalized_session_id = session_id or f"a2a_{uuid.uuid4().hex[:8]}"
+        pending = _PendingA2ARequest(
+            queue=asyncio.Queue(),
+            session_id=normalized_session_id,
+        )
         self._pending[request_id] = pending
         try:
             msg = Message(
                 id=request_id,
                 type="req",
                 channel_id=self.channel_id,
-                session_id=session_id or f"a2a_{uuid.uuid4().hex[:8]}",
+                session_id=normalized_session_id,
                 params=self._build_request_params(query=query, files=files),
                 timestamp=time.time(),
                 ok=True,
@@ -510,9 +667,7 @@ class A2AChannel(BaseChannel):
                 is_stream=True,
                 metadata=dict(metadata or {}),
             )
-            result = self._on_message_cb(msg)
-            if asyncio.iscoroutine(result):
-                await result
+            await self._dispatch_message(msg)
             return pending
         finally:
             # Keep pending entry for send() until terminal message is consumed by executor.
@@ -522,10 +677,28 @@ class A2AChannel(BaseChannel):
         self._pending.pop(str(request_id), None)
 
     async def cancel_pending_request(self, request_id: str) -> bool:
-        """Wake an active executor with a terminal cancellation event."""
+        """Cancel the mapped Agent session, then wake the local A2A executor."""
         pending = self._pending.get(str(request_id))
         if pending is None:
             return False
+        cancel_error: Exception | None = None
+        try:
+            await self._dispatch_message(
+                Message(
+                    id=f"{request_id}_cancel",
+                    type="req",
+                    channel_id=self.channel_id,
+                    session_id=pending.session_id,
+                    params={"intent": "cancel", "session_id": pending.session_id},
+                    timestamp=time.time(),
+                    ok=True,
+                    req_method=ReqMethod.CHAT_CANCEL,
+                    is_stream=False,
+                    metadata={},
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            cancel_error = exc
         await pending.queue.put(
             Message(
                 id=str(request_id),
@@ -539,13 +712,36 @@ class A2AChannel(BaseChannel):
                 event_type=EventType.CHAT_INTERRUPT_RESULT,
             )
         )
+        if cancel_error is not None:
+            raise cancel_error
         return True
+
+    async def _dispatch_message(self, msg: Message) -> None:
+        if self._on_message_cb is None:
+            raise RuntimeError("A2AChannel on_message callback is not set")
+        result = self._on_message_cb(msg)
+        if inspect.isawaitable(result):
+            await result
+
+    @staticmethod
+    def filter_ingress_metadata(metadata: Any) -> dict[str, str]:
+        """Copy only bounded, inert tracing metadata from an A2A caller."""
+        if not isinstance(metadata, dict):
+            return {}
+        filtered: dict[str, str] = {}
+        for key in _A2A_INGRESS_METADATA_ALLOWLIST:
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                filtered[key] = value[:_A2A_INGRESS_METADATA_VALUE_MAX_LENGTH]
+        return filtered
 
     @staticmethod
     def message_to_text(msg: Message) -> str:
         payload = msg.payload if isinstance(msg.payload, dict) else {}
         if msg.type == "event" and msg.event_type == EventType.CHAT_ERROR:
-            return str(payload.get("error") or payload.get("content") or "agent request failed")
+            return str(
+                payload.get("error") or payload.get("content") or "agent request failed"
+            )
         if "content" in payload:
             return str(payload.get("content") or "")
         if payload:
@@ -559,7 +755,9 @@ class A2AChannel(BaseChannel):
         return is_reasoning_event(msg.event_type, payload)
 
     @staticmethod
-    def message_to_a2a_parts(msg: Message, *, fallback_to_text: bool = True) -> list[Any]:
+    def message_to_a2a_parts(
+        msg: Message, *, fallback_to_text: bool = True
+    ) -> list[Any]:
         """Map internal message payload to A2A response parts."""
         from a2a.types import Part
 
@@ -568,11 +766,15 @@ class A2AChannel(BaseChannel):
 
         # Keep error response readable for A2A callers.
         if msg.type == "event" and msg.event_type == EventType.CHAT_ERROR:
-            error_text = str(payload.get("error") or payload.get("content") or "agent request failed")
+            error_text = str(
+                payload.get("error") or payload.get("content") or "agent request failed"
+            )
             return [Part(text=error_text)]
 
         thought_metadata = (
-            {A2A_THOUGHT_METADATA_KEY: True} if A2AChannel.is_reasoning_message(msg) else None
+            {A2A_THOUGHT_METADATA_KEY: True}
+            if A2AChannel.is_reasoning_message(msg)
+            else None
         )
 
         content = payload.get("content")
@@ -588,7 +790,9 @@ class A2AChannel(BaseChannel):
             if not A2AChannel.is_completion_sentinel_text(normalized_result):
                 parts.append(Part(text=normalized_result))
         # Surface tool events in stream mode so callers can observe progress.
-        if msg.event_type == EventType.CHAT_TOOL_CALL and isinstance(payload.get("tool_call"), dict):
+        if msg.event_type == EventType.CHAT_TOOL_CALL and isinstance(
+            payload.get("tool_call"), dict
+        ):
             tool_call = payload.get("tool_call") or {}
             tool_name = str(tool_call.get("name") or "tool").strip()
             parts.append(Part(text=f"[tool_call] {tool_name}"))
@@ -604,8 +808,12 @@ class A2AChannel(BaseChannel):
         for idx, file_item in enumerate(files):
             if not isinstance(file_item, dict):
                 continue
-            file_name = str(file_item.get("filename") or file_item.get("name") or f"file_{idx}").strip()
-            media_type = str(file_item.get("media_type") or file_item.get("type") or "").strip()
+            file_name = str(
+                file_item.get("filename") or file_item.get("name") or f"file_{idx}"
+            ).strip()
+            media_type = str(
+                file_item.get("media_type") or file_item.get("type") or ""
+            ).strip()
             url = str(file_item.get("url") or file_item.get("uri") or "").strip()
             data = str(file_item.get("data") or "").strip()
             raw = str(file_item.get("raw") or "").strip()
@@ -662,45 +870,23 @@ class A2AChannel(BaseChannel):
 
     @staticmethod
     def map_a2a_parts_to_params(a2a_message: Any) -> tuple[str, list[dict[str, Any]]]:
-        """Map A2A message parts to JiuwenSwarm-friendly query/files params."""
+        """Map text parts only.
+
+        Breaking change vs. earlier batches: file/binary parts (url/data/raw) from
+        inbound A2A messages are intentionally dropped rather than forwarded as
+        `files`, since accepting arbitrary URLs/base64 blobs from external A2A
+        callers is outside the current ingress security scope. Always returns
+        ``files=[]``; see test_map_a2a_parts_to_params_forwards_text_but_drops_files.
+        """
         if a2a_message is None:
             return "", []
 
         text_segments: list[str] = []
-        files: list[dict[str, Any]] = []
         parts = getattr(a2a_message, "parts", None) or []
-        for idx, part in enumerate(parts):
+        for part in parts:
             text = str(getattr(part, "text", "") or "").strip()
             if text:
                 text_segments.append(text)
 
-            file_name = str(getattr(part, "filename", "") or "").strip()
-            media_type = str(getattr(part, "media_type", "") or "").strip()
-            url = str(getattr(part, "url", "") or "").strip()
-            data = str(getattr(part, "data", "") or "").strip()
-            raw = str(getattr(part, "raw", "") or "").strip()
-
-            # Preserve non-text parts as files metadata for downstream tools.
-            if url or data or raw:
-                normalized_name = file_name or f"a2a_part_{idx}"
-                entry: dict[str, Any] = {
-                    # web_channel compatibility keys
-                    "name": normalized_name,
-                    "filename": normalized_name,
-                }
-                if media_type:
-                    entry["media_type"] = media_type
-                    # common consumers check `type`
-                    entry["type"] = media_type
-                if url:
-                    entry["url"] = url
-                    entry["uri"] = url
-                if data:
-                    entry["data"] = data
-                    entry["encoding"] = "base64"
-                if raw:
-                    entry["raw"] = raw
-                files.append(entry)
-
         query = "\n".join(seg for seg in text_segments if seg).strip()
-        return query, files
+        return query, []

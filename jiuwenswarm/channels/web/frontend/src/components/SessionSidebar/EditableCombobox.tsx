@@ -9,15 +9,24 @@ interface EditableComboboxProps {
   ariaLabel: string;
   disabled?: boolean;
   emptyText?: string;
+  placeholder?: string;
   onChange: (value: string) => void;
   options: EditableComboboxOption[];
   value: string;
 }
 
-export function EditableCombobox({ ariaLabel, disabled = false, emptyText = '没有匹配项', onChange, options, value }: EditableComboboxProps) {
+export function EditableCombobox({
+  ariaLabel,
+  disabled = false,
+  emptyText = '没有匹配项',
+  placeholder,
+  onChange,
+  options,
+  value,
+}: EditableComboboxProps) {
   const listboxId = useId();
   const selectedOption = options.find(option => option.value === value);
-  const selectedLabel = selectedOption?.label ?? value;
+  const selectedLabel = selectedOption?.label ?? (value ? value : '');
   const [inputValue, setInputValue] = useState(selectedLabel);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -54,7 +63,9 @@ export function EditableCombobox({ ariaLabel, disabled = false, emptyText = '没
     setOpen(false);
     setInputValue(option.label);
     setActiveIndex(0);
-    if (option.value !== value) onChange(option.value);
+    // 显式点选始终通知父组件：自定义生效后 value 可能仍停在某项，
+    // 再点同一项时也需要触发切换回授权 Agent。
+    onChange(option.value);
   };
 
   const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
@@ -98,6 +109,7 @@ export function EditableCombobox({ ariaLabel, disabled = false, emptyText = '没
         aria-activedescendant={open && filteredOptions.length > 0 ? `${listboxId}-option-${activeIndex}` : undefined}
         autoComplete="off"
         disabled={disabled}
+        placeholder={placeholder}
         value={inputValue}
         onChange={event => {
           setInputValue(event.target.value);

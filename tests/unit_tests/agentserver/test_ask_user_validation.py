@@ -311,7 +311,9 @@ async def test_non_exact_skipped_shapes_are_rejected(user_input):
     decision = await rail.resolve_interrupt(MagicMock(), tc, user_input)
 
     assert isinstance(decision, RejectResult)
-    assert "INVALID_ARGUMENT" in decision.tool_result
+    # Non-exact / malformed shapes are treated as skipped (not [INVALID_ARGUMENT])
+    # so the LLM does not mistake the tool as broken and trigger fallback cascades.
+    assert "未提供回答" in decision.tool_result
 
 
 @pytest.mark.asyncio
@@ -423,4 +425,6 @@ async def test_legacy_answer_representations_are_rejected(legacy_input):
     decision = await rail.resolve_interrupt(MagicMock(), tc, legacy_input)
 
     assert isinstance(decision, RejectResult)
-    assert "INVALID_ARGUMENT" in decision.tool_result
+    # Legacy / unparseable representations are treated as skipped (not
+    # [INVALID_ARGUMENT]) to avoid misleading the LLM into fallback cascades.
+    assert "未提供回答" in decision.tool_result

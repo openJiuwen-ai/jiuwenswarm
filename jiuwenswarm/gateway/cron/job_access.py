@@ -28,7 +28,20 @@ def create_tenant_cron_store(
     service_id: str,
     agent_id: str,
 ) -> Any:
-    """Return CronJobRepository when PersistentStore is wired; else FileCronJobStore."""
+    """Return cron store for tenant scope.
+
+    企业实例已绑定且连远程库时，走 ``GatewayDbCronJobStore``（与 ``cron_job`` 表结构一致）；
+    否则 PersistentStore 可用时用 ``CronJobRepository``；再否则文件 store。
+    """
+    import os
+
+    from jiuwenswarm.gateway.cron.enterprise_gate import enterprise_cron_enabled
+
+    if enterprise_cron_enabled() and os.getenv("GATEWAY_DB_HOST", "").strip():
+        from jiuwenswarm.gateway.cron.db_store import GatewayDbCronJobStore
+
+        return GatewayDbCronJobStore()
+
     store = get_cron_persistent_store()
     if store is None:
         from jiuwenswarm.common.utils import resolve_gateway_cron_jobs_path

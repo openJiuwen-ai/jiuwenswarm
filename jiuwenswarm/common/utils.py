@@ -1,4 +1,5 @@
-from jiuwenswarm.common.local_env_config import is_enterprise
+import atexit
+from jiuwenswarm.edition import is_enterprise
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """Path management for JiuWenSwarm.
@@ -9,7 +10,7 @@ Runtime layout:
 - <root>/config/config.yaml
 - <root>/config/.env
 - <root>/agent/home
-- <root>/agent/workspace（DeepAgent 标准工作空间）
+- <root>/agent/jiuwenclaw_workspace（DeepAgent 标准工作空间）
   - memory/
   - skills/
   - todo/
@@ -21,7 +22,7 @@ Runtime layout:
   - HEARTBEAT.md
   - USER.md
 - <root>/agent/sessions
-- <root>/agent/workspace/agent-data.json
+- <root>/agent/jiuwenclaw_workspace/agent-data.json
 - <root>/agent/.checkpoint
 - <root>/agent/.logs（gateway.log / channel.log / agent_server.log / full.log）
 
@@ -31,7 +32,6 @@ Runtime layout:
 import asyncio
 import copy
 import ctypes
-import hashlib
 import json
 import os
 import re
@@ -904,42 +904,211 @@ def _migrate_from_jiuwenclaw_root() -> bool:
         return False
 
 
-def _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir: Path) -> None:
-    """Migrate from legacy jiuwenclaw_workspace directory name to workspace.
+def _replace_path_prefix(value: str, prefixes: list[tuple[str, str]]) -> str:
+    """替换字符串开头的旧工作区绝对路径前缀（分隔符边界感知）。
+
+    前缀命中后必须紧跟路径分隔符或结尾，避免误伤
+    ``.../agent/workspace_other`` 这类路径。旧/新前缀各自的分隔符风格
+    （``\\`` / ``/``）都处理。
+    """
+    for old_s, new_s in prefixes:
+        if value == old_s:
+            return new_s
+        if value.startswith(old_s) and value[len(old_s)] in ("\\", "/"):
+            return new_s + value[len(old_s):]
+    return value
+
+
+def _rewrite_json_path_prefix(
+    file_path: Path, prefixes: list[tuple[str, str]]
+) -> bool:
+    """重写 JSON 文件字符串值中的旧路径前缀；有变更并成功写回时返回 True。
+
+    解析后按值替换（避免 JSON 转义导致的文本替换错位），原子写回。
+    文件缺失/损坏时静默返回 False。
+    """
+    try:
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+
+    changed = False
+
+    def _rewrite(obj: Any) -> Any:
+        nonlocal changed
+        if isinstance(obj, str):
+            new_value = _replace_path_prefix(obj, prefixes)
+            if new_value != obj:
+                changed = True
+                obj = new_value
+            return obj
+        if isinstance(obj, list):
+            return [_rewrite(item) for item in obj]
+        if isinstance(obj, dict):
+            return {key: _rewrite(value) for key, value in obj.items()}
+        return obj
+
+    new_data = _rewrite(data)
+    if not changed:
+        return False
+    tmp_path = file_path.with_suffix(file_path.suffix + ".migration.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(new_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp_path.replace(file_path)
+    except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
+        logger.warning("重写 %s 中的旧路径前缀失败: %s", file_path, exc)
+        return False
+    return True
+
+
+def _rewrite_legacy_project_dir_metadata(
+    agent_root: Path, old_workspace: Path, new_workspace: Path
+) -> None:
+    """目录改名后同步重写持久化元数据中的旧工作区绝对路径。
+
+    存量 ``projects.json``（``project_dir``）与 ``sessions/*/metadata.json``
+    （``project_dir``、``channel_metadata.cwd`` 等）记录的是
+    ``.../agent/workspace`` 绝对路径。若不重写，``validate_project_dir`` 会在
+    旧路径上 mkdir 重建"僵尸目录"，下次重启又触发一轮合并迁移，且两次重启
+    之间写入旧目录的项目文件对会话不可见。
+
+    幂等：无旧前缀命中时不写盘，可安全重复调用（含并发迁移场景）。
+    """
+    old_s, new_s = str(old_workspace), str(new_workspace)
+    posix_old, posix_new = old_workspace.as_posix(), new_workspace.as_posix()
+    prefixes = [(old_s, new_s)]
+    if posix_old != old_s:
+        prefixes.append((posix_old, posix_new))
+
+    projects_file = agent_root / "projects.json"
+    if projects_file.is_file() and _rewrite_json_path_prefix(projects_file, prefixes):
+        print(f"[migration] Rewrote legacy project_dir in {projects_file}")
+
+    sessions_dir = agent_root / "sessions"
+    if sessions_dir.is_dir():
+        for entry in sessions_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            meta_file = entry / "metadata.json"
+            if meta_file.is_file() and _rewrite_json_path_prefix(meta_file, prefixes):
+                print(f"[migration] Rewrote legacy project_dir in {meta_file}")
+
+
+def _migrate_workspace_to_jiuwenclaw_workspace(workspace_dir: Path) -> None:
+    """Migrate from legacy workspace directory name to jiuwenclaw_workspace.
 
     Migration:
-    - Old: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/
-    - New: ~/.jiuwenswarm/agent/workspace/
+    - Old: <tenant_root>/agent/workspace/
+    - New: <tenant_root>/agent/jiuwenclaw_workspace/
+
+    Covers every tenant layout:
+    - Personal: ``~/.jiuwenswarm/service_default/agent_default``
+    - Enterprise: ``~/.jiuwenswarm/workspace_{key}`` for each key bucket
+    - Legacy pre-tenant: ``~/.jiuwenswarm`` itself
 
     Args:
         workspace_dir: Path to workspace root (~/.jiuwenswarm).
     """
-    old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
-    new_workspace = workspace_dir / "agent" / "workspace"
 
-    if not old_workspace.exists():
-        return
-    if new_workspace.exists():
-        # Both exist - merge carefully
-        print(f"[migration] Both jiuwenclaw_workspace and workspace exist, merging...")
-        for item in old_workspace.iterdir():
-            dest = new_workspace / item.name
-            if item.is_dir():
-                if dest.exists():
-                    # Merge directories
-                    shutil.copytree(item, dest, dirs_exist_ok=True)
-                else:
-                    shutil.copytree(item, dest)
+    def _merge_one(tenant_root: Path) -> None:
+        agent_root = tenant_root / "agent"
+        old_workspace = agent_root / "workspace"
+        new_workspace = agent_root / "jiuwenclaw_workspace"
+        if not old_workspace.exists():
+            # 旧目录已不存在：可能是并发进程刚完成迁移（可能来不及重写元数据
+            # 就崩溃），仍需重写元数据兜底（幂等，无命中不写盘）。
+            _rewrite_legacy_project_dir_metadata(agent_root, old_workspace, new_workspace)
+            return
+
+        def _conflict_backup_dir() -> Path:
+            """同名冲突时备份旧侧文件的目录（按时间戳隔离多次迁移）。
+
+            放在 ``agent/`` 下的隐藏同级目录（与 ``.checkpoint``/``.logs``
+            布局一致），不污染新工作区文件树。
+            """
+            backup_dir = agent_root / f".migration-backup-{int(time.time())}"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            return backup_dir
+
+        try:
+            if new_workspace.exists():
+                # Both exist - merge carefully
+                # 优先级方向统一为：新侧（jiuwenclaw_workspace）为胜者，旧侧独有内容并入；
+                # 旧侧同名冲突文件一律备份到 agent/.migration-backup-{ts}/ 而非静默丢弃/覆盖。
+                print(f"[migration] Both workspace and jiuwenclaw_workspace exist, merging...")
+                backup_dir: Optional[Path] = None
+                for item in old_workspace.iterdir():
+                    dest = new_workspace / item.name
+                    if item.is_dir():
+                        if dest.exists():
+                            # Merge directories, keeping new-side files on conflict
+                            # (same priority direction as top-level files below).
+                            for sub in item.rglob("*"):
+                                dest_sub = dest / sub.relative_to(item)
+                                if sub.is_dir():
+                                    dest_sub.mkdir(parents=True, exist_ok=True)
+                                elif not dest_sub.exists():
+                                    shutil.copy2(sub, dest_sub)
+                                else:
+                                    # Conflict inside directory: back up old-side file
+                                    if backup_dir is None:
+                                        backup_dir = _conflict_backup_dir()
+                                    backup_sub = backup_dir / item.name / sub.relative_to(item)
+                                    backup_sub.parent.mkdir(parents=True, exist_ok=True)
+                                    shutil.copy2(sub, backup_sub)
+                                    logger.warning(
+                                        "Both workspace and jiuwenclaw_workspace have %s; "
+                                        "kept new version, old copy backed up to %s",
+                                        sub.relative_to(item), backup_sub,
+                                    )
+                        else:
+                            shutil.copytree(item, dest)
+                    else:
+                        if not dest.exists():
+                            shutil.copy2(item, dest)
+                        else:
+                            # Conflict: back up old-side file instead of dropping it
+                            if backup_dir is None:
+                                backup_dir = _conflict_backup_dir()
+                            backup_path = backup_dir / item.name
+                            shutil.copy2(item, backup_path)
+                            logger.warning(
+                                "Both workspace and jiuwenclaw_workspace have %s; "
+                                "kept new version, old copy backed up to %s",
+                                item.name, backup_path,
+                            )
+                # Remove old after successful merge
+                shutil.rmtree(old_workspace)
+                print(f"[migration] Merged and removed: {old_workspace}")
             else:
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-        # Remove old after successful merge
-        shutil.rmtree(old_workspace)
-        print(f"[migration] Merged and removed: {old_workspace}")
-    else:
-        # Simple rename
-        shutil.move(str(old_workspace), str(new_workspace))
-        print(f"[migration] Renamed: {old_workspace} -> {new_workspace}")
+                # Simple rename
+                shutil.move(str(old_workspace), str(new_workspace))
+                print(f"[migration] Renamed: {old_workspace} -> {new_workspace}")
+        except FileNotFoundError:
+            # 多进程/多 Pod 并发启动时，旧目录可能已被其他进程迁移/清理。
+            # 此时迁移目标已达成，跳过而非崩溃。
+            print(
+                f"[migration] {old_workspace} already handled by another process, skipping"
+            )
+        # 无论迁移由本进程还是并发进程完成，都重写元数据中的旧路径前缀
+        # （幂等，无命中不写盘）。
+        _rewrite_legacy_project_dir_metadata(agent_root, old_workspace, new_workspace)
+
+    tenant_roots = [workspace_dir / "service_default" / "agent_default"]
+    if workspace_dir.is_dir():
+        tenant_roots.extend(
+            entry for entry in workspace_dir.iterdir()
+            if entry.is_dir() and entry.name.startswith("workspace_")
+        )
+    for tenant_root in tenant_roots:
+        if (tenant_root / "agent").is_dir():
+            _merge_one(tenant_root)
+    # Legacy pre-tenant layout: <root>/agent/workspace
+    if (workspace_dir / "agent").is_dir():
+        _merge_one(workspace_dir)
 
 
 def _migrate_legacy_workspace(
@@ -956,15 +1125,15 @@ def _migrate_legacy_workspace(
     - Old: ~/.jiuwenswarm/agent/skills/
     - Old: ~/.jiuwenswarm/agent/memory/
 
-    - New: ~/.jiuwenswarm/agent/workspace/ (DeepAgent standard)
+    - New: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/ (DeepAgent standard)
 
     Mapping:
-    - agent/home/HEARTBEAT.md -> agent/workspace/HEARTBEAT.md
-    - agent/skills/ -> agent/workspace/skills/
-    - agent/memory/ -> agent/workspace/memory/
+    - agent/home/HEARTBEAT.md -> agent/jiuwenclaw_workspace/HEARTBEAT.md
+    - agent/skills/ -> agent/jiuwenclaw_workspace/skills/
+    - agent/memory/ -> agent/jiuwenclaw_workspace/memory/
 
-    Note: jiuwenclaw_workspace -> workspace renaming is handled separately by
-    _migrate_jiuwenclaw_workspace_to_workspace.
+    Note: workspace -> jiuwenclaw_workspace renaming is handled separately by
+    _migrate_workspace_to_jiuwenclaw_workspace.
 
     Args:
         workspace_dir: Path to workspace root (~/.jiuwenswarm).
@@ -976,7 +1145,7 @@ def _migrate_legacy_workspace(
     old_skills = workspace_dir / "agent" / "skills"
     old_memory = workspace_dir / "agent" / "memory"
 
-    new_workspace = workspace_dir / "agent" / "workspace"
+    new_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
     new_workspace.mkdir(parents=True, exist_ok=True)
 
     # 1. Migrate old home files
@@ -1226,8 +1395,8 @@ def prepare_workspace(
     workspace_dir.mkdir(parents=True, exist_ok=True)
     migrate_legacy_user_config_if_needed()
 
-    # Migrate from legacy jiuwenclaw_workspace directory name to workspace
-    _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir)
+    # Migrate from legacy workspace directory name to jiuwenclaw_workspace
+    _migrate_workspace_to_jiuwenclaw_workspace(workspace_dir)
 
     # Check for legacy workspace migration or cleanup (pre-DeepAgent layout)
     # These are even older layouts: agent/workspace, agent/home, agent/skills, agent/memory
@@ -1300,35 +1469,36 @@ def prepare_workspace(
     if not template_agent_dir.is_dir():
         raise RuntimeError(f"resources template missing agent dir: {template_agent_dir}")
 
-    # ----- .env: copy from template to config/.env -----
-    env_template_src_candidates = [
-        resources_dir / ".env.template",
-        package_root / ".env.template",
-    ]
-    env_template_src = next((p for p in env_template_src_candidates if p.exists()), None)
-    if not env_template_src:
-        raise RuntimeError(
-            "env template source not found; tried: "
-            + ", ".join(str(p) for p in env_template_src_candidates)
-        )
-    env_dest = workspace_dir / "config" / ".env"
-    if overwrite or not env_dest.exists():
-        with TrackCopyDiff(
-            dest=env_dest,
-            is_file=True,
-            cumulative=cumulative_diff,
-            overwrite=overwrite,
-        ):
-            shutil.copy2(env_template_src, env_dest)
+    # ----- .env: copy from template to config/.env（仅个人版） -----
+    # 企业版环境变量由部署侧注入（K8s envFrom），不产生也不读取 config/.env
+    # （运行时守卫见 dotenv_early.load_dotenv_runtime）。
+    if not is_enterprise():
+        env_template_src_candidates = [
+            resources_dir / ".env.template",
+            package_root / ".env.template",
+        ]
+        env_template_src = next((p for p in env_template_src_candidates if p.exists()), None)
+        if not env_template_src:
+            raise RuntimeError(
+                "env template source not found; tried: "
+                + ", ".join(str(p) for p in env_template_src_candidates)
+            )
+        env_dest = workspace_dir / "config" / ".env"
+        if overwrite or not env_dest.exists():
+            with TrackCopyDiff(
+                dest=env_dest,
+                is_file=True,
+                cumulative=cumulative_diff,
+                overwrite=overwrite,
+            ):
+                shutil.copy2(env_template_src, env_dest)
 
     # ----- copy runtime dirs (multi-tenant layout) -----
     service_root = get_service_root_dir()
     service_root.mkdir(parents=True, exist_ok=True)
     (service_root / ".logs").mkdir(parents=True, exist_ok=True)
 
-    agent_workspace = get_multi_tenant_user_workspace_dir("default", "default")
-    if agent_workspace is None:
-        raise RuntimeError("failed to resolve default multi-tenant workspace")
+    agent_workspace = get_multi_tenant_user_workspace_dir("default")
     agent_workspace.mkdir(parents=True, exist_ok=True)
     (agent_workspace / ".checkpoint").mkdir(parents=True, exist_ok=True)
     agent_root = agent_workspace / "agent"
@@ -1336,7 +1506,7 @@ def prepare_workspace(
     agent_sessions = agent_root / "sessions"
 
     # ----- DeepAgent workspace (standard DeepAgents schema) -----
-    deepagent_workspace = agent_root / "workspace"
+    deepagent_workspace = agent_root / "jiuwenclaw_workspace"
     default_project_workspace = deepagent_workspace / "projects"
     agent_skills = deepagent_workspace / "skills"
     agent_memory = deepagent_workspace / "memory"
@@ -1446,7 +1616,9 @@ def prepare_workspace(
 
     from jiuwenswarm.common.config import set_preferred_language_in_config_file
 
-    set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
+    # 企业版 config.yaml 由部署侧挂载（只读），不回写语言偏好
+    if not is_enterprise():
+        set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(
@@ -1603,18 +1775,15 @@ def _resolve_paths(force=False) -> None:
 
     workspace_dir = get_user_workspace_dir()
 
-    # Migrate from legacy jiuwenclaw_workspace directory name to workspace
-    _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir)
+    # Migrate from legacy workspace directory name to jiuwenclaw_workspace
+    _migrate_workspace_to_jiuwenclaw_workspace(workspace_dir)
 
     # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
     # 保证源码运行与安装包运行后的读写路径完全一致。
     user_config_dir = workspace_dir / "config"
-    # 多租户路径：service_default/agent_default/agent/workspace
-    multi_tenant_workspace = get_multi_tenant_user_workspace_dir("default", "default")
-    if multi_tenant_workspace is not None:
-        user_workspace_dir = multi_tenant_workspace / "agent" / "workspace"
-    else:
-        user_workspace_dir = workspace_dir / "agent" / "workspace"
+    # 租户默认工作区：个人版 service_default/agent_default；企业版 workspace_default
+    multi_tenant_workspace = get_multi_tenant_user_workspace_dir("default")
+    user_workspace_dir = multi_tenant_workspace / "agent" / "jiuwenclaw_workspace"
     if user_config_dir.exists():
         _root_dir = workspace_dir
         _config_dir = user_config_dir
@@ -1676,7 +1845,7 @@ def get_agent_workspace_dir() -> Path:
 
     Returns:
         Path to agent workspace:
-        ``~/.jiuwenswarm/service_default/agent_default/agent/workspace``
+        ``~/.jiuwenswarm/workspace_default/agent/jiuwenclaw_workspace``
         (or the request-bound tenant workspace when ContextVar is set).
     """
     try:
@@ -1687,7 +1856,7 @@ def get_agent_workspace_dir() -> Path:
             return bound
     except ImportError:
         logger.debug("tenant_context unavailable for workspace bind", exc_info=True)
-    return get_agent_root_dir() / "workspace"
+    return get_agent_root_dir() / "jiuwenclaw_workspace"
 
 
 def get_default_project_workspace_dir() -> Path:
@@ -1743,8 +1912,10 @@ def get_service_root_dir(service_id: str = "default") -> Path:
 def get_agent_root_dir() -> Path:
     """Get the agent root directory path (multi-tenant default).
 
-    Path: ``~/.jiuwenswarm/service_default/agent_default/agent/``
-    (or the request-bound agent root when ContextVar is set).
+    Path:
+    - 个人版: ``~/.jiuwenswarm/service_default/agent_default/agent/``
+    - 企业版: ``~/.jiuwenswarm/workspace_default/agent/``
+    （或请求绑定的 agent root ContextVar）。
     """
     try:
         from jiuwenswarm.server.runtime.tenant_context import get_bound_agent_root
@@ -1754,7 +1925,7 @@ def get_agent_root_dir() -> Path:
             return bound
     except ImportError:
         logger.debug("tenant_context unavailable for agent root bind", exc_info=True)
-    return get_multi_tenant_user_workspace_dir("default", "default") / "agent"
+    return get_multi_tenant_user_workspace_dir("default") / "agent"
 
 
 def get_agent_root_relative_dir() -> Path:
@@ -1764,7 +1935,7 @@ def get_agent_root_relative_dir() -> Path:
 
 def get_agent_workspace_relative_dir() -> Path:
     """Get the agent workspace relative path under a tenant workspace root."""
-    return get_agent_root_relative_dir() / "workspace"
+    return get_agent_root_relative_dir() / "jiuwenclaw_workspace"
 
 
 _AGENT_WORKSPACE_DIR_NAMES = frozenset({"workspace", "jiuwenclaw_workspace"})
@@ -1773,8 +1944,8 @@ _AGENT_WORKSPACE_DIR_NAMES = frozenset({"workspace", "jiuwenclaw_workspace"})
 def collapse_nested_agent_workspace_dir(path: Path | str) -> Path:
     """Collapse ``.../workspace/workspace`` back to the agent workspace.
 
-    The agent workspace is ``.../agent/workspace`` (this project) or
-    ``.../agent/jiuwenclaw_workspace`` (upstream). PPT tooling historically
+    The agent workspace is ``.../agent/workspace`` (legacy name) or
+    ``.../agent/jiuwenclaw_workspace`` (current). PPT tooling historically
     used ``{cwd}/workspace`` as the session parent, which nests a second
     ``workspace`` directory when cwd is already the agent workspace.
     """
@@ -1798,8 +1969,18 @@ def _normalize_tenant_id(value: str | None) -> str:
     return str(value or "").strip()
 
 
+def _require_workspace_key(workspace_key: str | None) -> str:
+    """Normalize and require non-empty ``workspace_key`` for ``workspace_{key}/`` paths."""
+    from jiuwenswarm.common.local_env_config import normalize_env_ns_id
+
+    wk = _normalize_tenant_id(workspace_key)
+    if not wk:
+        raise ValueError(f"workspace_key required: workspace_key={workspace_key!r}")
+    return normalize_env_ns_id(wk, default=wk)
+
+
 def _require_tenant_ids(service_id: str | None, agent_id: str | None) -> tuple[str, str]:
-    """Require non-empty ``service_id`` and ``agent_id`` for path construction."""
+    """Require non-empty ``service_id`` and ``agent_id`` (env/routing，非磁盘根)."""
     sid = _normalize_tenant_id(service_id)
     aid = _normalize_tenant_id(agent_id)
     if not sid or not aid:
@@ -1809,97 +1990,68 @@ def _require_tenant_ids(service_id: str | None, agent_id: str | None) -> tuple[s
     return sid, aid
 
 
-def get_multi_tenant_user_workspace_dir(
-    service_id: str | None,
-    agent_id: str | None = None,
-) -> Path | None:
-    """Get multi-tenant user workspace directory path.
+def _effective_workspace_key(workspace_key: str | None = None) -> str:
+    """Explicit ``workspace_key`` > bound key > ``default``."""
+    if workspace_key is not None:
+        return _require_workspace_key(workspace_key)
+    try:
+        from jiuwenswarm.server.runtime.tenant_context import get_bound_workspace_key
+    except ImportError:
+        return "default"
 
-    Path format: ``~/.jiuwenswarm/service_{service_id}/agent_{agent_id}``
-
-    Aligns with test/jiuwenclaw and OfficeClaw on-disk layout
-    (e.g. ``service_default/agent_office``).
-    """
-    if not service_id and not agent_id:
-        return None
-    workspace_dir = get_user_workspace_dir()
-    workspace_dir = (
-        workspace_dir / f"service_{service_id}" if service_id else workspace_dir / "service"
-    )
-    workspace_dir = (
-        workspace_dir / f"agent_{agent_id}" if agent_id else workspace_dir / "agents"
-    )
-    return workspace_dir
-
-
-def resolve_tenant_env_ns(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> tuple[str, str]:
-    """Resolve ``(service_id, agent_id)``: explicit pair > bound env_ns > TypeError."""
-    from jiuwenswarm.common.local_env_config import (
-        get_bound_agent_env_ns,
-        normalize_env_ns_id,
-    )
-
-    if service_id is not None or agent_id is not None:
-        if service_id is None or agent_id is None:
-            raise TypeError(
-                "tenant scope requires both service_id and agent_id when either is passed"
-            )
-        sid = str(service_id).strip()
-        aid = str(agent_id).strip()
-        if not sid or not aid:
-            raise TypeError("tenant service_id/agent_id must be non-empty strings")
-        return normalize_env_ns_id(sid), normalize_env_ns_id(aid)
-    bound = get_bound_agent_env_ns()
+    bound = get_bound_workspace_key()
     if bound is not None:
-        return normalize_env_ns_id(bound[0]), normalize_env_ns_id(bound[1])
-    raise TypeError(
-        "tenant scope is required: pass service_id=... and agent_id=..., "
-        "or bind_agent_env_ns before resolving tenant paths"
-    )
+        return _require_workspace_key(bound)
+    return "default"
 
 
-def get_tenant_agent_workspace_dir(
+def get_multi_tenant_user_workspace_dir(
+    workspace_key: str | None = None,
+    *,
     service_id: str | None = None,
     agent_id: str | None = None,
 ) -> Path:
-    """多租户 DeepAgent 工作区：``service_{sid}/agent_{aid}/agent/workspace``."""
-    sid, aid = resolve_tenant_env_ns(service_id, agent_id)
-    workspace = get_multi_tenant_user_workspace_dir(sid, aid)
-    if workspace is None:
-        raise TypeError(
-            f"invalid tenant for workspace path: service_id={sid!r}, agent_id={aid!r}"
+    """租户工作区根目录（企业版 / 个人版隔离策略不同）。
+
+    - 企业版: ``~/.jiuwenswarm/workspace_{workspace_key}``
+    - 个人版: ``~/.jiuwenswarm/service_{service_id}/agent_{agent_id}``
+      （显式 sid/aid > bound env_ns > ``default``/``default``）
+    """
+    if is_enterprise():
+        wk = _require_workspace_key(
+            workspace_key if workspace_key is not None else "default"
         )
-    return workspace / get_agent_workspace_relative_dir()
+        return get_user_workspace_dir() / f"workspace_{wk}"
+
+    from jiuwenswarm.common.local_env_config import resolve_env_ns
+
+    sid, aid = resolve_env_ns(service_id, agent_id)
+    return get_user_workspace_dir() / f"service_{sid}" / f"agent_{aid}"
 
 
-# 兼容旧命名（上游 jiuwenclaw_workspace）
-get_tenant_agent_jiuwenclaw_workspace_dir = get_tenant_agent_workspace_dir
+def get_tenant_agent_workspace_dir(workspace_key: str | None = None) -> Path:
+    """DeepAgent 工作区：``<tenant_root>/agent/jiuwenclaw_workspace``.
+
+    企业版 tenant_root 为 ``workspace_{key}``；个人版为 ``service_default/agent_default``。
+    """
+    wk = _effective_workspace_key(workspace_key)
+    return get_multi_tenant_user_workspace_dir(wk) / get_agent_workspace_relative_dir()
 
 
-def get_tenant_agent_skills_dirs(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> list[Path]:
+def get_tenant_agent_skills_dirs(workspace_key: str | None = None) -> list[Path]:
     """多租户 skills 目录（与 ``JiuWenSwarm`` / ``SkillManager`` 落盘路径一致）."""
-    workspace = get_tenant_agent_workspace_dir(service_id, agent_id)
-    return [workspace / "skills"]
+    return [get_tenant_agent_workspace_dir(workspace_key) / "skills"]
 
 
-def get_multi_tenant_skill_dirs(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> list[Path]:
+def get_multi_tenant_skill_dirs(workspace_key: str | None = None) -> list[Path]:
     """Resolve the skills directory list for multi-tenant / single-tenant mode.
 
-    - Multi-tenant（提供 ``service_id`` / ``agent_id``）: returns
-      ``[service_{sid}/agent_{aid}/agent/workspace/skills]``.
-    - Single-tenant（均未提供）: returns ``[get_agent_skills_dir()]``.
+    - 显式提供 ``workspace_key``: ``[<tenant_root>/agent/jiuwenclaw_workspace/skills]``
+      （企业版 tenant_root=``workspace_{key}``，个人版固定 ``service_default/agent_default``）。
+    - 未提供: ``[get_agent_skills_dir()]``（不读 bound key，避免误进多租户树）.
     """
-    if service_id or agent_id:
-        return get_tenant_agent_skills_dirs(service_id, agent_id)
+    if workspace_key is not None:
+        return get_tenant_agent_skills_dirs(workspace_key)
     return [get_agent_skills_dir()]
 
 
@@ -1913,7 +2065,7 @@ def get_agent_memory_dir() -> Path:
     Uses DeepAgent standard workspace location for unified workspace.
 
     Returns:
-        Path to memory directory: ~/.jiuwenswarm/agent/workspace/memory
+        Path to memory directory: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/memory
     """
     return get_agent_workspace_dir() / "memory"
 
@@ -1924,7 +2076,7 @@ def get_agent_skills_dir() -> Path:
     Uses DeepAgent standard workspace location for unified workspace.
 
     Returns:
-        Path to skills directory: ~/.jiuwenswarm/agent/workspace/skills
+        Path to skills directory: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills
     """
     return get_agent_workspace_dir() / "skills"
 
@@ -2028,7 +2180,7 @@ def get_interactions_dir() -> Path:
     """Get the interactions directory for pending interaction contexts.
 
     Returns:
-        Path to interactions directory: {workspace}/agent/workspace/interactions
+        Path to interactions directory: {workspace}/agent/jiuwenclaw_workspace/interactions
     """
     return get_agent_workspace_dir() / "interactions"
 
@@ -2067,34 +2219,35 @@ def resolve_gateway_cron_jobs_path(
     )
 
 
-def resolve_tenant_agent_root_dir(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> Path:
-    """Resolve ``service_{sid}/agent_{aid}/agent``."""
-    sid, aid = resolve_tenant_env_ns(service_id, agent_id)
-    workspace = get_multi_tenant_user_workspace_dir(sid, aid)
-    if workspace is None:
-        raise TypeError(
-            f"invalid tenant for agent root: service_id={sid!r}, agent_id={aid!r}"
-        )
-    return workspace / "agent"
+def resolve_tenant_agent_root_dir(workspace_key: str | None = None) -> Path:
+    """Resolve ``<tenant_root>/agent``.
+
+    企业版 ``tenant_root`` 为 ``workspace_{key}``；个人版为固定
+    ``service_default/agent_default``。
+
+    When ``workspace_key`` is omitted: bound agent root (request context) >
+    bound ``workspace_key`` > ``default``.
+    """
+    try:
+        from jiuwenswarm.server.runtime.tenant_context import get_bound_agent_root
+
+        bound = get_bound_agent_root()
+        if bound is not None and workspace_key is None:
+            return bound
+    except ImportError:
+        pass
+    wk = _effective_workspace_key(workspace_key)
+    return get_multi_tenant_user_workspace_dir(wk) / "agent"
 
 
-def resolve_tenant_agent_workspace_dir(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> Path:
-    """Resolve ``service_{sid}/agent_{aid}/agent/workspace``."""
-    return resolve_tenant_agent_root_dir(service_id, agent_id) / "workspace"
+def resolve_tenant_agent_workspace_dir(workspace_key: str | None = None) -> Path:
+    """Resolve ``<tenant_root>/agent/jiuwenclaw_workspace``."""
+    return resolve_tenant_agent_root_dir(workspace_key) / "jiuwenclaw_workspace"
 
 
-def resolve_tenant_sessions_dir(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> Path:
-    """Resolve ``service_{sid}/agent_{aid}/agent/sessions`` for a tenant pair."""
-    return resolve_tenant_agent_root_dir(service_id, agent_id) / "sessions"
+def resolve_tenant_sessions_dir(workspace_key: str | None = None) -> Path:
+    """Resolve ``<tenant_root>/agent/sessions``."""
+    return resolve_tenant_agent_root_dir(workspace_key) / "sessions"
 
 
 def resolve_cron_tenant_scope(
@@ -2132,7 +2285,7 @@ def get_deepagent_todo_dir() -> Path:
     """Get the DeepAgent todo directory path.
 
     Returns:
-        Path to todo directory: ~/.jiuwenswarm/agent/workspace/todo
+        Path to todo directory: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/todo
     """
     return get_agent_workspace_dir() / "todo"
 
@@ -2141,7 +2294,7 @@ def get_deepagent_messages_dir() -> Path:
     """Get the DeepAgent messages directory path.
 
     Returns:
-        Path to messages directory: ~/.jiuwenswarm/agent/workspace/messages
+        Path to messages directory: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/messages
     """
     return get_agent_workspace_dir() / "messages"
 
@@ -2150,7 +2303,7 @@ def get_deepagent_agents_dir() -> Path:
     """Get the DeepAgent agents (sub-agent) directory path.
 
     Returns:
-        Path to agents directory: ~/.jiuwenswarm/agent/workspace/agents
+        Path to agents directory: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/agents
     """
     return get_agent_workspace_dir() / "agents"
 
@@ -2159,7 +2312,7 @@ def get_deepagent_heartbeat_path() -> Path:
     """Get the DeepAgent HEARTBEAT.md file path.
 
     Returns:
-        Path to HEARTBEAT.md: ~/.jiuwenswarm/agent/workspace/HEARTBEAT.md
+        Path to HEARTBEAT.md: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/HEARTBEAT.md
     """
     return get_agent_workspace_dir() / "HEARTBEAT.md"
 
@@ -2168,7 +2321,7 @@ def get_deepagent_agent_md_path() -> Path:
     """Get the DeepAgent AGENT.md file path.
 
     Returns:
-        Path to AGENT.md: ~/.jiuwenswarm/agent/workspace/AGENT.md
+        Path to AGENT.md: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/AGENT.md
     """
     return get_agent_workspace_dir() / "AGENT.md"
 
@@ -2177,7 +2330,7 @@ def get_deepagent_soul_md_path() -> Path:
     """Get the DeepAgent SOUL.md file path.
 
     Returns:
-        Path to SOUL.md: ~/.jiuwenswarm/agent/workspace/SOUL.md
+        Path to SOUL.md: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/SOUL.md
     """
     return get_agent_workspace_dir() / "SOUL.md"
 
@@ -2186,7 +2339,7 @@ def get_deepagent_identity_md_path() -> Path:
     """Get the DeepAgent IDENTITY.md file path.
 
     Returns:
-        Path to IDENTITY.md: ~/.jiuwenswarm/agent/workspace/IDENTITY.md
+        Path to IDENTITY.md: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/IDENTITY.md
     """
     return get_agent_workspace_dir() / "IDENTITY.md"
 
@@ -2195,7 +2348,7 @@ def get_deepagent_user_md_path() -> Path:
     """Get the DeepAgent USER.md file path.
 
     Returns:
-        Path to USER.md: ~/.jiuwenswarm/agent/workspace/USER.md
+        Path to USER.md: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/USER.md
     """
     return get_agent_workspace_dir() / "USER.md"
 
@@ -2213,23 +2366,21 @@ def get_builtin_skills_dir() -> Path:
 
 
 def get_agent_sessions_dir() -> Path:
-    """Get sessions directory (bound tenant or ``service_default/agent_default``).
+    """Get sessions directory (bound tenant or ``workspace_default``).
 
-    Path: ``~/.jiuwenswarm/service_default/agent_default/agent/sessions``
+    Path: ``~/.jiuwenswarm/workspace_default/agent/sessions``
+    (or the request-bound tenant sessions dir when ContextVar is set).
     """
     return get_agent_root_dir() / "sessions"
 
 
-def get_agent_evolution_trajectories_dir(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> Path:
+def get_agent_evolution_trajectories_dir(workspace_key: str | None = None) -> Path:
     """Get the evolution execution trajectories directory.
 
-    Path: ``service_{sid}/agent_{aid}/agent/evolution_trajectories``
+    Path: ``workspace_{key}/agent/evolution_trajectories``
     """
-    if service_id is not None or agent_id is not None:
-        return resolve_tenant_agent_root_dir(service_id, agent_id) / "evolution_trajectories"
+    if workspace_key is not None:
+        return resolve_tenant_agent_root_dir(workspace_key) / "evolution_trajectories"
     return get_agent_root_dir() / "evolution_trajectories"
 
 
@@ -2273,16 +2424,15 @@ def resolve_git_branch(project_dir: str | None) -> str:
 
 
 def get_checkpoint_dir() -> Path:
-    """Get the default checkpoint directory (agent_default).
+    """Get the default checkpoint directory.
 
-    Path: ``~/.jiuwenswarm/service_default/agent_default/.checkpoint``
+    Path:
+    - 个人版: ``~/.jiuwenswarm/service_default/agent_default/.checkpoint``
+    - 企业版: ``~/.jiuwenswarm/workspace_default/.checkpoint``
 
     Per-agent isolation uses ``set_checkpoint`` / ``get_multi_tenant_user_workspace_dir``.
     """
-    workspace = get_multi_tenant_user_workspace_dir("default", "default")
-    if workspace:
-        return workspace / ".checkpoint"
-    return get_agent_root_dir().parent / ".checkpoint"
+    return get_multi_tenant_user_workspace_dir("default") / ".checkpoint"
 
 
 def _resolve_logs_service_id(service_id: str | None = None) -> str:
@@ -2342,156 +2492,32 @@ def is_package_installation() -> bool:
     return _detect_installation_mode()
 
 
-# 统一敏感信息掩码值。
-_SENSITIVE_MASK = "******"
-_DATA_IMAGE_PATTERN = re.compile(
-    r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+"
-)
-# 匹配常见敏感字段键值对（不要求值必须带引号），用于覆盖:
-# - token=abc
-# - api_key: sk-xxx
-# - authorization = Bearer ...
-# 分组说明：
-# 1) 敏感键名；2) 分隔符及两侧空白（: 或 =）；3) 可选起始引号；
-# 4) 值本体（用于脱敏后附指纹）；5) 可选结束引号。
-_KV_SENSITIVE_PATTERN = re.compile(
-    r"(?i)(?<![A-Za-z0-9])"
-    r"(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|authorization|user[_-]?id|userid)"
-    r"(?![A-Za-z0-9])(\s*[:=]\s*)([\"']?)([^,\s\"'\]\}]+)([\"']?)"
-)
-# 匹配“键名包含敏感关键词”且“值被引号包裹”的场景，覆盖:
-# - 'CAT_CAFE_CALLBACK_TOKEN': 'xxxx'
-# - 'CAT_CAFE_USER_ID': 'CSDN-weixin'
-# - "my_private_key"="xxxx"
-# 分组说明：
-# 1) 完整的 key + 分隔符（含可选引号）
-# 2) 值的起始引号（' 或 "）
-# 3) 值内容（非贪婪）
-# 4) 结束引号（通过 (\2) 强制与起始引号一致）
-_NAMED_SENSITIVE_KV_PATTERN = re.compile(
-    r"(?i)([\"']?[A-Za-z0-9_.-]*"
-    r"(?:token|secret|password|passwd|pwd|api[_-]?key|authorization|"
-    r"credential|private[_-]?key|user[_-]?id|userid)"
-    r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
-)
-# 匹配 Authorization Bearer 令牌，保留 "Bearer " 前缀，仅掩码后面的令牌值。
-# 分组：1) "Bearer " 前缀；2) 令牌值本体（用于算指纹）。
-_BEARER_SENSITIVE_PATTERN = re.compile(r"(?i)\b(Bearer\s+)([A-Za-z0-9\-._~+/]+=*)")
-_SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
-    # 匹配 JWT（header.payload.signature 三段式，常见以 eyJ 开头）。
-    re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"),
-    # 匹配 OpenAI 风格 key（sk- 前缀）。
-    re.compile(r"\bsk-[A-Za-z0-9]{8,}\b"),
-    # 匹配 GitHub Personal Access Token（ghp_ 前缀）。
-    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
-    # 匹配 GitLab Personal Access Token（glpat- 前缀）。
-    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
-    # 匹配邮箱地址（避免日志中泄露个人身份信息）。
-    re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b"),
-    # 匹配中国大陆手机号（可带 +86 或 86 前缀，支持空格/短横线分隔）。
-    re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)"),
-    # 匹配中国身份证号（18 位，最后一位可为 X/x）。
-    re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)"),
-]
-# PII / 非凭证类 pattern：掩码但不附指纹（关联意义不大，且避免引入额外可逆性顾虑）。
-_SENSITIVE_PII_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[-3:])
-# 凭证类 prefix pattern：掩码并附指纹（同 key 指纹一致可关联、不可逆）。
-_SENSITIVE_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[:4])
+# 日志文本脱敏统一走 infrastructure.log_masking（Filter + 引擎内置/库规则）。
+from jiuwenswarm.infrastructure.log_masking import SensitiveDataFilter  # noqa: E402
 
-
-def _fingerprint(value: str) -> str:
-    """返回 value 的 SHA256 前 4 字节（8 位 hex）指纹，用于脱敏后的关联。
-
-    不可逆：拿到 ``fp:7f3a2c19`` 无法还原原值。同一 key 每次指纹一致，
-    可在日志中把同一账号/会话的多次请求串起来排查；key 轮换后指纹自然变化。
-    """
-    if not value:
-        return ""
-    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:8]
-
-
-# 已脱敏产物形态：纯 ****** 或 ******(fp:xxxxxxxx)。
-# 用于在二次脱敏时识别"已是脱敏值"，跳过重算指纹，避免产生"指纹的指纹"
-# 导致跨日志关联失效（如 stream_logger._mask_secrets 先脱敏，_write_raw 再脱敏）。
-_ALREADY_MASKED_PATTERN = re.compile(rf"^{re.escape(_SENSITIVE_MASK)}(\(fp:[0-9a-f]{{8}}\))?$")
-
-# LogMaskingEngine 回退失败计数（避免在日志 Filter 热路径上静默吞异常）。
+# LogMaskingEngine 调用失败计数（避免在日志热路径上静默吞异常）。
 _sanitize_engine_fallback_failures = 0
 
 
-def _is_already_masked(value: Any) -> bool:
-    """判断 value 是否已是脱敏产物（纯掩码或带指纹），避免重复脱敏。"""
-    try:
-        v = str(value) if value is not None else ""
-    except Exception:
-        return False
-    return bool(v) and bool(_ALREADY_MASKED_PATTERN.match(v))
-
-
-def _masked_with_fp(value: Any) -> str:
-    """脱敏并附指纹：``******(fp:xxxxxxxx)``。value 为空或失败时退化为纯掩码。
-
-    若 value 本身已是脱敏产物（``******`` 或 ``******(fp:..)``），原样返回，
-    不重算指纹——避免对"指纹值"再算指纹导致跨日志关联失效。
-    """
-    try:
-        v = str(value) if value is not None else ""
-    except Exception:
-        return _SENSITIVE_MASK
-    if _is_already_masked(v):
-        return v
-    fp = _fingerprint(v)
-    if not fp:
-        return _SENSITIVE_MASK
-    return f"{_SENSITIVE_MASK}(fp:{fp})"
-
-
 def _sanitize_log_text(text: str) -> str:
+    """对自由文本做敏感信息脱敏，统一委托 ``LogMaskingEngine``。"""
     if not text:
         return text
+    try:
+        from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
 
-    # 企业版：若已从 Gateway DB 下发脱敏规则，优先走 LogMaskingEngine。
-    if is_enterprise():
-        try:
-            from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
-
-            engine = LogMaskingEngine.get_instance()
-            if engine.uses_external_rules:
-                return engine.sanitize(text)
-        except Exception as exc:
-            # 回退到本地正则脱敏。不能走 logging：本函数会被 SensitiveDataFilter 调用，
-            # 写日志会递归进脱敏路径。仅首次 stderr 提示，避免静默吞掉异常。
-            global _sanitize_engine_fallback_failures
-            _sanitize_engine_fallback_failures += 1
-            if _sanitize_engine_fallback_failures == 1:
-                print(
-                    "[jiuwenswarm] LogMaskingEngine sanitize failed, "
-                    f"falling back to local masking: {exc!r}",
-                    file=sys.stderr,
-                )
-
-    masked = text
-    masked = _DATA_IMAGE_PATTERN.sub("data:image/*;base64,******", masked)
-    # _KV_SENSITIVE_PATTERN: 组1=键名, 组2=分隔符, 组4=值（组3/5 为可选引号）。
-    masked = _KV_SENSITIVE_PATTERN.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{_masked_with_fp(m.group(4))}", masked
-    )
-    # _NAMED_SENSITIVE_KV_PATTERN: 组1=键+分隔符, 组2=起始引号, 组3=值, 组4=结束引号。
-    masked = _NAMED_SENSITIVE_KV_PATTERN.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{_masked_with_fp(m.group(3))}{m.group(4)}", masked
-    )
-    # _BEARER_SENSITIVE_PATTERN: 组1=Bearer 前缀, 组2=令牌值。
-    masked = _BEARER_SENSITIVE_PATTERN.sub(
-        lambda m: f"{m.group(1)}{_masked_with_fp(m.group(2))}", masked
-    )
-    # 凭证类 prefix key（JWT/sk-/ghp_/glpat-）：掩码并附指纹。
-    for pattern in _SENSITIVE_CREDENTIAL_PATTERNS:
-        masked = pattern.sub(lambda m, _p=pattern: _masked_with_fp(m.group(0)), masked)
-    # PII（邮箱/手机/身份证）：纯掩码，不附指纹。
-    for pattern in _SENSITIVE_PII_PATTERNS:
-        masked = pattern.sub(_SENSITIVE_MASK, masked)
-    return masked
+        return LogMaskingEngine.get_instance().sanitize(text)
+    except Exception as exc:
+        # 不能走 logging：可能被 Filter / source masking 调用，写日志会递归。
+        global _sanitize_engine_fallback_failures
+        _sanitize_engine_fallback_failures += 1
+        if _sanitize_engine_fallback_failures == 1:
+            print(
+                "[jiuwenswarm] LogMaskingEngine sanitize failed, "
+                f"returning unsanitized text: {exc!r}",
+                file=sys.stderr,
+            )
+        return text
 
 
 def mask_sensitive(text: Any) -> str:
@@ -2506,42 +2532,13 @@ def mask_sensitive(text: Any) -> str:
     return _sanitize_log_text(str(text))
 
 
-class SensitiveDataFilter(logging.Filter):
-    """Mask sensitive data in all log messages and tracebacks."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            message = record.getMessage()
-            record.msg = _sanitize_log_text(message)
-            record.args = ()
-        except Exception:
-            # Never block logging because of desensitization failure.
-            pass
-
-        # Traceback 由 Formatter.formatException() 在 record.exc_text 中单独渲染，
-        # 不经过 record.getMessage()，因此 message 脱敏覆盖不到。这里提前把
-        # traceback 文本脱敏写入 record.exc_text 并清空 record.exc_info，
-        # 使 logger.exception()/exc_info=True 的异常栈也不会泄露 api_key 等。
-        try:
-            exc_info = record.exc_info
-            if exc_info and not record.exc_text:
-                import traceback as _traceback
-
-                # exc_info 是 (type, value, tb) 三元组。Python 3.10+ 的
-                # traceback.format_exception 新签名只接受单个异常实例：
-                # format_exception(exc, /, limit=None, chain=True)。
-                # 旧的 format_exception(*exc_info)（拆包成 3 个位置参数）依赖
-                # 兼容层，未来版本可能移除；改用 exc_info[1]（异常实例）是
-                # 官方推荐写法，面向未来且行为等价（None 时输出 "NoneType: None"）。
-                formatted = "".join(_traceback.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_log_text(formatted)
-                record.exc_info = None
-            elif record.exc_text:
-                record.exc_text = _sanitize_log_text(record.exc_text)
-        except Exception:
-            # 同样不因脱敏失败而阻断日志输出。
-            pass
-        return True
+def build_log_identity(record: logging.LogRecord) -> str:
+    """从 record.user_id/domain_id/app_id 拼文本 identity 片段（null 输出 ``null``）。"""
+    parts = []
+    for field in ("user_id", "domain_id", "app_id"):
+        v = getattr(record, field, None)
+        parts.append(f"{field}={v if v is not None else 'null'}")
+    return " " + " ".join(parts) + " "
 
 
 class JsonOnlyFormatter(logging.Formatter):
@@ -2572,9 +2569,8 @@ def install_source_record_masking() -> None:
     - clawee（yuanrong faas）拉起的 AgentServer 内 openjiuwen SDK 自有 logger；
     - httpx/openai SDK 在 DEBUG 级别打印请求头（含 Authorization）。
 
-    复用带指纹的 ``_sanitize_log_text``，与 handler 层 ``SensitiveDataFilter``
-    共存为双保险：若 record 已在源头脱敏，handler 层的 ``_is_already_masked``
-    会跳过重算，不破坏指纹。幂等，重复调用安全。
+    复用 ``_sanitize_log_text``（委托 LogMaskingEngine），与 handler 层
+    ``SensitiveDataFilter`` 共存为双保险。幂等，重复调用安全。
     """
     global _source_record_masking_installed
     if _source_record_masking_installed:
@@ -2879,10 +2875,11 @@ class UserVisibleTagFilter(logging.Filter):
 
 
 class IdentityFieldFilter(logging.Filter):
-    """从 IdentityStore（contextvar）读身份，塞 record.user_id/domain_id/app_id。始终放行。
+    """从 IdentityStore 读身份，写入字段并预先拼好 ``record.identity``。始终放行。
 
-    import 链失败时身份降级为 null——日志 filter 绝不因自身 import 失败而中断日志
-    （Python logging 不兜 filter 异常，filter 抛会透传到 logger.* 调用方）。
+    须挂在 ``SensitiveDataFilter`` **之前**，且必须在 **emit 调用线程**执行
+    （例如 ``QueueHandler``）：``IdentityStore`` 基于 contextvars，挂到
+    ``QueueListener`` 目标 handler 会在独立线程读到空身份。
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -2899,18 +2896,20 @@ class IdentityFieldFilter(logging.Filter):
             record.user_id = None
             record.domain_id = None
             record.app_id = None
+        record.identity = build_log_identity(record)
         return True
 
 
 class IdentityTextFormatter(logging.Formatter):
-    """文本 Formatter：构建 record.identity = " user_id=.. domain_id=.. app_id=.. "（null 输出 "null"）。"""
+    """文本 Formatter：使用 Filter 阶段已写好的 ``record.identity`` 排版。
+
+    若上游未挂 IdentityFieldFilter（单测直调 Formatter），则按字段现场拼一份
+    兜底 identity，不再在此处做脱敏。
+    """
 
     def format(self, record: logging.LogRecord) -> str:
-        parts = []
-        for field in ("user_id", "domain_id", "app_id"):
-            v = getattr(record, field, None)
-            parts.append(f"{field}={v if v is not None else 'null'}")
-        record.identity = " " + " ".join(parts) + " "
+        if not isinstance(getattr(record, "identity", None), str):
+            record.identity = build_log_identity(record)
         return super().format(record)
 
 
@@ -2918,6 +2917,29 @@ _log_queue: _queue.SimpleQueue | None = None
 _log_listener: QueueListener | None = None
 # respect_handler_level is Python 3.12+; cache once for setup_logger.
 _SUPPORTS_RESPECT_HANDLER_LEVEL: bool = sys.version_info >= (3, 12)
+
+
+def _stop_log_listener() -> None:
+    """Stop the QueueListener daemon thread at interpreter shutdown.
+
+    setup_logger() starts a QueueListener daemon thread that blocks on queue.get().
+    Without explicit stop, the thread survives to interpreter finalizing, where it
+    races for the stderr BufferedWriter lock and triggers
+    ``Fatal Python error: _enter_buffered_busy`` (exit code 134 / SIGABRT).
+    """
+    global _log_listener
+    if _log_listener is None:
+        return
+    targets = list(_log_listener.handlers)
+    _log_listener.stop()
+    for handler in targets:
+        try:
+            handler.close()
+        except Exception as exc:
+            # listener 已停止，日志经 QueueHandler 会滞留队列无法输出；
+            # 但 close 极少失败，此处使用 logging 模块以满足 G.LOG.02。
+            logger.warning("[jiuwenswarm] log handler close failed during shutdown: %s", exc)
+    _log_listener = None
 
 
 def _iter_log_output_handlers() -> list[logging.Handler]:
@@ -2965,9 +2987,12 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     - format（text/json/dual）：env JIUWENSWARM_LOG_FORMAT 或 config.yaml logging.format
     - console_enabled/file_enabled：输出开关
     - JSON：JsonUserVisibleFormatter（.json 文件）
-    - 身份字段：IdentityFieldFilter（每 handler）
+    - 身份字段：IdentityFieldFilter（挂在 QueueHandler 上，emit 线程读取 contextvars）
     - user_visible Tag：UserVisibleTagFilter（text/dual）
     保留 dev-stable 既有的 SensitiveDataFilter + install_source_record_masking 双层脱敏。
+    Filter 顺序（QueueHandler / 调用线程）：IdentityFieldFilter → SensitiveDataFilter。
+    不可挂在 QueueListener 目标 handler 上：listener 在独立线程，读不到请求 contextvars，
+    identity 会恒为 null。
 
     File/console handlers are served by a ``QueueListener`` thread so emit/flush
     I/O does not block the asyncio event loop. Source-record masking still runs
@@ -3046,8 +3071,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
             h.setFormatter(json_formatter)
         else:
             h.setFormatter(text_formatter)
-        h.addFilter(privacy_filter)
-        h.addFilter(identity_filter)
+        # identity / 脱敏挂在 QueueHandler（调用线程），此处只挂与输出相关的 filter。
         if tag_config:
             h.addFilter(UserVisibleTagFilter(tag_config))
         if name_filter is not None:
@@ -3084,14 +3108,15 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
             stream_handler.setFormatter(text_formatter)
         if tag_config:
             stream_handler.addFilter(UserVisibleTagFilter(tag_config))
-        stream_handler.addFilter(identity_filter)
-        stream_handler.addFilter(privacy_filter)
         listener_targets.append(stream_handler)
 
     # QueueHandler keeps file I/O / flush off the asyncio event-loop thread.
     if listener_targets:
         queue_handler = QueueHandler(_log_queue)
         queue_handler.setLevel(logging.NOTSET)
+        # 必须在 emit 线程执行：IdentityStore 基于 contextvars，listener 线程读不到。
+        queue_handler.addFilter(identity_filter)
+        queue_handler.addFilter(privacy_filter)
         root.addHandler(queue_handler)
         if _SUPPORTS_RESPECT_HANDLER_LEVEL:
             _log_listener = QueueListener(
@@ -3104,6 +3129,9 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
                 target.addFilter(lambda record, handler=target: record.levelno >= handler.level)
             _log_listener = QueueListener(_log_queue, *listener_targets)
         _log_listener.start()
+        # setup_logger 支持重复调用，先撤销旧注册避免 atexit 条目累积。
+        atexit.unregister(_stop_log_listener)
+        atexit.register(_stop_log_listener)
 
     # 保留 dev-stable 既有的源头脱敏（与 handler 层 SensitiveDataFilter 双保险）
     install_source_record_masking()

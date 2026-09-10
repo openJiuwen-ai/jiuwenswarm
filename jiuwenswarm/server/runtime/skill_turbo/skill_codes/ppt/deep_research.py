@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -34,7 +35,13 @@ from jiuwenswarm.server.runtime.skill_turbo.plan_node import (
     DisableThinkingMixin,
     PlanNode,
 )
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
+from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import (
+    CONTENT_BRANCH_MATERIAL,
+    CONTENT_BRANCH_RESEARCH,
+    PptCommon,
+    pipeline_role_boundary,
+    research_evidence_limited_mentioned,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +54,66 @@ _MIN_DATA_TYPES = 2
 _MIN_TIMEPOINTS = 3
 _MIN_COMPARE_OBJECTS = 2
 _MIN_COMPARE_DIMS = 2
-_MIN_NAMED_CITATIONS = 3
 
-_WORD_COUNT_MAP = {"L1": 1200, "L2": 2000, "L3": 3500}
-_WORD_COUNT_NO_SEARCH_MAP = {"L1": 800, "L2": 1200, "L3": 2000}
+# 与 pptx-craft validate-research / research-output-template 对齐的单页落盘骨架
+_RESEARCH_PAGE_SKELETON = """### P{N}: {页面标题}
+> 页面类型：{type} | 研究级别：{L1|L2|L3}
+**核心论点**：{≤60字一句结论，含1个关键数字} [{来源名称}]
+
+#### PPT 内容建议
+- **推荐主标题**：{headline}
+- **主轴**（必填 | ≥4行×≥3列；证据受限时 ≥3×2 | 单元格≤12字）：
+  | {轴名} | {对象1} | {对象2} | {对象3} | 来源 |
+  | --- | --- | --- | --- | --- |
+  （trend→时间轴；comparison/technology→对象轴；data→指标轴；case→实体轴。
+  时序/对比数据必须写入本主轴表，禁止再用「时序数据」「对比数据」作顶层槽位名。）
+- **关键数据**（5-8条，no_search/证据受限≥3条，≥2种数据类型）：
+  | 数据项 | 数值 | 单位/口径 | 归属对象 | 来源 | 时间 | 数据类型 |
+  | --- | --- | --- | --- | --- | --- | --- |
+- **上屏要点**（4-6条 | 每条≤40字 | 必须自带数字或实体名 | 不写展开说明）：
+  1. {短句} [{来源名称}]
+- **案例**（2-3条 | 每条≤50字）：
+  - {实体} — {含数字的结果} [{来源名称}]
+
+#### 来源留痕
+| 名称 | URL | 类别 | 评分 |
+| --- | --- | --- | --- |
+| {与内联[名称]完全同名} | {完整URL或用户文件名} | {权威机构/标准|企业官方一手|学术论文|行业研报|权威媒体|行业媒体} | {A+~B} |
+"""
+
+_RESEARCH_WRITE_HARD_RULES = (
+    "### 写作硬规则\n"
+    "1. 顶部一句**核心论点**即可；可上屏短句写入**上屏要点**（每条≤40字），禁止把「核心论点」写成 5-10 条长展开列表\n"
+    "2. 必须包含槽位：**主轴** / **关键数据** / **上屏要点** / **案例**，以及 `#### 来源留痕`\n"
+    "3. 禁止输出顶层槽位名「关键数据清单」「时序数据」「对比数据」「案例素材」——时序/对比信息并入**主轴**表\n"
+    "4. 精准引用：事实陈述同句附来源名（如 [Gartner]），且名称须在来源留痕表可解析；禁止伪引用\n"
+    "5. 反空泛：用精确数字替代模糊修饰；禁止 TODO/xxx 等占位文本\n"
+    "6. 数据完整保留：所有数据点必须出现在**关键数据**表中\n"
+    "7. 来源可识别：使用来源名称标注，禁止纯数字编号\n"
+)
+
+_RESEARCH_PREWRITE_CHECKLIST = (
+    "### 落笔前自检（写入主轴表前必做，与 validate-research 一致）\n"
+    "1. 数主轴表行列：标准 ≥4 行 × ≥3 列；页内标注数据有限/证据受限时 ≥3×2\n"
+    "2. 禁止提交「行够列不够」（如 5×2）；不足则补对比对象/时间点列，或合并行\n"
+    "3. 时序/对比数据必须写入主轴表，禁止 resurrect 旧顶层槽位名\n"
+    "4. 单元格 ≤12 字；能量化用数字，不用「较强/支持」等空泛词\n"
+)
+
+_FORBIDDEN_RESEARCH_TOP_SLOTS = ("关键数据清单", "时序数据", "对比数据", "案例素材")
+_AXIS_TABLE_QUOTA = (4, 3)
+_AXIS_TABLE_QUOTA_LIMITED = (3, 2)
+_AXIS_SECTION_RE = re.compile(
+    r"[-*]\s*\*\*主轴\*\*[^\n]*\n(.*?)(?=\n[-*]\s*\*\*|\n####|\Z)",
+    re.DOTALL,
+)
+_TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$", re.MULTILINE)
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$", re.MULTILINE)
+
+# 新 skill：三级字数统一目标约 1000 CJK；程序化检查改为 warn，不硬失败
+_TARGET_WORDS_PER_PAGE = 1000
+_WORD_COUNT_MAP = {"L1": 1000, "L2": 1000, "L3": 1000}
+_WORD_COUNT_NO_SEARCH_MAP = {"L1": 800, "L2": 800, "L3": 800}
 
 _PAGE_HEADER_RE = re.compile(r"^###\s*P(\d+)\s*[:：]", re.MULTILINE)
 _TITLE_FIELD_RE = re.compile(r"\*\*标题\*\*[：:]\s*(.+)", re.IGNORECASE)
@@ -61,6 +124,7 @@ _LIST_ITEM_RE = re.compile(r"^[ \t]*-[ \t]+(.+)$", re.MULTILINE)
 _NEXT_FIELD_RE = re.compile(r"\*\*[^*]+\*\*[：:]")
 _SEARCHED_SOURCES_RE = re.compile(r"^##\s*已搜索来源", re.MULTILINE)
 _URL_RE = re.compile(r"https?://[^\s\])>\"']+")
+_MIN_NAMED_CITATIONS = 3
 # 来源名称标注 [Name]，排除纯数字编号
 _NAMED_CITATION_RE = re.compile(r"\[([^\[\]]{1,40})\]")
 _HOST_FROM_URL_RE = re.compile(r"^https?://([^/\s?#:]+)", re.IGNORECASE)
@@ -123,6 +187,118 @@ def enrich_section_citations(
     return section.rstrip() + f"\n- **来源标注**：{tags}\n"
 
 
+def _parse_markdown_table_rows(body: str) -> list[tuple[list[str], list[list[str]]]]:
+    """Parse markdown pipe tables into (headers, data_rows) list."""
+    lines = body.splitlines()
+    tables: list[tuple[list[str], list[list[str]]]] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if not _TABLE_ROW_RE.match(line) or _TABLE_SEP_RE.match(line):
+            idx += 1
+            continue
+        block = [line]
+        idx += 1
+        while idx < len(lines) and _TABLE_ROW_RE.match(lines[idx]):
+            block.append(lines[idx])
+            idx += 1
+        if len(block) < 2 or not _TABLE_SEP_RE.match(block[1]):
+            continue
+        headers = [c.strip() for c in block[0].strip().strip("|").split("|")]
+        rows: list[list[str]] = []
+        for row_line in block[2:]:
+            if _TABLE_SEP_RE.match(row_line):
+                continue
+            rows.append([c.strip() for c in row_line.strip().strip("|").split("|")])
+        if headers:
+            tables.append((headers, rows))
+    return tables
+
+
+def _extract_axis_section_body(section: str) -> str:
+    match = _AXIS_SECTION_RE.search(section)
+    return match.group(1) if match else ""
+
+
+def _measure_axis_table(section: str) -> tuple[int, int]:
+    """Return best (rows, cols) in 主轴 section, aligned with validate-research measureAxisTable."""
+    body = _extract_axis_section_body(section)
+    best_rows, best_cols = 0, 0
+    for headers, rows in _parse_markdown_table_rows(body):
+        last_header = headers[-1] if headers else ""
+        has_source_col = bool(re.search(r"来源|出处", last_header))
+        cols = max(len(headers) - 1 - (1 if has_source_col else 0), 0)
+        row_count = len(rows)
+        if row_count * cols > best_rows * best_cols:
+            best_rows, best_cols = row_count, cols
+    return best_rows, best_cols
+
+
+def _axis_table_quota(section: str) -> tuple[int, int]:
+    if research_evidence_limited_mentioned(section):
+        return _AXIS_TABLE_QUOTA_LIMITED
+    return _AXIS_TABLE_QUOTA
+
+
+def _precheck_research_section(section: str, config: "_ResearchConfig") -> list[str]:
+    """Rule precheck before validate-research CLI (axis table + forbidden slots)."""
+    issues: list[str] = []
+    if not section.strip():
+        return ["empty_section"]
+    for slot in _FORBIDDEN_RESEARCH_TOP_SLOTS:
+        if re.search(rf"^\s*[-*]\s*\*\*{re.escape(slot)}\*\*", section, re.MULTILINE):
+            issues.append(f"forbidden_top_slot:{slot}")
+    if "主轴" not in section:
+        issues.append("missing:主轴")
+        return issues
+    need_rows, need_cols = _axis_table_quota(section)
+    rows, cols = _measure_axis_table(section)
+    if rows < need_rows or cols < need_cols:
+        issues.append(f"axis_table_too_small:{rows}x{cols}<{need_rows}x{need_cols}")
+    if config.search_mode == "no_search" and not research_evidence_limited_mentioned(section):
+        issues.append("missing_evidence_limited_annotation")
+    return issues
+
+
+def _validate_reason_rewrite_hints(reasons: list[str]) -> str:
+    """Map validate-research reason tags to skill-aligned rewrite instructions."""
+    hints: list[str] = []
+    for raw in reasons:
+        reason = str(raw).strip()
+        if not reason:
+            continue
+        if reason.startswith("axis_table_too_small:"):
+            match = re.search(
+                r"axis_table_too_small:(\d+)x(\d+)<(\d+)x(\d+)",
+                reason,
+            )
+            if match:
+                hints.append(
+                    f"主轴表当前 {match.group(1)}×{match.group(2)}，"
+                    f"需补至 ≥{match.group(3)} 行 × ≥{match.group(4)} 列"
+                    "（优先补列：增加对比对象/时间点；禁止行够列不够）"
+                )
+            else:
+                hints.append("主轴表规模不足：标准 ≥4×3，证据受限 ≥3×2")
+        elif reason.startswith("missing:"):
+            hints.append(f"补全槽位：{reason.split(':', 1)[1]}")
+        elif reason.startswith("missing_section:"):
+            hints.append(f"补全章节：{reason.split(':', 1)[1]}")
+        elif reason.startswith("data_rows_below:"):
+            hints.append(f"关键数据行数不足：{reason.split(':', 1)[1]}")
+        elif reason == "missing_data_type_column":
+            hints.append("关键数据表须含「数据类型」列")
+        elif reason.startswith("forbidden_top_slot:"):
+            hints.append(
+                f"删除顶层槽位「{reason.split(':', 1)[1]}」，时序/对比并入主轴表"
+            )
+        elif reason.startswith("missing_evidence_limited_annotation"):
+            hints.append("no_search 页须标注「数据有限，基于用户素材」")
+        else:
+            hints.append(reason)
+    return "\n".join(f"- {h}" for h in hints)
+
+
 @dataclass
 class _ResearchConfig:
     """封装撰写所需配置参数，避免函数签名过长。"""
@@ -130,6 +306,9 @@ class _ResearchConfig:
     research_depth: str
     topic: str
     no_data_fallback: bool = False
+    writer_profile: str = "deep"  # material | deep
+    min_citations: int = 3
+    documents_excerpt: str = ""
 
 
 class PrepareNode(DisableThinkingMixin, PlanNode):
@@ -191,35 +370,93 @@ class PrepareNode(DisableThinkingMixin, PlanNode):
             logger.warning("[P6.0] 未从 outline.md 中解析到需要研究的页面")
             return {"prepare_status": "failed"}
 
-        search_mode = inputs.get("search_mode", "auto")
-        research_depth = inputs.get("research_depth", "L2")
-        source_material = inputs.get("source_material", "")
+        PptCommon.ensure_phase1_defaults(inputs)
+        branch = PptCommon.ensure_content_branch(inputs)
+        search_mode = str(inputs.get("search_mode") or "auto").strip()
+        research_depth = str(inputs.get("research_depth") or "L2").strip()
         topic = inputs.get("topic", "")
         searched_urls = self._extract_searched_urls(outline_text)
-        need_search = await self._should_search(search_mode, source_material, pages)
+        min_citations = PptCommon.min_citations_for_depth(research_depth)
+        inputs["min_citations"] = min_citations
 
-        no_data_fallback = (
-            not need_search
-            and (not source_material or len(source_material.strip()) < 200)
-        )
+        source_material = ""
+        if branch == CONTENT_BRANCH_MATERIAL:
+            source_material = await PptCommon.load_source_material(
+                self,
+                inputs,
+                max_chars=8000,
+                error_type=RuntimeError,
+            )
+            writer_profile = "material"
+        else:
+            # research 分支不以用户文档为主数据源
+            source_material = ""
+            inputs["source_material"] = ""
+            writer_profile = "deep"
+
+        page_coverage: dict[str, dict[str, Any]] = {}
+        pages_need_search: dict[str, bool] = {}
+
+        if branch == CONTENT_BRANCH_RESEARCH:
+            # 有 ✅ 就必须逐页研究；不得因「素材充实」跳过
+            need_search = search_mode != "no_search"
+            for page in pages:
+                pages_need_search[str(page["page_number"])] = need_search
+            no_data_fallback = search_mode == "no_search" and not source_material
+        else:
+            # material：按 search_mode + 覆盖度决定哪些页快搜
+            if search_mode == "no_search":
+                need_search = False
+                for page in pages:
+                    pages_need_search[str(page["page_number"])] = False
+            elif search_mode == "force_search":
+                need_search = True
+                for page in pages:
+                    pages_need_search[str(page["page_number"])] = True
+            else:
+                # auto：评估覆盖度，仅缺口页搜
+                if source_material:
+                    page_coverage = await self._evaluate_page_coverage(pages, source_material)
+                need_search = False
+                for page in pages:
+                    key = str(page["page_number"])
+                    cov = str((page_coverage.get(key) or {}).get("coverage") or "uncovered")
+                    page_need = cov != "covered"
+                    pages_need_search[key] = page_need
+                    if page_need:
+                        need_search = True
+            no_data_fallback = (
+                search_mode == "no_search"
+                and (not source_material or len(source_material.strip()) < 200)
+            )
+
         if no_data_fallback:
             logger.warning(
-                "[P6.0] 跳过搜索且无用户素材，进入无研究数据降级撰写 (search_mode=%s)",
+                "[P6.0] 跳过搜索且无用户素材，进入无研究数据降级撰写 (branch=%s search_mode=%s)",
+                branch,
                 search_mode,
             )
 
-        page_coverage: dict[str, dict[str, Any]] = {}
-        if need_search and source_material:
-            page_coverage = await self._evaluate_page_coverage(pages, source_material)
-
-        total_min_words = _WORD_COUNT_MAP.get(research_depth, 2000)
+        # 新 skill：统一约 1000 CJK / 页；no_search 约 800；字数仅 warn
         if search_mode == "no_search":
-            total_min_words = _WORD_COUNT_NO_SEARCH_MAP.get(research_depth, 1200)
-        min_words_per_page = max(200, total_min_words // max(len(pages), 1))
+            min_words_per_page = _WORD_COUNT_NO_SEARCH_MAP.get(research_depth, 800)
+        else:
+            min_words_per_page = _WORD_COUNT_MAP.get(research_depth, _TARGET_WORDS_PER_PAGE)
+
+        documents_excerpt = ""
+        if branch == CONTENT_BRANCH_MATERIAL and output_dir:
+            documents_excerpt = await self._load_documents_excerpt(output_dir)
 
         logger.info(
-            "[P6.0] 预处理完成 pages=%d need_search=%s no_data_fallback=%s min_words_per_page=%d",
-            len(pages), need_search, no_data_fallback, min_words_per_page,
+            "[P6.0] 预处理完成 branch=%s writer=%s pages=%d need_search=%s "
+            "no_data_fallback=%s min_words=%d min_citations=%d",
+            branch,
+            writer_profile,
+            len(pages),
+            need_search,
+            no_data_fallback,
+            min_words_per_page,
+            min_citations,
         )
 
         return {
@@ -227,6 +464,7 @@ class PrepareNode(DisableThinkingMixin, PlanNode):
             "pages": pages,
             "searched_urls": searched_urls,
             "need_search": need_search,
+            "pages_need_search": pages_need_search,
             "no_data_fallback": no_data_fallback,
             "page_coverage": page_coverage,
             "min_words_per_page": min_words_per_page,
@@ -235,7 +473,42 @@ class PrepareNode(DisableThinkingMixin, PlanNode):
             "research_depth": research_depth,
             "topic": topic,
             "output_dir": output_dir,
+            "content_branch": branch,
+            "writer_profile": writer_profile,
+            "min_citations": min_citations,
+            "documents_excerpt": documents_excerpt,
+            "outline_path": outline_path,
         }
+
+    async def _load_documents_excerpt(self, output_dir: str, *, max_chars: int = 6000) -> str:
+        """读取 output_dir/documents/*.md 供 material data_ref（截断）。"""
+        from pathlib import Path
+
+        docs_dir = Path(str(output_dir)) / "documents"
+        if not docs_dir.is_dir():
+            return ""
+        parts: list[str] = []
+        total = 0
+        try:
+            files = sorted(
+                p for p in docs_dir.iterdir()
+                if p.is_file() and p.suffix == ".md"
+            )
+        except OSError:
+            return ""
+        for path in files:
+            text = await self._read_file(str(path))
+            if not text.strip():
+                continue
+            chunk = f"## 文件：{path.name}\n{text.strip()}\n"
+            if total + len(chunk) > max_chars:
+                remain = max_chars - total
+                if remain > 200:
+                    parts.append(chunk[:remain] + "\n...(截断)\n")
+                break
+            parts.append(chunk)
+            total += len(chunk)
+        return "\n".join(parts)
 
     async def _read_file(self, path: str) -> str:
         if not path:
@@ -476,7 +749,11 @@ class PrepareNode(DisableThinkingMixin, PlanNode):
 
 
 class PageWorkerNode(DisableThinkingMixin, PlanNode):
-    """P6.1 — per-page 并发闭环：搜索→评分→补搜→抓取→ghost→校验→回溯→撰写→按页校验→失败重写，N 页并发。"""
+    """P6.1 — per-page 并发闭环（Phase 2）。
+
+    Dispatch 映射（见 ppt_common.DISPATCH_ACCEL_NOTES）：全页 asyncio.gather ≈ 整轮派发；
+    页内校验失败重写 1 次是 accel 例外（非 skill retry_queue 按轮重试）。
+    """
 
     def __init__(self) -> None:
         super().__init__(
@@ -503,6 +780,7 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 "- `research_paths`: {页码: research-P{N}.md 文件路径} 字典\n"
                 "\n"
                 "### 执行流程（per-page 闭环，N 页 asyncio.gather 并发）\n"
+                "Dispatch：gather ≈ 整轮派发；页内失败重写 1 次 = accel 例外（非按轮 retry_queue）。\n"
                 "对每一页独立执行：\n"
                 "\n"
                 "#### 阶段 1：搜索（need_search=True 时）\n"
@@ -528,24 +806,17 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 "   - 优先从 page_sources[backfill_start:backfill_end] 补抓\n"
                 "   - 候选池不足时按 missing 类别生成定向查询调 web_search\n"
                 "   - 新 URL 走同样的抓取流程\n"
-                "e. 回溯后严格二次校验：\n"
-                "   1. 证据密度：≥3 条 key_findings 且 ≥5 条关键数据点（严格）\n"
-                "   2. 数据类型覆盖：≥2 种数据类型（严格）\n"
-                "   3. 时序/对比：同上\n"
-                "   4. 交叉验证：同上\n"
-                "f. 仍不通过 → 标注 data_limited: true\n"
+                "e. 回溯后取消严格二次充分性 LLM：直接标注 data_limited: true\n"
+                "f. （保留）仍不通过场景统一走 data_limited 降级撰写\n"
                 "\n"
                 "#### 阶段 3：撰写\n"
                 "a. LLM 撰写单页研究报告（以 `### P{N}:` 开头，不输出报告标题）\n"
-                "b. 按页校验（LLM 判断 7 项）：\n"
-                "   1. 页面结构：`### P{N}:` 标题 + `#### PPT 内容建议`\n"
-                "   2. PPT 内容建议：推荐主标题 + 核心论点(5-10条) + 关键数据清单表格(≥5/≥3行) + 时序数据表(必要时) + 对比数据表(必要时) + 案例素材\n"
-                "   3. 数据表格格式：关键数据清单含'数据类型'列；时序/对比为专用表格非散文\n"
-                "   4. 引用规范：每页 ≥3 个来源标注（来源名称，非数字编号）\n"
-                "   5. 反空泛：无模糊修饰、无占位文本\n"
-                "   6. 字数达标：本页中文字数 ≥ min_words_per_page × 80%\n"
-                "   7. 素材充实度：核心论点有展开说明和来源标注；案例含具体实体名称\n"
-                "c. 校验不通过 → 重写1次（仅本页，覆盖当前版本，不再二次校验）\n"
+                "b. 按页规则化校验（不调 LLM）：\n"
+                "   1. 页面结构：`### P{N}:` + `#### PPT 内容建议` + `#### 来源留痕` + 必填槽位\n"
+                "   2. 程序化预检：主轴表规模 / 禁止顶层槽位 / 证据受限标注\n"
+                "   3. 字数：本页中文字数 ≥ min_words_per_page × 80%（仅 warn）\n"
+                "   4. 规则补引用：按抓取 URL host 补足命名引用至最低数\n"
+                "c. 仅结构/预检失败 → 重写1次（仅本页，覆盖当前版本，不再二次校验）\n"
                 "\n"
                 "### 来源可信度评分标准\n"
                 "| 等级 | 分数 | 来源类型 |\n"
@@ -598,38 +869,25 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 "\n"
                 "### research-P{N}.md 结构骨架（每页独立文件，不含全局 header）\n"
                 "```\n"
-                "### P{N}: {页面标题}\n"
-                "> 页面类型：{type}\n"
-                "**核心论点**：{一句结论性陈述}\n"
-                "#### PPT 内容建议\n"
-                "- **推荐主标题**：{headline}\n"
-                "- **核心论点**（5-10条，每条附展开说明和来源引用）\n"
-                "- **关键数据清单**（Markdown表格，搜索模式≥5行 / no_search≥3行，含数据类型列）：\n"
-                "  | 数据项 | 数值/结果 | 来源 | 时间 | 数据类型 |\n"
-                "- **时序数据**（trend/data/comparison/technology页必填，≥3时间点）：\n"
-                "  | 指标 | {t1} | {t2} | {t3} | 来源 |\n"
-                "- **对比数据**（comparison/data/technology页必填，≥2对象×≥2维度）：\n"
-                "  | 对比维度 | {A} | {B} | 来源 |\n"
-                "- **案例素材**：{entity} — {description} [来源名称]\n"
+                f"{_RESEARCH_PAGE_SKELETON}"
                 "```\n"
                 "\n"
                 "### 写作硬规则\n"
-                "1. 要点优先，核心论点附展开说明和来源引用\n"
-                "2. 精准引用：事实陈述首次出现时同句内附来源标注（如 [Gartner]、[年度报告]），禁止伪引用\n"
-                "3. 反空泛：禁止'市场前景广阔''发展迅速'等无来源修饰，用精确数字替代；禁止 TODO/xxx 等占位文本\n"
-                "4. 数据完整保留：所有数据点必须出现在关键数据清单表格中\n"
+                "1. 顶部一句核心论点；上屏短句写入上屏要点（≤40字）\n"
+                "2. 精准引用：事实陈述首次出现时同句内附来源标注，并在来源留痕登记\n"
+                "3. 反空泛：禁止无来源修饰与占位文本\n"
+                "4. 数据完整保留：所有数据点必须出现在关键数据表中；时序/对比写入主轴\n"
                 "5. 来源可识别：使用来源名称标注，禁止纯数字编号\n"
-                "6. 关键数据清单每页 ≥5 条（no_search ≥3 条）、≥2 种数据类型\n"
-                "7. trend/data/comparison/technology 页必须有时序数据（≥3时间点）和对比数据（≥2对象×≥2维度）\n"
-                "8. 数据有限页面：page_extractions 中含 `data_limited: true` 的页面，在该页 PPT 内容建议下显式标注'数据有限，基于用户素材'或'数据有限'\n"
+                "6. 关键数据每页 ≥5 条（no_search ≥3 条）、≥2 种数据类型；主轴 ≥4×3（证据受限 ≥3×2）\n"
+                "7. 数据有限页面：显式标注'数据有限，基于用户素材'或'数据有限，基于 N 个来源'\n"
                 "\n"
                 "### no_search 模式调整\n"
                 "| 项目 | 搜索模式 | no_search 模式 |\n"
                 "|---|---|---|\n"
                 "| 数据来源 | 外部研究为主 | 用户素材为主 |\n"
                 "| 来源标注 | [机构名] | [资料名] |\n"
-                "| 全文字数 | L1≥1.2k/L2≥2k/L3≥3.5k | L1≥800/L2≥1.2k/L3≥2k |\n"
-                "| 关键数据清单 | ≥5 条 | ≥3 条 |\n"
+                "| 关键数据 | ≥5 条 | ≥3 条 |\n"
+                "| 主轴 | ≥4×3 | 可降为 ≥3×2（须标注数据有限） |\n"
                 "| 数据有限标注 | 仅在搜索不足时 | 每个仅凭素材的页面均标注'数据有限，基于用户素材' |\n"
                 "\n"
                 "### 失败兜底\n"
@@ -642,9 +900,9 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 "- 单个URL抓取异常：日志记录，跳过该URL\n"
                 "- 幽灵来源LLM识别失败：保留全部来源，不过滤\n"
                 "- 数据充分性校验LLM失败：保守视为缺口，进入回溯\n"
-                "- 回溯后仍不通过：标注 data_limited: true，传递给撰写阶段降级处理\n"
+                "- 回溯后：跳过严格二次充分性 LLM，直接标注 data_limited: true，传递给撰写阶段降级处理\n"
                 "- 撰写LLM失败：使用兜底骨架\n"
-                "- 按页校验LLM失败：保守视为通过（避免假阳性触发无意义重写）\n"
+                "- 按页规则化校验失败：仅结构/预检失败触发重写；字数不足仅 warn\n"
                 "- 重写LLM失败：保留当前版本\n"
                 "- write_file 不可用/失败：记录错误日志，该页不写入 research_paths\n"
             ),
@@ -653,6 +911,7 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
     async def _execute(self, inputs: dict[str, Any]) -> dict[str, Any]:
         pages = inputs.get("pages", [])
         need_search = inputs.get("need_search", False)
+        pages_need_search = inputs.get("pages_need_search") or {}
         no_data_fallback = inputs.get("no_data_fallback", False)
         page_coverage = inputs.get("page_coverage", {})
         searched_urls = inputs.get("searched_urls", [])
@@ -662,12 +921,21 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         topic = inputs.get("topic", "")
         output_dir = inputs.get("output_dir", "")
         min_words_per_page = int(inputs.get("min_words_per_page") or 200)
+        writer_profile = str(inputs.get("writer_profile") or "deep").strip() or "deep"
+        min_citations = int(
+            inputs.get("min_citations")
+            or PptCommon.min_citations_for_depth(research_depth)
+        )
+        documents_excerpt = str(inputs.get("documents_excerpt") or "")
 
         config = _ResearchConfig(
             search_mode=search_mode,
             research_depth=research_depth,
             topic=topic,
             no_data_fallback=no_data_fallback,
+            writer_profile=writer_profile,
+            min_citations=min_citations,
+            documents_excerpt=documents_excerpt,
         )
 
         # 降级路径：无研究数据 — 逐页写 stub
@@ -695,7 +963,9 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 source_material=source_material,
                 config=config,
                 min_words_per_page=min_words_per_page,
-                need_search=need_search,
+                need_search=bool(
+                    pages_need_search.get(str(page["page_number"]), need_search)
+                ),
             )
             for page in pages
         ]
@@ -718,16 +988,136 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
 
         logger.info("[P6.1] per-page 闭环完成，已落盘 %d 个 research-P{N}.md", len(research_paths))
 
-        # validate-research 全量门禁（prod 契约：所有页面写完后统一校验）
+        # validate-research 全量门禁；失败则对 invalid 页重写 1 次后再校验
         pptx_root = str(inputs.get("pptx_root") or "").strip()
         outline_path = str(inputs.get("outline_path") or "").strip()
         validation_inputs_ready = all((research_paths, output_dir, pptx_root, outline_path))
         if validation_inputs_ready:
-            validation_ok = await self._run_validate_research(output_dir, pptx_root, outline_path, research_depth)
+            validation_ok, invalid_pages, page_reasons = await self._run_validate_research(
+                output_dir,
+                pptx_root,
+                outline_path,
+                research_depth,
+                min_citations=min_citations,
+                require_min_citations=(writer_profile == "deep"),
+            )
+            if not validation_ok and invalid_pages:
+                logger.warning(
+                    "[P6.1] validate-research 未通过 invalid=%s，对失败页重写 1 次",
+                    invalid_pages,
+                )
+                page_by_num = {int(p["page_number"]): p for p in pages}
+                rewrite_tasks = []
+                rewrite_pages: list[int] = []
+                for page_num in invalid_pages:
+                    page = page_by_num.get(int(page_num))
+                    if not page:
+                        continue
+                    reasons = page_reasons.get(int(page_num), [])
+                    rewrite_pages.append(int(page_num))
+                    rewrite_tasks.append(
+                        self._rewrite_page_for_validate(
+                            page=page,
+                            output_dir=output_dir,
+                            config=config,
+                            min_words_per_page=min_words_per_page,
+                            reasons=reasons,
+                        )
+                    )
+                if rewrite_tasks:
+                    rewrite_results = await asyncio.gather(
+                        *rewrite_tasks, return_exceptions=True
+                    )
+                    for page_num, result in zip(rewrite_pages, rewrite_results):
+                        if isinstance(result, Exception):
+                            logger.warning(
+                                "[P6.1] P%d validate 重写异常: %s", page_num, result
+                            )
+                            continue
+                        if result:
+                            research_paths[page_num] = f"{output_dir}/research-P{page_num}.md"
+                    validation_ok, invalid_pages, _ = await self._run_validate_research(
+                        output_dir,
+                        pptx_root,
+                        outline_path,
+                        research_depth,
+                        min_citations=min_citations,
+                        require_min_citations=(writer_profile == "deep"),
+                    )
             if not validation_ok:
-                logger.warning("[P6.1] validate-research 全量门禁未通过，但不阻塞 pipeline（降级继续）")
+                logger.warning(
+                    "[P6.1] validate-research 全量门禁仍未通过 invalid=%s，不阻塞 pipeline（降级继续）",
+                    invalid_pages,
+                )
 
         return {"research_paths": research_paths}
+
+    async def _rewrite_page_for_validate(
+        self,
+        *,
+        page: dict[str, Any],
+        output_dir: str,
+        config: _ResearchConfig,
+        min_words_per_page: int,
+        reasons: list[str],
+    ) -> bool:
+        """按 validate-research reasons 重写单页 research-P{N}.md。"""
+        page_num = int(page["page_number"])
+        path = f"{output_dir}/research-P{page_num}.md"
+        existing = ""
+        if self.has_tool("read_file"):
+            try:
+                raw = await self.call_tool("read_file", file_path=path)
+                existing = PptCommon.parse_tool_file_content(raw)
+            except Exception as exc:
+                if isinstance(exc, AbortError):
+                    raise
+                existing = ""
+        reason_text = "；".join(str(r) for r in reasons) if reasons else "结构不符合新槽位"
+        hint_block = _validate_reason_rewrite_hints(reasons)
+        prompt = (
+            "请按新 skill 单页骨架重写本页 research Markdown。"
+            "只输出以 `### P{N}:` 开头的完整页面内容，不要解释。\n\n"
+            f"校验失败原因：{reason_text}\n"
+        )
+        if hint_block:
+            prompt += f"\n### 修复指引（按 research-output-template）\n{hint_block}\n"
+        prompt += (
+            f"\n主题：{config.topic}\n"
+            f"页面编号：P{page_num}\n"
+            f"页面标题：{page.get('title', '')}\n"
+            f"页面类型：{page.get('page_type', page.get('type', ''))}\n"
+            f"研究深度：{config.research_depth}\n"
+            f"搜索模式：{config.search_mode}\n"
+            f"目标字数约 {min_words_per_page}\n\n"
+            f"{_RESEARCH_PREWRITE_CHECKLIST}\n\n"
+            "### 必须使用的骨架\n"
+            "```\n"
+            f"{_RESEARCH_PAGE_SKELETON}"
+            "```\n\n"
+            f"{_RESEARCH_WRITE_HARD_RULES}\n"
+            "### 当前版本（可保留事实与数字，必须改槽位名与结构）\n"
+            f"{existing or '（空）'}\n"
+        )
+        try:
+            result = await self.stream_llm_collect(
+                prompt=prompt,
+                system_prompt=(
+                    pipeline_role_boundary("P6")
+                    + "你是研究报告修订助手：把旧槽位改成主轴/关键数据/上屏要点/案例/来源留痕；"
+                    "直接输出 Markdown。"
+                ),
+                concurrent=True,
+            )
+            section = (result or "").strip()
+            if not section:
+                return False
+            return await self._write_file(path, section)
+        except Exception as exc:
+            if isinstance(exc, AbortError):
+                raise
+            logger.warning("[P6.1] P%d validate 重写失败: %s", page_num, exc)
+            return False
 
     async def _run_validate_research(
         self,
@@ -735,15 +1125,14 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         pptx_root: str,
         outline_path: str,
         research_depth: str,
-    ) -> bool:
-        """调 cli validate-research 全量门禁，校验所有页面研究质量。
-
-        prod 契约：cli validate-research --dir <dir> --outline <outline.md> --level <L>。
-        CLI 不可用时降级为通过。
-        """
+        *,
+        min_citations: int = 3,
+        require_min_citations: bool = True,
+    ) -> tuple[bool, list[int], dict[int, list[str]]]:
+        """调 cli validate-research；返回 (ok, invalid_pages, reasons_by_page)。"""
         try:
             from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils import (
-                cli_path, quote_path, run_bash,
+                cli_path, combined_output, quote_path, run_bash,
             )
             cmd = (
                 f"{cli_path('validate-research', pptx_root)} "
@@ -751,21 +1140,68 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 f"--outline {quote_path(outline_path)} "
                 f"--level {research_depth}"
             )
+            if require_min_citations:
+                cmd += f" --min-citations {min_citations}"
             result = await run_bash(
                 self, cmd,
                 timeout_seconds=120, required=False, workdir=pptx_root,
             )
+            detail = combined_output(result) or result.stderr or result.stdout or ""
+            invalid_pages, page_reasons = self._parse_validate_research_output(detail)
             if result.exit_code != 0:
-                detail = result.stderr or result.stdout or ""
-                logger.warning("[P6.1] validate-research 门禁返回 exit=%d: %s", result.exit_code, detail[:500])
-                return False
+                logger.warning(
+                    "[P6.1] validate-research 门禁返回 exit=%d invalid=%s: %s",
+                    result.exit_code,
+                    invalid_pages,
+                    detail[:500],
+                )
+                return False, invalid_pages, page_reasons
             logger.info("[P6.1] validate-research 全量门禁通过")
-            return True
+            return True, [], {}
         except Exception as e:
             if isinstance(e, AbortError):
                 raise
             logger.warning("[P6.1] validate-research CLI 不可用，降级跳过: %s", e)
-            return True
+            return True, [], {}
+
+    @staticmethod
+    def _parse_validate_research_output(
+        detail: str,
+    ) -> tuple[list[int], dict[int, list[str]]]:
+        """从 validate-research JSON 输出提取 invalid 页与 reasons。"""
+        text = str(detail or "")
+        # 去掉可能的 Exit code 前缀，取第一个 JSON 对象
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return [], {}
+        try:
+            payload = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return [], {}
+        if not isinstance(payload, dict):
+            return [], {}
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        invalid_raw = summary.get("invalid") or []
+        invalid_pages: list[int] = []
+        for item in invalid_raw:
+            try:
+                invalid_pages.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        page_reasons: dict[int, list[str]] = {}
+        pages_obj = payload.get("pages") if isinstance(payload.get("pages"), dict) else {}
+        for key, info in pages_obj.items():
+            try:
+                page_num = int(key)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(info, dict):
+                continue
+            reasons = info.get("reasons") or []
+            if isinstance(reasons, list):
+                page_reasons[page_num] = [str(r) for r in reasons]
+        return invalid_pages, page_reasons
 
     async def _run_page_pipeline(
         self,
@@ -778,21 +1214,33 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         min_words_per_page: int,
         need_search: bool,
     ) -> dict[str, Any]:
-        """单页闭环：搜索→评分→补搜→抓取→ghost→校验→回溯→撰写→按页校验→失败重写。"""
+        """单页闭环。
+
+        material：快搜 + 浅抓取（无评分矩阵/幽灵源/交叉验证）→ material writer
+        deep：搜索→评分→补搜→抓取→ghost→校验→回溯→深度 writer
+        """
         page_num = page["page_number"]
+        light = config.writer_profile == "material"
 
         page_sources: list[dict[str, Any]] = []
         page_extractions: list[dict[str, Any]] = []
 
         if need_search:
-            # 阶段1：搜索
-            page_sources = await self._search_for_page(page, coverage_info, searched_urls)
+            if light:
+                page_sources = await self._search_for_page_light(
+                    page, coverage_info, searched_urls,
+                )
+                if page_sources:
+                    page_extractions = await self._fetch_for_page_light(
+                        page, page_sources, config.research_depth,
+                    )
+            else:
+                page_sources = await self._search_for_page(page, coverage_info, searched_urls)
+                if page_sources:
+                    page_extractions = await self._fetch_for_page(
+                        page, page_sources, config.research_depth,
+                    )
 
-            # 阶段2：抓取校验
-            if page_sources:
-                page_extractions = await self._fetch_for_page(page, page_sources, config.research_depth)
-
-        # 阶段3：撰写
         section = await self._write_single_page(
             page=page,
             extractions=page_extractions,
@@ -801,13 +1249,37 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             min_words_per_page=min_words_per_page,
         )
 
-        # 结构校验 + 规则补引用；仅结构崩才整页重写一次（软质量不重写）
         if section:
-            section, structural_ok = self._finalize_page_section(
-                page, section, page_extractions, min_words_per_page,
+            precheck_issues = _precheck_research_section(section, config)
+            if precheck_issues:
+                logger.info(
+                    "[P6.1] 页面 P%d 主轴表预检未通过 issues=%s，尝试同页自修",
+                    page_num,
+                    precheck_issues,
+                )
+                repaired = await self._repair_research_section_precheck(
+                    page=page,
+                    section=section,
+                    issues=precheck_issues,
+                    config=config,
+                )
+                if repaired:
+                    section = repaired
+                    still_bad = _precheck_research_section(section, config)
+                    if still_bad:
+                        logger.warning(
+                            "[P6.1] 页面 P%d 预检自修后仍 issues=%s",
+                            page_num,
+                            still_bad,
+                        )
+
+        # 按页规则化校验 + 失败重写 1 次（字数不足仅 warn，不触发重写）
+        if section:
+            section, passed = self._finalize_page_section(
+                page, section, page_extractions, config, min_words_per_page,
             )
-            if not structural_ok:
-                logger.info("[P6.1] 页面 P%d 结构校验未通过，尝试重写1次", page_num)
+            if not passed:
+                logger.info("[P6.1] 页面 P%d 校验未通过，尝试重写1次", page_num)
                 rewritten = await self._write_single_page(
                     page=page,
                     extractions=page_extractions,
@@ -817,12 +1289,58 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 )
                 if rewritten:
                     section, _ = self._finalize_page_section(
-                        page, rewritten, page_extractions, min_words_per_page,
+                        page, rewritten, page_extractions, config, min_words_per_page,
                     )
 
         return {"section": section}
 
     # ==================== 搜索阶段 ====================
+
+    async def _search_for_page_light(
+        self,
+        page: dict[str, Any],
+        coverage_info: dict[str, Any],
+        searched_urls: list[str],
+    ) -> list[dict[str, Any]]:
+        """material 快搜：3–5 次查询，无评分矩阵 / 无补搜循环。"""
+        if not self.has_tool("web_search"):
+            logger.warning("[P6.1] web_search 工具不可用，跳过快搜")
+            return []
+
+        queries = self._build_page_queries(page, coverage_info)[:5]
+        if not queries:
+            logger.warning(
+                "[P6.1] 页面 P%d 无搜索查询，跳过快搜", page["page_number"],
+            )
+            return []
+
+        logger.info("[P6.1] 页面 P%d material 快搜 %d 个查询", page["page_number"], len(queries))
+        search_tasks = [
+            self.call_tool("web_search", query=q, search_mode="default")
+            for q in queries
+        ]
+        results = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+        sources: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for q, result in zip(queries, results):
+            if isinstance(result, Exception):
+                logger.warning("[P6.1] 快搜失败 query=%s: %s", q[:50], result)
+                continue
+            if isinstance(result, str) and result.startswith("[ERROR]"):
+                continue
+            for s in self._parse_search_results(result):
+                url = s.get("url", "")
+                if url and url not in seen:
+                    seen.add(url)
+                    sources.append(s)
+
+        for url in searched_urls:
+            if url and url not in seen:
+                seen.add(url)
+                sources.append({"url": url, "from_existing": True})
+
+        return sources[:8]
 
     async def _search_for_page(
         self,
@@ -1046,6 +1564,18 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         return existing_sources
 
     # ==================== 抓取校验阶段 ====================
+
+    async def _fetch_for_page_light(
+        self,
+        page: dict[str, Any],
+        page_sources: list[dict[str, Any]],
+        _research_depth: str,
+    ) -> list[dict[str, Any]]:
+        """material 浅抓取：仅批量 fetch，跳过 ghost / 充分性 / 回溯。"""
+        if not self.has_tool("fetch_webpage"):
+            logger.warning("[P6.1] fetch_webpage 工具不可用，跳过浅抓取")
+            return []
+        return await self._batch_fetch_single(page, page_sources, "L1")
 
     async def _fetch_for_page(
         self,
@@ -1430,6 +1960,45 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
 
     # ==================== 撰写阶段 ====================
 
+    async def _repair_research_section_precheck(
+        self,
+        *,
+        page: dict[str, Any],
+        section: str,
+        issues: list[str],
+        config: _ResearchConfig,
+    ) -> str:
+        """Fix axis-table / slot issues in-place before validate-research CLI."""
+        page_num = page["page_number"]
+        hint_block = _validate_reason_rewrite_hints(issues)
+        prompt = (
+            "以下 research 页未通过落笔前预检，请只修复表格规模/槽位/标注问题，"
+            f"保留已有事实与数字，直接输出完整 `### P{page_num}:` 页面 Markdown。\n\n"
+            f"预检问题：{'; '.join(issues)}\n"
+        )
+        if hint_block:
+            prompt += f"\n### 修复指引\n{hint_block}\n"
+        prompt += (
+            f"\n{_RESEARCH_PREWRITE_CHECKLIST}\n"
+            f"{_RESEARCH_WRITE_HARD_RULES}\n\n"
+            f"原文：\n{section}\n"
+        )
+        try:
+            result = await self.stream_llm_collect(
+                prompt=prompt,
+                system_prompt=(
+                    pipeline_role_boundary("P6")
+                    + "你是 research 结构修订助手，只修表格与槽位，直接输出 Markdown。"
+                ),
+                concurrent=True,
+            )
+            return (result or "").strip()
+        except Exception as exc:
+            if isinstance(exc, AbortError):
+                raise
+            logger.warning("[P6.1] 页面 P%d 预检自修失败: %s", page_num, exc)
+            return ""
+
     async def _write_single_page(
         self,
         page: dict[str, Any],
@@ -1439,11 +2008,22 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         min_words_per_page: int,
     ) -> str:
         """撰写单页研究报告，返回以 `### P{N}:` 开头的该页 Markdown 片段。"""
-        page_num = page["page_number"]
-        page_type = page.get("page_type", page.get("type", ""))
-        title = page.get("title", "")
-        data_needs = page.get("data_needs", []) or []
+        if config.writer_profile == "material":
+            return await self._write_material_page(
+                page, extractions, source_material, config, min_words_per_page,
+            )
+        return await self._write_deep_page(
+            page, extractions, source_material, config, min_words_per_page,
+        )
 
+    def _build_extraction_and_material_sections(
+        self,
+        extractions: list[dict[str, Any]],
+        source_material: str,
+        config: _ResearchConfig,
+        *,
+        material_limit_default: int = 2000,
+    ) -> tuple[str, str]:
         extraction_summary = ""
         if extractions:
             for ext in extractions:
@@ -1451,9 +2031,103 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
 
         material_section = ""
         if source_material:
-            material_limit = 8000 if config.search_mode == "no_search" else 2000
+            material_limit = 8000 if config.search_mode == "no_search" else material_limit_default
             truncated = source_material[:material_limit]
-            material_section = f"\n\n用户素材（前 {material_limit} 字）：\n{truncated}"
+            material_section = (
+                f"\n\n用户文档摘要（前 {material_limit} 字，"
+                f"以 uploaded_document_summary 语义使用）：\n{truncated}"
+            )
+        return extraction_summary, material_section
+
+    async def _write_material_page(
+        self,
+        page: dict[str, Any],
+        extractions: list[dict[str, Any]],
+        source_material: str,
+        config: _ResearchConfig,
+        min_words_per_page: int,
+    ) -> str:
+        """素材分支撰写：用户数值优先 + data_ref；搜索值不得覆盖。"""
+        page_num = page["page_number"]
+        page_type = page.get("page_type", page.get("type", ""))
+        title = page.get("title", "")
+        data_needs = page.get("data_needs", []) or []
+        extraction_summary, material_section = self._build_extraction_and_material_sections(
+            extractions, source_material, config, material_limit_default=4000,
+        )
+        docs_section = ""
+        if config.documents_excerpt:
+            docs_section = (
+                f"\n\n### documents/*.md 摘录（数值须逐字 data_ref，禁止改写）\n"
+                f"{config.documents_excerpt}\n"
+            )
+        research_density_rule = (
+            "no_search：标注「数据有限，基于用户素材」，关键数据 ≥3 行、主轴可降为 ≥3×2"
+            if config.search_mode == "no_search"
+            else "关键数据尽量 ≥5 行、≥2 种数据类型；主轴 ≥4×3"
+        )
+
+        prompt = (
+            "你是素材分支内容研究员。主数据源是用户文档；外搜仅作缺口补充，"
+            "搜到的数值不得覆盖用户数值。直接输出该页 Markdown（以 `### P{N}:` 开头）。\n\n"
+            f"主题：{config.topic}\n"
+            f"页面编号：P{page_num}\n"
+            f"页面标题：{title}\n"
+            f"页面类型：{page_type}\n"
+            f"数据需求：{'; '.join(str(d) for d in data_needs)}\n"
+            f"搜索模式：{config.search_mode}\n"
+            f"研究深度：{config.research_depth}\n"
+            f"本页目标字数：约 {min_words_per_page} 字（不足仅作质量提示，仍须输出完整结构）\n\n"
+            "### 严格格式要求（只输出本页章节，以 `### P{N}:` 开头）\n"
+            "```\n"
+            f"{_RESEARCH_PAGE_SKELETON}"
+            "#### 用户数据引用（data_ref，逐字使用，禁止改写）  ← 匹配到 documents 表/图时必填\n"
+            "- data_ref: {id或工作表名} ｜ 来源: {文件} ｜ dataOrigin: {cache|cf|none}\n"
+            "- 类别 / 系列数值：逐字复制，禁止取整换算编造\n"
+            "```\n\n"
+            f"{_RESEARCH_WRITE_HARD_RULES}"
+            f"{_RESEARCH_PREWRITE_CHECKLIST}\n"
+            "8. 用户素材数值逐字优先；外部搜索值仅作对比/背景并分别标注\n"
+            "9. 匹配到 documents 表/图时必须写 data_ref 块；匹配不到不强行编造\n"
+            f"10. {research_density_rule}\n\n"
+            f"### 快搜补充内容（不得覆盖用户数值）\n{extraction_summary or '（无）'}"
+            f"{material_section}"
+            f"{docs_section}"
+        )
+
+        try:
+            result = await self.stream_llm_collect(
+                prompt=prompt,
+                system_prompt=(
+                    pipeline_role_boundary("P6")
+                    + "你是素材分支研究员：用户数值优先、data_ref 逐字；"
+                    "直接输出该页 Markdown，不要解释。"
+                ),
+                concurrent=True,
+            )
+            return result.strip() if result else ""
+        except Exception as e:
+            if isinstance(e, AbortError):
+                raise
+            logger.warning("[P6.1] 页面 P%d material 撰写LLM失败: %s", page_num, e)
+            return ""
+
+    async def _write_deep_page(
+        self,
+        page: dict[str, Any],
+        extractions: list[dict[str, Any]],
+        source_material: str,
+        config: _ResearchConfig,
+        min_words_per_page: int,
+    ) -> str:
+        """搜索分支深度撰写。"""
+        page_num = page["page_number"]
+        page_type = page.get("page_type", page.get("type", ""))
+        title = page.get("title", "")
+        data_needs = page.get("data_needs", []) or []
+        extraction_summary, material_section = self._build_extraction_and_material_sections(
+            extractions, source_material, config,
+        )
 
         prompt = (
             "你是一位深度内容研究员。请撰写以下单页的研究报告段落，"
@@ -1466,33 +2140,17 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             f"数据需求：{'; '.join(str(d) for d in data_needs)}\n"
             f"搜索模式：{config.search_mode}\n"
             f"研究深度：{config.research_depth}\n"
-            f"本页最低字数：{min_words_per_page} 字\n\n"
+            f"本页目标字数：约 {min_words_per_page} 字（不足仅作质量提示）\n"
+            f"本页最低引用数：{config.min_citations}\n\n"
             "### 严格格式要求（只输出本页章节，以 `### P{N}:` 开头）\n"
             "```\n"
-            "### P{N}: {页面标题}\n"
-            "> 页面类型：{type}\n"
-            "**核心论点**：{一句结论性陈述}\n"
-            "#### PPT 内容建议\n"
-            "- **推荐主标题**：{headline}\n"
-            "- **核心论点**（5-10条，每条附展开说明和来源引用）\n"
-            "- **关键数据清单**（Markdown表格，≥5行，含数据类型列）：\n"
-            "  | 数据项 | 数值/结果 | 来源 | 时间 | 数据类型 |\n"
-            "- **时序数据**（trend/data/comparison/technology页必填，≥3时间点）：\n"
-            "  | 指标 | {t1} | {t2} | {t3} | 来源 |\n"
-            "- **对比数据**（comparison/data/technology页必填，≥2对象×≥2维度）：\n"
-            "  | 对比维度 | {A} | {B} | 来源 |\n"
-            "- **案例素材**：{entity} — {description} [来源名称]\n"
+            f"{_RESEARCH_PAGE_SKELETON}"
             "```\n\n"
-            "### 写作硬规则\n"
-            "1. 要点优先，核心论点附展开说明和来源引用\n"
-            "2. 精准引用：事实陈述首次出现时同句内附来源标注（如 [Gartner]、[年度报告]），禁止伪引用\n"
-            "3. 反空泛：禁止'市场前景广阔''发展迅速'等无来源修饰，用精确数字替代\n"
-            "4. 数据完整保留：所有数据点必须出现在关键数据清单表格中\n"
-            "5. 来源可识别：使用来源名称标注，禁止纯数字编号\n"
-            "6. 关键数据清单每页 ≥5 条、≥2 种数据类型\n"
-            "7. trend/data/comparison/technology 页必须有时序数据（≥3时间点）和对比数据（≥2对象×≥2维度）\n"
-            f"8. 本页 ≥{min_words_per_page} 字\n"
-            f"{'9. no_search 模式：数据有限页面标注「数据有限，基于用户素材」，关键数据清单 ≥3 行即可' if config.search_mode == 'no_search' else ''}\n\n"
+            f"{_RESEARCH_WRITE_HARD_RULES}"
+            f"{_RESEARCH_PREWRITE_CHECKLIST}\n"
+            f"8. 引用标注 ≥{config.min_citations} 个不同来源名，且均在来源留痕登记\n"
+            "9. 关键数据每页 ≥5 条、≥2 种数据类型；主轴 ≥4 行×≥3 列"
+            f"{'；no_search 或证据受限时标注「数据有限…」并允许关键数据 ≥3、主轴 ≥3×2' if config.search_mode == 'no_search' else ''}\n\n"
             f"### 抓取内容\n{extraction_summary}"
             f"{material_section}"
         )
@@ -1500,7 +2158,10 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         try:
             result = await self.stream_llm_collect(
                 prompt=prompt,
-                system_prompt="你是深度内容研究员，直接输出该页的 Markdown 内容，不要输出解释。",
+                system_prompt=(
+                    pipeline_role_boundary("P6")
+                    + "你是深度内容研究员，直接输出该页的 Markdown 内容，不要输出解释。"
+                ),
                 concurrent=True,
             )
             return result.strip() if result else ""
@@ -1521,8 +2182,15 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             "**核心论点**：[撰写失败，待补充]\n"
             "#### PPT 内容建议\n"
             f"- **推荐主标题**：{title}\n"
-            "- **核心论点**：待补充\n"
-            "- **关键数据清单**：待补充\n"
+            "- **主轴**：待补充\n"
+            "- **关键数据**：待补充\n"
+            "- **上屏要点**：待补充\n"
+            "- **案例**：待补充\n"
+            "\n"
+            "#### 来源留痕\n"
+            "| 名称 | URL | 类别 | 评分 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 待补充 | 待补充 | 待补充 | C |\n"
         )
 
     def _build_no_data_page_section(
@@ -1541,27 +2209,45 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
 
         lines: list[str] = []
         lines.append(f"### P{page_num}: {title}")
-        lines.append(f"> 页面类型：{page_type}")
+        lines.append(f"> 页面类型：{page_type} | 研究级别：{research_depth}")
         lines.append("")
         lines.append("**核心论点**：[数据有限，基于大纲规划]")
         lines.append("")
         lines.append("#### PPT 内容建议")
         lines.append(f"- **推荐主标题**：{title}")
-        lines.append("- **核心论点**：")
-        if queries:
-            for q in queries[:5]:
-                lines.append(f"  - {q}（待补充数据）")
-        else:
-            lines.append("  - 待补充")
-        lines.append("- **关键数据清单**（无研究数据，待后续补充）：")
-        lines.append("  | 数据项 | 数值/结果 | 来源 | 时间 | 数据类型 |")
-        lines.append("  | --- | --- | --- | --- | --- |")
+        lines.append("- **主轴**（数据有限，基于用户素材 / 大纲）：")
+        lines.append("  | 维度 | 对象A | 对象B | 来源 |")
+        lines.append("  | --- | --- | --- | --- |")
+        lines.append("  | 待补充 | 待补充 | 待补充 | 大纲 |")
+        lines.append("  | 待补充 | 待补充 | 待补充 | 大纲 |")
+        lines.append("  | 待补充 | 待补充 | 待补充 | 大纲 |")
+        lines.append("- **关键数据**（无研究数据，待后续补充）：")
+        lines.append("  | 数据项 | 数值 | 单位/口径 | 归属对象 | 来源 | 时间 | 数据类型 |")
+        lines.append("  | --- | --- | --- | --- | --- | --- | --- |")
         if data_needs:
             for need in data_needs[:3]:
-                lines.append(f"  | {need} | 待补充 | 待补充 | 待补充 | 待补充 |")
+                lines.append(
+                    f"  | {need} | 待补充 | 待补充 | 待补充 | 大纲 | 待补充 | 绝对值 |"
+                )
         else:
-            lines.append("  | 待补充 | 待补充 | 待补充 | 待补充 | 待补充 |")
-        lines.append("- **数据有限**，本页未执行外部搜索，亦无用户素材。")
+            lines.append(
+                "  | 待补充 | 待补充 | 待补充 | 待补充 | 大纲 | 待补充 | 绝对值 |"
+            )
+        lines.append("- **上屏要点**：")
+        if queries:
+            for i, q in enumerate(queries[:4], 1):
+                lines.append(f"  {i}. {q}（待补充） [大纲]")
+        else:
+            lines.append("  1. 待补充 [大纲]")
+        lines.append("- **案例**：")
+        lines.append("  - 待补充 — 待补充 [大纲]")
+        lines.append("")
+        lines.append("#### 来源留痕")
+        lines.append("| 名称 | URL | 类别 | 评分 |")
+        lines.append("| --- | --- | --- | --- |")
+        lines.append("| 大纲 | outline.md | 用户素材 | B |")
+        lines.append("")
+        lines.append("- **数据有限，基于用户素材**，本页未执行外部搜索。")
         lines.append("")
         return "\n".join(lines)
 
@@ -1570,34 +2256,66 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         page: dict[str, Any],
         section: str,
         extractions: list[dict[str, Any]] | None,
+        config: _ResearchConfig,
         min_words_per_page: int,
     ) -> tuple[str, bool]:
-        """结构校验 + 规则补引用。返回 (section, structural_ok)；仅结构崩触发重写。"""
+        """结构 + 程序化预检 + 规则补引用。返回 (section, ok)；仅结构/预检失败才重写。"""
         if not section:
             return "", False
 
         page_num = page["page_number"]
+
         header_match = _PAGE_HEADER_RE.search(section)
         if not header_match or int(header_match.group(1)) != int(page_num):
             logger.warning(
-                "[P6.1] 页面 P%d 结构失败：页码不对齐（section 未以 ### P%d: 开头）",
+                "[P6.1] 页面 P%d 校验失败：页码不对齐（section 未以 ### P%d: 开头）",
                 page_num, page_num,
             )
             return section, False
 
         if "#### PPT 内容建议" not in section:
-            logger.warning("[P6.1] 页面 P%d 结构失败：缺少 #### PPT 内容建议", page_num)
+            logger.warning("[P6.1] 页面 P%d 校验失败：缺少 #### PPT 内容建议", page_num)
+            return section, False
+        if "#### 来源留痕" not in section:
+            logger.warning("[P6.1] 页面 P%d 校验失败：缺少 #### 来源留痕", page_num)
+            return section, False
+        for slot in ("主轴", "关键数据", "上屏要点"):
+            if slot not in section:
+                logger.warning("[P6.1] 页面 P%d 校验失败：缺少槽位 %s", page_num, slot)
+                return section, False
+
+        precheck_issues = _precheck_research_section(section, config)
+        blocking: list[str] = []
+        blocking_prefixes = (
+            "axis_table_too_small:",
+            "missing:",
+            "forbidden_top_slot:",
+        )
+        for issue in precheck_issues:
+            if issue.startswith(blocking_prefixes) or issue == "missing_evidence_limited_annotation":
+                blocking.append(issue)
+        if blocking:
+            logger.warning(
+                "[P6.1] 页面 P%d 程序化预检未通过: %s",
+                page_num,
+                blocking,
+            )
             return section, False
 
         chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", section))
         min_words_80 = int(min_words_per_page * 0.8)
         if chinese_chars < min_words_80:
             logger.warning(
-                "[P6.1] 页面 P%d 字数偏低 %d < %d（不触发重写）",
+                "[P6.1] 页面 P%d 字数不足（warn）：%d < %d，不阻断",
                 page_num, chinese_chars, min_words_80,
             )
 
-        section = enrich_section_citations(section, extractions)
+        min_citations = max(1, int(config.min_citations or _MIN_NAMED_CITATIONS))
+        if config.writer_profile == "material" and config.search_mode == "no_search":
+            min_citations = max(1, min(min_citations, 2))
+        section = enrich_section_citations(
+            section, extractions, min_citations=min_citations,
+        )
         return section, True
 
     async def _write_file(self, path: str, content: str) -> bool:
@@ -1654,7 +2372,7 @@ class DeepResearchNode(PlanNode):
                 "\n"
                 "### 执行流程（两阶段串行）\n"
                 "1. 调用 P6.0 PrepareNode → 全局预处理（解析 outline、判定搜索策略、素材覆盖度评估、计算每页最低字数）\n"
-                "2. 调用 P6.1 PageWorkerNode → per-page 并发闭环（搜索→评分→补搜→抓取→ghost→校验→回溯→撰写→按页校验→失败重写）\n"
+                "2. 调用 P6.1 PageWorkerNode → per-page 并发闭环（搜索→评分→补搜→抓取→ghost→校验→回溯→撰写→规则化按页校验→失败重写）\n"
                 "   - N 页 asyncio.gather 并发，单页内各阶段串行\n"
                 "   - LLM 并发度由框架 semaphore 控制\n"
                 "\n"

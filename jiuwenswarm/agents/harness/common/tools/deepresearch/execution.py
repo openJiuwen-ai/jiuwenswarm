@@ -19,6 +19,7 @@ from openjiuwen.core.foundation.tool import tool
 from jiuwenswarm.common.schema.ask_user import (
     AskUserResponse,
     AskUserResponseError,
+    decode_user_input,
     parse_ask_user_response,
 )
 from jiuwenswarm.perf.context import DeepResearchReportType
@@ -250,23 +251,8 @@ def _append_timing_window(
     return next_state
 
 
-def _decode_user_input(value: Any) -> Any:
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (TypeError, ValueError):
-            return value
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            return model_dump(mode="json")
-        except TypeError:
-            return model_dump()
-    return value
-
-
 def _parse_response(value: Any) -> AskUserResponse:
-    decoded = _decode_user_input(value)
+    decoded = decode_user_input(value)
     if not isinstance(decoded, Mapping):
         raise AskUserResponseError("AskUser response must be an object")
     if decoded.get("status") in {"error", "cancelled"}:
@@ -275,7 +261,7 @@ def _parse_response(value: Any) -> AskUserResponse:
 
 
 def _terminal_interaction_status(value: Any) -> str:
-    decoded = _decode_user_input(value)
+    decoded = decode_user_input(value)
     if not isinstance(decoded, Mapping):
         return ""
     status = str(decoded.get("status") or "").strip().lower()
@@ -566,7 +552,7 @@ def _marker_prompt(outcome: Mapping[str, Any]) -> str:
 
 
 def _interaction_json(value: Any) -> str:
-    decoded = _decode_user_input(value)
+    decoded = decode_user_input(value)
     if isinstance(decoded, Mapping):
         return json.dumps(dict(decoded), ensure_ascii=False, separators=(",", ":"))
     return ""

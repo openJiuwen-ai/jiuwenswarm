@@ -240,13 +240,14 @@ class CronJobRepository:
         return deleted
 
     async def get_revision(self) -> int:
-        if self._revision:
-            return self._revision
         jobs = await self.list_jobs()
         if not jobs:
-            return 0
+            return int(self._revision or 0)
         stamp = max(float(j.updated_at or 0) for j in jobs)
-        return int(stamp * 1_000_000)
+        db_rev = int(stamp * 1_000_000)
+        if self._revision:
+            return max(int(self._revision), db_rev)
+        return db_rev
 
     async def upsert_from_dict(self, data: dict[str, Any]) -> CronJob:
         job = CronJob.from_dict(dict(data))

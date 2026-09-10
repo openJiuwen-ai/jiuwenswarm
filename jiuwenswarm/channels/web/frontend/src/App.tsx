@@ -41,8 +41,14 @@ import {
   normalizeToolCallPayload,
   normalizeToolResultPayload,
 } from './features/tool-events/toolEventNormalizer';
-import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages } from './hooks';
+import {
+  useWebSocket,
+  mergePersistedGoalCompletionMessages,
+  stampGoalObjectiveMessages,
+  useCronJobSync,
+} from './hooks';
 import { webRequest } from './services/webClient';
+import { getWebTransport } from './utils/env';
 import { useTeamPanelState } from './features/teamPanelState';
 import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session, type UserAnswerStatus } from './types';
 import {
@@ -56,6 +62,12 @@ import {
   useCronStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+import {
+  MAIN_NAV_STORAGE_KEY,
+  parseStoredMainNav,
+  resolveMainNavAfterRoute,
+  type MainNavKey,
+} from './features/mainNavigationState';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import { DeleteDialog } from './multi-session/dialogs/Dialogs';
 import {
@@ -101,8 +113,6 @@ function isTeamMode(mode: string): boolean {
 function shouldPreviewModelSetupGuide(): boolean {
   return PREVIEW_MODEL_SETUP_GUIDE;
 }
-
-type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'browserpanel' | 'updatepanel' | 'a2aingress';
 
 type LoadedHistoryPage = {
   pageIdx: number;
@@ -261,9 +271,16 @@ async function saveShareImage(dataUrl: string, filename: string): Promise<boolea
   return true;
 }
 
+/** 切换会话时等待历史预载的上限：超过则放弃预载直接翻转视图，由 bootstrap effect 兜底 */
+const HISTORY_PRELOAD_MAX_WAIT_MS = 1500;
+
 function AppContent() {
   const { t, i18n } = useTranslation();
   const { route, navigate } = useChatRoute();
+  const routeKey = route.kind === 'chat-session'
+    ? `chat-session:${route.sessionId}`
+    : route.kind;
+  const previousRouteKeyRef = useRef(routeKey);
   const tRef = useRef(t);
   // 优先使用存储的会话 ID，避免每次刷新创建新会话
   const [sessionId, setSessionId] = useState<string>(() => {
@@ -272,8 +289,21 @@ function AppContent() {
   });
 
   const enterpriseMode = isEnterprise();
+  const cronJobPullSyncEnabled = enterpriseMode && getWebTransport() === 'http';
+  useCronJobSync(cronJobPullSyncEnabled);
   const enterpriseBlockedNav = new Set<MainNavKey>(ENTERPRISE_HIDDEN_NAV_ITEMS);
-  const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  const [activeNav, setActiveNav] = useState<MainNavKey>(() => {
+    let stored: string | null = null;
+    try {
+      stored = window.sessionStorage.getItem(MAIN_NAV_STORAGE_KEY);
+    } catch {
+      // Storage may be unavailable in private/locked-down browser contexts.
+    }
+    return parseStoredMainNav(stored, {
+      blocked: enterpriseMode ? ENTERPRISE_HIDDEN_NAV_ITEMS : [],
+      updaterEnabled: FEATURE_APP_UPDATER_UI,
+    });
+  });
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -290,8 +320,8 @@ function AppContent() {
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
-  const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
-  const [hasVisitedChannels, setHasVisitedChannels] = useState(false);
+  const [hasVisitedSkills, setHasVisitedSkills] = useState(activeNav === 'skills');
+  const [hasVisitedChannels, setHasVisitedChannels] = useState(activeNav === 'channels');
   const [sidebarMorePanelOpen, setSidebarMorePanelOpen] = useState(false);
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
@@ -308,6 +338,14 @@ function AppContent() {
   useEffect(() => {
     tRef.current = t;
   }, [t]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(MAIN_NAV_STORAGE_KEY, activeNav);
+    } catch {
+      // Keep navigation functional when storage is unavailable.
+    }
+  }, [activeNav]);
 
   useEffect(() => {
     if (activeNav !== 'configpanel') {
@@ -333,7 +371,10 @@ function AppContent() {
   useEffect(() => {
     const handler = (e: Event) => {
       const nav = (e as CustomEvent<MainNavKey>).detail;
-      if (nav && !(enterpriseMode && enterpriseBlockedNav.has(nav))) setActiveNav(nav);
+      if (!nav || (enterpriseMode && enterpriseBlockedNav.has(nav))) return;
+      setActiveNav(nav);
+      if (nav === 'skills') setHasVisitedSkills(true);
+      if (nav === 'channels') setHasVisitedChannels(true);
     };
     window.addEventListener('jiuwen:nav', handler);
     return () => window.removeEventListener('jiuwen:nav', handler);
@@ -408,10 +449,16 @@ function AppContent() {
   } = useTeamPanelState();
 
   useEffect(() => {
+    const previousRouteKey = previousRouteKeyRef.current;
+    previousRouteKeyRef.current = routeKey;
+    setActiveNav(current => resolveMainNavAfterRoute(current, {
+      previousRouteKey,
+      routeKey,
+      routeKind: route.kind,
+    }));
     if (route.kind === 'chat-session') {
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
-      setActiveNav('chat');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') navigate({ kind: 'chat-new' }, { replace: true });
       if (preserveSelectedProjectOnChatNewRef.current) {
@@ -421,10 +468,9 @@ function AppContent() {
       }
       sessionIdRef.current = 'new';
       setSessionId('new');
-      setActiveNav('chat');
       setTeamAreaExpanded(false);
     }
-  }, [navigate, route, setTeamAreaExpanded]);
+  }, [navigate, route, routeKey, setTeamAreaExpanded]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -1313,6 +1359,218 @@ function AppContent() {
       .catch(() => {});
   }, [isConnected]);
 
+  /**
+   * 发起一次全量历史恢复：订阅 history.message 流 + 发送 history.get，最后一帧 done 后
+   * 一次性 replaceHistoryMessages 落库。bootstrap effect 与"切换会话预载"共用这套回放
+   * 回调，保证两种入口行为一致——预载在视图翻转前把目标会话消息填进 runtime，翻转后
+   * ChatPanel 直接渲染完整时间线，消除"空态 loading → 时间线整块弹出"的切换跳闪；
+   * 预载超时/失败则交给 sessionId 变化后的 bootstrap effect 走常规恢复路径兜底。
+   * 返回 done：resolve(true)=恢复完成（含空会话），resolve(false)=恢复失败。
+   */
+  const startHistoryRestore = useCallback((sid: string): { done: Promise<boolean> } => {
+    let settleDone!: (ok: boolean) => void;
+    const done = new Promise<boolean>((resolve) => { settleDone = resolve; });
+    const restoreHandle = beginHistoryRestore({
+      sessionId: sid,
+      onReady: (messages, totalPages) => {
+        historyRestoreFromPanelHintRef.current = false;
+        // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
+        // messages 里不会有它——按时间戳把本地持久化的记录补回去，见
+        // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
+        // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
+        // 见 stampGoalObjectiveMessages。
+        replaceHistoryMessages(
+          sid,
+          stampGoalObjectiveMessages(sid, mergePersistedGoalCompletionMessages(sid, messages))
+        );
+        const restoredTotalPages = totalPages ?? 1;
+        setHistoryPagerMeta(sid, {
+          loadedPages: 1,
+          totalPages: restoredTotalPages,
+        });
+        setLoadingHistory(sid, false);
+        startBackgroundHistoryPrefetch(sid, 1, restoredTotalPages);
+        queueMicrotask(() => {
+          if (historyRestoreHandlesRef.current.get(sid) === restoreHandle) {
+            historyRestoreHandlesRef.current.delete(sid);
+          }
+        });
+        settleDone(true);
+      },
+      onEmpty: (emptyTotalPages) => {
+        replaceHistoryMessages(sid, mergePersistedGoalCompletionMessages(sid, []));
+        const restoredTotalPages = emptyTotalPages ?? 1;
+        setHistoryPagerMeta(sid, {
+          loadedPages: 1,
+          totalPages: restoredTotalPages,
+        });
+        if (historyRestoreFromPanelHintRef.current) {
+          historyRestoreFromPanelHintRef.current = false;
+          addMessage(sid, {
+            id: `history-restore-empty-${Date.now()}`,
+            role: 'system',
+            content: tRef.current('sessions.restoreEmpty'),
+            timestamp: new Date().toISOString(),
+          });
+        }
+        setLoadingHistory(sid, false);
+        startBackgroundHistoryPrefetch(sid, 1, restoredTotalPages);
+        if (historyRestoreHandlesRef.current.get(sid) === restoreHandle) {
+          historyRestoreHandlesRef.current.delete(sid);
+        }
+        settleDone(true);
+      },
+      onToolReplay: (items) => {
+        clearSubtasks(sid);
+        for (const item of items) {
+          if (item.kind === 'tool_call') {
+            const n = normalizeToolCallPayload(item.payload);
+            addToolCall(
+              sid,
+              {
+                id: n.id,
+                name: n.name,
+                arguments: n.arguments,
+                description: n.description,
+                formatted_args: n.formatted_args,
+                display_name: n.display_name,
+                memberName: n.memberName,
+              },
+              { startedAt: item.at }
+            );
+          } else {
+            const n = normalizeToolResultPayload(item.payload);
+            addToolResult(
+              sid,
+              {
+                toolName: n.toolName,
+                result: n.result,
+                success: n.success,
+                toolCallId: n.toolCallId,
+                summary: n.summary,
+                skillTree: n.skillTree,
+                ...(n.timedOut ? { timedOut: true } : {}),
+                ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
+              },
+              { updatedAt: item.at }
+            );
+          }
+        }
+        settleHistoricalToolExecutions(sid);
+      },
+      onHarnessReplay: (items: HistoryHarnessReplayItem[]) => {
+        const harnessStore = useHarnessStore.getState();
+        const harnessRuntime = harnessStore.getRuntime(sid);
+        for (const item of items) {
+          if (item.kind === 'harness_message') {
+            const content = typeof item.payload.content === 'string' ? item.payload.content : '';
+            const stage = typeof item.payload.stage === 'string' ? item.payload.stage : undefined;
+            if (content) {
+              harnessStore.addHarnessMessage(sid, content, stage);
+              // Update stage result with running status and label from message
+              if (stage) {
+                const existingStage = harnessRuntime?.stageResults.find((s) => s.stage === stage);
+                if (existingStage?.status !== 'running') {
+                  harnessStore.updateStageResult(sid, {
+                    stage,
+                    stageLabel: content,
+                    status: 'running',
+                    messages: [],
+                    metrics: {},
+                  });
+                }
+              }
+            }
+          } else if (item.kind === 'harness_stage_result') {
+            const stage = typeof item.payload.stage === 'string' ? item.payload.stage : '';
+            const status = typeof item.payload.status === 'string' ? item.payload.status : 'success';
+            const error = typeof item.payload.error === 'string' ? item.payload.error : undefined;
+            const messages = Array.isArray(item.payload.messages) ? item.payload.messages : [];
+            const metrics = item.payload.metrics || {};
+            if (stage) {
+              harnessStore.updateStageResult(sid, {
+                stage,
+                status: status as 'success' | 'failed' | 'timeout',
+                error,
+                messages,
+                metrics,
+              });
+            }
+          }
+        }
+      },
+      onReasoningReplay: (items) => {
+        restoreReasoningSegments(sid, items);
+      },
+      onError: (message) => {
+        console.warn('[history.restore]', message);
+        setLoadingHistory(sid, false);
+        settleDone(false);
+      },
+    });
+    historyRestoreHandlesRef.current.set(sid, restoreHandle);
+
+    // 调用历史会话接口
+    void (async () => {
+      try {
+        await request(HISTORY_GET_METHOD, {
+          session_id: sid,
+          page_idx: 1,
+        });
+      } catch (error) {
+        historyRestoreFromPanelHintRef.current = false;
+        restoreHandle.dispose();
+        if (historyRestoreHandlesRef.current.get(sid) === restoreHandle) {
+          historyRestoreHandlesRef.current.delete(sid);
+        }
+        // 发生错误时，设置 historyPagerMeta 为 null，显示欢迎信息
+        setHistoryPagerMeta(sid, null);
+        console.error('Failed to load history:', error);
+        setLoadingHistory(sid, false);
+        // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (sessionIdRef.current === sid && !errorMessage.includes('invalid page_idx or session history not found')) {
+          clearMessages(sid);
+          addMessage(sid, {
+            id: `history-load-failed-${Date.now()}`,
+            role: 'system',
+            content: tRef.current('sessions.errors.restoreFailed', { sessionId: sid }),
+            timestamp: new Date().toISOString(),
+          });
+        }
+        settleDone(false);
+      }
+    })();
+    return { done };
+  }, [
+    request,
+    addMessage,
+    addToolCall,
+    addToolResult,
+    settleHistoricalToolExecutions,
+    clearMessages,
+    clearSubtasks,
+    setLoadingHistory,
+    setHistoryPagerMeta,
+    replaceHistoryMessages,
+    restoreReasoningSegments,
+    startBackgroundHistoryPrefetch,
+  ]);
+
+  // 轮询兜底刷新：企业版 HTTP 无 cron 结果 push，立即执行跳转后 skipHistoryLoad，
+  // syncJobRuns 检测到「当前正打开会话 == 新 last_session_id」时投递刷新请求，
+  // 这里消费并触发一次完整的历史恢复（与首次点击激活会话的时机一逻辑一致）。
+  const pendingActiveHistoryRefresh = useCronStore((s) => s.pendingActiveHistoryRefresh);
+  useEffect(() => {
+    if (!pendingActiveHistoryRefresh) return;
+    // consume 物先置空再判断，保证 effect 幂等、不会因同一值重复触发
+    const sid = useCronStore.getState().consumeActiveHistoryRefresh();
+    if (!sid) return;
+    // 仅当该会话仍是当前激活会话时刷新，避免竞态下刷新到已切走的会话
+    if (useChatStore.getState().activeSessionId !== sid) return;
+    startHistoryRestore(sid);
+  }, [pendingActiveHistoryRefresh, startHistoryRestore]);
+
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
@@ -1352,191 +1610,15 @@ function AppContent() {
     setHistoryLoadingMore(false);
     
     setLoadingHistory(sessionId, true);
-    // 开始历史会话加载
-    const restoreHandle = beginHistoryRestore({
-      sessionId: sessionId,
-      onReady: (messages, totalPages) => {
-        historyRestoreFromPanelHintRef.current = false;
-        // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
-        // messages 里不会有它——按时间戳把本地持久化的记录补回去，见
-        // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
-        // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
-        // 见 stampGoalObjectiveMessages。
-        replaceHistoryMessages(
-          sessionId,
-          stampGoalObjectiveMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, messages))
-        );
-        const restoredTotalPages = totalPages ?? 1;
-        setHistoryPagerMeta(sessionId, {
-          loadedPages: 1,
-          totalPages: restoredTotalPages,
-        });
-        setLoadingHistory(sessionId, false);
-        startBackgroundHistoryPrefetch(sessionId, 1, restoredTotalPages);
-        queueMicrotask(() => {
-          if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
-            historyRestoreHandlesRef.current.delete(sessionId);
-          }
-        });
-      },
-      onEmpty: (emptyTotalPages) => {
-        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, []));
-        const restoredTotalPages = emptyTotalPages ?? 1;
-        setHistoryPagerMeta(sessionId, {
-          loadedPages: 1,
-          totalPages: restoredTotalPages,
-        });
-        if (historyRestoreFromPanelHintRef.current) {
-          historyRestoreFromPanelHintRef.current = false;
-          addMessage(sessionId, {
-            id: `history-restore-empty-${Date.now()}`,
-            role: 'system',
-            content: tRef.current('sessions.restoreEmpty'),
-            timestamp: new Date().toISOString(),
-          });
-        }
-        setLoadingHistory(sessionId, false);
-        startBackgroundHistoryPrefetch(sessionId, 1, restoredTotalPages);
-        if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
-          historyRestoreHandlesRef.current.delete(sessionId);
-        }
-      },
-      onToolReplay: (items) => {
-        clearSubtasks(sessionId);
-        for (const item of items) {
-          if (item.kind === 'tool_call') {
-            const n = normalizeToolCallPayload(item.payload);
-            addToolCall(
-              sessionId,
-              {
-                id: n.id,
-                name: n.name,
-                arguments: n.arguments,
-                description: n.description,
-                formatted_args: n.formatted_args,
-                display_name: n.display_name,
-                memberName: n.memberName,
-              },
-              { startedAt: item.at }
-            );
-          } else {
-            const n = normalizeToolResultPayload(item.payload);
-            addToolResult(
-              sessionId,
-              {
-                toolName: n.toolName,
-                result: n.result,
-                success: n.success,
-                toolCallId: n.toolCallId,
-                summary: n.summary,
-                skillTree: n.skillTree,
-                ...(n.timedOut ? { timedOut: true } : {}),
-                ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
-              },
-              { updatedAt: item.at }
-            );
-          }
-        }
-        settleHistoricalToolExecutions(sessionId);
-      },
-      onHarnessReplay: (items: HistoryHarnessReplayItem[]) => {
-        const harnessStore = useHarnessStore.getState();
-        const harnessRuntime = harnessStore.getRuntime(sessionId);
-        for (const item of items) {
-          if (item.kind === 'harness_message') {
-            const content = typeof item.payload.content === 'string' ? item.payload.content : '';
-            const stage = typeof item.payload.stage === 'string' ? item.payload.stage : undefined;
-            if (content) {
-              harnessStore.addHarnessMessage(sessionId, content, stage);
-              // Update stage result with running status and label from message
-              if (stage) {
-                const existingStage = harnessRuntime?.stageResults.find((s) => s.stage === stage);
-                if (existingStage?.status !== 'running') {
-                  harnessStore.updateStageResult(sessionId, {
-                    stage,
-                    stageLabel: content,
-                    status: 'running',
-                    messages: [],
-                    metrics: {},
-                  });
-                }
-              }
-            }
-          } else if (item.kind === 'harness_stage_result') {
-            const stage = typeof item.payload.stage === 'string' ? item.payload.stage : '';
-            const status = typeof item.payload.status === 'string' ? item.payload.status : 'success';
-            const error = typeof item.payload.error === 'string' ? item.payload.error : undefined;
-            const messages = Array.isArray(item.payload.messages) ? item.payload.messages : [];
-            const metrics = item.payload.metrics || {};
-            if (stage) {
-              harnessStore.updateStageResult(sessionId, {
-                stage,
-                status: status as 'success' | 'failed' | 'timeout',
-                error,
-                messages,
-                metrics,
-              });
-            }
-          }
-        }
-      },
-      onReasoningReplay: (items) => {
-        restoreReasoningSegments(sessionId, items);
-      },
-      onError: (message) => {
-        console.warn('[history.restore]', message);
-        setLoadingHistory(sessionId, false);
-      },
-    });
-    historyRestoreHandlesRef.current.set(sessionId, restoreHandle);
-
-    // 调用历史会话接口
-    void (async () => {
-      try {
-        await request(HISTORY_GET_METHOD, {
-          session_id: sessionId,
-          page_idx: 1,
-        });
-      } catch (error) {
-        historyRestoreFromPanelHintRef.current = false;
-        restoreHandle.dispose();
-        if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
-          historyRestoreHandlesRef.current.delete(sessionId);
-        }
-        // 发生错误时，设置 historyPagerMeta 为 null，显示欢迎信息
-        setHistoryPagerMeta(sessionId, null);
-        console.error('Failed to load history:', error);
-        setLoadingHistory(sessionId, false);
-        // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (sessionIdRef.current === sessionId && !errorMessage.includes('invalid page_idx or session history not found')) {
-          clearMessages(sessionId);
-          addMessage(sessionId, {
-            id: `history-load-failed-${Date.now()}`,
-            role: 'system',
-            content: tRef.current('sessions.errors.restoreFailed', { sessionId }),
-            timestamp: new Date().toISOString(),
-          });
-        }
-      }
-    })();
+    startHistoryRestore(sessionId);
   }, [
     isConnected,
     sessionId,
     historyBootstrapKey,
-    request,
-    addMessage,
-    addToolCall,
-    addToolResult,
-    settleHistoricalToolExecutions,
-    clearMessages,
-    clearSubtasks,
     disposeInFlightHistoryHandles,
     setLoadingHistory,
     setHistoryPagerMeta,
-    replaceHistoryMessages,
-    restoreReasoningSegments,
-    startBackgroundHistoryPrefetch,
+    startHistoryRestore,
   ]);
 
   // 会话切换/页面加载时主动拉一次当前 Goal 状态（协议文档 v2 §11 推荐流程）——不然刷新页面
@@ -1819,8 +1901,10 @@ function AppContent() {
     status?: UserAnswerStatus,
   ) => {
     const currentSessionId = sessionIdRef.current;
-    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
-    void sendUserAnswer(currentSessionId, requestId, answers, source, status);
+    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
+      return Promise.resolve();
+    }
+    return sendUserAnswer(currentSessionId, requestId, answers, source, status);
   }, [sendUserAnswer]);
 
   const handleLoadMoreHistory = useCallback(async () => {
@@ -1895,26 +1979,6 @@ function AppContent() {
         useSessionStore.getState().getRuntime(previousSessionId)?.mode ?? mode;
       const resolvedMode = targetMode ?? targetSession?.mode ?? previousMode;
       disposeInFlightHistoryHandles(targetSessionId);
-      if (previousSessionId && previousSessionId !== targetSessionId) {
-        try {
-          await request('session.switch', {
-            session_id: targetSessionId,
-            previous_session_id: previousSessionId,
-            previous_mode: previousMode,
-            mode: resolvedMode,
-          });
-        } catch (error) {
-          if (isTeamMode(resolvedMode)) {
-            console.error('Failed to switch team session:', error);
-            window.alert(t('sessions.errors.switchSession'));
-            return;
-          }
-          console.warn('Session switch lifecycle hook failed; continuing restore:', error);
-        }
-      }
-
-      setHistoryPagerMeta(targetSessionId, null);
-      setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
       if (!existingRuntime) {
         useChatStore.getState().ensureRuntime(targetSessionId);
@@ -1931,7 +1995,61 @@ function AppContent() {
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
       ensureSessionRuntimes(targetSessionId);
+      // historyLoadingMore 是全局单例（非按会话），切换后一律复位，避免上一会话遗留的
+      // "加载更多"转圈挂到新会话上。但 historyPagerMeta 是按会话的"历史已完整加载"标记：
+      // 目标会话已加载过就别清——清了会让翻转后的 bootstrap effect 把它当成从未加载过而
+      // 整页重拉历史，replaceHistoryMessages 换掉整条时间线（render key 重排+滚动效果
+      // 重跑），这就是"切回已访问会话时的跳闪"。只有即将走预载/重载路径的会话才清旧状态。
+      setHistoryLoadingMore(false);
+      const willLoadHistory =
+        !options?.skipHistoryLoad &&
+        !existingRuntime?.historyPagerMeta &&
+        !existingRuntime?.isNewSession &&
+        !promotedFromNewSessionIdsRef.current.has(targetSessionId);
+      if (willLoadHistory) {
+        setHistoryPagerMeta(targetSessionId, null);
+        setLoadingHistory(targetSessionId, true);
+      }
+
+      // 切换原子化：并行发起 session.switch 生命周期与目标会话历史预载，两者都就绪后再翻转
+      // 视图。旧实现先翻转 sessionId，ChatPanel 会先渲染一帧"空时间线+加载中"，history
+      // 到达后整块时间线弹出并滚底——即切换会话后的跳闪。预载 1.5s 封顶：超时/失败不再
+      // 等待，翻转后由 bootstrap effect 走常规恢复路径兜底（等价旧行为）。
+      let switchError: unknown = null;
+      const switchPromise =
+        previousSessionId && previousSessionId !== targetSessionId
+          ? request('session.switch', {
+              session_id: targetSessionId,
+              previous_session_id: previousSessionId,
+              previous_mode: previousMode,
+              mode: resolvedMode,
+            }).catch((error: unknown) => {
+              switchError = error;
+              return null;
+            })
+          : Promise.resolve(true as const);
+      const preloadPromise = willLoadHistory ? startHistoryRestore(targetSessionId).done : null;
+
+      const switchOk = await switchPromise;
+      if (switchOk === null) {
+        if (isTeamMode(resolvedMode)) {
+          console.error('Failed to switch team session:', switchError);
+          window.alert(t('sessions.errors.switchSession'));
+          return;
+        }
+        console.warn('Session switch lifecycle hook failed; continuing restore:', switchError);
+      }
+      if (preloadPromise) {
+        await Promise.race([
+          preloadPromise,
+          new Promise<void>((resolve) => { window.setTimeout(resolve, HISTORY_PRELOAD_MAX_WAIT_MS); }),
+        ]);
+      }
+
       sessionIdRef.current = targetSessionId;
+      // 同步切 activeSessionId（缺省由 effect 在渲染后才补同步）：否则切换后首帧
+      // ChatPanel 仍按上一个会话读取消息，旧会话内容会在新会话标题下闪回一帧。
+      useChatStore.getState().setActiveSessionId(targetSessionId);
       setSessionId(targetSessionId);
       if (targetSession) {
         upsertSessionMetadata(targetSession, { setCurrent: true });
@@ -1972,11 +2090,13 @@ function AppContent() {
       setCurrentSession,
       setHistoryLoadingMore,
       setHistoryPagerMeta,
+      setLoadingHistory,
       setMode,
       setPaused,
       setProcessing,
       setSessionId,
       setThinking,
+      startHistoryRestore,
       t,
       upsertSessionMetadata,
     ]
@@ -2209,7 +2329,7 @@ function AppContent() {
         isConnected={isConnected}
         onNewSession={handleNewSession}
         showNewSession={false}
-        hiddenNavItems={enterpriseMode ? ['sessions', ...ENTERPRISE_HIDDEN_NAV_ITEMS] : ['sessions']}
+        hiddenNavItems={enterpriseMode ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS] : ['sessions', 'history']}
         onMorePanelOpenChange={setSidebarMorePanelOpen}
       />
 
@@ -2223,7 +2343,7 @@ function AppContent() {
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${isTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${activeNav === 'a2aingress' ? 'content--a2a' : ''} ${isTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
         {configError && (
           <div className="card mb-4">
             <div className="text-sm text-text-muted">
@@ -2346,6 +2466,10 @@ function AppContent() {
               isConnected={isConnected}
               isProcessing={isProcessing}
               onRestoreSession={handleRestoreSession}
+              isRemoteSessionStorage={
+                typeof serverConfig?.gateway_web_session_storage === 'string' &&
+                serverConfig.gateway_web_session_storage.trim().toLowerCase() === 'remote'
+              }
             />
           </div>
         )}
@@ -2416,7 +2540,7 @@ function AppContent() {
           </div>
         )}
         {activeNav === 'a2aingress' && (
-          <div className="app-section">
+          <div className="app-section min-h-0">
             <A2AIngressPanel isConnected={isConnected} request={request} />
           </div>
         )}

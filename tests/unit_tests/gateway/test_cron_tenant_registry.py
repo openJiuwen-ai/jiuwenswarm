@@ -9,6 +9,7 @@ import pytest
 
 from jiuwenswarm.common.utils import resolve_gateway_cron_jobs_path
 from tests.unit_tests.tenant_workspace_test_helpers import (
+    patch_multi_tenant_workspace_dirs,
     tenant_workspace_key,
     tenant_workspace_root,
 )
@@ -97,9 +98,7 @@ async def test_get_controller_concurrent_same_tenant(tmp_path, monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_web_create_mirrors_to_agent_home(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path
-    )
+    patch_multi_tenant_workspace_dirs(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "jiuwenswarm.gateway.cron.tenant_registry.CronSchedulerService.start",
         AsyncMock(),
@@ -116,6 +115,10 @@ async def test_web_create_mirrors_to_agent_home(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.gateway.cron.enterprise_store.enterprise_cron_enabled",
         lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.cron.controller.is_enterprise",
+        lambda: False,
     )
 
     registry = CronTenantRegistry.get_instance(
@@ -136,8 +139,10 @@ async def test_web_create_mirrors_to_agent_home(tmp_path, monkeypatch) -> None:
 
     gateway_path = resolve_gateway_cron_jobs_path("default", "office")
     wk = tenant_workspace_key("default", "office")
-    agent_path = tenant_workspace_root(tmp_path, wk) / "agent" / "home" / "cron_jobs.json"
+    agent_path = (
+        tenant_workspace_root(tmp_path, workspace_key=wk) / "agent" / "home" / "cron_jobs.json"
+    )
     assert gateway_path.exists()
-    assert agent_path.exists()
+    assert agent_path.exists(), f"missing agent mirror at {agent_path}"
     assert job["service_id"] == "default"
     assert job["agent_id"] == "office"

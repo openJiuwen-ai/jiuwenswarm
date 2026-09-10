@@ -2,7 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
 
 """模板表：model_template、embedding_template、extension_config_template、
-skill_whitelist_template、service_config_template（与企业级数据模型对齐）。
+skill_prebuilt_template、mcp_template、permissions_template（与企业级数据模型对齐）。
 """
 
 from __future__ import annotations
@@ -105,8 +105,8 @@ EXTENSION_CONFIG_TEMPLATE_TABLE_DEF = TableDefinition(
     ],
 )
 
-SKILL_WHITELIST_TEMPLATE_TABLE_DEF = TableDefinition(
-    table_name="skill_whitelist_template",
+SKILL_PREBUILT_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="skill_prebuilt_template",
     columns=[
         ColumnDefinition(
             "id",
@@ -119,8 +119,9 @@ SKILL_WHITELIST_TEMPLATE_TABLE_DEF = TableDefinition(
         ColumnDefinition("template_name", "string", length=128, nullable=False),
         ColumnDefinition("description", "string", length=512, nullable=True),
         ColumnDefinition("skill_id", "string", length=512, nullable=False),
-        ColumnDefinition("skill_version", "string", length=64, nullable=False),
-        ColumnDefinition("skill_source", "string", length=2048, nullable=False),
+        ColumnDefinition("package_url", "string", length=2048, nullable=True),
+        ColumnDefinition("source_id", "string", length=64, nullable=True),
+        ColumnDefinition("version_id", "string", length=128, nullable=True),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("data", "json", nullable=True),
         ColumnDefinition("created_at", "datetime", nullable=False),
@@ -131,8 +132,8 @@ SKILL_WHITELIST_TEMPLATE_TABLE_DEF = TableDefinition(
     ],
 )
 
-SERVICE_CONFIG_TEMPLATE_TABLE_DEF = TableDefinition(
-    table_name="service_config_template",
+MCP_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="mcp_template",
     columns=[
         ColumnDefinition(
             "id",
@@ -144,51 +145,32 @@ SERVICE_CONFIG_TEMPLATE_TABLE_DEF = TableDefinition(
         ColumnDefinition("template_id", "string", length=100, nullable=False),
         ColumnDefinition("template_name", "string", length=128, nullable=False),
         ColumnDefinition("description", "string", length=512, nullable=True),
-        ColumnDefinition("agent_image", "string", length=512, nullable=False),
-        ColumnDefinition("namespace", "string", length=128, nullable=False),
-        ColumnDefinition("pod_name", "string", length=128, nullable=True),
-        ColumnDefinition("container_name", "string", length=128, nullable=False),
-        ColumnDefinition("container_port", "integer", nullable=False),
-        ColumnDefinition("port_name", "string", length=64, nullable=False, default="http"),
-        ColumnDefinition(
-            "image_pull_policy",
-            "string",
-            length=32,
-            nullable=False,
-            default="IfNotPresent",
-        ),
-        ColumnDefinition("replicas", "integer", nullable=False, default=1),
-        ColumnDefinition("kubeconfig", "string", length=512, nullable=True),
-        ColumnDefinition("agent_runtime", "string", length=128, nullable=True),
-        ColumnDefinition("readiness_initial_delay", "integer", nullable=False, default=10),
-        ColumnDefinition("readiness_period", "integer", nullable=False, default=5),
-        ColumnDefinition("ready_timeout", "integer", nullable=False, default=300),
-        ColumnDefinition("ready_poll_interval", "integer", nullable=False, default=5),
-        ColumnDefinition("nfs_server", "string", length=256, nullable=True),
-        ColumnDefinition("nfs_path", "string", length=512, nullable=False, default="/"),
-        ColumnDefinition("nfs_mount_path", "string", length=512, nullable=True),
-        ColumnDefinition("agent_cpu_request", "string", length=32, nullable=True),
-        ColumnDefinition("agent_memory_request", "string", length=32, nullable=True),
-        ColumnDefinition("agent_cpu_limit", "string", length=32, nullable=True),
-        ColumnDefinition("agent_memory_limit", "string", length=32, nullable=True),
-        ColumnDefinition("jiuwenbox_cpu_request", "string", length=32, nullable=True),
-        ColumnDefinition("jiuwenbox_memory_request", "string", length=32, nullable=True),
-        ColumnDefinition("jiuwenbox_cpu_limit", "string", length=32, nullable=True),
-        ColumnDefinition("jiuwenbox_memory_limit", "string", length=32, nullable=True),
-        ColumnDefinition("min_idle_services", "integer", nullable=False, default=1),
-        ColumnDefinition("max_services", "integer", nullable=False, default=20),
-        ColumnDefinition("service_concurrency", "integer", nullable=False, default=30),
-        ColumnDefinition("service_ttl", "integer", nullable=False, default=180),
-        ColumnDefinition(
-            "autoscale_interval",
-            "decimal",
-            nullable=False,
-            default=5,
-        ),
-        ColumnDefinition("message_timeout", "integer", nullable=False, default=60),
-        ColumnDefinition("session_concurrency", "integer", nullable=False, default=3),
-        ColumnDefinition("session_ttl", "integer", nullable=False, default=60),
+        ColumnDefinition("mcp_entry", "json", nullable=False),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[
+        IndexDefinition(["template_id"], unique=True),
+    ],
+)
+
+PERMISSIONS_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="permissions_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("body", "json", nullable=False),
         ColumnDefinition("data", "json", nullable=True),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
@@ -221,4 +203,59 @@ AGENT_TEMPLATE_TABLE_DEF = TableDefinition(
     indexes=[
         IndexDefinition(["template_id"], unique=True),
     ],
+)
+
+A2A_OUTBOUND_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="a2a_outbound_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("a2a_tags", "json", nullable=True),
+        ColumnDefinition("source_url", "string", length=2048, nullable=False),
+        ColumnDefinition("card_path", "string", length=512, nullable=False),
+        ColumnDefinition("agent_card", "json", nullable=False),
+        ColumnDefinition("card_fingerprint", "string", length=128, nullable=False),
+        ColumnDefinition("card_revision", "integer", nullable=False),
+        ColumnDefinition("selected_interface", "json", nullable=False),
+        ColumnDefinition("credential_ref", "string", length=512, nullable=True),
+        ColumnDefinition("connect_timeout_seconds", "float", nullable=False),
+        ColumnDefinition("sync_wait_seconds", "float", nullable=False),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["template_id"], unique=True)],
+)
+
+A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="a2a_access_policy_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("policy_id", "string", length=100, nullable=False),
+        ColumnDefinition("policy_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("mode", "string", length=16, nullable=False),
+        ColumnDefinition("member_template_ids", "json", nullable=False),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("revision", "integer", nullable=False),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["policy_id"], unique=True)],
 )

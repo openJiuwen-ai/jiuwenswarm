@@ -47,7 +47,7 @@ kubectl get nodes
 在`部署节点`执行以下操作，下载并解压官方部署工具安装包，工具下载地址：
 
 ```
-https://openjiuwen-ci.obs.cn-north-4.myhuaweicloud.com/JiuwenSwarm/JiuwenSwarm/JiuwenSwarm_deployTool_<VERSION>_<ARCH>.zip
+https://openjiuwen-ci.obs.cn-north-4.myhuaweicloud.com/jiuwenclaw/JiuwenClaw/product/JiuwenClaw_deployTool_<VERSION>_<ARCH>_product.zip
 ```
 
 解压命令：
@@ -62,7 +62,7 @@ unzip ***.zip
 部署工具解压后完整目录结构及各文件/目录用途说明如下，业务配置统一在配置文件`.env.custom` 中调整，其他文件非必要不修改，：
 
 ```
-JiuwenClaw_deployTool_0.0.74k_arm64/
+JiuwenClaw_deployTool_<VERSION>_<ARCH>_product/
 ├── .env.example                          # 配置文件的参数说明书
 ├── .env.custom                           # 配置文件（需用户手动修改）
 ├── README.md                             # 部署工具本地说明文档
@@ -74,8 +74,8 @@ JiuwenClaw_deployTool_0.0.74k_arm64/
 ├── envfile_handler.sh                    # 处理环境变量文件脚本
 ├── global_vars.sh                        # 全局常量、默认参数定义脚本
 ├── gateway_handler.sh                    # Gateway网关模块部署、运维处理脚本
+├── runtime_handler.sh                    # AgentRuntime 运行时模块部署、运维处理脚本
 ├── k8s_handler.sh                        # Kubernetes 集群资源操作核心脚本
-├── manager_handler.sh                    # Manager 管理模块运维脚本
 ├── minio_handler.sh                      # MinIO 对象存储模块部署运维脚本
 ├── mysql_handler.sh                      # MySQL 数据库模块部署运维脚本
 ├── ports_handler.sh                      # 端口分配、校验、冲突检测管理脚本
@@ -84,17 +84,16 @@ JiuwenClaw_deployTool_0.0.74k_arm64/
 ├── nfs_handler.sh                        # NFS 模块部署运维脚本
 ├── template_handler.sh                   # Kubernetes 模板文件渲染、配置生成脚本
 ├── update_conf.sh                        # 配置更新、重载处理脚本
-├── update_docker_registry.py             # 镜像仓库地址批量更新工具
 ├── web_handler.sh                        # Web 前端模块部署、运维脚本
 ├── log_handler.sh                        # 日志管理模块部署、运维脚本
-├── jina_handler.sh                       # 网页内容提取服务模块部署、运维脚本
 ├── configmap_secret_handler.sh           # 处理存放密码的ConfigMap的脚本
 └── templates/                            # 所有 Kubernetes 资源模板配置目录
     ├── gateway-config-jiuwen.template.yaml # 网关业务配置模板
     ├── gateway.template.env                # 网关环境变量配置模板
     ├── gateway.template.yaml               # 网关 Kubernetes 部署资源模板
-    ├── manager-server.template.yaml        # 管理服务后端部署模板
-    ├── manager-web.template.yaml           # 管理前端部署模板
+    ├── agentserver.template.json           # AgentServer 服务模板
+    ├── agentserver.template.env            # AgentServer 环境变量配置模板
+    ├── runtime.template.yaml               # AgentRuntime 运行时 Kubernetes 资源模板
     ├── minio.template.yaml                 # MinIO 存储 Kubernetes 资源模板
     ├── mysql.template.yaml                 # MySQL 数据库 Kubernetes 资源模板
     ├── nfs.template.yaml                   # NFS 存储 Kubernetes 资源模板
@@ -103,7 +102,6 @@ JiuwenClaw_deployTool_0.0.74k_arm64/
     ├── postgresql.template.yaml            # PostgreSQL 数据库 Kubernetes 资源模板
     ├── redis.template.yaml                 # Redis 缓存 Kubernetes 资源模板
     ├── log.template.yaml                   # 日志模块 Kubernetes 资源模板
-    ├── jina.template.yaml                  # 网页内容提取服务模块 Kubernetes 资源模板
     ├── configmap-secret.template.yaml      # 专门存放密码的ConfigMap 资源模板
     └── web.template.yaml                   # Web 前端 Kubernetes 部署资源模板
 ```
@@ -129,22 +127,6 @@ API_KEY=""
 
 ```
 
-如需支持飞书客户端向机器人发起对话，则补充本段配置；如果仅需通过 Web 端与机器人交互则无需配置本段参数。
-```
-# ==============================================================
-# 飞书机器人配置（FEISHU_BOTS）
-# 配置格式：一行一个机器人，规则为 Bot Name:App ID:App Secret
-# 示例：
-# FEISHU_BOTS="
-# bot_name_1:app_id_1:app_secret_1
-# bot_name_2:app_id_2:app_secret_2
-# bot_name_3:app_id_3:app_secret_2
-#"
-
-FEISHU_BOTS="
-"
-```
-
 ## 2 部署工具命令行介绍
 
 **命令格式:**
@@ -161,9 +143,9 @@ FEISHU_BOTS="
 
 **基础用法**（当未指定模块参数时，部署工具默认操作所有业务模块）：
 ```
-./deploy.sh up       # 部署 Gateway、Web、Manager 模块
-./deploy.sh down     # 卸载 Manager、Web、Gateway 模块
-./deploy.sh restart  # 重启 Gateway、Web、Manager  模块
+./deploy.sh up       # 部署 Gateway、Web、AgentRuntime 模块（AgentServer 由 AgentRuntime 拉起）
+./deploy.sh down     # 卸载 AgentRuntime、Web、Gateway 模块
+./deploy.sh restart  # 重启 Gateway、Web、AgentRuntime 模块
 ```
 
 ### 2.2 模块列表（选填）
@@ -175,10 +157,9 @@ FEISHU_BOTS="
 - **postgresql**：PostgreSQL 存储服务模块
 - **minio**：Minio 存储服务模块
 - **log**：日志管理模块
-- **jina**：网页内容提取服务模块
 - **gateway**：Gateway 模块
 - **web**：Web 前端页面服务模块
-- **manager**：CLAW-Manager 管理模块
+- **runtime**：AgentRuntime 运行时模块，负责按需创建与管理 AgentServer Pod
 
 **单模块操作示例：**
 ```
@@ -188,17 +169,16 @@ FEISHU_BOTS="
 ./deploy.sh [操作命令] postgresql   # 仅操作 PostgreSQL 模块
 ./deploy.sh [操作命令] minio        # 仅操作 MinIO 模块
 ./deploy.sh [操作命令] log          # 仅操作日志管理模块
-./deploy.sh [操作命令] jina         # 仅操作网页内容提取服务模块
 ./deploy.sh [操作命令] gateway      # 仅操作 Gateway 模块
 ./deploy.sh [操作命令] web          # 仅操作 Web 模块
-./deploy.sh [操作命令] manager      # 仅操作 Manager 模块
+./deploy.sh [操作命令] runtime      # 仅操作 AgentRuntime 模块
 ```
 
 **重要约束：**
 
-- **NFS / MySQL / PostgreSQL / Log / Jina：** 以上基础依赖模块全局仅支持单次部署，固定运行于 default 命名空间，部署命令自动忽略自定义命名空间参数。
+- **NFS / MySQL / PostgreSQL / MinIO / Log：** 以上基础依赖模块全局仅支持单次部署，固定运行于 default 命名空间，部署命令自动忽略自定义命名空间参数。
 - **Redis：** 不作为独立模块部署，仅作为 Gateway、Runtime 的附属依赖。每个命名空间拥有独立的 Redis 实例（Deployment 名为 `jiuwenclaw-redis`），实现多业务实例间数据隔离。启动 Gateway 或 Runtime 等依赖 Redis 的业务模块时，部署工具会自动执行就绪检查：已配置外挂 Redis 则复用外部服务；否则复用同命名空间已有的内置 Redis；若同命名空间既无外挂 Redis 也无内置 Redis，则自动拉起一个内置 Redis 实例。
-- **Web / Gateway / Manager：** 业务服务模块需保持命名空间一致（为了环境隔离与日志运维，禁止使用default命令空间），否则服务间网络互通异常、功能不可用。
+- **Web / Gateway / Runtime：** 业务服务模块需保持命名空间一致（为了环境隔离与日志运维，禁止使用default命令空间），否则服务间网络互通异常、功能不可用。
 
 **使用示例：**
 
@@ -209,16 +189,14 @@ FEISHU_BOTS="
 ./deploy.sh up postgresql # 启动 PostgreSQL 存储模块（只需一次）
 ./deploy.sh up minio      # 启动 MinIO 存储模块（只需一次）
 ./deploy.sh up log        # 启动日志管理服务模块（只需一次）
-./deploy.sh up jina       # 启动网页内容提取服务模块（只需一次）
 ./deploy.sh up gateway    # 启动 Gateway 服务模块
 ./deploy.sh up web        # 启动 Web 前端模块
-./deploy.sh up manager    # 启动 Manager 管理模块
+./deploy.sh up runtime    # 启动 AgentRuntime 运行时模块（负责拉起 AgentServer）
 
 
-./deploy.sh down manager    # 卸载 Manager 管理模块（按需卸载）
 ./deploy.sh down web        # 卸载 Web 前端模块（按需卸载）
 ./deploy.sh down gateway    # 卸载 Gateway 服务模块（按需卸载）
-./deploy.sh down jina       # 卸载网页内容提取服务模块（非必要不卸载）
+./deploy.sh down runtime    # 卸载 AgentRuntime 运行时模块（按需卸载）
 ./deploy.sh down log        # 卸载日志管理服务模块（非必要不卸载）
 ./deploy.sh down minio      # 卸载 MinIO 存储模块（非必要不卸载
 ./deploy.sh down postgresql # 卸载 PostgreSQL 存储模块（非必要不卸载）
@@ -232,19 +210,18 @@ FEISHU_BOTS="
 ./deploy.sh restart postgresql  # 重启 PostgreSQL 存储模块（非必要不重启）
 ./deploy.sh restart minio       # 重启 MinIO 存储模块（非必要不重启）
 ./deploy.sh restart log         # 重启日志管理模块（非必要不重启）
-./deploy.sh restart jina        # 重启网页内容提取服务模块（非必要不重启）
 ./deploy.sh restart gateway     # 重启 Gateway 服务模块（按需重启）
 ./deploy.sh restart web         # 重启 Web 前端模块（按需重启）
-./deploy.sh restart manager     # 重启 Manager 管理模块（按需重启）
+./deploy.sh restart runtime     # 重启 AgentRuntime 运行时模块（按需重启）
 ```
 
 **重要说明：**
-每当升级新版本服务时，对于**NFS、NFS-SC、MySQL、PostgreSQL、MinIO、Log、Jina** 等全局基础依赖组件应尽量保持不变，无需重复部署。**Redis** 已改为按命名空间独立部署、随业务实例隔离（不支持单独部署），升级业务模块时各命名空间下的 Redis 实例保持不变即可。仅需对业务服务**Gateway、Web、CLAW-Manager**进行版本替换：在旧版本部署目录中，依次卸载 业务模块；随后切换至新版本部署工具目录，启动对应新版业务模块。
+每当升级新版本服务时，对于**NFS、NFS-SC、MySQL、PostgreSQL、MinIO、Log** 等全局基础依赖组件应尽量保持不变，无需重复部署。**Redis** 已改为按命名空间独立部署、随业务实例隔离（不支持单独部署），升级业务模块时各命名空间下的 Redis 实例保持不变即可。仅需对业务服务**Gateway、Web、AgentRuntime**进行版本替换：在旧版本部署目录中，依次卸载 业务模块；随后切换至新版本部署工具目录，启动对应新版业务模块。
 
 ### 2.3 配置参数（选填）
 
 **参数说明：**
-- `-n`:  指定部署目标命名空间, 从而实现模块多实例隔离部署，不同命名空间的资源不冲突，默认值：`default`。需要注意的是：操作 NFS / MySQL / PostgreSQL / Log / Jina 等基础依赖模块时，该参数强制失效，固定部署于 `default` 命名空间；**Redis** 随业务模块按 `-n` 指定的命名空间自动部署（不支持单独部署）。
+- `-n`:  指定部署目标命名空间, 从而实现模块多实例隔离部署，不同命名空间的资源不冲突，默认值：`default`。需要注意的是：操作 NFS / MySQL / PostgreSQL / MinIO / Log 等基础依赖模块时，该参数强制失效，固定部署于 `default` 命名空间；**Redis** 随业务模块按 `-n` 指定的命名空间自动部署（不支持单独部署）。
 - `--render-only`：只渲染模板输出文件至 conf 目录，不操作集群、不校验集群资源
 
 **参数使用示例：**
@@ -370,18 +347,15 @@ DB_HOST=""
 DB_PORT=
 
 # 外部数据库服务服务的用户名跟密码，账号权限区分规则：
-# 1. 分库独立账号配置：分别定义 MANAGER_DB_USER / MANAGER_DB_PASSWORD、GATEWAY_DB_USER / GATEWAY_DB_PASSWORD，实现两个业务库账号、密码完全隔离
-# 2. 全局统一账号配置：仅配置 DB_USER、DB_PASSWORD，Manager、Gateway 共用同一套数据库访问凭证
+# 1. 分库独立账号配置：定义 GATEWAY_DB_USER / GATEWAY_DB_PASSWORD，实现业务库账号、密码独立
+# 2. 全局统一账号配置：仅配置 DB_USER、DB_PASSWORD，Gateway 使用同一套数据库访问凭证
 # 优先级规则：分库专属账号变量优先级 > 全局通用账号变量；若两类变量同时配置，以分库专属账号为准，全局账号配置自动失效
 DB_USER=""
 DB_PASSWORD=""
 GATEWAY_DB_USER=""
 GATEWAY_DB_PASSWORD=""
-MANAGER_DB_USER=""
-MANAGER_DB_PASSWORD=""
 
 # (仅 PostgreSQL 有效) 各模块的专属 Schema 名称, 默认为 public
-MANAGER_PG_SCHEMA=""
 GATEWAY_PG_SCHEMA=""
 IDENTITY_PG_SCHEMA=""
 WEB_PG_SCHEMA=""
@@ -397,7 +371,7 @@ RUNTIME_PG_SCHEMA=""
 - **MySQL**：每个实例的每个模块使用形如 `<模块库名>_<命名空间>` 的独立数据库（如实例 `test` 的 Gateway 库为 `gateway_test`）。
 - **PostgreSQL**：在同一共享数据库内，为每个实例使用以命名空间命名的独立 schema 实现隔离（如实例 `test` 使用 schema `test`）。
 
-各模块默认库名为：Gateway→`gateway`、Manager→`manager`、Identity→`identity`、Runtime→`runtime`、Web→`web`。
+各模块默认库名为：Gateway→`gateway`、Identity→`identity`、Runtime→`runtime`、Web→`web`。
 
 **自定义数据库名**：如需指定，可在 `.env.custom` 中为各模块设置对应变量（MySQL 为 `*_DB_NAME`，PostgreSQL 为 `*_PG_SCHEMA`）。一旦显式设置，部署工具将直接采用该值并不再自动分配——**请务必保证同一套部署中每个实例的各模块数据库名（或 PostgreSQL schema 名）互不相同**，否则不同实例会读写同一数据库，导致数据串台。
 
@@ -540,62 +514,21 @@ LOG_TO_FILE_ENABLED=false
     │   ├── jiuwenbox-2026-07-14.log
     │   └── jiuwenclaw-agentserver-2026-07-14.log
     ├── jiuwenclaw-gateway-668cccc968-66pxt
-    │   ├── gateway-2026-07-14.log
-    │   └── gateway-2026-07-15.log
-    ├── jiuwenclaw-manager-server-569fc57f7-pn4v6
-    │   └── manager-2026-07-15.log
+    │   ├── gateway-2026-07-14.log
+    │   └── gateway-2026-07-15.log
     └── jiuwenclaw-web-545f77c477-drfcf
         └── web-2026-07-14.log
 ```
-### 3.5 部署 Jina 网页内容提取服务（可选部署）
-
-#### 3.5.1 三种方案介绍
-业务侧的 `fetch_webpage` 工具依赖网页内容提取服务，将目标网页转换为 Markdown 输出供模型消费。客户可根据自身网络环境与抓取场景，从以下三种方案中选择：
-
-- **本部署工具内置部署的 Jina 服务**：本部署工具内置部署，基于开源镜像在自有集群内运行，无 API Key 限制、无官方调用限流、数据内网流转，无数据出境的风险，适合大批量内部抓取场景。通过如下命令一键部署：
-```
-./deploy.sh up jina          # 部署网页内容提取服务模块（可选部署，也只能部署一次）
-```
-部署完成后，当集群检测到 `jina-reader`、`jina-cache-proxy` 部署资源时，`fetch_webpage` 会自动路由至该内置服务，无需额外配置。
-
-- **r.jinaai.cn（官方国内加速）**：大陆网络直连无需代理，需自备 API Key，匿名调用受官方严格限流管控。集群内未部署内置 Jina 服务，且未手动修改 `JINA_READER_ENDPOINT` 配置时，系统默认自动使用该地址。
-
-- **r.jina.ai（官方海外原版）**：适合有跨境代理的国内客户或海外客户使用，需自备 API Key，匿名调用受官方严格限流管控。不会自动启用，如需切换至此服务，必须手动修改全局环境变量 `JINA_READER_ENDPOINT`，将值指定为 `https://r.jina.ai`。
-
-
-#### 3.5.1 三种方案对比
-
-为方便客户选型，下表对三种网页内容提取方案做一个详细的横向对比：
-
-| 维度 | 本部署工具内置部署的Jina 服务 | r.jinaai.cn（官方国内加速） | r.jina.ai（官方海外原版） |
-|---|---|---|---|
-| 是否需要 API Key | 否，开源镜像自部署 | 是，匿名调用严格限流 | 是，匿名调用严格限流 |
-| 调用频次限制 | 无，按自有算力伸缩 | 有官方限流 | 有官方限流 |
-| 国内网络延迟 | 内网 ms 级，最快 | 200ms–1s，大陆直连 | 1–5s 甚至超时，跨境抖动 |
-| 抓取成功率 | 中等。开源 reader 对 JS 重渲染、Cloudflare 反爬处理一般 | 高。官方有 IP 池反封禁、高阶反爬能力 | 高，同左 |
-|ReaderLM 语义提纯模型（官方闭源）|无，仅靠 DOM 规则清洗，广告、侧边栏、推荐内容过滤效果弱，输出 Markdown 冗余内容更多|支持，内置 ReaderLM 大模型提纯，输出文本干净，自动剔除广告、导航栏、弹窗，无需二次清洗|同左 |
-| 功能完整度 | 仅网页转 Markdown 主功能 |阉割加速版（Reader、搜索、Grounding 等支持） | 完整，海外 beta 功能最先上线，部分高级头部参数、图像摘要、深度渲染仅原版完整支持  |
-| 缓存策略 | 自带 nginx 分层缓存，命中后毫秒返回 | 由官方控制，不暴露缓存层 | 同左 |
-| 数据隐私 | 抓取内容不离开自有集群，敏感 URL 安全，数据不出镜 | URL/内容会进官方日志，数据出境 | 同左 |
-| 故障可控性 | 完全自管，Pod/日志/缓存可观测 | 依赖 SaaS，故障只能等 | 同左 |
-| 被目标站点封禁风险 | 较高，单一出口 IP 易被站点封禁 | 低，官方 IP 轮换 | 低 |
-| 成本 | 自有算力 + 维护成本 | 按流量付费，免费额度不够用 | 同左 |
-
-#### 3.5.3 选型建议
-
-- **国内客户 + 高频国内网页抓取**（天气、12306、知乎、微博等）：首选**自建 Jina**，零限流 + 内网缓存提速最明显。
-- **国内客户 + 高频遇到 Cloudflare / JS 渲染重站点抓取失败**：用 **r.jinaai.cn** （建议配 token）。
-- **海外客户**：用 **r.jina.ai**（建议配 token）。
-
 ## 4 部署JiuwenSwarm企业级服务
 
 JiuwenSwarm 企业级服务完整支持基于 Kubernetes 命名空间的多实例隔离部署，可在同一集群内通过不同命名空间部署多套独立运行的业务实例，实现环境隔离、多实例并行使用。
 
-同一业务实例下的所有组件（Gateway、Web、CLAW-Manager、Redis）只有部署在同一个命名空间内才能服务调用和互通。其中 NFS、MySQL、MinIO、PostgreSQL 等基础依赖组件为所有业务实例的公共组件，固定部署于 default 命名空间，无需随业务实例重复部署；而 Redis 不作为独立模块部署，随业务实例按命名空间隔离，启动业务模块时由部署工具自动就绪。
+同一业务实例下的所有组件（Gateway、Web、AgentRuntime 及其拉起的 AgentServer、Redis）只有部署在同一个命名空间内才能服务调用和互通。其中 NFS、MySQL、MinIO、PostgreSQL 等基础依赖组件为所有业务实例的公共组件，固定部署于 default 命名空间，无需随业务实例重复部署；而 Redis 不作为独立模块部署，随业务实例按命名空间隔离，启动业务模块时由部署工具自动就绪。
 
 **注意**：
 - 业务组件请勿部署至 default 默认命名空间。
-- 可参照对应章节分步单独部署各组件，也可执行以下命令一键部署所有业务组件（`Gateway`、`Manager`、`Web`）
+- 可参照对应章节分步单独部署各组件，也可执行以下命令一键部署所有业务组件（`Gateway`、`Web`、`AgentRuntime`）
+- AgentServer 不是独立部署模块，由 AgentRuntime 负责按需拉起与管理
 ```
 ./deploy.sh up -n <你的命名空间>
 ```
@@ -603,7 +536,7 @@ JiuwenSwarm 企业级服务完整支持基于 Kubernetes 命名空间的多实�
 
 ### 4.1 部署 Gateway (必选部署)
 
-Gateway 是 JiuwenSwarm 的多渠道接入网关与消息调度核心，负责 AgentServer 生命周期管控、多平台渠道接入、消息双向路由转发、会话关系映射等关键能力。作为客户端与 AgentServer 之间的中转枢纽，该组件为系统强制部署项，缺失 Gateway 将导致整体业务系统无法正常运行。执行以下命令完成网关部署：
+Gateway 是 JiuwenSwarm 的多渠道接入网关与消息调度核心，负责多平台渠道接入、消息双向路由转发、会话关系映射等关键能力。作为客户端与 AgentServer 之间的中转枢纽，该组件为系统强制部署项，缺失 Gateway 将导致整体业务系统无法正常运行。执行以下命令完成网关部署：
 
 ```
 ./deploy.sh up gateway -n <你的命名空间>             # 部署 Gateway 核心网关模块
@@ -611,12 +544,40 @@ Gateway 是 JiuwenSwarm 的多渠道接入网关与消息调度核心，负责 A
 
 部署时会检查 `.env.custom` 中的 `JIUWENCLAW_ID`：未配置则自动生成并写回；已配置则沿用原值。
 
-注意：Gateway 仅支持分布式多副本部署模式（`DEPLOYMENT_MODE=distributed`）：多副本同时在线、连接 Redis 共享会话、无选主（cron 默认关闭、仅 web/tui 通道）。所需 Redis 由部署工具按命名空间自动拉起（详见 3.3 节）。启动前可在配置文件 `.env.custom` 中确认如下参数：
+注意：Gateway 支持分布式多副本部署模式：多副本同时在线、连接 Redis 共享会话。所需 Redis 由部署工具按命名空间自动拉起（详见 3.3 节）。启动前可在配置文件 `.env.custom` 中确认如下参数：
 
 ```
-# Gateway 部署模式：distributed（多副本同时在线，连接 Redis 共享 session，无选主；cron 默认关闭；仅 web/tui 通道）
-DEPLOYMENT_MODE=distributed
+# Gateway 副本实例数量，控制部署运行的 Pod 个数
+GATEWAY_REPLICAS=1
 ```
+
+### 4.2 部署 AgentRuntime（必选部署）
+
+AgentRuntime 是 Agent 运行时管理模块，负责按需创建、管理与回收 AgentServer Pod。AgentServer 不由部署工具直接部署：部署工具将渲染好的 AgentServer 服务模板（`templates/agentserver.template.json`，含容器镜像、存储挂载、多容器编排等）与其环境变量 ConfigMap（由 `templates/agentserver.template.env` 渲染，名为 `jiuwenclaw-agentserver-env`）下发后，由 AgentRuntime 据此拉起并维护 AgentServer 实例。执行以下命令完成部署：
+
+```
+./deploy.sh up runtime -n <你的命名空间>     # 部署 AgentRuntime 运行时模块
+```
+
+部署内容包括：
+- ServiceAccount / Role / RoleBinding（授予 AgentServer Pod 创建权限）
+- AgentRuntime Deployment（默认名 `jiuwenclaw-agent-runtime`）
+- AgentServer 环境变量 ConfigMap（`jiuwenclaw-agentserver-env`）
+- 部署就绪后，通过 AgentRuntime 的 `config_sync` 接口下发 AgentServer 服务模板
+
+启动前可在配置文件 `.env.custom` 中确认如下参数：
+
+```
+# Agent Runtime 服务镜像地址
+AGENT_RUNTIME_IMAGE=""
+
+# Agent Runtime 副本实例数量，控制部署运行的 Pod 个数
+AGENT_RUNTIME_REPLICAS=1
+```
+
+说明：卸载 AgentRuntime 时会先优雅停止其 Pod（保留 ServiceAccount，确保退出过程中能正常清理所创建的 AgentServer Pod），再兜底删除遗留的 AgentServer Pod，最后清理 ServiceAccount、Role 等周边资源。
+
+
 
 若需为业务服务挂载外部 NFS 服务实现数据持久化，需在配置文件`.env.custom` 中设置：
 ```
@@ -642,35 +603,6 @@ CLAW_PVC=""
 # 外部 PVC 绑定的 StorageClass 名称
 NFS_SC_NAME=""
 ```
-
-### 4.2 部署 Manager（可选部署）
-
-Manager 为平台管理模块，提供策略下发和配置、业务实例监控等管理能力，用于辅助运维人员完成系统管控。该组件为可选部署项，可根据实际运维需求选择性部署。执行以下命令完成管理模块部署：
-
-```
-./deploy.sh up manager -n <你的命名空间>     # 部署 Manager 管理模块
-```
-
-注意，这会启动 `jiuwenclaw-manager-server` 后端服务跟 `jiuwenclaw-manager-web` 前端组件，如果不需要 `jiuwenclaw-manager-web` 前端组件的，请在启动前，修改配置文件 `.env.custom` 如下参数：
-```
-# 控制是否启动 Manager 前端模块
-IS_UP_MANAGER_WEB=false
-```
-
-Identity Center 的企业联合认证 Demo 默认关闭。需要验证联合登录链路时，在
-`.env.custom` 中显式开启；该 Demo 只用于联调，不接收或验证真实 SAML 报文：
-
-```bash
-IDENTITY_FEDERATION_DEMO_ENABLED=true
-IDENTITY_FEDERATION_PUBLIC_PATH_PREFIX=/idp
-IDENTITY_FEDERATION_REQUEST_TTL=300
-IDENTITY_FEDERATION_CODE_TTL=60
-IDENTITY_FEDERATION_DEMO_ADMIN_GROUP=enterprise-admins
-```
-
-开启后应通过 Manager Web 的 `/idp` 同源代理访问 Identity Center，因此
-`IDENTITY_FEDERATION_PUBLIC_PATH_PREFIX` 保持 `/idp`。登录页会根据 Identity Center
-返回的可用连接动态显示企业登录入口，不需要额外的 Manager Web 开关。
 
 ### 4.3 部署 Web（可选部署）
 
@@ -744,28 +676,6 @@ cat /var/lib/kubelet/config.yaml | grep podLogsDir
 kubectl exec -it <pod-name> -n <namespace> -c <container-name> bash
 ```
 
-### 5.5 利用工具一键收集某命名空间下所有 Pod 的实时日志
-
-本部署工具提供轻量批量日志采集脚本，自动对某命名空间下所有 Pod、所有容器开启后台实时日志监听，日志自动落地至带时间戳的本地目录，便于问题回溯与关键字检索：
-```
-./collect_pods_log.sh <namespace>
-```
-**日志文件目录结构示例**
-```
-pod_logs_20260707_163022/
-├── jiuwenclaw-agentserver-28pmfxp0gi-d9k4s-container1.log
-├── jiuwenclaw-agentserver-28pmfxp0gi-d9k4s-container2.log
-├── jiuwenclaw-gateway-6498fbc8d-nfhcl-gateway.log
-└── jiuwenclaw-web-fd64b644f-p42hf-web.log
-```
-
-**注意**
-- 建议业务 Pod 统一部署在独立自定义命名空间，禁止使用 default 命名空间，便于环境隔离与日志运维。
-- 脚本执行前会自动清理当前指定命名空间的历史 kubectl 日志监听进程，避免多进程重复采集、日志重叠问题，且不会影响其他命名空间及其他用户的监听进程。
-- 所有容器日志监听任务均在后台持续运行，实时追加新日志；Pod 新建、重建或重启后需重新执行脚本，接续监听新 Pod 日志。
-- 长时间采集会持续落盘日志，需定期清理历史日志目录，避免磁盘占用过高。
-
-
 ### 5.5 启动日志管理服务收集所有业务日志
 
 详情请见["部署日志管理服务"](#35-部署日志管理服务可选部署)
@@ -773,7 +683,7 @@ pod_logs_20260707_163022/
 
 ## 6 CCE 云集群 JiuwenSwarm 企业级部署
 
-### 方案一：部署脚本 `--render-only` 渲染 YAML 离线部署（推荐，标准化、低门槛）
+**方案：部署脚本 `--render-only` 渲染 YAML 离线部署（推荐，标准化、低门槛）**
 
 该方案依托配套部署脚本自动渲染全套 K8s 资源清单，仅生成 YAML 不直接操作集群，适配本地运维机与 CCE 集群分离场景，无需手动编写 / 修改资源模板。
 
@@ -794,8 +704,6 @@ CURRENT_NODE_NAME=
 
 # 选取CCE节点的空闲端口（端口区间30000-32767）
 GATEWAY_NODE_PORT=
-MANAGER_SERVER_NODE_PORT=
-MANAGER_WEB_NODE_PORT=
 WEB_NODE_PORT=
 ```
 
@@ -815,95 +723,21 @@ WEB_NODE_PORT=
 - gateway-config.configmap.yaml
 - gateway.yaml
 - web.yaml
-- manager-server.yaml
-- manager-web.yaml
+- runtime.yaml
+- agentserver-env.configmap.yaml
 
-
-### 方案二：基于 Example 模板手动改造 YAML 部署（进阶方案，需具备 K8s 基础）
-
-本方案不依赖自动化部署脚本，完全基于项目内置 `examples` 目录原始 `YAML 模板`进行人工适配改造，适合需要深度自定义集群资源、脱离部署脚本独立交付的场景。操作人员需具备基础 Kubernetes 资源配置、YAML 语法、环境变量配置能力。
-
-**步骤 1：获取原生模板文件**
-拷贝部署工具根目录下的examples目录中的 所有 K8s 资源`YAML 模板`至自定义工作目录，作为本次手动部署的基准文件。模板文件内置统一占位符 `<<变量名>>`，用于替换业务与集群参数。
-
-**步骤 2：依据配置说明书`.env.example`替换所有占位符，生产最终的 `YAML 模板`**
-所有模板内的 `<<变量名>>`占位符，其含义、取值规范、默认规则、业务用途，均以部署工具根目录`.env.example`配置说明书为准。
-
-**替换规则：** 遍历所有 `YAML 模板`，将 `<<变量名>>`占位符，对照 `.env.example` 说明替换为当前客户环境的真实参数值。
-
-**替换示例：**
-模板 `gateway-env.configmap.yaml` 存在数据库占位符配置：
-```
-....
-  GATEWAY_DB_HOST: <<DB_HOST>>
-  GATEWAY_DB_NAME: gateway
-  GATEWAY_DB_PORT: <<DB_PORT>>
-  GATEWAY_DB_TYPE: <<DB_TYPE>>
-  GATEWAY_DB_USER: <<DB_USER>>
-....
-```
-查询 `.env.example` 中 `DB_HOST`、`DB_PORT`、`DB_TYPE`、`DB_USER`变量使用规范、取值要求，替换为客户环境中的真实值。
-
-> 注意：`configmap-secret.yaml` 为 Kubernetes Secret 资源，data 字段规范要求填写明文经过 Base64 编码后的字符串，编码命令参考：`echo -n "明文内容" | base64 -w 0`
-
-**步骤 3：存储挂载模式适配**
-当前模板默认采用 NFS 挂载模式（`CLAW_MOUNT_TYPE: nfs`）；若需切换为 PVC 持久卷挂载模式，请编辑 `gateway-env.configmap.yaml` 完成如下调整：
-- 删除原有 NFS 相关配置项：`CLAW_MOUNT_TYPE`、`CLAW_NFS_PATH`、`CLAW_NFS_SERVER`
-- 新增 PVC 模式配置参数：
-
-```
-CLAW_MOUNT_TYPE: pvc
-CLAW_PVC: <<外部 PVC 的名字，该PVC需存在，且与业务Pod处于同一Namespace>>
-NFS_SC_NAME: <<外部 PVC 绑定的StorageClass名称>>
-```
-
-**步骤 4：飞书机器人专项配置(可选)**
-如果需要飞书渠道与机器人交互，请在 `gateway-config.configmap.yaml` 配置文件中写入飞书渠道配置，支持单/多机器人同时部署，标准格式及填写规范如下：
-```
-....
-channels:
-      feishu:
-        <<你的机器人名字1>>:
-          app_id: <<你的飞书应用ID1>
-          app_secret: ><你的飞书应用密钥1>>
-          encrypt_key: ""
-          verification_token: ""
-          allow_from: []
-          enable_streaming: true
-          chat_id: ""
-          enabled: true
-        <<你的机器人名字2>>:
-          app_id: <<你的飞书应用ID2>
-          app_secret: <<你的飞书应用密钥2>>
-          encrypt_key: ""
-          verification_token: ""
-          allow_from: []
-          enable_streaming: true
-          chat_id: ""
-          enabled: true
-        ....<更多机器人，请在这继续添加>....
-....
-```
-
-**步骤 5：完成全部配置修改后，请登录CCE 集群云管理平台，按如下文件顺序（资源依赖顺序）创建资源**
-- configmap-secret.yaml
-- gateway-env.configmap.yaml
-- gateway-config.configmap.yaml
-- gateway.yaml
-- web.yaml
-- manager-server.yaml
-- manager-web.yaml
 
 # FAQ 
 
 ## 如何在线调试业务代码
 
-    在开发调试环境中，如果需要对 Gateway、Manager、AgentServer、Web 业务组件进行代码在线修改以及调试配置，可通过配置变量控制 Pod 启动时挂载宿主机本地源码，Pod 不再使用镜像内置代码，直接加载本地修改后的源码，无需重新构建推送镜像，即可实时调试功能。
+    在开发调试环境中，如果需要对 Gateway、AgentRuntime、AgentServer、Web 业务组件进行代码在线修改以及调试配置，可通过配置变量控制 Pod 启动时挂载宿主机本地源码，Pod 不再使用镜像内置代码，直接加载本地修改后的源码，无需重新构建推送镜像，即可实时调试功能。
 
 **使用前注意事项：**
 - 提前在部署节点的宿主机上拉取对应模块完整源码，并切换至指定开发分支
 - 具备部署节点的宿主机上的本地源码目录可读权限；
 - 不调试某个模块时，对应路径变量必须留空，否则会覆盖镜像内置代码。
+- 开发模式下 Pod 会固定调度到 `CURRENT_NODE_NAME` 指定的节点（hostPath 为节点本地路径），并以 root 身份运行，保证挂载源码在容器内可读写。
 
 **使用方法：**
     请在启动服务前，修改配置文件 `.env.custom` 如下参数：
@@ -914,17 +748,36 @@ MODE=dev
 
 # ===================== jiuwenclaw 模块调试 =====================
 # CLAW源码宿主机绝对路径，仅调试claw组件时填写；不调试直接留空
-# 源码仓库：https://gitcode.com/openJiuwen/jiuwenswarm
-# 代码分支：dev/enterprise_kub
+# 源码仓库：https://gitcode.com/openJiuwen/jiuwenswarm.git
+# 代码分支：dev-stable
 CLAW_CODE_PATH=""
 
 # ===================== agent-runtime 模块调试 =====================
 # Runtime源码宿主机绝对路径，仅调试runtime组件时填写；不调试直接留空
-# 源码仓库：https://gitcode.com/openJiuwen/agent-runtime
+# 源码仓库：https://gitcode.com/openJiuwen/agent-runtime.git
 # 代码分支：develop
 RUNTIME_CODE_PATH=""
 
+# ===================== agent-core 模块调试 =====================
+# agent-core项目在宿主机本地代码路径，仅调试core组件时填写；不调试直接留空
+# 源码仓库：https://gitcode.com/openJiuwen/agent-core.git
+# 代码分支：dev-stable
+CORE_CODE_PATH=""
+
 # 是否要给 Web 模块mount代码
-# 注意：Web源代码代码需要npm run build之后，才能mount进容器，
+# 注意：Web源代码代码需要npm install之后，才能mount进容器。
+# cd jiuwenswarm/channels/web/frontend
+# npm install
+
 IS_MOUNT_WEB_CODE="false"
 ```
+
+**源码路径变量与组件的对应关系：**
+
+| 变量 | Gateway | AgentRuntime | AgentServer | Web |
+|------|---------|--------------|-------------|-----|
+| `CLAW_CODE_PATH` | 挂载 jiuwenswarm 源码 | 不涉及 | 挂载 jiuwenswarm 源码 | 挂载（需 `IS_MOUNT_WEB_CODE=true`） |
+| `RUNTIME_CODE_PATH` | 挂载 foundation/management 包 | 挂载 agent-runtime 源码 | 挂载 foundation/management 包 | 挂载（需 `IS_MOUNT_WEB_CODE=true`） |
+| `CORE_CODE_PATH` | 挂载 openjiuwen 核心包 | 不涉及 | 挂载 openjiuwen 核心包 | 挂载（需 `IS_MOUNT_WEB_CODE=true`） |
+
+说明：AgentServer 为多容器 Pod（jiuwenclaw-agentserver + jiuwenbox），其源码挂载随服务模板一并生效；任一源码路径变量留空时，AgentServer 服务模板中对应的 hostPath 挂载会被自动剔除，继续使用镜像内置代码。

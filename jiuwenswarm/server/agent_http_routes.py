@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping
 # NOTE: 这些必须是**模块级**导入。本模块启用了 ``from __future__ import annotations``，
 # 注解在运行时是字符串，FastAPI 通过 ``get_type_hints()`` 在模块全局命名空间解析；
 # 若把 ``Request`` 放在函数内导入，FastAPI 解析不到就会把它当查询参数，导致 422。
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
@@ -41,6 +41,19 @@ logger = logging.getLogger(__name__)
 #: ``param_defaults`` 里的占位符：取本次请求的 request_id。
 #: 用它可让「同一 X-Request-Id 重复调用」天然幂等。
 REQUEST_ID_PLACEHOLDER = "$request_id"
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    """HTTP 请求身份与租户键。"""
+
+    request_id: str
+    channel_id: str
+    session_id: str | None
+    user_id: str | None
+    routing: dict[str, str]
+    tenant_ids: dict[str, str]
+    request_ext: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -257,12 +270,40 @@ ROUTES: list[RouteSpec] = [
         ReqMethod.SKILLS_TEAMSKILLS_HUB_DELETE.value,
     ),
     RouteSpec(
+        "GET", "/skills/sources", ReqMethod.SKILLS_SOURCE_PROVIDERS.value
+    ),
+    RouteSpec(
+        "GET", "/skills/sources/search", ReqMethod.SKILLS_SOURCE_SEARCH.value
+    ),
+    RouteSpec(
+        "POST", "/skills/sources/install", ReqMethod.SKILLS_SOURCE_INSTALL.value, 201
+    ),
+    RouteSpec(
+        "GET", "/skills/updates", ReqMethod.SKILLS_UPDATES_CHECK.value
+    ),
+    RouteSpec(
+        "POST", "/skills/actions/update", ReqMethod.SKILLS_UPDATE.value
+    ),
+    RouteSpec(
+        "GET", "/skills/enterprise", ReqMethod.SKILLS_ENTERPRISE_LIST.value
+    ),
+    RouteSpec(
         "POST", "/skills/enterprise/install", ReqMethod.SKILLS_ENTERPRISE_INSTALL.value, 201
     ),
     RouteSpec(
         "POST",
         "/skills/enterprise/actions/uninstall",
         ReqMethod.SKILLS_ENTERPRISE_UNINSTALL.value,
+    ),
+    RouteSpec(
+        "GET",
+        "/skills/enterprise/sources",
+        ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS.value,
+    ),
+    RouteSpec(
+        "GET",
+        "/skills/enterprise/sources/search",
+        ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH.value,
     ),
     RouteSpec("GET", "/skills/{name}", ReqMethod.SKILLS_GET.value),
     RouteSpec("DELETE", "/skills/{name}", ReqMethod.SKILLS_UNINSTALL.value),
@@ -422,15 +463,21 @@ async def collect_params(request: Any) -> dict[str, Any]:
     return params
 
 
-def request_context(
-    request: Any,
-) -> tuple[str, str, str | None, str | None, dict[str, str]]:
-    """从请求头/路径提取 (request_id, channel_id, session_id, user_id, identity)。
+def request_context(request: Any) -> RequestContext:
+    """从请求头/路径提取身份与租户键。
 
-    ``identity`` 含 ``X-User-Id`` 与 ``X-Group/Bot/Gateway-Id``，由
+    ``routing`` 含 ``X-User-Id`` 与 ``X-Group/Bot/Gateway-Id``，由
     :func:`apply_routing_metadata` 拆到顶层 ``user_id`` + ``metadata.routing``。
     ``gateway_id`` 仅重建保留，Agent 业务不强制消费。
+
+    ``tenant_ids`` 含可选的 ``service_id`` / ``agent_id`` / ``workspace_key``
+    （来自 ``X-Service-Id`` / ``X-Agent-Id`` / ``X-Workspace-Key``）。
     """
+    from jiuwenswarm.common.request_ext import (
+        INTERNAL_HEADER_NAME,
+        RequestExtCodecError,
+        decode_internal_header,
+    )
     from jiuwenswarm.common.request_identity import normalize_routing_identity
 
     headers = request.headers
@@ -446,7 +493,33 @@ def request_context(
             "gateway_id": headers.get("x-gateway-id"),
         }
     )
-    return request_id, channel_id, session_id, user_id, routing
+    tenant_ids: dict[str, str] = {}
+    for header_name, tenant_key in (
+        ("x-service-id", "service_id"),
+        ("x-agent-id", "agent_id"),
+        ("x-workspace-key", "workspace_key"),
+    ):
+        raw = headers.get(header_name)
+        text = str(raw).strip() if raw is not None else ""
+        if text:
+            tenant_ids[tenant_key] = text
+    try:
+        request_ext = decode_internal_header(headers.get(INTERNAL_HEADER_NAME)) or {}
+    except RequestExtCodecError as exc:
+        logger.warning("[AgentHTTPRoutes] 非法内部扩展字段头: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="invalid internal request extension header",
+        ) from exc
+    return RequestContext(
+        request_id=request_id,
+        channel_id=channel_id,
+        session_id=session_id,
+        user_id=user_id,
+        routing=routing,
+        tenant_ids=tenant_ids,
+        request_ext=request_ext,
+    )
 
 
 def _envelope_wants_stream(request: Any, envelope: dict[str, Any]) -> bool:
@@ -500,25 +573,27 @@ def build_fastapi_app(server: AgentHTTPServer) -> Any:
     def _make_endpoint(spec: RouteSpec) -> Callable:
         async def endpoint(request: Request) -> JSONResponse:
             params = await collect_params(request)
-            request_id, channel_id, session_id, user_id, routing = request_context(request)
+            ctx = request_context(request)
             for key, default in spec.param_defaults.items():
                 if not params.get(key):
                     params[key] = (
-                        request_id if default == REQUEST_ID_PLACEHOLDER else default
+                        ctx.request_id if default == REQUEST_ID_PLACEHOLDER else default
                     )
             payload, status = await server.invoke_unary(
                 spec.method,
                 params,
-                request_id=request_id,
-                session_id=session_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                routing=routing,
+                request_id=ctx.request_id,
+                session_id=ctx.session_id,
+                channel_id=ctx.channel_id,
+                user_id=ctx.user_id,
+                routing=ctx.routing,
+                tenant_ids=ctx.tenant_ids,
+                request_ext=ctx.request_ext,
             )
             if payload.get("ok") and status == 200:
                 status = spec.status
             return JSONResponse(
-                payload, status_code=status, headers={"X-Request-Id": request_id}
+                payload, status_code=status, headers={"X-Request-Id": ctx.request_id}
             )
 
         endpoint.__name__ = f"{spec.verb.lower()}_{spec.method.replace('.', '_')}"
@@ -566,10 +641,15 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
         from jiuwenswarm.server.transports.push_registry import get_push_registry
         from jiuwenswarm.server.transports.sink import STREAM_DONE, SSESink
 
-        request_id, channel_id, session_id, _user_id, _routing = request_context(request)
+        ctx = request_context(request)
         qp = request.query_params
-        session_filter = qp.get("session_id") or session_id
+        session_filter = qp.get("session_id") or ctx.session_id
         channel_filter = qp.get("channel_id")
+        # 信任边界假设：此头仅由内部 Gateway 设置，可被伪造；若端点可能暴露给
+        # 不受信任客户端，需改用 mTLS/共享密钥等强验证。
+        reverse_rpc_capable = (
+            request.headers.get("x-jiuwen-push-consumer") == "gateway"
+        )
 
         registry = get_push_registry()
         sink = SSESink()
@@ -578,7 +658,7 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
         # 一旦重复：后注册的覆盖先注册的，先断开的那条又在 finally 里把后者摘掉，
         # 结果是「活着的连接永久收不到推送且零报错」（WS 单槽位语义已实测过这种杀伤力，
         # 见 push_registry 模块 docstring）。保留 request_id 前缀只为日志可关联。
-        subscriber_id = f"http-sse:{request_id}:{uuid.uuid4().hex[:8]}"
+        subscriber_id = f"http-sse:{ctx.request_id}:{uuid.uuid4().hex[:8]}"
 
         async def _events() -> Any:
             # 注册必须在生成器**体内**，与 finally 的注销成对 ——
@@ -589,15 +669,24 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
             # 填满 maxsize 后，`PushRegistry.push` 每次扇到它都要等满超时才注销 ——
             # 进程级推送被一个早已消失的客户端拖累。
             registry.register(
-                subscriber_id, sink, session_id=session_filter, channel_id=channel_filter
+                subscriber_id,
+                sink,
+                session_id=session_filter,
+                channel_id=channel_filter,
+                reverse_rpc_capable=reverse_rpc_capable,
             )
             try:
+                if reverse_rpc_capable:
+                    yield {
+                        "event": "gateway.push_ready",
+                        "data": json.dumps({"event_type": "gateway.push_ready"}),
+                    }
                 while True:
                     item = await sink.queue.get()
                     if item is STREAM_DONE:
                         break
                     yield {
-                        "id": item.get("request_id") or request_id,
+                        "id": item.get("request_id") or ctx.request_id,
                         "event": _frame_event_name(item),
                         "data": json.dumps(item, ensure_ascii=False),
                     }
@@ -606,35 +695,41 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
                 registry.unregister(subscriber_id)
 
         # sse_starlette 自带 ping（默认 15s 注释帧）保活，无需自行实现心跳。
-        return EventSourceResponse(_events(), headers={"X-Request-Id": request_id})
+        return EventSourceResponse(_events(), headers={"X-Request-Id": ctx.request_id})
 
     async def _chat(request: Request, method: str) -> Any:
         params = await collect_params(request)
-        request_id, channel_id, session_id, user_id, routing = request_context(request)
-        session_id = session_id or params.get("session_id")
+        ctx = request_context(request)
+        session_id = ctx.session_id or params.get("session_id")
         if wants_stream(request, params):
             return EventSourceResponse(
                 server.iter_stream(
                     method,
                     params,
-                    request_id=request_id,
+                    request_id=ctx.request_id,
                     session_id=session_id,
-                    channel_id=channel_id,
-                    user_id=user_id,
-                    routing=routing,
+                    channel_id=ctx.channel_id,
+                    user_id=ctx.user_id,
+                    routing=ctx.routing,
+                    tenant_ids=ctx.tenant_ids,
+                    request_ext=ctx.request_ext,
                 ),
-                headers={"X-Request-Id": request_id},
+                headers={"X-Request-Id": ctx.request_id},
             )
         payload, status = await server.invoke_unary(
             method,
             params,
-            request_id=request_id,
+            request_id=ctx.request_id,
             session_id=session_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            routing=routing,
+            channel_id=ctx.channel_id,
+            user_id=ctx.user_id,
+            routing=ctx.routing,
+            tenant_ids=ctx.tenant_ids,
+            request_ext=ctx.request_ext,
         )
-        return JSONResponse(payload, status_code=status, headers={"X-Request-Id": request_id})
+        return JSONResponse(
+            payload, status_code=status, headers={"X-Request-Id": ctx.request_id}
+        )
 
     @app.post(f"{API_PREFIX}/chat/completions")
     async def chat_completions(request: Request) -> Any:  # noqa: ANN202
@@ -648,29 +743,31 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
     @app.get(f"{API_PREFIX}/sessions/{{session_id}}/history/stream")
     async def history_stream(request: Request) -> Any:  # noqa: ANN202
         params = await collect_params(request)
-        request_id, channel_id, session_id, user_id, routing = request_context(request)
+        ctx = request_context(request)
         return EventSourceResponse(
             server.iter_stream(
                 ReqMethod.HISTORY_GET.value,
                 params,
-                request_id=request_id,
-                session_id=session_id,
-                channel_id=channel_id,
-                user_id=user_id,
-                routing=routing,
+                request_id=ctx.request_id,
+                session_id=ctx.session_id,
+                channel_id=ctx.channel_id,
+                user_id=ctx.user_id,
+                routing=ctx.routing,
+                tenant_ids=ctx.tenant_ids,
+                request_ext=ctx.request_ext,
             ),
-            headers={"X-Request-Id": request_id},
+            headers={"X-Request-Id": ctx.request_id},
         )
 
     @app.post(f"{API_PREFIX}/rpc/{{method}}")
     async def generic_rpc(request: Request) -> Any:  # noqa: ANN202
         """通用透传：任意 ``ReqMethod`` 均可直接调用，覆盖未显式建模的方法。"""
         method = (request.path_params or {}).get("method", "")
-        request_id, channel_id, session_id, user_id, routing = request_context(request)
+        ctx = request_context(request)
         if not is_valid_req_method(method):
             return JSONResponse(
                 {
-                    "request_id": request_id,
+                    "request_id": ctx.request_id,
                     "ok": False,
                     "error": {
                         "code": "UNKNOWN_METHOD",
@@ -682,30 +779,36 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
             )
         params = await collect_params(request)
         params.pop("method", None)
-        session_id = session_id or params.get("session_id")
+        session_id = ctx.session_id or params.get("session_id")
         if wants_stream(request, params):
             return EventSourceResponse(
                 server.iter_stream(
                     method,
                     params,
-                    request_id=request_id,
+                    request_id=ctx.request_id,
                     session_id=session_id,
-                    channel_id=channel_id,
-                    user_id=user_id,
-                    routing=routing,
+                    channel_id=ctx.channel_id,
+                    user_id=ctx.user_id,
+                    routing=ctx.routing,
+                    tenant_ids=ctx.tenant_ids,
+                    request_ext=ctx.request_ext,
                 ),
-                headers={"X-Request-Id": request_id},
+                headers={"X-Request-Id": ctx.request_id},
             )
         payload, status = await server.invoke_unary(
             method,
             params,
-            request_id=request_id,
+            request_id=ctx.request_id,
             session_id=session_id,
-            channel_id=channel_id,
-            user_id=user_id,
-            routing=routing,
+            channel_id=ctx.channel_id,
+            user_id=ctx.user_id,
+            routing=ctx.routing,
+            tenant_ids=ctx.tenant_ids,
+            request_ext=ctx.request_ext,
         )
-        return JSONResponse(payload, status_code=status, headers={"X-Request-Id": request_id})
+        return JSONResponse(
+            payload, status_code=status, headers={"X-Request-Id": ctx.request_id}
+        )
 
     @app.post(f"{API_PREFIX}/e2a")
     async def e2a_passthrough(request: Request) -> Any:  # noqa: ANN202

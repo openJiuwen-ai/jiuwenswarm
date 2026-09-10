@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwenswarm.edition import is_enterprise
+
 from ...infrastructure.repository_access import require_memory_repository
 
 logger = logging.getLogger(__name__)
@@ -21,7 +23,6 @@ def _document_to_dict(document) -> dict[str, Any]:
 
 
 def _apply_memory(body: dict[str, Any] | None, *, op: str) -> None:
-    from jiuwenswarm.common.local_env_config import is_enterprise
     from jiuwenswarm.agents.harness.common.memory.config import (
         apply_memory_config_payload,
     )

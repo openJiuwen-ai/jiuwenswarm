@@ -74,10 +74,13 @@ def _reset_local_env_config_state() -> None:
     fresh ``monkeypatch.setenv`` values read by ``get_local_config``.
     """
     from jiuwenswarm.common.local_env_config import reset_local_env_state_for_tests
+    from jiuwenswarm.server.runtime.tenant_context import clear_tenant_bindings
 
     reset_local_env_state_for_tests()
+    clear_tenant_bindings()
     yield
     reset_local_env_state_for_tests()
+    clear_tenant_bindings()
 
 
 def patch_handler_name(monkeypatch, name, value):

@@ -337,7 +337,7 @@ When you need JiuwenSwarm to forget all conversation history and user informatio
 
 Memory files are stored in:
 - **Windows**: `C:\Users\<your-username>\.jiuwenswarm\agent\workspace\memory\`
-- **Linux/Mac**: `~/.jiuwenswarm/agent/workspace/memory/`
+- **Linux/Mac**: `~/.jiuwenswarm/agent/jiuwenclaw_workspace/memory/`
 
 **Method 1: Delete via Agent**
 Tell JiuwenSwarm: "Please delete all memory files" or "Clear my memory", Agent will call file tools to delete files in the memory directory.

@@ -129,6 +129,7 @@ def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
         chat_id=data.get("chat_id"),
         service_id=data.get("service_id"),
         agent_id=data.get("agent_id"),
+        workspace_key=data.get("workspace_key"),
         req_method=req_method,
         params=data.get("params", {}),
         is_stream=data.get("is_stream", False),

@@ -10,14 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from ..core.application_config.log_masking_rule import LogMaskingRuleService
 from ..core.application_config.logging_config import LoggingConfigService
 from ..core.application_config.memory_config import MemoryConfigService
-from ..core.application_config.permissions_config import PermissionsConfigService
 from ..core.application_config.task_memory_config import TaskMemoryConfigService
 from ..schemas.application_config_schemas import (
     LoggingConfigUpsertRequest,
     LogMaskingRuleCreateRequest,
     LogMaskingRuleUpdateRequest,
     MemoryConfigUpsertRequest,
-    PermissionsConfigUpsertRequest,
     TaskMemoryUpsertRequest,
 )
 from ..schemas.common_schemas import ResponseModel
@@ -34,9 +32,6 @@ application_config_router = APIRouter()
 
 LoggingSyncBody = make_sync_body("LoggingSyncBody", LoggingConfigUpsertRequest)
 TaskMemorySyncBody = make_sync_body("TaskMemorySyncBody", TaskMemoryUpsertRequest)
-PermissionsSyncBody = make_sync_body(
-    "PermissionsSyncBody", PermissionsConfigUpsertRequest
-)
 MemorySyncBody = make_sync_body("MemorySyncBody", MemoryConfigUpsertRequest)
 LogMaskingCreateSyncBody = make_sync_body(
     "LogMaskingCreateSyncBody", LogMaskingRuleCreateRequest
@@ -88,30 +83,6 @@ async def delete_task_memory(
 ):
     try:
         await TaskMemoryConfigService().delete()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
-    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
-
-
-@application_config_router.put("/permissions", response_model=ResponseModel)
-async def upsert_permissions(
-    sync: Annotated[SyncContext, Depends(verify_sync(PermissionsSyncBody))],
-):
-    try:
-        result = await PermissionsConfigService().upsert(**sync.business)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
-    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
-
-
-@application_config_router.delete("/permissions", response_model=ResponseModel)
-async def delete_permissions(
-    sync: VerifySyncEnvelopeOnly,
-):
-    try:
-        await PermissionsConfigService().delete()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     trigger_runtime_config_update()

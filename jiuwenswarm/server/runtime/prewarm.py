@@ -28,6 +28,7 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import (
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +169,6 @@ async def warmup_deep_agent_query(
     企业版无请求 ``routing`` identity，DeepAgent 预热会误读空模型配置并打 ERROR，
     故跳过阶段3（阶段1/2 import+checkpointer 仍可跑）。
     """
-    from jiuwenswarm.common.local_env_config import is_enterprise
-
     if is_enterprise():
         logger.info(
             "[Prewarm] skip stage=3 deep agent query on enterprise "

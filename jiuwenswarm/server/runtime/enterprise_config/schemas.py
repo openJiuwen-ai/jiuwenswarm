@@ -6,9 +6,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-SERVICE_CONFIG_SLOT = "service_config"
-SERVICE_CONFIG_TABLE = "service_config_template"
-
 
 class TemplateRefSlot(StrEnum):
     """``template_ref`` JSON 键名（与 agent_template.template_ref 槽位一致）。"""
@@ -17,10 +14,13 @@ class TemplateRefSlot(StrEnum):
     VIDEO_MODEL = "video_model"
     AUDIO_MODEL = "audio_model"
     VISION_MODEL = "vision_model"
+    IMAGE_GEN_MODEL = "image_gen_model"
     EMBEDDING_MODEL = "embedding_model"
-    SKILL_WHITELIST = "skill_whitelist"
+    SKILL_PREBUILT = "skill_prebuilt"
     EXTENSION_CONFIG = "extension_config"
-    SERVICE_CONFIG = "service_config"
+    MCP = "mcp"
+    PERMISSIONS = "permissions"
+    A2A_ACCESS_POLICY = "a2a_access_policy"
 
 
 SLOT_ENTITY_TABLE: dict[TemplateRefSlot, str] = {
@@ -28,10 +28,13 @@ SLOT_ENTITY_TABLE: dict[TemplateRefSlot, str] = {
     TemplateRefSlot.VIDEO_MODEL: "model_template",
     TemplateRefSlot.AUDIO_MODEL: "model_template",
     TemplateRefSlot.VISION_MODEL: "model_template",
+    TemplateRefSlot.IMAGE_GEN_MODEL: "model_template",
     TemplateRefSlot.EMBEDDING_MODEL: "embedding_template",
-    TemplateRefSlot.SKILL_WHITELIST: "skill_whitelist_template",
+    TemplateRefSlot.SKILL_PREBUILT: "skill_prebuilt_template",
     TemplateRefSlot.EXTENSION_CONFIG: "extension_config_template",
-    TemplateRefSlot.SERVICE_CONFIG: "service_config_template",
+    TemplateRefSlot.MCP: "mcp_template",
+    TemplateRefSlot.PERMISSIONS: "permissions_template",
+    TemplateRefSlot.A2A_ACCESS_POLICY: "a2a_access_policy_template",
 }
 
 MODEL_SLOT_KEYS = frozenset({
@@ -39,18 +42,22 @@ MODEL_SLOT_KEYS = frozenset({
     TemplateRefSlot.VIDEO_MODEL,
     TemplateRefSlot.AUDIO_MODEL,
     TemplateRefSlot.VISION_MODEL,
+    TemplateRefSlot.IMAGE_GEN_MODEL,
 })
 
 DEFAULT_AGENT_LOAD_SLOTS = frozenset({
     *MODEL_SLOT_KEYS,
     TemplateRefSlot.EMBEDDING_MODEL,
-    TemplateRefSlot.SKILL_WHITELIST,
+    TemplateRefSlot.SKILL_PREBUILT,
     TemplateRefSlot.EXTENSION_CONFIG,
+    TemplateRefSlot.MCP,
+    TemplateRefSlot.PERMISSIONS,
+    TemplateRefSlot.A2A_ACCESS_POLICY,
 })
 
 
 def normalize_template_ref(value: Any) -> dict[str, list[str]]:
-    """将 ``template_ref`` 规范为 ``{slot: [ref_string, ...]}``；空值键省略。"""
+    """将 ``template_ref`` 规范为 ``{slot: [ref_string, ...]}``；空值键省略，同槽位去重保序。"""
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -62,11 +69,16 @@ def normalize_template_ref(value: Any) -> dict[str, list[str]]:
             continue
         if not isinstance(raw, list):
             raise ValueError(f"template_ref[{slot!r}] must be a list")
-        refs = [
-            str(item).strip()
-            for item in raw
-            if item is not None and str(item).strip()
-        ]
+        refs: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            refs.append(text)
         if refs:
             out[slot] = refs
     return out
@@ -93,46 +105,44 @@ class EffectiveEnterpriseConfig:
     """单次路由上下文下解析完成的企业级配置快照。"""
 
     routing: RoutingContext
+    resource_id: str | None = None
+    instance_agent_resource: dict[str, Any] | None = None
+    ref_template_id: str | None = None
+    agent_template: dict[str, Any] | None = None
     template_ref: dict[str, list[str]] = field(default_factory=dict)
     models: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     embedding: list[dict[str, Any]] | None = None
-    skill_whitelist: list[dict[str, Any]] | None = None
+    skill_prebuilt: list[dict[str, Any]] | None = None
     extension_config: list[dict[str, Any]] | None = None
-    service_config: list[dict[str, Any]] | None = None
+    mcp: list[dict[str, Any]] | None = None
+    permissions: list[dict[str, Any]] | None = None
+    a2a_access_policy: list[dict[str, Any]] | None = None
     service_id: str | None = None
-    agent_id: str | None = None
-    workspace_dir: str | None = None
     send_file_allowed: bool = True
-    resource_id: str | None = None
-    ref_template_id: str | None = None
-    agent_template: dict[str, Any] | None = None
-    instance_agent_resource: dict[str, Any] | None = None
     debug: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "routing": self.routing.as_dict(),
+            "resource_id": self.resource_id,
+            "instance_agent_resource": self.instance_agent_resource,
+            "ref_template_id": self.ref_template_id,
+            "agent_template": self.agent_template,
             "template_ref": dict(self.template_ref),
             "models": dict(self.models),
             "embedding": self.embedding,
-            "skill_whitelist": self.skill_whitelist,
+            "skill_prebuilt": self.skill_prebuilt,
             "extension_config": self.extension_config,
-            "service_config": self.service_config,
+            "mcp": self.mcp,
+            "permissions": self.permissions,
+            "a2a_access_policy": self.a2a_access_policy,
             "service_id": self.service_id,
-            "agent_id": self.agent_id,
-            "workspace_dir": self.workspace_dir,
             "send_file_allowed": self.send_file_allowed,
-            "resource_id": self.resource_id,
-            "ref_template_id": self.ref_template_id,
-            "agent_template": self.agent_template,
-            "instance_agent_resource": self.instance_agent_resource,
             "debug": dict(self.debug),
         }
 
 
 __all__ = (
-    "SERVICE_CONFIG_SLOT",
-    "SERVICE_CONFIG_TABLE",
     "DEFAULT_AGENT_LOAD_SLOTS",
     "EffectiveEnterpriseConfig",
     "MODEL_SLOT_KEYS",

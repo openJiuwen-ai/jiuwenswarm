@@ -15,11 +15,12 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from jiuwenswarm.common.local_env_config import get_bound_agent_env_ns, read_env
+from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.utils import (
     get_multi_tenant_user_workspace_dir,
     normalize_tenant_scope_id,
 )
+from jiuwenswarm.server.runtime.tenant_context import get_bound_workspace_key
 
 from .config import _load_config, get_embed_config
 
@@ -99,43 +100,22 @@ def _nonempty_str(value: Any) -> str | None:
     return text or None
 
 
-def _resolve_tenant_agent_workspace_dir(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-    *,
-    workspace_key: str | None = None,
-) -> Path:
-    """``service_{sid}/agent_{aid}/agent/workspace`` (jiuwenswarm layout)."""
-    del workspace_key  # legacy kw; disk isolation is service_id + agent_id
-    sid = normalize_tenant_scope_id(service_id)
-    aid = normalize_tenant_scope_id(agent_id)
-    base = get_multi_tenant_user_workspace_dir(sid, aid)
-    if base is None:
-        raise TypeError(
-            f"invalid tenant for workspace: service_id={sid!r}, agent_id={aid!r}"
-        )
-    return base / "agent" / "workspace"
+def _resolve_tenant_agent_workspace_dir(*, workspace_key: str | None = None) -> Path:
+    """``workspace_{key}/agent/jiuwenclaw_workspace`` (jiuwenswarm layout)."""
+    wk = workspace_key if workspace_key is not None else get_bound_workspace_key()
+    wk = normalize_tenant_scope_id(wk)
+    return get_multi_tenant_user_workspace_dir(wk) / "agent" / "jiuwenclaw_workspace"
 
 
-def _resolve_ltm_dir(
-    service_id: str | None = None,
-    agent_id: str | None = None,
-) -> Path:
+def _resolve_ltm_dir(*, workspace_key: str | None = None) -> Path:
     """Default LTM dir under the tenant agent workspace.
 
-    Path: ``service_{sid}/agent_{aid}/agent/workspace/memory/ltm``
+    Path: ``workspace_{key}/agent/jiuwenclaw_workspace/memory/ltm``
 
-    When neither explicit ids nor a bound env ns are available, falls back to
-    ``default`` / ``default``.
+    When ``workspace_key`` is omitted, uses the key bound via
+    :func:`~jiuwenswarm.server.runtime.tenant_context.bind_workspace_key`.
     """
-    if service_id is None and agent_id is None and get_bound_agent_env_ns() is None:
-        service_id, agent_id = "default", "default"
-    elif service_id is None and agent_id is None:
-        bound = get_bound_agent_env_ns()
-        if bound is not None:
-            service_id, agent_id = bound
-
-    base = _resolve_tenant_agent_workspace_dir(service_id, agent_id) / "memory" / "ltm"
+    base = _resolve_tenant_agent_workspace_dir(workspace_key=workspace_key) / "memory" / "ltm"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -143,8 +123,7 @@ def _resolve_ltm_dir(
 def resolve_openjiuwen_store_paths(
     oj_cfg: Optional[Dict[str, Any]] = None,
     *,
-    service_id: str | None = None,
-    agent_id: str | None = None,
+    workspace_key: str | None = None,
 ) -> tuple[str, str, str]:
     """Resolve kv / vector / db paths (tip → config → tenant default).
 
@@ -164,7 +143,7 @@ def resolve_openjiuwen_store_paths(
 
     ltm_dir: Path | None = None
     if not (tip_kv or cfg_kv) or not (tip_vec or cfg_vec) or not (tip_db or cfg_db):
-        ltm_dir = _resolve_ltm_dir(service_id, agent_id)
+        ltm_dir = _resolve_ltm_dir(workspace_key=workspace_key)
 
     kv_path = tip_kv or cfg_kv or str(ltm_dir / "kv")
     vector_dir = tip_vec or cfg_vec or str(ltm_dir / "chroma")
@@ -176,8 +155,7 @@ def build_openjiuwen_provider_config(
     ext_cfg: Dict[str, Any],
     full_config: Optional[Dict[str, Any]] = None,
     *,
-    service_id: str | None = None,
-    agent_id: str | None = None,
+    workspace_key: str | None = None,
 ) -> Tuple[Dict[str, Any], Any]:
     """Map jiuwenswarm config into what OpenJiuwenMemoryProvider expects.
 
@@ -202,8 +180,7 @@ def build_openjiuwen_provider_config(
     oj_cfg = ext_cfg.get("openjiuwen") or {}
     kv_path, vector_dir, db_path = resolve_openjiuwen_store_paths(
         oj_cfg,
-        service_id=service_id,
-        agent_id=agent_id,
+        workspace_key=workspace_key,
     )
 
     kv_backend = (oj_cfg.get("kv_type") or "shelve").lower()
@@ -340,8 +317,7 @@ def _build_scope_config(
 def external_memory_fingerprint(
     config: dict[str, Any] | None,
     *,
-    service_id: str | None = None,
-    agent_id: str | None = None,
+    workspace_key: str | None = None,
 ) -> str:
     """Stable hash for external memory provider config (includes store paths)."""
     import hashlib
@@ -362,8 +338,7 @@ def external_memory_fingerprint(
     try:
         kv_path, vector_dir, db_path = resolve_openjiuwen_store_paths(
             oj if isinstance(oj, dict) else {},
-            service_id=service_id,
-            agent_id=agent_id,
+            workspace_key=workspace_key,
         )
     except Exception:
         kv_path = vector_dir = db_path = ""

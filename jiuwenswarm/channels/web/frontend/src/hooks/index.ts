@@ -5,3 +5,4 @@
 export { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages } from './useWebSocket';
 export { useSpeechRecognition, useSpeechSynthesis } from './useSpeech';
 export { useDesktopLocalFilePickerReady } from './useDesktopLocalFilePickerReady';
+export { useCronJobSync } from './useCronJobSync';

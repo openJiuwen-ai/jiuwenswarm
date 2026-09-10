@@ -152,7 +152,10 @@ def test_enterprise_cron_enabled_by_deployment_mode(
 ) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     assert enterprise_cron_enabled(deployment_mode="standalone") is True
+    monkeypatch.delenv("GATEWAY_DB_HOST", raising=False)
     assert enterprise_cron_enabled(deployment_mode="distributed") is False
+    monkeypatch.setenv("GATEWAY_DB_HOST", "mysql-headless.default")
+    assert enterprise_cron_enabled(deployment_mode="distributed") is True
 
 
 def test_enterprise_cron_disabled_for_personal_edition(

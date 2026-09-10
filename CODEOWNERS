@@ -1,0 +1,92 @@
+# 指定文件/目录的Code Owner
+/jiuwenswarm/*.py @lixiaofeng6
+/jiuwenswarm/server/ @lixiaofeng6
+/jiuwenswarm/common/ @lixiaofeng6
+/jiuwenswarm/instance_manager/ @lixiaofeng6
+/jiuwenswarm/resources/ @KevinLLLove
+/jiuwenswarm/extensions/ @liubuyu1
+/jiuwenswarm/perf/ @liubuyu1
+/jiuwenswarm/telemetry/ @liubuyu1
+
+
+/jiuwenswarm/agents/harness/ @liubuyu1
+/jiuwenswarm/server/runtime/ @KevinLLLove
+/jiuwenswarm/server/hooks/ @liubuyu1
+/jiuwenswarm/server/handlers/ @lixiaofeng6
+
+
+/jiuwenswarm/server/runtime/session/ @KevinLLLove
+/jiuwenswarm/server/runtime/enterprise_config/ @KevinLLLove
+/jiuwenswarm/server/runtime/debug_trace/ @liubuyu1
+/jiuwenswarm/server/runtime/skill/ @CodehubTTG
+/jiuwenswarm/server/runtime/skill_turbo/ @CodehubTTG
+
+
+/jiuwenswarm/agents/harness/common/prompt/ @renquanjia
+/jiuwenswarm/agents/harness/common/plugins/ @liubuyu1
+/jiuwenswarm/agents/harness/common/rails/ @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/ @liubuyu1
+/jiuwenswarm/agents/harness/common/recommendation/ @xiaowenzihwl
+
+
+/jiuwenswarm/agents/harness/common/rails/interrupt/ @KevinLLLove
+/jiuwenswarm/agents/harness/common/tools/subagent_executor/ @KevinLLLove
+/jiuwenswarm/agents/harness/common/tools/browser-move/ @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/web_search/ @liubuyu1
+
+
+/jiuwenswarm/agents/harness/common/session_ops_service.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/rails/ask_user_rail.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/tools/send_file_to_user.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/rails/read_file_validation.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/rails/stream_event_rail.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/rails/concurrent_safe_rails.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/rails/llm_retry_notify_rail.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/tools/multi_session_toolkits.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/rails/task_execution_rail.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/tools/todo_toolkits.py @KevinLLLove
+/jiuwenswarm/agents/harness/common/tools/todo_compat.py @KevinLLLove
+
+
+/jiuwenswarm/agents/harness/common/rails/progressive_tool_rail.py @liubuyu1
+/jiuwenswarm/agents/harness/common/rails/disabled_tools_rail.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/invoke_tool_tool.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/tools_search_tool.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py @liubuyu1
+/jiuwenswarm/server/runtime/tool_catalog.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/browser_tools.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/browser_timeout_policy.py @liubuyu1
+/jiuwenswarm/agents/harness/common/rails/multimodal_image_rail.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/audio_tools.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/image_tools.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/video_tools.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/multimodal_config.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/web_fetch_tools.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/web_file_download.py @liubuyu1
+/jiuwenswarm/agents/harness/common/tools/harness_named_web_tools.py @liubuyu1
+/jiuwenswarm/agents/harness/common/rails/extension_config_debug_rail.py @liubuyu1
+/jiuwenswarm/agents/harness/agent_observability.py @liubuyu1
+/jiuwenswarm/agents/harness/observability_runtime.py @liubuyu1
+
+
+/jiuwenswarm/agents/harness/common/rails/context_overflow_recovery_rail.py @renquanjia
+/jiuwenswarm/agents/harness/common/rails/response_prompt_rail.py @renquanjia
+/jiuwenswarm/agents/harness/common/rails/runtime_prompt_rail.py @renquanjia
+
+
+/jiuwenswarm/agents/harness/common/rails/skill_active_state.py @CodehubTTG
+/jiuwenswarm/agents/harness/common/rails/skill_credential_injection_rail.py @CodehubTTG
+/jiuwenswarm/agents/harness/common/rails/skill_protocol_prompt_rail.py @CodehubTTG
+/jiuwenswarm/agents/harness/common/rails/skill_retrieval_prompt_rail.py @CodehubTTG
+/jiuwenswarm/agents/harness/common/tools/skill_toolkits.py @CodehubTTG
+/jiuwenswarm/agents/harness/common/tools/skill_retrieval_toolkits.py @CodehubTTG
+
+
+/jiuwenswarm/agents/harness/code/ @NickFuryXXX
+/jiuwenswarm/agents/harness/team/ @liutao_1998
+/jiuwenswarm/server/runtime/agent_adapter/evolution_version.py @xinyang_bali
+/jiuwenswarm/server/runtime/agent_adapter/evolution_slash.py @xinyang_bali
+/jiuwenswarm/server/runtime/agent_adapter/evolution_helpers.py @xinyang_bali
+/jiuwenswarm/agents/harness/agent_observability.py @xinyang_bali
+/jiuwenswarm/agents/harness/observability_runtime.py @xinyang_bali
+/jiuwenswarm/agents/swarm/providers/evolution_rails.py @xinyang_bali

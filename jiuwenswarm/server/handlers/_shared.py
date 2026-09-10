@@ -212,15 +212,15 @@ def _is_team_metadata_mode(metadata: dict[str, Any]) -> bool:
 
 
 def _sessions_dir_for_request(request: AgentRequest) -> Path:
-    """Resolve tenant ``service_{sid}/agent_{aid}/agent/sessions`` for an AgentRequest."""
-    agent_id, service_id, _workspace_key = TenantAgentPool.extract_ids(request)
-    return resolve_tenant_sessions_dir(service_id, agent_id)
+    """Resolve tenant ``workspace_{key}/agent/sessions`` for an AgentRequest."""
+    _agent_id, _service_id, workspace_key = TenantAgentPool.extract_ids(request)
+    return resolve_tenant_sessions_dir(workspace_key)
 
 
 def _agent_workspace_dir_for_request(request: AgentRequest) -> Path:
-    """Resolve tenant ``service_{sid}/agent_{aid}/agent/workspace`` for a request."""
-    agent_id, service_id, _workspace_key = TenantAgentPool.extract_ids(request)
-    return resolve_tenant_agent_workspace_dir(service_id, agent_id)
+    """Resolve tenant ``workspace_{key}/agent/jiuwenclaw_workspace`` for a request."""
+    _agent_id, _service_id, workspace_key = TenantAgentPool.extract_ids(request)
+    return resolve_tenant_agent_workspace_dir(workspace_key)
 
 
 def _effective_config_for_request(request: AgentRequest) -> Any:
@@ -235,13 +235,18 @@ def _effective_config_for_request(request: AgentRequest) -> Any:
     )
     from jiuwenswarm.server.runtime.sync_agents_configs import materialize_sync_env
     from jiuwenswarm.server.runtime.tenant_catalog_registry import TenantCatalogRegistry
+    from jiuwenswarm.server.runtime.tenant_context import (
+        bind_workspace_key,
+        reset_workspace_key,
+    )
 
     if request.channel_id == "officeclaw":
-        agent_id, service_id, _workspace_key = TenantAgentPool.extract_ids(request)
+        agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
         spec = TenantCatalogRegistry.get_instance().get(service_id, agent_id)
         if spec is not None and isinstance(spec.config, dict):
             env = materialize_sync_env(spec.env) if isinstance(spec.env, dict) else {}
             ns_token = bind_agent_env_ns(service_id, agent_id)
+            wk_token = bind_workspace_key(workspace_key)
             try:
                 overlay_token = bind_task_env_overlay(
                     build_effective_env_overlay(
@@ -256,6 +261,7 @@ def _effective_config_for_request(request: AgentRequest) -> Any:
                     reset_task_env_overlay(overlay_token)
             finally:
                 reset_agent_env_ns(ns_token)
+                reset_workspace_key(wk_token)
         return {}
     return get_config()
 

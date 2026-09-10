@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import os
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -15,10 +16,15 @@ from urllib.parse import urlparse
 
 
 def _max_upload_filename_bytes() -> int:
-    """Return OS filename component limit (typically 255 bytes on Linux)."""
+    """Return OS filename component limit."""
+    # Windows: NTFS 通常支持 255 个字符
+    if sys.platform == "win32":
+        return 255
+    
     try:
+        # Unix/Linux/macOS
         return int(os.pathconf(tempfile.gettempdir(), "PC_NAME_MAX"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
         return 255
 
 
@@ -72,14 +78,18 @@ def _parse_bool(value: str | bool | None, default: bool = False) -> bool:
 
 
 def load_minio_upload_config() -> MinioUploadConfig:
-    """Load MinIO settings from env vars, falling back to config.yaml ``minio``."""
-    endpoint = os.environ.get("JIUWENCLAW_MINIO_ENDPOINT", "").strip()
-    access_key = os.environ.get("JIUWENCLAW_MINIO_ACCESS_KEY", "").strip()
-    secret_key = os.environ.get("JIUWENCLAW_MINIO_SECRET_KEY", "").strip()
-    bucket = os.environ.get("JIUWENCLAW_MINIO_BUCKET", "").strip()
-    public_base_url = os.environ.get("JIUWENCLAW_MINIO_PUBLIC_BASE_URL", "").strip()
-    secure_env = os.environ.get("JIUWENCLAW_MINIO_SECURE", "").strip()
-    region = os.environ.get("JIUWENCLAW_MINIO_REGION", "").strip()
+    """Load object-store settings from ``OBS_*`` env or ``config.yaml`` ``minio``.
+
+    Deploy contract is ``deploy/enterprise/.env.example`` ``OBS_*``
+    (``OBS_URL`` / ``OBS_ACCESS_KEY`` / ``OBS_SECRET_KEY`` / …).
+    """
+    endpoint = os.environ.get("OBS_URL", "").strip()
+    access_key = os.environ.get("OBS_ACCESS_KEY", "").strip()
+    secret_key = os.environ.get("OBS_SECRET_KEY", "").strip()
+    bucket = os.environ.get("OBS_BUCKET", "").strip()
+    public_base_url = os.environ.get("OBS_PUBLIC_BASE_URL", "").strip()
+    secure_env = os.environ.get("OBS_SECURE", "").strip()
+    region = os.environ.get("OBS_REGION", "").strip()
 
     yaml_secure: bool | None = None
     if not all((endpoint, access_key, secret_key, bucket)):
@@ -97,11 +107,9 @@ def load_minio_upload_config() -> MinioUploadConfig:
 
     if not endpoint or not access_key or not secret_key:
         raise RuntimeError(
-            "MinIO upload config missing: set JIUWENCLAW_MINIO_ENDPOINT / "
-            "JIUWENCLAW_MINIO_ACCESS_KEY / JIUWENCLAW_MINIO_SECRET_KEY "
-            "(optional JIUWENCLAW_MINIO_BUCKET / JIUWENCLAW_MINIO_SECURE / "
-            "JIUWENCLAW_MINIO_REGION / JIUWENCLAW_MINIO_PUBLIC_BASE_URL), or configure minio.endpoint / "
-            "access_key / secret_key / bucket in config.yaml"
+            "Object storage config missing: set OBS_URL / OBS_ACCESS_KEY / "
+            "OBS_SECRET_KEY (optional OBS_BUCKET / OBS_SECURE / OBS_REGION / "
+            "OBS_PUBLIC_BASE_URL), or configure minio.* in config.yaml"
         )
 
     host, secure_from_url = _parse_endpoint(endpoint)
@@ -128,8 +136,13 @@ def upload_local_file_to_minio(
     *,
     filename: str | None = None,
     presign_days: int = 7,
+    object_prefix: str = "uploads",
 ) -> dict[str, str | int]:
-    """Upload a local file to MinIO and return url/name/size."""
+    """Upload a local file to MinIO and return url/name/size.
+
+    ``object_prefix`` defaults to ``uploads`` (browser upload-obs). Enterprise
+    Agent→user download uses ``downloads``.
+    """
     try:
         from minio import Minio
     except ImportError as exc:
@@ -137,7 +150,8 @@ def upload_local_file_to_minio(
 
     display_name = filename or os.path.basename(file_path)
     safe_name = display_name.replace("\\", "_").replace("/", "_")
-    object_name = f"uploads/{uuid.uuid4().hex}_{safe_name}"
+    prefix = (object_prefix or "uploads").strip().strip("/") or "uploads"
+    object_name = f"{prefix}/{uuid.uuid4().hex}_{safe_name}"
 
     client = Minio(
         config.endpoint,

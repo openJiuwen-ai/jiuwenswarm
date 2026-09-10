@@ -3,7 +3,7 @@
 """Distributed Leader Election using Redis SETNX + TTL for PRIMARY/STANDBY failover."""
 
 from __future__ import annotations
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 import asyncio
 import logging

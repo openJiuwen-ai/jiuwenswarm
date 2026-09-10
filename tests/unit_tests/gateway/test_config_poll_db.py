@@ -42,7 +42,7 @@ def test_row_snapshot_detects_delete_and_update() -> None:
 async def test_list_table_records_channel_config() -> None:
     list_mock = AsyncMock(return_value=[{"channel_id": "web", "status": "active"}])
     with patch(
-        "jiuwenswarm.server.runtime.enterprise_config.gateway_db.list_records",
+        "jiuwenswarm.server.runtime.enterprise_config.db_queries.list_records",
         list_mock,
     ):
         rows = await list_table_records("channel_config")
@@ -54,7 +54,7 @@ async def test_list_table_records_channel_config() -> None:
 async def test_list_table_records_logging_without_instance_filter() -> None:
     list_mock = AsyncMock(return_value=[{"level": "INFO"}])
     with patch(
-        "jiuwenswarm.server.runtime.enterprise_config.gateway_db.list_records",
+        "jiuwenswarm.server.runtime.enterprise_config.db_queries.list_records",
         list_mock,
     ):
         rows = await list_table_records("logging_config")

@@ -26,39 +26,25 @@ from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
 
 
-def is_enterprise() -> bool:
-    """判断当前 AgentServer 是否运行在企业版。
-
-    产品形态由 JIUWENSWARM_EDITION 统一标识；AGENT_RUNTIME 仅表示运行模式，
-    不再作为个人版/企业版的判定依据。
-
-    启动早期不要依赖 ``local_env_config``（该模块较重）；后续会再从该模块导入同名函数。
-    """
-    return os.getenv("JIUWENSWARM_EDITION", "").strip().lower() == "enterprise"
-
-
 from jiuwenswarm.common.utils import (
     get_env_file,
     get_logs_dir,
     get_user_workspace_dir,
-    is_enterprise,
     logger,
     prepare_workspace,
     reset_free_search_runtime_flags,
     update_config,
     migrate_legacy_user_config_if_needed,
 )
-# Needed before workspace update_config gate (module top-level uses is_enterprise;
-# enterprise multi-Pod shared PVC skips startup merge).
-from jiuwenswarm.common.local_env_config import is_enterprise
+from jiuwenswarm.edition import is_enterprise
 
 migrate_legacy_user_config_if_needed()
 
 # Ensure workspace initialized
 _workspace_dir = get_user_workspace_dir()
 _config_file = _workspace_dir / "config" / "config.yaml"
-_new_workspace = _workspace_dir / "agent" / "workspace"
-_old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
+_new_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
+_old_workspace = _workspace_dir / "agent" / "workspace"
 if not _config_file.exists() or (_old_workspace.exists() and not _new_workspace.exists()):
     prepare_workspace(overwrite=False)
 else:
@@ -239,6 +225,15 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
     from jiuwenswarm.extensions.registry import ExtensionRegistry
     from jiuwenswarm.common.config import get_config
 
+    # 脱敏冷加载尽量提前：读库走 infrastructure.db，不依赖扩展加载完成。
+    # 失败时仍保留内置规则；企业版 identity 在 import 阶段已可对 user_id= 等脱敏。
+    try:
+        from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
+
+        await LogMaskingEngine.reload_log_masking_rule()
+    except Exception:  # noqa: BLE001
+        logger.warning("[AgentServer] log_masking_rule cold load skipped", exc_info=True)
+
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
 
     from jiuwenswarm.perf.config import init_perf_summary_config
@@ -270,14 +265,6 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         register_code_source_unicode_hook()
     except Exception:  # noqa: BLE001
         logger.warning("[AgentServer] code_source_unicode hook registration skipped", exc_info=True)
-
-    try:
-        from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
-
-        await LogMaskingEngine.reload_log_masking_rule()
-        logger.info("[AgentServer] log masking rules loaded from Gateway DB (if any)")
-    except Exception:  # noqa: BLE001
-        logger.warning("[AgentServer] log_masking_rule cold load skipped", exc_info=True)
 
     if is_enterprise():
         try:
@@ -317,9 +304,9 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
             )
 
             await reload_permissions_from_gateway_db()
-            logger.info("[AgentServer] permissions config loaded from Gateway DB (if any)")
+            logger.info("[AgentServer] permissions config refreshed from yaml fallback")
         except Exception:  # noqa: BLE001
-            logger.warning("[AgentServer] permissions_config cold load skipped", exc_info=True)
+            logger.warning("[AgentServer] permissions config cold load skipped", exc_info=True)
 
     # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
     # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
@@ -386,6 +373,11 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         stop_event.set()
 
     loop = asyncio.get_running_loop()
+    # 把主 loop 句柄注入 sandbox_config_rpc, 供同步 RPC handler 在工作线程调用
+    # _trigger_apply 时用 run_coroutine_threadsafe 投递协程 (替代 deprecated
+    # asyncio.get_event_loop().create_task()).
+    from jiuwenswarm.server.sandbox_config_rpc import register_main_loop
+    register_main_loop(loop)
     try:
         import signal
 
@@ -414,6 +406,42 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentServer] HTTP 入口关闭失败: %s", exc)
         await server.stop()
+        # jiuwenbox 关停顺序: 先 DELETE 远端沙箱, 再停 box-server 子进程。
+        # shutdown_jiuwenbox_sandboxes 是 HTTP DELETE 给 box-server (清本进程 provider
+        # 缓存里的 sandbox_id), 必须 box-server 还活着才能响应; 故它在 runner.stop()
+        # 之前。runner.stop() 再停 box-server 子进程 (external 模式下 no-op)。若反过来
+        # 先停子进程, DELETE 会全失败 (被 warning 吞不崩, 但沙箱没正常清理)。
+        # 走线程是因为底层 httpx 是同步 API, 不能直接堵 event loop。
+        # cleanup 自身已经吞了所有异常并永不抛, 外层 try/except 只是再加一道防线,
+        # 兜住 import 阶段 (例如 venv 损坏) 这种极端情况。
+        try:
+            from jiuwenswarm.server.sandbox_lifecycle import (
+                shutdown_jiuwenbox_sandboxes,
+            )
+
+            logger.info("[AgentServer][sandbox] step 1: DELETE 远端沙箱 (box-server 活着)")
+            released = await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
+            logger.info("[AgentServer][sandbox] step 1 done: released=%s", released)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] jiuwenbox sandbox cleanup failed: %s", exc,
+            )
+        # 停 internal 模式下由本 agent-server 拉起的 box-server 子进程。box-server
+        # 进程退出时其 FastAPI lifespan shutdown 会兜底调 shutdown_all_sandboxes
+        # (清上面 DELETE 漏网的沙箱)。失败不阻断后续清理。
+        try:
+            from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+
+            runner = JiuwenBoxRunner.instance()
+            owned = runner.get_owned_endpoint()
+            logger.info(
+                "[AgentServer][sandbox] step 2: stop box-server 子进程 (owned=%s)",
+                owned,
+            )
+            await runner.stop()
+            logger.info("[AgentServer][sandbox] step 2 done")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentServer] jiuwenbox runner stop failed: %s", exc)
         from jiuwenswarm.perf.guard import run_perf_safe
         from jiuwenswarm.perf.writer import flush_request_summary_writer
 

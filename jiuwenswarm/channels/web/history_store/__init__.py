@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 from .api import (
+    count_sessions_sync,
     get_default_store,
+    get_session_detail_strict_sync,
     get_session_detail_sync,
     list_sessions_sync,
     set_default_store,
@@ -33,6 +35,8 @@ __all__ = [
     "set_default_store",
     "get_default_store",
     "list_sessions_sync",
+    "count_sessions_sync",
     "get_session_detail_sync",
+    "get_session_detail_strict_sync",
     "resolve_history_db_type",
 ]

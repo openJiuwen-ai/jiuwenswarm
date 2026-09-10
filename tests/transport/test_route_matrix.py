@@ -100,6 +100,34 @@ def test_headers_map_to_envelope(client, stub_server) -> None:
     assert env["metadata"].get("user_id") == "u1"
 
 
+def test_internal_request_ext_header_reaches_agent_metadata(client, stub_server) -> None:
+    from jiuwenswarm.common.request_ext import (
+        INTERNAL_HEADER_NAME,
+        encode_internal_header,
+    )
+
+    ext = {"tenant": "租户-a", "custom_trace": "trace-1"}
+    response = client.get(
+        "/api/v1/sessions",
+        headers={INTERNAL_HEADER_NAME: encode_internal_header(ext)},
+    )
+
+    assert response.status_code == 200
+    assert stub_server.last["metadata"]["ext"] == ext
+
+
+def test_invalid_internal_request_ext_header_returns_400(client) -> None:
+    from jiuwenswarm.common.request_ext import INTERNAL_HEADER_NAME
+
+    response = client.get(
+        "/api/v1/sessions",
+        headers={INTERNAL_HEADER_NAME: "not+base64"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid internal request extension header"
+
+
 @pytest.mark.parametrize(
     ("code", "message", "expected"),
     [
@@ -194,6 +222,9 @@ def test_chat_stream_flag_in_body(client, stub_server) -> None:
              request_id="r4", session_id="s3", channel_id="web", user_id=None, is_stream=False),
         dict(method="team.delete", params={"team_name": "T", "unicode": "中文🎉"},
              request_id="r5", session_id=None, channel_id="web", user_id="u3", is_stream=False),
+        dict(method="chat.send", params={"query": "ext"}, request_id="r6",
+             session_id="s4", channel_id="web", user_id="u4", is_stream=True,
+             request_ext={"tenant": "租户-a", "feature": {"flag": True}}),
     ],
     ids=lambda kw: f"{kw['method']}-stream{int(kw['is_stream'])}",
 )

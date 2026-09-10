@@ -114,6 +114,32 @@ def test_parse_llm_output_without_task_id_unchanged() -> None:
     assert parsed == {"event_type": "chat.delta", "content": "hello"}
 
 
+def test_parse_llm_output_accepts_openjiuwen_output_key() -> None:
+    """openjiuwen llm_controller streams payload.output, not payload.content.
+
+    Before this fix, mid-ReAct user text was dropped while reasoning (which
+    already accepted ``output``) still reached the thinking UI.
+    """
+    chunk = SimpleNamespace(
+        type="llm_output",
+        payload={"output": "我来帮你完成这个任务", "result_type": "answer"},
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.delta",
+        "content": "我来帮你完成这个任务",
+    }
+
+
+def test_parse_llm_output_prefers_content_over_output() -> None:
+    chunk = SimpleNamespace(
+        type="llm_output",
+        payload={"content": "from-content", "output": "from-output"},
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed["content"] == "from-content"
+
+
 def test_parse_content_chunk_forwards_task_id() -> None:
     chunk = SimpleNamespace(
         type="content_chunk",
@@ -122,6 +148,31 @@ def test_parse_content_chunk_forwards_task_id() -> None:
     parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
     assert parsed["event_type"] == "chat.delta"
     assert parsed["task_id"] == "task_plan"
+
+
+def test_parse_chat_file_obs_url_is_not_dropped() -> None:
+    """Enterprise send_file writes OutputSchema(type=chat.file, files=[url]).
+
+    Fallback treats unknown typed chunks as chat.delta via content/output; a
+    files-only payload would return None and Gateway would never materialize.
+    """
+    chunk = SimpleNamespace(
+        type="chat.file",
+        payload={
+            "files": [
+                {
+                    "url": "http://minio-headless.default:9000/b/downloads/out.docx",
+                    "name": "out.docx",
+                    "size": 10,
+                }
+            ]
+        },
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed is not None
+    assert parsed["event_type"] == "chat.file"
+    assert parsed["files"][0]["url"].startswith("http://")
+    assert parsed["files"][0]["name"] == "out.docx"
 
 
 def test_parse_unknown_chat_delta_payload_forwards_task_id() -> None:
@@ -146,6 +197,125 @@ def test_same_round_streamed_answer_still_empty_final() -> None:
         _streamed_text=answer,
     )
     assert parsed == {"event_type": "chat.final", "content": ""}
+
+
+def test_hitl_suppress_noise_keeps_flags() -> None:
+    """Pause-tail metadata must not clear suppress.
+
+    ``__interaction__`` is not noise: it is the ask_user card source after the
+    forced-emit revert and must be forwarded.
+    """
+    for chunk_type in (
+        "llm_usage",
+        "context.usage",
+        "controller_output",
+    ):
+        assert JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+            SimpleNamespace(type=chunk_type, payload={})
+        )
+    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+        SimpleNamespace(type="__interaction__", payload={})
+    )
+
+
+def test_hitl_suppress_task_failed_not_noise() -> None:
+    """controller_output.task_failed must clear suppress and surface chat.error."""
+    chunk = SimpleNamespace(
+        type="controller_output",
+        payload=SimpleNamespace(type="task_failed", data=[]),
+    )
+    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(chunk)
+
+
+def test_hitl_suppress_dict_task_failed_not_noise() -> None:
+    """dict payload task_failed must also clear suppress (align stream_utils)."""
+    chunk = SimpleNamespace(
+        type="controller_output",
+        payload={"type": "task_failed", "data": [{"text": "model failed"}]},
+    )
+    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(chunk)
+    assert JiuWenSwarmDeepAdapter._run_failure(chunk) == (
+        "task_failed",
+        "model failed",
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed == {"event_type": "chat.error", "error": "model failed"}
+
+
+def test_controller_output_task_interaction_is_dropped() -> None:
+    """ISSUE #3892: TASK_INTERACTION must not stringify as chat.delta body."""
+    chunk = SimpleNamespace(
+        type="controller_output",
+        payload=SimpleNamespace(
+            type="task_interaction",
+            data=[SimpleNamespace(data={"result_type": "interrupt", "state": []})],
+            metadata={"task_id": "t1"},
+        ),
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed is None
+
+
+def test_controller_output_control_plane_types_are_dropped() -> None:
+    for inner in ("task_completion", "processing", "all_tasks_processed"):
+        chunk = SimpleNamespace(
+            type="controller_output",
+            payload=SimpleNamespace(type=inner, data=[]),
+        )
+        assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+
+
+def test_controller_output_dict_task_interaction_is_dropped() -> None:
+    chunk = SimpleNamespace(
+        type="controller_output",
+        payload={
+            "type": "task_interaction",
+            "data": [
+                {
+                    "data": {
+                        "result_type": "interrupt",
+                        "state": [],
+                        "interrupt_ids": ["call_x"],
+                        "_interaction_emitted": True,
+                    }
+                }
+            ],
+            "metadata": {"task_id": "t2"},
+        },
+    )
+    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+
+
+def test_controller_output_unknown_type_is_dropped() -> None:
+    chunk = SimpleNamespace(
+        type="controller_output",
+        payload=SimpleNamespace(type="future_new_type", data=[]),
+    )
+    assert JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk) is None
+
+
+def test_hitl_suppress_cleared_on_resume_or_unknown_chunk() -> None:
+    """Content and unknown SDK frames clear suppress (default = resumed)."""
+    for chunk_type in ("llm_output", "answer", "chat.file", "task.start", "tool_call"):
+        assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+            SimpleNamespace(type=chunk_type, payload={})
+        )
+    assert not JiuWenSwarmDeepAdapter._is_hitl_suppress_noise_chunk(
+        SimpleNamespace(payload={})
+    )
+
+
+def test_is_ask_user_payload_detects_ask_user() -> None:
+    assert JiuWenSwarmDeepAdapter._is_ask_user_payload(
+        {"event_type": "chat.ask_user_question", "questions": []}
+    )
+
+
+def test_is_ask_user_payload_rejects_non_ask_user() -> None:
+    assert not JiuWenSwarmDeepAdapter._is_ask_user_payload(
+        {"event_type": "chat.delta", "content": "hi"}
+    )
+    assert not JiuWenSwarmDeepAdapter._is_ask_user_payload(None)
 
 
 def test_streamed_flag_without_visible_text_keeps_final_for_drain() -> None:

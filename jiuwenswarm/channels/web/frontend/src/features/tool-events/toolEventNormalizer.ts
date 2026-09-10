@@ -74,6 +74,8 @@ export interface NormalizedToolCall {
   formatted_args?: string;
   /** 后端下发的可读展示名（部分工具带），前端优先直接展示，省去本地推断。 */
   display_name?: string;
+  /** 触发该工具时激活的技能名（ContextVar 归因）。 */
+  source_skill?: string;
   memberName?: string;
 }
 
@@ -115,6 +117,11 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
     (typeof toolCallPayload.displayName === 'string' && toolCallPayload.displayName) ||
     '';
   const display_name = displayNameRaw.trim() || undefined;
+  const sourceSkillRaw =
+    (typeof toolCallPayload.source_skill === 'string' && toolCallPayload.source_skill) ||
+    (typeof toolCallPayload.sourceSkill === 'string' && toolCallPayload.sourceSkill) ||
+    '';
+  const source_skill = sourceSkillRaw.trim() || undefined;
   const memberName = resolveMemberName(toolCallPayload, payload);
 
   return {
@@ -124,6 +131,7 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
     description,
     formatted_args,
     display_name,
+    source_skill,
     memberName,
   };
 }

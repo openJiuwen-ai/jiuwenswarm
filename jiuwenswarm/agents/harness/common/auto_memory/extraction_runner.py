@@ -214,11 +214,30 @@ async def _execute_auto_memory_extraction(
 
         # Get coding memory directory (unified with Auto Memory)
         from jiuwenswarm.common.utils import get_agent_workspace_dir
-        from jiuwenswarm.common.coding_memory_paths import resolve_project_coding_memory_dir
-        memory_dir = Path(resolve_project_coding_memory_dir(
+        from jiuwenswarm.common.coding_memory_paths import prepare_project_coding_memory_dir
+        migration = prepare_project_coding_memory_dir(
             agent_workspace_dir=get_agent_workspace_dir(),
             project_dir=project_dir,
-        ))
+        )
+        memory_dir = Path(migration.target_dir)
+        if migration.failed or migration.index_truncated:
+            logger.warning(
+                "[auto_memory] Coding Memory legacy migration needs attention; "
+                "continuing with the new directory",
+                extra={
+                    "user_visible": "progress",
+                    "coding_memory_migration": {
+                        "target": migration.target_dir,
+                        "sources": migration.source_paths,
+                        "sources_found": migration.sources_found,
+                        "sources_migrated": migration.sources_migrated,
+                        "copied": migration.copied,
+                        "duplicates": migration.duplicates,
+                        "renamed": migration.renamed,
+                        "index_truncated": migration.index_truncated,
+                    },
+                },
+            )
 
         # Ensure memory directory exists
         memory_dir.mkdir(parents=True, exist_ok=True)

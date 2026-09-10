@@ -15,3 +15,7 @@ export function isLoginAuthSimulateEnabled(): boolean {
   }
   return parseLoginAuthSimulate(import.meta.env.VITE_LOGIN_AUTH_SIMULATE);
 }
+
+export function isAuthEntryPath(pathname: string): boolean {
+  return pathname === '/auth' || pathname === '/auth/';
+}

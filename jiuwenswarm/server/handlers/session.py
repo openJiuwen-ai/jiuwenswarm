@@ -125,17 +125,19 @@ async def _resolve_rewind_agent(
     return (deep_agent, react_agent)
 
 
-def get_conversation_history(session_id: str, page_idx: int) -> dict[str, Any] | None:
+def get_conversation_history(
+    session_id: str, page_idx: int, sessions_root: str | None = None,
+) -> dict[str, Any] | None:
     # 按照 session_id 和分页消息获取历史记录
     if not isinstance(session_id, str) or not session_id.strip():
         return None
     if not isinstance(page_idx, int) or page_idx <= 0:
         return None
     normalized_session_id = session_id.strip()
-    if not history_exists(normalized_session_id):
+    if not history_exists(normalized_session_id, sessions_root=sessions_root):
         return None
     try:
-        raw = load_history_records(normalized_session_id)
+        raw = load_history_records(normalized_session_id, sessions_root=sessions_root)
     except Exception:
         return None
     if not isinstance(raw, list):
@@ -223,7 +225,10 @@ async def handle_session_list(ctx: RequestContext) -> None:
     offset = max(0, _coerce_int(params.get("offset"), 0))
 
     try:
-        sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
+        sessions_root = _sessions_dir_for_request(ctx.request)
+        sessions, total = get_all_sessions_metadata(
+            limit=limit, offset=offset, sessions_root=sessions_root,
+        )
     except Exception as exc:  # noqa: BLE001 - 与原实现一致：失败降级为空列表
         logger.warning("[handlers.session] 获取会话列表失败: %s", exc)
         sessions, total = [], 0
@@ -388,6 +393,22 @@ async def handle_session_delete(ctx: RequestContext) -> None:
         session_dir, invalid_reason = resolve_session_dir(
             target, sessions_root=sessions_root
         )
+        if session_dir is not None:
+            # 合法的永久删除请求首先回收进程内授权。即使会话目录已被外部删除
+            # 或随后文件删除失败，也不能让 ACTIVE/PENDING Grant 继续存活。
+            try:
+                from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.runtime import (
+                    clear_deleted_session,
+                )
+
+                clear_deleted_session(target)
+            except Exception:  # noqa: BLE001 — Grant 回收失败不掩盖原删除结果
+                logger.warning(
+                    "[AgentWebSocketServer] session.delete skill grant cleanup failed: "
+                    "session_id=%s",
+                    target,
+                    exc_info=True,
+                )
         if session_dir is None:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -784,7 +805,10 @@ async def handle_history_get(ctx: RequestContext) -> None:
     session_id = params.get("session_id")
     # 归一化数字型参数
     page_idx = _coerce_int(params.get("page_idx"), 0)
-    data = get_conversation_history(session_id=session_id, page_idx=page_idx)
+    sessions_root = str(_sessions_dir_for_request(request))
+    data = get_conversation_history(
+        session_id=session_id, page_idx=page_idx, sessions_root=sessions_root,
+    )
     if data is None:
         resp = AgentResponse(
             request_id=request.request_id,
@@ -809,7 +833,10 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
     session_id = params.get("session_id")
     # 归一化数字型参数
     page_idx = _coerce_int(params.get("page_idx"), 0)
-    data = get_conversation_history(session_id=session_id, page_idx=page_idx)
+    sessions_root = str(_sessions_dir_for_request(request))
+    data = get_conversation_history(
+        session_id=session_id, page_idx=page_idx, sessions_root=sessions_root,
+    )
     if data is None:
         err_chunk = AgentResponseChunk(
             request_id=request.request_id,

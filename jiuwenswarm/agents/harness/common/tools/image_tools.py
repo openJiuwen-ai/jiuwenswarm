@@ -6,9 +6,10 @@ import os
 import random
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -73,9 +74,14 @@ class _RetryExecutor:
         max_tries: int,
         base_delay: int = 4,
         on_failure=None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> Any:
         last_err = None
         for i in range(1, max_tries + 1):
+            # 外层任务取消时通过 should_stop 置位中止后续重试；CancelledError
+            # 是 BaseException，不会被下方 except Exception 吞掉。
+            if should_stop is not None and should_stop():
+                raise asyncio.CancelledError()
             try:
                 return await coro_factory()
             except Exception as e:
@@ -84,6 +90,8 @@ class _RetryExecutor:
                     if on_failure:
                         return on_failure(max_tries, e)
                     raise
+                if should_stop is not None and should_stop():
+                    raise asyncio.CancelledError()
                 await asyncio.sleep(base_delay ** i)
         if on_failure and last_err:
             return on_failure(max_tries, last_err)
@@ -619,7 +627,7 @@ def _save_generated_images(response: Any, *, prompt: str, output_dir: Path | Non
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
-            response_dl = requests.get(url, headers={"User-Agent": ua}, verify=get_requests_verify())
+            response_dl = requests_get(url, headers={"User-Agent": ua}, verify=get_requests_verify())
             response_dl.raise_for_status()
             dest.write_bytes(response_dl.content)
             if dest.stat().st_size == 0:
@@ -702,6 +710,12 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
     save_dir = inputs.get("save_dir")
 
     try:
+        # use_shared_llm_http_client=False：生图调用整体跑在 asyncio.to_thread 的
+        # 独立事件循环里，若复用进程级共享 AsyncOpenAI（httpx 连接池按单事件循环
+        # 设计），OpenAI 兼容 provider 的 images.generate 会跨 loop 复用连接池，
+        # 触发 "bound to a different loop" / "Event loop is closed"。改为每请求
+        # 独立 client，随调用同 loop 创建并在 finally 关闭（DashScope 走同步 SDK
+        # 不受此配置影响）。
         model_client_config = ModelClientConfig(
             client_id="image_gen_client",
             client_provider=provider,
@@ -710,6 +724,7 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
             verify_ssl=mc.get("verify_ssl", True),
             ssl_cert=mc.get("ssl_cert"),
             timeout=mc.get("timeout", 1800),
+            use_shared_llm_http_client=False,
         )
 
         model_config = ModelRequestConfig(
@@ -734,10 +749,34 @@ async def _invoke_model_image_generation(inputs: dict[str, Any]) -> dict:
         async def _call():
             return await model_instance.generate_image(messages=messages, model=model, **gen_kwargs)
 
-        result = await _RetryExecutor.with_backoff(_call, max_tries=3)
+        # DashScope 等客户端内部是同步 SDK 调用（MultiModalConversation.call），
+        # 直接 await 会阻塞整个事件循环（实测单次 45-60s，重试可达 300s+），
+        # 导致 WS 心跳停发、客户端断连。整体挪到工作线程的独立事件循环执行。
+        # asyncio.to_thread 不向工作线程传播取消：会话中断后若不通知线程，
+        # 线程里的重试循环会继续跑到耗尽（最长 300s+），持续消耗 API 配额并
+        # 占用默认线程池线程。用 threading.Event 把取消信号传入线程，让
+        # with_backoff 在下一次尝试前/退避前停止。残留行为：in-flight 的单次
+        # 调用不可中断（当前 HTTP 请求会跑完）；to_thread 的线程非 daemon，
+        # 极端情况下会延迟进程优雅退出（ThreadPoolExecutor 无公开 daemon 选项）。
+        cancel_event = threading.Event()
+
+        def _run_gen():
+            return asyncio.run(
+                _RetryExecutor.with_backoff(
+                    _call, max_tries=3, should_stop=cancel_event.is_set
+                )
+            )
+
+        try:
+            result = await asyncio.to_thread(_run_gen)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            raise
 
         out_dir = Path(save_dir) if save_dir else None
-        saved_paths = _save_generated_images(result, prompt=prompt, output_dir=out_dir)
+        saved_paths = await asyncio.to_thread(
+            _save_generated_images, result, prompt=prompt, output_dir=out_dir
+        )
 
         return {
             "image_paths": [str(p) for p in saved_paths],

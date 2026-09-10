@@ -15,8 +15,13 @@ WS 侧语义（2026-08 起）
    全局 id 无条件清空（旧单槽位曾导致：短连接覆盖后断开 → 长连接仍在收请求流、
    但 ``send_push`` 永久失败，前端收不到 ``chat.file`` 且工具误报成功）。
 
-历史：固定 id ``gateway-ws`` 单槽 + 断开无条件清空，真机出现过「短连接挤掉长连接
-后永久无推送」。``WS_PUSH_SUBSCRIBER_ID`` 常量仅作前缀/兼容别名保留。
+2026-08-20 真机实测过旧单槽位方案的杀伤力：几条只活 5 秒的短连接轮流接入/断开，
+把长连接挤出槽位后又清空；长连接因为一直没断**不会重新注册**，于是前端**永久收
+不到推送且毫无报错**，只能重启服务恢复（刷新浏览器无效）。``WS_PUSH_SUBSCRIBER_ID``
+常量仅作前缀/兼容别名保留，不要再拿它当全局单槽注册。
+
+反向 RPC 另有一个显式 owner。普通推送仍按原语义扇出；ACP/A2A 请求只投递给
+最后注册的 RPC-capable Gateway，避免多个 SSE 订阅者重复执行同一个工具请求。
 
 与 ``server.gateway_push`` 的区别（名字相近，角色相反）
 --------------------------------------------------
@@ -34,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,6 +57,18 @@ WS_PUSH_SUBSCRIBER_ID = WS_PUSH_SUBSCRIBER_ID_PREFIX
 def make_ws_push_subscriber_id(ws: Any) -> str:
     """为一条 Gateway/Relay WebSocket 生成 PushRegistry 订阅 id。"""
     return f"{WS_PUSH_SUBSCRIBER_ID_PREFIX}:{id(ws)}"
+
+
+def subscriber_kind(subscriber_id: str) -> str:
+    """从订阅 id 前缀推断订户类型（便于日志区分 WS / HTTP-SSE）。"""
+    sid = str(subscriber_id or "")
+    if sid.startswith("http-sse:"):
+        return "http-sse"
+    if sid.startswith(f"{WS_PUSH_SUBSCRIBER_ID_PREFIX}:"):
+        return "gateway-ws"
+    if sid == WS_PUSH_SUBSCRIBER_ID_PREFIX:
+        return "gateway-ws"
+    return "other"
 
 
 #: 单个订阅者的推送投递上限（秒）。超时即判定该订阅者停滞并注销 ——
@@ -100,10 +118,26 @@ class _Subscriber:
 class PushRegistry:
     """推送订阅者注册表：把「推给当前连接」变成「推给匹配的订阅者」。"""
 
-    __slots__ = ("_subscribers",)
+    __slots__ = (
+        "_reverse_rpc_owner_id",
+        "_reverse_rpc_owner_lost_callback",
+        "_subscribers",
+    )
 
     def __init__(self) -> None:
         self._subscribers: dict[str, _Subscriber] = {}
+        self._reverse_rpc_owner_id: str | None = None
+        self._reverse_rpc_owner_lost_callback: Callable[[], None] | None = None
+
+    def set_reverse_rpc_owner_lost_callback(
+        self, callback: Callable[[], None] | None
+    ) -> None:
+        self._reverse_rpc_owner_lost_callback = callback
+
+    def _notify_reverse_rpc_owner_lost(self) -> None:
+        callback = self._reverse_rpc_owner_lost_callback
+        if callback is not None:
+            callback()
 
     def register(
         self,
@@ -113,19 +147,33 @@ class PushRegistry:
         session_id: str | None = None,
         channel_id: str | None = None,
         drop_on_stall: bool = True,
+        reverse_rpc_capable: bool = False,
     ) -> None:
         """登记一个订阅者。同 ``subscriber_id`` 重复注册会覆盖旧的。
 
         ``drop_on_stall`` 的含义见 :class:`_Subscriber` —— WS 侧必须传 ``False``。
+
+        ``reverse_rpc_capable=True`` 使此订阅者成为反向 RPC owner；调用方需
+        自行确保该标记来自可信来源。
         """
+        replacing_rpc_owner = self._reverse_rpc_owner_id == subscriber_id
         self._subscribers[subscriber_id] = _Subscriber(
             sink=sink,
             session_id=session_id,
             channel_id=channel_id,
             drop_on_stall=drop_on_stall,
         )
+        if reverse_rpc_capable:
+            if self._reverse_rpc_owner_id is not None:
+                self._notify_reverse_rpc_owner_lost()
+            self._reverse_rpc_owner_id = subscriber_id
+        elif replacing_rpc_owner:
+            self._reverse_rpc_owner_id = None
+            self._notify_reverse_rpc_owner_lost()
         logger.info(
-            "[PushRegistry] 订阅者接入: id=%s session_id=%s channel_id=%s 当前订阅数=%d",
+            "[PushRegistry] 订阅者接入: kind=%s id=%s session_id=%s channel_id=%s "
+            "当前订阅数=%d",
+            subscriber_kind(subscriber_id),
             subscriber_id,
             session_id,
             channel_id,
@@ -135,6 +183,9 @@ class PushRegistry:
     def unregister(self, subscriber_id: str) -> None:
         """注销订阅者。不存在时静默返回（断连清理可能重入）。"""
         if self._subscribers.pop(subscriber_id, None) is not None:
+            if self._reverse_rpc_owner_id == subscriber_id:
+                self._reverse_rpc_owner_id = None
+                self._notify_reverse_rpc_owner_lost()
             logger.info(
                 "[PushRegistry] 订阅者断开: id=%s 当前订阅数=%d",
                 subscriber_id,
@@ -143,6 +194,41 @@ class PushRegistry:
 
     def subscriber_count(self) -> int:
         return len(self._subscribers)
+
+    def reverse_rpc_ready(self) -> bool:
+        owner_id = self._reverse_rpc_owner_id
+        return owner_id is not None and owner_id in self._subscribers
+
+    async def push_reverse_rpc(self, wire: dict[str, Any]) -> int:
+        """Deliver a point-to-point reverse RPC to the current Gateway owner."""
+        owner_id = self._reverse_rpc_owner_id
+        subscriber = self._subscribers.get(owner_id or "")
+        if owner_id is None or subscriber is None or not subscriber.matches(wire):
+            return 0
+        try:
+            if subscriber.drop_on_stall:
+                sent = await asyncio.wait_for(
+                    subscriber.sink.send_wire(wire), timeout=SEND_TIMEOUT
+                )
+            else:
+                sent = await subscriber.sink.send_wire(wire)
+        except TimeoutError:
+            logger.warning(
+                "[PushRegistry] 反向 RPC 推送超时(%.1fs)，注销订阅者: id=%s",
+                SEND_TIMEOUT,
+                owner_id,
+            )
+            self.unregister(owner_id)
+            return 0
+        except Exception as exc:  # noqa: BLE001 - owner loss fails pending RPCs
+            logger.warning(
+                "[PushRegistry] 反向 RPC 推送失败，注销订阅者: id=%s error=%s",
+                owner_id,
+                exc,
+            )
+            self.unregister(owner_id)
+            return 0
+        return int(bool(sent))
 
     async def push(self, wire: dict[str, Any]) -> int:
         """向匹配的订阅者扇出一条已构造好的 wire 帧。
@@ -166,10 +252,12 @@ class PushRegistry:
             return 0
 
         delivered = 0
+        by_kind: dict[str, int] = {}
         # 先快照：扇出过程中可能有订阅者注册/注销
         for subscriber_id, sub in list(self._subscribers.items()):
             if not sub.matches(wire):
                 continue
+            kind = subscriber_kind(subscriber_id)
             try:
                 if sub.drop_on_stall:
                     sent = await asyncio.wait_for(
@@ -181,10 +269,12 @@ class PushRegistry:
                     sent = await sub.sink.send_wire(wire)
                 if sent:
                     delivered += 1
+                    by_kind[kind] = by_kind.get(kind, 0) + 1
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[PushRegistry] 推送超时(%.1fs)，注销停滞订阅者: id=%s",
+                    "[PushRegistry] 推送超时(%.1fs)，注销停滞订阅者: kind=%s id=%s",
                     SEND_TIMEOUT,
+                    kind,
                     subscriber_id,
                 )
                 self.unregister(subscriber_id)
@@ -193,9 +283,32 @@ class PushRegistry:
             # 那里兜底是 BaseException，才**必须**显式 re-raise）。
             except Exception as exc:  # noqa: BLE001 - 单个订阅者故障不影响其它
                 logger.warning(
-                    "[PushRegistry] 推送失败，注销订阅者: id=%s error=%s", subscriber_id, exc
+                    "[PushRegistry] 推送失败，注销订阅者: kind=%s id=%s error=%s",
+                    kind,
+                    subscriber_id,
+                    exc,
                 )
                 self.unregister(subscriber_id)
+
+        if delivered > 0:
+            event_type = ""
+            body = wire.get("body") if isinstance(wire.get("body"), dict) else {}
+            payload = wire.get("payload") if isinstance(wire.get("payload"), dict) else {}
+            nested = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+            for src in (payload, nested, body):
+                et = src.get("event_type") if isinstance(src, dict) else None
+                if isinstance(et, str) and et.strip():
+                    event_type = et.strip()
+                    break
+            logger.info(
+                "[PushRegistry] 扇出完成: delivered=%d by_kind=%s "
+                "request_id=%s session_id=%s event_type=%s",
+                delivered,
+                by_kind,
+                wire.get("request_id"),
+                wire.get("session_id"),
+                event_type,
+            )
         return delivered
 
 

@@ -9,7 +9,7 @@ from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2AChannelConfig,
     _A2AAgentExecutor,
 )
-from jiuwenswarm.common.schema.message import EventType, Message
+from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 
 
 class DummyBus:
@@ -46,7 +46,7 @@ def build_channel() -> A2AChannel:
     return A2AChannel(A2AChannelConfig(enabled=False), DummyBus())
 
 
-def test_map_a2a_parts_to_params_text_and_files():
+def test_map_a2a_parts_to_params_forwards_text_but_drops_files():
     msg = DummyA2AMessage(
         [
             DummyPart(text="hello"),
@@ -67,16 +67,24 @@ def test_map_a2a_parts_to_params_text_and_files():
     query, files = A2AChannel.map_a2a_parts_to_params(msg)
 
     assert query == "hello"
-    assert len(files) == 3
-    assert files[0]["filename"] == "sample-url.txt"
-    assert files[0]["url"] == "https://example.com/test.txt"
-    assert files[0]["uri"] == "https://example.com/test.txt"
-    assert files[1]["filename"] == "inline.txt"
-    assert files[1]["data"] == "aGVsbG8gd29ybGQ="
-    assert files[1]["encoding"] == "base64"
-    # raw-only part should still produce a normalized synthetic filename.
-    assert files[2]["filename"] == "a2a_part_3"
-    assert files[2]["raw"] == "opaque-bytes"
+    assert files == []
+
+
+def test_filter_ingress_metadata_keeps_only_bounded_tracing_fields():
+    filtered = A2AChannel.filter_ingress_metadata(
+        {
+            "trace_id": "trace-1",
+            "traceparent": "x" * 600,
+            "cwd": "C:/sensitive",
+            "member_name": "admin",
+            "ws_id": "forged",
+            "user_id": "forged-user",
+            "enable_memory": False,
+            "correlation_id": 123,
+        }
+    )
+
+    assert filtered == {"trace_id": "trace-1", "traceparent": "x" * 512}
 
 
 def test_message_to_a2a_parts_filters_completion_sentinel_text():
@@ -125,7 +133,9 @@ def test_message_to_a2a_parts_maps_tool_events():
     )
 
     call_parts = A2AChannel.message_to_a2a_parts(tool_call_msg, fallback_to_text=False)
-    result_parts = A2AChannel.message_to_a2a_parts(tool_result_msg, fallback_to_text=False)
+    result_parts = A2AChannel.message_to_a2a_parts(
+        tool_result_msg, fallback_to_text=False
+    )
 
     assert len(call_parts) == 1
     assert getattr(call_parts[0], "text", "") == "[tool_call] view_file"
@@ -250,7 +260,8 @@ async def test_dispatch_a2a_request_defaults_metadata_to_empty_dict():
 @pytest.mark.asyncio
 async def test_cancel_pending_request_wakes_executor_queue():
     channel = build_channel()
-    channel.on_message(lambda msg: None)
+    seen = []
+    channel.on_message(seen.append)
     pending = await channel.dispatch_a2a_request(
         request_id="req-cancel",
         session_id="sess-cancel",
@@ -261,13 +272,169 @@ async def test_cancel_pending_request_wakes_executor_queue():
     canceled = await pending.queue.get()
     assert canceled.event_type == EventType.CHAT_INTERRUPT_RESULT
     assert canceled.payload["is_complete"] is True
+    assert [msg.req_method for msg in seen] == [
+        ReqMethod.CHAT_SEND,
+        ReqMethod.CHAT_CANCEL,
+    ]
+    assert seen[1].session_id == "sess-cancel"
+    assert seen[1].params == {"intent": "cancel", "session_id": "sess-cancel"}
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_every_pending_agent_session():
+    channel = build_channel()
+    seen = []
+    channel.on_message(seen.append)
+    await channel.dispatch_a2a_request(
+        request_id="req-stop",
+        session_id="sess-stop",
+        query="hello",
+    )
+
+    await channel.stop()
+
+    assert [msg.req_method for msg in seen] == [
+        ReqMethod.CHAT_SEND,
+        ReqMethod.CHAT_CANCEL,
+    ]
+    assert seen[-1].session_id == "sess-stop"
+    assert channel._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_start_waits_for_real_uvicorn_readiness_and_mounts_extended_card(
+    monkeypatch,
+):
+    release_start = asyncio.Event()
+    instances = []
+    advertised_cards = []
+
+    from a2a.server import routes as a2a_routes
+
+    create_agent_card_routes = a2a_routes.create_agent_card_routes
+
+    def capture_agent_card_routes(agent_card, *, card_url):
+        advertised_cards.append(agent_card)
+        return create_agent_card_routes(agent_card, card_url=card_url)
+
+    class DelayedServer:
+        def __init__(self, config):
+            self.config = config
+            self.started = False
+            self.should_exit = False
+            instances.append(self)
+
+        async def serve(self, *, sockets):
+            assert sockets and sockets[0].getsockname()[1] > 0
+            await release_start.wait()
+            self.started = True
+            while not self.should_exit:
+                await asyncio.sleep(0)
+
+    monkeypatch.setattr("uvicorn.Server", DelayedServer)
+    monkeypatch.setattr(
+        "a2a.server.routes.create_agent_card_routes", capture_agent_card_routes
+    )
+    channel = A2AChannel(
+        A2AChannelConfig(enabled=True, host="127.0.0.1", port=0),
+        DummyBus(),
+    )
+    start_task = asyncio.create_task(channel.start())
+    await asyncio.sleep(0.25)
+
+    assert start_task.done() is False
+    release_start.set()
+    await start_task
+    paths = {route.path for route in instances[0].config.app.routes}
+    assert channel.config.card_path in paths
+    assert channel.config.extended_card_path in paths
+    assert channel.config.rpc_path in paths
+    assert len(advertised_cards) == 2
+    assert all(not card.capabilities.extended_agent_card for card in advertised_cards)
+
+    await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_surfaces_bind_failure_before_running(monkeypatch):
+    def fail_bind(_host, _port):
+        raise OSError("address already in use")
+
+    monkeypatch.setattr(A2AChannel, "_bind_listen_socket", staticmethod(fail_bind))
+    channel = A2AChannel(A2AChannelConfig(enabled=True), DummyBus())
+
+    with pytest.raises(OSError, match="address already in use"):
+        await channel.start()
+
+    assert channel.is_running is False
+    assert channel._server_task is None
+
+
+def test_listen_socket_rejects_an_existing_listener():
+    first = A2AChannel._bind_listen_socket("127.0.0.1", 0)
+    try:
+        port = first.getsockname()[1]
+        with pytest.raises(OSError):
+            A2AChannel._bind_listen_socket("127.0.0.1", port)
+    finally:
+        first.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_uvicorn_exit_notifies_runtime_observer(monkeypatch):
+    crash = asyncio.Event()
+    observer_started = asyncio.Event()
+    release_observer = asyncio.Event()
+
+    class CrashingServer:
+        def __init__(self, config):
+            self.config = config
+            self.started = False
+            self.should_exit = False
+
+        async def serve(self, *, sockets):
+            self.started = True
+            await crash.wait()
+            raise RuntimeError("server crashed")
+
+    monkeypatch.setattr("uvicorn.Server", CrashingServer)
+    channel = A2AChannel(
+        A2AChannelConfig(enabled=True, host="127.0.0.1", port=0),
+        DummyBus(),
+    )
+    observed = []
+
+    async def observe(error):
+        observed.append(error)
+        observer_started.set()
+        await release_observer.wait()
+
+    channel.set_runtime_error_observer(observe)
+    await channel.start()
+
+    crash.set()
+    await observer_started.wait()
+
+    assert len(observed) == 1
+    assert str(observed[0]) == "server crashed"
+    assert channel.is_running is False
+    assert len(channel._runtime_error_tasks) == 1
+    observer_task = next(iter(channel._runtime_error_tasks))
+    assert observer_task.done() is False
+    release_observer.set()
+    await observer_task
+    await asyncio.sleep(0)
+    assert channel._runtime_error_tasks == set()
+    await channel.stop()
 
 
 @pytest.mark.asyncio
 async def test_executor_empty_query_emits_failed_task_lifecycle():
     pytest.importorskip("a2a.types")
     from a2a.types import Message, Part, Role, Task, TaskState, TaskStatusUpdateEvent
-    from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import _A2AAgentExecutor
+    from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
+        _A2AAgentExecutor,
+    )
 
     class MockEventQueue:
         def __init__(self) -> None:
@@ -367,7 +534,9 @@ def test_message_to_a2a_parts_marks_thought_metadata():
         event_type=EventType.CHAT_DELTA,
     )
 
-    thought_parts = A2AChannel.message_to_a2a_parts(reasoning_msg, fallback_to_text=False)
+    thought_parts = A2AChannel.message_to_a2a_parts(
+        reasoning_msg, fallback_to_text=False
+    )
     plain_parts = A2AChannel.message_to_a2a_parts(plain_msg, fallback_to_text=False)
 
     assert len(thought_parts) == 1
@@ -406,6 +575,42 @@ class _FakeContext:
 
     def get_user_input(self):
         return "hello"
+
+
+@pytest.mark.asyncio
+async def test_executor_filters_caller_metadata_before_gateway_dispatch():
+    pytest.importorskip("a2a.types")
+    context = _FakeContext()
+    context.metadata = {
+        "trace_id": "trace-1",
+        "cwd": "C:/forged",
+        "member_name": "forged-member",
+        "enable_memory": False,
+    }
+    channel = build_channel()
+    captured = []
+
+    async def on_message(msg: Message):
+        captured.append(msg)
+        pending = channel._pending[str(msg.id)]
+        await pending.queue.put(
+            Message(
+                id=msg.id,
+                type="event",
+                channel_id="a2a",
+                session_id=msg.session_id,
+                params={},
+                timestamp=time.time(),
+                ok=True,
+                payload={"content": "done", "is_complete": True},
+                event_type=EventType.CHAT_FINAL,
+            )
+        )
+
+    channel.on_message(on_message)
+    await _A2AAgentExecutor(channel).execute(context, _FakeEventQueue())
+
+    assert captured[0].metadata == {"trace_id": "trace-1"}
 
 
 async def _run_executor_with_stream(channel: A2AChannel, stream: list[Message]):
@@ -463,9 +668,13 @@ async def test_executor_streams_reasoning_as_thought_status_updates_by_default()
     channel = build_channel()
     history_events = []
     channel.set_request_observer(history_events.append)
-    event_queue = await _run_executor_with_stream(channel, _stream_reasoning_then_final())
+    event_queue = await _run_executor_with_stream(
+        channel, _stream_reasoning_then_final()
+    )
 
-    artifact_events = [e for e in event_queue.events if isinstance(e, TaskArtifactUpdateEvent)]
+    artifact_events = [
+        e for e in event_queue.events if isinstance(e, TaskArtifactUpdateEvent)
+    ]
     assert len(artifact_events) == 1
     assert [p.text for p in artifact_events[0].artifact.parts] == ["final answer"]
 
@@ -592,10 +801,12 @@ async def test_executor_history_uses_display_safe_agent_error_summary():
     channel.set_request_observer(history_events.append)
     await _run_executor_with_stream(
         channel,
-        [_make_message(
-            payload={"error": "internal host db.private.local failed"},
-            event_type=EventType.CHAT_ERROR,
-        )],
+        [
+            _make_message(
+                payload={"error": "internal host db.private.local failed"},
+                event_type=EventType.CHAT_ERROR,
+            )
+        ],
     )
 
     assert history_events[-1]["status"] == "failed"
@@ -608,10 +819,16 @@ async def test_executor_drops_reasoning_when_disabled():
     pytest.importorskip("a2a.types")
     from a2a.types import TaskArtifactUpdateEvent
 
-    channel = A2AChannel(A2AChannelConfig(enabled=False, expose_reasoning=False), DummyBus())
-    event_queue = await _run_executor_with_stream(channel, _stream_reasoning_then_final())
+    channel = A2AChannel(
+        A2AChannelConfig(enabled=False, expose_reasoning=False), DummyBus()
+    )
+    event_queue = await _run_executor_with_stream(
+        channel, _stream_reasoning_then_final()
+    )
 
-    artifact_events = [e for e in event_queue.events if isinstance(e, TaskArtifactUpdateEvent)]
+    artifact_events = [
+        e for e in event_queue.events if isinstance(e, TaskArtifactUpdateEvent)
+    ]
     assert len(artifact_events) == 1
     artifact_texts = [p.text for p in artifact_events[0].artifact.parts]
     assert artifact_texts == ["final answer"]
@@ -640,12 +857,15 @@ async def test_executor_terminal_reasoning_chunk_does_not_leak_into_artifact():
     ]
     event_queue = await _run_executor_with_stream(channel, stream)
 
-    artifact_events = [e for e in event_queue.events if isinstance(e, TaskArtifactUpdateEvent)]
+    artifact_events = [
+        e for e in event_queue.events if isinstance(e, TaskArtifactUpdateEvent)
+    ]
     all_texts = [p.text for e in artifact_events for p in e.artifact.parts]
     assert "trailing thought" not in all_texts
     assert "answer part" in all_texts
     final_states = [
-        e.status.state for e in event_queue.events
+        e.status.state
+        for e in event_queue.events
         if not isinstance(e, TaskArtifactUpdateEvent)
     ]
     assert TaskState.TASK_STATE_COMPLETED in final_states

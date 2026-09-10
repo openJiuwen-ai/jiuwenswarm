@@ -591,11 +591,11 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("channel_id", "service_id", "agent_id", "expected_service_id", "expected_agent_id"),
+    ("channel_id", "service_id", "agent_id", "expected_workspace_key"),
     [
-        ("web", None, None, "default", "default"),
-        ("officeclaw", "service-officeclaw", "agent-team", "service-officeclaw", "agent-team"),
-        ("acp", None, None, "global_acp", "acp"),
+        ("web", None, None, "default"),
+        ("officeclaw", "service-officeclaw", "agent-team", "default"),
+        ("acp", None, None, "workspace_acp"),
     ],
 )
 async def test_team_stream_injects_image_tool_context_for_non_vision_model(
@@ -603,8 +603,7 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
     channel_id,
     service_id,
     agent_id,
-    expected_service_id,
-    expected_agent_id,
+    expected_workspace_key,
 ):
     """Team mode must preserve the same local-image tool context as agent mode."""
     adapter = JiuWenSwarmDeepAdapter()
@@ -660,8 +659,5 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
 
     assert captured["runtime_context"] == {
         "config_base": tenant_config,
-        "sessions_root": resolve_tenant_sessions_dir(
-            expected_service_id,
-            expected_agent_id,
-        ),
+        "sessions_root": resolve_tenant_sessions_dir(expected_workspace_key),
     }

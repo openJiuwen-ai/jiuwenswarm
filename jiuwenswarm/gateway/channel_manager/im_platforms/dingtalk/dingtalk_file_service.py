@@ -162,12 +162,19 @@ class DingTalkFileService:
     def _resolve_workspace_dir(self) -> str:
         if self._workspace_dir_override:
             return self._workspace_dir_override
-        from jiuwenswarm.gateway.tenant_paths import resolve_channel_agent_workspace
+        from jiuwenswarm.gateway.tenant_paths import (
+            resolve_channel_agent_workspace,
+            workspace_key_from_channel_ids,
+        )
 
         bound = _DINGTALK_FILE_TENANT.get()
         if bound is not None:
-            return str(resolve_channel_agent_workspace(bound[0], bound[1]))
-        return str(resolve_channel_agent_workspace("default", "default"))
+            return str(
+                resolve_channel_agent_workspace(
+                    workspace_key_from_channel_ids(bound[0], bound[1])
+                )
+            )
+        return str(resolve_channel_agent_workspace("default"))
 
     def _get_download_dir(self, file_category: str) -> str:
         """获取下载目录路径。"""

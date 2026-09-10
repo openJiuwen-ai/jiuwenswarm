@@ -85,6 +85,21 @@ _A2A_INGRESS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
 
 _A2A_OUTBOUND_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     WebHttpMappedRoute(
+        "GET",
+        "/a2a/outbound/settings",
+        "a2a.outbound.settings.get",
+        "a2a",
+        "读取 A2A 出站设置",
+    ),
+    WebHttpMappedRoute(
+        "PATCH",
+        "/a2a/outbound/settings",
+        "a2a.outbound.settings.update",
+        "a2a",
+        "更新 A2A 出站设置",
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
         "POST",
         "/a2a/outbound/discover",
         "a2a.outbound.discover",
@@ -115,6 +130,15 @@ _A2A_OUTBOUND_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "a2a",
         "读取第三方 A2A Agent 注册项",
         path_to_param={"agent_id": "agent_id"},
+    ),
+    WebHttpMappedRoute(
+        "PATCH",
+        "/a2a/outbound/agents/{agent_id}/enabled",
+        "a2a.outbound.enabled.update",
+        "a2a",
+        "更新 A2A Agent 的用户启用状态",
+        path_to_param={"agent_id": "agent_id"},
+        accept_body=True,
     ),
     WebHttpMappedRoute(
         "PATCH",
@@ -153,6 +177,14 @@ _A2A_OUTBOUND_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
     WebHttpMappedRoute(
         "GET",
+        "/a2a/outbound/dispatches",
+        "a2a.outbound.dispatch.list",
+        "a2a",
+        "列出 A2A 出站派发处理历史",
+        query_keys=("limit",),
+    ),
+    WebHttpMappedRoute(
+        "GET",
         "/a2a/outbound/dispatches/{dispatch_id}",
         "a2a.outbound.dispatch.get",
         "a2a",
@@ -185,6 +217,17 @@ _CRON_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "GET", "/cron/jobs", "cron.job.list",
         "cron", "列定时任务",
         query_keys=_CRON_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/cron/jobs", "cron.job.create",
+        "cron", "创建定时任务（body 字段与 RPC params 一致）",
+        query_keys=_TENANT_QUERY,
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/cron/jobs/meta", "cron.job.meta",
+        "cron", "Cron 元数据（modes/timeout 等）",
     ),
     WebHttpMappedRoute(
         "GET", "/cron/jobs/{id}", "cron.job.get",
@@ -446,6 +489,64 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
+        "GET", "/skills/sources", "skills.source.providers",
+        "skills", "列出已配置技能源",
+        query_keys=_TENANT_QUERY + _SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/skills/sources/search", "skills.source.search",
+        "skills", "搜索技能源",
+        query_keys=("source_id", "q", "page", "page_size") + _TENANT_QUERY + _SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/sources/actions/search", "skills.source.search",
+        "skills", "搜索技能源（含扩展筛选）",
+        query_keys=_TENANT_QUERY,
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/sources/actions/install", "skills.source.install",
+        "skills", "从技能源安装精确版本",
+        query_keys=_TENANT_QUERY,
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/skills/updates", "skills.updates.check",
+        "skills", "检查已安装技能更新",
+        query_keys=("source_id",) + _TENANT_QUERY + _SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/actions/update", "skills.update",
+        "skills", "更新已安装技能",
+        query_keys=_TENANT_QUERY,
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/skills/enterprise/sources", "skills.enterprise.source.providers",
+        "skills", "列出企业技能源",
+        query_keys=_TENANT_QUERY + _SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/skills/enterprise/sources/search", "skills.enterprise.source.search",
+        "skills", "搜索企业技能源",
+        query_keys=("source_id", "q", "page", "page_size") + _TENANT_QUERY + _SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/enterprise/sources/actions/search", "skills.enterprise.source.search",
+        "skills", "搜索企业技能源（含扩展筛选）",
+        query_keys=_TENANT_QUERY,
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
         "GET", "/skills/retrieval/status", "skills.retrieval.status",
         "skills", "技能检索索引状态",
         query_keys=_SKILL_SESSION_QUERY,
@@ -625,8 +726,67 @@ _HARNESS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+_PROJECT_QUERY = ("filter", "work_mode", "include_hidden", "limit", "cron_id")
+
+_PROJECT_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/projects", "project.list",
+        "projects", "列出项目（含默认项目与统计）",
+        query_keys=_PROJECT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/projects/pinned-sessions", "project.pinned_sessions",
+        "projects", "全部置顶会话",
+    ),
+    WebHttpMappedRoute(
+        "GET", "/projects/{project_id}", "project.info",
+        "projects", "项目详情（统计口径同 project.list）",
+        path_to_param={"project_id": "project_id"},
+    ),
+    WebHttpMappedRoute(
+        "GET", "/projects/{project_id}/sessions", "project.get_sessions",
+        "projects", "项目下非置顶普通会话列表",
+        path_to_param={"project_id": "project_id"},
+        query_keys=("limit",),
+    ),
+    WebHttpMappedRoute(
+        "GET", "/projects/{project_id}/cron-sessions", "project.get_cron_sessions",
+        "projects", "项目下定时任务触发会话列表",
+        path_to_param={"project_id": "project_id"},
+        query_keys=("cron_id",),
+    ),
+    WebHttpMappedRoute(
+        "POST", "/projects", "project.create",
+        "projects", "创建项目（name/project_dir/work_mode 均可选）",
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/projects/actions/restore", "project.restore",
+        "projects", "恢复已软删除的项目（body.project_id）",
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/projects/{project_id}", "project.rename",
+        "projects", "重命名项目（body.name）",
+        path_to_param={"project_id": "project_id"},
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/projects/{project_id}/actions/pin", "project.pin",
+        "projects", "置顶/取消置顶项目（body.pinned）",
+        path_to_param={"project_id": "project_id"},
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "DELETE", "/projects/{project_id}", "project.remove",
+        "projects", "移除项目（软删除）",
+        path_to_param={"project_id": "project_id"},
+    ),
+)
+
 WORKSPACE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_PERMISSIONS_ROUTES,
+    *_PROJECT_ROUTES,
     *_SKILLS_ROUTES,
     *_HARNESS_ROUTES,
 )
@@ -636,6 +796,19 @@ MAPPED_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *SETTINGS_ROUTES,
     *WORKSPACE_ROUTES,
 )
+
+
+def mapped_routes_for_edition(*, enterprise: bool) -> tuple[WebHttpMappedRoute, ...]:
+    if not enterprise:
+        return MAPPED_ROUTES
+    ingress_route_keys = {
+        (route.http_method, route.path) for route in _A2A_INGRESS_ROUTES
+    }
+    return tuple(
+        route
+        for route in MAPPED_ROUTES
+        if (route.http_method, route.path) not in ingress_route_keys
+    )
 
 # Core routes implemented in web_http_app.py (hand-written because of SSE / history collect).
 CORE_ROUTE_CATALOG: tuple[tuple[str, str, str, str], ...] = (
@@ -691,8 +864,18 @@ def catalog_entries(
     include_core: bool = True,
     include_settings: bool = True,
     include_workspace: bool = True,
+    routes: Sequence[WebHttpMappedRoute] | None = None,
 ) -> list[dict[str, Any]]:
     """Machine-readable map for GET /api/v1/catalog and docs generation."""
+    route_keys = (
+        None
+        if routes is None
+        else {(route.http_method, route.path) for route in routes}
+    )
+
+    def enabled(route: WebHttpMappedRoute) -> bool:
+        return route_keys is None or (route.http_method, route.path) in route_keys
+
     rows: list[dict[str, Any]] = []
     if include_core:
         for http_method, path, rpc_method, note in CORE_ROUTE_CATALOG:
@@ -705,10 +888,12 @@ def catalog_entries(
             })
     if include_settings:
         for route in SETTINGS_ROUTES:
-            rows.append(_catalog_row_from_route(route, group="settings"))
+            if enabled(route):
+                rows.append(_catalog_row_from_route(route, group="settings"))
     if include_workspace:
         for route in WORKSPACE_ROUTES:
-            rows.append(_catalog_row_from_route(route, group="workspace"))
+            if enabled(route):
+                rows.append(_catalog_row_from_route(route, group="workspace"))
     rows.append({
         "http_method": "POST",
         "path": "/api/v1/harness/packages/actions/import-file",

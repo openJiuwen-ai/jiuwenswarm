@@ -48,7 +48,7 @@
 
 1. User Web 读取 `USER_WEB_MODE=enterprise`、`LOGIN_AUTH_SIMULATE=false`。
 2. Provider 注册器选择 Manager 正式认证 Provider。
-3. 未发现本地 access token 时清理登录状态并跳转 `/auth`。
+3. 未发现本地 access token 时清理登录状态并跳转 `/auth`。该路径由 Manager Web 或客户统一入口提供，User Web 自身不包含登录页；若 User Web 的 SPA 回退已经落到 `/auth`，则停止重复跳转并提示用户改从统一入口访问。
 4. 登录后依次通过同源代理获取：
    - `/idp/v1/auth/me`：当前用户；
    - `/idp/v1/auth/me/orgs`：授权组织；
@@ -105,7 +105,7 @@
 
 ## 验证
 
-- 前端认证单测：`npm run test:user-web-entry`，**8/8 通过**。覆盖 personal 跳过认证、enterprise 未登录跳转、正式上下文加载、模拟默认值、URL 三元组覆盖、布尔配置严格解析、候选排序和 Agent 回退。
+- 前端认证单测：`npm run test:user-web-entry`，**10/10 通过**。覆盖 personal 跳过认证、enterprise 未登录跳转、正式上下文加载、模拟默认值、URL 三元组覆盖、布尔配置严格解析、`/auth` 自跳转保护、候选排序、Agent 回退和调试上下文。
 - Python User Web 单测：`JIUWENSWARM_DATA_DIR=/private/tmp/jiuwenswarm-codex-auth-test jiuwenswarm/bin/python -m pytest -q tests/unit_tests/test_app_web_gateway_api_proxy.py`，**5/5 通过**。覆盖代理路由、运行配置注入及严格布尔解析。
 - 内部制品：`npm run build` 构建成功，Vite 转换 **4559** 个模块。
 - 客户制品：`npm run build:customer` 构建成功，Vite 转换 **4558** 个模块，比内部制品少模拟插件模块。

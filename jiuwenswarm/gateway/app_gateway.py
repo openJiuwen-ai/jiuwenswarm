@@ -64,7 +64,8 @@ from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
-from jiuwenswarm.common.local_env_config import decrypt, is_enterprise
+from jiuwenswarm.common.local_env_config import decrypt
+from jiuwenswarm.edition import is_enterprise
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
@@ -77,6 +78,22 @@ def _uses_external_agent_config() -> bool:
     if is_enterprise():
         return True
     return bool(os.getenv("GATEWAY_RUNTIME_MANAGER_URL", "").strip())
+
+
+def _load_gateway_a2a_ingress_config():
+    from jiuwenswarm.gateway.a2a_manager import (
+        A2AIngressConfig,
+        load_a2a_ingress_config_safely,
+    )
+
+    if is_enterprise():
+        return A2AIngressConfig(), None
+    return load_a2a_ingress_config_safely()
+
+
+async def _start_gateway_a2a_ingress(a2a_manager: Any) -> None:
+    if not is_enterprise():
+        await a2a_manager.start_from_config()
 
 
 # Keep gateway idle-finalize fallback aligned with ACP channel default.
@@ -1520,7 +1537,7 @@ async def _run_with_telemetry(
     web_path: str,
     telemetry_lifecycle,
 ) -> bool:
-    from jiuwenswarm.gateway.a2a_manager import A2AManager, load_a2a_ingress_config_safely
+    from jiuwenswarm.gateway.a2a_manager import A2AManager
     from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, \
         DingTalkConfig
     from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
@@ -1646,14 +1663,13 @@ async def _run_with_telemetry(
         ):
             gateway_storage_ctx = await setup_gateway_storage_repositories(full_cfg)
             if gateway_storage_ctx is not None:
-                if not is_enterprise():
-                    from jiuwenswarm.gateway.storage_assembly import (
-                        create_a2a_outbound_repository,
-                    )
+                from jiuwenswarm.gateway.storage_assembly import (
+                    create_a2a_outbound_repository,
+                )
 
-                    a2a_outbound_repository = create_a2a_outbound_repository(
-                        await gateway_storage_ctx.persistent()
-                    )
+                a2a_outbound_repository = create_a2a_outbound_repository(
+                    await gateway_storage_ctx.persistent()
+                )
                 wired: list[str] = []
                 if is_session_map_repository_enabled(full_cfg):
                     wired.append("session_map")
@@ -1697,7 +1713,7 @@ async def _run_with_telemetry(
     try:
         from jiuwenswarm.gateway.storage_assembly.setup import (
             ensure_enterprise_storage_context,
-            wire_enterprise_manager_ws_store_async,
+            wire_enterprise_persistent_repositories_async,
         )
 
         if is_enterprise():
@@ -1705,17 +1721,21 @@ async def _run_with_telemetry(
                 full_cfg,
                 existing=gateway_storage_ctx,
             )
-            await wire_enterprise_manager_ws_store_async(gateway_storage_ctx, full_cfg)
-            logger.info("[App] Manager WS write path wired to PersistentStore")
+            await wire_enterprise_persistent_repositories_async(
+                gateway_storage_ctx, full_cfg
+            )
+            logger.info(
+                "[App] enterprise PersistentStore repositories wired"
+            )
     except Exception as exc:  # noqa: BLE001
         if is_enterprise():
             logger.error(
-                "[App] enterprise Manager WS storage wiring failed (fail-fast): %s",
+                "[App] enterprise PersistentStore wiring failed (fail-fast): %s",
                 exc,
             )
             raise
         logger.warning(
-            "[App] enterprise Manager WS storage wiring failed: %s",
+            "[App] enterprise PersistentStore wiring failed: %s",
             exc,
         )
 
@@ -1774,6 +1794,8 @@ async def _run_with_telemetry(
     im_outbound = IMOutboundPipeline()
     message_handler.set_inbound_pipeline(im_inbound)
     message_handler.set_outbound_pipeline(im_outbound)
+
+    from jiuwenswarm.gateway.cron.tenant_registry import CronTenantRegistry
 
     cron_registry = CronTenantRegistry.get_instance(
         agent_client=client,
@@ -1840,8 +1862,11 @@ async def _run_with_telemetry(
     message_handler.set_channel_manager(channel_manager)
     updater_service = UpdaterService()
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
+    prewarm_sync_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
+        if is_enterprise():
+            return
         try:
             prewarm_channels = {
                 channel
@@ -1873,6 +1898,8 @@ async def _run_with_telemetry(
         name: str, *, delay_seconds: float = 1.0
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
+        if is_enterprise():
+            return
         nonlocal prewarm_sync_debounce_task
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
@@ -2021,7 +2048,7 @@ async def _run_with_telemetry(
     web_channel.git_watcher_registry = _git_watcher_registry
     _git_watcher_registry.set_channel(web_channel)
 
-    a2a_config, a2a_config_error = load_a2a_ingress_config_safely()
+    a2a_config, a2a_config_error = _load_gateway_a2a_ingress_config()
     if a2a_config_error is not None:
         logger.error("a2a.ingress configuration is invalid; ingress remains disabled: %s", a2a_config_error)
     a2a_manager = A2AManager(
@@ -2031,6 +2058,7 @@ async def _run_with_telemetry(
         initial_error=a2a_config_error,
         outbound_repository=a2a_outbound_repository,
     )
+    message_handler.set_a2a_outbound_tool_manager(a2a_manager)
 
     _register_web_handlers(
         WebHandlersBindParams(
@@ -2140,7 +2168,7 @@ async def _run_with_telemetry(
             binding.install(gateway_server)
     gateway_server.on_message(acp_inbound_server.handle_message)
 
-    await a2a_manager.start_from_config()
+    await _start_gateway_a2a_ingress(a2a_manager)
 
     feishu_channel = None
     feishu_task = None
@@ -2778,10 +2806,11 @@ async def _run_with_telemetry(
         "agent-prewarm-sync-after-startup",
         delay_seconds=3.0,
     )
-    prewarm_sync_task = asyncio.create_task(
-        _periodic_agent_prewarm_sync(),
-        name="agent-prewarm-periodic-sync",
-    )
+    if not is_enterprise():
+        prewarm_sync_task = asyncio.create_task(
+            _periodic_agent_prewarm_sync(),
+            name="agent-prewarm-periodic-sync",
+        )
 
     await channel_manager.start_dispatch()
 
@@ -2881,11 +2910,12 @@ async def _run_with_telemetry(
                 await prewarm_sync_debounce_task
             except asyncio.CancelledError:
                 pass
-        prewarm_sync_task.cancel()
-        try:
-            await prewarm_sync_task
-        except asyncio.CancelledError:
-            pass
+        if prewarm_sync_task is not None:
+            prewarm_sync_task.cancel()
+            try:
+                await prewarm_sync_task
+            except asyncio.CancelledError:
+                pass
         await a2a_manager.stop()
         if gateway_server_task is not None:
             gateway_server_task.cancel()

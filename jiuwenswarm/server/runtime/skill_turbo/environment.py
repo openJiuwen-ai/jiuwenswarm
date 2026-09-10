@@ -218,7 +218,7 @@ class SkillTurboEnvironment:
     def _resolve_sys_operation(self) -> Any:
         """解析 sys_operation。
 
-        sys_operation 是 openjiuwen 提供的系统操作抽象层，bash/code/filesystem
+        sys_operation 是 openjiuwen 提供的系统操作抽象层，bash/filesystem
         等工具依赖它。DeepAgent 在初始化时已将 sys_operation 注册到全局
         Runner.resource_mgr 中，SkillTurbo 可直接获取，无需 interface_deep.py
         显式传入。

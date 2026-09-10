@@ -66,6 +66,14 @@ class _OutboundRegistryProbe:
     async def update_agent(self, agent_id, params):
         return {"agent_id": agent_id, **params}
 
+    async def set_user_enabled(self, agent_id, user_enabled):
+        return {
+            "agent_id": agent_id,
+            "user_enabled": user_enabled,
+            "manager_enabled": True,
+            "effective_enabled": user_enabled,
+        }
+
     async def refresh_agent(self, agent_id):
         return {"agent_id": agent_id, "refreshed": True}
 
@@ -77,6 +85,22 @@ class _OutboundRegistryProbe:
 
     async def get_dispatch(self, dispatch_id):
         return {"dispatch_id": dispatch_id}
+
+    async def list_dispatches(self, *, limit=200):
+        return {"items": [], "total": 0, "limit": limit}
+
+
+class _OutboundSettingsProbe:
+    def __init__(self) -> None:
+        self.enabled = False
+        self.allow_http = False
+
+    def load(self):
+        return {"allow_loopback": self.enabled, "allow_http": self.allow_http}
+
+    def save(self, *, allow_loopback, allow_http):
+        self.enabled = allow_loopback
+        self.allow_http = allow_http
 
 
 @pytest.mark.asyncio
@@ -104,6 +128,45 @@ async def test_a2a_ingress_web_handlers_return_snapshots():
     assert channel.responses[1]["payload"] == {"items": [], "total": 0}
     assert channel.responses[2]["payload"]["desired_port"] == 19123
     assert channel.responses[3]["payload"]["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_saved_ingress_credential_is_returned_to_configuration_ui():
+    channel = _WebChannelProbe()
+    manager = A2AManager(
+        _ChannelManagerProbe(),
+        object(),
+        A2AIngressConfig(),
+        repository=_RepositoryProbe(),
+        channel_factory=lambda config, router: _ChannelProbe(),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
+    credential = "test-viewable-ingress-credential"
+    await channel.methods["a2a.ingress.update"](
+        object(),
+        "save",
+        {"config": {"auth_type": "bearer", "credential": credential}, "apply": True},
+        "session",
+    )
+    await channel.methods["a2a.ingress.get"](object(), "refresh", {}, "session")
+    await channel.methods["a2a.ingress.get"](object(), "poll", {}, "session")
+    for response in channel.responses:
+        assert response["ok"] is True
+        assert credential not in str(response)
+        assert "credential" not in response["payload"]
+        assert "desired_credential" not in response["payload"]
+        assert "credential_hash" not in response["payload"]
+    await channel.methods["a2a.ingress.update"](
+        object(), "failed-save", {"config": {"rpc_path": "invalid"}}, "session"
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert credential not in str(channel.responses[-1])
+    await channel.methods["a2a.ingress.edit"](object(), "edit", {}, "session")
+    assert channel.responses[-1]["payload"]["credential"] == credential
+    assert not any(
+        route.rpc_method in {"a2a.ingress.edit", "a2a.outbound.edit"}
+        for route in MAPPED_ROUTES
+    )
 
 
 @pytest.mark.asyncio
@@ -202,6 +265,7 @@ def test_a2a_ingress_http_routes_map_to_rpc_methods():
 @pytest.mark.asyncio
 async def test_a2a_outbound_web_handlers_expose_management_facade():
     channel = _WebChannelProbe()
+    settings = _OutboundSettingsProbe()
     manager = A2AManager(
         _ChannelManagerProbe(),
         object(),
@@ -209,6 +273,7 @@ async def test_a2a_outbound_web_handlers_expose_management_facade():
         repository=_RepositoryProbe(),
         channel_factory=lambda config, router: _ChannelProbe(),
         outbound_registry=_OutboundRegistryProbe(),
+        outbound_settings_repository=settings,
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
 
@@ -241,6 +306,22 @@ async def test_a2a_outbound_web_handlers_expose_management_facade():
         object(), "dispatch_get", {"dispatch_id": "dispatch-1"}, "session"
     )
 
+    await channel.methods["a2a.outbound.settings.get"](
+        object(), "settings-get", {}, "session"
+    )
+    await channel.methods["a2a.outbound.settings.update"](
+        object(), "settings-update", {"allow_loopback": True, "allow_http": True}, "session"
+    )
+    await channel.methods["a2a.outbound.dispatch.list"](
+        object(), "dispatch-list", {"limit": 20}, "session"
+    )
+    await channel.methods["a2a.outbound.enabled.update"](
+        object(),
+        "enabled-update",
+        {"agent_id": "agent-1", "user_enabled": False},
+        "session",
+    )
+
     assert channel.responses[0]["payload"]["discovery_id"] == "disc-1"
     assert channel.responses[1]["payload"]["agent_id"] == "agent-1"
     assert channel.responses[2]["payload"]["total"] == 0
@@ -250,11 +331,119 @@ async def test_a2a_outbound_web_handlers_expose_management_facade():
     assert channel.responses[6]["payload"]["accepted"] is False
     assert channel.responses[7]["payload"]["deleted"] is True
     assert channel.responses[8]["payload"]["dispatch_id"] == "dispatch-1"
+    assert channel.responses[9]["payload"] == {"allow_loopback": False, "allow_http": False}
+    assert channel.responses[10]["payload"] == {"allow_loopback": True, "allow_http": True}
+    assert channel.responses[11]["payload"] == {"items": [], "total": 0, "limit": 20}
+    assert channel.responses[12]["payload"]["user_enabled"] is False
+    assert settings.enabled is True
     assert all(item["ok"] for item in channel.responses)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("params", [{"agent_id": "agent-1"}, {"agent_id": "agent-1", "accept": "false"}])
+async def test_a2a_outbound_dispatch_list_rejects_non_integer_limit():
+    channel = _WebChannelProbe()
+    manager = A2AManager(
+        _ChannelManagerProbe(),
+        object(),
+        A2AIngressConfig(),
+        repository=_RepositoryProbe(),
+        channel_factory=lambda config, router: _ChannelProbe(),
+        outbound_registry=_OutboundRegistryProbe(),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
+
+    await channel.methods["a2a.outbound.dispatch.list"](
+        object(), "dispatch-list", {"limit": "invalid"}, "session"
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "A2A_OUTBOUND_STORE_INVALID"
+    assert channel.responses[-1]["error"] == "limit must be an integer"
+
+
+@pytest.mark.asyncio
+async def test_a2a_outbound_dispatch_list_clamps_limit_to_200():
+    channel = _WebChannelProbe()
+    registry = _OutboundRegistryProbe()
+    manager = A2AManager(
+        _ChannelManagerProbe(),
+        object(),
+        A2AIngressConfig(),
+        repository=_RepositoryProbe(),
+        channel_factory=lambda config, router: _ChannelProbe(),
+        outbound_registry=registry,
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
+
+    await channel.methods["a2a.outbound.dispatch.list"](
+        object(), "dispatch-list", {"limit": 500}, "session"
+    )
+
+    assert channel.responses[-1]["payload"]["limit"] == 200
+
+
+@pytest.mark.asyncio
+async def test_a2a_outbound_user_enabled_requires_boolean():
+    channel = _WebChannelProbe()
+    manager = A2AManager(
+        _ChannelManagerProbe(),
+        object(),
+        A2AIngressConfig(),
+        repository=_RepositoryProbe(),
+        channel_factory=lambda config, router: _ChannelProbe(),
+        outbound_registry=_OutboundRegistryProbe(),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
+
+    await channel.methods["a2a.outbound.enabled.update"](
+        object(),
+        "enabled-update",
+        {"agent_id": "agent-1", "user_enabled": "false"},
+        "session",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "A2A_OUTBOUND_STORE_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_enterprise_dispatch_get_passes_trusted_resource_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    channel = _WebChannelProbe()
+    calls = []
+
+    class _Manager:
+        outbound_available = True
+
+        async def outbound_dispatch_get(self, dispatch_id, **kwargs):
+            calls.append((dispatch_id, kwargs))
+            return {"dispatch_id": dispatch_id}
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=_Manager()))
+    await channel.methods["a2a.outbound.dispatch.get"](
+        object(),
+        "dispatch-get",
+        {"dispatch_id": "dispatch-1", "bot_id": "resource-1"},
+        "session-1",
+    )
+
+    assert calls == [
+        (
+            "dispatch-1",
+            {
+                "source_session_id": "session-1",
+                "source_resource_id": "resource-1",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params", [{"agent_id": "agent-1"}, {"agent_id": "agent-1", "accept": "false"}]
+)
 async def test_a2a_outbound_confirm_revision_requires_explicit_boolean(params):
     channel = _WebChannelProbe()
     manager = A2AManager(
@@ -290,6 +479,9 @@ async def test_a2a_outbound_handlers_tolerate_missing_manager():
     await channel.methods["a2a.outbound.update"](
         object(), "update", {"agent_id": "agent-1"}, "session"
     )
+    await channel.methods["a2a.outbound.enabled.update"](
+        object(), "enabled-update", {"agent_id": "agent-1", "user_enabled": True}, "session"
+    )
     await channel.methods["a2a.outbound.refresh"](
         object(), "refresh", {"agent_id": "agent-1"}, "session"
     )
@@ -303,8 +495,10 @@ async def test_a2a_outbound_handlers_tolerate_missing_manager():
         object(), "dispatch_get", {"dispatch_id": "dispatch-1"}, "session"
     )
 
-    assert [item["ok"] for item in channel.responses] == [False] * 8
-    assert {item["code"] for item in channel.responses} == {"A2A_OUTBOUND_STORE_INVALID"}
+    assert [item["ok"] for item in channel.responses] == [False] * 9
+    assert {item["code"] for item in channel.responses} == {
+        "A2A_OUTBOUND_STORE_INVALID"
+    }
 
 
 def test_a2a_outbound_http_routes_map_to_rpc_methods():
@@ -312,9 +506,16 @@ def test_a2a_outbound_http_routes_map_to_rpc_methods():
         (route.http_method, route.path): route.rpc_method for route in MAPPED_ROUTES
     }
 
+    assert routes[("GET", "/a2a/outbound/settings")] == "a2a.outbound.settings.get"
+    assert routes[("PATCH", "/a2a/outbound/settings")] == "a2a.outbound.settings.update"
     assert routes[("POST", "/a2a/outbound/discover")] == "a2a.outbound.discover"
     assert routes[("POST", "/a2a/outbound/agents")] == "a2a.outbound.register"
     assert routes[("GET", "/a2a/outbound/agents")] == "a2a.outbound.list"
+    assert routes[("GET", "/a2a/outbound/dispatches")] == "a2a.outbound.dispatch.list"
+    assert (
+        routes[("PATCH", "/a2a/outbound/agents/{agent_id}/enabled")]
+        == "a2a.outbound.enabled.update"
+    )
     assert routes[("PATCH", "/a2a/outbound/agents/{agent_id}")] == "a2a.outbound.update"
     assert (
         routes[("POST", "/a2a/outbound/agents/{agent_id}:refresh")]

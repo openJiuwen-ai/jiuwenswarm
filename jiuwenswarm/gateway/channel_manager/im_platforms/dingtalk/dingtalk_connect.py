@@ -1112,6 +1112,7 @@ class DingTalkChannel(BaseChannel):
         from jiuwenswarm.gateway.tenant_paths import (
             normalize_channel_tenant_ids,
             resolve_channel_agent_workspace,
+            workspace_key_from_channel_ids,
         )
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_resolved_project_dir,
@@ -1121,12 +1122,13 @@ class DingTalkChannel(BaseChannel):
             return []
 
         sid, aid = normalize_channel_tenant_ids(service_id, agent_id)
+        wk = workspace_key_from_channel_ids(sid, aid)
         sess = (session_id or "").strip() or "default"
         workspace_dir = os.path.abspath(
             get_resolved_project_dir(
                 sess,
-                resolve_tenant_sessions_dir(sid, aid),
-                default=resolve_channel_agent_workspace(sid, aid),
+                resolve_tenant_sessions_dir(wk),
+                default=resolve_channel_agent_workspace(wk),
             )
         ).rstrip("/\\")
 

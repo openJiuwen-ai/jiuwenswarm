@@ -53,14 +53,15 @@ def _validate_component(value: Any) -> str:
 def deepresearch_todo_path(
     *,
     session_id: str,
-    service_id: str,
-    agent_id: str,
+    workspace_key: str | None = None,
 ) -> Path:
     """Return the standard harness todo.json path for one tenant session."""
     safe_session = _validate_component(session_id)
-    safe_service = _validate_component(service_id)
-    safe_agent = _validate_component(agent_id)
-    workspace = get_tenant_agent_workspace_dir(safe_service, safe_agent)
+    if workspace_key is None:
+        wk = "default"
+    else:
+        wk = _validate_component(str(workspace_key).strip())
+    workspace = get_tenant_agent_workspace_dir(wk)
     return workspace / "todo" / safe_session / "todo.json"
 
 

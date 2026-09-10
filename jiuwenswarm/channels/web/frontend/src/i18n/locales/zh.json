@@ -13,7 +13,16 @@
     "ok": "确定",
     "and": "和",
     "modify": "修改",
-    "delete": "删除"
+    "delete": "删除",
+    "update": "更新",
+    "pagination": {
+      "total": "共 {{count}} 个",
+      "prev": "上一页",
+      "next": "下一页",
+      "pageSize": "每页",
+      "jumpTo": "跳至",
+      "go": "确定"
+    }
   },
   "a2ui": {
     "generating": "A2UI 界面生成中...",
@@ -503,6 +512,7 @@
     "folder": "文件夹",
     "notPreviewable": "不可预览",
     "selectFile": "请选择一个文件查看",
+    "remoteFilesUnavailable": "分布式模式下当前仅支持恢复会话历史，暂不支持浏览网关本地会话文件",
     "noneSelected": "未选择会话",
     "unknownSession": "未知会话-未知时间",
     "unknownTime": "未知时间",
@@ -535,38 +545,224 @@
     "connectionStatus": "连接状态",
     "version": "版本",
     "language": "语言",
-    "moreSettings": "更多设置"
+    "moreSettings": "更多设置",
+    "enterpriseContext": {
+      "user": "用户",
+      "userContext": "用户上下文",
+      "modeAria": "上下文设定方式",
+      "selectAgent": "选择 Agent",
+      "custom": "自定义",
+      "agentOrgLabel": "agent名称-组织名称",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "apply": "应用",
+      "switching": "正在切换...",
+      "logout": "注销登录",
+      "customRequired": "请填写 bot_id、group_id、user_id",
+      "noMatch": "没有匹配项",
+      "pleaseSelect": "请选择"
+    }
   },
   "a2aIngress": {
+    "security": {
+      "title": "安全配置",
+      "description": "配置调用方认证与响应信息的开放范围。远程访问请通过 HTTPS 反向代理保护传输。",
+      "types": {
+        "none": "无认证",
+        "bearer": "Bearer Token",
+        "api_key": "API Key（请求头）"
+      },
+      "configured": "已保存凭据",
+      "notConfigured": "尚未配置凭据",
+      "credentialPlaceholder": "输入安全凭据",
+      "credentialHint": "16–512 个可打印 ASCII 字符，不含空格。可生成随机凭据；保存后点击眼睛可查看或复制原文。留空保留已保存的凭据，删除请勾选清除。",
+      "generate": "生成随机凭据",
+      "show": "显示凭据",
+      "hide": "隐藏凭据",
+      "clear": "清除已保存凭据（需先选择无认证）",
+      "cardHint": "开启后，无需凭据即可查看服务名称、能力和接口地址（Agent Card）；关闭后，查看这些信息也需要认证。配置认证后，所有实际调用始终需要凭据。",
+      "effective": "当前生效的认证方式：{{method}}",
+      "pendingApply": "已存储的安全配置与当前运行配置不同。点击“保存”会立即应用并重启正在运行的入站服务。"
+    },
     "title": "A2A 调度中心",
     "subtitle": "管理 JiuwenSwarm 对外提供的 A2A 服务。",
+    "enterpriseSubtitle": "查看管理员分配的 A2A Agent，并管理个人启用状态和处理历史。",
     "tabs": { "ariaLabel": "A2A 调度中心页面", "config": "入站配置", "outbound": "出站配置", "history": "处理历史" },
-    "enable": "启用服务", "enabling": "启用中...", "disable": "停用服务", "disabling": "停用中...", "reload": "重新加载", "reloading": "重载中...",
-    "save": "保存配置", "saveAndApply": "保存并应用", "applying": "应用中...", "saved": "配置已保存，尚未应用到正在运行的服务。", "savedAndApplied": "配置已保存并应用。",
+    "enable": "启用服务",
+    "enabling": "启用中...",
+    "disable": "停用服务",
+    "disabling": "停用中...",
+    "restart": "重启服务",
+    "restarting": "重启中...",
+    "restartHint": "停止并重新启动入站服务，现有连接可能短暂中断。",
+    "refreshStatus": "刷新状态",
+    "refreshHint": "重新读取当前状态和配置，不会重启服务。",
+    "save": "保存",
+    "saved": "配置已保存并应用。",
     "disconnected": "当前未连接到 Gateway，无法读取或修改 A2A 服务。",
-    "saveBeforeLifecycleAction": "配置有未保存的修改，请先保存后再启用、停用或重载服务。",
+    "saveBeforeLifecycleAction": "配置有未保存的修改，请先保存或取消，再启用、停用或重启服务。",
     "states": { "disabled": "已关闭", "starting": "启动中", "running": "运行中", "stopping": "停止中", "error": "异常" },
-    "status": { "title": "服务状态", "configRevision": "配置版本：{{revision}}", "effectiveRpcUrl": "实际 JSON-RPC 地址", "effectiveCardUrl": "实际 Agent Card 地址", "notListening": "当前未监听" },
-    "config": { "title": "入站服务配置", "description": "保存只更新目标配置；“保存并应用”会重载正在运行的服务。" },
+    "status": {
+      "title": "服务状态",
+      "configRevision": "配置版本：{{revision}}",
+      "effectiveRpcUrl": "实际 JSON-RPC 地址",
+      "effectiveCardUrl": "实际 Agent Card 地址",
+      "notListening": "当前未监听"
+    },
+    "config": { "title": "入站服务配置", "description": "保存后立即应用，正在运行的服务将重启；取消可放弃本次修改。" },
     "outbound": {
-      "discovery": { "title": "发现第三方 Agent", "description": "发现仅获取并预览 Agent Card；完成手动注册后，JiuwenSwarm 才能调用该 Agent。", "action": "发现 Agent", "discovering": "发现中...", "previewOnly": "仅预览，尚未注册", "previewReady": "发现成功。请核对信息并显式注册，当前候选尚不可调用。" },
-      "list": { "title": "已注册 Agent", "total": "共 {{count}} 个", "empty": "暂无已注册的第三方 Agent" },
-      "fields": { "version": "版本", "endpoint": "实际 Endpoint", "protocol": "协议", "expiresAt": "候选过期时间", "displayName": "显示名称", "credential": "API Key / Bearer（可选，不会回显）", "revision": "Card 版本", "credentialState": "凭据", "lastChecked": "最近检查", "connectTimeout": "连接超时（秒）", "syncWait": "同步等待超时（秒）", "replaceCredential": "替换凭据（留空则不修改）" },
+      "credentialHelp": {
+        "method": "Agent Card 声明的认证方式：{{method}}。",
+        "value": "填写对方提供的凭据原文，调用时按认证方式自动携带。已保存凭据可点击眼睛查看；留空保留原值，删除请勾选清除。",
+        "header": "请求头",
+        "query": "查询参数",
+        "cookie": "Cookie",
+        "unknown": "未识别的认证方式",
+        "undeclared": "未声明认证方式；若配置凭据，派发会报错",
+        "or": " 或 "
+      },
+      "localDebug": {
+        "title": "网络访问设置",
+        "description": "允许访问 localhost 等回环地址。",
+        "allow": "允许本地回环地址",
+        "warning": "风险：回环访问可能暴露 Gateway 本机服务，仅用于可信 Agent。",
+        "httpWarning": "风险：HTTP 允许公网明文传输，凭据和任务数据可能泄露。",
+        "saving": "保存中...",
+        "saved": "出站网络访问设置已保存并立即生效。",
+        "allowHttp": "允许 HTTP",
+        "httpDescription": "允许明文 HTTP；回环访问需同时开启上方开关。"
+      },
+      "discovery": {
+        "title": "发现第三方 Agent",
+        "description": "发现仅获取并预览 Agent Card；完成手动注册后，JiuwenSwarm 才能调用该 Agent。",
+        "urlLabel": "Agent Card 地址",
+        "action": "发现 Agent",
+        "discovering": "发现中...",
+        "previewOnly": "仅预览，尚未注册",
+        "previewReady": "发现成功。请核对信息并显式注册，当前候选尚不可调用。",
+        "candidateTitle": "待注册 Agent",
+        "candidateDescription": "核对发现结果并补充注册信息，完成注册后才会加入可调用列表。",
+        "registrationTitle": "注册信息",
+        "registrationDescription": "设置在 JiuwenSwarm 中显示的名称，并按需填写调用凭据。",
+        "advanced": "高级配置"
+      },
+      "list": {
+        "title": "已注册 Agent",
+        "description": "管理第三方 Agent 的可用状态、连接配置和 Card 更新。",
+        "enterpriseDescription": "管理员统一维护 Agent 配置；你可以决定启用哪些可用 Agent。",
+        "enterpriseEmpty": "管理员尚未向当前实例下发 A2A Agent",
+        "empty": "暂无已注册的第三方 Agent"
+      },
+      "fields": {
+        "version": "版本",
+        "endpoint": "实际 Endpoint",
+        "protocol": "协议",
+        "expiresAt": "候选过期时间",
+        "displayName": "显示名称",
+        "credential": "安全凭据",
+        "revision": "Card 版本",
+        "credentialState": "凭据",
+        "lastChecked": "最近检查",
+        "connectTimeout": "连接超时（秒）",
+        "syncWait": "同步等待超时（秒）",
+        "replaceCredential": "替换凭据（留空则不修改）"
+      },
       "availability": { "available": "可用", "unreachable": "不可达", "incompatible": "不兼容", "review_required": "待确认" },
-      "register": "注册", "registering": "注册中...", "registered": "第三方 Agent 已注册，现在可按启用和可用状态参与出站调用。",
-      "enabled": "已启用", "disabled": "已停用", "enable": "启用", "disable": "停用", "refresh": "刷新 Card",
-      "configured": "已配置", "notConfigured": "未配置", "settings": "配置", "saved": "注册项配置已保存。", "clearCredential": "清除已保存凭据", "reviewRequired": "检测到 Endpoint、协议、安全要求或身份信息的关键变化。确认前已暂停新调用。", "endpointChange": "Endpoint 变化",
-      "confirm": "确认并应用", "reject": "拒绝变化", "deleteConfirm": "确定删除该注册项吗？已有派发历史会保留，但新调用将立即被拒绝。",
+      "register": "注册",
+      "registering": "注册中...",
+      "registered": "第三方 Agent 已注册，现在可按启用和可用状态参与出站调用。",
+      "enabled": "已启用",
+      "disabled": "已停用",
+      "managerDisabled": "管理员已停用",
+      "userToggle": "切换个人启用状态",
+      "enable": "启用",
+      "disable": "停用",
+      "refresh": "刷新 Card",
+      "configured": "已配置",
+      "notConfigured": "未配置",
+      "settings": "配置",
+      "saved": "注册项配置已保存。",
+      "clearCredential": "清除已保存凭据",
+      "reviewRequired": "检测到 Endpoint、协议、安全要求或身份信息的关键变化。确认前已暂停新调用。",
+      "endpointChange": "Endpoint 变化",
+      "confirm": "确认并应用",
+      "reject": "拒绝变化",
+      "deleteConfirm": "确定删除该注册项吗？已有派发历史会保留，但新调用将立即被拒绝。",
       "errors": { "invalidResponse": "A2A 出站管理服务返回了无效数据。", "invalidSettings": "请填写有效的显示名称和大于 0 的超时时间。" }
     },
     "history": {
-      "title": "入向请求处理历史", "description": "显示当前 Gateway 进程内最近 200 条 A2A 入向请求，不记录请求正文。", "total": "共 {{count}} 条", "empty": "暂无处理记录", "emptyDescription": "收到 A2A 入向请求后，处理状态会显示在这里。", "processing": "处理中",
+      "tabs": { "ariaLabel": "A2A 请求处理历史类型", "ingress": "入站请求", "outbound": "出站请求" },
+      "copy": "点击复制",
+      "copied": "已复制",
+      "copyFailed": "复制失败，请检查浏览器剪贴板权限。",
+      "ingress": {
+        "title": "入站请求处理历史",
+        "description": "显示当前 Gateway 进程内最近 200 条 A2A 入站请求，不记录请求正文。",
+        "empty": "暂无入站处理记录",
+        "emptyDescription": "收到 A2A 入站请求后，处理状态会显示在这里。"
+      },
+      "outbound": {
+        "title": "出站请求处理历史",
+        "description": "显示最近 200 条 A2A 出站派发记录，不展示请求正文或响应正文。",
+        "empty": "暂无出站处理记录",
+        "emptyDescription": "向第三方 Agent 派发请求后，处理状态会显示在这里。",
+        "modes": { "sync": "同步", "async": "异步" },
+        "statuses": {
+          "created": "已创建",
+          "submitting": "提交中",
+          "accepted": "已接收",
+          "working": "执行中",
+          "completed": "已完成",
+          "failed": "失败",
+          "canceled": "已取消",
+          "rejected": "已拒绝",
+          "input_required": "等待输入",
+          "auth_required": "需要认证",
+          "unknown": "状态未知",
+          "timed_out": "已超时",
+          "dispatch_failed": "派发失败"
+        }
+      },
+      "processing": "处理中",
       "statuses": { "processing": "处理中", "completed": "已完成", "failed": "失败", "canceled": "已取消" },
       "operations": { "message": "消息处理" },
-      "columns": { "status": "状态", "operation": "请求类型", "requestId": "请求 ID", "contextId": "上下文 ID", "startedAt": "开始时间", "duration": "耗时", "error": "错误信息" }
+      "columns": {
+        "status": "状态",
+        "operation": "请求类型",
+        "requestId": "请求 ID",
+        "contextId": "上下文 ID",
+        "mode": "模式",
+        "agentId": "Agent ID",
+        "agent": "Agent",
+        "dispatchId": "派发 ID",
+        "remoteTaskId": "远端任务 ID",
+        "startedAt": "开始时间",
+        "duration": "耗时",
+        "error": "错误信息"
+      }
     },
-    "fields": { "host": "监听地址", "port": "监听端口", "rpc_path": "RPC 路径", "card_path": "Agent Card 路径", "extended_card_path": "扩展 Card 路径", "protocol_version": "协议版本", "app_name": "Agent 名称", "app_description": "Agent 描述", "app_version": "Agent 版本", "expose_reasoning": "在 A2A 响应中暴露 reasoning" },
-    "errors": { "invalidResponse": "A2A 服务返回了无效状态。", "invalidHistoryResponse": "A2A 服务返回了无效的处理历史。", "invalidField": "请检查字段：{{field}}" }
+    "fields": {
+      "auth_type": "认证方式",
+      "api_key_header": "API Key 请求头名称",
+      "credential": "安全凭据",
+      "card_auth_required": "允许匿名查看服务信息",
+      "host": "监听地址",
+      "port": "监听端口",
+      "rpc_path": "RPC 路径",
+      "card_path": "Agent Card 路径",
+      "extended_card_path": "扩展 Agent Card 路径",
+      "protocol_version": "协议版本",
+      "app_name": "Agent 名称",
+      "app_description": "Agent 描述",
+      "app_version": "Agent 版本",
+      "expose_reasoning": "在 A2A 响应中暴露 reasoning"
+    },
+    "errors": {
+      "invalidResponse": "A2A 服务返回了无效状态。",
+      "invalidHistoryResponse": "A2A 服务返回了无效的处理历史。",
+      "invalidField": "请检查字段：{{field}}"
+    }
   },
   "offloadFiles": {
     "title": "离线文件",
@@ -1485,7 +1681,10 @@
     "mySkillsTabs": {
       "all": "全部",
       "enabled": "启用",
-      "disabled": "禁用"
+      "disabled": "禁用",
+      "builtin": "内置",
+      "prebuilt": "企业预置",
+      "user": "用户自装"
     },
     "enable": "启用",
     "noDisabledSkills": "暂无禁用的技能",
@@ -1530,6 +1729,8 @@
       "disabling": "禁用中..."
     },
     "builtIn": "内置",
+    "enterprisePrebuilt": "企业预置",
+    "enterpriseManagedHint": "该技能由管理员统一管理，不允许卸载或启停",
     "status": {
       "installed": "已安装",
       "notInstalled": "未安装",
@@ -1542,7 +1743,31 @@
       "clawhub": "ClawHub",
       "skillnet": "SkillNet",
       "teamskillshub": "TeamSkillsHub",
-      "unknown": "未知"
+      "swarmskillhub": "SwarmSkillHub",
+      "unknown": "未知",
+      "author": "作者",
+      "rating": "评分",
+      "downloads": "下载量",
+      "localVersion": "本地版本",
+      "updatedAt": "更新时间",
+      "searchPlaceholder": "搜索技能名称或描述",
+      "noResults": "暂无匹配的技能",
+      "noSources": "暂无可用技能源，请联系管理员配置",
+      "checkUpdates": "检查更新",
+      "prev": "上一页",
+      "next": "下一页",
+      "replaceConfirm": "技能 {{name}} 已安装，是否覆盖重装？",
+      "replaceConfirmTitle": "覆盖安装确认",
+      "errors": {
+        "loadFailed": "获取技能源失败",
+        "searchFailed": "搜索失败",
+        "installFailed": "安装失败",
+        "updateFailed": "更新失败"
+      },
+      "messages": {
+        "installed": "已安装：{{name}}",
+        "updated": "已更新：{{name}}"
+      }
     },
     "sourceLabel": "来源",
     "statusLabel": "状态",
@@ -1866,6 +2091,7 @@
       "install": "安装",
       "replaceConfirm": "已安装同名技能「{{name}}」，继续安装将卸载已安装的版本并替换为当前选择的版本。是否继续？",
       "installing": "安装中…",
+      "updating": "更新中…",
       "updatedAt": "更新于 {{date}}",
       "configTitle": "配置",
       "configDescription": "请输入从 ClawHub 平台获取的 CLI Token，用于访问 ClawHub 技能库。",
@@ -1893,13 +2119,16 @@
       "searchPlaceholder": "输入关键词搜索 TeamSkills",
       "noResults": "未找到相关技能，可换个关键词再试。",
       "installing": "安装中…",
+      "updating": "更新中…",
       "replaceConfirm": "已安装同名技能「{{name}}」，继续安装将卸载已安装的版本并替换为当前选择的版本。是否继续？",
       "messages": {
-        "installed": "已安装：{{name}}"
+        "installed": "已安装：{{name}}",
+        "updated": "已更新：{{name}}"
       },
       "errors": {
         "searchFailed": "搜索失败",
         "installFailed": "安装失败",
+        "updateFailed": "更新失败",
         "skillAlreadyInstalled": "该技能已安装。"
       }
     },
@@ -1919,6 +2148,7 @@
     "marketplacesDefault": "默认 marketplace: anthropics",
     "installPrompt": "请输入插件规格 (plugin@marketplace)",
     "importPrompt": "请输入服务端本地 skill 路径（SKILL.md 或目录）",
+    "uninstallConfirmTitle": "卸载确认",
     "uninstallConfirm": "确认卸载 {{pluginName}} ?",
     "messages": {
       "installing": "安装中：{{name}}...",
@@ -1959,7 +2189,7 @@
     "markdownOnly": "仅支持 Markdown/JSON（.md/.mdx/.json）预览",
     "errors": {
       "refreshFailed": "刷新失败：无法重建 agent 文件索引，请检查生成脚本日志。",
-      "loadFailed": "无法读取 agent 文件列表，请检查 agent/workspace/agent-data.json 是否已生成。"
+      "loadFailed": "无法读取 agent 文件列表，请检查 agent/jiuwenclaw_workspace/agent-data.json 是否已生成。"
     }
   },
   "fileViewer": {
@@ -2036,6 +2266,8 @@
       "timeout": "执行超时",
       "running": "执行中...",
       "toolName": "工具名称",
+      "sourceSkill": "来源技能",
+      "sourceSkillInline": "{{label}}（技能：{{skill}}）",
       "arguments": "参数",
       "result": "结果",
       "truncated": "结果已截断"
@@ -2094,6 +2326,26 @@
       "acceptAll": "全部接收",
       "submit": "确认提交",
       "entryCount": "共 {{count}} 条演进经验"
+    },
+    "skillApproval": {
+      "title": "Skill 加载审批",
+      "trustBuiltin": "内置",
+      "versionLocal": "本地（无版本）",
+      "source": "来源",
+      "version": "版本",
+      "hash": "权限声明摘要",
+      "cached": "该 Skill 已在本会话获批（上次决策：{{decision}}），确认后复用审批记录。",
+      "cachedLocal": "本次允许",
+      "cachedSession": "会话内允许",
+      "widened": "放宽项（批准后生效）",
+      "tightened": "收紧项（批准后生效）",
+      "rejected": "被安全策略丢弃的声明（deny 不可突破）",
+      "approveOnce": "本次允许",
+      "approveOnceDesc": "仅本次 Skill 激活期有效",
+      "approveSession": "会话内允许",
+      "approveSessionDesc": "会话内保留审批记录，Skill 结束后失活",
+      "continueWithout": "仅加载不授权",
+      "continueWithoutDesc": "仅加载 Skill，不授予额外权限"
     }
   },
   "share": {
@@ -2260,7 +2512,7 @@
     "helpTitle": "使用说明",
     "help0": "扩展文件夹必须包含 rail.py 作为入口文件",
     "help1": "Rail 扩展文件必须继承 DeepAgentRail 或 AgentRail 基类",
-    "help2": "扩展文件会被保存到 ~/.jiuwenswarm/agent/workspace/extensions/ 目录",
+    "help2": "扩展文件会被保存到 ~/.jiuwenswarm/agent/jiuwenclaw_workspace/extensions/ 目录",
     "errors": {
       "missingFolderPath": "缺少 folder_path 参数",
       "folderNotFound": "文件夹不存在或不是目录：{{path}}",
@@ -2410,6 +2662,8 @@
     "confirm": "确定",
     "customOption": "自定义",
     "customPlaceholder": "没有合适的选项？输入您的答案...",
+    "customRequired": "请填写自定义内容。",
+    "selectionRequired": "请至少选择一项，或填写自定义内容。",
     "skippedSummary": "已跳过"
   },
   "qaSummary": {
