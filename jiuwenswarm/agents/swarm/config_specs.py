@@ -886,31 +886,6 @@ def build_member_deep_agent_spec(
         merged_rails, retrieval_enabled=retrieval_enabled
     )
 
-    if role == "leader" and not _is_code_mode(mode):
-        # Add the leader-facing PermissionInterruptRail. The chat-team leader
-        # is user-facing and can resolve ASK dialogs; teammates are headless
-        # and use TeamPermissionRail instead (see _build_team_capability_specs).
-        # Code mode is excluded to avoid surprising existing code-team flows.
-        _perms_cfg = (
-            config.get("permissions") if isinstance(config, dict) else None
-        )
-        if isinstance(_perms_cfg, dict) and _perms_cfg.get("enabled"):
-            from jiuwenswarm.agents.swarm.permission_rail_spec import (
-                PERMISSION_RAIL_BUNDLE,
-                register_permission_rail_provider,
-            )
-            register_permission_rail_provider()
-            if not any(
-                isinstance(_s, RailSpec) and _s.type == PERMISSION_RAIL_BUNDLE
-                for _s in merged_rails
-            ):
-                merged_rails.append(
-                    RailSpec(
-                        type=PERMISSION_RAIL_BUNDLE,
-                        params={"permissions_config": _perms_cfg},
-                    ),
-                )
-
     update: dict[str, Any] = {
         "rails": merged_rails,
         "tools": merged_tools,
