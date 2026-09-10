@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, ExternalLink, Loader2, CheckCircle2, RotateCw } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
@@ -93,7 +94,10 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
   // "+"扩展面板（zIndex:9999）里弹出，必须盖在它上面；data 属性供 InputArea.tsx/
   // ExtensionPickerPanel.tsx 的外部点击关闭监听识别"点的是弹窗内部"从而跳过关闭（2026-08-25
   // 用户反馈）。
-  return (
+  // createPortal 到 document.body：同 ConnectTokenModal——脱离 "+"扩展面板 / 详情页 `.detail-body`
+  // 的容器，既保证 z 层级盖住浮层，又不被 index.css 的 `.detail-body > *` 限宽规则压窄遮罩
+  // （bug 2026091001-001）。
+  return createPortal(
     <div data-connector-auth-modal="true" data-testid="connector-market-cli-auth-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[420px] rounded-2xl bg-card p-6 shadow-xl">
         <button type="button" onClick={onCancel} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-cli-auth-modal-close">
@@ -150,6 +154,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

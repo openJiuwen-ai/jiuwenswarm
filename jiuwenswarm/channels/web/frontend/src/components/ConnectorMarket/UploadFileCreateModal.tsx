@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, UploadCloud, Info, FileArchive, Loader2 } from 'lucide-react';
 import {
@@ -138,7 +139,9 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
       })
     : null;
 
-  return (
+  // createPortal 到 document.body：统一所有连接器市场弹窗的挂载方式，避免 `fixed inset-0` 遮罩
+  // 被 index.css 里 `.detail-body > * / .page-scroll > *` 的限宽规则压窄（bug 2026091001-001）。
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-cron-dialog" data-testid="connector-market-upload-modal">
       <div className="relative w-[520px] rounded-2xl bg-card p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
@@ -234,6 +237,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

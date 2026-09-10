@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Search, X, Plus, Check } from 'lucide-react';
 
@@ -42,7 +43,10 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
-  return (
+  // createPortal 到 document.body：这个抽屉根节点也是 `fixed inset-0`，若留在页面容器内会被
+  // index.css 的 `.detail-body > * / .page-scroll > *` 限宽规则压窄（bug 2026091001-001）。
+  // 目前它只从 CreatePluginPage 弹出、暂未命中，但统一挂到 body 下更稳、也和其它弹窗一致。
+  return createPortal(
     <div
       className="fixed inset-0 z-50 bg-overlay-cron-drawer"
       data-testid="connector-market-picker-modal"
@@ -121,6 +125,7 @@ export function PickerModal({ title, items, initialSelectedIds, loading, onCance
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
