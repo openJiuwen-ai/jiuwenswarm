@@ -75,6 +75,10 @@ from jiuwenswarm.common.mode_matrix import (
     is_web_composable_mode,
     read_request_work_mode,
 )
+from jiuwenswarm.common.context_keys import (
+    JIUWENSWARM_CHANNEL_CONTEXT_KEY,
+    JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
+)
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
@@ -106,6 +110,26 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
 )
+
+
+def _with_request_runtime_context(
+    run: object,
+    *,
+    channel: str,
+    skip_a2ui: bool,
+) -> dict[str, Any]:
+    """Return a copy of ``run`` carrying JiuwenSwarm request metadata."""
+    run_data = dict(run) if isinstance(run, dict) else {}
+    raw_context = run_data.get("context")
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    raw_extra = context.get("extra")
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra[JIUWENSWARM_CHANNEL_CONTEXT_KEY] = channel
+    if skip_a2ui:
+        extra[JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY] = True
+    context["extra"] = extra
+    run_data["context"] = context
+    return run_data
 
 
 class _TeamPlanApprovalPayloadError(ValueError):
@@ -1392,7 +1416,10 @@ class JiuWenSwarm:
                 query, _request_debug = strip_debug_directive(query)
         if self._is_malformed_team_plan_approval_payload(params):
             raise _TeamPlanApprovalPayloadError(self._team_plan_approval_payload_error_message())
-        channel = request.channel_id or (request.session_id.split('_')[0] if request.session_id else "web")
+        request_channel = str(request.channel_id or "").strip()
+        channel = request_channel or (
+            request.session_id.split('_')[0] if request.session_id else "web"
+        )
         language = config_base.get("preferred_language", "zh")
 
         # Get trusted directories from request params (passed by TUI)
@@ -1501,7 +1528,10 @@ class JiuWenSwarm:
         }
         if _request_debug:
             inputs["_request_debug"] = True
-        if request.metadata and request.metadata.get("skip_a2ui") is True:
+        skip_a2ui = bool(
+            request.metadata and request.metadata.get("skip_a2ui") is True
+        )
+        if skip_a2ui:
             inputs["skip_a2ui"] = True
 
         # 传递 enable_memory 参数
@@ -1529,6 +1559,16 @@ class JiuWenSwarm:
                 "kind": "cron",
                 "context": {"extra": {"cron": cron}},
             }
+
+        # DeepAgent normalizes inputs to a fixed InvokeInputs schema, so loose
+        # top-level fields such as ``channel`` do not reach model-call rails.
+        # RunContext.extra is the SDK-supported request-scoped extension point
+        # and survives every ReAct iteration independently of the Agent mode.
+        inputs["run"] = _with_request_runtime_context(
+            inputs.get("run"),
+            channel=request_channel,
+            skip_a2ui=skip_a2ui,
+        )
 
         # Per-request workspace_dir scopes one prompt's cwd to the given
         # directory; threaded into inputs["cwd"] which downstream init_cwd
