@@ -461,7 +461,7 @@ function failureLabel(
     if (score != null && parentScore != null) return '得分未超过父节点';
     return '未达到采纳条件';
   }
-  if (lifecycle === 'pruned') return '搜索空间已剪枝';
+  if (lifecycle === 'pruned') return asText(node.failure_reason) || '搜索空间已剪枝';
   return null;
 }
 
@@ -571,7 +571,7 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
     summary,
     changeItems,
     reasonLabel,
-    reasonDetail: clampText(asText(node.failure_reason), 500),
+    reasonDetail: lifecycle === 'pruned' ? null : clampText(asText(node.failure_reason), 500),
     parentTitle: parent ? presentRsiNode(parent, { ...context, allNodes }).title : null,
     iteration: round,
     attempt,
@@ -613,6 +613,7 @@ export function actionsForStatus(
   scenario: RsiScenario,
   installed = false,
   tree: RsiTreeGetResult | null = null,
+  artifactType: RsiArtifactType | null = null,
 ): RsiActionKind[] {
   const actions: RsiActionKind[] = ['config', 'delete'];
   switch (status) {
@@ -625,7 +626,8 @@ export function actionsForStatus(
       actions.push(scenario === 'HARNESS' ? 'stop' : 'pause');
       break;
     case 'PAUSED':
-      actions.push('resume');
+      // 论文当前只支持暂停，不支持恢复；保留停止以便用户结束暂停任务。
+      actions.push(scenario === 'ARTIFACT' && artifactType === 'PAPER' ? 'stop' : 'resume');
       break;
     case 'COMPLETED':
       if (!installed) {

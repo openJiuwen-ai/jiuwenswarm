@@ -13,6 +13,7 @@ import pytest
 from jiuwenswarm.agents.harness.common.rsi.paper_provider import (
     PaperProvider,
     _ExecutionOutcome,
+    _read_usage_ledger,
     _safe_reporting_resource_paths,
 )
 from jiuwenswarm.agents.harness.common.rsi.provider_factory import build_rsi_adapters
@@ -41,6 +42,8 @@ def test_real_factory_registers_paper_provider(tmp_path: Path):
     assert set(adapters) == {"ARTIFACT:PAPER", "ARTIFACT:PROGRAM"}
     assert isinstance(adapters["ARTIFACT:PAPER"].provider, PaperArtifactProviderImpl)
     assert isinstance(adapters["ARTIFACT:PROGRAM"].provider, PuctProgramArtifactProvider)
+    assert adapters["ARTIFACT:PAPER"].supports_pause is True
+    assert adapters["ARTIFACT:PAPER"].supports_resume is False
 
 
 def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
@@ -53,6 +56,13 @@ def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
 
         async def arun(self, **kwargs):
             captured["request"] = kwargs
+            from openjiuwen.rsi.usage import record_model_usage
+
+            await record_model_usage(
+                model="fake-paper-model",
+                call_id="fake-paper-call",
+                usage={"input_tokens": 11, "output_tokens": 5, "cache_read_tokens": 2},
+            )
             return SimpleNamespace(status="complete", summary="dry run")
 
     model = SimpleNamespace(
@@ -66,6 +76,7 @@ def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
     )
     tasks_root = tmp_path / "tasks"
     run_dir = tasks_root / "rsi-paper" / "run"
+    run_dir.mkdir(parents=True)
     request = ArtifactEngineRequest(
         task_id="rsi-paper",
         run_dir=str(run_dir),
@@ -111,6 +122,45 @@ def test_paper_provider_wires_the_bundled_autoresearch_runtime(tmp_path: Path):
         "initial_prompt": "task prompt",
         "task_mode": "create_new_paper",
     }
+    usage = _read_usage_ledger(run_dir)
+    assert usage is not None
+    assert usage.tokens.input == 11
+    assert usage.tokens.output == 5
+    assert usage.tokens.cache_hit == 2
+    assert usage.call_count == 1
+
+
+def test_paper_provider_reads_usage_from_persisted_snapshots(tmp_path: Path):
+    tasks_root = tmp_path / "tasks"
+    task_id = "rsi-paper"
+    run_dir = tasks_root / task_id / "run"
+    provider = PaperProvider(tasks_root)
+    provider._initialize_snapshots(task_id, run_dir, 1)  # noqa: SLF001 - snapshot contract
+    (run_dir / "model_calls.jsonl").write_text(
+        json.dumps(
+            {
+                "event_id": 1,
+                "task_id": task_id,
+                "call_id": "call-1",
+                "model_call": {
+                    "model": "paper-model",
+                    "call_count": 1,
+                    "tokens": {"input": 4, "output": 9, "cache_hit": 1},
+                    "status": "succeeded",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state = provider.read_state(task_id)
+    report = provider.read_report(task_id)
+    assert state.usage is not None
+    assert report.usage is not None
+    assert state.usage.tokens.input == report.usage.tokens.input == 4
+    assert state.usage.tokens.output == report.usage.tokens.output == 9
+    assert state.usage.call_count == report.usage.call_count == 1
 
 
 def test_paper_provider_accepts_a_regular_file_and_stages_it(tmp_path: Path):

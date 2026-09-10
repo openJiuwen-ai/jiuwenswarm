@@ -341,6 +341,18 @@
   line-height: 22px;
   color: #191919;
 }
+.rsi-result__paper-button {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-link, #2563eb);
+  font: inherit;
+  cursor: pointer;
+}
+.rsi-result__paper-button:hover {
+  text-decoration: underline;
+}
 .rsi-result__metric {
   flex: 1 1 0;
   min-width: 0;

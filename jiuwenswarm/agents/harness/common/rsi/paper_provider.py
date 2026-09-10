@@ -37,9 +37,12 @@ from openjiuwen.rsi.schema import (
     EngineResult,
     EngineState,
     RsiChange,
+    RsiUsage,
+    RsiUsageTokens,
     RsiTreeNode,
     TreeResponse,
 )
+from openjiuwen.rsi.usage import ModelUsageObserver, set_usage_node, usage_snapshot, usage_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -356,7 +359,7 @@ class PaperProvider:
             best_node_id=state.get("best_node_id"),
             score=state.get("score"),
             baseline=state.get("baseline"),
-            usage=None,
+            usage=usage_snapshot(state.get("usage")) or _read_usage_ledger(self._read_run_dir(task_id)),
             updated_at=str(state.get("updated_at") or ""),
             error_code=state.get("error_code"),
             error_message=state.get("error_message"),
@@ -369,7 +372,9 @@ class PaperProvider:
             task_id=task_id,
             status=str(report.get("status") or "created"),
             best_node_id=report.get("best_node_id"),
-            usage=None,
+            usage=usage_snapshot(report.get("usage"))
+            or usage_snapshot(self._read_json(task_id, _STATE_FILE).get("usage"))
+            or _read_usage_ledger(self._read_run_dir(task_id)),
             artifact_index=refs,
             summary=report.get("summary"),
         )
@@ -520,16 +525,26 @@ class PaperProvider:
         )
         with self._temporary_model_environment(request.model, task_id=request.task_id):
             set_project_root(run_dir)
-            return asyncio.run(
-                runtime.arun(
-                    topic=topic,
-                    research_paths=research_paths,
-                    run_id=manager_run_id,
-                    objective=request.optimization_instruction or topic,
-                    initial_prompt=initial_prompt,
-                    task_mode="modify_paper" if request.artifact_path else "create_new_paper",
-                )
-            )
+
+            async def run_runtime() -> Any:
+                usage_state = {"task_id": str(request.task_id)}
+                observer = ModelUsageObserver(None)
+                async with observer.observe():
+                    await observer.bind(usage_state, run_dir)
+                    set_usage_node(manager_run_id)
+                    try:
+                        return await runtime.arun(
+                            topic=topic,
+                            research_paths=research_paths,
+                            run_id=manager_run_id,
+                            objective=request.optimization_instruction or topic,
+                            initial_prompt=initial_prompt,
+                            task_mode="modify_paper" if request.artifact_path else "create_new_paper",
+                        )
+                    finally:
+                        await observer.finish_pending()
+
+            return asyncio.run(run_runtime())
 
     def _load_config(self, load_config: Any) -> dict[str, Any]:
         if self.config_path is not None:
@@ -613,7 +628,15 @@ class PaperProvider:
         on_event: OnEvent | None,
     ) -> None:
         seen: set[tuple[str, int]] = set()
+        last_usage: RsiUsage | None = None
         while True:
+            last_usage = await self._publish_usage_snapshot(
+                task_id,
+                run_dir,
+                total_iterations,
+                last_usage,
+                on_event,
+            )
             await self._scan_manager_reports(
                 task_id,
                 run_dir,
@@ -631,8 +654,44 @@ class PaperProvider:
                     seen,
                     on_event,
                 )
+                await self._publish_usage_snapshot(
+                    task_id,
+                    run_dir,
+                    total_iterations,
+                    last_usage,
+                    on_event,
+                )
                 return
             await asyncio.sleep(self.poll_interval)
+
+    async def _publish_usage_snapshot(
+        self,
+        task_id: str,
+        run_dir: Path,
+        total_iterations: int,
+        previous: RsiUsage | None,
+        on_event: OnEvent | None,
+    ) -> RsiUsage | None:
+        usage = await asyncio.to_thread(_read_usage_ledger, run_dir)
+        if usage is None or usage == previous:
+            return previous
+        state = self._read_json(task_id, _STATE_FILE)
+        report = self._read_json(task_id, _REPORT_FILE)
+        usage_payload = asdict(usage)
+        state["usage"] = usage_payload
+        report["usage"] = usage_payload
+        self._write_task_snapshots(task_id, state=state, report=report, run_dir=run_dir)
+        await _emit(
+            on_event,
+            EventProgress(
+                iteration=int(state.get("iteration", 0) or 0),
+                total_iterations=total_iterations,
+                score=state.get("score"),
+                baseline=state.get("baseline"),
+                usage=usage,
+            ),
+        )
+        return usage
 
     async def _scan_manager_reports(
         self,
@@ -692,6 +751,7 @@ class PaperProvider:
         state = self._read_json(task_id, _STATE_FILE)
         report = self._read_json(task_id, _REPORT_FILE)
         tree = self._read_json(task_id, _TREE_FILE)
+        usage = _read_usage_ledger(run_dir)
         module = str(manager_report.get("module") or "module")
         attempt = int(manager_report.get("attempt", index + 1) or index + 1)
         outcome = str(manager_report.get("outcome") or "failed")
@@ -766,6 +826,7 @@ class PaperProvider:
                 "best_node_id": node_id if adopted else state.get("best_node_id"),
                 "updated_at": _utc_now(),
                 "current_stage": module,
+                "usage": asdict(usage) if usage is not None else state.get("usage"),
             }
         )
         report.update(
@@ -774,6 +835,7 @@ class PaperProvider:
                 "best_node_id": state.get("best_node_id"),
                 "artifact_index": report_index,
                 "summary": summary[:1000],
+                "usage": asdict(usage) if usage is not None else report.get("usage"),
             }
         )
         self._write_task_snapshots(task_id, state=state, report=report, tree=tree)
@@ -785,7 +847,7 @@ class PaperProvider:
                 total_iterations=total_iterations,
                 score=None,
                 baseline=None,
-                usage=None,
+                usage=usage,
             ),
         )
 
@@ -842,6 +904,7 @@ class PaperProvider:
         state = self._read_json(task_id, _STATE_FILE)
         report = self._read_json(task_id, _REPORT_FILE)
         tree = self._read_json(task_id, _TREE_FILE)
+        usage = _read_usage_ledger(run_dir)
         artifact_index = list(report.get("artifact_index") or [])
         for package in sorted((run_dir / _ARTIFACTS_DIR).glob("paper-optimization-*")):
             if not package.is_dir() and not (
@@ -886,6 +949,7 @@ class PaperProvider:
                 "updated_at": _utc_now(),
                 "error_code": error_code,
                 "error_message": error_message,
+                "usage": asdict(usage) if usage is not None else state.get("usage"),
             }
         )
         report.update(
@@ -894,6 +958,7 @@ class PaperProvider:
                 "best_node_id": state.get("best_node_id"),
                 "artifact_index": artifact_index,
                 "summary": outcome.summary[:2000],
+                "usage": asdict(usage) if usage is not None else report.get("usage"),
             }
         )
         self._write_task_snapshots(task_id, state=state, report=report, tree=tree, run_dir=run_dir)
@@ -1187,6 +1252,56 @@ def _read_json_file(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _read_usage_ledger(run_dir: Path) -> RsiUsage | None:
+    """Aggregate the durable, content-free model-call ledger."""
+    path = run_dir / "model_calls.jsonl"
+    if not path.is_file():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    totals: dict[str, int | None] = {"input": 0, "output": 0, "cache_hit": 0}
+    seen: set[str] = set()
+    call_count = 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            # A concurrently appended final line is retried on the next poll.
+            continue
+        if not isinstance(record, dict):
+            continue
+        call_id = str(record.get("call_id") or "")
+        model_call = record.get("model_call")
+        if not call_id or call_id in seen or not isinstance(model_call, dict):
+            continue
+        seen.add(call_id)
+        tokens = usage_tokens(model_call.get("tokens"))
+        for key in ("input", "output", "cache_hit"):
+            value = getattr(tokens, key)
+            if value is None:
+                totals[key] = None
+            elif totals[key] is not None:
+                totals[key] += value
+        call_count += 1
+
+    if call_count == 0:
+        return None
+    return RsiUsage(
+        tokens=RsiUsageTokens(
+            input=totals["input"],
+            output=totals["output"],
+            cache_hit=totals["cache_hit"],
+        ),
+        cost_estimate=None,
+        call_count=call_count,
+    )
 
 
 def _compact_manager_report(report: dict[str, Any]) -> dict[str, Any]:

@@ -5,21 +5,23 @@
  *   - usage.tokens：rsi.usage.get → task.usage（§3.4/§8.2）
  *   - metrics.iterations / eval_passed / eval_total / pruned_count：rsi.report.get（§8.1）
  *   - pruned_count 仅 harness 优化有值；产物优化为 null（§14），不渲染剪枝列
- * 后端产物预览图接口 ready 后替换占位缩略图。
+ * 当前最优论文通过节点产物路径打开已有的 PDF/LaTeX 预览弹窗。
  */
 import { useTranslation } from 'react-i18next';
 import optimizeImage from '../../../assets/rsi/rsi-optimize.svg';
 import type { RsiTaskGetResult, RsiReportGetResult, RsiUsageGetResult } from '../types';
 import { formatArtifactScore, formatGain, formatTokensK, presentRsiNode, typeDisplayLabel } from '../rsiPresentation';
+import { resolveRsiArtifactSource } from '../rsiArtifactFiles';
 import { useRsiStore } from '../rsiStore';
 
 interface RsiResultSummaryProps {
   task: RsiTaskGetResult;
   report: RsiReportGetResult | null;
   usage: RsiUsageGetResult | null;
+  onOpenArtifact: (path: string, title: string) => void;
 }
 
-export function RsiResultSummary({ task, report, usage }: RsiResultSummaryProps) {
+export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiResultSummaryProps) {
   const { t } = useTranslation();
   const liveProgress = useRsiStore((s) => (s.selectedTaskId ? s.detail[s.selectedTaskId]?.liveProgress : null));
   const tree = useRsiStore((s) => s.detail[task.task_id]?.tree ?? null);
@@ -34,6 +36,10 @@ export function RsiResultSummary({ task, report, usage }: RsiResultSummaryProps)
     tree?.nodes.find((node) => bestArtifactId != null && node.snapshot_artifact_id === bestArtifactId) ??
     [...(tree?.nodes ?? [])].filter((node) => node.type === 'ADOPTED').sort((a, b) => b.iteration - a.iteration)[0] ??
     null;
+  const bestArtifactSource = bestNode ? resolveRsiArtifactSource(bestNode, task.task_id) : null;
+  const viewArtifactLabel = task.artifact_type === 'PAPER'
+    ? t('rsi.detail.viewPaper', { defaultValue: '查看论文' })
+    : t('rsi.detail.viewArtifact', { defaultValue: '查看产物' });
   const bestPresentation = bestNode
     ? presentRsiNode(bestNode, {
         scenario: task.scenario,
@@ -56,7 +62,9 @@ export function RsiResultSummary({ task, report, usage }: RsiResultSummaryProps)
   const iterations = queued
     ? null
     : (liveProgress?.iteration ?? report?.metrics.iterations ?? task.progress?.iteration ?? null);
-  const tokenUsage = usage?.usage ?? task.usage ?? null;
+  const tokenUsage = task.status === 'RUNNING'
+    ? liveProgress?.usage ?? usage?.usage ?? task.usage ?? null
+    : usage?.usage ?? task.usage ?? liveProgress?.usage ?? null;
 
   // 指标列顺序：基线分数 → 用量 → 迭代次数 →（组合评测、剪枝，均不含程序优化）
   const isProgram = task.artifact_type === 'PROGRAM';
@@ -104,7 +112,18 @@ export function RsiResultSummary({ task, report, usage }: RsiResultSummaryProps)
             )}
           </div>
           <div className="rsi-best">
-            {t('rsi.detail.bestArtifact')}：{bestName ?? '当前暂无产物'}
+            <span>
+              {t('rsi.detail.bestArtifact')}：{bestName ?? '当前暂无产物'}
+            </span>
+            {bestArtifactSource && (
+              <button
+                type="button"
+                className="rsi-result__paper-button"
+                onClick={() => onOpenArtifact(bestArtifactSource.path, bestName ?? '论文预览')}
+              >
+                {viewArtifactLabel}
+              </button>
+            )}
           </div>
         </div>
         {metrics.map((m) => (

@@ -224,7 +224,11 @@ def provider_report_to_web(report: Any, state: Any = None) -> dict[str, Any]:
     return {
         "status": provider_status(raw.get("status") or state_raw.get("status")),
         "best_score": _safe_float_or_none(
-            raw.get("best_score") if raw.get("best_score") is not None else state_raw.get("score")
+            raw.get("best_score")
+            if raw.get("best_score") is not None
+            else raw.get("score")
+            if raw.get("score") is not None
+            else state_raw.get("score")
         ),
         "baseline": _safe_float_or_none(
             raw.get("baseline") if raw.get("baseline") is not None else state_raw.get("baseline")

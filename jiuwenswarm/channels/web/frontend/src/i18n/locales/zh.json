@@ -3315,6 +3315,8 @@
     "detail": {
       "optimizationResult": "优化结果",
       "bestArtifact": "当前最优产物",
+      "viewPaper": "查看论文",
+      "viewArtifact": "查看产物",
       "baselineScore": "基线分数",
       "usage": "用量（token）",
       "iterations": "迭代轮次",

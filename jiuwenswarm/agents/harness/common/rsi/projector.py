@@ -402,6 +402,11 @@ class RsiProjector:
             return cls._normalize_node(provider)
         adopted = bool(local.adopted or provider.adopted)
         extra = {**(local.extra or {}), **(provider.extra or {})}
+        provider_terminal_type = (
+            provider.type
+            if provider.type in {"ADOPTED", "REJECTED", "PRUNED"}
+            else None
+        )
         paper_extra = (provider.extra or {}).get("paper")
         paper_pending = (
             provider.type == "PROVISIONAL"
@@ -412,7 +417,11 @@ class RsiProjector:
             node_id=local.node_id,
             iteration=local.iteration if local.iteration > 0 else provider.iteration,
             parent_id=local.parent_id or provider.parent_id,
-            type="ADOPTED" if adopted else (local.type or provider.type or "REJECTED"),
+            type=(
+                "ADOPTED"
+                if adopted
+                else provider_terminal_type or local.type or provider.type or "REJECTED"
+            ),
             adopted=adopted,
             score=local.score if local.score is not None else provider.score,
             description=(

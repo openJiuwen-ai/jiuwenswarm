@@ -69,7 +69,16 @@ export function RsiDetail() {
         }}
       />
       <div className="rsi-stage">
-        <RsiResultSummary task={detail.task} report={detail.report} usage={detail.usage} />
+        <RsiResultSummary
+          task={detail.task}
+          report={detail.report}
+          usage={detail.usage}
+          onOpenArtifact={(path, title) => {
+            if (!selectedTaskId) return;
+            setArtifactTitle(title);
+            setArtifactSource({ taskId: selectedTaskId, path, initialFilePath: null });
+          }}
+        />
         <RsiCanvasArea task={detail.task} tree={detail.tree} />
       </div>
       <ConfigInfoDialog open={configOpen} task={detail.task} onClose={() => setConfigOpen(false)} />

@@ -98,3 +98,18 @@ def test_best_artifact_prefers_latest_ref_for_best_node():
     assert provider_best_artifact(report)["artifact_id"] == "iteration-package"
     projected = provider_report_to_web(report, {"iteration": 1, "status": "running"})
     assert projected["metrics"]["best_artifact_id"] == "iteration-package"
+
+
+def test_provider_paper_scores_reach_the_web_report():
+    projected = provider_report_to_web(
+        {
+            "status": "completed",
+            "score": 8.4,
+            "baseline": 7.1,
+            "artifact_index": [],
+        },
+        {"iteration": 2, "status": "completed"},
+    )
+
+    assert projected["best_score"] == 8.4
+    assert projected["baseline"] == 7.1
