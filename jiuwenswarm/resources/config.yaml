@@ -1577,6 +1577,12 @@ modes:
 # unchanged. One sidecar serves both normal and flash sessions, each in its
 # own child adapter + DeepAgent, no restart. Override in the user-dir config.
 agent_profiles:
+  # Config-baked default profile kind, applied when a request carries no
+  # agent_kind signal and no breed_map hit. Lets one sidecar default to a
+  # profile with zero relay/frontend change. null (default) => no profile
+  # activation (use global react config); `normal` => normal profile;
+  # `flash` => flash profile. User override wins over this template default.
+  default: null
   normal:
     react:
       enable_task_loop: true

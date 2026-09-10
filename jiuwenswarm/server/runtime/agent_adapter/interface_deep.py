@@ -8326,6 +8326,9 @@ class JiuWenSwarmDeepAdapter:
              (single-breed + per-request field relay approach)
           2. agent_profiles.breed_map[agent_id] (two-breed relay approach where
              the breed name carries the kind, no relay code change needed)
+          3. agent_profiles.default (config-baked default; lets one sidecar
+             default to flash/normal without any request signal — no relay or
+             frontend change needed)
 
         Returns "normal" | "flash" | None (None => no profile; use global config).
         """
@@ -8349,6 +8352,9 @@ class JiuWenSwarmDeepAdapter:
                 mapped = breed_map.get(self._agent_id)
                 if isinstance(mapped, str) and mapped.strip().lower() in ("normal", "flash"):
                     return mapped.strip().lower()
+            default_kind = profiles.get("default")
+            if isinstance(default_kind, str) and default_kind.strip().lower() in ("normal", "flash"):
+                return default_kind.strip().lower()
         return None
 
     def _active_profile_spec(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
