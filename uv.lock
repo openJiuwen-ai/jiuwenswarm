@@ -1958,8 +1958,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'a2a'", specifier = "==1.0.0" },
-    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'a2a'", specifier = ">=1.0.0,<2" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = ">=1.0.0,<2" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
@@ -1978,7 +1978,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
     { name = "gitcode-api", specifier = ">=1.2.20,<2" },
-    { name = "google-genai", specifier = ">=1.68.0,<2" },
+    { name = "google-genai", specifier = ">=1.68.0,<3" },
     { name = "google-genai", marker = "extra == 'harmony'", specifier = ">=1.68.0" },
     { name = "greenlet", specifier = ">=3.3.2,<4" },
     { name = "greenlet", marker = "extra == 'harmony'", specifier = ">=3.3.2" },
@@ -1986,7 +1986,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = ">=0.27,<1.0" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'harmony'", specifier = ">=0.27" },
     { name = "jiuwenswarm-tui", marker = "extra == 'tui'", directory = "packages/jiuwenswarm-tui" },
-    { name = "json-repair", specifier = ">=0.30.0,<0.60" },
+    { name = "json-repair", specifier = ">=0.30.0,<0.70" },
     { name = "json-repair", marker = "extra == 'harmony'", specifier = ">=0.30.0" },
     { name = "lark-oapi", specifier = ">=1.5.3,<2" },
     { name = "lark-oapi", marker = "extra == 'harmony'", specifier = ">=1.5.3" },
@@ -1997,11 +1997,11 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os_code_search" },
-    { name = "openjiuwen", extras = ["claude"], git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os_code_search" },
-    { name = "openjiuwen", extras = ["code-graph"], marker = "extra == 'code-graph'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os_code_search" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os_code_search" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os_code_search" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
+    { name = "openjiuwen", extras = ["claude"], git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
+    { name = "openjiuwen", extras = ["code-graph"], marker = "extra == 'code-graph'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<2" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<2" },
@@ -2010,7 +2010,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0,<2" },
     { name = "opentelemetry-sdk", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
-    { name = "pgvector", specifier = ">=0.4.2,<0.5" },
+    { name = "pgvector", specifier = ">=0.4.2,<0.6" },
     { name = "pgvector", marker = "extra == 'harmony'", specifier = ">=0.4.2" },
     { name = "pillow", specifier = ">=12.2.0,<13" },
     { name = "pillow", marker = "extra == 'harmony'", specifier = ">=12.2.0" },
@@ -2054,7 +2054,7 @@ provides-extras = ["harmony", "a2a", "ssh", "desktop", "dev", "tui", "distribute
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
+    { name = "a2a-sdk", extras = ["http-server"], specifier = ">=1.0.0,<2" },
     { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
     { name = "codespell", specifier = ">=2.2.4" },
     { name = "coverage", specifier = ">=7.7.1" },
@@ -2077,7 +2077,7 @@ lint = [
     { name = "ruff", specifier = ">=0.11.2" },
 ]
 test = [
-    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.0" },
+    { name = "a2a-sdk", extras = ["http-server"], specifier = ">=1.0.0,<2" },
     { name = "asyncssh", specifier = ">=2.14.0,<2.24" },
     { name = "coverage", specifier = ">=7.7.1" },
     { name = "pytest", specifier = ">=8.3.5" },
@@ -2937,8 +2937,8 @@ wheels = [
 
 [[package]]
 name = "openjiuwen"
-version = "0.1.16"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os_code_search#53b461f79c689037fa37daa4f80f46a5b70dfc33" }
+version = "0.1.17"
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?branch=develop#77521f8ea1d2c447c96e122c068b9ec46b51f722" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp" },

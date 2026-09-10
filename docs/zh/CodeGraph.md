@@ -1,6 +1,6 @@
 # Code Graph 代码检索
 
-Code Graph 给 Coding Agent 一套基于仓库索引的检索工具（`find_*`），用来在改代码之前定位符号、调用关系和文件结构。默认关闭，行为与原来的 grep / read / edit 一致。
+Code Graph 给 Coding Agent 一套基于仓库索引的检索工具（focused：`resolve_symbol`、`find_code_symbols`、`search_source_text`、`inspect_code_structure`、`focus_code`），用来在改代码之前定位符号、调用关系和文件结构。默认关闭，行为与原来的 grep / read / edit 一致。
 
 索引按 **canonical 绝对路径** 共享：同一 `project_dir` 的多个对话共用一张当前图，不按对话 fork。不同 clone / worktree 因真实路径不同而各有一张图。对话关闭只释放引用，不删除共享索引。
 
@@ -12,15 +12,15 @@ Code Graph 给 Coding Agent 一套基于仓库索引的检索工具（`find_*`�
 uv pip install tree-sitter-language-pack
 ```
 
-语法在随后的 `jiuwenswarm-init` / `jiuwenswarm-start` 里下载，不会拖到 Coding Agent 对话里。`profile: off`（仓库模板默认）不挂图工具、不建索引、不藏 grep，Coding Agent 就是原来的 grep / read / edit。关掉之后**不会**去刷新或作废已经建好的图，图只是闲置。`/status` 在 `off` 时显示 `absent`，避免看起来还在用图；磁盘 checkpoint 还在，再打开 `graph` 才检查这期间文件有没有变。装不上 parser 或注册失败时也不挂 `find_*`，工具表与关闭时相同。仓库超过上限（含后来新增太多文件，或建图时内存/磁盘超了）时 `UNAVAILABLE`：清掉旧图、恢复 grep，并提示抬对应的文件数、源码字节、内存或磁盘上限。图能完整建索引时会去掉 grep / glob。
+语法在随后的 `jiuwenswarm-init` / `jiuwenswarm-start` 里下载，不会拖到 Coding Agent 对话里。`profile: off`（仓库模板默认）不挂图工具、不建索引、不藏 grep，Coding Agent 就是原来的 grep / read / edit。关掉之后**不会**去刷新或作废已经建好的图，图只是闲置。`/status` 在 `off` 时显示 `absent`，避免看起来还在用图；磁盘 checkpoint 还在，再打开 `graph` 才检查这期间文件有没有变。装不上 parser 或注册失败时也不挂图工具，工具表与关闭时相同。仓库超过上限（含后来新增太多文件，或建图时内存/磁盘超了）时 `UNAVAILABLE`：清掉旧图、恢复 grep，并提示抬对应的文件数、源码字节、内存或磁盘上限。图能完整建索引时会去掉 grep / glob。
 
-选了 `profile: graph` 并且会话已经有 `project_dir` 时，**对话一开始就后台建图**，不必等第一次 `find_*`。进程启动时尚无项目路径，没法提前建。
+选了 `profile: graph` 并且会话已经有 `project_dir` 时，**对话一开始就后台建图**，不必等第一次图查询。进程启动时尚无项目路径，没法提前建。
 
 ## 如何打开
 
-源码 Web / 桌面 GUI：左侧 **更多 → 配置信息 → 其他配置 → Code Graph**。`检索档位` 选 `graph` 即打开。同一页可改挂载点和建图上限。保存后当前 Code 对话的下一回合即可用图（off→graph 会立刻挂 `find_*` 并藏 grep）。挂载点改到 `code_agent` 时会自动打开该子代理；若当前会话是在 Root 上开的，新开一轮对话更稳。
+源码 Web / 桌面 GUI：左侧 **更多 → 配置信息 → 其他配置 → Code Graph**。`检索档位` 选 `graph` 即打开（检索面固定 focused，界面不能选 classic）。同一页可改挂载点和建图上限。保存后当前 Code 对话的下一回合即可用图（off→graph 会立刻挂 focused 五件套并藏 grep）。挂载点改到 `code_agent` 时会自动打开该子代理；若当前会话是在 Root 上开的，新开一轮对话更稳。
 
-安全配置里的工具表会列出 `find_*` / `resolve_symbol` 等图工具，方便单独设 allow / ask / deny；`profile: off` 时这些工具不会挂上。
+安全配置里的工具表会列出 `resolve_symbol`、`find_code_symbols`、`search_source_text`、`inspect_code_structure`、`focus_code`，方便单独设 allow / ask / deny；`profile: off` 时这些工具不会挂上。
 
 也可以直接编辑产品配置（仓库内默认文件：`jiuwenswarm/resources/config.yaml`；本机运行常见路径：`~/.jiuwenswarm/config/config.yaml`）：
 

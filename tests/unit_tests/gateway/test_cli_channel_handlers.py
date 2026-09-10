@@ -1422,6 +1422,8 @@ def test_tui_config_schema_exposes_code_graph_group():
     profile = next(item for item in schema if item["key"] == "code_graph_profile")
     assert profile["group"] == "Code Graph"
     assert profile["options"] == ["off", "graph"]
+    assert "classic" not in profile["options"]
+    assert "focused" not in profile["options"]
     assert profile["default"] == "off"
     assert profile["source"] == "yaml"
     agent = next(item for item in schema if item["key"] == "code_graph_agent")
@@ -1430,6 +1432,33 @@ def test_tui_config_schema_exposes_code_graph_group():
     volume = next(item for item in schema if item["key"] == "code_graph_max_source_bytes")
     assert volume["default"] == "40"
     assert "MB" in volume["label"]
+
+
+def test_tui_renderer_lists_focused_code_graph_tools_only() -> None:
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "jiuwenswarm/channels/tui/frontend/src/ui/components/tools/tool-kind-utils.ts"
+    ).read_text(encoding="utf-8")
+    start = source.index("const CODE_GRAPH_TOOLS = new Set([")
+    block = source[start : source.index("]);", start)]
+    for name in (
+        "resolve_symbol",
+        "find_code_symbols",
+        "search_source_text",
+        "inspect_code_structure",
+        "focus_code",
+    ):
+        assert f'"{name}"' in block
+    for name in (
+        "find_callers",
+        "find_callees",
+        "read_symbol",
+        "select_code_context",
+        "submit_code_context",
+    ):
+        assert f'"{name}"' not in block
 
 
 @pytest.mark.asyncio

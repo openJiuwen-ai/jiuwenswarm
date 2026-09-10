@@ -1252,7 +1252,12 @@
         "read_file": "Read file contents (text, images, PDF, notebooks, etc.).",
         "read": "Permission alias for read-style tools (often maps to read_file).",
         "acp_chat": "Send a message to an external ACP agent process from config.",
-        "grep": "Search for matching content in workspace files."
+        "grep": "Search for matching content in workspace files.",
+        "resolve_symbol": "Resolve a known symbol name to its definition (Code Graph focused).",
+        "find_code_symbols": "Search symbol candidates by fuzzy name, then call focus_code.",
+        "search_source_text": "Search source by literal text (errors, config keys, decorators).",
+        "inspect_code_structure": "Inspect file or class structure.",
+        "focus_code": "Open a symbol source window; turn on include_relations for callers/imports."
       }
     },
     "proactive": {

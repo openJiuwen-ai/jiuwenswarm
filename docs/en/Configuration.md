@@ -363,7 +363,7 @@ The system automatically identifies and filters the following types of sensitive
 | **Build RSS cap (MB)** | `code_graph.max_build_rss_mb` | `4096` | Hard stop during build |
 | **Index disk cap (MB)** | `code_graph.max_cache_size_mb` | `2048` | Hard stop for on-disk index |
 
-With `profile: off` the graph stays idle. The Security tools table lists `resolve_symbol`, `find_callers`, and the other graph tools so you can set allow / ask / deny. See [Code Graph](../zh/CodeGraph.md).
+With `profile: off` the graph stays idle. The Security tools table lists the focused set: `resolve_symbol`, `find_code_symbols`, `search_source_text`, `inspect_code_structure`, `focus_code`, so you can set allow / ask / deny. Product `graph` does not expose classic tools such as `find_callers` or `read_symbol`. See [Code Graph](CodeGraph.md).
 
 ---
 
