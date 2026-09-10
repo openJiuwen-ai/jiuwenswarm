@@ -38,6 +38,8 @@ export interface FileDownloadItem {
   download_token: string;
   /** 工作区绝对/相对路径；用于去重身份（优先于 downloadUrl 中的 exp token） */
   path?: string;
+  /** send_file 侧探测：是否为可一键保存的 Skill 包（含 SKILL.md 的 zip/.skill） */
+  is_skill_package?: boolean;
 }
 
 export interface ContextCompressionRuntime {

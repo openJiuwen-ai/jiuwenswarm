@@ -8,6 +8,7 @@ export type FileIdentitySource = {
   download_url?: string;
   download_token?: string;
   path?: string;
+  is_skill_package?: boolean;
 };
 
 function decodeBase64UrlUtf8(value: string): string | null {
@@ -80,6 +81,13 @@ function assignDefinedFields<T extends FileIdentitySource>(prev: T, next: T): T 
   return out;
 }
 
+function withMergedSkillPackageFlag<T extends FileIdentitySource>(prev: T, next: T, base: T): T {
+  if (prev.is_skill_package === true || next.is_skill_package === true) {
+    return { ...base, is_skill_package: true };
+  }
+  return base;
+}
+
 export function mergeFileDownloadItems<T extends FileIdentitySource>(
   existing: T[] | undefined | null,
   incoming: T[] | undefined | null
@@ -98,7 +106,9 @@ export function mergeFileDownloadItems<T extends FileIdentitySource>(
       const prevHasUrl = Boolean(prev.download_url || prev.download_token);
       const nextHasUrl = Boolean(file.download_url || file.download_token);
       if (nextHasUrl || !prevHasUrl) {
-        merged.set(key, assignDefinedFields(prev, file));
+        merged.set(key, withMergedSkillPackageFlag(prev, file, assignDefinedFields(prev, file)));
+      } else if (file.is_skill_package === true && prev.is_skill_package !== true) {
+        merged.set(key, { ...prev, is_skill_package: true });
       }
     }
   };
