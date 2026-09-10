@@ -12,7 +12,13 @@ bootstrap_module = types.ModuleType("jiuwenswarm.agents.harness.team.bootstrap")
 bootstrap_module.configure_agent_teams_home = lambda: None
 sys.modules.setdefault(bootstrap_module.__name__, bootstrap_module)
 
-from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
+from jiuwenswarm.channels.web.app_web import _SpaStaticHandler, _format_ws_diagnostics
+
+
+def test_format_ws_diagnostics_forwards_parts_and_fields():
+    assert _format_ws_diagnostics({"client": "127.0.0.1"}, reason="peer closed") == (
+        "client='127.0.0.1' reason='peer closed'"
+    )
 
 
 def test_raw_file_serves_persisted_session_image(tmp_path):

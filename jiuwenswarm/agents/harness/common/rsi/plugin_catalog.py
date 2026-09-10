@@ -66,6 +66,14 @@ def _export_manifest(source: Path, destination: Path, installation_id: str) -> N
     (destination / "manifest.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
     )
+    # Legacy Harness outputs do not require a README, but the extension
+    # catalog does. Add one only to the exported copy, preserving task data.
+    readme = destination / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            f"# {spec.name or spec.id}\n\n{spec.description or 'RSI optimized Harness plugin.'}\n",
+            encoding="utf-8",
+        )
     load_plugin_package(destination / "manifest.json")
 
 

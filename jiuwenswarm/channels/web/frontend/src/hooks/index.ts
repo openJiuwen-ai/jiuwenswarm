@@ -14,3 +14,4 @@ export {
   useWelcomeBubblePosition,
 } from './useResponsive';
 export { useFullscreenPanel } from './useFullscreenPanel';
+export { useHorizontalScrollEdges } from './useHorizontalScrollEdges';

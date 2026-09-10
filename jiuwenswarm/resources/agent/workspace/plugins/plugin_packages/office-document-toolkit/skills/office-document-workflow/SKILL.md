@@ -43,7 +43,8 @@ description: 办公文档处理工作流：指导PDF、Word、Excel、PPT文档�
 
 调用 `document_generator` 工具生成目标文档：
 
-- 指定 `format`、`filename` 和 `content`
+- 指定 `format`、`filename` 和 `content`；`format` 用 `pdf` / `word` / `excel` / `ppt`（`pptx` / `docx` / `xlsx` 也可）
+- `content` 必须是对象，不要把整段参数再编码成 JSON 字符串塞进 `content`
 - `content` 结构：`{title, paragraphs[], tables[], sheets[], slides[]}`
 - 含中文内容且请求 PDF 时，会自动改为 Word（`.docx`）输出
 

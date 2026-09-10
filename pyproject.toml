@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@feat/rsi",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@ad0c9dfbbd577423cc60f73edffa0a4699cc53f9",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "websockets>=12.0,<16",
@@ -69,7 +69,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@feat/rsi",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@ad0c9dfbbd577423cc60f73edffa0a4699cc53f9",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "aiosqlite>=0.22.1",
@@ -185,7 +185,7 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", branch = "feat/rsi" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "ad0c9dfbbd577423cc60f73edffa0a4699cc53f9" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

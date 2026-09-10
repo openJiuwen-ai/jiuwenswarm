@@ -123,6 +123,7 @@ body.workspace-resize-active iframe {
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -133,6 +134,7 @@ body.workspace-resize-active iframe {
   from {
     opacity: 0;
   }
+
   to {
     opacity: 1;
   }
@@ -143,6 +145,7 @@ body.workspace-resize-active iframe {
     opacity: 0;
     transform: scale(0.95);
   }
+
   to {
     opacity: 1;
     transform: scale(1);
@@ -153,6 +156,7 @@ body.workspace-resize-active iframe {
   0% {
     background-position: -200% 0;
   }
+
   100% {
     background-position: 200% 0;
   }
@@ -163,10 +167,12 @@ body.workspace-resize-active iframe {
     color: var(--color-text-primary);
     opacity: 0.78;
   }
+
   50% {
     color: var(--color-animation-breath-peak);
     opacity: 1;
   }
+
   100% {
     color: var(--color-text-primary);
     opacity: 0.78;
@@ -174,42 +180,50 @@ body.workspace-resize-active iframe {
 }
 
 @keyframes pulse-subtle {
+
   0%,
   100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.7;
   }
 }
 
 @keyframes glow-pulse {
+
   0%,
   100% {
     box-shadow: var(--effect-glow-pulse-rest);
   }
+
   50% {
     box-shadow: 0 0 20px var(--color-action-primary-glow);
   }
 }
 
 @keyframes chatStreamPulse {
+
   0%,
   100% {
     border-color: var(--color-border-default);
   }
+
   50% {
     border-color: var(--color-action-primary);
   }
 }
 
 @keyframes chatReadingDot {
+
   0%,
   80%,
   100% {
     opacity: 0.4;
     transform: translateY(0);
   }
+
   40% {
     opacity: 1;
     transform: translateY(-3px);
@@ -217,10 +231,12 @@ body.workspace-resize-active iframe {
 }
 
 @keyframes blink {
+
   0%,
   100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0;
   }
@@ -240,6 +256,7 @@ body.workspace-resize-active iframe {
    =========================================== */
 
 @layer components {
+
   /* Shell Layout */
   .shell {
     height: 100vh;
@@ -269,6 +286,7 @@ body.workspace-resize-active iframe {
   .shell--icon-rail.shell--agent-management {
     grid-template-columns: 72px minmax(0, 1fr);
   }
+
   /* Topbar */
   .topbar {
     grid-area: topbar;
@@ -403,6 +421,125 @@ body.workspace-resize-active iframe {
     background: var(--color-surface-card);
     border-radius: var(--radius-lg);
     padding: 20px;
+  }
+
+  /* Auto-fit responsive card grid shared by marketplace / catalog pages */
+  .card-grid-auto {
+    display: grid;
+    justify-content: center;
+    align-items: flex-start;
+    align-content: start;
+    gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  }
+
+  /* 共享页面卡片（skill / agent / connector 各内容页卡片统一的宽度约束），
+     目前只收宽度，边框/圆角/阴影等公共外观后续逐步扩展 */
+  .page-card {
+    min-width: 360px;
+  }
+
+  @media (min-width: 1600px) {
+    .page-card {
+      max-width: 456px;
+    }
+  }
+
+  /* 页面通栏容器：flex 列，自身不限宽也不加横向 padding——
+     滚动条由内层滚动列渲染，始终贴 viewport 最右缘 */
+  .page-content {
+    display: flex;
+    flex: 1 1 0%;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--color-surface-card);
+    padding-top: 32px;
+    padding-bottom: 24px;
+  }
+
+  /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
+     与滚动列内层保持同一条 max 1400px 内容线（窄屏两侧至少留 48px） */
+  .page-shell {
+    width: min(1400px, calc(100% - 96px));
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  /* 滚动列（技能/专家/扩展的列表）：通栏，滚动条贴 viewport 最右缘。
+     scrollbar-gutter: stable 永久预留 8px 滚动条槽位（全局 ::-webkit-scrollbar 宽 8px），
+     both-edges 两侧对称预留，内容几何居中且滚动条出现/消失都不挤压布局 */
+  .page-scroll {
+    scrollbar-gutter: stable;
+    scrollbar-gutter: stable both-edges;
+  }
+
+  /* 滚动列/详情滚动体的内层限宽：滚动容器两侧已各让出 8px 滚动条槽，
+     故在 100% 基础上扣 96-16=80px，与 .page-shell（100%-96px）内容线严格对齐 */
+  .page-scroll>*,
+  .detail-body>* {
+    width: min(1400px, calc(100% - 80px));
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  /* 详情页统一滚动容器（agent/skill/connector detail）：同 .page-scroll 通栏滚动，
+     子元素通过 > * 规则限宽 1400px 并居中 */
+  .detail-body {
+    scrollbar-gutter: stable;
+    scrollbar-gutter: stable both-edges;
+  }
+
+  /* 统一返回按钮（agent/skill/connector detail）。
+     限宽 1400px 并居中，与详情页内容区域对齐；flex-shrink:0 保证不被压缩。 */
+  .detail-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-primary);
+    padding: 0;
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 22px;
+    width: min(1400px, calc(100% - 96px));
+    margin-right: auto;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  .detail-back:hover {
+    color: var(--color-text-strong);
+  }
+
+  .detail-back svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .page-content .chat-picker-panel__tabs {
+    height: 34px;
+    min-height: 34px;
+    margin-bottom: 0;
+    font-size: 16px;
+  }
+
+  .page-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    margin-top: 32px;
+    margin-bottom: 16px;
+  }
+
+  .page-catalog {
+    display: flex;
+    align-items: center;
+    font-size: 16px;
   }
 
   .main-panel-card {
@@ -573,7 +710,7 @@ body.workspace-resize-active iframe {
     border-color: transparent;
     background: var(--color-connector-tool-icon-surface);
     width: fit-content;
-    max-width: 100%;
+    max-width: calc(100% - 88px);
     margin-left: auto;
   }
 
@@ -609,7 +746,7 @@ body.workspace-resize-active iframe {
   }
 
   .chat-bubble-wrapper--with-files {
-    width: min(82%, 720px);
+    width: 100%;
   }
 
   /* AI disclaimer — footer note pinned below the composer */
@@ -640,7 +777,7 @@ body.workspace-resize-active iframe {
     height: 12px;
   }
 
-  .chat-reading-indicator__dots > span {
+  .chat-reading-indicator__dots>span {
     display: inline-block;
     width: 6px;
     height: 6px;
@@ -652,11 +789,11 @@ body.workspace-resize-active iframe {
     will-change: transform, opacity;
   }
 
-  .chat-reading-indicator__dots > span:nth-child(2) {
+  .chat-reading-indicator__dots>span:nth-child(2) {
     animation-delay: 0.15s;
   }
 
-  .chat-reading-indicator__dots > span:nth-child(3) {
+  .chat-reading-indicator__dots>span:nth-child(3) {
     animation-delay: 0.3s;
   }
 
@@ -721,7 +858,7 @@ body.workspace-resize-active iframe {
     background: var(--color-surface-card, transparent);
   }
 
-  .chat-markdown-table-wrap > table {
+  .chat-markdown-table-wrap>table {
     width: 100%;
     min-width: 28rem;
     margin: 0;
@@ -777,7 +914,7 @@ body.workspace-resize-active iframe {
     margin-block: 0;
   }
 
-  .chat-markdown p + p {
+  .chat-markdown p+p {
     margin-top: 1em;
   }
 
@@ -813,7 +950,7 @@ body.workspace-resize-active iframe {
     margin: 0;
   }
 
-  .proactive-card-content p + p {
+  .proactive-card-content p+p {
     margin-top: 0.5rem;
   }
 
@@ -843,10 +980,8 @@ body.workspace-resize-active iframe {
     border: 1px solid var(--color-chat-task-queue-border);
     border-radius: 18px 18px 0 0;
     background-color: var(--color-surface-page);
-    background-image: linear-gradient(
-      rgba(var(--color-chat-composer-surface-rgb), 0.96),
-      rgba(var(--color-chat-composer-surface-rgb), 0.96)
-    );
+    background-image: linear-gradient(rgba(var(--color-chat-composer-surface-rgb), 0.96),
+        rgba(var(--color-chat-composer-surface-rgb), 0.96));
     box-shadow: var(--effect-chat-task-queue-highlight);
     animation: rise 0.3s var(--ease-out);
   }
@@ -1037,21 +1172,21 @@ body.workspace-resize-active iframe {
     gap: 4px;
   }
 
-  /* ====== Team Timeline Messages（与单 agent assistant-row 同一套布局指标） ====== */
+  /* ====== Team Timeline Messages（头像+名字一行，正文另起一行） ====== */
   .team-member-message {
     width: min(100%, 920px);
     margin: 0 auto 12px;
     display: flex;
-    gap: 10px;
-    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+    align-items: stretch;
   }
 
   .team-member-message__header {
     display: flex;
     align-items: center;
+    gap: 8px;
     flex: 0 0 auto;
-    width: 32px;
-    margin-top: 2px;
   }
 
   .team-member-message__body {
@@ -1061,7 +1196,6 @@ body.workspace-resize-active iframe {
 
   .chat-message-file-list {
     width: 100%;
-    max-width: min(100%, 720px);
   }
 
   .team-member-message__card {
@@ -1084,7 +1218,6 @@ body.workspace-resize-active iframe {
   }
 
   .team-member-message__plain {
-    max-width: min(100%, 720px);
     min-width: 0;
     overflow-x: auto;
     color: var(--color-text-primary);
@@ -1108,11 +1241,11 @@ body.workspace-resize-active iframe {
     --tw-prose-links: var(--color-action-primary);
   }
 
-  .team-message-markdown > :first-child {
+  .team-message-markdown> :first-child {
     margin-top: 0;
   }
 
-  .team-message-markdown > :last-child {
+  .team-message-markdown> :last-child {
     margin-bottom: 0;
   }
 
@@ -1120,9 +1253,16 @@ body.workspace-resize-active iframe {
     display: inline;
   }
 
-  .team-message-markdown--inline > p:first-child {
+  .team-message-markdown--inline>p:first-child {
     display: inline;
     margin: 0;
+  }
+
+  /* ====== Member detail body (team-area / subagent shared) ====== */
+  .member-detail-body>* {
+    max-width: max(720px, calc(100% - 640px));
+    margin-left: auto;
+    margin-right: auto;
   }
 
   /* ====== Team Event Group Cards ====== */
@@ -1220,7 +1360,7 @@ body.workspace-resize-active iframe {
     padding: 7px 4px;
   }
 
-  .team-event-group-row--activity + .team-event-group-row--activity {
+  .team-event-group-row--activity+.team-event-group-row--activity {
     border-top: 1px solid rgba(var(--color-border-default-rgb), 0.64);
   }
 
@@ -1352,14 +1492,14 @@ body.workspace-resize-active iframe {
   .team-group-chat-message-list .team-event-group-chip--broadcast {
     background: transparent;
     color: var(--color-text-link);
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 400;
   }
 
-  /* 群聊消息正文：16px / 28px 行高 */
+  /* 群聊消息正文：14px / 28px 行高 */
   .team-group-chat-message-list .team-message-markdown {
-    font-size: 16px;
-    line-height: 28px;
+    font-size: 14px;
+    line-height: 22px;
   }
 
   .chat-timeline {
@@ -1369,7 +1509,7 @@ body.workspace-resize-active iframe {
     position: relative;
   }
 
-  .chat-timeline > * {
+  .chat-timeline>* {
     margin-top: 0;
     margin-bottom: 0;
   }
@@ -1389,12 +1529,12 @@ body.workspace-resize-active iframe {
     gap: 0;
   }
 
-  .tool-group-frame:not(.tool-group-frame--team) > .tool-group-frame__avatar {
+  .tool-group-frame:not(.tool-group-frame--team)>.tool-group-frame__avatar {
     flex: 0 0 32px;
     width: 32px;
   }
 
-  .tool-group-frame:not(.tool-group-frame--team) > .min-w-0 {
+  .tool-group-frame:not(.tool-group-frame--team)>.min-w-0 {
     flex: 1 1 auto;
     min-width: 0;
   }
@@ -1435,7 +1575,7 @@ body.workspace-resize-active iframe {
     overflow-wrap: anywhere;
   }
 
-  .tool-tree__section + .tool-tree__section {
+  .tool-tree__section+.tool-tree__section {
     margin-top: 4px;
   }
 
@@ -1618,21 +1758,6 @@ body.workspace-resize-active iframe {
     transition: opacity 0.28s ease, transform 0.28s ease;
   }
 
-  .completed-work-chip__badge {
-    flex-shrink: 0;
-    padding: 0;
-    margin-left: 2px;
-    border-radius: 0;
-    font-size: var(--font-size-2xs, 11px);
-    font-weight: 500;
-    line-height: inherit;
-  }
-
-  .completed-work-chip__badge.is-partial {
-    background: transparent;
-    color: var(--color-feedback-warning);
-  }
-
   .completed-work-chip .tool-tree-item__disclosure {
     opacity: 0.7;
     transition: transform 0.22s ease, opacity 0.18s ease;
@@ -1731,7 +1856,7 @@ body.workspace-resize-active iframe {
     animation: timeline-collapse-open 0.3s ease;
   }
 
-  .timeline-collapse.is-open > .timeline-collapse-inner > * {
+  .timeline-collapse.is-open>.timeline-collapse-inner>* {
     animation: timeline-collapse-drop 0.22s ease;
   }
 
@@ -1739,6 +1864,7 @@ body.workspace-resize-active iframe {
     from {
       grid-template-rows: 0fr;
     }
+
     to {
       grid-template-rows: 1fr;
     }
@@ -1749,6 +1875,7 @@ body.workspace-resize-active iframe {
       opacity: 0;
       transform: translateY(-4px);
     }
+
     to {
       opacity: 1;
       transform: translateY(0);
@@ -1757,14 +1884,12 @@ body.workspace-resize-active iframe {
 
   /* 执行中：不转圈，改用一条明亮窄带从左到右扫过灰字（对比更强、更明显）。 */
   .tool-tree__header-line-text.is-running {
-    background: linear-gradient(
-      100deg,
-      var(--tool-muted, var(--color-text-secondary)) 0%,
-      var(--tool-muted, var(--color-text-secondary)) 42%,
-      var(--color-text-primary) 50%,
-      var(--tool-muted, var(--color-text-secondary)) 58%,
-      var(--tool-muted, var(--color-text-secondary)) 100%
-    );
+    background: linear-gradient(100deg,
+        var(--tool-muted, var(--color-text-secondary)) 0%,
+        var(--tool-muted, var(--color-text-secondary)) 42%,
+        var(--color-text-primary) 50%,
+        var(--tool-muted, var(--color-text-secondary)) 58%,
+        var(--tool-muted, var(--color-text-secondary)) 100%);
     background-size: 220% 100%;
     -webkit-background-clip: text;
     background-clip: text;
@@ -1798,7 +1923,7 @@ body.workspace-resize-active iframe {
     color: var(--color-action-primary-hover);
   }
 
-  .tool-tree-item + .tool-tree-item {
+  .tool-tree-item+.tool-tree-item {
     margin-top: 4px;
   }
 
@@ -1923,6 +2048,13 @@ body.workspace-resize-active iframe {
     opacity: 0.75;
   }
 
+  .tool-tree-item__detail-hint {
+    font-weight: 400;
+    letter-spacing: normal;
+    text-transform: none;
+    opacity: 0.72;
+  }
+
   .tool-tree-item__detail-badge {
     padding: 1px 6px;
     border-radius: 4px;
@@ -1945,8 +2077,9 @@ body.workspace-resize-active iframe {
     font-weight: 500;
   }
 
+  /* 失败态与「已完成思考」同色，不再用红色强调 */
   .tool-tree__header-line-text.is-failed {
-    color: rgba(185, 28, 28, 0.78);
+    color: var(--tool-muted, var(--color-text-secondary));
   }
 
   .tool-tree-item__detail-pre.is-failed {
@@ -1977,6 +2110,41 @@ body.workspace-resize-active iframe {
     white-space: pre-wrap;
     word-break: break-word;
     overflow-wrap: anywhere;
+  }
+
+  .tool-tree-item__detail-raw {
+    margin-top: 6px;
+  }
+
+  /* 流程图与折叠标题保持和原始结果标题到输出框一致的间距。 */
+  .tool-tree-item__detail-raw .diagram-container {
+    margin: 4px 0 0;
+    border-radius: 8px;
+  }
+
+  .tool-tree-item__detail-raw .diagram-container__toolbar {
+    min-height: 32px;
+    padding: 4px 6px;
+  }
+
+  .tool-tree-item__detail-raw .markdown-toggle-pill {
+    height: 22px;
+    padding: 0 6px;
+    font-size: var(--font-size-2xs);
+  }
+
+  .tool-tree-item__detail-raw .markdown-toolbar-btn {
+    width: 22px;
+    height: 22px;
+  }
+
+  .tool-tree-item__detail-raw .markdown-toolbar-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .tool-tree-item__detail-raw .diagram-menu__item {
+    font-size: var(--font-size-2xs);
   }
 
   .tool-tree-item__detail-status {
@@ -2106,6 +2274,7 @@ body.workspace-resize-active iframe {
   }
 
   @media (prefers-reduced-motion: reduce) {
+
     .chat-timeline,
     .completed-work-col,
     .reasoning-col,
@@ -2114,7 +2283,7 @@ body.workspace-resize-active iframe {
     .timeline-collapse,
     .reasoning-panel__body,
     .timeline-collapse.is-open,
-    .timeline-collapse.is-open > .timeline-collapse-inner > *,
+    .timeline-collapse.is-open>.timeline-collapse-inner>*,
     .tool-tree-item__disclosure,
     .tool-tree-item__collapse,
     .tool-tree-item__detail-wrap,
@@ -2149,10 +2318,12 @@ body.workspace-resize-active iframe {
 
 /* Voice recording pulse */
 @keyframes voice-pulse {
+
   0%,
   100% {
     box-shadow: var(--effect-voice-pulse-start);
   }
+
   50% {
     box-shadow: var(--effect-voice-pulse-end);
   }
@@ -2176,6 +2347,7 @@ body.workspace-resize-active iframe {
     transform: translateX(100%);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;
@@ -2199,11 +2371,6 @@ body.workspace-resize-active iframe {
 
 @media (min-width: 1440px) {
   :root {
-    --font-size-base: 15px;
-    --font-size-lg: 17px;
-    --font-size-sm: 14px;
-    --font-size-xs: 13px;
-    --font-size-2xs: 12px;
     --shell-nav-width: 248px;
     --tool-panel-width: var(--shell-nav-width);
     --statusbar-right-space: var(--tool-panel-width);
@@ -2212,13 +2379,24 @@ body.workspace-resize-active iframe {
 
 @media (min-width: 1920px) {
   :root {
-    --font-size-base: 16px;
-    --font-size-lg: 18px;
-    --font-size-sm: 15px;
-    --font-size-xs: 14px;
-    --font-size-2xs: 13px;
     --shell-nav-width: 272px;
     --tool-panel-width: var(--shell-nav-width);
     --statusbar-right-space: var(--tool-panel-width);
   }
+}
+
+/* data-tooltip 自适应提示：useAdaptiveTooltip 以 portal 渲染到 body，
+   水平位置由 JS 计算（默认居中，空间不足贴边/收进视口），这里只管外观 */
+.adaptive-tooltip {
+  box-sizing: border-box;
+  max-width: 320px;
+  padding: 7px 16px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-surface-popover);
+  box-shadow: var(--effect-shadow-lg);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 18px;
+  pointer-events: none;
 }

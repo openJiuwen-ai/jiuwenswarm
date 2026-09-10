@@ -155,7 +155,7 @@ export function OnlineSkillSearchPanel({
     setExpandedKey(null);
     void (async () => {
       try {
-        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ query, limit: 20 }), { timeoutMs: 45_000 });
+        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ q: query, limit: 20 }), { timeoutMs: 45_000 });
         if (requestSequence !== requestSequenceRef.current) return;
         setItems(data.items || []);
         setPartial(Boolean(data.partial));

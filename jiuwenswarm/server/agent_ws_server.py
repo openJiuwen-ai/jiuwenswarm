@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, ClassVar, Optional
+from typing import Any, Awaitable, Callable, ClassVar, Optional
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import server_logger
@@ -67,6 +67,8 @@ from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
 from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
+    append_history_record,
+    enqueue_history_request_completion,
     history_exists,
     is_valid_session_id,
     load_history_records,
@@ -342,9 +344,10 @@ _CODE_MODE_SYNC_METHODS = frozenset({
     ReqMethod.CHAT_ANSWER,
 })
 
-# ── 流式处理心跳间隔：当 Agent 处理时间超过此阈值时，发送心跳 chunk 保持 WebSocket 连接活跃 --
+# ── 流式连接保活间隔：当 Agent 处理时间超过此阈值时，发送 keepalive chunk --
 # 避免 ping_timeout 导致连接关闭。默认 10 秒，小于服务端 ping_timeout=20s。
-_STREAM_HEARTBEAT_INTERVAL_SECONDS = 10.0
+_STREAM_KEEPALIVE_INTERVAL_SECONDS = 10.0
+_STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS = 1.0
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
     _HISTORY_WIRE_STRING_LIMIT,
@@ -358,12 +361,14 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _TEAM_HISTORY_MIN_MAX_BYTES,
     _TEAM_HISTORY_MAX_MAX_BYTES,
     _TEAM_HISTORY_FRAME_OVERHEAD_BYTES,
-    _WORKFLOW_SNAPSHOT_MAX_BYTES,
-    _WORKFLOW_SNAPSHOT_FRAME_OVERHEAD_BYTES,
-    _WORKFLOW_SNAPSHOT_MAX_WORKFLOWS,
-    _WORKFLOW_LIST_SUMMARY_STRING_LIMIT,
-    _WORKFLOW_COLLAPSED_AGENT_TEXT_LIMIT,
-    _WORKFLOW_WAITING_HUMAN_PROMPT_MAX_BYTES,
+    _WORKFLOW_AGENT_FIELD_PART_BYTES,
+    _WORKFLOW_LIST_DEFAULT_LIMIT,
+    _WORKFLOW_LIST_MAX_LIMIT,
+    _WORKFLOW_PHASE_DEFAULT_LIMIT,
+    _WORKFLOW_PHASE_MAX_LIMIT,
+    _WORKFLOW_AGENT_DEFAULT_LIMIT,
+    _WORKFLOW_AGENT_MAX_LIMIT,
+    _SPLITTABLE_AGENT_FIELDS,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
     _json_wire_size,
     _coerce_int,
@@ -375,26 +380,186 @@ from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported fo
     _sanitize_history_record_for_wire,
     split_history_record_for_stream,
     _select_history_record_page,
-    _is_waiting_human_agent,
-    _extract_waiting_human_prompts,
-    _restore_waiting_human_prompts,
-    _workflow_agent_for_collapse,
-    _collapse_oversized_workflow_snapshot_item,
-    _minimal_workflow_snapshot_item_for_wire,
-    _minimal_workflow_detail_preserving_waiting_human,
-    _sanitize_workflow_snapshot_item_for_wire,
-    _fit_workflow_detail_to_budget,
-    _workflow_list_summary_phase,
+    _split_oversized_agent_fields,
     _workflow_list_summary_item,
-    _minimal_workflow_list_item,
-    _fit_workflow_list_item_for_budget,
+    _workflow_phase_summary,
+    _workflow_run_meta,
+    _find_phase,
+    _find_agent,
     _build_workflow_list_payload,
-    _build_workflow_detail_payload,
-    _find_workflow_agent,
-    _build_workflow_human_prompt_payload,
-    _build_workflow_snapshot_payload,
+    _build_workflow_detail_paginated,
+    _build_phase_detail_paginated,
+    _build_agent_detail,
 )
 
+
+def _consume_keepalive_task_result(
+    keepalive_task: asyncio.Task,
+    request_id: str,
+) -> None:
+    """Observe an auxiliary keepalive result without replacing stream errors."""
+    try:
+        keepalive_task.result()
+    except asyncio.CancelledError:
+        return
+    except WebSocketConnectionClosed:
+        logger.info(
+            "[AgentWebSocketServer] keepalive task stopped after connection closed: "
+            "request_id=%s",
+            request_id,
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        logger.exception(
+            "[AgentWebSocketServer] keepalive task failed: request_id=%s",
+            request_id,
+        )
+
+
+async def _stop_stream_keepalive(
+    keepalive_task: asyncio.Task,
+    keepalive_stop_event: asyncio.Event,
+    stream_activity_event: asyncio.Event,
+    request_id: str,
+) -> None:
+    """Stop an owned stream keepalive without blocking its owner indefinitely."""
+    keepalive_stop_event.set()
+    stream_activity_event.set()
+    phase_timeout = _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS / 2.0
+    try:
+        done, _ = await asyncio.wait(
+            {keepalive_task},
+            timeout=phase_timeout,
+        )
+        if keepalive_task not in done:
+            logger.warning(
+                "[AgentWebSocketServer] keepalive task did not stop cooperatively; "
+                "cancelling: request_id=%s",
+                request_id,
+            )
+            keepalive_task.cancel()
+            done, _ = await asyncio.wait(
+                {keepalive_task},
+                timeout=phase_timeout,
+            )
+    except asyncio.CancelledError:
+        if keepalive_task.done():
+            _consume_keepalive_task_result(keepalive_task, request_id)
+        else:
+            keepalive_task.add_done_callback(
+                lambda finished: _consume_keepalive_task_result(
+                    finished,
+                    request_id,
+                )
+            )
+            keepalive_task.cancel()
+        raise
+    if keepalive_task not in done:
+        logger.error(
+            "[AgentWebSocketServer] keepalive task did not stop after bounded cleanup: "
+            "request_id=%s timeout=%.3fs",
+            request_id,
+            _STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS,
+        )
+        keepalive_task.add_done_callback(
+            lambda finished: _consume_keepalive_task_result(
+                finished,
+                request_id,
+            )
+        )
+        return
+    _consume_keepalive_task_result(keepalive_task, request_id)
+
+
+class _StreamKeepalive:
+    """Own the transport keepalive task for one streaming request."""
+
+    def __init__(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        self._ws = ws
+        self._request = request
+        self._send_lock = send_lock
+        self._channel_id = request.channel_id or "default"
+        self._stop_event = asyncio.Event()
+        self._activity_event = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        """Start sending keepalives while the stream is idle."""
+        self._task = asyncio.create_task(
+            self._run(),
+            name=f"stream-keepalive:{self._request.request_id}",
+        )
+
+    def notify_activity(self, *, terminal: bool = False) -> None:
+        """Restart the idle timer and optionally prevent future keepalives."""
+        self._activity_event.set()
+        if terminal:
+            self._stop_event.set()
+
+    def signal_stop(self) -> None:
+        """Prevent new sends and wake an idle keepalive immediately."""
+        self._stop_event.set()
+        self._activity_event.set()
+
+    async def stop(self) -> None:
+        """Join the owned task within the configured total time budget."""
+        self.signal_stop()
+        if self._task is None:
+            return
+        await _stop_stream_keepalive(
+            self._task,
+            self._stop_event,
+            self._activity_event,
+            self._request.request_id,
+        )
+
+    async def _run(self) -> None:
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    await asyncio.wait_for(
+                        self._activity_event.wait(),
+                        timeout=_STREAM_KEEPALIVE_INTERVAL_SECONDS,
+                    )
+                    self._activity_event.clear()
+                except asyncio.TimeoutError:
+                    if self._stop_event.is_set():
+                        break
+                    if self._activity_event.is_set():
+                        continue
+                    keepalive_chunk = AgentResponseChunk(
+                        request_id=self._request.request_id,
+                        channel_id=self._channel_id,
+                        payload={"event_type": "keepalive"},
+                        is_complete=False,
+                    )
+                    if keepalive_chunk.agent_ref is None:
+                        keepalive_chunk.agent_ref = self._request.agent_ref
+                    wire = encode_agent_chunk_for_wire(
+                        keepalive_chunk,
+                        response_id=self._request.request_id,
+                        sequence=-1,
+                    )
+                    async with self._send_lock:
+                        if self._stop_event.is_set():
+                            break
+                        if self._activity_event.is_set():
+                            continue
+                        await send_wire_payload(self._ws, wire)
+                    logger.info(
+                        "[AgentWebSocketServer] keepalive chunk 发送: request_id=%s",
+                        self._request.request_id,
+                    )
+        except WebSocketConnectionClosed:
+            logger.info(
+                "[AgentWebSocketServer] keepalive 停止，WebSocket 已关闭: "
+                "request_id=%s",
+                self._request.request_id,
+            )
 
 
 def _request_query_text(request: AgentRequest) -> str:
@@ -568,11 +733,37 @@ def _is_restorable_history_record(record: Any) -> bool:
     return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
 
 
-def resolve_request_project_dir(request: AgentRequest) -> str | None:
+def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
+    """Read locked session fields that decide where ``todo.json`` lives."""
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        metadata = get_session_metadata(session_id, enable_writeback=False) or {}
+    except Exception:
+        metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    project_dir = str(metadata.get("project_dir") or "").strip() or None
+    work_mode = metadata.get("work_mode")
+    mode = metadata.get("mode")
+    return {
+        "project_dir": project_dir,
+        "work_mode": work_mode if isinstance(work_mode, str) else None,
+        "mode": mode if isinstance(mode, str) else None,
+    }
+
+
+def resolve_request_project_dir(
+    request: AgentRequest,
+    *,
+    include_legacy_fallbacks: bool = True,
+) -> str | None:
     """Resolve the stable project identity for agent construction.
 
     New clients send ``project_dir`` separately from dynamic ``cwd``. Keep
-    legacy fallbacks for older clients that only send cwd/trusted_dirs.
+    legacy fallbacks for older clients that only send cwd/trusted_dirs when
+    the caller opts in. Projectless Agent/Code turns deliberately leave those
+    fields dynamic so the adapter can allocate their task workspace.
     """
     params = request.params or {}
     project_dir = params.get("project_dir")
@@ -582,6 +773,8 @@ def resolve_request_project_dir(request: AgentRequest) -> str | None:
     metadata_project_dir = metadata.get("project_dir") if isinstance(metadata, dict) else None
     if isinstance(metadata_project_dir, str) and metadata_project_dir.strip():
         return metadata_project_dir.strip()
+    if not include_legacy_fallbacks:
+        return None
     cwd = params.get("cwd")
     if isinstance(cwd, str) and cwd.strip():
         return cwd.strip()
@@ -901,6 +1094,39 @@ def _file_entry_matches_path(entry: Any, path: str) -> bool:
         _canonicalize_sandbox_files_path(entry_path)
         == _canonicalize_sandbox_files_path(path)
     )
+
+
+def _uses_projectless_task_workspace(
+    params: dict[str, Any],
+    channel_id: str,
+) -> bool:
+    """Return whether the request should use an isolated task workspace.
+
+    TUI sends its launch directory as ``project_dir``/``cwd``.  That is an
+    explicit project workspace even when the request mode resolves to
+    ``agent`` or ``code``; only requests without either directory should use
+    the Documents/JiuwenSwarm projectless task workspace.
+    """
+    for key in ("project_dir", "cwd"):
+        value = params.get(key)
+        if isinstance(value, (str, os.PathLike)) and str(value).strip():
+            return False
+
+    raw_work_mode = params.get("work_mode")
+    if not isinstance(raw_work_mode, str) or raw_work_mode.strip().lower() not in {
+        "code",
+        "work",
+    }:
+        from jiuwenswarm.server.runtime.session.work_mode import (
+            default_work_mode_for_channel,
+        )
+
+        raw_work_mode = default_work_mode_for_channel(channel_id)
+    manager_mode, _, _ = resolve_agent_request_mode(
+        params.get("mode", "agent"),
+        work_mode=raw_work_mode,
+    )
+    return manager_mode in {"agent", "code"}
 
 
 def _canonicalize_sandbox_files_path(path: str) -> str:
@@ -1996,6 +2222,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
+                await self._handle_session_plan_status(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.SESSION_KVC_PREPARE:
                 await self._handle_session_kvc_prepare(ws, request, send_lock)
                 return
@@ -2041,6 +2270,9 @@ class AgentWebSocketServer:
                 else:
                     await self._handle_history_get(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.HISTORY_APPEND_RECORD:
+                await self._handle_history_append_record(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.TEAM_SNAPSHOT:
                 await self._handle_team_snapshot(ws, request, send_lock)
                 return
@@ -2052,6 +2284,15 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.COMMAND_WORKFLOWS:
                 await self._handle_command_workflows(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SWARMFLOW_PAUSE:
+                await self._handle_swarmflow_pause(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SWARMFLOW_RESUME:
+                await self._handle_swarmflow_resume(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SWARMFLOW_STOP:
+                await self._handle_swarmflow_stop(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.TEAM_HISTORY_GET:
                 await self._handle_team_history_get(ws, request, send_lock)
@@ -2097,6 +2338,12 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.MCP_SHOW:
                 await self._handle_mcp_show(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.MCP_INSTALL:
+                await self._handle_mcp_install(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.MCP_UNINSTALL:
+                await self._handle_mcp_uninstall(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.MCP_CONNECT:
                 await self._handle_mcp_connect(ws, request, send_lock)
@@ -2304,6 +2551,16 @@ class AgentWebSocketServer:
                             )
                             async with send_lock:
                                 await send_wire_payload(ws, wire)
+                if (
+                    intent in ("cancel", "supplement")
+                    and cancel_response is not None
+                    and cancel_response.ok
+                    and not (
+                        isinstance(cancel_response.payload, dict)
+                        and cancel_response.payload.get("success") is False
+                    )
+                ):
+                    await self._clear_pending_interaction(sid)
                 return
             await self._ensure_auto_team_binding_for_chat(request)
             if request.is_stream:
@@ -2886,7 +3143,10 @@ class AgentWebSocketServer:
             work_mode=runtime_work_mode,
         )
         agent_mode = "agent" if mode == "auto_harness" else mode
-        requested_project_dir = resolve_request_project_dir(request)
+        requested_project_dir = resolve_request_project_dir(
+            request,
+            include_legacy_fallbacks=mode not in {"agent", "code"},
+        )
         # [改动] 写盘用 canonical mode（request.params["mode"]，已被规范化为
         # "agent.plan"/"team" 等），而非一级 mode（"agent"），使磁盘出现你期望的两类值。
         canonical_mode = (
@@ -2999,6 +3259,143 @@ class AgentWebSocketServer:
             return True
         params = request.params if isinstance(request.params, dict) else {}
         return is_plan_mode(params.get(_SESSION_PREVIOUS_MODE_KEY))
+
+    async def _handle_session_plan_status(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """``session.plan_status``：只读查询当前会话是否处于计划模式。
+
+        不调用 ``switch_mode`` / ``ensure_live_session_instance``，也不改
+        ``_plan_active_sessions``。单 agent 有 live session 时以 ``plan_mode``
+        为准（能纠正 metadata 仍是 ``*.plan``、agent 已退出的情况）；否则回退
+        metadata.mode。集群的 plan 写在 metadata / team runtime，不走
+        DeepAgent ``plan_mode``——同 session 上常有为 Goal 等 RPC 拉起的
+        DeepAdapter，默认 ``plan_mode=normal``，若当成权威会把
+        ``team.work.plan`` 误判成未在计划里。
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        sid = str(params.get("session_id") or request.session_id or "").strip()
+        if not sid:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": "session_id is required", "code": "BAD_REQUEST"},
+                metadata=request.metadata,
+            )
+        else:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_session_metadata,
+            )
+
+            meta = get_session_metadata(
+                sid,
+                cache_bust=True,
+                enable_writeback=False,
+            )
+            if not meta:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload={"error": "session not found", "code": "NOT_FOUND"},
+                    metadata=request.metadata,
+                )
+            else:
+                metadata_mode = meta.get("mode")
+                live_plan_mode = (
+                    None
+                    if is_team_mode(metadata_mode)
+                    else self._try_read_live_plan_mode(sid)
+                )
+                in_plan = self._combine_session_in_plan(
+                    live_plan_mode=live_plan_mode,
+                    session_id=sid,
+                    metadata_mode=metadata_mode,
+                )
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={"session_id": sid, "in_plan": in_plan},
+                    metadata=request.metadata,
+                )
+        if getattr(resp, "agent_ref", None) is None:
+            resp.agent_ref = request.agent_ref
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    @staticmethod
+    def _combine_session_in_plan(
+        *,
+        live_plan_mode: str | None,
+        session_id: str,
+        metadata_mode: Any,
+    ) -> bool:
+        """Combine live agent plan_mode, in-process marker, and metadata.mode.
+
+        Team sessions ignore live DeepAgent ``plan_mode``: cluster plan is
+        persisted on ``metadata.mode`` (``team.*.plan``), while a live
+        DeepAdapter on the same session_id typically still has the default
+        ``normal`` plan_mode and would falsely report not-in-plan.
+        """
+        if is_team_mode(metadata_mode):
+            if session_id in _plan_active_sessions:
+                return True
+            return is_plan_mode(metadata_mode)
+        if isinstance(live_plan_mode, str) and live_plan_mode.strip():
+            return live_plan_mode.strip() == "plan"
+        if session_id in _plan_active_sessions:
+            return True
+        return is_plan_mode(metadata_mode)
+
+    def _try_read_live_plan_mode(self, session_id: str) -> str | None:
+        """Read ``plan_mode.mode`` from a live DeepAgent, if one is already running.
+
+        Does not start a session or build an adapter. Missing live state is
+        not an error: the caller falls back to metadata.
+        """
+        from jiuwenswarm.agents.harness.common.session_ops_service import (
+            resolve_live_agent_session,
+        )
+
+        agents_by_channel = getattr(self._agent_manager, "agents", None) or {}
+        if not isinstance(agents_by_channel, dict):
+            return None
+        for channel_agents in agents_by_channel.values():
+            if not isinstance(channel_agents, dict):
+                continue
+            for agent in channel_agents.values():
+                getter = getattr(agent, "get_live_session_instance", None)
+                if not callable(getter):
+                    continue
+                try:
+                    deep_agent = getter(session_id)
+                    if deep_agent is None:
+                        continue
+                    session = resolve_live_agent_session(deep_agent, session_id)
+                    if session is None:
+                        continue
+                    load_state = getattr(deep_agent, "load_state", None)
+                    if not callable(load_state):
+                        continue
+                    state = load_state(session)
+                    mode = getattr(getattr(state, "plan_mode", None), "mode", None)
+                except Exception as exc:
+                    logger.warning(
+                        "[session.plan_status] skip live agent while reading "
+                        "plan_mode: session=%s error=%s",
+                        session_id,
+                        exc,
+                    )
+                    continue
+                if isinstance(mode, str) and mode.strip():
+                    return mode.strip()
+        return None
 
     @staticmethod
     async def _open_plan_state_session(
@@ -3208,6 +3605,36 @@ class AgentWebSocketServer:
 
         return restored_after_approval
 
+    def _should_admit_interrupt_resume(self, request: AgentRequest) -> bool:
+        """Keep stale answers gated while allowing a live interrupt to resume."""
+        admission = getattr(self._heartbeat_runtime, "admission", None)
+        if admission is None:
+            return False
+        is_user_active = getattr(admission, "is_user_active", None)
+        if not callable(is_user_active):
+            return False
+        return not bool(is_user_active(request.session_id or "default"))
+
+    async def _mark_pending_interaction(
+        self, session_id: str, request_id: str
+    ) -> None:
+        admission = getattr(
+            getattr(self, "_heartbeat_runtime", None), "admission", None
+        )
+        marker = getattr(admission, "mark_interaction_pending", None)
+        if callable(marker):
+            await marker(session_id, request_id)
+
+    async def _clear_pending_interaction(
+        self, session_id: str, request_id: str | None = None
+    ) -> None:
+        admission = getattr(
+            getattr(self, "_heartbeat_runtime", None), "admission", None
+        )
+        clearer = getattr(admission, "clear_interaction_pending", None)
+        if callable(clearer):
+            await clearer(session_id, request_id)
+
     async def _handle_unary(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
@@ -3229,8 +3656,16 @@ class AgentWebSocketServer:
             and not is_team_params(request.params)
         )
         session_id = request.session_id or "default"
+        interrupt_resume = is_interrupt_resume_payload(request.params)
+        if admitted and interrupt_resume:
+            admitted = self._should_admit_interrupt_resume(request)
         if admitted:
             await self._heartbeat_runtime.admission.begin_user(session_id)
+        if interrupt_resume:
+            await self._clear_pending_interaction(
+                session_id,
+                str((request.params or {}).get("request_id") or ""),
+            )
         try:
             await self._handle_unary_impl(ws, request, send_lock)
             kvc_task_succeeded = True
@@ -3315,6 +3750,16 @@ class AgentWebSocketServer:
         if getattr(resp, "agent_ref", None) is None:
             resp.agent_ref = request.agent_ref
 
+        payload = getattr(resp, "payload", None)
+        if (
+            isinstance(payload, dict)
+            and payload.get("event_type") == "chat.ask_user_question"
+        ):
+            await self._mark_pending_interaction(
+                request.session_id or "default",
+                str(payload.get("request_id") or ""),
+            )
+
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -3345,14 +3790,35 @@ class AgentWebSocketServer:
             and not is_team_params(request.params)
         )
         session_id = request.session_id or "default"
+        interrupt_resume = is_interrupt_resume_payload(request.params)
+        if admitted and interrupt_resume:
+            admitted = self._should_admit_interrupt_resume(request)
         if admitted:
             await self._heartbeat_runtime.admission.begin_user(session_id)
+        if interrupt_resume:
+            await self._clear_pending_interaction(
+                session_id,
+                str((request.params or {}).get("request_id") or ""),
+            )
+        admission_released = False
+
+        async def _release_admission_once() -> None:
+            nonlocal admission_released
+            if not admitted or admission_released:
+                return
+            await self._heartbeat_runtime.admission.end_user(session_id)
+            admission_released = True
+
         try:
-            await self._handle_stream_impl(ws, request, send_lock)
+            await self._handle_stream_impl(
+                ws,
+                request,
+                send_lock,
+                on_response_stream_closed=_release_admission_once,
+            )
             kvc_task_succeeded = True
         finally:
-            if admitted:
-                await self._heartbeat_runtime.admission.end_user(session_id)
+            await _release_admission_once()
             if foreground:
                 await manager.end_foreground_chat()
             if tracks_kvc_task:
@@ -3505,6 +3971,14 @@ class AgentWebSocketServer:
                 # content. Preserve the prompt on every start frame so clients
                 # never replace this run's visible user turn with an empty one.
                 payload = chunk.payload
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.ask_user_question"
+                ):
+                    await self._mark_pending_interaction(
+                        request.session_id or "default",
+                        str(payload.get("request_id") or ""),
+                    )
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -3564,7 +4038,12 @@ class AgentWebSocketServer:
                     await self._check_post_process_plan_exit(request, agent)
 
     async def _handle_stream_impl(
-        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+        *,
+        on_response_stream_closed: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
         # 兜底确保 checkpointer 就绪 (见 _handle_unary 同名注释)。
@@ -3600,62 +4079,27 @@ class AgentWebSocketServer:
                     await self._push_plan_mode_exited(request)
 
         chunk_count = 0
-        # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
-        heartbeat_event = asyncio.Event()
-        heartbeat_task: asyncio.Task | None = None
-
-        async def _heartbeat_loop() -> None:
-            """后台心跳任务：在空闲期间定期发送 keepalive chunk."""
-            try:
-                while True:
-                    # 等待心跳间隔，如果期间有真实 chunk 发送则 heartbeat_event 被设置，重置等待
-                    try:
-                        await asyncio.wait_for(
-                            heartbeat_event.wait(),
-                            timeout=_STREAM_HEARTBEAT_INTERVAL_SECONDS,
-                        )
-                        # 有真实 chunk 发送，重置 event 继续等待
-                        heartbeat_event.clear()
-                    except asyncio.TimeoutError:
-                        # 超时：空闲超过心跳间隔，发送 keepalive chunk
-                        heartbeat_chunk = AgentResponseChunk(
-                            request_id=request.request_id,
-                            channel_id=channel_id,
-                            payload={"event_type": "keepalive"},
-                            is_complete=False,
-                        )
-                        # V2: 心跳 chunk 也回带 agent_ref，避免切换 mode 后
-                        # 旧 session 心跳错路由到新 agent 窗口（设计 §5.2 场景 2）。
-                        if heartbeat_chunk.agent_ref is None:
-                            heartbeat_chunk.agent_ref = request.agent_ref
-                        wire = encode_agent_chunk_for_wire(
-                            heartbeat_chunk,
-                            response_id=request.request_id,
-                            sequence=-1,  # 心跳使用特殊序列号 -1
-                        )
-                        async with send_lock:
-                            await send_wire_payload(ws, wire)
-                        logger.info(
-                            "[AgentWebSocketServer] keepalive chunk 发送: request_id=%s",
-                            request.request_id,
-                        )
-            except asyncio.CancelledError:
-                pass
-            except WebSocketConnectionClosed:
-                logger.info(
-                    "[AgentWebSocketServer] keepalive 停止，WebSocket 已关闭: request_id=%s",
-                    request.request_id,
-                )
-
-        # 启动心跳任务
-        heartbeat_task = asyncio.create_task(_heartbeat_loop())
-
+        keepalive = _StreamKeepalive(
+            ws,
+            request,
+            send_lock,
+        )
         response_stream = agent.process_message_stream(request)
+        keepalive.start()
         try:
             async for chunk in response_stream:
                 chunk_count += 1
-                # 通知心跳任务有真实 chunk 发送，重置心跳计时
-                heartbeat_event.set()
+                payload = getattr(chunk, "payload", None)
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.ask_user_question"
+                ):
+                    await self._mark_pending_interaction(
+                        session_id,
+                        str(payload.get("request_id") or ""),
+                    )
+                # 通知 keepalive 有真实 chunk 发送，重置空闲计时。
+                keepalive.notify_activity(terminal=chunk.is_complete)
                 # V2: chunk 回带请求侧 agent_ref，供 gateway 3 元组精确路由
                 # （设计 §6.3）。is None 守卫：保留 team 模式由事件派生的 agent_ref
                 # （_build_team_event_chunk_meta 已设值），不覆盖。
@@ -3693,47 +4137,31 @@ class AgentWebSocketServer:
                         request.request_id,
                     )
                     return
-                # 清除 event，让心跳任务重新开始计时
-                heartbeat_event.clear()
         finally:
-            close_stream = getattr(response_stream, "aclose", None)
-            if callable(close_stream):
-                await close_stream()
-            # 停止心跳任务
-            if heartbeat_task is not None:
-                logger.info(
-                    "[AgentWebSocketServer] cancelling heartbeat_task: request_id=%s",
-                    request.request_id,
-                )
-                heartbeat_task.cancel()
+            # 尽早阻止新的 keepalive；Agent 流清理仍先完成以释放其资源。
+            keepalive.signal_stop()
+            try:
+                close_stream = getattr(response_stream, "aclose", None)
+                if callable(close_stream):
+                    await close_stream()
+                # The user turn ends with its response stream. Transport
+                # keepalive cleanup must not retain Heartbeat admission.
+                if on_response_stream_closed is not None:
+                    await on_response_stream_closed()
+            finally:
                 try:
-                    await heartbeat_task
-                    logger.info(
-                        "[AgentWebSocketServer] heartbeat_task cancelled cleanly: request_id=%s",
-                        request.request_id,
-                    )
-                except asyncio.CancelledError:
-                    logger.info(
-                        "[AgentWebSocketServer] heartbeat_task cancelled (CancelledError): request_id=%s",
-                        request.request_id,
-                    )
-                    pass
-                except WebSocketConnectionClosed:
-                    logger.info(
-                        "[AgentWebSocketServer] heartbeat_task cancelled (ConnectionClosed): request_id=%s",
-                        request.request_id,
-                    )
-                    pass
-            # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
-            entries = self._session_stream_tasks.get(session_id)
-            if entries is not None and current_task is not None:
-                entries.pop(current_task, None)
-                if not entries:
-                    self._session_stream_tasks.pop(session_id, None)
+                    # 显式停止并唤醒 keepalive；Task.cancel 只作为有界的兜底。
+                    await keepalive.stop()
+                finally:
+                    # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
+                    entries = self._session_stream_tasks.get(session_id)
+                    if entries is not None and current_task is not None:
+                        entries.pop(current_task, None)
+                        if not entries:
+                            self._session_stream_tasks.pop(session_id, None)
             # Push plan.mode_exited if exit_plan_mode restored mode during processing
             if not readonly_goal_get:
                 await self._check_post_process_plan_exit(request, agent)
-
         logger.info(
             "[AgentWebSocketServer] 流式响应已发送: request_id=%s 共 %s 个 chunk",
             request.request_id,
@@ -4968,6 +5396,7 @@ class AgentWebSocketServer:
                     team_name = str(metadata.get("team_name") or "").strip()
                     channel_id = str(metadata.get("channel_id") or request.channel_id or "").strip() or None
                     heartbeat_delete_prepared = False
+                    trajectory_delete_prepared = False
                     try:
                         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
                             mark_session_deleted,
@@ -4986,6 +5415,13 @@ class AgentWebSocketServer:
                             exc,
                         )
                     try:
+                        if not is_team_session:
+                            from jiuwenswarm.observability.session_delete import (
+                                begin_trajectory_session_delete,
+                            )
+
+                            begin_trajectory_session_delete(target)
+                            trajectory_delete_prepared = True
                         await self._heartbeat_runtime.begin_session_delete(target)
                         heartbeat_delete_prepared = True
                         if is_team_session:
@@ -5035,6 +5471,20 @@ class AgentWebSocketServer:
                         deleted = False
 
                     if not deleted:
+                        if trajectory_delete_prepared:
+                            try:
+                                from jiuwenswarm.observability.session_delete import (
+                                    abort_trajectory_session_delete,
+                                )
+
+                                abort_trajectory_session_delete(target)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "[AgentWebSocketServer] trajectory delete rollback failed: "
+                                    "session_id=%s error=%s",
+                                    target,
+                                    exc,
+                                )
                         if heartbeat_delete_prepared:
                             try:
                                 await self._heartbeat_runtime.abort_session_delete(
@@ -5069,6 +5519,20 @@ class AgentWebSocketServer:
                             metadata=request.metadata,
                         )
                     else:
+                        if trajectory_delete_prepared:
+                            try:
+                                from jiuwenswarm.observability.session_delete import (
+                                    commit_trajectory_session_delete,
+                                )
+
+                                commit_trajectory_session_delete(target)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "[AgentWebSocketServer] trajectory delete commit failed; "
+                                    "session_id=%s error=%s",
+                                    target,
+                                    exc,
+                                )
                         try:
                             await self._heartbeat_runtime.commit_session_delete(target)
                         except Exception as exc:  # noqa: BLE001
@@ -5308,7 +5772,7 @@ class AgentWebSocketServer:
             if compact and direction == "from":
                 import uuid as _uuid
                 import time as _time
-                from jiuwenswarm.server.runtime.session.session_history import append_history_record
+
                 request_id = str(_uuid.uuid4())
                 now = _time.time()
 
@@ -5557,6 +6021,80 @@ class AgentWebSocketServer:
                 channel_id=request.channel_id,
                 ok=True,
                 payload=data,
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_history_append_record(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Append a supplied history record without creating an Agent turn.
+
+        Cron uses this for terminal failures.  Falling through to the normal
+        request path would treat the failure text as chat input and can invoke
+        the unavailable model a second time, leaving the frontend with no
+        durable record when it reloads the execution session.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(params.get("session_id") or request.session_id or "").strip()
+        content = params.get("content")
+        if not session_id or not is_valid_session_id(session_id) or content is None:
+            wire = self._send_error_response(
+                ws, request, send_lock, "session_id and content required", "BAD_REQUEST"
+            )
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
+
+        request_id = str(params.get("request_id") or request.request_id or "").strip()
+        channel_id = str(params.get("channel_id") or request.channel_id or "").strip()
+        role = "assistant" if str(params.get("role") or "assistant") == "assistant" else "user"
+        event_type = str(params.get("event_type") or "").strip() or None
+        mode = str(params.get("mode") or "").strip() or None
+        try:
+            timestamp = float(params.get("timestamp") or request.timestamp or 0.0)
+        except (TypeError, ValueError):
+            timestamp = 0.0
+        if timestamp <= 0:
+            timestamp = _dt.datetime.now().timestamp()
+
+        try:
+            append_history_record(
+                session_id=session_id,
+                request_id=request_id,
+                channel_id=channel_id,
+                role=role,
+                content=content,
+                timestamp=timestamp,
+                event_type=event_type,
+                mode=mode,
+            )
+            # The history writer is asynchronous.  Wait for a FIFO completion
+            # marker so a frontend history reload immediately after this RPC
+            # observes the newly appended terminal record.
+            receipt = enqueue_history_request_completion(
+                session_id, request_id, terminal_status="failed"
+            )
+            if receipt is not None:
+                await asyncio.wait_for(asyncio.wrap_future(receipt), timeout=5.0)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"persisted": True, "session_id": session_id},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] history.append_record failed: session_id=%s error=%s",
+                session_id,
+                exc,
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc)},
             )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
@@ -5833,20 +6371,49 @@ class AgentWebSocketServer:
         source_count = len(workflows)
         source_bytes = sum(_json_wire_size(item) for item in workflows if isinstance(item, dict))
 
-        if action == "get":
-            if not isinstance(workflow_id, str) or not workflow_id.strip():
+        target_id = workflow_id.strip() if isinstance(workflow_id, str) and workflow_id.strip() else None
+
+        def _find_workflow() -> dict[str, Any] | None:
+            if not target_id:
+                return None
+            return next(
+                (item for item in workflows if isinstance(item, dict) and item.get("id") == target_id),
+                None,
+            )
+
+        if action == "list":
+            offset = _coerce_int(
+                params.get("offset"), default=0, minimum=0, maximum=10_000_000
+            )
+            limit = _coerce_int(
+                params.get("limit"),
+                default=_WORKFLOW_LIST_DEFAULT_LIMIT,
+                minimum=1,
+                maximum=_WORKFLOW_LIST_MAX_LIMIT,
+            )
+            payload = _build_workflow_list_payload(
+                workflows,
+                session_id=session_id,
+                offset=offset,
+                limit=limit,
+                total=source_count,
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=True,
+                payload=payload,
+            )
+        elif action == "get_workflow":
+            if not target_id:
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=channel_id,
                     ok=False,
-                    payload={"error": "workflow_id is required for action=get"},
+                    payload={"error": "workflow_id is required for action=get_workflow"},
                 )
             else:
-                target_id = workflow_id.strip()
-                match = next(
-                    (item for item in workflows if isinstance(item, dict) and item.get("id") == target_id),
-                    None,
-                )
+                match = _find_workflow()
                 if match is None:
                     resp = AgentResponse(
                         request_id=request.request_id,
@@ -5856,41 +6423,41 @@ class AgentWebSocketServer:
                     )
                 else:
                     detail_raw_bytes = _json_wire_size(match)
+                    phase_offset = _coerce_int(
+                        params.get("phase_offset"), default=0, minimum=0, maximum=10_000_000
+                    )
+                    phase_limit = _coerce_int(
+                        params.get("phase_limit"),
+                        default=_WORKFLOW_PHASE_DEFAULT_LIMIT,
+                        minimum=1,
+                        maximum=_WORKFLOW_PHASE_MAX_LIMIT,
+                    )
+                    payload = _build_workflow_detail_paginated(
+                        match,
+                        session_id=session_id,
+                        phase_offset=phase_offset,
+                        phase_limit=phase_limit,
+                    )
                     resp = AgentResponse(
                         request_id=request.request_id,
                         channel_id=channel_id,
                         ok=True,
-                        payload=_build_workflow_detail_payload(match, session_id=session_id),
+                        payload=payload,
                     )
-        elif action == "get_human_prompt":
-            agent_id = params.get("agent_id")
-            correlation_id = params.get("correlation_id")
-            agent_id_str = agent_id.strip() if isinstance(agent_id, str) and agent_id.strip() else None
-            corr_id_str = (
-                correlation_id.strip()
-                if isinstance(correlation_id, str) and correlation_id.strip()
-                else None
-            )
-            if not isinstance(workflow_id, str) or not workflow_id.strip():
+        elif action == "get_phase":
+            phase_id = params.get("phase_id")
+            phase_id_str = phase_id.strip() if isinstance(phase_id, str) and phase_id.strip() else None
+            if not target_id or not phase_id_str:
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=channel_id,
                     ok=False,
-                    payload={"error": "workflow_id is required for action=get_human_prompt"},
-                )
-            elif not agent_id_str and not corr_id_str:
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=channel_id,
-                    ok=False,
-                    payload={"error": "agent_id or correlation_id is required for action=get_human_prompt"},
+                    payload={
+                        "error": "workflow_id and phase_id are required for action=get_phase",
+                    },
                 )
             else:
-                target_id = workflow_id.strip()
-                match = next(
-                    (item for item in workflows if isinstance(item, dict) and item.get("id") == target_id),
-                    None,
-                )
+                match = _find_workflow()
                 if match is None:
                     resp = AgentResponse(
                         request_id=request.request_id,
@@ -5899,68 +6466,181 @@ class AgentWebSocketServer:
                         payload={"error": f"workflow not found: {target_id}"},
                     )
                 else:
-                    prompt_payload = _build_workflow_human_prompt_payload(
+                    agent_offset = _coerce_int(
+                        params.get("agent_offset"), default=0, minimum=0, maximum=10_000_000
+                    )
+                    agent_limit = _coerce_int(
+                        params.get("agent_limit"),
+                        default=_WORKFLOW_AGENT_DEFAULT_LIMIT,
+                        minimum=1,
+                        maximum=_WORKFLOW_AGENT_MAX_LIMIT,
+                    )
+                    payload = _build_phase_detail_paginated(
                         match,
                         session_id=session_id,
-                        agent_id=agent_id_str,
-                        correlation_id=corr_id_str,
+                        phase_id=phase_id_str,
+                        agent_offset=agent_offset,
+                        agent_limit=agent_limit,
                     )
                     resp = AgentResponse(
                         request_id=request.request_id,
                         channel_id=channel_id,
-                        ok="error" not in prompt_payload,
-                        payload=prompt_payload,
+                        ok=payload.get("ok", True),
+                        payload=payload,
+                    )
+        elif action == "get_agent":
+            phase_id = params.get("phase_id")
+            agent_id = params.get("agent_id")
+            phase_id_str = phase_id.strip() if isinstance(phase_id, str) and phase_id.strip() else None
+            agent_id_str = agent_id.strip() if isinstance(agent_id, str) and agent_id.strip() else None
+            if not target_id or not phase_id_str or not agent_id_str:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload={
+                        "error": "workflow_id, phase_id and agent_id are required for action=get_agent",
+                    },
+                )
+            else:
+                match = _find_workflow()
+                if match is None:
+                    resp = AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        ok=False,
+                        payload={"error": f"workflow not found: {target_id}"},
+                    )
+                else:
+                    payload = _build_agent_detail(
+                        match,
+                        session_id=session_id,
+                        phase_id=phase_id_str,
+                        agent_id=agent_id_str,
+                    )
+                    resp = AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        ok=payload.get("ok", True),
+                        payload=payload,
                     )
         else:
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=channel_id,
-                ok=True,
-                payload=_build_workflow_list_payload(workflows, session_id=session_id),
+                ok=False,
+                payload={"error": f"unknown action: {action}"},
             )
 
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         payload_bytes = _json_wire_size(payload)
-        truncated = bool(payload.get("truncated")) if isinstance(payload, dict) else False
-        included = len(payload.get("workflows", [])) if payload.get("action") == "list" else None
+        has_more = bool(payload.get("has_more")) if isinstance(payload, dict) else False
+        included = (
+            len(payload.get("workflows", []))
+            if payload.get("action") == "list"
+            else None
+        )
         error = payload.get("error") if isinstance(payload, dict) and not resp.ok else None
-        log_level = logging.WARNING if (not resp.ok or truncated) else logging.INFO
-        if action == "list":
-            logger.log(
-                log_level,
-                "[WF_DBG] command.workflows res ok=%s action=list source=%s count=%d source_bytes=%d "
-                "payload_bytes=%d included=%d/%d truncated=%s error=%s",
-                resp.ok,
-                source,
-                source_count,
-                source_bytes,
-                payload_bytes,
-                included or 0,
-                source_count,
-                truncated,
-                error,
+        log_level = logging.WARNING if (not resp.ok or has_more) else logging.INFO
+        logger.log(
+            log_level,
+            "[WF_DBG] command.workflows res ok=%s action=%s source=%s session_id=%s "
+            "workflow_id=%s count=%d source_bytes=%d payload_bytes=%d has_more=%s error=%s",
+            resp.ok,
+            action,
+            source,
+            session_id,
+            wf_id_log,
+            source_count,
+            source_bytes,
+            payload_bytes,
+            has_more,
+            error,
+        )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_swarmflow_pause(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Handle swarmflow.pause RPC — pause a live swarmflow run by run_id."""
+        await self._run_swarmflow_control(ws, request, send_lock, action="pause")
+
+    async def _handle_swarmflow_resume(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Handle swarmflow.resume RPC — resume a paused swarmflow run by run_id."""
+        await self._run_swarmflow_control(ws, request, send_lock, action="resume")
+
+    async def _handle_swarmflow_stop(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Handle swarmflow.stop RPC — stop a swarmflow run by run_id."""
+        await self._run_swarmflow_control(ws, request, send_lock, action="stop")
+
+    async def _run_swarmflow_control(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+        *,
+        action: str,
+    ) -> None:
+        """Shared pause/resume/stop control-path handler for a swarmflow run.
+
+        Looks up the session's BackgroundTaskController and applies the requested
+        control to the run identified by ``run_id`` (accepting ``run_id`` or the
+        ``workflow_run_id`` alias). Returns ok=False with a reason when run_id is
+        missing or no matching live run is registered on the controller.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            get_background_task_controller,
+        )
+
+        session_id = request.session_id or ""
+        channel_id = request.channel_id or "web"
+        params = request.params if isinstance(request.params, dict) else {}
+        run_id = params.get("run_id") or params.get("workflow_run_id")
+
+        if not isinstance(run_id, str) or not run_id.strip():
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "run_id is required"},
             )
         else:
-            prompt_len = None
-            if action == "get_human_prompt" and isinstance(payload, dict):
-                human_prompt = payload.get("human_prompt")
-                if isinstance(human_prompt, str):
-                    prompt_len = len(human_prompt.encode("utf-8"))
-            logger.log(
-                log_level,
-                "[WF_DBG] command.workflows res ok=%s action=%s source=%s workflow_id=%s "
-                "raw_bytes=%s payload_bytes=%d truncated=%s prompt_len=%s error=%s",
-                resp.ok,
-                action,
-                source,
-                wf_id_log,
-                detail_raw_bytes,
-                payload_bytes,
-                truncated,
-                prompt_len,
-                error,
-            )
+            run_id = run_id.strip()
+            controller = get_background_task_controller(session_id)
+            status = {"pause": "paused", "resume": "resumed", "stop": "stopped"}.get(action, "")
+            if action == "pause":
+                acted = await controller.pause(run_id)
+            elif action == "resume":
+                acted = await controller.resume(run_id)
+            elif action == "stop":
+                acted = await controller.stop(run_id)
+            else:  # pragma: no cover - internal dispatch only
+                acted = False
+            if not acted:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload={"error": "workflow run not found"},
+                )
+            else:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=True,
+                    payload={"run_id": run_id, "status": status},
+                )
 
+        logger.info(
+            "[SWARMFLOW] %s req channel_id=%s session_id=%s request_id=%s run_id=%s ok=%s",
+            action,
+            channel_id,
+            session_id,
+            request.request_id,
+            run_id,
+            resp.ok,
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -6136,7 +6816,10 @@ class AgentWebSocketServer:
         # so the frontend todo panel restores without reading workspace files.
         # Only page 1 — pagination must not re-flash the panel.
         if page_idx == 1 and isinstance(session_id, str) and session_id.strip():
-            todos = load_todo_snapshot_for_frontend(session_id)
+            todos = load_todo_snapshot_for_frontend(
+                session_id.strip(),
+                **_todo_snapshot_session_fields(session_id.strip()),
+            )
             todo_chunk = AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -6247,12 +6930,24 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _handle_command_compact(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        # 提前 import 观测 span 工具（同 interface_deep 处理）：原 import 若放 try 内，
+        # 中途异常会让 finally 的 close_agent_run_span 因名字未绑定抛 UnboundLocalError。
+        from openjiuwen.harness.observability import (  # noqa: E402
+            close_agent_run_span,
+            open_agent_run_span,
+        )
+
+        from jiuwenswarm.agents.harness.agent_observability import (  # noqa: E402
+            sync_agent_observability,
+        )
+        _run_span: Any = None
+        summary = ""
         try:
             session_id = request.session_id or "default"
             params = request.params or {}
 
             channel_id = request.channel_id or "default"
-            mode, sub_mode, _ = resolve_agent_request_mode(params.get("mode", "agent"))
+            mode, sub_mode, canonical_mode = resolve_agent_request_mode(params.get("mode", "agent"))
             agent_mode = "agent" if mode == "auto_harness" else mode
             # 同 command.btw：先按 session_id 找承载会话的 agent，按 mode 兜底会命中影子 agent。
             agent = self._agent_manager.get_agent_for_session_nowait(
@@ -6274,73 +6969,100 @@ class AgentWebSocketServer:
             # 否则 self._instance 为 None 时 compress_context 会直接 noop（误报"无需压缩"）。
             await agent.ensure_instance()
 
-            result_data = await agent.compress_context(session_id=session_id, return_state=True)
+            # 手动压缩发生在 agent turn 之外，本无录制中的 root span，compaction.completed
+            # 轨迹事件会因 ContextCompressionObservabilityBridge 找不到 parent 而被丢弃。
+            # 与 chat 流式路径一致，先同步 observability 再开一个 run root span（session-keyed
+            # registry），使压缩状态回调能解析到 parent，事件进入轨迹 v2 展示。
+            sync_agent_observability()
+            execution_subject = None
+            if is_team_mode(canonical_mode):
+                from jiuwenswarm.agents.harness.team import get_team_manager
 
-            result = result_data.get("result")
-            stats = result_data.get("stats")
-            state = result_data.get("state") if isinstance(result_data.get("state"), dict) else {}
-            summary = str(
-                result_data.get("compact_summary")
-                or state.get("compact_summary")
-                or result_data.get("summary")
-                or ""
-            ).strip()
-
-            if result == "compressed" and stats:
-                before_tokens = stats.get("raw_total_tokens", 0)
-                after_tokens = stats.get("total_tokens", 0)
-                if before_tokens > 0:
-                    rate = round((before_tokens - after_tokens) / before_tokens * 100, 1)
-                else:
-                    rate = 0
-                stats_summary = (
-                    f"\u2713 Context compacted: {after_tokens / 1000:.1f}K/"
-                    f"{before_tokens / 1000:.1f}K tokens ({rate:.1f}% saved)"
-                )
-
-                if summary:
-                    append_compact_history_records(
-                        session_id=session_id,
-                        request_id=request.request_id,
-                        channel_id=channel_id,
-                        summary=summary,
-                        timestamp=_dt.datetime.now().timestamp(),
-                        trigger="manual",
-                        stats=stats,
-                        mode=params.get("mode", "agent"),
-                    )
-                    compression_state_payload: dict[str, Any] = {
-                        **state,
-                        "event_type": "context.compression_state",
-                        "status": state.get("status") or "completed",
-                        "phase": state.get("phase") or "active_compress",
-                        "processor": state.get("processor") or _extract_compact_summary_processor(summary),
-                        "before": state.get("before") or {"tokens": before_tokens},
-                        "after": state.get("after") or {"tokens": after_tokens},
-                        "saved": state.get("saved") or {
-                            "tokens": before_tokens - after_tokens,
-                            "percent": rate,
-                        },
-                        "summary": stats_summary,
-                        "compact_summary": summary,
-                    }
-                    await self.send_push({
-                        "channel_id": channel_id,
-                        "session_id": session_id,
-                        "payload": compression_state_payload,
-                    })
-
-            resp = AgentResponse(
+                team_agent = get_team_manager(channel_id).get_team_agent(session_id)
+                if team_agent is not None:
+                    execution_subject = team_agent.observability_execution_subject(session_id)
+            _run_span = open_agent_run_span(
+                session_id=session_id,
+                mode=params.get("mode", "agent"),
                 request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={
-                    "result": result,
-                    "stats": stats,
-                    **({"summary": summary} if summary else {}),
-                    **({"compact_summary": summary} if summary else {}),
-                },
+                run_id=request.request_id,
+                turn_id=request.request_id,
+                execution_subject=execution_subject,
             )
+            try:
+                result_data = await agent.compress_context(session_id=session_id, return_state=True)
+
+                result = result_data.get("result")
+                stats = result_data.get("stats")
+                state = result_data.get("state") if isinstance(result_data.get("state"), dict) else {}
+                summary = str(
+                    result_data.get("compact_summary")
+                    or state.get("compact_summary")
+                    or result_data.get("summary")
+                    or ""
+                ).strip()
+
+                if result == "compressed" and stats:
+                    before_tokens = stats.get("raw_total_tokens", 0)
+                    after_tokens = stats.get("total_tokens", 0)
+                    if before_tokens > 0:
+                        rate = round((before_tokens - after_tokens) / before_tokens * 100, 1)
+                    else:
+                        rate = 0
+                    stats_summary = (
+                        f"\u2713 Context compacted: {after_tokens / 1000:.1f}K/"
+                        f"{before_tokens / 1000:.1f}K tokens ({rate:.1f}% saved)"
+                    )
+
+                    if summary:
+                        append_compact_history_records(
+                            session_id=session_id,
+                            request_id=request.request_id,
+                            channel_id=channel_id,
+                            summary=summary,
+                            timestamp=_dt.datetime.now().timestamp(),
+                            trigger="manual",
+                            stats=stats,
+                            mode=params.get("mode", "agent"),
+                        )
+                        compression_state_payload: dict[str, Any] = {
+                            **state,
+                            "event_type": "context.compression_state",
+                            "status": state.get("status") or "completed",
+                            "phase": state.get("phase") or "active_compress",
+                            "processor": state.get("processor") or _extract_compact_summary_processor(summary),
+                            "before": state.get("before") or {"tokens": before_tokens},
+                            "after": state.get("after") or {"tokens": after_tokens},
+                            "saved": state.get("saved") or {
+                                "tokens": before_tokens - after_tokens,
+                                "percent": rate,
+                            },
+                            "summary": stats_summary,
+                            "compact_summary": summary,
+                        }
+                        await self.send_push({
+                            "channel_id": channel_id,
+                            "session_id": session_id,
+                            "payload": compression_state_payload,
+                        })
+
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={
+                        "result": result,
+                        "stats": stats,
+                        **({"summary": summary} if summary else {}),
+                        **({"compact_summary": summary} if summary else {}),
+                    },
+                )
+            finally:
+                close_agent_run_span(
+                    _run_span,
+                    session_id=session_id,
+                    output=summary,
+                )
         except Exception as e:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] command.compact failed: %s", e)
             resp = AgentResponse(
@@ -7322,14 +8044,14 @@ class AgentWebSocketServer:
         web 不转发此入口（网关本地已处理），保留只为语义对齐。
         """
         try:
-            from jiuwenswarm.server.runtime.mcp.registry import (
-                list_marketplace_mcps,
+            from jiuwenswarm.server.runtime.mcp.marketplace import (
+                list_mcps_with_hub,
             )
             params = request.params or {}
             filter_val = str(params.get("filter") or "builtin").strip().lower() or "builtin"
             if filter_val not in ("builtin", "local"):
                 filter_val = "builtin"
-            items = await asyncio.to_thread(list_marketplace_mcps, filter_val)
+            items = await list_mcps_with_hub(filter_val)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -7353,12 +8075,12 @@ class AgentWebSocketServer:
     ) -> None:
         """Handle ``mcp.show`` RPC: return one MCP detail with tools."""
         try:
-            from jiuwenswarm.server.runtime.mcp.registry import get_mcp
+            from jiuwenswarm.server.runtime.mcp.marketplace import show_mcp_with_hub
             params = request.params or {}
-            name = str(params.get("name", "")).strip()
+            name = str(params.get("id") or params.get("name") or "").strip()
             if not name:
-                raise ValueError("mcp name is required")
-            item = get_mcp(name)
+                raise ValueError("mcp id or name is required")
+            item = await show_mcp_with_hub(name)
             if item is None:
                 raise KeyError(f"mcp '{name}' not found")
             # Connected MCP but ToolMgr returned no tools: fall back to a
@@ -7393,6 +8115,127 @@ class AgentWebSocketServer:
                 channel_id=request.channel_id,
                 ok=False,
                 payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_mcp_install(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Download and install a Hub MCP package without connecting it."""
+        try:
+            from jiuwenswarm.server.runtime.mcp.marketplace import install_hub_mcp
+
+            asset_id = str((request.params or {}).get("id") or "").strip()
+            item = await install_hub_mcp(asset_id)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"type": "installed", "item": item},
+            )
+        except (KeyError, ValueError) as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "install_failed", "error": str(exc), "code": "MCP_BAD_REQUEST"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] mcp.install failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "install_failed", "error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_mcp_uninstall(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Disconnect and remove an installed Hub MCP package."""
+        try:
+            from jiuwenswarm.server.runtime.mcp.marketplace import uninstall_hub_mcp
+
+            asset_id = str((request.params or {}).get("id") or "").strip()
+            item = await asyncio.to_thread(uninstall_hub_mcp, asset_id)
+            name = str(item.get("name") or "").strip()
+            applied = True
+            error_message = ""
+            agent_manager = getattr(self, "_agent_manager", None)
+            if agent_manager is not None and name:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(
+                            agent_manager.apply_mcp_change(name, "remove")
+                        ),
+                        timeout=15.0,
+                    )
+                except asyncio.TimeoutError:
+                    applied = False
+                    error_message = (
+                        "MCP unregister timed out (package removed; server will "
+                        "clear on next reload)"
+                    )
+                    logger.warning(
+                        "[mcp] apply_mcp_change after Hub uninstall timed out for '%s'",
+                        name,
+                    )
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "[mcp] apply_mcp_change after Hub uninstall CancelledError "
+                        "for '%s'",
+                        name,
+                    )
+                    raise
+                except Exception as reload_exc:  # noqa: BLE001
+                    applied = False
+                    error_message = str(reload_exc)
+                    logger.warning(
+                        "[mcp] apply_mcp_change after Hub uninstall failed: %s",
+                        reload_exc,
+                    )
+                try:
+                    agent_manager.clear_mcp_credentials(name)
+                except Exception as clear_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp] clear_mcp_credentials after Hub uninstall failed: %s",
+                        clear_exc,
+                    )
+                try:
+                    await agent_manager.refresh_skill_rails()
+                except Exception as skill_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp] refresh_skill_rails after Hub uninstall failed: %s",
+                        skill_exc,
+                    )
+            payload = {"type": "uninstalled", "item": item, "applied": applied}
+            if error_message:
+                payload["error"] = error_message
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=payload,
+            )
+        except (KeyError, ValueError) as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "uninstall_failed", "error": str(exc), "code": "MCP_NOT_FOUND"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] mcp.uninstall failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "uninstall_failed", "error": str(exc), "code": "MCP_INTERNAL"},
             )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
@@ -7480,7 +8323,7 @@ class AgentWebSocketServer:
                         ok=False,
                         payload={
                             "type": "connect_failed",
-                            "error": probe_reason or "MCP live-connect probe failed",
+                            "error": "MCP live-connect probe failed",
                             "code": "MCP_UNREACHABLE",
                             "name": name,
                         },
@@ -10032,18 +10875,23 @@ class AgentWebSocketServer:
                         find_or_create_code_project_for_tui_params,
                     )
 
-                    project = find_or_create_code_project_for_tui_params(params)
-                    if project is not None:
-                        params["project_id"] = project.project_id
-                        params["project_dir"] = project.project_dir
-                        params["work_mode"] = project.work_mode
+                    if not _uses_projectless_task_workspace(params, channel_id):
+                        project = find_or_create_code_project_for_tui_params(params)
+                        if project is not None:
+                            params["project_id"] = project.project_id
+                            params["project_dir"] = project.project_dir
+                            params["work_mode"] = project.work_mode
             # TUI 无显式 session_id（未带 --session）创建时：AgentServer 侧按
             # cwd/project_dir 解析真实的 code 项目并写回，避免落到默认 default_code
             # （AgentOS 迁移前由 TUI 本地解析，现收敛到 AgentServer 保证归属一致）。
             if (
                 not external_tui_session
                 and channel_id.strip().lower() == "tui"
+                and not _uses_projectless_task_workspace(params, channel_id)
             ):
+                # An explicit TUI cwd/project_dir is promoted to a registered
+                # code project. Requests without either directory keep the
+                # dated task workspace behavior.
                 from jiuwenswarm.server.runtime.session.project_store import (
                     find_or_create_code_project_for_tui_params,
                 )
@@ -10246,7 +11094,10 @@ class AgentWebSocketServer:
                 channel_metadata = None
                 if channel_id.strip().lower() == "tui":
                     workspace = str(params.get("cwd") or project_dir or "").strip()
-                    if workspace:
+                    if workspace and (
+                        not _uses_projectless_task_workspace(params, channel_id)
+                        or project_dir
+                    ):
                         channel_metadata = {
                             "cwd": workspace,
                             "project_dir": project_dir or workspace,

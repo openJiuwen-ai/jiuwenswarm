@@ -4,6 +4,7 @@
     "confirm": "确认",
     "cancel": "取消",
     "close": "关闭",
+    "clear": "清空",
     "refresh": "刷新",
     "refreshing": "刷新中...",
     "loading": "加载中...",
@@ -33,9 +34,8 @@
   "nav": {
     "chat": "对话",
     "work": "任务",
-    "agent": "智能体",
+    "agent": "专家",
     "experiments": "实验",
-    "teams": "团队",
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
@@ -68,12 +68,15 @@
     },
     "dialog": {
       "discardTitle": "放弃未保存的修改",
-      "discardConfirm": "当前修改尚未保存，确定放弃吗？"
+      "discardConfirm": "当前修改尚未保存，确定放弃吗？",
+      "clearTitle": "清空{{name}}",
+      "clearConfirm": "已保存的{{name}}将被删除，确定要清空吗？"
     },
     "common": {
       "configured": "已配置",
       "notConfigured": "未配置",
       "configure": "配置",
+      "clear": "清空",
       "showValue": "显示明文",
       "hideValue": "隐藏明文"
     },
@@ -142,7 +145,9 @@
       "fetchReasons": {
         "noEndpoint": "当前为提供商预设列表：该提供商未提供模型列表接口",
         "apiKeyRequired": "当前为提供商预设列表：填写 API Key 后可拉取最新模型",
-        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空"
+        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空",
+        "remoteAuthFailed": "当前为提供商预设列表：API Key 无效或鉴权方式不符（HTTP 401/403）",
+        "remoteRateLimited": "当前为提供商预设列表：远端限流（HTTP 429），请稍后重试"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
@@ -169,7 +174,17 @@
         "anthropicUnavailable": "当前提供商套餐不支持 Anthropic 协议"
       },
       "reasoning": {
-        "auto": "使用默认值"
+        "auto": "使用默认值",
+        "options": {
+          "off": "关闭",
+          "on": "开启",
+          "minimal": "最低",
+          "low": "低",
+          "medium": "中",
+          "high": "高",
+          "xhigh": "极高",
+          "max": "最高"
+        }
       },
       "openaiAccount": "OpenAI 账号",
       "agentOsReadonly": "AgentOS 只读",
@@ -178,6 +193,8 @@
       "reloadAfterFailure": "重新加载核对",
       "modelsResponseInvalid": "模型列表响应格式不正确，请重试。",
       "catalogResponseInvalid": "模型提供商目录响应格式不正确，请重试。",
+      "catalogLoadingCustomAvailable": "正在加载内置模型提供商；仍可选择“自定义”继续配置。",
+      "catalogLoadFailedCustomAvailable": "内置模型提供商加载失败；仍可选择“自定义”继续配置。",
       "catalogLoading": "正在加载模型提供商和推理选项，请稍候。",
       "catalogLoadFailed": "模型提供商和推理选项加载失败，请重试后保存。",
       "saveResponseInvalid": "模型保存响应格式不正确，请重新加载核对。",
@@ -185,6 +202,7 @@
       "savedRestartRequired": "已保存，重启后生效",
       "validationOk": "连接测试通过",
       "validationFailed": "连接测试失败",
+      "validationFailedWithDetail": "连接测试失败：{{detail}}",
       "testingConnection": "正在测试连接…",
       "savingModel": "正在保存…",
       "validationBeforeSaveTitle": "连接测试未通过",
@@ -211,8 +229,19 @@
       "webSearch": "网页搜索",
       "mediaTools": "工具",
       "vision": "图片处理",
+      "visionDescription": "启用后可处理图片内容；关闭后保留已有模型配置。",
+      "visionConfigTitle": "配置图片处理模型",
       "audio": "音频处理",
+      "audioDescription": "启用后可处理音频内容；关闭后保留已有模型配置。",
+      "audioConfigTitle": "配置音频处理模型",
       "video": "视频理解",
+      "videoDescription": "启用后可理解视频内容；关闭后保留已有模型配置。",
+      "videoConfigTitle": "配置视频理解模型",
+      "toggleCapability": "切换{{name}}能力",
+      "saveAndEnable": "保存并启用",
+      "savedRestartRequired": "配置已保存，重启后生效。",
+      "deleteModelTitle": "删除模型配置",
+      "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
     },
     "browser": {
@@ -220,7 +249,6 @@
       "runtimeDescription": "浏览器配置保存后会由现有后端逻辑重置运行时。",
       "path": "浏览器路径",
       "pathDescription": "指定浏览器可执行文件路径；留空时自动探测。",
-      "preferredBrowser": "优先浏览器",
       "runMode": "浏览器运行方式",
       "runModeDescription": "选择在前台显示浏览器窗口或以无头模式运行。",
       "headed": "前台显示",
@@ -234,6 +262,7 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
+      "trajectoryUi": "轨迹界面",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
@@ -248,10 +277,6 @@
         "title": "浏览器路径",
         "description": "指定浏览器可执行文件路径；留空时自动探测。",
         "placeholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-      },
-      "browser_type": {
-        "title": "优先浏览器",
-        "description": "指定类型时只查找该浏览器；填写路径时以路径为准。"
       },
       "headless": {
         "title": "浏览器运行方式",
@@ -271,7 +296,7 @@
         "description": "开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。免费模型来源于 Opencode Zen 网关（https://opencode.ai/zen），由 models.dev 目录（https://models.opencode.ai/api.json）与 Zen 实时模型列表取交集得到（判定标准：输入价格为 0）。"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
-      "skill_retrieval_enabled": { "title": "技能自动搜索", "description": "控制智能体是否自动检索可用技能" },
+      "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
       "jina_api_key": { "title": "Jina API 密钥" },
@@ -291,13 +316,13 @@
       "video_api_key": { "title": "API 密钥" },
       "video_model": { "title": "模型名称" },
       "video_provider": { "title": "模型提供商" },
-      "swarmflow_enabled": { "title": "动态工作流", "description": "控制智能体团队是否启用动态工作流能力" },
       "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
       "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
+      "trajectory_ui_enabled": { "title": "启用轨迹界面", "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。" },
       "external_cli_agent_claude_enabled": {
         "title": "启用 Claude",
         "description": "允许 Team Leader 拉起 Claude Agent。"
@@ -334,6 +359,24 @@
     "validation": {
       "required": "此字段为必填项",
       "integerRange": "请输入 {{min}}–{{max}} 之间的整数"
+
+    }
+  },
+  "trajectory": {
+    "loading": "正在加载轨迹界面…",
+    "tabs": {
+      "aria": "Agent 与团队内容视图",
+      "trajectory": "轨迹"
+    },
+    "team": {
+      "memberLanes": "成员轨迹泳道",
+      "members": "成员"
+    },
+    "layout": {
+      "hideSessions": "收起会话栏",
+      "showSessions": "展开会话栏",
+      "hideTasks": "收起任务栏",
+      "showTasks": "展开任务栏"
     }
   },
   "team": {
@@ -359,6 +402,7 @@
     "elapsedTime": "已花费时间: {{value}}",
     "duration": "耗时",
     "noTasks": "当前暂无任务",
+    "moreTasks": "还有 {{count}} 个任务",
     "noMemberData": "暂无成员数据",
     "selectMember": "请选择 Team 成员",
     "detailTabs": {
@@ -466,7 +510,9 @@
       "views": {
         "list": "列表视图",
         "structure": "结构视图",
-        "board": "任务板视图"
+        "board": "任务板视图",
+        "graph": "流程图",
+        "workflow": "工作流视图"
       },
       "metrics": {
         "progress": "进度",
@@ -527,30 +573,6 @@
     "tab": "参考信息",
     "empty": "当前暂无参考信息"
   },
-  "teams": {
-    "title": "团队管理",
-    "subtitle": "查看团队目录或删除团队",
-    "teamList": "团队列表",
-    "count": "当前 {{count}} 个团队",
-    "sessionCount": "{{count}} 个会话",
-    "directory": "团队目录",
-    "noneSelected": "未选择团队",
-    "empty": "暂无团队",
-    "selectFirst": "请先选择团队",
-    "loadingDirectory": "加载团队目录中...",
-    "emptyDirectory": "暂无团队目录文件",
-    "deleteTeam": "删除团队",
-    "deleting": "删除中...",
-    "deleteConfirm": "确认删除团队 {{team}} ?\n将删除团队运行时、关联会话及目录。",
-    "folder": "文件夹",
-    "notPreviewable": "不可预览",
-    "selectFile": "请选择一个文件查看",
-    "errors": {
-      "loadTeams": "团队列表加载失败",
-      "loadDirectory": "团队目录加载失败",
-      "deleteTeam": "删除团队失败：{{team}}"
-    }
-  },
   "statusBar": {
     "evolving": "正在检测是否需要技能演进...",
     "evolutionStages": {
@@ -570,10 +592,11 @@
   "chat": {
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
+    "placeholderAwaitingApproval": "请先处理上方待确认项",
     "placeholderProcessing": "处理中，输入新指令可中断...",
     "placeholderProcessingQueue": "处理中，输入新指令将加入等待队列...",
-    "placeholderTeamMode": "需要帮你做些什么？输入“/”快速引用技能及指令",
-    "placeholderTeamModeProcessing": "集群模式处理中，输入新指令会并行执行...",
+    "placeholderTeamMode": "需要帮你做些什么？输入“/”快速引用技能",
+    "placeholderTeamModeProcessing": "集群模式处理中，输入新消息会并行执行...",
     "placeholderVoice": "正在听取语音...",
     "welcomeLogoAlt": "WorkSwarm 标志",
     "welcomeBubbleText": "HI~我是你的专属桌面智能搭子，随时待命陪你摸鱼解闷~",
@@ -597,8 +620,9 @@
     "removeTask": "移除任务",
     "addImage": "添加图片",
     "addImageDisabled": "处理中或录音中不可添加图片",
-    "addFile": "添加文件",
-    "addFileDisabled": "处理中或录音中不可添加文件",
+    "addFile": "上传文件",
+    "addFileDisabled": "处理中或录音中不可上传文件",
+    "addFileTooltip": "可添加文件、专家、技能、连接器",
     "addAttachment": "添加附件",
     "removeImage": "移除图片",
     "sendTask": "发送消息，但不打断模型运行",
@@ -630,7 +654,7 @@
       "detailTitle": "上下文用量",
       "systemPrompt": "系统提示词",
       "messages": "对话消息",
-      "tools": "工具及MCP",
+      "tools": "工具及连接器",
       "skills": "技能",
       "notReported": "未报告",
       "close": "关闭上下文详情",
@@ -649,20 +673,21 @@
     "skillsManage": "更多",
     "skillsAdd": "添加到输入栏",
     "skillsRemove": "移除",
-    "agent": "智能体",
-    "agentToggle": "选择已安装智能体",
+    "agent": "专家",
+    "agentToggle": "选择已安装专家",
     "agentSearchPlaceholder": "请输入关键词搜索",
-    "agentNoInstalled": "暂无已安装智能体",
-    "agentNoMatches": "没有找到匹配的智能体",
+    "agentNoInstalled": "暂无已安装专家",
+    "agentNoMatches": "没有找到匹配的专家",
     "agentAdd": "添加到输入栏",
-    "agentRemove": "移除智能体",
+    "agentRemove": "移除专家",
     "agentMore": "更多",
     "extension": "扩展",
     "extensionSearchPlaceholder": "请输入关键字搜索",
     "extensionEmpty": "暂无内容",
     "extensionConnect": "连接",
     "extensionManagePlugins": "管理我的插件",
-    "extensionManageMcps": "管理我的MCP",
+    "extensionManageMcps": "管理我的连接器",
+    "extensionMore": "更多",
     "recentTasks": "进度",
     "contextCompressionCommandRunning": "正在压缩上下文",
     "teamPause": "暂停",
@@ -1131,9 +1156,12 @@
       "codexHint": "SDK 未安装时将自动安装；CLI 可使用内置版本、系统 PATH 或指定路径。",
       "useBuiltin": "使用内置 CLI",
       "detect": "检测",
+      "detectHint": "未填写路径时从系统 PATH 查找；填写路径后检测指定的 CLI 可执行文件并校验版本",
       "selectFile": "选择文件",
       "selectFileTitle": "选择 {{agent}} 命令",
       "selectFileFailed": "选择文件失败",
+      "copyPath": "复制检测到的路径",
+      "copied": "已复制",
       "cliPathPlaceholder": "自动检测 {{agent}} 路径，或手动填写可执行文件路径",
       "statusUnknown": "未检测",
       "statusOk": "可用",
@@ -1145,16 +1173,15 @@
       "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或勾选“使用内置 CLI”，改用默认启动方式。",
       "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或勾选“使用内置 CLI”，改用默认启动方式。",
       "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或勾选“使用内置 CLI”。",
-      "dependencyInstalling": "正在后台安装 {{agents}} 可选组件。安装期间不会启用；安装完成后，请重新启用并保存配置。",
-      "dependencyInstalled": "{{agent}} 可选组件已安装，请重新启用并保存配置。",
-      "dependencyInstallPhasePreparing": "准备安装 {{agent}} 依赖",
-      "dependencyInstallPhaseInstalling": "正在安装 {{agent}} 依赖",
-      "dependencyInstallPhaseVerifying": "正在校验 {{agent}} 依赖",
-      "dependencyInstallPhaseSucceeded": "{{agent}} 依赖已安装，请重新启用 {{agent}} 并保存配置",
-      "dependencyInstallPhaseFailed": "{{agent}} 依赖安装失败",
+      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或勾选“使用内置 CLI”。",
+      "missingPath": "路径不存在：{{path}}。请检查路径，或勾选“使用内置 CLI”。",
+      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或勾选“使用内置 CLI”。",
+      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或勾选“使用内置 CLI”。",
+      "autoSaved": "{{agents}} 依赖安装完成，已自动保存您的配置。",
       "installDialogTitle": "安装可选组件",
-      "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，请返回三方 Agent 配置，重新启用相应组件并保存配置。",
+      "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，您的配置将自动保存。",
       "installArtifact": "正在下载第 {{current}} 个文件，共 {{total}} 个：{{package}} {{version}}",
+      "installActivity": "最新安装活动",
       "installProgress": "下载进度",
       "installEta": "预计剩余 {{eta}}",
       "installRetry": "下载异常，正在重试（{{current}}/{{total}}）",
@@ -1169,7 +1196,7 @@
         "downloading": "正在下载",
         "installing": "正在安装",
         "verifying": "正在校验",
-        "succeeded": "安装完成，请重新启用",
+        "succeeded": "安装完成",
         "failed": "安装失败",
         "running": "正在安装"
       }
@@ -1467,9 +1494,6 @@
     }
   },
   "browser": {
-    "browserTypeAuto": "自动（Chrome > Edge）",
-    "browserTypeChrome": "Chrome",
-    "browserTypeEdge": "Microsoft Edge",
     "errors": {
       "loadPath": "加载浏览器配置失败"
     }
@@ -1504,7 +1528,12 @@
     "mySkillsTabs": {
       "all": "全部",
       "enabled": "启用",
-      "disabled": "禁用"
+      "disabled": "禁用",
+      "builtin": "内置"
+    },
+    "mySkillsGroups": {
+      "added": "已添加技能",
+      "builtin": "内置技能"
     },
     "publishFilter": {
       "all": "全部",
@@ -1531,6 +1560,7 @@
     "disable": "禁用",
     "noDisabledSkills": "暂无禁用的技能",
     "noEnabledSkills": "暂无启用的技能",
+    "noBuiltinSkills": "暂无内置技能",
     "setEnabledError": "设置技能启用状态失败",
     "setEnabledSuccess": "已启用技能 {name}",
     "setDisabledSuccess": "已禁用技能 {name}",
@@ -1623,7 +1653,11 @@
       "errorInvalidVersion": "版本号格式应为 x.y.z（如 1.0.0）",
       "errorDisplayNameTooLong": "显示名不能超过 {{max}} 个字符",
       "pathNotFound": "无法确定技能目录",
-      "forceOverwrite": "强制覆盖（版本已存在时覆盖原插件）"
+      "forceOverwrite": "强制覆盖（版本已存在时覆盖原插件）",
+      "skillNameTooltip": "字段名:name。小写字母、数字与连字符，须与目录内skill根文件夹命名规则一致，例如my-demo-skill。",
+      "displayNameTooltip": "字段名:display_name。在技能列表与详情中展示的名称。",
+      "descriptionTooltip": "字段名:description。留空时，市场简介将使用 SKILL.md中 YAML头部的description。填写则写入plugin.yaml，可覆盖为与文件头不同的文案。",
+      "tagsTooltip": "字段名:tags。多个标签用英文或中文逗号分隔。"
     },
     "oauthLogin": {
       "title": "登录以发布技能",
@@ -1639,8 +1673,8 @@
       "title": "上传技能",
       "pathLabel": "本地技能路径",
       "pathPlaceholder": "请输入技能文件/目录路径",
-      "notice": "文件夹或者.zip需要包含SKILL.md文件，.md 文件需包含 YAML 格式的技能名称和描述。",
-      "dropHint": "点击或拖动压缩包或文件到此处",
+      "notice": "仅支持上传 .zip 压缩包，且需包含 SKILL.md 文件，其中 YAML 头部需声明技能名称（name）和描述（description）。",
+      "dropHint": "点击或拖动 .zip 压缩包到此处",
       "confirm": "导入",
       "cancel": "取消"
     },
@@ -1683,7 +1717,7 @@
     "contentPreview": "内容预览",
     "noDescription": "暂无描述",
     "noContent": "暂无内容",
-    "searchPlaceholder": "搜索技能名称、描述或标签",
+    "searchPlaceholder": "搜索技能",
     "totalCount": "共 {{count}} 个",
     "listError": "获取技能失败，请检查后端服务",
     "featuredTeamSkills": "精选团队技能",
@@ -1707,6 +1741,9 @@
       "noPreview": "无法预览此文件",
       "contentPreview": "内容预览",
       "selectFileToPreview": "请选择左侧文件进行预览",
+      "defaultVersion": "默认",
+      "unavailableVersion": "不可用",
+      "notPreviewable": "不可预览",
       "tabs": {
         "contentDetail": "内容详情",
         "filePreview": "文件预览",
@@ -1733,7 +1770,6 @@
       "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时 skill_index 检索；分类索引是否构建由单独的索引开关控制。已有会话保持创建时冻结的策略。",
       "globalDisabledHint": "全局发现开关已关闭。Agent 使用 JiuwenSwarm 原有 Skill 逻辑；已有分类索引文件会保留但不使用。",
       "indexNotNeeded": "完整候选快照低于 1% 阈值时无需分类索引；即使已保存索引偏好，也不会启动构建。",
-      "indexRecommended": "候选目录达到或超过 1% 阈值。实时平铺检索仍完整可用；如需按层级浏览，可在配置中启用可选的分类索引。构建和刷新会消耗模型 token。",
       "indexDisabled": "分类索引开关已关闭。实时平铺检索仍可用，已有索引文件会保留。",
       "indexBuildRunning": "分类索引正在后台构建。构建期间检索仍可用；构建会消耗模型 token。",
       "indexActive": "分类索引开关已开启，当前分类目录正在使用；刷新会消耗模型 token。",
@@ -1826,6 +1862,8 @@
       "zoomIn": "放大",
       "zoomOut": "缩小",
       "zoomLevel": "当前缩放 {{percent}}%",
+      "fullscreen": "全屏",
+      "exitFullscreen": "退出全屏",
       "actions": {
         "read": "读取图谱",
         "incrementalBuild": "增量构建",
@@ -1852,6 +1890,7 @@
         "readFailed": "无法读取技能图谱，请先刷新图谱。",
         "refreshFailed": "技能图谱刷新失败",
         "cancelFailed": "技能图谱取消失败",
+        "primaryModelProbeFailed": "主模型连接测试未通过：{{detail}}",
         "buildFailedWithDetail": "Symphony 图谱构建失败: {{detail}}"
       },
       "serverDetails": {
@@ -1865,6 +1904,8 @@
       "buildStages": {
         "idle": "暂无构建日志",
         "updateStart": "开始构建技能图谱",
+        "modelProbeStart": "测试主模型连接",
+        "modelProbeDone": "主模型连接测试通过",
         "updateCancelRequested": "正在取消技能图谱构建",
         "updateCancelled": "技能图谱构建已取消",
         "scanStart": "扫描技能目录",
@@ -2074,7 +2115,10 @@
       "packFailed": "打包失败",
       "downloadFailed": "下载打包文件失败",
       "published": "技能 {{name}} 发布成功",
-      "publishFailed": "发布失败"
+      "publishFailed": "发布失败",
+      "rebuilding": "正在重建技能，请耐心等待",
+      "rebuildCompleted": "技能重建完成",
+      "rebuildFailed": "重建失败: {{detail}}"
     },
     "errors": {
       "installFailed": "安装失败",
@@ -2086,6 +2130,11 @@
       "skillNetInstallFailedHint": "SkillNet 安装失败，请检查 skill URL 或依赖",
       "importFailed": "导入失败",
       "importFailedHint": "导入失败，请检查路径或权限",
+      "knowledgeSkillExists": "技能「{{name}}」已存在，请更换名称或先卸载后再试",
+      "knowledgeSkillExistsGeneric": "同名技能已存在，请更换名称或先卸载后再试",
+      "uploadFailed": "文件上传失败，请重试",
+      "uploadUnsafePath": "文件名包含不允许的字符或使用了系统保留名称，请重命名后上传",
+      "uploadInvalidRequest": "上传请求无效或缺少文件，请重新选择文件后上传",
       "uninstallFailed": "卸载失败",
       "uninstallFailedHint": "卸载失败，请稍后重试"
     }
@@ -2112,18 +2161,20 @@
     }
   },
   "agentManagement": {
-    "title": "智能体管理",
-    "subtitle": "创建并管理智能体，快速复用智能体资产",
-    "tabsLabel": "智能体管理分类",
-    "tabs": { "catalog": "智能体广场", "mine": "我的智能体" },
-    "source": { "builtin": "官方", "local": "我的" },
-    "categoryLabel": "智能体分类",
+    "title": "专家管理",
+    "subtitle": "创建并管理专家，快速复用专家资产",
+    "tabsLabel": "专家管理分类",
+    "tabs": { "catalog": "专家广场", "mine": "我的专家" },
+    "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
+    "categoryLabel": "专家分类",
     "categoryAll": "全部",
     "categoryOther": "其他",
-    "mineSubtitle": "管理你创建或已安装的智能体",
-    "searchLabel": "搜索智能体",
-    "searchCatalog": "搜索智能体",
-    "searchMine": "搜索我的智能体",
+    "categoryScrollPrev": "向左滚动分类",
+    "categoryScrollNext": "向右滚动分类",
+    "mineSubtitle": "管理你创建或已安装的专家",
+    "searchLabel": "搜索专家",
+    "searchCatalog": "搜索专家",
+    "searchMine": "搜索我的专家",
     "unknownDescription": "暂无能力介绍",
     "categories": {
       "IndustryConsultant": "行业顾问",
@@ -2149,6 +2200,8 @@
       "connecting": "连接中…",
       "uninstall": "卸载",
       "uninstalling": "卸载中…",
+      "delete": "删除",
+      "deleting": "删除中…",
       "create": "创建",
       "createFirst": "手动创建",
       "createByChat": "通过聊天创建",
@@ -2157,34 +2210,37 @@
       "createViaChatPrompt": "帮我创建一个xxx专家，擅长xxx",
       "back": "返回"
     },
-    "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作" },
+    "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作", "moreTagsTooltip": "更多标签：{{tags}}" },
     "states": {
       "installed": "已安装",
-      "loadError": "智能体列表加载失败，请重试。",
-      "detailError": "智能体详情加载失败，请重试。",
+      "loadError": "专家列表加载失败，请重试。",
+      "detailError": "专家详情加载失败，请重试。",
       "actionError": "操作未完成，请稍后重试。",
-      "duplicateName": "智能体名称已存在，请更换名称后重试。",
-      "agentUnavailable": "该智能体已不存在，请刷新列表后重试。",
-      "agentDefinitionUnavailable": "该智能体定义不完整，暂时无法使用。",
+      "duplicateName": "专家名称已存在，请更换名称后重试。",
+      "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
+      "agentDefinitionUnavailable": "该专家定义不完整，暂时无法使用。",
       "skillUnavailable": "所选技能已不可用，请刷新技能列表后重试。",
-      "mcpUnavailable": "所选 MCP 已不可用，请刷新 MCP 列表后重试。",
+      "mcpUnavailable": "所选连接器已不可用，请刷新连接器列表后重试。",
       "promptInvalid": "推荐问题内容有误，请删除空白问题后重试。",
       "tagInvalid": "领域标签信息有误，请重新选择后重试。",
       "formInvalid": "表单信息不完整，请检查后重试。",
-      "authRequired": "该智能体需要完成认证后才能安装",
-      "connectionUnavailable": "依赖的 MCP 尚未连接，请先连接后再使用",
-      "connectorUnavailableNamed": "该智能体依赖的 MCP「{{connector}}」尚未连接，请先完成连接后再重试安装。",
-      "uploadSuccess": "智能体包 {{id}} 已导入，请在我的智能体中查看",
-      "uploadError": "上传并导入智能体失败，请检查文件后重试",
-      "newVersion": "该智能体有新版本，可更新",
-      "teamUnavailable": "团队智能体管理暂未开放",
+      "authRequired": "该专家需要完成认证后才能安装",
+      "connectionUnavailable": "依赖的连接器尚未连接，请先连接后再使用",
+      "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
+      "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
+      "uploadError": "上传并导入专家失败，请检查文件后重试",
+      "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
+      "uploadMissingReadme": "专家包缺少 README.md 文件",
+      "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
+      "newVersion": "该专家有新版本，可更新",
+      "teamUnavailable": "团队专家管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
-      "catalogEmpty": "暂无可展示的智能体",
-      "mineEmpty": "还没有我的智能体",
-      "noMatch": "没有找到匹配的智能体"
+      "catalogEmpty": "暂无可展示的专家",
+      "mineEmpty": "还没有我的专家",
+      "noMatch": "没有找到匹配的专家"
     },
     "pagination": {
-      "label": "智能体列表分页",
+      "label": "专家列表分页",
       "range": "显示 {{start}}-{{end}}，共 {{total}} 个",
       "page": "第 {{page}} / {{total}} 页",
       "previous": "上一页",
@@ -2197,16 +2253,16 @@
       "skills": "调用技能",
       "tools": "工具",
       "rails": "Rail",
-      "mcps": "MCP 能力",
+      "mcps": "连接器能力",
       "quickInputs": "这样问我试试看",
       "usePrompt": "使用问题：{{prompt}}",
-      "tabsLabel": "智能体详情内容",
+      "tabsLabel": "专家详情内容",
       "contentTab": "内容详情",
       "filesTab": "文件预览",
-      "filesUnavailable": "安装后即可查看该智能体的文件。"
+      "filesUnavailable": "安装后即可查看该专家的文件。"
     },
     "files": {
-      "treeLabel": "智能体文件树",
+      "treeLabel": "专家文件树",
       "loadError": "文件列表加载失败，请重试。",
       "readError": "文件内容读取失败，请重试。",
       "fileUnavailable": "文件已不存在，请重新加载文件列表。",
@@ -2221,20 +2277,23 @@
     },
     "form": {
       "title": "手动创建",
-      "subtitle": "创建一个可复用的智能体定义",
+      "subtitle": "创建一个可复用的专家定义",
       "createOnly": "仅支持创建",
       "createTabsLabel": "创建类型",
-      "createAgentTab": "创建智能体",
+      "createAgentTab": "创建专家",
       "basic": "基本信息",
       "idLabel": "运行标识",
       "idPlaceholder": "例如 content-creator",
-      "nameLabel": "智能体名称",
+      "nameLabel": "专家名称",
       "namePlaceholder": "输入展示名称",
       "descriptionLabel": "能力介绍",
-      "descriptionPlaceholder": "说明这个智能体擅长什么",
+      "descriptionPlaceholder": "说明这个专家擅长什么",
+      "charCount": "{{count}}/{{max}}",
       "tagLabel": "领域标签（可选）",
       "tagPlaceholder": "请选择领域标签",
       "toggleTags": "展开或收起领域标签",
+      "tagScrollPrev": "向左查看领域标签",
+      "tagScrollNext": "向右查看领域标签",
       "removeTag": "移除领域标签 {{name}}",
       "customTagPlaceholder": "输入自定义领域标签",
       "addCustomTag": "添加",
@@ -2275,28 +2334,28 @@
       "refreshSkills": "刷新技能",
       "skillsError": "技能列表加载失败，请重试。",
       "skillsEmpty": "暂无可用技能",
-      "mcpLabel": "MCP 配置（可选）",
-      "mcpToggle": "收起或展开 MCP 配置",
-      "addMcp": "添加 MCP",
-      "removeMcp": "移除 MCP {{name}}",
-      "selectMcp": "选择 MCP",
-      "myMcp": "我的 MCP",
-      "mcpMarket": "MCP 广场",
+      "mcpLabel": "连接器配置（可选）",
+      "mcpToggle": "收起或展开连接器配置",
+      "addMcp": "添加连接器",
+      "removeMcp": "移除连接器 {{name}}",
+      "selectMcp": "选择连接器",
+      "myMcp": "我的连接器",
+      "mcpMarket": "连接器广场",
       "selectionSearchPlaceholder": "请输入关键字搜索",
-      "mcpTypeFilter": "MCP 类型",
+      "mcpTypeFilter": "连接器类型",
       "mcpTypeAll": "全部类型",
-      "mcpError": "MCP 列表加载失败，请重试。",
-      "mcpEmpty": "暂无可用 MCP",
+      "mcpError": "连接器列表加载失败，请重试。",
+      "mcpEmpty": "暂无可用连接器",
       "promptsLabel": "这样问我试试看（可选）",
       "promptsToggle": "收起或展开推荐问题",
       "promptPlaceholder": "输入推荐问题",
       "addPrompt": "添加问题",
       "removePrompt": "删除问题",
-      "saveError": "智能体创建未完成，请检查表单内容后重试。",
+      "saveError": "专家创建未完成，请检查表单内容后重试。",
       "errors": {
         "idRequired": "请输入运行标识",
         "idInvalid": "只能使用字母、数字、点、下划线和连字符",
-        "nameRequired": "请输入智能体名称",
+        "nameRequired": "请输入专家名称",
         "descriptionRequired": "请输入能力介绍",
         "personaRequired": "请输入专家人设"
       }
@@ -2370,6 +2429,8 @@
       "toolName": "工具名称",
       "arguments": "参数",
       "result": "结果",
+      "flowchart": "流程图",
+      "flowchartHint": "点击展开/收起",
       "truncated": "结果已截断"
     },
     "toolGroup": {
@@ -2566,6 +2627,7 @@
       "restart_pending": "等待重启",
       "restarting": "重启中...",
       "installing": "安装中",
+      "connect": "连接",
       "error": "检查失败",
       "unsupported": "当前平台不支持",
       "disabled": "更新已禁用"
@@ -2720,10 +2782,10 @@
     "errors": { "delete": "删除对话失败", "create": "创建对话失败", "send": "发送消息失败" }
   },
   "subagent": {
-    "title": "Subagents",
-    "compactTitle": "Subagents（{{count}}）",
+    "title": "子智能体",
+    "compactTitle": "子智能体（{{count}}）",
     "activeListTitle": "当前活跃 {{count}}",
-    "expand": "展开 Subagents",
+    "expand": "展开子智能体",
     "selectWithStatus": "选择 {{name}}，状态：{{status}}",
     "running": "运行中",
     "idle": "待机中",
@@ -2734,7 +2796,7 @@
     "activityTitle": "活动",
     "activityEmpty": "暂无活动",
     "historyLoading": "正在恢复历史…",
-    "empty": "暂无 Subagent",
+    "empty": "暂无子智能体",
     "activity": {
       "thinking": "思考",
       "toolCall": "工具调用",
@@ -2800,6 +2862,7 @@
     "prev": "上一题",
     "next": "下一题",
     "cancel": "取消",
+    "replyLater": "稍后回复",
     "skip": "跳过",
     "nextStep": "下一步",
     "confirm": "确定",
@@ -2812,10 +2875,12 @@
   },
   "connectorMarket": {
     "title": "扩展",
-    "subtitle": "创建并管理插件、MCP",
+    "subtitle": "创建并管理插件、连接器",
     "tabs": {
       "plugin": "插件",
-      "mcp": "MCP",
+      "mcp": "连接器",
+      "pluginMarket": "插件广场",
+      "mcpMarket": "连接器广场",
       "my": "我的扩展"
     },
     "categories": {
@@ -2831,7 +2896,7 @@
     },
     "search": {
       "plugin": "搜索插件",
-      "mcp": "搜索MCP",
+      "mcp": "搜索连接器",
       "my": "搜索我的扩展"
     },
     "statusFilter": {
@@ -2844,7 +2909,7 @@
       "manual": "手动创建",
       "withSkill": "通过聊天创建",
       "withUpload": "上传文件创建",
-      "registerMcp": "配置MCP",
+      "registerMcp": "配置连接器",
       "basicInfo": "基本信息",
       "uploadHint": "支持上传png、jpeg、gif、jpg格式图片，限200Kb内",
       "avatarNotPersisted": "头像暂时只能本地预览，还无法保存（等待后端支持）",
@@ -2855,24 +2920,26 @@
       "description": "插件描述",
       "skillsOptional": "技能配置（可选）",
       "addSkill": "添加技能",
-      "mcpOptional": "MCP配置（可选）",
-      "addMcp": "添加MCP",
+      "mcpOptional": "连接器配置（可选）",
+      "addMcp": "添加连接器",
       "pickSkillTitle": "选择技能",
-      "pickMcpTitle": "选择MCP",
-      "submitError": "创建失败，该功能仍在等待后端支持",
+      "pickMcpTitle": "选择连接器",
+      "submitError": "创建失败，请检查填写内容后重试",
+      "fieldRequired": "该项为必填项，请填写",
       "withSkillNotWired": "该入口尚未接入聊天面板，需先在聊天输入框完成对接"
     },
     "chatPrompts": {
       "createPlugin": "帮我创建一个xxx插件，擅长xxx"
     },
     "errors": {
-      "runtimeMissing": "该 MCP 依赖的运行环境缺失，请先安装对应运行环境后再使用",
-      "runtimeMissingNamed": "该 MCP 依赖 {{runtime}} 运行环境，请先安装 {{runtime}} 后再使用",
+      "runtimeMissing": "该连接器依赖的运行环境缺失，请先安装对应运行环境后再使用",
+      "runtimeMissingNamed": "该连接器依赖 {{runtime}} 运行环境，请先安装 {{runtime}} 后再使用",
       "installNetwork": "依赖下载失败，请检查网络连接后重试",
       "cliIncomplete": "CLI 安装不完整或版本过低，请重新连接以重试",
       "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
     },
     "card": {
+      "connect": "连接",
       "use": "使用",
       "useNotWired": "该功能尚未接入，请在会话输入框的\"+\"面板里选用",
       "install": "安装",
@@ -2880,6 +2947,7 @@
       "connecting": "连接中",
       "disconnecting": "解绑中",
       "deleting": "删除中",
+      "uninstalling": "卸载中",
       "stateError": "连接失败",
       "retry": "重试",
       "uninstall": "卸载",
@@ -2890,23 +2958,23 @@
     "detail": {
       "breadcrumbMy": "我的扩展",
       "breadcrumbPlugin": "插件详情",
-      "breadcrumbMcp": "MCP详情",
-      "mcpDisconnectedBanner": "当前插件未连接MCP无法正常使用",
-      "mcpDisconnectedBannerSelf": "当前MCP未连接无法正常使用",
-      "connectMcp": "连接MCP",
+      "breadcrumbMcp": "连接器详情",
+      "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
+      "mcpDisconnectedBannerSelf": "当前连接器未连接，无法正常使用",
+      "connectMcp": "点击连接",
       "sections": {
         "basicInfo": "基本信息",
         "skills": "技能",
         "tools": "工具",
         "rails": "Rail",
-        "mcps": "MCP",
+        "mcps": "连接器",
         "connectionConfig": "连接配置",
         "examples": "试试这样用"
       },
       "integrationType": {
         "cli": "CLI 授权",
-        "stdioMcp": "本地 MCP",
-        "remoteMcp": "远程 MCP",
+        "stdioMcp": "本地连接器",
+        "remoteMcp": "远程连接器",
         "skillOnly": "仅技能"
       },
       "cliSpecPresentHint": "支持命令行驱动",
@@ -2920,27 +2988,29 @@
     },
     "confirmUninstall": {
       "title": "卸载{{name}}？",
-      "message": "卸载后该 MCP 将变为不可用状态，需要重新联接才能继续使用。"
+      "message": "卸载后该连接器将变为不可用状态，需要重新联接才能继续使用。"
     },
     "confirmUnbind": {
       "title": "解绑{{name}}？",
-      "message": "解绑后将清除本地凭证并断开连接，该 MCP 会变为不可用状态。保留的定义可重新连接，重连需重新填写凭证。"
+      "message": "解绑后将清除本地凭证并断开连接，该连接器会变为不可用状态。保留的定义可重新连接，重连需重新填写凭证。"
     },
     "confirmDeleteMcp": {
       "title": "彻底删除{{name}}？",
-      "message": "删除后该自定义 MCP 的配置、凭证与技能将被彻底清除，不可恢复；如果只是想以后还能重连，请用解绑而不是删除。"
+      "message": "删除后该自定义连接器的配置、凭证与技能将被彻底清除，不可恢复；如果只是想以后还能重连，请用解绑而不是删除。"
     },
     "confirmUninstallPlugin": {
       "message": "卸载后该插件将变为不可用状态，可以重新安装。"
     },
     "empty": {
-      "myMcp": "还没有已安装的MCP",
-      "myPlugin": "还没有已安装的插件",
+      "myMcp": "暂无我的连接器",
+      "myPlugin": "暂无我的插件",
+      "mcp": "暂无可用的连接器",
+      "plugin": "暂无可用的插件",
       "searchNoResult": "没有找到匹配的结果",
       "loadingPlugin": "加载插件中...",
-      "loadingMcp": "加载MCP中...",
+      "loadingMcp": "加载连接器中...",
       "loadingMyPlugin": "加载我的插件中...",
-      "loadingMyMcp": "加载我的MCP中..."
+      "loadingMyMcp": "加载我的连接器中..."
     },
     "pagination": {
       "pageSize": "每页显示",
@@ -2950,9 +3020,12 @@
       "next": "下一页"
     },
     "toast": {
-      "mcpConnected": "MCP已连接成功。",
-      "mcpCreated": "MCP已创建成功。",
-      "mcpCreatedAndConnected": "MCP已创建并连接成功。",
+      "mcpConnected": "连接器已连接成功。",
+      "mcpInstalled": "连接器安装成功，请连接后使用。",
+      "mcpUninstalled": "连接器卸载成功。",
+      "mcpUninstallPendingReload": "连接器包已卸载，运行中的服务将在下次刷新时完成清理。",
+      "mcpCreated": "连接器已创建成功。",
+      "mcpCreatedAndConnected": "连接器已创建并连接成功。",
       "pluginInstalled": "插件安装成功。",
       "pluginUninstalled": "插件卸载成功。"
     },
@@ -2974,8 +3047,8 @@
       "timeout": "等待授权超时，请重新打开授权页面重试"
     },
     "registerMcp": {
-      "title": "配置MCP",
-      "editTitle": "编辑MCP",
+      "title": "配置连接器",
+      "editTitle": "编辑连接器",
       "creating": "创建中",
       "saving": "保存中",
       "name": "名称",
@@ -3000,14 +3073,17 @@
       "hint": "支持.zip和.tar文件，解压后的文件夹需要至少包含 manifest.json 文件和 README.md，.json 文件需包含 packageType 声明包类型。",
       "dropHint": "点击或拖动文件到此处",
       "invalidType": "仅支持 .zip / .tar 文件",
-      "importSuccess": "插件导入成功"
+      "importSuccess": "插件导入成功",
+      "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
+      "missingReadme": "插件包缺少 README.md 文件"
     },
     "common": {
       "back": "返回",
       "cancel": "取消",
       "confirm": "确定",
       "search": "搜索",
-      "noResult": "没有匹配结果"
+      "noResult": "没有匹配结果",
+      "loadFailed": "详情加载失败，请重试"
     }
   },
   "auth": {
@@ -3036,8 +3112,8 @@
     "schedule": {
       "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
       "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
-      "cron": { "hint": "标准 5 段格式：分 时 日 月 周（例：0 9 * * 1-5 表示工作日早上 9 点）" },
-      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成" },
+      "cron": { "hint": "支持 5 段（分 时 日 月 周）或与普通 Cron 任务相同的 7 段格式（秒 分 时 日 月 周 年）。" },
+      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成", "dateLabel": "日期", "timeLabel": "时间" },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
         "cron": "{{expr}}（{{timezone}}）回到当前会话",
@@ -3045,7 +3121,7 @@
       }
     },
     "errors": {
-      "cronFieldCount": "心跳的 Cron 表达式需要 5 段（分 时 日 月 周）"
+      "cronFieldCount": "心跳的 Cron 表达式需要 5 段（分 时 日 月 周）或 7 段（秒 分 时 日 月 周 年）"
     },
     "drawer": {
       "fieldName": "任务名称",
@@ -3055,13 +3131,15 @@
       "fieldPromptHint": "心跳触发时，会把这段文字作为一条新消息投递回当前会话，Agent 在原有上下文里继续处理，不会开新会话",
       "fieldSchedule": "调度计划",
       "fieldScheduleHint": "选择心跳回到这个会话的触发方式：按间隔轮询 / 按 Cron 表达式定时 / 只触发一次",
+      "scheduleExpired": "所选时间已过期，请重新选择",
       "fieldConcurrencyPolicy": "重叠运行策略",
       "fieldConcurrencyPolicyHint": "上一轮还没跑完时新触发怎么处理：跳过（skip，默认）/ 排队补跑一次（queue）/ 取消上一轮改跑新的（replace）",
       "fieldSessionDeletedPolicy": "会话删除后策略",
       "fieldSessionDeletedPolicyHint": "绑定的会话被删除后：停用任务并保留记录（disable，默认）/ 标记为已完成（completed）",
       "fieldMaxRuns": "最大触发次数",
       "fieldMaxRunsUnlimited": "不限制",
-      "fieldMaxRunsHint": "达到这个次数后任务自动标记为已完成；留空表示不限制",
+      "fieldMaxRunsUnlimitedOption": "不限次数",
+      "fieldMaxRunsHint": "仅对按间隔／Cron 生效；达到次数后任务自动标记为已完成，打开「不限次数」开关则一直运行",
       "missingFields": "还需要填写：{{fields}}",
       "submitCreate": "创建",
       "submitUpdate": "保存",
@@ -3081,7 +3159,7 @@
       "cancelRun": "停止本次运行",
       "pause": "暂停",
       "resume": "恢复",
-      "resumeFromCompletedHint": "任务已完成或到期，需先在「编辑」里把调度／停止条件改成未来时间，任务会自动重新激活",
+      "resumeFromCompletedHint": "任务已完成或到期，请先在「编辑」里把调度／停止条件改好，再点击「恢复」",
       "delete": "删除",
       "deleteConfirm": "确定删除心跳任务「{{name}}」吗？",
       "filterLabel": "状态",
@@ -3183,7 +3261,7 @@
       "testerModelLabel": "测试模型",
       "datasetLabel": "评测集文件",
       "datasetPlaceholder": "请选择本地评测集 JSON 文件",
-      "datasetTip": "请选择单个评测 JSON 文件（如 suites/train_suite.json）",
+      "datasetTip": "请选择单个评测 JSON 文件；顶层为 cases 数组，每题包含 case_id、input，可选 assets 与 reference",
       "datasetFieldTipTitle": "评测集字段格式",
       "browse": "浏览",
       "maxIterationsLabel": "最大迭代轮次",
@@ -3211,7 +3289,7 @@
       "customModels": "自定义模型",
       "submit": "创建",
       "cancel": "取消",
-      "infoBar": "请预先安装、调用evolve-design技能，创建产物优化的依赖项，填写程序路径",
+      "infoBar": "请预先安装、调用rsi-program-dataset-creator技能，创建产物优化的依赖项，填写程序路径",
       "validation": {
         "nameRequired": "请输入实验名称",
         "datasetRequired": "请选择数据集文件",
@@ -3335,5 +3413,42 @@
       "candidateError": "候选 {{index}}/{{total}} 生成失败",
       "scoreSuffix": " · 得分 {{score}}"
     }
+  },
+  "swarmflow": {
+    "statusPlanned": "已规划",
+    "statusPending": "等待中",
+    "statusRunning": "运行中",
+    "statusPaused": "已暂停",
+    "statusCompleted": "已完成",
+    "statusFailed": "失败",
+    "statusStopped": "已停止",
+    "statusWaitingForHuman": "等待人工输入",
+    "subWorkflow": "子工作流",
+    "clickToReply": "点击回复",
+    "waitingForHuman": "等待回复 {{count}}",
+    "noWorkflow": "暂无工作流",
+    "layoutIndented": "缩进树",
+    "layoutOrgChart": "架构图",
+    "layoutGraph": "流程图",
+    "pauseResumeHint": "暂停/恢复",
+    "stopHint": "停止",
+    "sessionBudget": "会话预算（团队共享，不随运行重置）",
+    "runBudget": "本次运行预算（META.workflow_token_limit）",
+    "sessionBudgetShort": "会话累计",
+    "runBudgetShort": "本次运行",
+    "budgetUnlimited": "无限制",
+    "budgetExhaustedSession": "会话预算耗尽",
+    "budgetExhaustedWorkflow": "运行预算耗尽",
+    "toggleLabel": "动态工作流",
+    "tagHint": "本次会话已启用动态工作流",
+    "closeTag": "关闭动态工作流",
+    "closeTagDisabled": "会话进行中，无法关闭",
+    "configTitle": "动态工作流配置",
+    "configReadonlyHint": "会话已开启，配置不可修改",
+    "budgetPanelTitle": "SwarmFlow 预算",
+    "budgetPanelHint": "设置本次会话的 Token 上限。",
+    "budgetPlaceholder": "输入数字",
+    "budgetActualHint": "本次配置上限：{{count}} tokens",
+    "workflowList": "工作流列表"
   }
 }

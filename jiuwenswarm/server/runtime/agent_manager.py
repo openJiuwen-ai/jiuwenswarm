@@ -1558,12 +1558,12 @@ class AgentManager:
             params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
             mode_full = params.get("mode", "agent")
             mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            workspace_dir = params.get("workspace_dir")
+            project_dir = params.get("project_dir")
 
             agent = await self.get_agent(
                 channel_id=channel_id,
                 mode=mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
@@ -1588,12 +1588,12 @@ class AgentManager:
             params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
             mode_full = params.get("mode", "agent")
             mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            workspace_dir = params.get("workspace_dir")
+            project_dir = params.get("project_dir")
 
             agent = await self.get_agent(
                 channel_id=channel_id,
                 mode=mode,
-                project_dir=workspace_dir,
+                project_dir=project_dir,
             )
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")

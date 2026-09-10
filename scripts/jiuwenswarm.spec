@@ -190,6 +190,10 @@ for package_root in DISPATCH_PACKAGE_ROOTS:
 # openjiuwen 使用动态导入，需要收集全部子模块
 openjiuwen_submodules = collect_submodules("openjiuwen")
 symphony_submodules = collect_submodules("jiuwenswarm.symphony")
+# TeamManager imports this lifecycle hook while its parent package is being
+# initialized.  Keep it explicit because PyInstaller cannot reliably infer
+# this package-attribute import from the frozen entry point.
+team_kv_cache_hiddenimports = ["jiuwenswarm.agents.harness.team.kv_cache_hooks"]
 dispatch_submodules = collect_tree_python_modules(symphony_root, DISPATCH_PACKAGE_ROOTS)
 http2_submodules = [
     *collect_submodules("h2"),
@@ -201,6 +205,19 @@ http2_submodules = [
 hiddenimports = webview_hiddenimports + http2_submodules + [
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
+    # ``--doctor`` imports these targets dynamically before business imports.
+    # Keep them explicit so the installed executable can diagnose a broken
+    # native dependency instead of reporting a PyInstaller collection gap.
+    "tiktoken._tiktoken",
+    "grpc._cython.cygrpc",
+    "cryptography.hazmat.bindings._rust",
+    "numpy",
+    "pandas._libs.lib",
+    "lxml.etree",
+    "PIL._imaging",
+    "bcrypt._bcrypt",
+    "faiss",
+    "chromadb_rust_bindings",
     "tiktoken_ext",  # tiktoken 编码插件（cl100k_base 等）
     "tiktoken_ext.openai_public",
     "ruamel.yaml",
@@ -217,7 +234,7 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [

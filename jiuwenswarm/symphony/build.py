@@ -28,6 +28,7 @@ from jiuwenswarm.symphony.config import (
     default_symphony_config,
 )
 from jiuwenswarm.symphony.adapter import (
+    FingerprintArtifactCapabilityProvider,
     FingerprintLLMAdapter,
     ScanResultCapabilityProvider,
     fingerprint_settings_from_swarm,
@@ -215,9 +216,15 @@ class SymphonyGraphBuilder:
                         source_snapshot if isinstance(source_snapshot, dict) else {}
                     ),
                 )
+                expected_snapshot.update(
+                    scan_result.source_snapshot.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                )
                 identity_runtime = SymphonyRuntime(
                     graph_artifact_root=output_dir,
-                    capability_provider=capabilities,
+                    capability_provider=(),
                     model=None,
                     orchestration_config=graph_build_orchestration_config_from_swarm(
                         runtime_config
@@ -225,7 +232,9 @@ class SymphonyGraphBuilder:
                     source_snapshot=expected_snapshot,
                     graph_config=graph_config_from_swarm(runtime_config),
                 )
-                stale = not identity_runtime.orchestration.status().fresh
+                stale = not identity_runtime.orchestration.status(
+                    expected_snapshot=expected_snapshot
+                ).fresh
             except (FileNotFoundError, ValueError):
                 stale = True
         resume_from = latest_incomplete_build(output_dir)
@@ -464,7 +473,9 @@ class SymphonyGraphBuilder:
 
         runtime = SymphonyRuntime(
             graph_artifact_root=output_dir,
-            capability_provider=capabilities,
+            capability_provider=FingerprintArtifactCapabilityProvider(
+                fingerprint_artifact
+            ),
             model=(model_from_config(llm_config) if llm_config is not None else None),
             model_response_observer=(
                 model_response_observer_from_config(llm_config)

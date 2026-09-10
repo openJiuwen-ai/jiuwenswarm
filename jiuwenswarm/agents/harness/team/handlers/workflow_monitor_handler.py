@@ -46,6 +46,9 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         super().__init__(monitor, session_id)
         self._channel_id = channel_id
         self._runs: dict[str, WorkflowRunState] = dict(initial_runs or {})
+        # Session-wide (leader-shared) budget snapshot, updated from each
+        # progress event's ``budget`` field and persisted to session metadata.
+        self._session_budget: Optional[dict] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -118,6 +121,10 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
             )
             return
 
+        # Track the session-wide budget snapshot from each event (leader-shared).
+        if progress.budget is not None:
+            self._session_budget = progress.budget
+
         delta = run_state.apply(progress)
         if delta is None:
             logger.debug(
@@ -155,8 +162,17 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
 
     def _persist(self) -> None:
         try:
-            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import persist_workflow_runs
-            persist_workflow_runs(self._runs, self._session_id)
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                persist_workflow_runs,
+            )
+            # runs + session_budget must land in ONE read-modify-write: two
+            # separate persists each cache_bust-read the disk before the
+            # other's queued write is flushed, and the second full-file
+            # replace reverts the first's workflow_runs (lost update that
+            # froze the checkpoint at a stale pre-terminal state).
+            persist_workflow_runs(
+                self._runs, self._session_id, session_budget=self._session_budget
+            )
         except Exception as e:
             logger.warning("[WorkflowMonitorHandler] checkpoint persist failed: %s", e)
 
@@ -235,9 +251,13 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 answer=getattr(payload, "answer", None),
                 tokens=getattr(payload, "tokens", None),
                 budget=getattr(payload, "budget", None),
+                workflow_budget=getattr(payload, "workflow_budget", None),
+                budget_exhausted_scope=getattr(payload, "budget_exhausted_scope", None),
+                relaunch_kind=getattr(payload, "relaunch_kind", None),
                 phase_type=getattr(payload, "phase_type", None),
                 nested_phase=getattr(payload, "nested_phase", None),
                 parent_phase=getattr(payload, "parent_phase", None),
+                phase_iteration=getattr(payload, "phase_iteration", None),
             )
         except Exception:
             logger.warning("[WorkflowMonitorHandler] Failed to extract progress from event")

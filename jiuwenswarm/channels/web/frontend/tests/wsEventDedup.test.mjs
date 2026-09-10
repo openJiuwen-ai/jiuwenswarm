@@ -69,6 +69,41 @@ test('tool results from different tool calls in one request stay distinct', () =
   );
 });
 
+test('tool calls from different tool calls in one request stay distinct', () => {
+  const firstSpawn = makeEventDedupKey('chat.tool_call', {
+    session_id: session,
+    event_type: 'chat.tool_call',
+    request_id: requestId,
+    tool_call: {
+      name: 'subagent_spawn',
+      tool_call_id: 'call_spawn_shenzhen',
+    },
+  });
+  const secondSpawn = makeEventDedupKey('chat.tool_call', {
+    session_id: session,
+    event_type: 'chat.tool_call',
+    request_id: requestId,
+    tool_call: {
+      name: 'subagent_spawn',
+      tool_call_id: 'call_spawn_guangzhou',
+    },
+  });
+
+  assert.notEqual(firstSpawn, secondSpawn);
+  assert.equal(
+    firstSpawn,
+    makeEventDedupKey('chat.tool_call', {
+      session_id: session,
+      event_type: 'chat.tool_call',
+      request_id: requestId,
+      tool_call: {
+        name: 'subagent_spawn',
+        tool_call_id: 'call_spawn_shenzhen',
+      },
+    })
+  );
+});
+
 test('other chat events with the same request_id are unchanged', () => {
   const first = makeEventDedupKey('chat.final', {
     session_id: session,

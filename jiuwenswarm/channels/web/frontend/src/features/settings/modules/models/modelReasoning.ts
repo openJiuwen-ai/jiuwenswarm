@@ -109,9 +109,16 @@ export function resolveModelReasoning(
   return modelRule?.capabilities[protocol] ?? catalog.reasoning.protocol_defaults[protocol];
 }
 
-export function buildReasoningOptions(capability: ModelReasoningCapability, defaultLabel: string) {
+export function buildReasoningOptions(
+  capability: ModelReasoningCapability,
+  defaultLabel: string,
+  resolveLabel: (value: string) => string = (value) => value,
+) {
   if (capability.options.length === 0) return [];
-  return [{ value: '', label: defaultLabel }, ...capability.options.map((value) => ({ value, label: value }))];
+  return [
+    { value: '', label: defaultLabel },
+    ...capability.options.map((value) => ({ value, label: resolveLabel(value) })),
+  ];
 }
 
 export function isReasoningLevelSupported(level: string, capability: ModelReasoningCapability): boolean {

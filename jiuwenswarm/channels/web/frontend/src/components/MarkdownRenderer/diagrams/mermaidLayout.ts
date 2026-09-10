@@ -5,24 +5,40 @@ export const MERMAID_CANVAS_TOP_OFFSET = 24;
 export const MERMAID_CANVAS_BOTTOM_OFFSET = 24;
 
 interface MermaidCanvasLayoutInput {
-  naturalWidth: number;
+  naturalWidth?: number;
   naturalHeight: number;
-  containerWidth: number;
+  containerWidth?: number;
+  minCanvasHeight?: number;
 }
 
 export interface MermaidCanvasLayout {
   fitScale: number;
-  displayScale: number;
+  displayScale?: number;
   canvasHeight: number;
+  alignTop?: boolean;
 }
 
 export function clampMermaidScale(scale: number): number {
   return Math.min(Math.max(scale, 0.25), 3);
 }
 
-export function calculateMermaidCanvasLayout({ naturalWidth, naturalHeight, containerWidth }: MermaidCanvasLayoutInput): MermaidCanvasLayout | null {
+export function calculateMermaidCanvasLayout({
+  naturalWidth = 0,
+  naturalHeight,
+  containerWidth = 0,
+  minCanvasHeight: requestedMinCanvasHeight,
+}: MermaidCanvasLayoutInput): MermaidCanvasLayout | null {
   if (naturalHeight <= 0) {
     return null;
+  }
+
+  if (requestedMinCanvasHeight !== undefined) {
+    const contentHeight = naturalHeight + MERMAID_CANVAS_TOP_OFFSET + MERMAID_CANVAS_BOTTOM_OFFSET;
+    return {
+      fitScale: 1,
+      canvasHeight: requestedMinCanvasHeight,
+      alignTop: contentHeight > requestedMinCanvasHeight,
+    };
   }
 
   const availableHeight = MERMAID_CANVAS_MAX_HEIGHT - MERMAID_CANVAS_TOP_OFFSET - MERMAID_CANVAS_BOTTOM_OFFSET;

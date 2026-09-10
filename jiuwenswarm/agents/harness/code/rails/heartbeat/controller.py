@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import replace
 from typing import Any
@@ -31,8 +32,12 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
     HEARTBEAT_STATUSES,
     HeartbeatJob,
     HeartbeatSchedule,
+    MAX_UNIX_TIMESTAMP_SECONDS,
     MIN_INTERVAL_SECONDS,
+    SCHEDULE_ONCE,
     SOURCE_WEB_RPC,
+    STATUS_RUNNING,
+    STATUS_SCHEDULED,
     validate_metadata_source,
 )
 from jiuwenswarm.agents.harness.code.rails.heartbeat.scheduler import HeartbeatSchedulerService
@@ -49,14 +54,13 @@ _CREATE_FIELDS: frozenset[str] = frozenset(
     {
         "name", "channel_id", "session_id", "prompt", "schedule", "timezone",
         "enabled", "concurrency_policy", "session_deleted_policy", "max_runs",
-        "delete_after_run", "source",
+        "source",
     }
 )
 _UPDATE_FIELDS: frozenset[str] = frozenset(
     {
         "name", "prompt", "schedule", "timezone", "enabled",
         "concurrency_policy", "session_deleted_policy", "max_runs",
-        "delete_after_run",
     }
 )
 
@@ -197,6 +201,23 @@ class HeartbeatController:
                     raise PermissionError("heartbeat.jobs.all permission required")
             else:
                 session_id = access_session_id
+        active_jobs = [
+            job
+            for job in jobs
+            if job.enabled and job.status in {STATUS_SCHEDULED, STATUS_RUNNING}
+        ]
+        global_active_count = len(active_jobs)
+        global_active_limit = int(self._limits.get("max_active_jobs_global", 100))
+        if session_id:
+            active_count = sum(
+                job.session_id == session_id for job in active_jobs
+            )
+            active_limit = int(
+                self._limits.get("max_active_jobs_per_session", 5)
+            )
+        else:
+            active_count = global_active_count
+            active_limit = global_active_limit
         out = []
         for j in sorted(jobs, key=lambda item: (item.created_at or 0.0, item.id)):
             if session_id and j.session_id != session_id:
@@ -206,7 +227,15 @@ class HeartbeatController:
             if status and j.status != status:
                 continue
             out.append(j.to_dict())
-        return {"jobs": out}
+        return {
+            "jobs": out,
+            "active_count": active_count,
+            "active_limit": active_limit,
+            "can_create": (
+                active_count < active_limit
+                and global_active_count < global_active_limit
+            ),
+        }
 
     async def _owned_job(
         self, job_id: str, access_session_id: str | None
@@ -283,15 +312,24 @@ class HeartbeatController:
         if session_deleted_policy not in HEARTBEAT_SESSION_DELETED_POLICIES:
             raise ValueError(f"invalid session_deleted_policy {session_deleted_policy!r}")
         enabled = self._strict_bool(params.get("enabled", True), field="enabled")
-        delete_after_run = self._strict_bool(
-            params.get("delete_after_run", False), field="delete_after_run"
-        )
 
         # 资源限制
         self._check_resource_limits_sync(session_id=session_id, schedule=schedule)
         await self._check_resource_limits_async(
             session_id=session_id, schedule=schedule, exclude_job_id=None
         )
+
+        if schedule.type == SCHEDULE_ONCE and schedule.run_at is not None:
+            if (
+                not math.isfinite(schedule.run_at)
+                or schedule.run_at > MAX_UNIX_TIMESTAMP_SECONDS
+            ):
+                raise ValueError(
+                    "schedule.run_at must be a finite Unix timestamp in seconds; "
+                    "milliseconds are not accepted"
+                )
+            if schedule.run_at <= time.time():
+                raise ValueError("schedule.run_at must be in the future")
 
         job = await self._store.create_job(
             name=name,
@@ -304,7 +342,6 @@ class HeartbeatController:
             concurrency_policy=concurrency_policy,
             session_deleted_policy=session_deleted_policy,
             max_runs=max_runs,
-            delete_after_run=delete_after_run,
             source=source,
             metadata=dict(identity_metadata or {}),
             max_active_jobs_per_session=int(
@@ -338,10 +375,6 @@ class HeartbeatController:
 
         if "enabled" in patch:
             patch["enabled"] = self._strict_bool(patch["enabled"], field="enabled")
-        if "delete_after_run" in patch:
-            patch["delete_after_run"] = self._strict_bool(
-                patch["delete_after_run"], field="delete_after_run"
-            )
 
         if patch.get("enabled") is True:
             target_max_runs = patch.get("max_runs", existing.max_runs)
@@ -519,10 +552,5 @@ class HeartbeatController:
             "statuses": list(HEARTBEAT_STATUSES),
             "sources": list(HEARTBEAT_SOURCES),
             "run_count_semantics": "increments for succeeded and failed attempts only",
-            "deprecated_fields": {
-                "delete_after_run": (
-                    "retained for compatibility; it completes and preserves the job "
-                    "record after an attempted run"
-                )
-            },
+            "deprecated_fields": {},
         }

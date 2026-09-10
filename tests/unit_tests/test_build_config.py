@@ -74,7 +74,7 @@ def test_write_updates_only_python_runtime_and_static_package_metadata(tmp_path:
     assert 'name = "workswarm-tui"' in tui_pyproject
     assert 'version = "1.2.3.beta4"' in tui_pyproject
     assert "VERSION = '1.2.3.beta4'" in runtime_config
-    assert "DMG_FILENAME = 'workswarm-1.2.3.beta4-macos.dmg'" in runtime_config
+    assert "DMG_FILENAME = 'WorkSwarm-1.2.3.beta4-macos.dmg'" in runtime_config
 
 
 def test_check_detects_version_drift_before_write(tmp_path: Path) -> None:
@@ -122,9 +122,9 @@ def test_shell_and_batch_values_are_emitted_directly_from_pyproject(tmp_path: Pa
     batch = render_batch(config)
 
     assert "BUILD_VERSION=1.2.3.beta4" in shell
-    assert "BUILD_DMG_FILENAME=workswarm-1.2.3.beta4-macos.dmg" in shell
+    assert "BUILD_DMG_FILENAME=WorkSwarm-1.2.3.beta4-macos.dmg" in shell
     assert 'set "BUILD_VERSION=1.2.3.beta4"' in batch
-    assert 'set "BUILD_SETUP_FILENAME=workswarm-1.2.3.beta4-windows.exe"' in batch
+    assert 'set "BUILD_SETUP_FILENAME=WorkSwarm-1.2.3.beta4-windows.exe"' in batch
     assert render_runtime_python(config).count("1.2.3.beta4") >= 4
 
 

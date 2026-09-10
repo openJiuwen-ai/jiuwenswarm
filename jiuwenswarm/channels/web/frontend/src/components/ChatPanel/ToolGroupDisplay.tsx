@@ -8,8 +8,10 @@ import {
   isSymphonyCommandTool,
 } from '../../utils/symphonyCommandDisplay';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
+import { AgentAvatar } from '../AgentAvatar';
 import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
+import { MarkdownRenderer } from '../MarkdownRenderer/MarkdownRenderer';
 import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
 
 interface ToolGroupDisplayProps {
@@ -17,11 +19,14 @@ interface ToolGroupDisplayProps {
   notices?: string[];
   showAvatar?: boolean;
   teamLayout?: boolean;
+  agentTemplateName?: string;
   collapseSkillTreeWhenContentStarts?: boolean;
   viewedSkillIds?: string[];
 }
 
 type ToolStatusTone = 'success' | 'warning' | 'error' | 'pending';
+// 结果内容框为 168px，流程图只对齐工具栏下方的内框。
+const TOOL_FLOWCHART_CANVAS_MIN_HEIGHT = 168;
 
 function ToolStatusIcon({
   tone,
@@ -171,6 +176,8 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
   const resultWordCount = isSymphonyCommandTool(toolCall.name) && result
     ? countResultWords(result.result)
     : null;
+  const isSymphonyComposeGraph = toolCall.name === 'symphony_compose_graph' || result?.toolName === 'symphony_compose_graph';
+  const mermaid = isSymphonyComposeGraph ? result?.mermaid : undefined;
 
   return (
     <div className="tool-tree-item__detail" data-testid="chat-panel-tool-execution-details">
@@ -230,7 +237,29 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
             )}
           </div>
           {result.skillTree && <SkillTreePath tree={result.skillTree} stepIntervalMs={0} />}
-          {(!result.skillTree || result.result) && (
+          {mermaid ? (
+            <>
+              <pre
+                className={clsx(
+                  'tool-tree-item__detail-pre',
+                  failed && 'is-failed',
+                  result.skillTree && 'mt-2'
+                )}
+              >
+                {formatToolResult(result.result)}
+              </pre>
+              <div className="tool-tree-item__detail-raw" data-testid="chat-panel-tool-result-mermaid">
+                <div className="tool-tree-item__detail-label">
+                  {t('chatUi.toolResult.flowchart')}
+                </div>
+                <MarkdownRenderer
+                  content={`\`\`\`mermaid\n${mermaid}\n\`\`\``}
+                  mermaidCanvasMinHeight={TOOL_FLOWCHART_CANVAS_MIN_HEIGHT}
+                  testId="chat-panel-tool-result-mermaid-renderer"
+                />
+              </div>
+            </>
+          ) : (!result.skillTree || result.result) && (
             <pre
               className={clsx(
                 'tool-tree-item__detail-pre',
@@ -361,6 +390,7 @@ export function ToolGroupDisplay({
   notices = [],
   showAvatar = true,
   teamLayout = false,
+  agentTemplateName,
   collapseSkillTreeWhenContentStarts = false,
   viewedSkillIds: turnViewedSkillIds = [],
 }: ToolGroupDisplayProps) {
@@ -403,10 +433,20 @@ export function ToolGroupDisplay({
     >
       {showAvatar ? (
         <div className="pt-0.5 tool-group-frame__avatar" data-testid="chat-panel-tool-group-avatar">
-          <TeamMemberAvatar member="team_leader" />
+          {!teamLayout && agentTemplateName ? (
+            <AgentAvatar agentId={agentTemplateName} alt="" />
+          ) : (
+            <TeamMemberAvatar member="team_leader" />
+          )}
         </div>
       ) : null}
       <div className="min-w-0">
+        {beamSearch && (
+          <BeamSearchTree
+            progress={beamSearch}
+            autoCollapse={collapseSkillTreeWhenContentStarts}
+          />
+        )}
         <div className="tool-tree" data-testid="chat-panel-tool-tree">
           {notices.length > 0 && (
             <div className="tool-tree__notices" data-testid="chat-panel-tool-tree-notices">
@@ -470,12 +510,6 @@ export function ToolGroupDisplay({
           <SkillTreePath
             trees={skillTrees}
             viewedSkillIds={viewedSkillIds}
-            autoCollapse={collapseSkillTreeWhenContentStarts}
-          />
-        )}
-        {beamSearch && (
-          <BeamSearchTree
-            progress={beamSearch}
             autoCollapse={collapseSkillTreeWhenContentStarts}
           />
         )}

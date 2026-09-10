@@ -163,6 +163,13 @@ export interface AskUserQuestionPayload {
   planApprovalKind?: string;
   planContent?: string;
   planLanguage?: 'cn' | 'en';
+  /** SwarmFlow human 交互元数据（source === 'swarmflow_human' 时存在） */
+  swarmflowMeta?: {
+    run_id: string;
+    correlation_id: string;
+    agent_id: string;
+    agent_name: string;
+  };
 }
 
 /**

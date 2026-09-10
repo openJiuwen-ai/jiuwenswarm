@@ -139,7 +139,7 @@ export function ContextUsageIndicator() {
     };
   }, [closeDetail, detailOpen]);
 
-  if (mode !== 'agent' || !activeSessionId || !snapshot) return null;
+  if ((mode !== 'agent' && mode !== 'team') || !activeSessionId || !snapshot) return null;
 
   const notReported = t('chat.contextUsage.notReported');
   const { occupancy_rate: rate, input_tokens: used, limit_tokens: limit } = snapshot.context_window;
@@ -148,7 +148,7 @@ export function ContextUsageIndicator() {
   const ringPercent = rate === null ? null : getContextRingPercent(rate);
   const overviewUsed = used === null ? notReported : formatContextTokens(used);
   const overviewLimit = limit === null ? notReported : formatContextLimitTokens(limit);
-  const displayCacheRate = cacheRate === null ? notReported : formatContextPercent(cacheRate);
+  const displayCacheRate = cacheRate === null ? null : formatContextPercent(cacheRate);
   const categories = [
     ...CONTEXT_USAGE_CATEGORY_KEYS.flatMap((key) => {
       const part = snapshot.parts[key];
@@ -230,10 +230,12 @@ export function ContextUsageIndicator() {
               <span>{t('chat.contextUsage.title')}</span>
               <strong>{hoverMetric}</strong>
             </div>
-            <div className="context-usage-tooltip__row">
-              <span>{t('chat.contextUsage.kvCacheHitRate')}</span>
-              <strong>{displayCacheRate}</strong>
-            </div>
+            {displayCacheRate !== null && (
+              <div className="context-usage-tooltip__row">
+                <span>{t('chat.contextUsage.kvCacheHitRate')}</span>
+                <strong>{displayCacheRate}</strong>
+              </div>
+            )}
           </div>,
           document.body,
         )}
@@ -301,10 +303,12 @@ export function ContextUsageIndicator() {
                 <p className="context-usage-detail__empty">{t('chat.contextUsage.noBreakdown')}</p>
               )}
 
-              <div className="context-usage-detail__kv">
-                <span>{t('chat.contextUsage.kvCacheHitRate')}</span>
-                <strong>{displayCacheRate}</strong>
-              </div>
+              {displayCacheRate !== null && (
+                <div className="context-usage-detail__kv">
+                  <span>{t('chat.contextUsage.kvCacheHitRate')}</span>
+                  <strong>{displayCacheRate}</strong>
+                </div>
+              )}
             </div>
           </div>,
           document.body,

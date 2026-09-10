@@ -6,6 +6,33 @@ export type DesktopSaveResult = {
 export type DesktopSaveApiResult = Promise<boolean | DesktopSaveResult> | boolean | DesktopSaveResult;
 
 export type DesktopSaveOutcome = 'saved' | 'cancelled' | 'failed';
+export type BlobSaveTransport = 'browser-download' | 'browser-file-picker' | 'desktop';
+
+export interface BlobSaveResult {
+  outcome: DesktopSaveOutcome;
+  transport: BlobSaveTransport;
+}
+
+export interface BlobSaveOptions {
+  preferBrowserFilePicker?: boolean;
+}
+
+interface BrowserWritableFileStream {
+  write: (data: Blob) => Promise<void>;
+  close: () => Promise<void>;
+}
+
+interface BrowserFileHandle {
+  createWritable: () => Promise<BrowserWritableFileStream>;
+}
+
+type BrowserFilePicker = (options: {
+  suggestedName: string;
+  types: Array<{
+    description: string;
+    accept: Record<string, string[]>;
+  }>;
+}) => Promise<BrowserFileHandle>;
 
 const DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024;
 
@@ -44,7 +71,33 @@ export function downloadBlob(blob: Blob, filename: string): void {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function saveBlobWithBrowserFilePicker(
+  blob: Blob,
+  filename: string,
+  picker: BrowserFilePicker,
+): Promise<DesktopSaveOutcome> {
+  try {
+    const mimeType = blob.type.split(';', 1)[0] || 'application/octet-stream';
+    const suffixMatch = filename.match(/(\.[a-zA-Z0-9]+)$/);
+    const handle = await picker({
+      suggestedName: filename,
+      types: [{
+        description: 'Export file',
+        accept: { [mimeType]: suffixMatch === null ? [] : [suffixMatch[1]] },
+      }],
+    });
+    const writable = await handle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return 'saved';
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') return 'cancelled';
+    console.error('Browser file save failed:', error);
+    return 'failed';
+  }
 }
 
 function blobChunkToBase64(blob: Blob): Promise<string> {
@@ -115,16 +168,34 @@ async function saveBlobToDesktop(blob: Blob, filename: string, api: DesktopBlobS
   }
 }
 
-export async function saveBlob(blob: Blob, filename: string): Promise<DesktopSaveOutcome> {
+export async function saveBlobWithResult(
+  blob: Blob,
+  filename: string,
+  options: BlobSaveOptions = {},
+): Promise<BlobSaveResult> {
   if (!window.pywebview) {
+    const picker = (window as Window & { showSaveFilePicker?: BrowserFilePicker }).showSaveFilePicker;
+    if (options.preferBrowserFilePicker && picker !== undefined) {
+      return {
+        outcome: await saveBlobWithBrowserFilePicker(blob, filename, picker.bind(window)),
+        transport: 'browser-file-picker',
+      };
+    }
     downloadBlob(blob, filename);
-    return 'saved';
+    return { outcome: 'saved', transport: 'browser-download' };
   }
 
   const api = getDesktopBlobSaveApi();
   if (!api) {
     console.error('Desktop blob save API is unavailable');
-    return 'failed';
+    return { outcome: 'failed', transport: 'desktop' };
   }
-  return saveBlobToDesktop(blob, filename, api);
+  return {
+    outcome: await saveBlobToDesktop(blob, filename, api),
+    transport: 'desktop',
+  };
+}
+
+export async function saveBlob(blob: Blob, filename: string): Promise<DesktopSaveOutcome> {
+  return (await saveBlobWithResult(blob, filename)).outcome;
 }

@@ -44,7 +44,8 @@ class UserTurn:
         files: ``chat.send`` files mapping (``uploaded_documents`` / ``uploaded_images``).
         trusted_dirs: Directories the client declared as trusted, if any.
         skills: Skill names explicitly selected by the client, if any.
-        metadata: Request metadata carrying sender / chat_type / interaction context.
+        metadata: Request metadata carrying sender / chat_type / interaction /
+            automation context.
     """
 
     text: Any
@@ -91,22 +92,23 @@ class UserTurn:
             if statusline_dispatch:
                 content = statusline_dispatch
 
-        envelope = self._build_envelope(content)
-        rendered = self._interaction_prefix() + _lead_in(self.channel, self.language)
+        prompt_channel = self._prompt_channel()
+        envelope = self._build_envelope(content, prompt_channel)
+        rendered = self._interaction_prefix() + _lead_in(prompt_channel, self.language)
         rendered += json.dumps(envelope, ensure_ascii=False)
         return rendered
 
-    def _build_envelope(self, content: Any) -> dict[str, Any]:
+    def _build_envelope(self, content: Any, prompt_channel: str) -> dict[str, Any]:
         """Assemble the JSON envelope body for ``content``."""
-        is_system = self.channel in _SYSTEM_CHANNELS
+        is_system = prompt_channel in _SYSTEM_CHANNELS
         now = datetime.now(timezone(timedelta(hours=8)))
         envelope: dict[str, Any] = {
-            "source": "system" if is_system else self.channel,
+            "source": "system" if is_system else prompt_channel,
             "timezone": "Asia/Shanghai",
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "preferred_response_language": self.language,
             "content": content,
-            "type": self.channel if is_system else "user input",
+            "type": prompt_channel if is_system else "user input",
         }
         # Scheduled and heartbeat turns carry no user upload.
         if not is_system:
@@ -120,6 +122,15 @@ class UserTurn:
         envelope.update(self._sender_fields())
         envelope.update(self._skill_scene_fields())
         return envelope
+
+    def _prompt_channel(self) -> str:
+        """Return the model-visible channel for this turn."""
+        if not self.metadata:
+            return self.channel
+        automation = self.metadata.get("automation")
+        if isinstance(automation, dict) and automation.get("kind") == "heartbeat":
+            return "heartbeat"
+        return self.channel
 
     def _resolve_skills(self, content: Any) -> list[str]:
         """Resolve skill names from the explicit list or the message text.
@@ -182,11 +193,22 @@ def _lead_in(channel: str, language: str) -> str:
     if language == "zh":
         if channel == "cron":
             return "你收到一条消息，对于查询类任务必须输出查询到的内容，不要只回复确认，不要记录到memory：\n"
+        if channel == "heartbeat":
+            return (
+                "当前为 Heartbeat 自动任务：仅执行 content 明确指定的任务；"
+                "除非 content 明确要求，否则不得改变任务目标或管理 Heartbeat 任务：\n"
+            )
         return "你收到一条消息：\n"
     if channel == "cron":
         return (
             "You receive a new message. For query tasks, you must output the queried content"
             "—don't just reply with confirmation, don't record to memory:\n"
+        )
+    if channel == "heartbeat":
+        return (
+            "This is an automated Heartbeat task. Execute only the task explicitly "
+            "specified in content; do not change its objective or manage Heartbeat "
+            "jobs unless content explicitly requires it:\n"
         )
     return "You receive a new message:\n"
 

@@ -62,16 +62,22 @@ Reviewer Feedback 链路不会创建或更新成员私有 Skill 副本。统一�
 如果希望立即为某个 Skill 触发演进，可以输入：
 
 ```bash
-/evolve <skill_name>
+/evolve <skill_name> [user_intent]
 ```
+
+- `<skill_name>`：必填，目标 Skill 名称。
+- `[user_intent]`：可选，本次演进希望关注的用户意图/方向描述，将作为 review 提示词的一部分；省略时由系统按默认方向扫描。
 
 例如：
 
 ```bash
 /evolve xlsx
+/evolve xlsx 改进表格数字格式化的边界处理
 ```
 
 系统会扫描最近的对话和执行记录，为该 Skill 生成演进经验，并显示生成结果。
+
+> **Team 模式注意事项**：Team 模式下 `/evolve` 仅支持演进 Swarm Skill / Team Skill（kind 为 `swarm-skill` 或 `team-skill`）；普通 Skill 不允许在 Team 模式下演进，需切回普通模式触发。
 
 ![手动触发](../assets/images/skill演进_手动触发.png)
 
@@ -80,10 +86,10 @@ Reviewer Feedback 链路不会创建或更新成员私有 Skill 副本。统一�
 想知道哪些 Skill 有待固化的演进经验，可以输入：
 
 ```bash
-/evolve list
+/evolve_list <skill_name> [--sort score]
 ```
 
-系统会列出所有包含待演进记录的 Skill 及具体内容摘要。
+系统会列出指定 Skill 的待演进记录及具体内容摘要。
 
 ![信息总览](../assets/images/skill演进_查看和整理经验.png)
 
@@ -306,7 +312,7 @@ SignalDetector 基于规则工作，不需要调用 LLM，因此响应速度快�
 └─────────────────────────────┘
 ```
 
-> **关于固化（Solidify）**：演进经验不需要单独的固化步骤。当 Skill 被调用时，系统自动将 `evolutions.json` 中的经验与 `SKILL.md` 一起加载。如需将经验永久合并到 `SKILL.md` 中，可使用 `/evolve rebuild <skill_name>` 命令重建 Skill。
+> **关于固化（Solidify）**：演进经验不需要单独的固化步骤。当 Skill 被调用时，系统自动将 `evolutions.json` 中的经验与 `SKILL.md` 一起加载。如需将经验永久合并到 `SKILL.md` 中，可使用 `/evolve_rebuild <skill_name> [user_intent]` 命令重建 Skill。
 
 ### 4.4 演进记录存储
 

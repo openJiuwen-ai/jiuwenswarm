@@ -49,6 +49,18 @@ test('uses the latest rendered card when the live user id differs from persisted
   assert.equal(latestTurnDiffKeyForMessages(messages, [latestTurn], bindings), 'cs-1');
 });
 
+test('uses the latest cron final card when its persisted user message is not rendered', () => {
+  const latestTurn = turn({
+    request_id: 'cron-nightly:1720000000',
+    user_message_id: 'cron-nightly:1720000000:user',
+    assistant_message_id: 'cron-nightly:1720000000:assistant',
+  });
+  const messages = [{ id: 'cron-final-nightly:1720000000', role: 'assistant' }];
+  const bindings = new Map([['cron-final-nightly:1720000000', [latestTurn]]]);
+
+  assert.equal(latestTurnDiffKeyForMessages(messages, [latestTurn], bindings), 'cs-1');
+});
+
 test('does not expose an older bound card when the newest user turn has no diff', () => {
   const previousTurn = turn({ user_message_id: 'persisted-user-1' });
   const messages = [

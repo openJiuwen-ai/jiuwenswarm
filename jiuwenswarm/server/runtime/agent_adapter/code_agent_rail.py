@@ -383,6 +383,16 @@ class CodeAgentRail(DeepAgentRail):
         self._unregister_agent_tool(agent)
         self._agent = None
 
+    def set_workspace_dir(self, workspace_dir: str) -> None:
+        """Rebind custom-agent discovery to the current Code workspace."""
+        normalized = str(workspace_dir or "").strip()
+        if not normalized or normalized == self._workspace_dir:
+            return
+        self._workspace_dir = normalized
+        if self._agent is not None:
+            self._unregister_agent_tool(self._agent)
+            self._register_agent_tool()
+
     def _register_agent_tool(self) -> None:
         custom_agents = self._load_custom_agents()
         if not custom_agents:

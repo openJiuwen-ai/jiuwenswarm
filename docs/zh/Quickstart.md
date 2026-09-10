@@ -48,12 +48,16 @@ jiuwenswarm-init
 jiuwenswarm-start
 ```
 
-启动成功后，终端会显示后端服务运行状态：
+启动成功后，终端会显示服务端口信息横幅：
 
 ```
-[INFO] Starting JiuwenSwarm server...
-[INFO] API server running at http://localhost:8000
-[INFO] Web server running at http://localhost:5173
+[INFO] ================================================================
+[INFO]   服务已启动，端口信息如下：
+[INFO]   ✓ Web UI                http://localhost:5173
+[INFO]   ✓ AgentServer WebSocket  ws://localhost:18092
+[INFO]   ✓ Gateway HTTP           http://localhost:19001
+[INFO]   ✓ WebChannel WebSocket   ws://localhost:19000/ws
+[INFO] ================================================================
 ```
 
 当看到类似上述提示时，表示服务已启动，在浏览器中访问 `http://localhost:5173` 即可使用。
@@ -156,11 +160,6 @@ cd jiuwenswarm
   - 静态运行前端服务（适合生产环境部署）
     ```bash
     npm run build
-    # 复制构建产物到用户工作区
-    # Windows:
-    xcopy /E /I dist %USERPROFILE%\.jiuwenswarm\channels\web\frontend\dist
-    # macOS/Linux:
-    cp -r dist ~/.jiuwenswarm/channels/web/frontend/dist
     cd ../../../
     uv run jiuwenswarm-init
     uv run jiuwenswarm-start
@@ -213,11 +212,6 @@ cd jiuwenswarm
   - 静态运行前端服务（适合生产环境部署）
     ```bash
     npm run build
-    # 复制构建产物到用户工作区
-    # Windows:
-    xcopy /E /I dist %USERPROFILE%\.jiuwenswarm\channels\web\frontend\dist
-    # macOS/Linux:
-    cp -r dist ~/.jiuwenswarm/channels/web/frontend/dist
     cd ../../../
     jiuwenswarm-init
     jiuwenswarm-start
@@ -266,7 +260,7 @@ cd jiuwenswarm
 | `model_name` | `MODEL_NAME` | 模型名称，如 `deepseek-chat`、`gpt-4o` | ✅ 必填 |
 | `api_base` | `API_BASE` | 模型 API 基础 URL，如 `https://api.deepseek.com` | ✅ 必填 |
 | `api_key` | `API_KEY` | 模型 API 密钥 | ✅ 必填 |
-| `model_provider` | `MODEL_PROVIDER` | 模型提供商，如 `OpenAI`、`DeepSeek`、`Anthropic` | ✅ 必填 |
+| `model_provider` | `MODEL_PROVIDER` | 模型提供商，如 `OpenAI`、`DeepSeek`、`DashScope`、`SiliconFlow`、`InferenceAffinity`、`OpenRouter`、`OpenAIAccount` | ✅ 必填 |
 
 **配置后测试：**
 
@@ -277,9 +271,9 @@ cd jiuwenswarm
 
 **注意事项：**
 
-- **保存后自动重启**：点击保存后，后端会自动重启以加载新配置
+- **保存后自动热重载**：点击保存后，系统会自动热重载配置；多数配置项即时生效，少数变更可能触发进程重启
 - **必填项**：以上四项是模型运行的基础配置，必须填写完整才能正常使用
-- **模型供应商**：`OpenAI`、`DashScope`、`SiliconFlow`、`InferenceAffinity`
+- **模型供应商**：`OpenAI`、`DeepSeek`、`DashScope`、`SiliconFlow`、`InferenceAffinity`、`OpenRouter`、`OpenAIAccount`
 
 ## 开始对话
 

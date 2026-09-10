@@ -25,6 +25,7 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _validate_wechat_numeric_params,
 )
 from jiuwenswarm.gateway.heartbeat import HeartbeatServiceUnavailableError
+from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 
 
 class FakeWebChannel:
@@ -71,6 +72,21 @@ class FakeAgentClient:
             self.reload_finished.set()
 
 
+class _FakeModelsResponse:
+    def __init__(self, model_ids):
+        self.status_code = 200
+        self._model_ids = model_ids
+
+    def json(self):
+        return {
+            "object": "list",
+            "data": [
+                {"id": model_id, "object": "model", "owned_by": "system"}
+                for model_id in self._model_ids
+            ],
+        }
+
+
 class _CapturingSessionListAgentClient:
     """捕获 E2A 信封并返回标准 session.list 响应（供 Web 转发断言）。"""
 
@@ -109,7 +125,87 @@ class _CapturingSessionListAgentClient:
         )()
 
 
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_applies_alibaba_allowlist(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *args, **kwargs: _FakeModelsResponse(
+            [
+                "qwen-turbo-0919",
+                "MiniMax-M2.5",
+                "MiniMax/MiniMax-M2.5",
+                "qwen3.8-max",
+                "kimi/kimi-k3",
+            ]
+        ),
+    )
+
+    await channel.methods["vendors.fetch_models"](
+        object(),
+        "req-fetch-models",
+        {"vendor_key": "alibaba", "plan": "custom_api", "api_key": "secret"},
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"] == {
+        "models": ["qwen3.8-max", "MiniMax-M2.5"],
+        "source": "remote",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *args, **kwargs: _FakeModelsResponse(
+            ["deepseek-chat", "vendor/deepseek-chat"]
+        ),
+    )
+
+    await channel.methods["vendors.fetch_models"](
+        object(),
+        "req-fetch-models",
+        {"vendor_key": "deepseek", "plan": "custom_api", "api_key": "secret"},
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"] == {
+        "models": ["deepseek-chat", "vendor/deepseek-chat"],
+        "source": "remote",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_falls_back_when_no_alibaba_models_match(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *args, **kwargs: _FakeModelsResponse(["MiniMax/MiniMax-M2.5"]),
+    )
+
+    await channel.methods["vendors.fetch_models"](
+        object(),
+        "req-fetch-models",
+        {"vendor_key": "alibaba", "plan": "custom_api", "api_key": "secret"},
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"]["source"] == "preset"
+    assert response["payload"]["models"]
+    assert response["payload"]["reason"] == (
+        "no remote models matched the Alibaba plan allowlist"
+    )
 
 
 class _OfflineRemoteAgentClient:
@@ -239,6 +335,7 @@ async def test_heartbeat_web_methods_preserve_health_check_aliases_and_session()
         {
             "name": "n",
             "prompt": "p",
+            "max_runs": None,
             "channel_id": "other",
             "session_id": "other-session",
             "schedule": {"type": "interval", "interval_seconds": 120},
@@ -254,6 +351,7 @@ async def test_heartbeat_web_methods_preserve_health_check_aliases_and_session()
     )
     created = controller.calls[1][1]
     assert created["channel_id"] == "web"
+    assert created["max_runs"] is None
     assert created["session_id"] == "session-current"
     assert created["source"] == "web_rpc"
     assert controller.calls[1][2] == "user-current"
@@ -1198,81 +1296,39 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("raw_config", "expected"),
-    [
-        ({}, "true"),
-        ({"rsi": {"enabled": False}}, "false"),
-    ],
-)
-async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
-    channel = FakeWebChannel()
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
-    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["config.get"](
-        object(),
-        "req-get-rsi",
-        {},
-        "sess-get-rsi",
-    )
-
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["rsi_enabled"] == expected
-
-
-@pytest.mark.asyncio
-async def test_config_save_all_persists_rsi_switch(monkeypatch):
+async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
-    reload_options_seen: list[dict] = []
-
     monkeypatch.setattr(
         app_web_handlers,
         "get_config_raw",
-        lambda: {"rsi": {"enabled": True}},
+        lambda: {"trajectory_ui": {"enabled": False}},
     )
     monkeypatch.setattr(
         app_web_handlers,
         "get_config",
-        lambda: {"rsi": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False}},
     )
     monkeypatch.setattr(
         app_web_handlers,
-        "update_rsi_enabled_in_config",
+        "update_trajectory_ui_in_config",
         lambda enabled: persisted.append(enabled),
     )
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
 
-    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
-        del updated_keys, env_updates, config_payload
-        reload_options_seen.append(dict(reload_options))
-        return True
+    await channel.methods["config.get"](object(), "req-trajectory-get", {}, "session")
+    assert channel.responses[-1]["payload"]["trajectory_ui_enabled"] == "false"
 
-    _register_web_handlers(
-        WebHandlersBindParams(
-            channel=channel,
-            on_config_saved=on_config_saved,
-        )
-    )
-
-    await channel.methods["config.save_all"](
+    await channel.methods["config.set"](
         object(),
-        "req-set-rsi",
-        {"config": {"rsi_enabled": False}},
-        "sess-set-rsi",
+        "req-trajectory-set",
+        {"trajectory_ui_enabled": "true"},
+        "session",
     )
-
-    assert persisted == [False]
-    assert reload_options_seen == [{
-        "target_channel_id": "web",
-        "reload_scopes": ["agent_runtime"],
-    }]
-    assert channel.responses[-1]["payload"] == {
-        "updated": ["rsi_enabled"],
-        "applied_without_restart": True,
-        "models_count": None,
-    }
+    assert persisted == [True]
+    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
+    change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_enabled"])
+    assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
 
 
 def test_media_capability_config_uses_multimodal_hot_reload_scope():
@@ -1964,8 +2020,44 @@ def test_codex_dependency_install_is_not_started_twice(monkeypatch):
     release_install.set()
 
     assert first and first["status"] == "running"
+    assert first["progress_kind"] == "installer_activity"
     assert second and second["status"] == "running"
     assert len(install_calls) == 1
+
+
+def test_claude_dependency_install_running_snapshot_does_not_reenter_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailOnReentryLock:
+        def __init__(self) -> None:
+            self.locked = False
+
+        def __enter__(self) -> None:
+            if self.locked:
+                raise AssertionError("Claude dependency lock was re-entered")
+            self.locked = True
+
+        def __exit__(self, *_args: object) -> None:
+            self.locked = False
+
+    lock = FailOnReentryLock()
+    monkeypatch.setattr(app_web_handlers, "_CLAUDE_DEPENDENCY_INSTALL_LOCK", lock)
+    monkeypatch.setitem(app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS, "claude", lock)
+    monkeypatch.setattr(app_web_handlers, "_activate_managed_external_cli_paths_if_needed", lambda: None)
+    monkeypatch.setattr(app_web_handlers.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    app_web_handlers._CLAUDE_DEPENDENCY_INSTALL_STATUS.update({
+        "status": "running",
+        "phase": "downloading",
+        "error": "",
+        "log_tail": [],
+    })
+
+    snapshot = app_web_handlers._ensure_claude_dependency_available_or_start_install()
+
+    assert snapshot is not None
+    assert snapshot["status"] == "running"
+    assert snapshot["phase"] == "downloading"
 
 
 @pytest.mark.parametrize(
@@ -2030,6 +2122,7 @@ def test_external_cli_dependency_install_starts_managed_runtime_in_frozen_deskto
 
     assert first and first["status"] == "running"
     assert first["phase"] == "preparing"
+    assert first["progress_kind"] == "download_metrics"
     assert second and second["status"] == "running"
     assert len(created_threads) == 1
     assert created_threads[0].target is app_web_handlers._run_managed_external_cli_runtime_install
@@ -2081,7 +2174,7 @@ def test_optional_dependency_install_times_out_after_one_hour(
     monkeypatch.setattr(
         app_web_handlers,
         "_build_optional_dependency_install_args",
-        lambda _package: ["installer"],
+        lambda _package, _cli_agent: ["installer"],
     )
     monkeypatch.setattr(
         app_web_handlers.subprocess,
@@ -2152,6 +2245,46 @@ async def test_external_cli_codex_install_status_returns_snapshot():
     assert payload["download_attempt"] == 3
     assert payload["download_max_attempts"] == 5
     assert payload["switching_source"] is False
+
+
+@pytest.mark.parametrize("cli_agent", ["claude", "codex"])
+def test_external_cli_install_success_clears_download_artifact_state(cli_agent: str) -> None:
+    lock = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
+    status = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    with lock:
+        status.update({
+            "status": "running",
+            "phase": "downloading",
+            "downloaded_bytes": 1024,
+            "total_bytes": 4096,
+            "bytes_per_second": 512.0,
+            "eta_seconds": 6.0,
+            "artifact_index": 1,
+            "artifact_count": 1,
+            "current_package": "claude-agent-sdk",
+            "current_version": "0.2.115",
+            "download_attempt": 2,
+            "download_max_attempts": 5,
+            "switching_source": True,
+        })
+
+    app_web_handlers._update_external_cli_dependency_install_status(
+        cli_agent,
+        app_web_handlers._external_cli_dependency_install_succeeded_updates(),
+    )
+
+    snapshot = app_web_handlers._snapshot_external_cli_dependency_install_status(cli_agent)
+    assert snapshot["status"] == "succeeded"
+    assert snapshot["phase"] == "succeeded"
+    assert snapshot["downloaded_bytes"] == 0
+    assert snapshot["total_bytes"] == 0
+    assert snapshot["artifact_index"] == 0
+    assert snapshot["artifact_count"] == 0
+    assert snapshot["current_package"] == ""
+    assert snapshot["current_version"] == ""
+    assert snapshot["download_attempt"] == 0
+    assert snapshot["download_max_attempts"] == 0
+    assert snapshot["switching_source"] is False
 
 
 @pytest.mark.asyncio
@@ -2441,6 +2574,14 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
     assert result["path"] == str(script_path)
 
 
+def test_detect_external_cli_agent_reports_directory_path(tmp_path) -> None:
+    result = _detect_external_cli_agent("claude", str(tmp_path))
+
+    assert result["status"] == "unsupported"
+    assert result["reason"] == "directory"
+    assert result["message"] == f"{tmp_path} is a directory"
+
+
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     raw = {
         "symphony": {
@@ -2461,7 +2602,8 @@ def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     assert "symphony_dynamic_graph_enabled" not in flat
     assert "symphony_orchestration_mode" not in flat
     assert flat["skill_retrieval_enabled"] == "true"
-    assert flat["skill_retrieval_index_enabled"] == "true"
+    assert "skill_retrieval_index_enabled" not in flat
+    assert "skill_retrieval_index_recommendation_shown" not in flat
     assert flat["skill_retrieval_max_results"] == "17"
     assert "skill_retrieval_build_branching_factor" not in flat
 
@@ -2504,9 +2646,7 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     )
 
     assert recorded_symphony == [{"enabled": True}]
-    assert recorded_skill_retrieval == [
-        {"enabled": False, "index": {"enabled": True}}
-    ]
+    assert recorded_skill_retrieval == [{"enabled": False}]
     assert channel.responses[-1] == {
         "id": "req-3",
         "ok": True,
@@ -2514,7 +2654,6 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
             "updated": [
                 "symphony_enabled",
                 "skill_retrieval_enabled",
-                "skill_retrieval_index_enabled",
             ],
             "applied_without_restart": True,
         },
@@ -3290,3 +3429,81 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
     assert "_persisted" not in items[1]
     assert items[1]["base64Data"] == small_b64
     assert 1 not in uploaded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({}, "true"),
+        ({"rsi": {"enabled": False}}, "false"),
+    ],
+)
+async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](
+        object(),
+        "req-get-rsi",
+        {},
+        "sess-get-rsi",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["rsi_enabled"] == expected
+
+
+@pytest.mark.asyncio
+async def test_config_save_all_persists_rsi_switch(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    reload_options_seen: list[dict] = []
+
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config_raw",
+        lambda: {"rsi": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config",
+        lambda: {"rsi": {"enabled": False}},
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_rsi_enabled_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        reload_options_seen.append(dict(reload_options))
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            on_config_saved=on_config_saved,
+        )
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-set-rsi",
+        {"config": {"rsi_enabled": False}},
+        "sess-set-rsi",
+    )
+
+    assert persisted == [False]
+    assert reload_options_seen == [{
+        "target_channel_id": "web",
+        "reload_scopes": ["agent_runtime"],
+    }]
+    assert channel.responses[-1]["payload"] == {
+        "updated": ["rsi_enabled"],
+        "applied_without_restart": True,
+        "models_count": None,
+    }

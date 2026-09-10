@@ -63,6 +63,22 @@ class SwarmBuildContext(BuildContext):
             internal, matching single-agent behaviour.
         team_id: Team name.
         team_ws_root: Team shared workspace root path.
+        task_workspace_root: Root of the shared final-deliverables directory
+            a projectless team member is told about (``team-workspace/artifacts
+            /<date>/chat-<n>/``). Only set when ``project_dir`` is None — a
+            team member bound to a project keeps deliverables in the project
+            and these stay None so the runtime prompt rail's
+            ``has_projectless_task`` branch stays off. The per-member
+            ``task_work_dir`` (the member workspace the prompt names as the
+            temporary working directory) is resolved in the rail from each
+            member's workspace root, not carried here — it is per-member.
+        team_outputs_dir: The final-deliverables directory (under
+            ``task_workspace_root``). Declared here explicitly (though the
+            base ``BuildContext`` also carries it once openjiuwen catches up)
+            so construction does not depend on the pinned openjiuwen version,
+            and the openjiuwen configurator and the team policy rail can
+            surface it to the team info body without a platform-specific
+            accessor. None when project_dir is set.
         team_skill_visibility_path: Team-level Skill visibility metadata file
             (``team_ws_root/skills-visibility.json``). Replaces the former
             ``team_skills_dir``: a team owns no Skill directory of its own, only
@@ -99,6 +115,8 @@ class SwarmBuildContext(BuildContext):
     disable_teammate_worktree: bool = False
     team_id: str = ""
     team_ws_root: str | None = None
+    task_workspace_root: str | None = None
+    team_outputs_dir: str | None = None
     team_skill_visibility_path: str | None = None
     global_skills_dir: str | None = None
     trajectory_span_processor: Any = None
@@ -138,6 +156,28 @@ class SwarmBuildContext(BuildContext):
             return None
         return str(ojw_paths.member_skill_visibility_path(self.team_id, member_name))
 
+    def resolve_member_work_dir(self) -> str | None:
+        """Resolve this member's isolated temporary working directory.
+
+        Named ``resolve_*`` on purpose: like
+        :meth:`resolve_member_skill_visibility_path`, it can only be computed
+        once the per-member view (``member_name``) is filled by ``setup_agent``
+        through ``derive()``. The member work directory lives under the shared
+        ``task_workspace_root`` (``team-workspace/artifacts/<date>/chat-<n>/
+        work/<member_slug>/``), so it is per-member and never travels in
+        :meth:`to_seed`.
+
+        Returns:
+            The absolute per-member work directory path, or ``None`` when no
+            shared artifact root is configured (a member bound to a project,
+            whose deliverables stay in the project).
+        """
+        if not self.task_workspace_root:
+            return None
+        from jiuwenswarm.common.team_artifacts import resolve_member_work_dir
+
+        return str(resolve_member_work_dir(self.task_workspace_root, self.member_name))
+
     def to_seed(self) -> dict[str, Any]:
         """Export the serializable per-team / per-process fields as a seed.
 
@@ -165,6 +205,8 @@ class SwarmBuildContext(BuildContext):
             "disable_teammate_worktree": self.disable_teammate_worktree,
             "team_id": self.team_id,
             "team_ws_root": self.team_ws_root,
+            "task_workspace_root": self.task_workspace_root,
+            "team_outputs_dir": self.team_outputs_dir,
             "team_skill_visibility_path": self.team_skill_visibility_path,
             "global_skills_dir": self.global_skills_dir,
         }
@@ -203,6 +245,8 @@ class SwarmBuildContext(BuildContext):
             ),
             team_id=seed.get("team_id", ""),
             team_ws_root=seed.get("team_ws_root"),
+            task_workspace_root=seed.get("task_workspace_root"),
+            team_outputs_dir=seed.get("team_outputs_dir"),
             team_skill_visibility_path=seed.get("team_skill_visibility_path"),
             global_skills_dir=seed.get("global_skills_dir"),
             trajectory_span_processor=trajectory_span_processor,

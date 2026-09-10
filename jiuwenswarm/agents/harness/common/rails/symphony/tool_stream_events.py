@@ -25,9 +25,6 @@ class SymphonyToolStreamHandler:
     _RESULT_FIELDS = (
         "graph_status",
         "graph_build",
-        "direct_display",
-        "continue_after_display",
-        "followup_action",
     )
 
     @classmethod
@@ -62,37 +59,6 @@ class SymphonyToolStreamHandler:
         for key in self._RESULT_FIELDS:
             if key in raw_output:
                 payload[key] = raw_output[key]
-
-    def request_force_finish(
-        self,
-        ctx: AgentCallbackContext,
-        tool_call: Any,
-        result: Any,
-    ) -> None:
-        if not self.matches(tool_call):
-            return
-        content = self._direct_display_content(result)
-        if not content or self._continues_after_display(result):
-            return
-        ctx.request_force_finish({"output": content, "result_type": "answer"})
-
-    @staticmethod
-    def _direct_display_content(result: Any) -> str:
-        if not isinstance(result, dict) or not bool(result.get("direct_display")):
-            return ""
-        rendered = result.get("content")
-        return rendered.strip() if isinstance(rendered, str) else ""
-
-    @staticmethod
-    def _continues_after_display(result: Any) -> bool:
-        if not isinstance(result, dict):
-            return False
-        value = result.get("continue_after_display")
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value != 0
-        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _tool_name(tool_call: Any) -> str:

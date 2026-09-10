@@ -18,9 +18,13 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _build_context_assemble_rail,
     _build_context_processor_rail,
 )
+from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
+    SymphonyRetrievalCompactProcessorConfig,
+)
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.observability.session_delete import trajectory_session_accepts_records
 from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStoreError
 
 
@@ -739,16 +743,17 @@ def test_sync_team_identity_metadata_updates_only_for_create_kinds(monkeypatch):
     TeamHelpersHarness.sync_team_identity_metadata_for_test(
         channel_id="web",
         session_id="team_sess_001",
-        mode="team",
         ready_team_name="demo-team",
         activation_kind=RunActionKind.CREATE.value,
     )
 
+    # 只写 team_name，不碰 metadata.mode（sync_team_identity_metadata 曾写死
+    # mode="team" 会盖掉 chat 轮次落盘的 team.work.plan，制造 session.plan_status
+    # 误报 false 的空窗）。
     assert updates == [
         {
             "session_id": "team_sess_001",
             "channel_id": "web",
-            "mode": "team",
             "team_name": "demo-team",
         }
     ]
@@ -771,7 +776,6 @@ def test_sync_team_identity_metadata_skips_recover_kinds(monkeypatch):
     TeamHelpersHarness.sync_team_identity_metadata_for_test(
         channel_id="web",
         session_id="team_sess_001",
-        mode="team",
         ready_team_name="new-team",
         activation_kind=RunActionKind.NEW_TEAM_IN_SESSION.value,
     )
@@ -796,7 +800,6 @@ def test_sync_team_identity_metadata_keeps_existing_name_on_mismatch(monkeypatch
     TeamHelpersHarness.sync_team_identity_metadata_for_test(
         channel_id="web",
         session_id="team_sess_001",
-        mode="team",
         ready_team_name="new-team",
         activation_kind=RunActionKind.CREATE.value,
     )
@@ -3061,6 +3064,7 @@ async def test_handle_session_delete_initializes_persistent_checkpointer(monkeyp
     assert heartbeat_delete_prepared == ["sess-agent-1"]
     assert heartbeat_deleted == ["sess-agent-1"]
     assert not session_dir.exists()
+    assert trajectory_session_accepts_records("sess-agent-1") is False
     assert fake_ws.sent == [
         {
             "response_id": "req-session-delete",
@@ -3205,6 +3209,7 @@ async def test_handle_session_delete_keeps_state_when_runtime_drain_fails(
     assert evict_calls == []
     assert release_calls == []
     assert session_dir.exists()
+    assert trajectory_session_accepts_records("sess-agent-busy") is True
     assert fake_ws.sent == [
         {
             "response_id": "req-session-delete-busy",
@@ -3290,6 +3295,7 @@ async def test_handle_session_delete_unbinds_team_session(monkeypatch, tmp_path)
     assert delete_calls == [{"session_id": "sess-team-1", "reason": "session.delete: "}]
     assert cleared_metadata_cache == ["sess-team-1"]
     assert not session_dir.exists()
+    assert trajectory_session_accepts_records("sess-team-1") is True
     binding = binding_store.get("research_team")
     assert binding is not None
     assert binding.session_ids == ("sess-keep",)
@@ -3629,7 +3635,7 @@ def test_build_context_processor_rail_uses_summary_offloader_config(monkeypatch)
 
     assert isinstance(rail, FakeContextProcessorRail)
     assert rail.preset is True
-    assert rail.processors == [
+    assert rail.processors[:-1] == [
         (
             "MessageSummaryOffloader",
             {
@@ -3639,6 +3645,8 @@ def test_build_context_processor_rail_uses_summary_offloader_config(monkeypatch)
         ),
         ("DialogueCompressor", {"tokens_threshold": 100000}),
     ]
+    assert rail.processors[-1][0] == "SymphonyRetrievalCompactProcessor"
+    assert isinstance(rail.processors[-1][1], SymphonyRetrievalCompactProcessorConfig)
 
 
 def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypatch):
@@ -3663,9 +3671,11 @@ def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypat
     )
 
     assert isinstance(rail, FakeContextProcessorRail)
-    assert rail.processors == [
+    assert rail.processors[:-1] == [
         ("MessageSummaryOffloader", {"tokens_threshold": 6000}),
     ]
+    assert rail.processors[-1][0] == "SymphonyRetrievalCompactProcessor"
+    assert isinstance(rail.processors[-1][1], SymphonyRetrievalCompactProcessorConfig)
 
 
 def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
@@ -3689,7 +3699,9 @@ def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
 
     assert isinstance(rail, FakeContextProcessorRail)
     assert rail.preset is True
-    assert rail.processors is None
+    assert rail.processors == [
+        ("SymphonyRetrievalCompactProcessor", SymphonyRetrievalCompactProcessorConfig())
+    ]
     assert rail.session_memory == {
         "trigger_tokens": 12000,
         "update_mode": "direct_replace",

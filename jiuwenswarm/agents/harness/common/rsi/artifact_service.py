@@ -93,7 +93,7 @@ class RsiArtifactService:
 
     def best_artifact(self, task_id: str) -> dict[str, Any] | None:
         """``rsi.task.get`` / ``rsi.report.get`` 的 best_artifact 对象（web §3.4 语义）。"""
-        best = self._latest_snapshot(task_id)
+        best = self._latest_snapshot(task_id, include_root=False)
         if best is None:
             return None
         return {
@@ -121,11 +121,13 @@ class RsiArtifactService:
                 logger.warning("[RSI] artifact 路径无效跳过: role=%s path=%s", art.role, raw)
         return usable
 
-    def _latest_snapshot(self, task_id: str) -> Path | None:
+    def _latest_snapshot(self, task_id: str, *, include_root: bool = True) -> Path | None:
         snapshots_dir = Path(self.tasks_root) / task_id / _SNAPSHOT_SUBDIR
         if not snapshots_dir.is_dir():
             return None
         candidates = [p for p in snapshots_dir.glob("A*.zip") if p.is_file()]
+        if not include_root:
+            candidates = [p for p in candidates if p.stem != "AROOT"]
         if not candidates:
             return None
         return max(candidates, key=lambda p: p.stat().st_mtime)

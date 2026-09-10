@@ -423,8 +423,7 @@
 
 .code-changes-card {
   container-type: inline-size;
-  width: min(720px, calc(100% - 24px));
-  margin: 14px auto;
+  width: 100%;
   overflow: hidden;
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
@@ -783,23 +782,6 @@ button.code-environment__row:disabled {
   background: transparent;
   color: var(--color-code-toolbar-icon);
   cursor: pointer;
-}
-
-/* data-tooltip 自适应提示：useAdaptiveTooltip 以 portal 渲染到 body，
-   水平位置由 JS 计算（默认居中，空间不足贴边/收进视口），这里只管外观 */
-.adaptive-tooltip {
-  box-sizing: border-box;
-  max-width: 240px;
-  padding: 7px 16px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 6px;
-  background: var(--color-surface-popover);
-  box-shadow: var(--effect-shadow-lg);
-  color: var(--color-text-primary);
-  font-size: 12px;
-  line-height: 18px;
-  white-space: nowrap;
-  pointer-events: none;
 }
 
 .code-review__icon-button:hover {

@@ -10,6 +10,7 @@
  * - hideAssignee:是否隐藏任务行负责人头像（非集群模式复用时传 true）
  * - renderTaskIcon?: 自定义状态图标与标题之间的内容（如人物图标），不传则按 hideAssignee 决定是否显示成员头像
  * - renderStatusIcon?: 自定义第一个状态图标，不传则按任务状态取默认图标
+ * - statusIconAtEnd?:  状态图标放到行尾（标题之后），默认放在行首
  * - maxCollapsedCount?: 折叠态最大显示任务数（未传或 expanded 为 true 时不截断）
  * - expanded?:         是否已展开全部（默认 false）
  * - emptyText?:        空列表时显示的文本（不传则默认 t('common.noData')）
@@ -26,7 +27,7 @@ import statusProcessingIcon from '../../assets/work-mode/status-processing.svg';
 import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
 import statusWaitingIcon from '../../assets/work-mode/status-waiting.svg';
 import statusWarningIcon from '../../assets/work-mode/status-warning.svg';
-import teamLeaderIcon from '../../assets/teamleader.svg';
+import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TaskColumnKey, type TeamMember } from './shared';
 
 const compactStatusIcons: Record<TaskColumnKey, string> = {
@@ -42,6 +43,7 @@ export interface CompactTaskListProps {
   hideAssignee: boolean;
   renderTaskIcon?: (task: SessionTeamTask) => ReactNode;
   renderStatusIcon?: (task: SessionTeamTask) => ReactNode;
+  statusIconAtEnd?: boolean;
   maxCollapsedCount?: number;
   expanded?: boolean;
   emptyText?: string;
@@ -55,6 +57,7 @@ export function CompactTaskList({
   hideAssignee,
   renderTaskIcon,
   renderStatusIcon,
+  statusIconAtEnd = false,
   maxCollapsedCount,
   expanded = false,
   emptyText,
@@ -85,6 +88,18 @@ export function CompactTaskList({
         const assigneeName = getMemberDisplayName(task.assignee || '');
         const title = getBoardTaskTitle(task);
         const columnKey = getTaskColumnKey(task);
+        const statusIcon = renderStatusIcon ? (
+          renderStatusIcon(task)
+        ) : (
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden">
+            <img
+              src={compactStatusIcons[columnKey]}
+              className={`h-4 w-4 shrink-0 ${columnKey === 'running' ? 'animate-spin' : ''}`}
+              aria-hidden="true"
+              data-testid="team-area-task-planning-task-status-icon"
+            />
+          </span>
+        );
         return (
           <div
             key={task.task_id}
@@ -105,16 +120,7 @@ export function CompactTaskList({
                 : undefined
             }
           >
-            {renderStatusIcon ? (
-              renderStatusIcon(task)
-            ) : (
-              <img
-                src={compactStatusIcons[columnKey]}
-                className={`h-4 w-4 shrink-0 ${columnKey === 'running' ? 'animate-spin' : ''}`}
-                aria-hidden="true"
-                data-testid="team-area-task-planning-task-status-icon"
-              />
-            )}
+            {!statusIconAtEnd && statusIcon}
             {renderTaskIcon
               ? renderTaskIcon(task)
               : !hideAssignee &&
@@ -126,20 +132,10 @@ export function CompactTaskList({
             <span className="flex-1 text-sm leading-[22px] text-text truncate" data-testid="team-area-task-planning-task-title">
               {title}
             </span>
+            {statusIconAtEnd && statusIcon}
           </div>
         );
       })}
     </div>
-  );
-}
-
-function UnassignedTeamAvatar({ className }: { className?: string }) {
-  return (
-    <img
-      src={teamLeaderIcon}
-      className={className}
-      alt=""
-      aria-hidden="true"
-    />
   );
 }

@@ -270,9 +270,12 @@ export function ModelsSettings() {
         delete next[key];
         return next;
       });
+      const detail = error instanceof Error ? error.message.trim() : '';
       showValidationToast({
         success: false,
-        message: error instanceof Error ? error.message : t('settingsPanel.models.validationFailed'),
+        message: detail
+          ? t('settingsPanel.models.validationFailedWithDetail', { detail })
+          : t('settingsPanel.models.validationFailed'),
       });
     }
   };

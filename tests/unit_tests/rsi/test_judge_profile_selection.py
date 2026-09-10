@@ -76,6 +76,9 @@ async def test_selected_judger_evaluates_response_with_configured_threshold(tmp_
     )
     invoke.assert_awaited_once()
     assert result.method == "llm_as_judge"
-    assert result.score == score
+    # Agent Core publishes a binary case score while retaining the continuous
+    # assessment separately for optimization and diagnostics.
+    assert result.score == float(passed)
+    assert result.metadata["parsed"]["overall_score"] == score
     assert result.passed is passed
     assert result.metadata["pass_threshold"] == 0.8

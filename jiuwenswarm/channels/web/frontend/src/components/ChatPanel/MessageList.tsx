@@ -8,6 +8,7 @@ import { ToolGroupDisplay } from './ToolGroupDisplay';
 import { useNow, formatDurationPrecise } from './chatTimelineClock';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
+import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import {
@@ -63,17 +64,19 @@ function formatElapsedCoarse(ms: number): string {
 /** 与 buildTurnTimeline 中异常回退阈值一致：超过则视为 startMs 脏数据。 */
 const MAX_PLAUSIBLE_TURN_MS = 24 * 60 * 60 * 1000;
 
-function TurnElapsed({
+export function TurnElapsed({
   startMs,
   endMs,
   isLastTurn,
   showAvatar,
+  agentTemplateName,
   teamLayout,
 }: {
   startMs: number;
   endMs: number;
   isLastTurn: boolean;
   showAvatar?: boolean;
+  agentTemplateName?: string;
   teamLayout: boolean;
 }) {
   const { t } = useTranslation();
@@ -118,8 +121,14 @@ function TurnElapsed({
   return (
     <div className={clsx('completed-work-col', teamLayout && 'completed-work-col--team')} data-testid="chat-panel-turn-elapsed-block">
       <div className="completed-work-col__avatar pt-0.5">
-        <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
-        <span className="chat-avatar-name">Jiuwen</span>
+        {!teamLayout && agentTemplateName ? (
+          <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
+        ) : (
+          <>
+            <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
+            <span className="chat-avatar-name">Jiuwen</span>
+          </>
+        )}
       </div>
       {timeLine}
     </div>
@@ -136,6 +145,7 @@ function CompletedWorkChip({
   showAvatar,
   teamLayout,
   elapsedMs = 0,
+  agentTemplateName,
 }: {
   variant: 'turn' | 'streak';
   thinkingCount?: number;
@@ -146,6 +156,7 @@ function CompletedWorkChip({
   showAvatar: boolean;
   teamLayout: boolean;
   elapsedMs?: number;
+  agentTemplateName?: string;
 }) {
   const { t } = useTranslation();
   // 耗时并入 turn 折叠条文案（原底部 TurnElapsed 已移除），位置唯一不再打架。
@@ -157,7 +168,6 @@ function CompletedWorkChip({
       : formatStreakSummaryLabel(t, thinkingCount, toolCount, outcomeTone);
   // 图标统一用 status-waiting 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
   const applyOutcome = variant === 'streak';
-  const showPartialBadge = applyOutcome && outcomeTone === 'partial';
   const toneClass = !applyOutcome
     ? 'is-success'
     : outcomeTone === 'error'
@@ -184,15 +194,6 @@ function CompletedWorkChip({
         <WaitingStatusIcon />
       </span>
       <span className="completed-work-chip__label" data-testid="chat-panel-completed-work-chip-label">{label}</span>
-      {showPartialBadge ? (
-        <span
-          className="completed-work-chip__badge is-partial"
-          data-testid="chat-panel-completed-work-chip-badge"
-          data-variant="partial"
-        >
-          {t('chatUi.workOutcomePartial')}
-        </span>
-      ) : null}
       <span className={clsx('tool-tree-item__disclosure', expanded && 'is-open')} aria-hidden="true">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
           <path strokeLinecap="round" strokeLinejoin="round" d="m8 6 4 4-4 4" />
@@ -230,8 +231,14 @@ function CompletedWorkChip({
     >
       {showAvatar ? (
         <div className="completed-work-col__avatar">
-          <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
-          <span className="chat-avatar-name">Jiuwen</span>
+          {agentTemplateName ? (
+            <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
+          ) : (
+            <>
+              <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
+              <span className="chat-avatar-name">Jiuwen</span>
+            </>
+          )}
         </div>
       ) : null}
       {chip}
@@ -241,10 +248,12 @@ function CompletedWorkChip({
 
 function ReasoningSegmentBlock({
   segment,
+  agentTemplateName,
   showAvatar,
   teamLayout,
 }: {
   segment: ReasoningSegment;
+  agentTemplateName?: string;
   showAvatar: boolean;
   teamLayout: boolean;
 }) {
@@ -253,6 +262,7 @@ function ReasoningSegmentBlock({
   const userToggledRef = useRef(false);
   const prevClosedRef = useRef(segment.closed);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
 
   useEffect(() => {
     if (!prevClosedRef.current && segment.closed && !userToggledRef.current) {
@@ -275,7 +285,7 @@ function ReasoningSegmentBlock({
       return;
     }
     const el = bodyRef.current;
-    if (!el) {
+    if (!el || !autoScrollRef.current) {
       return;
     }
     el.scrollTop = el.scrollHeight;
@@ -321,7 +331,18 @@ function ReasoningSegmentBlock({
       </button>
       <div className={clsx('reasoning-panel__collapse', open && 'is-open')}>
         <div className="reasoning-panel__collapse-inner">
-          <div ref={bodyRef} className="reasoning-panel__body" data-testid="chat-panel-reasoning-panel-body">
+          <div
+            ref={bodyRef}
+            className="reasoning-panel__body"
+            data-testid="chat-panel-reasoning-panel-body"
+            onScroll={() => {
+              const el = bodyRef.current;
+              if (!el) {
+                return;
+              }
+              autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+            }}
+          >
             {body}
           </div>
         </div>
@@ -355,8 +376,14 @@ function ReasoningSegmentBlock({
     >
       {showAvatar ? (
         <div className="reasoning-col__avatar">
-          <TeamMemberAvatar member="team_leader" />
-          <span className="chat-avatar-name">Jiuwen</span>
+          {agentTemplateName ? (
+            <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
+          ) : (
+            <>
+              <TeamMemberAvatar member="team_leader" />
+              <span className="chat-avatar-name">Jiuwen</span>
+            </>
+          )}
         </div>
       ) : null}
       {content}
@@ -386,6 +413,23 @@ export function ChatTimelineList({
     () => buildRenderItems(buildTimelineItems(messages, executions, reasoningSegments), isTeamMode, isProcessing),
     [messages, executions, reasoningSegments, isTeamMode, isProcessing]
   );
+  const agentTemplateNameByTurn = useMemo(() => {
+    const names = new Map<number, string>();
+    for (const item of renderItems) {
+      const name =
+        item.type === 'reasoning'
+          ? item.segment.agentTemplateName?.trim()
+          : item.type === 'toolGroup'
+            ? item.agentTemplateName?.trim()
+          : item.type === 'message' && item.message.role === 'assistant'
+            ? item.message.agentTemplateName?.trim()
+            : undefined;
+      if (name) {
+        names.set(item.turnId, name);
+      }
+    }
+    return names;
+  }, [renderItems]);
   const settlingForStreak = isSettlingForStreak(renderItems, Date.now());
   const settleNow = useNow(settlingForStreak);
   const streakNowMs = settlingForStreak ? settleNow : Date.now();
@@ -520,6 +564,7 @@ export function ChatTimelineList({
                     elapsedMs={completedWorkDurationMs(meta)}
                     showAvatar
                     teamLayout={isTeamMode}
+                    agentTemplateName={item.message.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
                   />
                 ) : null}
                 {/* 折叠态：交付物与代码变更卡需留在文档流内，不能放进被 absolute 隐藏的 collapse */}
@@ -601,6 +646,7 @@ export function ChatTimelineList({
                 elapsedMs={completedWorkDurationMs(meta)}
                 showAvatar
                 teamLayout={isTeamMode}
+                agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               />
             );
           }
@@ -621,6 +667,7 @@ export function ChatTimelineList({
                 // 仅当这条 streak 本身吃到了本轮顶部头像时才画；后续 streak 一律不画
                 showAvatar={!turnFoldable && isTopStreakInTurn && streak.showAvatar}
                 teamLayout={isTeamMode}
+                agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               />
             );
           }
@@ -656,6 +703,7 @@ export function ChatTimelineList({
             item.type === 'reasoning' ? (
               <ReasoningSegmentBlock
                 segment={item.segment}
+                agentTemplateName={item.segment.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
               />
@@ -665,6 +713,7 @@ export function ChatTimelineList({
                 notices={item.notices}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
+                agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
                 collapseSkillTreeWhenContentStarts={item.collapseSkillTreeWhenContentStarts}
                 viewedSkillIds={item.viewedSkillIds}
               />
@@ -709,6 +758,7 @@ export function ChatTimelineList({
               endMs={range.endMs}
               isLastTurn={item.isLastTurn}
               showAvatar={item.showAvatar}
+              agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               teamLayout={isTeamMode}
             />
           );

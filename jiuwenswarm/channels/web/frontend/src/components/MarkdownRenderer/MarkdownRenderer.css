@@ -217,6 +217,11 @@
   cursor: grab;
 }
 
+.mermaid-canvas--tool-result {
+  overflow: auto;
+  touch-action: auto;
+}
+
 .mermaid-canvas--dragging {
   cursor: grabbing;
 }
@@ -226,6 +231,12 @@
   position: absolute;
   left: 50%;
   top: 50%;
+}
+
+.mermaid-canvas--tool-result .mermaid-svg-wrapper {
+  position: relative;
+  left: auto;
+  top: auto;
 }
 
 /* Prevent Mermaid from squeezing wide diagrams into the container width. */

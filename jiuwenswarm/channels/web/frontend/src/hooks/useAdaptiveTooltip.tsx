@@ -4,11 +4,12 @@ import { createPortal } from 'react-dom';
 const VIEWPORT_MARGIN = 8;
 const TOOLTIP_GAP = 6;
 
+type TooltipPlacement = 'top' | 'bottom';
+
 type TooltipState = {
   text: string;
-  top: number;
-  buttonLeft: number;
-  buttonRight: number;
+  buttonRect: { left: number; right: number; top: number; bottom: number };
+  placement: TooltipPlacement;
 };
 
 type TooltipHandlers = {
@@ -18,19 +19,31 @@ type TooltipHandlers = {
   onBlur: () => void;
 };
 
+interface UseAdaptiveTooltipOptions {
+  offsetX?: number;
+  placement?: TooltipPlacement;
+}
+
 /**
  * data-tooltip 的自适应定位方案：默认水平居中于触发按钮下方，
  * 右侧空间不足时提示右缘对齐按钮右缘，左侧空间不足时左缘对齐按钮左缘，
  * 仍放不下时收进视口内（VIEWPORT_MARGIN 兜底）。
  *
+ * offsetX: 相对触发元素宽度的百分比偏移（负值向左），0 = 居中，-50 = 左移半个触发元素宽度。
+ * placement: 'top' 显示在触发元素上方，'bottom'（默认）显示在下方。
+ *
  * 用法：
  *   const { tooltip, handlers } = useAdaptiveTooltip();
+ *   const { tooltip, handlers } = useAdaptiveTooltip({ offsetX: -50 });
+ *   const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top' });
  *   <button data-tooltip="提示" {...handlers}>...</button>
  *   {tooltip}
  */
-export function useAdaptiveTooltip(): { tooltip: ReactNode; handlers: TooltipHandlers } {
+export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { tooltip: ReactNode; handlers: TooltipHandlers } {
+  const offsetPct = options?.offsetX ?? 0;
+  const placement = options?.placement ?? 'bottom';
   const [state, setState] = useState<TooltipState | null>(null);
-  const [left, setLeft] = useState<number | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number; visible: boolean } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
 
   const show = useCallback((event: { currentTarget: EventTarget | null }) => {
@@ -38,36 +51,61 @@ export function useAdaptiveTooltip(): { tooltip: ReactNode; handlers: TooltipHan
     const text = el?.getAttribute('data-tooltip') ?? '';
     if (!el || !text) return;
     const rect = el.getBoundingClientRect();
-    setLeft(null);
-    setState({ text, top: rect.bottom + TOOLTIP_GAP, buttonLeft: rect.left, buttonRight: rect.right });
+    setPosition(null);
+    setState({
+      text,
+      buttonRect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
+      placement,
+    });
+  }, [placement]);
+
+  const hide = useCallback(() => {
+    setState(null);
+    setPosition(null);
   }, []);
 
-  const hide = useCallback(() => setState(null), []);
-
-  // 测量真实宽度后计算水平位置：空间够则居中，不够则贴边/收进视口
   useLayoutEffect(() => {
     if (!state) {
-      setLeft(null);
+      setPosition(null);
       return;
     }
     const el = tooltipRef.current;
     if (!el) return;
     const width = el.offsetWidth;
-    const centered = state.buttonLeft + (state.buttonRight - state.buttonLeft) / 2 - width / 2;
+    const height = el.offsetHeight;
+    const { left, right, top, bottom } = state.buttonRect;
+    const buttonWidth = right - left;
+    const shift = (buttonWidth * offsetPct) / 100;
+    const centered = left + buttonWidth / 2 - width / 2 - shift;
     const maxLeft = window.innerWidth - VIEWPORT_MARGIN - width;
+    let finalLeft: number;
     if (centered < VIEWPORT_MARGIN) {
-      setLeft(Math.max(VIEWPORT_MARGIN, Math.min(state.buttonLeft, maxLeft)));
+      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left - shift, maxLeft));
     } else if (centered > maxLeft) {
-      setLeft(Math.min(Math.max(state.buttonRight - width, VIEWPORT_MARGIN), maxLeft));
+      finalLeft = Math.min(Math.max(right - width - shift, VIEWPORT_MARGIN), maxLeft);
     } else {
-      setLeft(centered);
+      finalLeft = centered;
     }
-  }, [state]);
+    const viewportHeight = window.innerHeight;
+    let finalTop: number;
+    if (state.placement === 'top') {
+      const topPos = top - TOOLTIP_GAP - height;
+      const spaceBelow = viewportHeight - bottom - TOOLTIP_GAP;
+      finalTop = topPos >= VIEWPORT_MARGIN ? topPos : (spaceBelow >= height ? bottom + TOOLTIP_GAP : topPos);
+    } else {
+      const bottomPos = bottom + TOOLTIP_GAP;
+      const spaceAbove = top - TOOLTIP_GAP;
+      finalTop = bottomPos + height <= viewportHeight - VIEWPORT_MARGIN ? bottomPos : (spaceAbove >= height ? top - TOOLTIP_GAP - height : bottomPos);
+    }
+    setPosition({ top: finalTop, left: finalLeft, visible: true });
+  }, [state, offsetPct]);
 
-  // 滚动/缩放后锚点位置失效，直接隐藏，避免提示悬在错误位置
   useEffect(() => {
     if (!state) return;
-    const hideTooltip = () => setState(null);
+    const hideTooltip = () => {
+      setState(null);
+      setPosition(null);
+    };
     window.addEventListener('resize', hideTooltip);
     window.addEventListener('scroll', hideTooltip, true);
     return () => {
@@ -83,9 +121,9 @@ export function useAdaptiveTooltip(): { tooltip: ReactNode; handlers: TooltipHan
           className="adaptive-tooltip"
           style={{
             position: 'fixed',
-            top: state.top,
-            left: left ?? -9999,
-            visibility: left === null ? 'hidden' : 'visible',
+            top: position ? position.top : -9999,
+            left: position ? position.left : -9999,
+            visibility: position?.visible ? 'visible' : 'hidden',
             zIndex: 10000,
           }}
           role="tooltip"

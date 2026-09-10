@@ -32,12 +32,16 @@
   --color-text-secondary: #777777;
   --color-text-secondary-rgb: 119, 119, 119;
   --color-text-tertiary: #52525b;
+  --color-text-weak: #595959;
+  --color-text-weak-rgb: 89, 89, 89;
   --color-text-placeholder: #808080;
   --color-text-meta: #808080;
   --color-text-suggestion-label: #282828;
   --color-text-card: #18181b;
   --color-text-inverse: #ffffff;
   --color-text-link: #0067d1;
+  --color-text-divider: #dbdbdb;
+  --color-text-divider-rgb: 219, 219, 219;
 
   /* Borders */
   --color-border-default: #e4e4e7;
@@ -69,7 +73,6 @@
   --color-button-hover: #fafafa;
   --color-brand-secondary: #0d9488;
   --color-tool-tab-active-bg: #e6e6e6;
-  --color-tool-tab-hover-bg: #fafafa;
   --color-artifact-toolbar-icon: #191919;
   --color-artifact-toolbar-icon-disabled: #c0c0c0;
   --color-artifact-toolbar-divider: #e5e5e5;
@@ -157,6 +160,14 @@
   --color-skill-action-surface: #ffffff;
   --color-skill-action-text: #000000;
   --color-skill-action-hover: #f0f0f0;
+  --color-skill-card-action-surface: #f5f5f5;
+  --color-skill-card-action-hover-surface: #f0f7ff;
+  --color-skill-badge-multimodal-surface: #d5f2dc;
+  --color-skill-badge-multimodal-text: #029931;
+  --color-skill-evolution-card-surface: #fafafa;
+  --color-skill-notice-surface: #deecff;
+  --color-skill-dropzone-surface: #f5f5f5;
+  --color-skill-dropzone-hover-surface: #eeeeee;
   --color-skill-capsule-active: #0066ff;
   --color-team-event-surface: var(--color-surface-elevated);
   --color-team-event-summary-surface: transparent;
@@ -263,7 +274,9 @@
   --color-source-selected-surface: #eaeaeb;
   --color-option-disabled: #8c8c96;
   --color-control-emphasis: #191919;
+  --color-control-emphasis-rgb: 25, 25, 25;
   --color-control-emphasis-text: #ffffff;
+  --color-control-emphasis-text-rgb: 255, 255, 255;
   --color-control-emphasis-hover: #1f2937;
   --color-control-emphasis-hover-strong: #333333;
   --color-config-team-icon: rgb(217, 70, 239);
@@ -311,5 +324,7 @@
   --color-rsi-delta-down-bg: #ef44441a;
   --color-rsi-progress-track: #e4e3e3;
   --color-rsi-running-bg: #e5f6ef;
+  --color-switch-track-off: #c2c2c2;
+  --color-switch-track-on: #1476ff;
   color-scheme: light;
 }

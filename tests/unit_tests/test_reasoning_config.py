@@ -8,6 +8,7 @@ from jiuwenswarm.common.reasoning_config import (
     reasoning_config_for_level,
     reasoning_level_options,
     resolve_endpoint_profile_override,
+    resolve_sampling_override,
     validate_reasoning_level_for_model,
 )
 from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
@@ -35,6 +36,32 @@ def test_reasoning_level_aliases_are_canonicalized() -> None:
     assert normalize_reasoning_level("enabled") == "on"
     assert normalize_reasoning_level("ultra") == "max"
     assert reasoning_config_for_level("on") == {"mode": "enabled"}
+
+
+@pytest.mark.parametrize(
+    "api_base",
+    [
+        "https://api.moonshot.cn/v1",      # 自定义API(通用Token)
+        "https://api.kimi.com/coding/v1",  # Coding Plan
+    ],
+)
+def test_sampling_override_covers_both_moonshot_and_kimi_hosts(api_base: str) -> None:
+    assert resolve_sampling_override(api_base) == {"temperature": 1.0, "top_p": 0.95}
+
+
+def test_sampling_override_absent_for_other_hosts() -> None:
+    assert resolve_sampling_override("https://api.deepseek.com") is None
+    assert resolve_sampling_override(None) is None
+
+
+def test_inject_reasoning_params_forces_sampling_on_kimi_coding_plan() -> None:
+    # Kimi Coding Plan 端点(api.kimi.com)必须在推理参数注入时也强制覆盖到 1.0/0.95,
+    # 否则 core 默认 0.95 原样发厂商 -> 400 "invalid temperature: only 1 is allowed".
+    injected = inject_reasoning_params(
+        model_client_config={"api_base": "https://api.kimi.com/coding/v1", "model_name": "kimi-k2.7-code"},
+        model_config_obj={"temperature": 0.95, "top_p": 0.95},
+    )
+    assert injected == {"temperature": 1.0, "top_p": 0.95}
 
 
 def test_reasoning_level_options_follow_core_capability() -> None:

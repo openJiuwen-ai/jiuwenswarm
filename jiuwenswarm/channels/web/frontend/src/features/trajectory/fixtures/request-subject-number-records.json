@@ -1,0 +1,106 @@
+[
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "11111111111111111111111111111111", "spanId": "1000000000000001", "name": "llm.call",
+      "startTimeUnixNano": "1000000000", "endTimeUnixNano": "1100000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeated output\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "main" } },
+        { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "22222222222222222222222222222222", "spanId": "2000000000000002", "name": "llm.call",
+      "startTimeUnixNano": "2000000000", "endTimeUnixNano": "2100000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeated output\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "main" } },
+        { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "33333333333333333333333333333333", "spanId": "3000000000000003", "name": "llm.call",
+      "startTimeUnixNano": "3000000000", "endTimeUnixNano": "3100000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeated output\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "3" } },
+        { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "subagent-a" } },
+        { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "33333333333333333333333333333333", "spanId": "4000000000000004", "name": "llm.call",
+      "startTimeUnixNano": "3000000000", "endTimeUnixNano": "3200000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeated output\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "4" } },
+        { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "subagent-a" } },
+        { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "22222222222222222222222222222222", "spanId": "5000000000000005", "name": "llm.call",
+      "startTimeUnixNano": "5000000000", "endTimeUnixNano": "5100000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeated output\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "5" } },
+        { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "main" } },
+        { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "3" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "44444444444444444444444444444444", "spanId": "6000000000000006", "name": "llm.call",
+      "startTimeUnixNano": "6000000000", "endTimeUnixNano": "6100000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Repeated output\"}]}]" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "6" } },
+        { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "subagent-b" } },
+        { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "22222222222222222222222222222222", "spanId": "7000000000000007", "parentSpanId": "5000000000000005", "name": "tool.lookup",
+      "startTimeUnixNano": "5200000000", "endTimeUnixNano": "5300000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+        { "key": "gen_ai.tool.name", "value": { "stringValue": "lookup" } },
+        { "key": "openjiuwen.turn.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "main" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "tool" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  }
+]

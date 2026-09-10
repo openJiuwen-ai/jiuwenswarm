@@ -104,9 +104,30 @@ def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
     """
     p = params if isinstance(params, dict) else {}
     mcp = p.get("mcp")
+    agent_template_id = p.get("agent_template_name")
+    if isinstance(agent_template_id, str) and agent_template_id.strip():
+        try:
+            agent_template_id = package_manager.resolve_equipment_runtime_id(
+                "agent_templates", agent_template_id
+            )
+        except (TypeError, ValueError):
+            pass
+    plugin_ids = p.get("plugin_names")
+    if isinstance(plugin_ids, list):
+        resolved_plugin_ids: list[Any] = []
+        for item in plugin_ids:
+            if isinstance(item, str) and item.strip():
+                try:
+                    item = package_manager.resolve_equipment_runtime_id(
+                        "plugin_packages", item
+                    )
+                except (TypeError, ValueError):
+                    pass
+            resolved_plugin_ids.append(item)
+        plugin_ids = resolved_plugin_ids
     connectors = package_manager.collect_connectors_for_packages(
-        agent_template_id=p.get("agent_template_name"),
-        plugin_ids=p.get("plugin_names") if isinstance(p.get("plugin_names"), list) else None,
+        agent_template_id=agent_template_id,
+        plugin_ids=plugin_ids if isinstance(plugin_ids, list) else None,
         skip_missing=True,
     )
     out: list[str] = []
@@ -120,6 +141,32 @@ def compute_chat_send_mcp_needed(params: dict[str, Any] | None) -> list[str]:
         seen.add(name)
         out.append(name)
     return out
+
+
+def restore_chat_send_equipment_params(
+    session_id: str | None,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill omitted equipment fields from the session's persisted snapshot.
+
+    Explicit empty values are never overwritten: omission means "keep", while
+    ``""`` / ``[]`` mean "clear".
+    """
+    if not session_id:
+        return params
+    mode = str(params.get("mode") or "").strip().lower()
+    if mode == "auto_harness" or is_team_runtime_mode(mode):
+        return params
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_equipment,
+    )
+
+    saved = get_session_equipment(session_id)
+    for key in ("agent_template_name", "plugin_names", "mcp"):
+        if key not in params and key in saved:
+            value = saved[key]
+            params[key] = list(value) if isinstance(value, list) else value
+    return params
 
 
 def _schedule_symphony_session_feedback(
@@ -318,6 +365,82 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
             extra["skills"] = skills
 
     return _with_heartbeat_history_metadata(extra, params)
+
+
+def _web_agent_template_name(params: Any, channel_id: Any) -> str | None:
+    """Return the explicitly selected Agent id for a Web single-Agent turn."""
+    if str(channel_id or "").strip().lower() != "web":
+        return None
+    if not isinstance(params, dict):
+        return None
+    mode = str(params.get("mode") or "").strip().lower()
+    if mode == "auto_harness" or is_team_params(params):
+        return None
+    value = params.get("agent_template_name")
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _with_web_agent_template_metadata(
+    extra: dict[str, Any] | None,
+    params: Any,
+    channel_id: Any,
+    *,
+    event_type: str | None,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach the selected Agent id without changing non-Web event semantics."""
+    result = dict(extra or {})
+    if event_type not in {"chat.delta", "chat.final", "chat.reasoning", "chat.tool_call"}:
+        return result
+    if isinstance(payload, dict) and (
+        payload.get("slash_command")
+        or payload.get("source") in {"proactive_recommendation", "session_task_summary"}
+    ):
+        return result
+    if isinstance(params, dict) and (
+        params.get("slash_command")
+        or params.get("source") in {"proactive_recommendation", "session_task_summary"}
+    ):
+        return result
+    for candidate in (payload, params):
+        if not isinstance(candidate, dict):
+            continue
+        automation = candidate.get("automation")
+        if isinstance(automation, dict) and automation.get("kind") == "heartbeat":
+            return result
+    agent_template_name = _web_agent_template_name(params, channel_id)
+    if agent_template_name:
+        result["agent_template_name"] = agent_template_name
+    return result
+
+
+def _with_web_agent_template_payload(
+    payload: dict[str, Any] | None,
+    params: Any,
+    channel_id: Any,
+    *,
+    event_type: str | None = None,
+) -> dict[str, Any] | None:
+    """Copy a Web assistant payload with its request-scoped Agent identity."""
+    if not isinstance(payload, dict):
+        return payload
+    resolved_event_type = event_type or payload.get("event_type")
+    if not isinstance(resolved_event_type, str):
+        return payload
+    metadata = _with_web_agent_template_metadata(
+        None,
+        params,
+        channel_id,
+        event_type=resolved_event_type,
+        payload=payload,
+    )
+    agent_template_name = metadata.get("agent_template_name")
+    if not agent_template_name:
+        return payload
+    return {**payload, "agent_template_name": agent_template_name}
 
 
 def _compact_stats_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -635,6 +758,7 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_MARKETPLACE_REMOVE: "handle_skills_marketplace_remove",
     ReqMethod.SKILLS_MARKETPLACE_TOGGLE: "handle_skills_marketplace_toggle",
     ReqMethod.SKILLS_ONLINE_SEARCH: "handle_skills_online_search",
+    ReqMethod.SKILLS_ONLINE_SEARCH_INSTALL: "handle_skills_online_search_install",
     ReqMethod.SKILLS_SKILLNET_SEARCH: "handle_skills_skillnet_search",
     ReqMethod.SKILLS_SKILLNET_INSTALL: "handle_skills_skillnet_install",
     ReqMethod.SKILLS_SKILLNET_INSTALL_STATUS: "handle_skills_skillnet_install_status",
@@ -1644,10 +1768,18 @@ class JiuWenSwarm:
                 "handle_skills_import_upload",
                 "handle_skills_toggle",
                 "handle_skills_skillnet_install",
+                "handle_skills_online_search_install",
                 "handle_skills_clawhub_download",
                 "handle_skills_team_skills_hub_install",
             ]
-            if handler_name == "handle_skills_skillnet_install" and payload.get("pending"):
+            if (
+                handler_name
+                in {
+                    "handle_skills_skillnet_install",
+                    "handle_skills_online_search_install",
+                }
+                and payload.get("pending")
+            ):
                 _reload_after_skills = False
             if _reload_after_skills:
                 await self.create_instance()
@@ -1684,16 +1816,14 @@ class JiuWenSwarm:
                         f"rebuild Agent 失败: {exc}",
                     ) from exc
                 payload = {"success": True}
-            elif (
-                handler_name == "handle_skills_create_from_knowledge"
-                and self._is_skills_create_from_knowledge_followup(payload)
-            ):
-                payload = await self._run_skills_create_from_knowledge_silent(
-                    request, payload
-                )
-                if payload.get("success"):
-                    await self.create_instance()
-                    await self._reload_team_skill_rails(request.session_id)
+            elif handler_name == "handle_skills_create_from_knowledge":
+                if self._is_skills_create_from_knowledge_followup(payload):
+                    payload = await self._run_skills_create_from_knowledge_silent(
+                        request, payload
+                    )
+                    if payload.get("success"):
+                        await self.create_instance()
+                        await self._reload_team_skill_rails(request.session_id)
         except Exception as exc:
             logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
             err_payload: dict = {"error": str(exc), "message": str(exc)}
@@ -1864,10 +1994,13 @@ class JiuWenSwarm:
         metadata["skills_create_from_knowledge_silent"] = True
         metadata["scene"] = "create_skill"
 
+        # Windows 禁止路径分量含 ':'；用 '-' 隔离，避免 sessions 目录 mkdir 失败。
+        raw_rid = str(request.request_id or "").strip() or "anon"
+        safe_rid = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_rid).strip("._-") or "anon"
         return AgentRequest(
             request_id=f"{request.request_id}-knowledge-followup",
             channel_id=request.channel_id,
-            session_id=f"skills-knowledge:{request.request_id}",
+            session_id=f"skills-knowledge-{safe_rid}",
             chat_id=request.chat_id,
             req_method=ReqMethod.CHAT_SEND,
             params=params,
@@ -1904,6 +2037,8 @@ class JiuWenSwarm:
         skills = self._coerce_optional_str_list(payload.get("skills"))
         trusted_dirs = self._coerce_optional_str_list(payload.get("trusted_dirs"))
         input_file = str(payload.get("input_file") or "").strip()
+        skills_root = Path(self._skill_manager.skills_dir)
+        before_names = set(self._skill_manager.list_installed_skill_dir_names())
 
         try:
             chat_request = self._build_skills_knowledge_followup_request(
@@ -1918,8 +2053,30 @@ class JiuWenSwarm:
             async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
                 pass
 
-            result = self._skill_manager.finalize_create_from_knowledge(output_dir)
-            await self._refresh_skill_rails_after_change()
+            after_names = set(self._skill_manager.list_installed_skill_dir_names())
+            skip_names = {
+                "_marketplace",
+                "_pending_knowledge",
+                "skill-omni-creation",
+                "skill-creator",
+                "skill-creator-normal",
+                "skill-creator-router",
+                "swarmskill-creator",
+                "agent-creator",
+                "plugin-creator",
+            }
+            workspace_candidates = [
+                skills_root / name
+                for name in sorted(after_names - before_names)
+                if name not in skip_names
+            ]
+            result = self._skill_manager.finalize_create_from_knowledge(
+                output_dir,
+                workspace_candidates=workspace_candidates,
+                existing_skill_names=before_names,
+            )
+            if result.get("success"):
+                await self._refresh_skill_rails_after_change()
             return result
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -1997,10 +2154,14 @@ class JiuWenSwarm:
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
                 payload = {
-                    "templates": package_manager.list_agent_templates(params)
+                    "templates": await package_manager.list_agent_templates_with_hub(
+                        params
+                    )
                 }
             elif method == ReqMethod.AGENT_TEMPLATES_SHOW:
-                card = package_manager.show_agent_template(str(name or ""))
+                card = await package_manager.show_agent_template_with_hub(
+                    str(name or "")
+                )
                 if card is None:
                     raise ValueError(f"agent_template not found: {name!r}")
                 payload = {"template": card}
@@ -2013,14 +2174,20 @@ class JiuWenSwarm:
                     str(name or ""), str(params.get("path", ""))
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_LIST:
-                payload = {"packages": package_manager.list_plugin_packages(params)}
+                payload = {
+                    "packages": await package_manager.list_plugin_packages_with_hub(
+                        params
+                    )
+                }
             elif method == ReqMethod.PLUGIN_PACKAGES_SHOW:
-                card = package_manager.show_plugin_package(str(name or ""))
+                card = await package_manager.show_plugin_package_with_hub(
+                    str(name or "")
+                )
                 if card is None:
                     raise ValueError(f"plugin not found: {name!r}")
                 payload = {"package": card}
             elif method == ReqMethod.AGENT_TEMPLATES_INSTALL:
-                ok, payload = package_manager.install_equipment_gated(
+                ok, payload = await package_manager.install_equipment_from_hub_gated(
                     "agent_templates", params
                 )
                 if not ok:
@@ -2032,7 +2199,7 @@ class JiuWenSwarm:
                         metadata=request.metadata,
                     )
             elif method == ReqMethod.PLUGIN_PACKAGES_INSTALL:
-                ok, payload = package_manager.install_equipment_gated(
+                ok, payload = await package_manager.install_equipment_from_hub_gated(
                     "plugin_packages", params
                 )
                 if not ok:
@@ -2046,14 +2213,20 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_TEMPLATES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    await unload_live("agent_templates", str(name or ""))
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "agent_templates", name
+                    )
+                    await unload_live("agent_templates", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "agent_templates", params
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_UNINSTALL:
                 unload_live = getattr(self, "_unload_live_equipment", None)
                 if unload_live is not None:
-                    await unload_live("plugin_packages", str(name or ""))
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "plugin_packages", name
+                    )
+                    await unload_live("plugin_packages", runtime_name)
                 payload = package_manager.uninstall_equipment_with_notice(
                     "plugin_packages", params
                 )
@@ -2403,6 +2576,8 @@ class JiuWenSwarm:
             return heartbeat_response
 
         session_id = self._session_manager.get_session_id(request.session_id)
+        if isinstance(request.params, dict):
+            restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
         feedback_scheduled = False
 
@@ -2523,6 +2698,12 @@ class JiuWenSwarm:
                 raise
             if isinstance(content, str):
                 result.payload["content"] = content_str
+            result.payload = _with_web_agent_template_payload(
+                result.payload,
+                request.params,
+                request.channel_id,
+                event_type="chat.final",
+            )
             append_history_record(
                 session_id=session_id,
                 request_id=request.request_id,
@@ -2531,7 +2712,16 @@ class JiuWenSwarm:
                 event_type="chat.final",
                 content=content_str,
                 timestamp=time.time(),
-                extra=_with_heartbeat_history_metadata(None, request.params),
+                extra=_with_heartbeat_history_metadata(
+                    _with_web_agent_template_metadata(
+                        None,
+                        request.params,
+                        request.channel_id,
+                        event_type="chat.final",
+                        payload=result.payload,
+                    ),
+                    request.params,
+                ),
                 mode=request.params.get("mode", "unknown"),
             )
             _schedule_feedback_once("success")
@@ -2675,6 +2865,8 @@ class JiuWenSwarm:
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
         session_id = self._session_manager.get_session_id(request.session_id)
+        if isinstance(request.params, dict):
+            restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
 
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
@@ -2895,10 +3087,15 @@ class JiuWenSwarm:
                 event_type="chat.reasoning",
                 content="",
                 timestamp=(started_at or now_ms) / 1000,
-                extra={
-                    "reasoning_content": reasoning_text,
-                    "reasoning_updated_at": updated_at or started_at or now_ms,
-                },
+                extra=_with_web_agent_template_metadata(
+                    {
+                        "reasoning_content": reasoning_text,
+                        "reasoning_updated_at": updated_at or started_at or now_ms,
+                    },
+                    request.params,
+                    cid,
+                    event_type="chat.reasoning",
+                ),
                 mode=request.params.get("mode", "unknown"),
             )
 
@@ -2934,7 +3131,13 @@ class JiuWenSwarm:
             if not isinstance(extra_fields, dict):
                 extra_fields = {}
             extra_fields = _with_heartbeat_history_metadata(
-                extra_fields, request.params
+                _with_web_agent_template_metadata(
+                    extra_fields,
+                    request.params,
+                    cid,
+                    event_type="chat.final",
+                ),
+                request.params,
             ) or {}
             record_timestamp = _resolve_final_record_timestamp(
                 event_type="chat.final",
@@ -3012,7 +3215,7 @@ class JiuWenSwarm:
 
         # Team 模式: 后续请求直接执行，绕过 Session Manager 队列
         # 因为 Team 是长期运行的(persistent)，interact 调用不需要等待前一个任务完成
-        # 且 team_helpers 内部已有请求锁保证同一 session 的请求串行执行
+        # team_helpers 只串行化同一 session 的首次启动，已有流上的输入可并发提交
         if is_team_mode and not is_team_first_request:
             logger.info(
                 "[JiuWenSwarm] Team模式后续请求，直接执行: request_id=%s session_id=%s",
@@ -3230,13 +3433,27 @@ class JiuWenSwarm:
                             data = _normalize_nested_stream_chunk(data)
                             if data is None:
                                 continue
+                        if isinstance(data.payload, dict):
+                            payload_event_type = data.payload.get("event_type")
+                            enriched_payload = _with_web_agent_template_payload(
+                                data.payload,
+                                request.params,
+                                cid,
+                                event_type=(
+                                    payload_event_type
+                                    if isinstance(payload_event_type, str)
+                                    else None
+                                ),
+                            )
+                            if enriched_payload is not data.payload:
+                                data = replace(data, payload=enriched_payload)
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
                             if et == "chat.error":
                                 completion_status = "error"
                                 abort_terminal_status = "error"
                             _note_goal_stream_payload(et, data.payload)
-                            should_record = et.startswith("chat.")
+                            should_record = et.startswith("chat.") or et == "context.usage"
                             final_segment_started_at: float | None = None
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
@@ -3378,7 +3595,14 @@ class JiuWenSwarm:
                                 if not isinstance(extra_fields, dict):
                                     extra_fields = {}
                                 extra_fields = _with_heartbeat_history_metadata(
-                                    extra_fields, request.params
+                                    _with_web_agent_template_metadata(
+                                        extra_fields,
+                                        request.params,
+                                        cid,
+                                        event_type=et,
+                                        payload=payload_dict,
+                                    ),
+                                    request.params,
                                 ) or {}
                                 record_timestamp = _resolve_final_record_timestamp(
                                     event_type=et,
@@ -3409,12 +3633,17 @@ class JiuWenSwarm:
                                     final_answer_chunks.clear()
                         yield data
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
+                        data = _with_web_agent_template_payload(
+                            data,
+                            request.params,
+                            cid,
+                        ) or data
                         et = str(data.get("event_type"))
                         if et == "chat.error":
                             completion_status = "error"
                             abort_terminal_status = "error"
                         _note_goal_stream_payload(et, data)
-                        should_record = et.startswith("chat.")
+                        should_record = et.startswith("chat.") or et == "context.usage"
                         final_segment_started_at = None
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
@@ -3551,7 +3780,14 @@ class JiuWenSwarm:
                             if not isinstance(extra_fields, dict):
                                 extra_fields = {}
                             extra_fields = _with_heartbeat_history_metadata(
-                                extra_fields, request.params
+                                _with_web_agent_template_metadata(
+                                    extra_fields,
+                                    request.params,
+                                    cid,
+                                    event_type=et,
+                                    payload=data,
+                                ),
+                                request.params,
                             ) or {}
                             record_timestamp = _resolve_final_record_timestamp(
                                 event_type=et,
@@ -3689,7 +3925,12 @@ class JiuWenSwarm:
                 content=finalized_assistant_message,
                 timestamp=time.time(),
                 extra=_with_heartbeat_history_metadata(
-                    _attach_reasoning_content(history_metadata),
+                    _with_web_agent_template_metadata(
+                        _attach_reasoning_content(history_metadata),
+                        request.params,
+                        cid,
+                        event_type="chat.final",
+                    ),
                     request.params,
                 ),
                 mode=request.params.get("mode", "unknown"),
@@ -3697,12 +3938,20 @@ class JiuWenSwarm:
             final_answer_content = finalized_assistant_message
             final_answer_chunks = []
             _schedule_feedback_once(completion_status)
-            yield _make_a2ui_final_chunk(
+            final_chunk = _make_a2ui_final_chunk(
                 request_id=rid,
                 channel_id=cid,
                 session_id=session_id,
                 content=finalized_assistant_message,
             )
+            enriched_payload = _with_web_agent_template_payload(
+                final_chunk.payload,
+                request.params,
+                cid,
+            )
+            if enriched_payload is not final_chunk.payload:
+                final_chunk = replace(final_chunk, payload=enriched_payload)
+            yield final_chunk
 
         _schedule_feedback_once(completion_status)
 

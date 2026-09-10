@@ -104,19 +104,39 @@ instead of silently using another installation.
 
 ### 5.2 Advanced environment overrides
 
-Most installations do not need these variables.
+Most installations do not need these variables. The `BROWSER_MANAGED_*` series are runtime-internal variables, automatically derived by the system from the `browser.*` section of `config.yaml`; **do not set them manually in `.env`** unless for advanced troubleshooting or override.
 
 | Environment variable | Default | Description |
 |---|---|---|
+| `BROWSER_PROFILE_NAME` | `Default` (`.env.template`) / `jiuwenclaw` (runtime default) | Browser profile name; see `.env.template` line 101. |
 | `BROWSER_DRIVER` | `managed` in JiuwenSwarm | Browser driver mode. |
-| `BROWSER_MANAGED_BINARY` | auto-detected | Direct openJiuwen runtime override. JiuwenSwarm derives it from `browser.chrome_path`. |
-| `BROWSER_MANAGED_PORT` | `9333` | Port for an unkeyed managed instance. Keyed instances allocate free ports automatically. |
-| `BROWSER_MANAGED_USER_DATA_DIR` | managed profile directory | Overrides the managed profile directory. |
-| `BROWSER_MANAGED_ARGS` | derived from display mode | Additional Chrome startup arguments. |
+| `BROWSER_MANAGED_BINARY` | auto-detected (from `browser.chrome_path`) | Path to the managed Chrome executable; at runtime the system sets this automatically based on `browser.chrome_path` in `config.yaml`. |
+| `BROWSER_MANAGED_PORT` | `9333` | Port for the unkeyed managed Chrome instance (different from `BROWSER_RUNTIME_MCP_PORT`; the latter is the MCP wrapper port, default 8940); keyed instances allocate free ports automatically. |
+| `BROWSER_MANAGED_USER_DATA_DIR` | managed profile directory (default under the runtime state root) | Overrides the managed profile directory. |
+| `BROWSER_MANAGED_ARGS` | derived from display mode (e.g., `--headless=new`) | Additional Chrome startup arguments; derived at runtime from `browser.headless`, etc. |
 | `BROWSER_MANAGED_KILL_EXISTING` | `false` | Allows the driver to terminate a matching existing Chrome before launch. Use only when profile ownership is understood. |
 
 `PLAYWRIGHT_CDP_URL` is intended for explicit remote-driver setups. It is not
 required for the normal managed-browser flow.
+
+#### 5.2.1 Browser MCP runtime variables
+
+The following variables control how the browser MCP runtime wrapper starts and communicates (see `.env.template` lines 64-86; for MCP configuration see [MCP Configuration](MCPConfiguration.md)).
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `BROWSER_RUNTIME_MCP_ENABLED` | `1` | Master switch for the browser MCP runtime (0 disable / 1 enable). |
+| `BROWSER_RUNTIME_MCP_CLIENT_TYPE` | `streamable-http` | MCP client type: `stdio` / `sse` / `streamable-http` (recommended). |
+| `BROWSER_RUNTIME_MCP_SERVER_ID` | `playwright_runtime_wrapper` | MCP server ID (registration identifier). |
+| `BROWSER_RUNTIME_MCP_SERVER_NAME` | `playwright-runtime-wrapper` | MCP server display name. |
+| `BROWSER_RUNTIME_MCP_SERVER_PATH` | `http://127.0.0.1:8940/mcp` | MCP server endpoint URL (`streamable-http` defaults to `/mcp`, `sse` defaults to `/sse`; under `stdio` it is metadata only). |
+| `BROWSER_RUNTIME_MCP_TIMEOUT_S` | `300` | MCP request timeout (seconds). |
+| `BROWSER_RUNTIME_MCP_HOST` | `127.0.0.1` | Local wrapper host (used for auto-launch). |
+| `BROWSER_RUNTIME_MCP_PORT` | `8940` | Local wrapper port (different from `BROWSER_MANAGED_PORT`; the latter is the managed Chrome instance port, default 9333). |
+| `BROWSER_RUNTIME_MCP_PATH` | `/mcp` | Local wrapper path (used for auto-launch). |
+| `BROWSER_RUNTIME_MCP_COMMAND` | empty | Override for the `stdio` mode launch command (empty means use the current Python executable). |
+| `BROWSER_RUNTIME_MCP_ARGS` | empty | Override for the `stdio` mode launch arguments (empty means use built-in defaults). |
+| `BROWSER_RUNTIME_MCP_AUTO_SSE_FALLBACK` | `1` | Whether `stdio` mode first attempts SSE fallback (1 enabled, recommended). |
 
 ## 6. Architecture
 

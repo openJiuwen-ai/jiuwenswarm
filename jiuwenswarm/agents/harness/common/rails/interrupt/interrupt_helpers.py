@@ -92,11 +92,14 @@ def build_permission_rail(
         SKILLS_REBUILD_SILENT,
         TOOL_PERMISSION_CHANNEL_ID,
     )
+    from jiuwenswarm.agents.harness.common.rails.permissions.builtin_rules_host import (
+        with_package_builtin_rules,
+    )
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file, get_workspace_dir
 
-    permission_config = config.get("permissions", {})
+    permission_config = with_package_builtin_rules(config.get("permissions", {}))
     logger.info(
         "[InterruptHelpers] build_permission_rail called: enabled=%s",
         permission_config.get("enabled", False)
@@ -382,7 +385,8 @@ def build_permission_rail(
                     "file_guard": {"enabled": False},
                 }
             cfg = get_config()
-            return cfg.get("permissions") if isinstance(cfg, dict) else {}
+            raw = cfg.get("permissions") if isinstance(cfg, dict) else {}
+            return with_package_builtin_rules(raw if isinstance(raw, dict) else {})
 
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_permissions_snapshot,

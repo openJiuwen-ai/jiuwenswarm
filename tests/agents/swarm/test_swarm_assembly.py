@@ -1580,10 +1580,11 @@ async def test_team_workspace_policy_keeps_project_deliverables_in_project(
 
     content = builder.build()
     assert f"User project root: `{project_dir}`" in content
-    assert f"Team collaboration workspace: `{team_ws_root}`" in content
+    assert f"Team shared workspace (config / internal data): `{team_ws_root}`" in content
     assert "Source code, tests, configuration" in content
     assert "When worktree isolation is active" in content
-    assert "Do not place final project files in the team collaboration workspace" in content
+    assert "final deliverables stay in the project" in content
+    assert "Do not place final project files in the team shared workspace root" in content
     assert "Use the internal mount path only" not in content
 
 
@@ -1609,8 +1610,8 @@ async def test_team_workspace_policy_does_not_fallback_project_files_to_team_wor
     )
 
     content = builder.build()
-    assert "User project root: unavailable" in content
-    assert "Do not silently use the team collaboration workspace" in content
+    assert "No user project root is available" in content
+    assert "do not silently drop them in the team workspace" in content
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
@@ -2640,6 +2641,33 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
     await plan_rail.before_tool_call(types.SimpleNamespace(inputs=types.SimpleNamespace(tool_name="bash")))
 
     assert calls == ["bash"]
+
+
+def test_permission_interrupt_omitted_for_cron_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
+
+    created: list[object] = []
+
+    def fake_build_permission_rail(**_kwargs: object) -> object:
+        rail = object()
+        created.append(rail)
+        return rail
+
+    monkeypatch.setattr(interrupt_helpers, "build_permission_rail", fake_build_permission_rail)
+
+    rail = code_rails.build_permission_interrupt(
+        {"permissions_config": {"enabled": True}, "model_name": "gpt-4"},
+        SwarmBuildContext(
+            mode="team",
+            role="leader",
+            session_id="cron_19abc_job1",
+        ),
+    )
+
+    assert rail is None
+    assert created == []
 
 
 def test_code_extra_tools_gated_by_config() -> None:

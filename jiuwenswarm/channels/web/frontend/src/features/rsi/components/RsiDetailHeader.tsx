@@ -118,7 +118,7 @@ export function RsiDetailHeader({
           const { id } = await pluginPackagesApi.importLocal({ path: artifact.path });
           await pluginPackagesApi.install(id);
           markTaskInstalled(task.task_id);
-          await usePluginPackageStore.getState().loadList('local', { silent: true });
+          await usePluginPackageStore.getState().loadList('mine', { silent: true });
           const snapshotName =
             report?.best_artifact?.name || task.best_artifact?.name;
           setActionSuccess(

@@ -48,6 +48,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
+    SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     get_config,
     get_config_raw,
@@ -74,9 +75,11 @@ from jiuwenswarm.common.config import (
     update_memory_forbidden_description_in_config,
     update_external_cli_agents_in_config,
     update_swarmflow_enabled_in_config,
+    update_swarmflow_budget_in_config,
     update_a2ui_in_config,
     update_updater_in_config,
     update_proactive_recommendation_in_config,
+    update_trajectory_ui_in_config,
     update_skill_evolution_enabled_in_config,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
@@ -186,6 +189,8 @@ class _ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
+            elif key_text == "trajectory_ui_enabled":
+                scopes.update({"agent_runtime", "web_ui"})
             elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
                 scopes.add("web_ui")
             else:
@@ -214,6 +219,7 @@ _CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
 _CODEX_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = {
     "status": "idle",
     "phase": "idle",
+    "progress_kind": "",
     "error": "",
     "last_log": "",
     "log_tail": [],
@@ -673,6 +679,11 @@ _FORWARD_REQ_METHODS = frozenset({
     "chat.interrupt",
     "chat.resume",
     "chat.user_answer",
+    "chat.swarmflow_reply",
+    "swarmflow.pause",
+    "swarmflow.resume",
+    "swarmflow.stop",
+    "command.workflows",
     "history.get",
     # "tts.synthesize",
     "skills.marketplace.list",
@@ -693,6 +704,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.marketplace.toggle",
     "skills.uninstall",
     "skills.online_search.search",
+    "skills.online_search.install",
     "skills.skillnet.search",
     "skills.skillnet.install",
     "skills.skillnet.install_status",
@@ -777,6 +789,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "plugin_packages.uninstall",
     "mcp.list",
     "mcp.show",
+    "mcp.install",
+    "mcp.uninstall",
     "mcp.connect",
     "mcp.wait_auth",
     "mcp.disconnect",
@@ -836,6 +850,10 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
+    "command.workflows",
+    "swarmflow.pause",
+    "swarmflow.resume",
+    "swarmflow.stop",
     "skills.marketplace.list",
     "skills.list",
     "skills.installed",
@@ -854,6 +872,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.marketplace.toggle",
     "skills.uninstall",
     "skills.online_search.search",
+    "skills.online_search.install",
     "skills.skillnet.search",
     "skills.skillnet.install",
     "skills.skillnet.install_status",
@@ -938,6 +957,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "plugin_packages.uninstall",
     "mcp.list",
     "mcp.show",
+    "mcp.install",
+    "mcp.uninstall",
     "mcp.connect",
     "mcp.wait_auth",
     "mcp.disconnect",
@@ -1044,10 +1065,12 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "rsi_enabled",
+    "trajectory_ui_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
     "swarmflow_enabled",
+    "swarmflow_budget",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -1122,7 +1145,6 @@ _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
     "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
         ("discovery", "max_output_chars"),
@@ -1235,7 +1257,11 @@ def _flatten_swarmflow_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
         SWARMFLOW_ENABLED_CONFIG_PATH,
         DEFAULT_SWARMFLOW_ENABLED,
     )
-    return {"swarmflow_enabled": "true" if enabled else "false"}
+    budget = _get_nested_config_value(raw, SWARMFLOW_BUDGET_CONFIG_PATH, None)
+    flat = {"swarmflow_enabled": "true" if enabled else "false"}
+    if budget is not None:
+        flat["swarmflow_budget"] = str(budget)
+    return flat
 
 
 def _flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
@@ -1296,21 +1322,23 @@ def _external_cli_reference_version(cli_agent: str) -> str:
     return ""
 
 
-def _resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str]:
+def _resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
     requested = cli_path.strip()
     if requested:
         resolved = shutil.which(requested)
         if resolved:
-            return resolved, ""
+            return resolved, "", ""
         candidate = Path(requested).expanduser()
         if candidate.is_file():
-            return str(candidate), ""
-        return "", f"{requested} not found"
+            return str(candidate), "", ""
+        if candidate.is_dir():
+            return "", f"{requested} is a directory", "directory"
+        return "", f"{requested} not found", "not_found"
 
     resolved = shutil.which(cli_agent)
     if resolved:
-        return resolved, ""
-    return "", f"{cli_agent} not found in PATH"
+        return resolved, "", ""
+    return "", f"{cli_agent} not found in PATH", "not_found"
 
 
 def _is_windows_platform() -> bool:
@@ -1338,7 +1366,10 @@ def _run_external_cli_version_command(cli_agent: str, resolved_path: str) -> tup
         if process.returncode == 0:
             return output, ""
         errors.append(output or f"exit code {process.returncode}")
-    return "", "; ".join(errors)
+    # Both flag variants usually fail with the same message (e.g. WinError 193
+    # for a non-executable path); show it once instead of repeating it.
+    unique_errors = list(dict.fromkeys(errors))
+    return "", "; ".join(unique_errors)
 
 
 def _detect_external_cli_agent(cli_agent: str, cli_path: str = "") -> dict[str, Any]:
@@ -1353,15 +1384,16 @@ def _detect_external_cli_agent(cli_agent: str, cli_path: str = "") -> dict[str, 
             "message": f"unsupported cli_agent: {cli_agent}",
         }
 
-    resolved_path, path_error = _resolve_external_cli_path(normalized_agent, cli_path)
+    resolved_path, path_error, path_reason = _resolve_external_cli_path(normalized_agent, cli_path)
     reference_version = _external_cli_reference_version(normalized_agent)
     if not resolved_path:
         return {
             "cli_agent": normalized_agent,
-            "status": "missing",
+            "status": "unsupported" if path_reason == "directory" else "missing",
             "path": "",
             "version": "",
             "reference_version": reference_version,
+            "reason": path_reason,
             "message": path_error,
         }
 
@@ -1670,6 +1702,27 @@ def _update_external_cli_dependency_install_status(cli_agent: str, updates: dict
         status["updated_at"] = time.time()
 
 
+def _external_cli_dependency_install_succeeded_updates() -> dict[str, Any]:
+    """Build a terminal success state without stale download progress."""
+    return {
+        "status": "succeeded",
+        "phase": "succeeded",
+        "error": "",
+        "finished_at": time.time(),
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "bytes_per_second": 0.0,
+        "eta_seconds": 0.0,
+        "artifact_index": 0,
+        "artifact_count": 0,
+        "current_package": "",
+        "current_version": "",
+        "download_attempt": 0,
+        "download_max_attempts": 0,
+        "switching_source": False,
+    }
+
+
 def _append_external_cli_dependency_install_log(cli_agent: str, line: str) -> None:
     stripped = line.strip()
     if not stripped:
@@ -1690,28 +1743,34 @@ def _snapshot_claude_dependency_install_status() -> dict[str, Any]:
     return _snapshot_external_cli_dependency_install_status("claude")
 
 
+def _activate_managed_external_cli_paths_if_needed() -> None:
+    """Expose managed SDKs only for an external-CLI configuration request."""
+    if not _is_frozen_runtime():
+        return
+    from jiuwenswarm.common.external_cli_runtime import (
+        activate_external_cli_runtime_paths,
+    )
+
+    activate_external_cli_runtime_paths()
+
+
 def _ensure_claude_dependency_available_or_start_install() -> dict[str, Any] | None:
+    _activate_managed_external_cli_paths_if_needed()
     if importlib.util.find_spec("claude_agent_sdk") is not None:
         with _CLAUDE_DEPENDENCY_INSTALL_LOCK:
-            _CLAUDE_DEPENDENCY_INSTALL_STATUS.update(
-                {
-                    "status": "succeeded",
-                    "phase": "succeeded",
-                    "error": "",
-                    "finished_at": time.time(),
-                    "updated_at": time.time(),
-                }
-            )
+            _CLAUDE_DEPENDENCY_INSTALL_STATUS.update(_external_cli_dependency_install_succeeded_updates())
+            _CLAUDE_DEPENDENCY_INSTALL_STATUS["updated_at"] = time.time()
         return None
     if _is_frozen_runtime():
         return _ensure_managed_external_cli_runtime_or_start_install("claude")
     with _CLAUDE_DEPENDENCY_INSTALL_LOCK:
         if _CLAUDE_DEPENDENCY_INSTALL_STATUS.get("status") == "running":
-            return _snapshot_claude_dependency_install_status()
+            return _snapshot_external_cli_dependency_install_status_unlocked("claude")
         _CLAUDE_DEPENDENCY_INSTALL_STATUS.update(
             {
                 "status": "running",
                 "phase": "installing",
+                "progress_kind": "installer_activity",
                 "error": "",
                 "last_log": "",
                 "log_tail": [],
@@ -1741,7 +1800,7 @@ def _install_claude_dependency_background() -> None:
     try:
         package = _resolve_openjiuwen_extra_package("claude")
         _install_optional_dependency("claude", package, "claude_agent_sdk")
-        updates = {"status": "succeeded", "phase": "succeeded", "error": "", "finished_at": time.time()}
+        updates = _external_cli_dependency_install_succeeded_updates()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config.set] Claude dependency installation failed: %s", exc)
         _append_external_cli_dependency_install_log("claude", str(exc))
@@ -1775,6 +1834,7 @@ def _ensure_managed_external_cli_runtime_or_start_install(cli_agent: str) -> dic
         status.update({
             "status": "running",
             "phase": "preparing",
+            "progress_kind": "download_metrics",
             "error": "",
             "last_log": "",
             "log_tail": [],
@@ -1837,14 +1897,7 @@ def _run_managed_external_cli_runtime_install(cli_agent: str) -> None:
 
     _update_external_cli_dependency_install_status(
         cli_agent,
-        {
-            "status": "succeeded",
-            "phase": "succeeded",
-            "error": "",
-            "finished_at": time.time(),
-            "bytes_per_second": 0.0,
-            "eta_seconds": 0.0,
-        },
+        _external_cli_dependency_install_succeeded_updates(),
     )
 
 
@@ -1861,13 +1914,9 @@ def _append_codex_dependency_install_log(line: str) -> None:
 
 
 def _ensure_codex_dependency_available_or_start_install() -> dict[str, Any] | None:
+    _activate_managed_external_cli_paths_if_needed()
     if importlib.util.find_spec("openai_codex") is not None:
-        _update_codex_dependency_install_status({
-            "status": "succeeded",
-            "phase": "succeeded",
-            "error": "",
-            "finished_at": time.time(),
-        })
+        _update_codex_dependency_install_status(_external_cli_dependency_install_succeeded_updates())
         return None
 
     if _is_frozen_runtime():
@@ -1881,6 +1930,7 @@ def _ensure_codex_dependency_available_or_start_install() -> dict[str, Any] | No
             _CODEX_DEPENDENCY_INSTALL_STATUS.update({
                 "status": "running",
                 "phase": "preparing",
+                "progress_kind": "installer_activity",
                 "error": "",
                 "last_log": "",
                 "log_tail": [],
@@ -1925,12 +1975,7 @@ def _run_codex_dependency_install_background() -> None:
         })
         return
 
-    _update_codex_dependency_install_status({
-        "status": "succeeded",
-        "phase": "succeeded",
-        "error": "",
-        "finished_at": time.time(),
-    })
+    _update_codex_dependency_install_status(_external_cli_dependency_install_succeeded_updates())
 
 
 def _install_codex_dependency() -> None:
@@ -1947,8 +1992,14 @@ def _install_optional_dependency(
 ) -> None:
     if _is_frozen_runtime():
         raise RuntimeError(f"frozen applications must use the managed {cli_agent} runtime installer")
-    args = _build_optional_dependency_install_args(package)
+    args = _build_optional_dependency_install_args(package, cli_agent)
     output_lines: list[str] = []
+    logger.info(
+        "[external-cli] installing %s dependency: interpreter=%s command=%s",
+        cli_agent,
+        sys.executable,
+        args,
+    )
     _update_external_cli_dependency_install_status(
         cli_agent,
         {
@@ -2006,12 +2057,24 @@ def _install_optional_dependency(
             process.kill()
             process.wait()
             reader.join(timeout=1)
+            logger.error(
+                "[external-cli] %s dependency install timed out after %ss; output tail:\n%s",
+                cli_agent,
+                _OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
+                "\n".join(output_lines[-20:]),
+            )
             raise RuntimeError(f"failed to install {cli_agent} dependency: timed out")
 
     reader.join(timeout=1)
     returncode = process.wait()
     if returncode != 0:
         output = "\n".join(output_lines[-20:])
+        logger.error(
+            "[external-cli] %s dependency install exited with code %s; output tail:\n%s",
+            cli_agent,
+            returncode,
+            output,
+        )
         raise RuntimeError(f"failed to install {cli_agent} dependency: {output}")
     _update_external_cli_dependency_install_status(
         cli_agent,
@@ -2021,7 +2084,20 @@ def _install_optional_dependency(
     )
     importlib.invalidate_caches()
     if importlib.util.find_spec(required_module) is None:
+        # The installer reported success but the module is not importable from
+        # the running interpreter — it almost certainly landed in a different
+        # environment. Log the interpreter paths to make that diagnosable.
+        logger.error(
+            "[external-cli] %s dependency installed but %s is still not importable; "
+            "interpreter=%s sys.prefix=%s search paths=%s",
+            cli_agent,
+            required_module,
+            sys.executable,
+            sys.prefix,
+            sys.path,
+        )
         raise RuntimeError(f"failed to install {cli_agent} dependency: {required_module} is still unavailable")
+    logger.info("[external-cli] %s dependency installed and verified: %s", cli_agent, required_module)
 
 
 def _resolve_openjiuwen_codex_package() -> str:
@@ -2048,11 +2124,55 @@ def _resolve_openjiuwen_extra_package(extra: str) -> str:
     return f"openjiuwen[{extra}]"
 
 
-def _build_optional_dependency_install_args(package: str) -> list[str]:
+# Mirror for optional CLI SDK installs. The managed runtime installer (frozen
+# apps) already downloads its wheels from Aliyun first; source installs should
+# resolve from the same mirror instead of falling back to pypi.org, which is
+# slow to unreachable for users in China. Override with PIP_INDEX_URL /
+# UV_INDEX_URL to respect a user-configured index.
+_OPTIONAL_DEPENDENCY_INDEX_URL = os.getenv("PIP_INDEX_URL") or os.getenv("UV_INDEX_URL") or (
+    "https://mirrors.aliyun.com/pypi/simple/"
+)
+
+
+def _build_optional_dependency_install_args(package: str, cli_agent: str) -> list[str]:
+    """Build the pip/uv command that installs an optional CLI agent SDK.
+
+    ``package`` is the ``openjiuwen[extra]`` requirement; the SDK wheels
+    themselves are pinned to the versions recorded in the managed-runtime
+    manifest so source installs resolve the same versions the frozen-app
+    installer ships, instead of the latest release on the index.
+    """
+    # Import lazily: only needed on this rare install path.
+    from jiuwenswarm.common.external_cli_runtime import pinned_sdk_requirements
+
+    pinned = pinned_sdk_requirements(cli_agent)
     uv_cmd = shutil.which("uv")
     if uv_cmd and sys.prefix != sys.base_prefix:
-        return [uv_cmd, "pip", "install", package]
-    return [sys.executable, "-m", "pip", "install", package]
+        # Pin the target interpreter: without --python, uv resolves its own
+        # environment (VIRTUAL_ENV / auto-discovery) which may differ from the
+        # running interpreter — the install then "succeeds" into the wrong
+        # venv and the follow-up find_spec check reports the SDK as missing.
+        return [
+            uv_cmd,
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--index-url",
+            _OPTIONAL_DEPENDENCY_INDEX_URL,
+            package,
+            *pinned,
+        ]
+    return [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--index-url",
+        _OPTIONAL_DEPENDENCY_INDEX_URL,
+        package,
+        *pinned,
+    ]
 
 
 async def _clear_agent_config_cache(agent_client=None) -> None:
@@ -2824,6 +2944,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             memory_desc = memory_cfg.get("description") or {}
             payload["memory_forbidden_description"] = memory_desc
             payload.update(get_a2ui_config_payload(raw))
+            trajectory_cfg = raw.get("trajectory_ui") or {}
+            payload["trajectory_ui_enabled"] = (
+                "true" if trajectory_cfg.get("enabled", False) else "false"
+            )
             payload.update(_flatten_swarmflow_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
@@ -2855,6 +2979,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
             for key, value in get_default_a2ui_config_payload().items():
                 payload.setdefault(key, value)
+            payload.setdefault("trajectory_ui_enabled", "false")
             for key, (_, value_type, default) in {
                 **_SYMPHONY_CONFIG_SPECS,
                 **_SKILL_RETRIEVAL_CONFIG_SPECS,
@@ -3090,6 +3215,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_memory_forbidden_description_in_config({preferred_lang: desc_val})
                 elif param_key == "swarmflow_enabled":
                     update_swarmflow_enabled_in_config(parsed)
+                elif param_key == "swarmflow_budget":
+                    update_swarmflow_budget_in_config(str(val).strip())
                 elif param_key in _EXTERNAL_CLI_AGENT_CONFIG_KEYS:
                     if not external_cli_agents_updated:
                         try:
@@ -3122,6 +3249,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     if not ok:
                         raise _ConfigBadRequest(error or "invalid A2UI config")
                     update_a2ui_in_config(update)
+                elif param_key == "trajectory_ui_enabled":
+                    update_trajectory_ui_in_config(parsed)
                 elif param_key == "proactive_recommendation_enabled":
                     update_proactive_recommendation_in_config({"enabled": parsed})
                 elif param_key == "proactive_recommendation_max_recommend_per_day":
@@ -3936,6 +4065,26 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 _fetch_remote_sync, preset.models_endpoint, headers,
             )
 
+            # DashScope's /models catalogue includes unavailable marketplace,
+            # retired, and non-chat entries. For Alibaba, expose only the
+            # plan-specific allowlist verified on the compatible endpoint.
+            if vendor_key == "alibaba" and remote_ids:
+                unfiltered_count = len(remote_ids)
+                remote_model_ids = set(remote_ids)
+                remote_ids = [
+                    model_id
+                    for model_id in preset.model_options
+                    if model_id in remote_model_ids
+                ]
+                filtered_count = unfiltered_count - len(remote_ids)
+                if filtered_count:
+                    logger.info(
+                        "[vendors.fetch_models] filtered %d non-allowlisted Alibaba models",
+                        filtered_count,
+                    )
+                if not remote_ids:
+                    remote_reason = "no remote models matched the Alibaba plan allowlist"
+
             if remote_ids:
                 await channel.send_response(
                     ws, req_id, ok=True,
@@ -4246,6 +4395,27 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.SESSION_GET_METADATA,
             label="session.get_metadata",
+        )
+
+    async def _session_plan_status(ws, req_id, params, session_id, user_id=None):
+        """查询会话当前是否处于计划模式（只读，刷新后恢复前端「计划」标签）。
+
+        转发 AgentServer ``SESSION_PLAN_STATUS``：单 agent 读 live
+        ``plan_mode``，集群 / 读不到 agent 状态时回退 metadata.mode。
+        """
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.SESSION_PLAN_STATUS,
+            label="session.plan_status",
         )
 
     async def _session_create(ws, req_id, params, session_id, user_id=None):
@@ -5241,6 +5411,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if isinstance(request_id, str) and request_id:
             payload["request_id"] = request_id
         await channel.send_response(ws, req_id, ok=True, payload=payload)
+
+    async def _chat_swarmflow_reply(ws, req_id, params, session_id):
+        # Empty-ack shell — standard 3-layer routing forwards the reply to the
+        # agent adapter, which builds HumanAgentMessage and calls team_manager.
+        await channel.send_response(
+            ws, req_id, ok=True, payload={"accepted": True, "session_id": session_id}
+        )
 
     async def _history_get(ws, req_id, params, session_id):
         payload = {"accepted": True, "session_id": session_id}
@@ -6472,6 +6649,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("session.create", _session_create)
     channel.register_method("session.delete", _session_delete)
     channel.register_method("session.get_metadata", _session_get_metadata)
+    channel.register_method("session.plan_status", _session_plan_status)
     channel.register_method("session.rename", _session_rename)
     channel.register_method("session.pin", _session_pin)
 
@@ -6551,6 +6729,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("chat.resume", _chat_resume)
     channel.register_method("chat.interrupt", _chat_interrupt)
     channel.register_method("chat.user_answer", _chat_user_answer)
+    channel.register_method("chat.swarmflow_reply", _chat_swarmflow_reply)
     channel.register_method("history.get", _history_get)
     channel.register_method("locale.get_conf", _locale_get_conf)
     channel.register_method("locale.set_conf", _locale_set_conf)

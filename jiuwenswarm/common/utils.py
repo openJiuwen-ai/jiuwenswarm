@@ -737,7 +737,15 @@ def _install_default_builtin_skills(
     - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
     - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
     - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
-    - program-evolution-design: 程序演进任务设计与评测编排
+    - rsi-program-dataset-creator: 程序演进任务设计与评测编排
+    - agent-creator: Agent 模板包创建助手
+    - plugin-creator: 插件能力扩展包创建助手
+    - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
+    - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
+    - local-doc-ocr: 本地离线 OCR（扫描件 PDF/图片提取文字）
+    - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
+    - pdf-extraction: PDF 文本/表格/元数据提取
+    - pptx-generator: PowerPoint 演示文稿生成与编辑
 
     Args:
         builtin_dir: 内置技能目录路径
@@ -752,9 +760,15 @@ def _install_default_builtin_skills(
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
-        "program-evolution-design",
+        "rsi-program-dataset-creator",
         "agent-creator",
-        "plugin-creator"
+        "plugin-creator",
+        "baoyu-image-gen",
+        "docx-pro",
+        "local-doc-ocr",
+        "xlsx",
+        "pdf-extraction",
+        "pptx-generator",
     ]
 
     if not builtin_dir.exists() or not builtin_dir.is_dir():
@@ -821,7 +835,15 @@ def ensure_default_builtin_skills() -> None:
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
-        "program-evolution-design",
+        "rsi-program-dataset-creator",
+        "agent-creator",
+        "plugin-creator",
+        "baoyu-image-gen",
+        "docx-pro",
+        "local-doc-ocr",
+        "xlsx",
+        "pdf-extraction",
+        "pptx-generator",
     ]
 
     user_skills_dir.mkdir(parents=True, exist_ok=True)
@@ -1110,12 +1132,24 @@ def _migrate_legacy_workspace(
                 )
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Failed to migrate cron_jobs.json: {e}")
+        else:
+            # Delete only the source store after migration/backup succeeds.
+            # Heartbeat data and other home files must remain in place.
+            try:
+                old_cron_jobs.unlink()
+            except OSError as e:
+                # The migration itself succeeded; only the source removal
+                # failed (e.g. the file is held open on Windows). It will be
+                # retried on the next start.
+                logger.warning(
+                    f"Cron jobs migrated to {new_cron_jobs} but failed to "
+                    f"remove legacy source {old_cron_jobs}: {e}"
+                )
 
     # 6. Clean up old directories after successful migration
     try:
-        if old_home.exists():
-            shutil.rmtree(old_home)
-            logger.info(f"Removed old home: {old_home}")
+        # agent/home also holds heartbeat and other live runtime data.
+        # The migrated cron source was removed individually above.
         if old_skills.exists():
             shutil.rmtree(old_skills)
             logger.info(f"Removed old skills: {old_skills}")
@@ -1187,6 +1221,82 @@ def cleanup_team_files(workspace_dir: Path) -> None:
                 logger.warning(f"[Cleanup] Failed to remove legacy team database file: {e}")
 
 
+def _is_windows_frozen_bundle() -> bool:
+    """Return whether this process is a packaged Windows application."""
+    return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+
+
+def cleanup_stale_openjiuwen_descs() -> None:
+    """Remove flat OpenJiuwen descriptions left by a layout migration.
+
+    New OpenJiuwen releases store tool descriptions below domain directories,
+    while an in-place upgrade can leave the former flat files beside them. The
+    recursive description index treats both files as the same key and refuses
+    to start. A flat file is removed only when a non-fragment nested file with
+    the same stem exists, so flat-only layouts and fragment files remain intact.
+
+    Windows frozen bundles skip runtime cleanup because their installer repairs
+    the installed package data before offering to launch the application.
+
+    Raises:
+        RuntimeError: If a confirmed stale file cannot be removed.
+    """
+    if _is_windows_frozen_bundle():
+        logger.info(
+            "[Cleanup] Skipping OpenJiuwen description cleanup in frozen Windows "
+            "bundle; the installer performs upgrade cleanup."
+        )
+        return
+
+    try:
+        import openjiuwen
+    except ModuleNotFoundError as exc:
+        if exc.name == "openjiuwen":
+            return
+        raise
+
+    package_file = getattr(openjiuwen, "__file__", None)
+    if not package_file:
+        return
+
+    descs_dir = (
+        Path(package_file).parent
+        / "agent_teams"
+        / "tools"
+        / "locales"
+        / "descs"
+    )
+    if not descs_dir.is_dir():
+        return
+
+    for lang_dir in sorted(path for path in descs_dir.iterdir() if path.is_dir()):
+        nested_stems = set()
+        for desc_path in lang_dir.rglob("*.md"):
+            if desc_path.parent == lang_dir:
+                continue
+            if "fragments" in desc_path.relative_to(lang_dir).parts:
+                continue
+            nested_stems.add(desc_path.stem)
+
+        for flat_md in sorted(lang_dir.glob("*.md")):
+            if flat_md.stem not in nested_stems:
+                continue
+            try:
+                flat_md.unlink()
+                logger.info(
+                    f"[Cleanup] Removed stale flat OpenJiuwen description: {flat_md}"
+                )
+            except FileNotFoundError:
+                # Another process may have completed the same idempotent cleanup.
+                continue
+            except OSError as exc:
+                raise RuntimeError(
+                    "Failed to remove stale OpenJiuwen description "
+                    f"'{flat_md}'. Ensure the Python environment is writable "
+                    "or reinstall OpenJiuwen in a clean environment."
+                ) from exc
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1229,9 +1339,8 @@ def prepare_workspace(
     # If overwrite (init command), clean up old legacy directories first
     elif overwrite:
         try:
-            if old_home.exists():
-                shutil.rmtree(old_home)
-                logger.info(f"Removed old home: {old_home}")
+            # Keep home runtime data during init too. Cron path resolution
+            # continues to support an existing home store without migration.
             if old_skills.exists():
                 shutil.rmtree(old_skills)
                 logger.info(f"Removed old skills: {old_skills}")
@@ -1451,34 +1560,76 @@ def prepare_workspace(
 def _find_mcp_builtins_seed(template_agent_workspace: Path) -> Path | None:
     """定位打包进 resources 的预置 MCP 种子 zip。
 
-    文件名形如 ``mcp_builtins_v0.1.zip``（版本号随发布变），用 glob
-    匹配 ``mcp_builtins*.zip``，这样升级换 zip 时无需改代码。种子随
-    ``resources/**/*`` 打进 whl（pyproject 的 package-data 已含）。
+    文件名形如 ``mcp_builtins_v0.1.zip``，用 glob 匹配
+    ``mcp_builtins*.zip``；多个候选的排序依据是压缩包内部版本标记，
+    文件名不作为版本真值。种子随 ``resources/**/*`` 打进 whl。
     """
-    candidates = sorted(template_agent_workspace.glob("mcp_builtins*.zip"))
-    return candidates[-1] if candidates else None
+    candidates = list(template_agent_workspace.glob("mcp_builtins*.zip"))
+    return max(candidates, key=_mcp_seed_sort_key) if candidates else None
 
 
-def _read_zip_index_version(zip_path: Path) -> str | None:
-    """读 zip 内顶层 index.json 的 version 字段（不落地解压）。"""
+def _mcp_seed_sort_key(zip_path: Path) -> tuple[int, ...]:
+    version = _read_mcp_builtins_seed_version(zip_path)
+    if version is None:
+        return ()
+    try:
+        return tuple(int(part) for part in version.removeprefix("v").split("."))
+    except ValueError:
+        return ()
+
+
+def _read_mcp_builtins_seed_version(zip_path: Path) -> str | None:
+    """Read the collection version declared inside a valid seed archive."""
     try:
         with zipfile.ZipFile(zip_path) as zf:
-            names = zf.namelist()
-            # zip 打包时可能把 mcp_builtins/ 顶层或内容直接铺在根，
-            # index.json 可能在根也可能在 mcp_builtins/ 下，取第一个命中。
-            idx_name = None
-            for n in names:
-                if n.rstrip("/") == "index.json" or n.endswith("/index.json"):
-                    idx_name = n
-                    break
-            if not idx_name:
+            names = {info.filename.replace("\\", "/"): info for info in zf.infolist()}
+            marker = names.get("mcp_builtins/.mcp_builtins_version")
+            if marker is None:
+                logger.warning(
+                    "[mcp_builtins] seed %s has no internal version marker",
+                    zip_path,
+                )
                 return None
-            with zf.open(idx_name) as fh:
-                data = json.load(fh)
-            return str(data.get("version", "")).strip() or None
-    except (OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
-        logger.warning("[mcp_builtins] read seed index.json failed: %s", exc)
+            version = zf.read(marker).decode("utf-8").strip()
+            return version or None
+    except (OSError, UnicodeError, zipfile.BadZipFile) as exc:
+        logger.warning("[mcp_builtins] read seed version failed: %s", exc)
         return None
+
+
+def mcp_builtins_seed_update_needed(workspace_dir: Path | None = None) -> bool:
+    """Return whether the bundled MCP seed must be installed or upgraded."""
+    package_root = _find_package_root()
+    if package_root is None:
+        return False
+
+    seed_zip = _find_mcp_builtins_seed(
+        package_root / "resources" / "agent" / "workspace"
+    )
+    if seed_zip is None:
+        return False
+    seed_version = _read_mcp_builtins_seed_version(seed_zip)
+    if seed_version is None:
+        return False
+
+    runtime_root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
+    installed_dir = runtime_root / "agent" / "workspace" / "mcp" / "mcp_builtins"
+    try:
+        installed_version = (
+            installed_dir / ".mcp_builtins_version"
+        ).read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    return installed_version != seed_version
+
+
+def _print_console_progress(message: str) -> None:
+    """Print progress without letting a legacy console encoding abort startup."""
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        escaped = message.encode("ascii", errors="backslashreplace").decode("ascii")
+        print(escaped)
 
 
 def _ensure_mcp_builtins(
@@ -1489,8 +1640,8 @@ def _ensure_mcp_builtins(
 ) -> None:
     """启动时保证预置 MCP 包目录就位（首次解压 / 版本更新覆盖）。
 
-    规则：无 mcp_builtins 目录 → 解压种子；已有但 index.json version 与
-    种子不一致 → 整目录覆盖解压（版本升级）；一致且非 overwrite → 跳过；
+    规则：无 mcp_builtins 目录 → 解压种子；已有但目录内版本标记与种子内标记
+    版本不一致 → 整目录覆盖解压（版本升级）；一致且非 overwrite → 跳过；
     overwrite=True（init -f）→ 无论版本一致都重新解压。种子 zip 缺失则
     跳过（开发期 resources 没打 zip 不应阻断启动）。
     """
@@ -1499,15 +1650,16 @@ def _ensure_mcp_builtins(
         logger.debug("[mcp_builtins] no seed zip under %s; skip", template_agent_workspace)
         return
 
-    seed_version = _read_zip_index_version(seed_zip)
-    # 读已落地的 index.json version（目录不存在视为 None）。
+    seed_version = _read_mcp_builtins_seed_version(seed_zip)
+    if seed_version is None:
+        logger.error("[mcp_builtins] invalid seed without collection version: %s", seed_zip)
+        return
+    version_file = mcp_builtins_dir / ".mcp_builtins_version"
     local_version: str | None = None
     if mcp_builtins_dir.is_dir():
-        local_idx = mcp_builtins_dir / "index.json"
         try:
-            with local_idx.open("r", encoding="utf-8") as fh:
-                local_version = str(json.load(fh).get("version", "")).strip() or None
-        except (OSError, json.JSONDecodeError):
+            local_version = version_file.read_text(encoding="utf-8").strip() or None
+        except OSError:
             local_version = None
 
     # 首次安装（无目录）或版本不一致（升级）或强制覆盖 → 解压。
@@ -1526,8 +1678,8 @@ def _ensure_mcp_builtins(
         "[mcp_builtins] %s: seed=%s local=%s -> extract %s",
         action, seed_version, local_version, seed_zip.name,
     )
-    print(
-        f"[jiuwenswarm-init] MCP 预置包 {action} (v{seed_version or '?'}) "
+    _print_console_progress(
+        f"[jiuwenswarm-init] MCP 预置包 {action} ({seed_version or '?'}) "
         f"<- {seed_zip.name}"
     )
 
@@ -1549,9 +1701,14 @@ def _ensure_mcp_builtins(
                 # Skip dir entries (trailing /)
                 if member.endswith("/"):
                     continue
-                # Guard against absolute / parent-traversal entries.
-                if member.startswith("/") or ".." in member.split("/"):
-                    continue
+                # Guard against absolute / parent-traversal entries. A malformed
+                # seed is rejected as a whole instead of silently dropping files.
+                if (
+                    not member.startswith("mcp_builtins/")
+                    or member.startswith("/")
+                    or ".." in member.split("/")
+                ):
+                    raise OSError(f"unsafe MCP seed member: {info.filename}")
                 target = tmp_dir / member
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(target, "wb") as dst:
@@ -1564,6 +1721,28 @@ def _ensure_mcp_builtins(
             for entry in nested.iterdir():
                 shutil.move(str(entry), str(tmp_dir / entry.name))
             nested.rmdir()
+        marker = tmp_dir / ".mcp_builtins_version"
+        if marker.read_text(encoding="utf-8").strip() != seed_version:
+            raise OSError("MCP seed collection version marker changed during extraction")
+        unexpected_root_files = [
+            path.name
+            for path in tmp_dir.iterdir()
+            if path.is_file() and path.name != ".mcp_builtins_version"
+        ]
+        if unexpected_root_files:
+            raise OSError(
+                "MCP seed contains unexpected root files: "
+                + ", ".join(sorted(unexpected_root_files))
+            )
+        from jiuwenswarm.server.runtime.mcp.package_manifest import iter_mcp_packages
+
+        package_dirs = [
+            path for path in tmp_dir.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        ]
+        packages = iter_mcp_packages(tmp_dir)
+        if not package_dirs or len(packages) != len(package_dirs):
+            raise OSError("MCP seed contains an invalid package manifest")
     except (OSError, zipfile.BadZipFile) as exc:
         logger.error("[mcp_builtins] extract %s failed: %s", seed_zip, exc)
         print(f"[jiuwenswarm-init] ERROR: extract MCP seed failed: {exc}")
@@ -1591,13 +1770,50 @@ def _ensure_mcp_builtins(
         os.replace(tmp_dir, mcp_builtins_dir)
     except OSError:
         shutil.move(str(tmp_dir), str(mcp_builtins_dir))
-
     with TrackCopyDiff(
         dest=mcp_builtins_dir,
         cumulative=cumulative_diff,
         overwrite=overwrite,
     ):
         pass  # 仅登记到 diff 摘要，文件已解压就位
+
+
+def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
+    """Perform the idempotent workspace work required before runtime children start.
+
+    Desktop and the ``jiuwenswarm.app`` supervisor call this once before they
+    launch AgentServer and Gateway.  The children can then skip the same disk
+    work via ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``.  Standalone child
+    entrypoints intentionally retain this function as their fallback.
+    """
+    if cleanup_stale_descs:
+        cleanup_stale_openjiuwen_descs()
+
+    workspace_dir = get_user_workspace_dir()
+    config_file = workspace_dir / "config" / "config.yaml"
+    new_workspace = workspace_dir / "agent" / "workspace"
+    old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
+    mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
+
+    cleanup_team_files(workspace_dir)
+
+    config_missing = not config_file.exists()
+    workspace_migration_needed = old_workspace.exists() and not new_workspace.exists()
+    mcp_builtins_missing = not mcp_builtins_dir.is_dir()
+    mcp_builtins_update_needed = mcp_builtins_seed_update_needed(workspace_dir)
+    workspace_preparation_needed = any(
+        (
+            config_missing,
+            workspace_migration_needed,
+            mcp_builtins_missing,
+            mcp_builtins_update_needed,
+        )
+    )
+    if workspace_preparation_needed:
+        prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
+
+    ensure_config_migrated_from_template(workspace_dir)
+    ensure_default_builtin_skills()
 
 
 def _close_log_handlers() -> None:
@@ -2297,14 +2513,32 @@ def get_interactions_dir() -> Path:
 
 
 def get_cron_jobs_path() -> Path:
-    """Canonical path for cron_jobs.json shared by gateway and agentserver."""
-    return get_user_workspace_dir() / "agent" / "home" / "cron_jobs.json"
+    """Path to cron_jobs.json, following wherever this workspace keeps it.
+
+    ``_migrate_legacy_workspace`` relocates the file to ``gateway/`` while this
+    getter pointed at ``agent/home/``, so after a migration the scheduler read a
+    missing path and silently loaded zero jobs. Resolution order:
+
+    1. ``gateway/`` if present -- the migration ran.
+    2. ``agent/home/`` if present -- it has not; repointing unconditionally
+       would empty the schedules of every deployment that never migrated.
+    3. ``gateway/`` otherwise, so cron itself does not create ``agent/home``.
+       Home may still exist for heartbeat; workspace migration preserves it.
+    """
+    workspace = get_user_workspace_dir()
+    gateway_path = workspace / "gateway" / "cron_jobs.json"
+    legacy_path = workspace / "agent" / "home" / "cron_jobs.json"
+    if gateway_path.exists():
+        return gateway_path
+    if legacy_path.exists():
+        return legacy_path
+    return gateway_path
 
 
 def get_heartbeat_jobs_path() -> Path:
     """Canonical path for heartbeat_jobs.json (new thread-automation heartbeat jobs).
 
-    与 ``get_cron_jobs_path`` 同目录(``agent/home``),禁止在业务代码中硬编码该路径。
+    保留在 ``agent/home``，不随 cron 迁移到 gateway；禁止在业务代码中硬编码该路径。
     """
     return get_agent_home_dir() / "heartbeat_jobs.json"
 

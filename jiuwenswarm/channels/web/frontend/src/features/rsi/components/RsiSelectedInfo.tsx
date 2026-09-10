@@ -55,7 +55,10 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
     : null;
   const stageLabel = nodeStageLocalizedLabel(selected, t) ?? presentation.stageLabel;
   const artifactSource = resolveRsiArtifactSource(selected, taskId);
-  const canViewArtifact = artifactSource !== null;
+  const canViewArtifact =
+    task.scenario === 'HARNESS'
+      ? selected.type !== 'ROOT' && Boolean(selected.snapshot_artifact_id)
+      : artifactSource !== null;
 
   // Harness 仍然按四个区域展示；产物优化直接展示结构化变更摘要。
   const changes = selected.changes ?? [];

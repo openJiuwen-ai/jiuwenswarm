@@ -148,6 +148,13 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
   const [jsonPaste, setJsonPaste] = useState('');
   const [creating, setCreating] = useState(false);
   const [backfilled, setBackfilled] = useState(false);
+  // 必填项前端拦截：后端 register_custom_mcp 校验 name 必填；transport=stdio 时 command
+  // 必填、transport=streamable-http 时 url 必填（server/runtime/mcp/registry.py）。留空提交
+  // 会被后端拒，这里在点"确定"时先本地逐项校验，命中的项红框 + 下方提示。
+  const [fieldErrors, setFieldErrors] = useState<{ name?: boolean; command?: boolean; url?: boolean }>({});
+
+  const clearFieldError = (key: 'name' | 'command' | 'url') =>
+    setFieldErrors((prev) => (prev[key] ? { ...prev, [key]: false } : prev));
 
   // 编辑模式：进入即按文档 §9 重新拉一次 mcp.show(editName)（refresh:true，不吃详情页可能已有
   // 的旧缓存），拿到 transport/command/args/env/url/headers 后一次性回填表单。只在第一次拿到
@@ -197,7 +204,17 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
   // 按钮全程可点（不因 creating 禁用）——用户不想等可以随时手动离开，store 里的 RPC 该怎么跑
   // 还怎么跑，不受组件是否还挂载影响。
   async function handleSubmit() {
-    if (!name.trim() || creating) return;
+    if (creating) return;
+    const nextErrors = {
+      name: !name.trim(),
+      command: type === 'stdio' && !command.trim(),
+      url: type === 'streamable-http' && !url.trim(),
+    };
+    if (nextErrors.name || nextErrors.command || nextErrors.url) {
+      setFieldErrors(nextErrors);
+      return;
+    }
+    setFieldErrors({});
 
     const stdioEnv: Record<string, string> = Object.fromEntries(env.filter((r) => r.key).map((r) => [r.key, r.value]));
     for (const row of envPassthrough) {
@@ -251,13 +268,22 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
 
         {/* 编辑模式 name 只读（文档 §9："编辑：name 只读"）——name 是后端识别"编辑同一个 MCP"
             还是"新建一个"的依据，允许改名会变成误建一个新条目而不是编辑原条目。 */}
-        <Field label={t('connectorMarket.registerMcp.name')}>
+        <Field
+          label={t('connectorMarket.registerMcp.name')}
+          required
+          error={fieldErrors.name ? t('connectorMarket.create.fieldRequired') : undefined}
+        >
           <input
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => {
+              setName(event.target.value);
+              clearFieldError('name');
+            }}
             readOnly={!!editName}
             disabled={!!editName}
-            className="h-9 w-full rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover disabled:cursor-not-allowed disabled:bg-bg-muted disabled:text-text-muted"
+            className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover disabled:cursor-not-allowed disabled:bg-bg-muted disabled:text-text-muted ${
+              fieldErrors.name ? 'border-danger' : 'border-border'
+            }`}
           />
         </Field>
 
@@ -281,12 +307,21 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
 
         {type === 'stdio' ? (
           <>
-            <Field label={t('connectorMarket.registerMcp.command')}>
+            <Field
+              label={t('connectorMarket.registerMcp.command')}
+              required
+              error={fieldErrors.command ? t('connectorMarket.create.fieldRequired') : undefined}
+            >
               <input
                 value={command}
-                onChange={(event) => setCommand(event.target.value)}
+                onChange={(event) => {
+                  setCommand(event.target.value);
+                  clearFieldError('command');
+                }}
                 placeholder="dev-mcp serve-sqlite"
-                className="h-9 w-full rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
+                className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover ${
+                  fieldErrors.command ? 'border-danger' : 'border-border'
+                }`}
               />
             </Field>
             <KeyValueField label={t('connectorMarket.registerMcp.args')} single rows={args} onChange={setArgs} placeholderKey={t('connectorMarket.registerMcp.pleaseInput')} />
@@ -301,12 +336,21 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
           </>
         ) : (
           <>
-            <Field label="URL">
+            <Field
+              label="URL"
+              required
+              error={fieldErrors.url ? t('connectorMarket.create.fieldRequired') : undefined}
+            >
               <input
                 value={url}
-                onChange={(event) => setUrl(event.target.value)}
+                onChange={(event) => {
+                  setUrl(event.target.value);
+                  clearFieldError('url');
+                }}
                 placeholder="https://mcp.example.com/mcp"
-                className="h-9 w-full rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
+                className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover ${
+                  fieldErrors.url ? 'border-danger' : 'border-border'
+                }`}
               />
             </Field>
             <Field label={t('connectorMarket.registerMcp.bearerTokenEnvKey')}>
@@ -347,7 +391,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={!name.trim() || creating}
+            disabled={creating}
             className="flex items-center gap-1.5 rounded-lg bg-text px-4 py-1.5 text-[13px] text-text-inverse disabled:opacity-60"
           >
             {creating && <Loader2 size={13} className="animate-spin" />}
@@ -361,11 +405,25 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  required,
+  error,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  error?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="mb-4">
-      <label className="mb-1.5 block text-[13px] font-medium text-text">{label}</label>
+      <label className="mb-1.5 block text-[13px] font-medium text-text">
+        {label}
+        {required && <span className="text-danger"> *</span>}
+      </label>
       {children}
+      {error && <p className="mt-1 text-[11px] leading-4 text-danger">{error}</p>}
     </div>
   );
 }

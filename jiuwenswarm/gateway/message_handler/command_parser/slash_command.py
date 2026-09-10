@@ -482,20 +482,6 @@ FIRST_BATCH_REGISTRY: tuple[SlashCommandEntry, ...] = (
 
 BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     {
-        "name": "btw",
-        "description": "快速侧问，不打断主对话（基于当前上下文）",
-        "usage": "/btw <question>",
-        "example": "/btw what does git status do?",
-        "kind": "built-in",
-        "takesArgs": True,
-        "scope": "agent",
-        "execution": "rpc",
-        "req_method": "command.btw",
-        # 侧问依赖当前会话上下文，欢迎页（无真实 session）不可用
-        "requires_session": True,
-        "available_modes": None,  # None 表示全模式可用
-    },
-    {
         "name": "compact",
         "description": "压缩对话历史，保留摘要以节省上下文",
         "usage": "/compact",

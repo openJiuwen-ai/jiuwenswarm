@@ -40,6 +40,135 @@ def _download_artifact(
     )
 
 
+def _configure_frozen_windows_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, str]:
+    artifact = _artifact()
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "_runtime_platform_key", lambda: "windows-x86_64")
+    monkeypatch.setattr(
+        runtime,
+        "_load_manifest",
+        lambda: {
+            "agents": {
+                "claude": {
+                    "platforms": {"windows-x86_64": [artifact]},
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(runtime, "activate_external_cli_runtime_paths", lambda: None)
+    monkeypatch.setattr(runtime, "_download_external_cli_runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(runtime, "_verify_installed_runtime", lambda _cli_agent: None)
+    return artifact
+
+
+def test_frozen_windows_installs_runtime_without_elevation_when_writable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = _configure_frozen_windows_install(monkeypatch)
+    direct_calls: list[tuple[str, str, list[dict[str, str]]]] = []
+    elevated_calls: list[str] = []
+
+    def _install_direct(
+        cli_agent: str,
+        platform_key: str,
+        artifacts: list[dict[str, str]],
+        _artifact_directory: Path,
+    ) -> None:
+        direct_calls.append((cli_agent, platform_key, artifacts))
+
+    monkeypatch.setattr(runtime, "_install_external_cli_runtime_artifacts_with_lock", _install_direct)
+    monkeypatch.setattr(
+        runtime,
+        "_run_elevated_windows_runtime_installer",
+        lambda cli_agent, _artifact_directory: elevated_calls.append(cli_agent),
+    )
+
+    runtime.install_external_cli_runtime("claude")
+
+    assert direct_calls == [("claude", "windows-x86_64", [artifact])]
+    assert elevated_calls == []
+
+
+def test_frozen_windows_elevates_only_after_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_frozen_windows_install(monkeypatch)
+    emitted: list[str] = []
+    elevated_calls: list[str] = []
+
+    def _raise_permission_error(*_args: object) -> None:
+        raise PermissionError("runtime directory is not writable")
+
+    monkeypatch.setattr(
+        runtime,
+        "_install_external_cli_runtime_artifacts_with_lock",
+        _raise_permission_error,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_run_elevated_windows_runtime_installer",
+        lambda cli_agent, _artifact_directory: elevated_calls.append(cli_agent),
+    )
+
+    runtime.install_external_cli_runtime("claude", log_callback=emitted.append)
+
+    assert elevated_calls == ["claude"]
+    assert any("requesting administrator permission" in message for message in emitted)
+
+
+def test_frozen_windows_does_not_elevate_for_non_permission_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_frozen_windows_install(monkeypatch)
+    elevated_calls: list[str] = []
+
+    def _raise_validation_error(*_args: object) -> None:
+        raise RuntimeError("runtime checksum validation failed")
+
+    monkeypatch.setattr(
+        runtime,
+        "_install_external_cli_runtime_artifacts_with_lock",
+        _raise_validation_error,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_run_elevated_windows_runtime_installer",
+        lambda cli_agent, _artifact_directory: elevated_calls.append(cli_agent),
+    )
+
+    with pytest.raises(RuntimeError, match="checksum validation failed"):
+        runtime.install_external_cli_runtime("claude")
+
+    assert elevated_calls == []
+
+
+def test_runtime_staging_root_is_created_under_agent_root(tmp_path: Path) -> None:
+    staging_root = runtime._create_runtime_staging_root(tmp_path)
+
+    assert staging_root.parent == tmp_path
+    assert staging_root.name.startswith(".install-")
+    assert staging_root.is_dir()
+
+
+def test_verify_runtime_reports_unreadable_install_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "site-packages"
+    target.mkdir()
+    monkeypatch.setattr(runtime, "external_cli_site_packages", lambda _cli_agent: target)
+
+    def _raise_permission_error(_path: Path) -> object:
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(Path, "iterdir", _raise_permission_error)
+
+    with pytest.raises(RuntimeError, match="runtime directory is not readable"):
+        runtime._verify_installed_runtime("claude")
+
+
 def test_activate_runtime_paths_logs_directory_creation_failure_and_continues(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

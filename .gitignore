@@ -103,3 +103,10 @@ reasonix.toml
 vendor/node/
 # oh-my-codex runtime artifacts (never tracked)
 .omx/
+/AGENTS.local.md
+report/index.html
+/tmp/
+/memory/
+/sub_agents/
+/context/
+/.plans/

@@ -108,7 +108,7 @@ Each model entry contains the following fields:
 - Must be globally unique across all configured models: cannot duplicate another model's `alias` or `model_name`;
 - When switching models (Web dropdown / CLI `/model <name>`), you can use either `alias` or `model_name` as the identifier.
 
-The first item in the list is the default model; you can drag to reorder or click "Set as Default" to change the default.
+The model marked with `is_default: true` is the default-used model; you can switch the default flag via the "Set as Default" button.
 
 ### 2.4 Multimodal Model Usage Examples
 
@@ -211,7 +211,9 @@ This section summarizes configuration for search and external services. All item
 
 Two additional related configuration groups:
 
-- **Free Search Engine Configuration**: `free_search_ddg_enabled` (DuckDuckGo) and `free_search_bing_enabled` (Bing) toggles control whether free search engines are enabled.
+- **Free Search Engine Configuration**:
+  - `free_search_ddg_enabled` (DuckDuckGo toggle) and `free_search_bing_enabled` (Bing toggle): control whether the free search engines are enabled. These two toggles are set via the "Configuration" page on the frontend and reset to `false` on every process startup; they must be explicitly enabled in the UI.
+  - `FREE_SEARCH_PROXY_URL`, `FREE_SEARCH_SSL_VERIFY`, `FREE_SEARCH_DDG_URL`: DuckDuckGo endpoint URL, SSL verification, and proxy URL, written to `.env`. Bing is not enabled by default.
 - **Other TeamSkillsHub settings**: `teamskills_market_url` (marketplace URL), `teamskills_system_token` (system token), and `teamskills_allowed_download_hosts` (allowed download hosts), configured as needed.
 
 ---
@@ -249,7 +251,7 @@ Context compression manages dialogue history retention strategies.
 - **Default**: `true` (enabled)
 - **Purpose**: Automatically compress and offload dialogue history when exceeding context window limits to maintain fluent interaction.
 
-This section also provides a **Compute Affinity (KV Release)** toggle (`react.context_engine_config.enable_kv_cache_release`, default `false`).
+This section also provides a **Compute Affinity (KV Release)** toggle (`react.kv_cache_affinity_config.enable_kv_cache_release`, default `false`).
 
 When enabled, the system will:
 
@@ -261,7 +263,7 @@ When enabled, the system will:
 
 **Compute Affinity (KV Release)** is an advanced optimization feature of context compression for managing GPU memory usage.
 
-- **Field**: `react.context_engine_config.enable_kv_cache_release`
+- **Field**: `react.kv_cache_affinity_config.enable_kv_cache_release`
 - **Default**: `false` (disabled)
 - **Purpose**: When enabled, the system dynamically releases KV Cache (key-value cache) that is no longer needed during conversations, saving GPU memory and allowing longer dialogue contexts.
 
@@ -445,8 +447,11 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `models.*.model_client_config.timeout` | Model request timeout (seconds) | `1800` |
 | `models.*.model_client_config.verify_ssl` | Verify SSL | `false` |
 | `models.*.model_config_obj.temperature` | Temperature | `0.95` |
-| `react.context_engine_config.dialogue_compressor_config.tokens_threshold` | Dialogue compression token threshold | `100000` |
-| `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.9` |
+| `react.context_engine_config.dialogue_compressor_config.trigger_context_ratio` | Dialogue compression trigger ratio of the effective context budget | `0.8` |
+| `react.context_engine_config.dialogue_compressor_config.min_target_context_ratio` | Dialogue compression target lower bound (fraction of window) | `0.1` |
+| `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
+| `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
+| `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
 
 <a id="dotenv-configuration"></a>
 

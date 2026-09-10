@@ -26,12 +26,18 @@ from openjiuwen.harness.rails import (
 )
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 from openjiuwen.harness.rails.context_engineer import ContextProcessorRail
+from openjiuwen.extensions.observability.demand import (
+    get_trajectory_span_processor,
+)
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
+    symphony_retrieval_compact_processor_spec,
+)
 from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail import TeamWorkspaceReportPathRail
 from jiuwenswarm.common.config import (
     get_config,
@@ -40,9 +46,6 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.utils import get_agent_skills_dir
-from jiuwenswarm.agents.harness.observability_runtime import (
-    get_trajectory_span_processor,
-)
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
 logger = logging.getLogger(__name__)
@@ -592,7 +595,7 @@ def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProce
     try:
         from typing import List, Tuple
 
-        user_processors: List[Tuple[str, dict]] = []
+        user_processors: List[Tuple[str, Any]] = []
         ctx_cfg: dict[str, Any] = {}
         if isinstance(config, dict):
             raw = config.get("context_engine_config", {})
@@ -613,6 +616,8 @@ def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProce
         round_level_cfg = ctx_cfg.get("round_level_compressor_config", {})
         if isinstance(round_level_cfg, dict) and round_level_cfg:
             user_processors.append(("RoundLevelCompressor", round_level_cfg))
+
+        user_processors.append(symphony_retrieval_compact_processor_spec())
 
         rail = ContextProcessorRail(
             processors=user_processors if user_processors else None,

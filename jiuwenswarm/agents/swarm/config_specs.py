@@ -775,8 +775,10 @@ def build_member_subagent_specs(
     """Build declarative member subagent specs.
 
     The status-line setup agent is available in every mode when enabled.
-    Code modes additionally include explore / plan, while code / browser are
-    config-gated via ``react.subagents.<name>.enabled``.
+    Code modes additionally include explore / plan. Every sub-agent is gated by
+    ``react.subagents.<name>.enabled``; status-line setup, explore and plan
+    default to on (only an explicit ``false`` drops them), while code / browser
+    require an explicit ``true``.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -810,14 +812,16 @@ def build_member_subagent_specs(
     if not _is_code_mode(mode):
         return specs
 
-    specs.extend(
-        [
-            _code_subagent_spec(
-                "explore_agent", registry.EXPLORE_AGENT, react, language
-            ),
-            _code_subagent_spec("plan_agent", registry.PLAN_AGENT, react, language),
-        ]
-    )
+# Explore / plan are the code profile's core sub-agents and stay mounted
+    # unless a config entry turns them off explicitly, so an absent entry keeps
+    # the long-standing behaviour.
+    for name, factory_name in (
+        ("explore_agent", registry.EXPLORE_AGENT),
+        ("plan_agent", registry.PLAN_AGENT),
+    ):
+        sub_cfg = subagents_cfg.get(name) if isinstance(subagents_cfg, dict) else None
+        if _is_subagent_default_enabled(sub_cfg):
+            specs.append(_code_subagent_spec(name, factory_name, react, language))
     if isinstance(subagents_cfg, dict):
         if _is_subagent_enabled(subagents_cfg.get("code_agent")):
             specs.append(
@@ -875,6 +879,31 @@ def build_member_deep_agent_spec(
     merged_rails = _collapse_skill_use_rails(
         merged_rails, retrieval_enabled=retrieval_enabled
     )
+
+    if role == "leader" and not _is_code_mode(mode):
+        # Add the leader-facing PermissionInterruptRail. The chat-team leader
+        # is user-facing and can resolve ASK dialogs; teammates are headless
+        # and use TeamPermissionRail instead (see _build_team_capability_specs).
+        # Code mode is excluded to avoid surprising existing code-team flows.
+        _perms_cfg = (
+            config.get("permissions") if isinstance(config, dict) else None
+        )
+        if isinstance(_perms_cfg, dict) and _perms_cfg.get("enabled"):
+            from jiuwenswarm.agents.swarm.permission_rail_spec import (
+                PERMISSION_RAIL_BUNDLE,
+                register_permission_rail_provider,
+            )
+            register_permission_rail_provider()
+            if not any(
+                isinstance(_s, RailSpec) and _s.type == PERMISSION_RAIL_BUNDLE
+                for _s in merged_rails
+            ):
+                merged_rails.append(
+                    RailSpec(
+                        type=PERMISSION_RAIL_BUNDLE,
+                        params={"permissions_config": _perms_cfg},
+                    ),
+                )
 
     update: dict[str, Any] = {
         "rails": merged_rails,

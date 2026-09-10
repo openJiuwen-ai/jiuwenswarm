@@ -52,6 +52,8 @@ export default {
           muted: color('--color-text-secondary'),
           inverse: color('--color-text-inverse'),
           link: color('--color-text-link'),
+          divider: color('--color-text-divider'),
+          weak: color('--color-text-weak'),
         },
         border: {
           DEFAULT: color('--color-border-default'),

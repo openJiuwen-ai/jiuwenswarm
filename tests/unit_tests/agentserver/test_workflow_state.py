@@ -912,3 +912,248 @@ def test_workflow_failed_freezes_budget():
                                            budget={"total": 500000, "spent": 500000, "remaining": 0, "scope": "leader", "exhausted": True}))
     assert r.budget["exhausted"] is True
     assert r.status == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Task 10c: workflow_paused / workflow_stopped 状态
+# ---------------------------------------------------------------------------
+
+def test_workflow_paused_marks_status_paused_non_terminal():
+    """workflow_paused sets status=paused (non-terminal, resumable) — no completed_at."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    delta = state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.is_terminal is False
+    assert state.completed_at is None
+    assert delta is not None
+    assert delta["status"] == "paused"
+
+
+def test_workflow_paused_does_not_stamp_terminal_fields():
+    """paused must not go through _stamp_workflow_terminal — no duration / completed_at."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.completed_at is None
+    assert state.duration_ms is None
+
+
+def test_workflow_paused_marks_running_agents_paused():
+    """pause marks in-flight agents paused (non-terminal, no completed_at) — matches workflow/phase paused."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
+    assert state.phases[0].agents[0].status == "running"
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+    assert state.phases[0].agents[0].completed_at is None
+
+
+def test_workflow_stopped_marks_terminal_without_error():
+    """workflow_stopped is terminal (control outcome) — no error/result text."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
+    delta = state.apply(_make_progress("workflow_stopped"))
+    assert state.status == "stopped"
+    assert state.is_terminal is True
+    assert state.completed_at is not None
+    assert state.error is None
+    assert state.result is None
+    assert delta["status"] == "stopped"
+
+
+def test_workflow_stopped_finalizes_running_phases_and_agents():
+    """stopped finalizes running phases/agents to stopped, mirroring completed/failed."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
+    state.apply(_make_progress("workflow_stopped"))
+    assert state.status == "stopped"
+    assert state.phases[0].status == "stopped"
+    assert state.phases[0].agents[0].status == "stopped"
+    assert state.phases[0].completed_agent_count == 1
+    assert state.completed_agent_count == 1
+
+
+def test_kind_handlers_route_paused_and_stopped():
+    """_KIND_HANDLERS maps workflow_paused / workflow_stopped to their handlers.
+
+    Access via an instance (Pydantic v2 wraps the un-annotated underscore
+    attribute in a ModelPrivateAttr descriptor on the class).
+    """
+    state = WorkflowRunState()
+    assert state._KIND_HANDLERS["workflow_paused"] == "_on_workflow_paused"
+    assert state._KIND_HANDLERS["workflow_stopped"] == "_on_workflow_stopped"
+
+
+def test_resume_workflow_started_resets_paused_to_running():
+    """A paused run resumed with the same run_id re-fires workflow_started → back to running.
+
+    The Monitor reuses the existing WorkflowRunState by run_id and
+    _on_workflow_started unconditionally sets status=running — the paused state
+    is reset, not orphaned/duplicated.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    # Resume relaunch (SwarmflowTool._relaunch re-runs with the same run_id).
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.status == "running"
+    assert state.is_terminal is False
+    assert state.completed_at is None
+    assert delta["status"] == "running"
+
+
+def test_resume_workflow_started_does_not_duplicate_phases():
+    """Re-firing workflow_started for the same run_id must NOT re-append META phases.
+
+    On resume the engine re-emits WORKFLOW_STARTED with the same full META
+    ``phases`` list for the same run_id; the Monitor reuses the existing
+    WorkflowRunState, so the phase cards must be kept — not duplicated into
+    fresh slug-4 / slug-5 / slug-6 cards.
+    """
+    phases_meta = [
+        PhasePlan(title="发牌", description="分配身份"),
+        PhasePlan(title="游戏进行"),
+        PhasePlan(title="结算"),
+    ]
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="werewolf-game", phases=phases_meta))
+    assert len(state.phases) == 3
+    ids_before = [p.id for p in state.phases]
+    # Resume relaunch re-emits workflow_started with the same full phases list.
+    delta = state.apply(_make_progress("workflow_started", workflow_name="werewolf-game", phases=phases_meta))
+    assert len(state.phases) == 3  # no duplicate phase cards
+    assert [p.name for p in state.phases] == ["发牌", "游戏进行", "结算"]
+    assert [p.id for p in state.phases] == ids_before  # ids stable, not slug-N re-append
+    assert state.status == "running"
+    assert len(delta["phases"]) == 3
+
+
+def test_workflow_paused_flips_running_phase_to_paused():
+    """A running phase flips to paused on workflow_paused (its agents pause too).
+
+    The phase stays non-terminal so a resume can continue; both the phase and
+    its in-flight agents show ``paused`` (matching the workflow control state).
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert state.phases[0].status == "running"
+    assert state.phases[0].agents[0].status == "running"
+    state.apply(_make_progress("workflow_paused"))
+    assert state.status == "paused"
+    assert state.phases[0].status == "paused"
+    assert state.phases[0].agents[0].status == "paused"
+    assert state.phases[0].agent_count == 1
+
+
+def test_resume_agent_started_reuses_same_agent_id():
+    """On resume, agent_started with the SAME agent_id reuses the node — no duplicate.
+
+    The engine re-emits ``agent_started`` for cache-hit agents (same
+    ``agent_id``) when a paused run is relaunched. Reusing the existing node
+    instead of appending keeps ``agent_count`` from doubling while the node
+    flips back to ``running``.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    state.apply(_make_progress("phase", phase="Phase 1"))
+    state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert len(state.phases[0].agents) == 1
+    assert state.phases[0].agents[0].status == "running"
+    state.apply(_make_progress("workflow_paused"))
+    assert state.phases[0].agents[0].status == "paused"
+    # Resume relaunch re-emits workflow_started + agent_started for the same node.
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    delta = state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a", agent_id="c:1"))
+    assert len(state.phases[0].agents) == 1
+    agent = state.phases[0].agents[0]
+    assert agent.status == "running"
+    assert state.phases[0].agent_count == 1
+    assert state.agent_count == 1
+    assert delta is not None
+
+
+def test_resume_workflow_started_keeps_original_started_at():
+    """A resume re-fires workflow_started — started_at must NOT be reset.
+
+    Otherwise the duration recomputes from the resume moment instead of the
+    original launch, shrinking the reported run duration on every pause/resume.
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    original = state.started_at
+    assert original is not None
+    state.apply(_make_progress("workflow_paused"))
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    assert state.started_at == original
+
+
+def test_relaunch_workflow_started_resets_phase_tree():
+    """A script-edit relaunch (relaunch_kind="relaunch") drops stale phases/agents.
+
+    The edited script may remove or rename phases, so the old phase cards (and
+    any agents under them) must not survive the re-run; the new META phase list
+    rebuilds from scratch. A normal resume (no relaunch_kind) keeps the tree.
+    """
+    state = WorkflowRunState()
+    old_phases = [PhasePlan(title="调研"), PhasePlan(title="分析"), PhasePlan(title="撰写")]
+    state.apply(_make_progress("workflow_started", workflow_name="test", phases=old_phases))
+    assert len(state.phases) == 3
+    # add an agent under the first phase so it must be dropped too
+    state.apply(_make_progress("agent_started", phase="调研", label="r", agent_id="k1", node_type="agent"))
+    assert state.phases[0].agents
+
+    new_phases = [PhasePlan(title="调研"), PhasePlan(title="撰写")]  # "分析" dropped
+    delta = state.apply(_make_progress(
+        "workflow_started", workflow_name="test", phases=new_phases, relaunch_kind="relaunch",
+    ))
+    assert [p.name for p in state.phases] == ["调研", "撰写"]
+    assert all(not p.agents for p in state.phases)  # stale agents cleared
+    # The started delta carries relaunch_kind so the frontend replaces the tree.
+    assert delta["relaunch_kind"] == "relaunch"
+
+
+def test_resume_workflow_started_keeps_phase_tree():
+    """A normal pause→resume (relaunch_kind="resume") keeps the existing phases."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test", phases=[PhasePlan(title="调研")]))
+    delta = state.apply(_make_progress("workflow_started", workflow_name="test", phases=[PhasePlan(title="调研")], relaunch_kind="resume"))
+    assert [p.name for p in state.phases] == ["调研"]  # not duplicated
+    # resume still carries the kind (frontend ignores it for merging), not "relaunch".
+    assert delta["relaunch_kind"] == "resume"
+
+
+def test_workflow_stopped_preserves_budget_and_scope():
+    """A session budget hit arrives as workflow_stopped carrying budget fields.
+
+    Unlike an explicit user stop (no budget), the session-budget stop must
+    preserve the budget snapshot + exhausted scope so the frontend can render
+    the exhausted layer and know it is session-scoped (not recoverable).
+    """
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="test"))
+    budget = {"total": 500000, "spent": 500000, "remaining": 0, "scope": "session", "exhausted": True}
+    wf_budget = {"total": 100, "spent": 50, "remaining": 50, "scope": "workflow", "exhausted": False}
+    state.apply(_make_progress(
+        "workflow_stopped",
+        text="session token budget exhausted",
+        budget=budget,
+        workflow_budget=wf_budget,
+        budget_exhausted_scope="session",
+    ))
+    assert state.status == "stopped"
+    assert state.budget == budget
+    assert state.workflow_budget == wf_budget
+    assert state.budget_exhausted_scope == "session"

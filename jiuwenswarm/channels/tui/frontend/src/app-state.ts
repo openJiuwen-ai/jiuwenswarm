@@ -79,15 +79,17 @@ import {
   collectWaitingForHuman,
   countWaitingForHuman,
   findWorkflowAgent,
-  isHumanPromptTruncated,
   mergeHumanPromptText,
   mergeWorkflowRun,
   normalizeWorkflowRun,
+  reassembleAgentFieldParts,
   isSessionNode,
   phaseLocalTurnNumber,
   sessionTurnLabelNumber,
   shouldShowTurnInDetailOrReply,
   type WorkflowRun,
+  type WorkflowPhase,
+  type WorkflowAgent,
 } from "./core/workflows.js";
 import type { PendingHumanPrompt } from "./core/event-handlers.js";
 import { spawnSync } from "node:child_process";
@@ -1674,16 +1676,13 @@ export class CliPiAppState {
       workflows?: unknown[];
       session_id?: string;
       total?: number;
-      truncated?: boolean;
+      has_more?: boolean;
     }>(
       "command.workflows",
       {
         action: "list",
         session_id: sessionId,
       },
-      // Align with get / get_human_prompt. 10s was too tight when the Gateway
-      // outbound writer is busy with workflow.updated / chat stream frames
-      // (list itself finishes in ms on AgentServer).
       30000,
     );
     this.applyWorkflowSnapshotPayload(payload);
@@ -1692,17 +1691,20 @@ export class CliPiAppState {
   readonly loadWorkflowDetail = async (
     workflowId: string,
     sessionId = this.sessionId,
+    phaseOffset = 0,
   ): Promise<void> => {
     const payload = await this.request<{
       type?: string;
       workflow?: unknown;
-      truncated?: boolean;
+      phase_total?: number;
+      has_more?: boolean;
     }>(
       "command.workflows",
       {
-        action: "get",
+        action: "get_workflow",
         workflow_id: workflowId,
         session_id: sessionId,
+        phase_offset: phaseOffset,
       },
       30000,
     );
@@ -1714,52 +1716,91 @@ export class CliPiAppState {
       "id" in payload.workflow
     ) {
       const workflow = payload.workflow as WorkflowRun;
-      if (payload.truncated === true) {
-        workflow.truncated = true;
+      if (payload.has_more === true) {
+        workflow.has_more = true;
+      }
+      if (typeof payload.phase_total === "number") {
+        workflow.phase_total = payload.phase_total;
       }
       this.applyWorkflowUpdate(workflow);
     }
   };
 
-  readonly loadHumanPrompt = async (
+  readonly loadPhaseAgents = async (
     workflowId: string,
+    phaseId: string,
+    sessionId = this.sessionId,
+    agentOffset = 0,
+  ): Promise<void> => {
+    const payload = await this.request<{
+      type?: string;
+      phase?: unknown;
+      agent_total?: number;
+      has_more?: boolean;
+      error?: unknown;
+    }>(
+      "command.workflows",
+      {
+        action: "get_phase",
+        workflow_id: workflowId,
+        phase_id: phaseId,
+        session_id: sessionId,
+        agent_offset: agentOffset,
+      },
+      30000,
+    );
+    if (payload.error || !payload.phase || typeof payload.phase !== "object") return;
+    const phase = payload.phase as WorkflowPhase & { workflow_id?: string };
+    const existing = this.workflowRuns.find((item) => item.id === workflowId);
+    if (!existing) return;
+    // Hand the incoming phase (agent summaries) to applyWorkflowUpdate's merge
+    // path — mergeWorkflowAgent preserves already-loaded full bodies (from
+    // get_agent) and stamps detail_pending on summary-only agents.
+    this.applyWorkflowUpdate({
+      ...existing,
+      phases: [...(existing.phases ?? []), phase],
+    });
+  };
+
+  readonly loadAgentDetail = async (
+    workflowId: string,
+    phaseId: string,
     agentId: string,
     sessionId = this.sessionId,
   ): Promise<string> => {
     const payload = await this.request<{
       type?: string;
-      human_prompt?: unknown;
-      agent_id?: unknown;
+      agent?: unknown;
       error?: unknown;
     }>(
       "command.workflows",
       {
-        action: "get_human_prompt",
+        action: "get_agent",
         workflow_id: workflowId,
+        phase_id: phaseId,
         agent_id: agentId,
         session_id: sessionId,
       },
       30000,
     );
-    if (payload.error) {
-      throw new Error(String(payload.error));
-    }
-    const prompt = typeof payload.human_prompt === "string" ? payload.human_prompt.trim() : "";
-    if (!prompt) return "";
+    if (payload.error || !payload.agent || typeof payload.agent !== "object") return "";
+    const agent = reassembleAgentFieldParts(payload.agent as WorkflowAgent);
 
     const existing = this.workflowRuns.find((item) => item.id === workflowId);
-    if (!existing) return prompt;
+    if (!existing) return agent.human_prompt ?? "";
 
-    const updatedPhases = (existing.phases ?? []).map((phase) => ({
-      ...phase,
-      agents: (phase.agents ?? []).map((agent) =>
-        agent.id === agentId
-          ? { ...agent, human_prompt: mergeHumanPromptText(agent.human_prompt, prompt) }
-          : agent,
-      ),
-    }));
+    const updatedPhases = (existing.phases ?? []).map((phase) =>
+      phase.id === phaseId
+        ? {
+            ...phase,
+            agents: (phase.agents ?? []).map((a) =>
+              a.id === agentId ? { ...a, ...agent } : a,
+            ),
+          }
+        : phase,
+    );
     this.applyWorkflowUpdate({ ...existing, phases: updatedPhases });
-    return prompt;
+    return agent.human_prompt ?? "";
   };
 
   readonly ensureHumanPromptLoaded = async (
@@ -1767,10 +1808,11 @@ export class CliPiAppState {
     agentId: string,
   ): Promise<void> => {
     const lookup = findWorkflowAgent(this.workflowRuns, workflowId, agentId);
-    const current = lookup?.agent.human_prompt?.trim() ?? "";
-    if (current && !isHumanPromptTruncated(current)) return;
+    if (!lookup) return;
+    const current = lookup.agent.human_prompt?.trim() ?? "";
+    if (current) return;
     try {
-      await this.loadHumanPrompt(workflowId, agentId);
+      await this.loadAgentDetail(workflowId, lookup.phase.id, agentId);
     } catch {
       // Best-effort — pending list still shows whatever partial text we have.
     }
@@ -1780,7 +1822,7 @@ export class CliPiAppState {
     type?: unknown;
     workflows?: unknown;
     total?: unknown;
-    truncated?: unknown;
+    has_more?: unknown;
     [key: string]: unknown;
   }): void => {
     const workflows = Array.isArray(payload.workflows) ? payload.workflows : [];

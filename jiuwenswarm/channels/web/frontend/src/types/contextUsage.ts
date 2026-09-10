@@ -11,6 +11,8 @@ export interface ContextUsageSnapshot {
   phase: 'post_call';
   request_id: string;
   product_session_id: string;
+  /** Team streams identify the main conversation owner semantically with role="leader". */
+  role: 'leader' | 'teammate' | null;
   depth: number;
   team_id: string | null;
   member_name: string | null;
@@ -21,4 +23,6 @@ export interface ContextUsageSnapshot {
   };
   parts: Record<string, ContextUsagePart>;
   session_kv_cache_hit_rate: number | null;
+  /** 用于历史分页恢复时避免旧页覆盖新页；实时事件没有该字段时不参与排序。 */
+  timestamp?: string;
 }

@@ -248,6 +248,8 @@ async def test_installer_publishes_and_is_idempotent(tmp_path):
     assert [card["id"] for card in cards] == [first["installation_id"]]
     assert cards[0]["installed"] is True
     assert catalog.resolve_plugin_dir(first["installation_id"]).is_dir()
+    assert (catalog.resolve_plugin_dir(first["installation_id"]) / "README.md").is_file()
+    assert not (Path(context.harness_activation_store.get_active()["runtime_path"]) / "README.md").exists()
 
     # An already-active installation repairs an unregistered/deleted catalog copy.
     catalog.uninstall_plugin_package({"id": first["installation_id"]})

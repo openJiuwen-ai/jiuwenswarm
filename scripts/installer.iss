@@ -90,17 +90,377 @@ Type: dirifempty; Name: "{app}"
 Filename: "{win}\explorer.exe"; Parameters: """{app}\{#MyAppExeName}"""; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall
 
 [Code]
+function HasDescriptionStemInTree(const Directory, Stem: String): Boolean;
+var
+  FindRec: TFindRec;
+  ChildDirectory: String;
+begin
+  Result := False;
+  if not FindFirst(AddBackslash(Directory) + '*', FindRec) then
+    exit;
+
+  try
+    repeat
+      if (FindRec.Name = '.') or (FindRec.Name = '..') then
+        continue;
+
+      if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+      begin
+        if CompareText(FindRec.Name, 'fragments') <> 0 then
+        begin
+          ChildDirectory := AddBackslash(Directory) + FindRec.Name;
+          if HasDescriptionStemInTree(ChildDirectory, Stem) then
+          begin
+            Result := True;
+            exit;
+          end;
+        end;
+      end
+      else if (CompareText(ExtractFileExt(FindRec.Name), '.md') = 0) and
+              (CompareText(ChangeFileExt(FindRec.Name, ''), Stem) = 0) then
+      begin
+        Result := True;
+        exit;
+      end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+function HasNestedDescriptionReplacement(const LanguageDirectory, Stem: String): Boolean;
+var
+  FindRec: TFindRec;
+  ChildDirectory: String;
+begin
+  Result := False;
+  if not FindFirst(AddBackslash(LanguageDirectory) + '*', FindRec) then
+    exit;
+
+  try
+    repeat
+      if (FindRec.Name = '.') or (FindRec.Name = '..') then
+        continue;
+
+      if ((FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and
+         (CompareText(FindRec.Name, 'fragments') <> 0) then
+      begin
+        ChildDirectory := AddBackslash(LanguageDirectory) + FindRec.Name;
+        if HasDescriptionStemInTree(ChildDirectory, Stem) then
+        begin
+          Result := True;
+          exit;
+        end;
+      end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+procedure CleanupStaleOpenJiuwenDescriptions();
+var
+  DescsDirectory: String;
+  LanguageDirectory: String;
+  StalePath: String;
+  Stem: String;
+  LanguageRec: TFindRec;
+  FlatRec: TFindRec;
+begin
+  DescsDirectory := ExpandConstant(
+    '{app}\_internal\openjiuwen\agent_teams\tools\locales\descs'
+  );
+  if not DirExists(DescsDirectory) then
+    exit;
+
+  if not FindFirst(AddBackslash(DescsDirectory) + '*', LanguageRec) then
+    exit;
+
+  try
+    repeat
+      if (LanguageRec.Name = '.') or (LanguageRec.Name = '..') or
+         ((LanguageRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0) then
+        continue;
+
+      LanguageDirectory := AddBackslash(DescsDirectory) + LanguageRec.Name;
+      if not FindFirst(AddBackslash(LanguageDirectory) + '*.md', FlatRec) then
+        continue;
+
+      try
+        repeat
+          Stem := ChangeFileExt(FlatRec.Name, '');
+          if not HasNestedDescriptionReplacement(LanguageDirectory, Stem) then
+            continue;
+
+          StalePath := AddBackslash(LanguageDirectory) + FlatRec.Name;
+          if DeleteFile(StalePath) then
+            Log('Removed stale OpenJiuwen description: ' + StalePath)
+          else
+            RaiseException(
+              'Unable to remove stale OpenJiuwen description: ' + StalePath
+            );
+        until not FindNext(FlatRec);
+      finally
+        FindClose(FlatRec);
+      end;
+    until not FindNext(LanguageRec);
+  finally
+    FindClose(LanguageRec);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep <> ssPostInstall then
+    exit;
+
+  { The current per-user installation directory is writable by Setup. }
+  CleanupStaleOpenJiuwenDescriptions();
+end;
+
+const
+  WebView2RuntimeId = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  WebView2StandaloneUrl = 'https://go.microsoft.com/fwlink/?linkid=2124701';
+  WebView2StandaloneFileName = 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe';
+  WebView2DownloadPageUrl = 'https://developer.microsoft.com/microsoft-edge/webview2/';
+  // Inno writes the uninstall entry as "<AppId>_is1" under HKLM. The old admin
+  // install registers in the 64-bit view; WOW6432Node is checked as a fallback.
+  LegacyUninstallNativeSubkey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6DC96977-C194-44FE-812D-D4F0B576BD905}_is1';
+  LegacyUninstallWowSubkey = 'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{6DC96977-C194-44FE-812D-D4F0B576BD905}_is1';
+
+var
+  WebView2DownloadPage: TDownloadWizardPage;
+
+procedure InitializeWizard;
+begin
+  WebView2DownloadPage := CreateDownloadPage(
+    '正在下载 Microsoft Edge WebView2 Runtime',
+    '桌面 App 需要此运行环境。下载期间可以取消，WorkSwarm 主体安装仍可继续。',
+    nil
+  );
+  WebView2DownloadPage.ShowBaseNameInsteadOfUrl := True;
+  WebView2DownloadPage.AbortButton.Caption := '取消下载';
+end;
+
+function GetWebView2RuntimeVersion(var Version: String): Boolean;
+var
+  Key: String;
+begin
+  Key := 'SOFTWARE\Microsoft\EdgeUpdate\Clients\' + WebView2RuntimeId;
+  Result := RegQueryStringValue(HKLM32, Key, 'pv', Version) and
+    (Trim(Version) <> '') and (CompareText(Trim(Version), '0.0.0.0') <> 0);
+
+  if not Result then
+    Result := RegQueryStringValue(HKCU, Key, 'pv', Version) and
+      (Trim(Version) <> '') and (CompareText(Trim(Version), '0.0.0.0') <> 0);
+end;
+
+procedure ShowWebView2UnavailableMessage(const Reason: String);
+begin
+  Log(Reason + ' WorkSwarm installation will continue without a usable WebView2 Runtime.');
+  if WizardSilent then
+    exit;
+
+  MsgBox(
+    Reason + #13#10 + #13#10 +
+    '{#MyAppName} 将继续安装。安装完成后 Web 端仍可正常使用；' +
+    '桌面 App 必须安装 Microsoft Edge WebView2 Runtime 才能正常运行。' + #13#10 + #13#10 +
+    '可稍后从微软官方页面下载安装：' + #13#10 + WebView2DownloadPageUrl,
+    mbError,
+    MB_OK
+  );
+end;
+
+function DownloadWebView2Installer(
+  var RuntimeInstaller: String;
+  var FailureReason: String
+): Boolean;
+var
+  DownloadError: String;
+begin
+  Result := False;
+  FailureReason := '';
+  RuntimeInstaller := ExpandConstant('{tmp}\') + WebView2StandaloneFileName;
+  DeleteFile(RuntimeInstaller);
+  WebView2DownloadPage.Clear;
+  WebView2DownloadPage.Add(
+    WebView2StandaloneUrl,
+    WebView2StandaloneFileName,
+    ''
+  );
+  WebView2DownloadPage.Show;
+  try
+    try
+      WebView2DownloadPage.Download;
+      Result := FileExists(RuntimeInstaller);
+      if not Result then
+        Log('WebView2 Runtime download completed but the temporary file is missing.');
+    except
+      DownloadError := GetExceptionMessage;
+      if WebView2DownloadPage.AbortedByUser then
+      begin
+        FailureReason := '已取消下载 Microsoft Edge WebView2 Runtime。';
+        Log('WebView2 Runtime download was cancelled by the user.');
+      end
+      else
+      begin
+        FailureReason :=
+          '未能下载 Microsoft Edge WebView2 Runtime。请检查网络、代理或防火墙设置。';
+        Log('WebView2 Runtime download failed: ' + DownloadError);
+      end;
+    end;
+  finally
+    { Keep the completed download page visible while signature verification
+      and the Microsoft child installer start. This avoids flashing back to
+      the main wizard and then showing a second progress page. }
+    if not Result then
+      WebView2DownloadPage.Hide;
+  end;
+end;
+
+function VerifyDownloadedWebView2Installer(const RuntimeInstaller: String): Boolean;
+var
+  PowerShellPath: String;
+  ScriptPath: String;
+  ScriptBody: AnsiString;
+  ResultCode: Integer;
+begin
+  Result := False;
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  ScriptPath := ExpandConstant('{tmp}\verify-workswarm-webview2.ps1');
+  ScriptBody :=
+    '$signature = Get-AuthenticodeSignature -LiteralPath $args[0]' + #13#10 +
+    'if (($signature.Status -eq ''Valid'') -and $signature.SignerCertificate -and ' +
+    '($signature.SignerCertificate.Subject -match ''(^|,\s*)O=Microsoft Corporation(,|$)'')) { exit 0 }' + #13#10 +
+    'exit 1' + #13#10;
+
+  if not SaveStringToFile(ScriptPath, ScriptBody, False) then
+  begin
+    Log('Could not create the WebView2 signature verification script.');
+    exit;
+  end;
+
+  if not Exec(
+    PowerShellPath,
+    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+      ScriptPath + '" "' + RuntimeInstaller + '"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+  begin
+    Log('Could not start WebView2 signature verification.');
+    exit;
+  end;
+
+  Result := ResultCode = 0;
+  if not Result then
+    Log('Downloaded WebView2 installer failed Microsoft Authenticode verification.');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  RuntimeVersion: String;
+  RuntimeInstaller: String;
+  ResultCode: Integer;
+  Executed: Boolean;
+  InstallParameters: String;
+  InstallShowCmd: Integer;
+  DownloadFailureReason: String;
+begin
+  Result := '';
+
+  if GetWebView2RuntimeVersion(RuntimeVersion) then
+  begin
+    Log('Microsoft Edge WebView2 Runtime is already installed: ' + RuntimeVersion);
+    exit;
+  end;
+
+  Log('Microsoft Edge WebView2 Runtime is missing; starting the online prerequisite flow.');
+  if not WizardSilent then
+    MsgBox(
+      '未检测到可用的 Microsoft Edge WebView2 Runtime。' + #13#10 + #13#10 +
+      '安装程序将从微软官方下载约 250 MB 的运行环境，并显示下载进度。' +
+      '下载期间可以取消；如果网络不可用，WorkSwarm 主体安装仍会继续。',
+      mbInformation,
+      MB_OK
+    );
+
+  if not DownloadWebView2Installer(RuntimeInstaller, DownloadFailureReason) then
+  begin
+    if DownloadFailureReason = '' then
+      DownloadFailureReason := 'Microsoft Edge WebView2 Runtime 下载文件不可用。';
+    ShowWebView2UnavailableMessage(DownloadFailureReason);
+    exit;
+  end;
+
+  WebView2DownloadPage.AbortButton.Enabled := False;
+  WebView2DownloadPage.Caption := '正在验证 Microsoft Edge WebView2 Runtime';
+  WebView2DownloadPage.Description := '正在校验微软数字签名，请稍候…';
+  try
+    if not VerifyDownloadedWebView2Installer(RuntimeInstaller) then
+    begin
+      DeleteFile(RuntimeInstaller);
+      ShowWebView2UnavailableMessage(
+        '下载的 Microsoft Edge WebView2 Runtime 未通过微软数字签名验证，已停止执行。'
+      );
+      exit;
+    end;
+
+    WebView2DownloadPage.Caption := '正在打开 Microsoft Edge WebView2 Runtime 安装程序';
+    WebView2DownloadPage.Description :=
+      '请在即将弹出的微软安装窗口中查看进度或取消安装。';
+    ResultCode := -1;
+    if WizardSilent then
+    begin
+      InstallParameters := '/silent /install';
+      InstallShowCmd := SW_HIDE;
+    end
+    else
+    begin
+      InstallParameters := '/install';
+      InstallShowCmd := SW_SHOWNORMAL;
+    end;
+    Executed := Exec(
+      RuntimeInstaller,
+      InstallParameters,
+      '',
+      InstallShowCmd,
+      ewWaitUntilTerminated,
+      ResultCode
+    );
+  finally
+    WebView2DownloadPage.Hide;
+  end;
+
+  { The Evergreen installer can return a non-zero code even when registration
+    succeeded. Verify Microsoft's documented pv value instead of trusting only
+    the child exit code. }
+  if GetWebView2RuntimeVersion(RuntimeVersion) then
+  begin
+    Log(
+      'Microsoft Edge WebView2 Runtime installation verified: ' +
+      RuntimeVersion + ' (installer exit code ' + IntToStr(ResultCode) + ')'
+    );
+    exit;
+  end;
+
+  if Executed then
+    Log('WebView2 Runtime installer exit code: ' + IntToStr(ResultCode))
+  else
+    Log('WebView2 Runtime installer could not be started.');
+
+  ShowWebView2UnavailableMessage(
+    'Microsoft Edge WebView2 Runtime 未能完成安装或已被取消。'
+  );
+end;
+
 // Migration: remove a previous admin-lineage install (AppId
 // 6DC96977-C194-44FE-812D-D4F0B576BD905) that lives in Program Files + HKLM.
 // A per-user (lowest) installer cannot delete those paths itself, so it drives
 // the old uninstaller via runas. This triggers one UAC during migration only;
 // fresh per-user installs run without any elevation.
-
-const
-  // Inno writes the uninstall entry as "<AppId>_is1" under HKLM. The old admin
-  // install registers in the 64-bit view; WOW6432Node is checked as a fallback.
-  LegacyUninstallNativeSubkey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6DC96977-C194-44FE-812D-D4F0B576BD905}_is1';
-  LegacyUninstallWowSubkey = 'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{6DC96977-C194-44FE-812D-D4F0B576BD905}_is1';
 
 function StripQuotes(const S: String): String;
 var

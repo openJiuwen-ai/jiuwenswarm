@@ -111,7 +111,7 @@ export function ExpandedPanelTabs({
             aria-label={isFullscreen ? t('team.restore') : t('team.maximize')}
             title={isFullscreen ? t('team.restore') : t('team.maximize')}
           >
-            {isFullscreen ? <Minimize2 size={12} /> : <MaximizeIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />}
+            {isFullscreen ? <Minimize2 className="h-[21.33px] w-[21.33px]" /> : <MaximizeIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />}
           </button>
         )}
         {onCollapse && (
