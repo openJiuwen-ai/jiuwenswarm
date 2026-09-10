@@ -164,6 +164,33 @@ def test_team_binding_store_rejects_duplicate_team_name(tmp_path) -> None:
     assert exc_info.value.code == "CONFLICT"
 
 
+def test_team_binding_store_finds_binding_by_session(tmp_path) -> None:
+    store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    store.create(team_name="research_team", template_id="default")
+    store.create(team_name="review_team", template_id="default")
+    store.bind_session(team_name="research_team", session_id="sess-a")
+    store.bind_session(team_name="review_team", session_id="sess-b")
+
+    assert store.find_by_session("sess-a").team_name == "research_team"
+    assert store.find_by_session("sess-b").team_name == "review_team"
+    assert store.find_by_session("sess-missing") is None
+    assert store.find_by_session("") is None
+
+
+def test_team_binding_store_find_by_session_reflects_rebind(tmp_path) -> None:
+    store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    store.create(team_name="research_team", template_id="default")
+    store.create(team_name="review_team", template_id="default")
+    store.bind_session(team_name="research_team", session_id="sess-a")
+
+    store.bind_session(team_name="review_team", session_id="sess-a")
+
+    found = store.find_by_session("sess-a")
+    assert found is not None
+    assert found.team_name == "review_team"
+    assert store.get("research_team").session_ids == ()
+
+
 def test_team_binding_store_concurrent_create_keeps_valid_json(tmp_path) -> None:
     store = TeamBindingStore(tmp_path / "bindings.json")
     errors: list[BaseException] = []
