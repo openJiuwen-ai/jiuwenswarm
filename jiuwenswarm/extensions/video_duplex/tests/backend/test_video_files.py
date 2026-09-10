@@ -1,4 +1,6 @@
 """File resources survive Core delegation, status recovery and visible history."""
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -87,7 +89,9 @@ async def test_file_history_uses_native_chat_file_record_in_visible_conversation
     monkeypatch.setattr(session_history, "_enqueue_history_item", lambda sid, item, **_: records.append((sid, item)))
     monkeypatch.setattr(session_metadata, "update_session_metadata", lambda **_: None)
     video_live.register_video_live_handler(channel, agent_client=None)
-    await handlers["video.conversation.append"](None, "append", {
+    append_handler = handlers.get("video.conversation.append")
+    assert append_handler is not None
+    await append_handler(None, "append", {
         "session_id": "visible-session", "event_id": "file-event", "kind": "file", "files": [FILE],
         "timestamp": 1_800_000_000,
     }, "transport-session")
@@ -96,7 +100,7 @@ async def test_file_history_uses_native_chat_file_record_in_visible_conversation
     assert records[0][1]["event_type"] == "chat.file"
     assert records[0][1]["files"] == [FILE]
     assert records[0][1]["channel_id"] == "video_duplex"
-    await handlers["video.conversation.append"](None, "bad", {
+    await append_handler(None, "bad", {
         "session_id": "visible-session", "event_id": "invalid", "kind": "file", "files": [{"name": "no-resource"}],
     }, None)
     assert channel.send_response.call_args.kwargs["code"] == "INVALID_FILES"

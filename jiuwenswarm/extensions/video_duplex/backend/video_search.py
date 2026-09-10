@@ -74,12 +74,9 @@ def _result_kind(question: str, answer: str, tools_used: list[str]) -> str:
 
 def _safe_brief(value: str) -> str:
     brief = value.strip()
-    if (
-        not brief
-        or len(brief) > MAX_REALTIME_BRIEF_CHARS
-        or "\n" in brief
-        or "\r" in brief
-    ):
+    if not brief or len(brief) > MAX_REALTIME_BRIEF_CHARS:
+        return ""
+    if "\n" in brief or "\r" in brief:
         return ""
     if re.search(r"https?://|www\.|```|`[^`]+`|\[\[JIUWEN_", brief, re.IGNORECASE):
         return ""
@@ -106,7 +103,10 @@ def _fallback_realtime_brief(
         "action": "任务已经执行完成，详细结果已经显示在界面中。",
         "generic": "任务已经完成，完整结果已经显示在界面中。",
     }
-    return messages[result_kind], "fallback"
+    message = messages.get(result_kind)
+    if message is None:
+        message = messages.get("generic", "")
+    return message, "fallback"
 
 
 def present_core_agent_result(
@@ -320,12 +320,13 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
         todos = payload.get("todos")
         if not isinstance(todos, list) or not todos:
             return None
-        completed = sum(
-            1
-            for item in todos
-            if isinstance(item, dict)
-            and str(item.get("status") or "").lower() == "completed"
-        )
+        completed = 0
+        for item in todos:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").lower()
+            if status == "completed":
+                completed += 1
         return {
             "stage": "plan",
             "title": "执行计划已更新",
@@ -551,34 +552,35 @@ class VideoSearchManager:
 
     def _queue_snapshot(self, scope: str) -> dict[str, Any]:
         pending = self._queue.get(scope, [])
+        jobs: list[dict[str, Any]] = []
+        visible_statuses = {"queued", "running", "cancelling", "cancelled"}
+        public_keys = (
+            "job_id",
+            "search_session_id",
+            "question",
+            "query",
+            "status",
+            "tool_call_id",
+            "turn_id",
+        )
+        for job_id, job in self._jobs.items():
+            if job.get("search_session_id") != scope:
+                continue
+            if job.get("status") not in visible_statuses:
+                continue
+            public_job: dict[str, Any] = {}
+            for key in public_keys:
+                if key in job:
+                    public_job[key] = job.get(key)
+            public_job["queue_position"] = (
+                pending.index(job_id) + 1 if job_id in pending else 0
+            )
+            public_job["queue_version"] = self._queue_versions.get(scope, 0)
+            jobs.append(public_job)
         return {
             "search_session_id": scope,
             "queue_version": self._queue_versions.get(scope, 0),
-            "jobs": [
-                {
-                    **{
-                        key: job[key]
-                        for key in (
-                            "job_id",
-                            "search_session_id",
-                            "question",
-                            "query",
-                            "status",
-                            "tool_call_id",
-                            "turn_id",
-                        )
-                        if key in job
-                    },
-                    "queue_position": pending.index(job_id) + 1
-                    if job_id in pending
-                    else 0,
-                    "queue_version": self._queue_versions.get(scope, 0),
-                }
-                for job_id, job in self._jobs.items()
-                if job.get("search_session_id") == scope
-                and job.get("status")
-                in {"queued", "running", "cancelling", "cancelled"}
-            ],
+            "jobs": jobs,
         }
 
     async def _publish_queue(self, ws: Any, scope: str) -> None:
@@ -783,9 +785,8 @@ class VideoSearchManager:
             self._session_states[search_session_id] = state
         return state
 
-    def _public_job(
-        self, job: dict[str, Any], *, reused: bool = False
-    ) -> dict[str, Any]:
+    @staticmethod
+    def _public_job(job: dict[str, Any], *, reused: bool = False) -> dict[str, Any]:
         return {
             "id": str(job.get("job_id") or job.get("id") or ""),
             "status": str(job.get("status") or "running"),

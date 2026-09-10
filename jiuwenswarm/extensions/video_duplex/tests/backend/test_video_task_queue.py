@@ -1,3 +1,5 @@
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 

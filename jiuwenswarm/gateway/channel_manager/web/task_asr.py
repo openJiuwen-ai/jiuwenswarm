@@ -67,7 +67,7 @@ def _decode_audio(raw: Any) -> bytes:
         raise TaskAsrError("录音超过 25 MB 限制", "ASR_AUDIO_TOO_LARGE")
     try:
         audio = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as exc:
+    except binascii.Error as exc:
         raise TaskAsrError("录音数据不是有效的 Base64", "BAD_REQUEST") from exc
     if not audio:
         raise TaskAsrError("录音内容为空", "BAD_REQUEST")

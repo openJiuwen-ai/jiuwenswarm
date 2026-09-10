@@ -1,4 +1,6 @@
 """Full-duplex titles use native history metadata and native session notifications."""
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import pytest

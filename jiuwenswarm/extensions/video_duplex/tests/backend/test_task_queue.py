@@ -1,4 +1,6 @@
 """Exercise actual execution locks rather than fabricated progress snapshots."""
+# pylint: disable=protected-access
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
