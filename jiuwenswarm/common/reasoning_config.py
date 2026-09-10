@@ -152,7 +152,6 @@ def validate_reasoning_level_for_model(
 
 
 __all__ = [
-    "SAMPLING_OVERRIDE_RULES",
     "ReasoningLevel",
     "SUPPORTED_REASONING_LEVELS",
     "effective_endpoint_profile",
