@@ -11,21 +11,21 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiDatasetInvalid,
     RsiModelNotFound,
     RsiPathInvalid,
     RsiUnsupportedParameter,
 )
-from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
     resolve_native_harness_baseline,
 )
+from jiuwenswarm.agents.harness.common.rsi.harness_adapter import HarnessEngineAdapter
 from jiuwenswarm.agents.harness.common.rsi.harness_provider import (
     HarnessProvider,
     engine_validate_input,
 )
-from jiuwenswarm.agents.harness.common.rsi.harness_adapter import HarnessEngineAdapter
 from jiuwenswarm.agents.harness.common.rsi.materializer import RsiTaskMaterializer
 from jiuwenswarm.agents.harness.common.rsi.model_resolver import RsiModelConfigResolver
 

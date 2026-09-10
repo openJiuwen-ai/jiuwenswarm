@@ -61,7 +61,18 @@ def _request(params: dict) -> SimpleNamespace:
 
 
 @pytest.mark.asyncio
-async def test_agentserver_accepts_evobench_suite_and_generic_harness_refs(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "repair_options, expected_repair_rounds",
+    [
+        ({}, 3),
+        ({"max_repair_rounds": 1}, 1),
+        ({"training_options": {"max_repair_rounds": 2}}, 2),
+        ({"max_repair_rounds": 5, "training_options": {"max_repair_rounds": 2}}, 5),
+    ],
+)
+async def test_agentserver_accepts_evobench_suite_and_generic_harness_refs(
+    tmp_path: Path, repair_options: dict, expected_repair_rounds: int,
+) -> None:
     dataset_root = tmp_path / "datasets"
     harness_root = tmp_path / "harnesses"
     package = harness_root / "policy_harness"
@@ -135,7 +146,7 @@ async def test_agentserver_accepts_evobench_suite_and_generic_harness_refs(tmp_p
                 "max_epochs": 1,
                 "batch_size": 1,
                 "max_issue_attempts": 8,
-                "max_repair_rounds": 1,
+                **repair_options,
                 "sibling_candidate_count": 1,
                 "rollout_concurrency": 2,
             }
@@ -164,7 +175,7 @@ async def test_agentserver_accepts_evobench_suite_and_generic_harness_refs(tmp_p
     assert profile["data_loader"]["batch_size"] == 1
     assert profile["member_optimizer"]["sibling_candidate_count"] == 1
     assert profile["member_optimizer"]["max_issue_attempts_per_batch"] == 8
-    assert profile["member_optimizer"]["max_repair_rounds_per_batch"] == 1
+    assert profile["member_optimizer"]["max_repair_rounds_per_batch"] == expected_repair_rounds
     assert profile["rsi_runtime"] == {
         "domain": "office",
         "execution_mode": "local",

@@ -6,15 +6,16 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from openjiuwen.harness.resources import load_plugin_package
-from jiuwenswarm.agents.harness.common.rsi.harness_activation import hash_harness_package
+
+from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
+    hash_harness_package,
+)
 from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harness_plugin
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
-from tests.unit_tests.rsi.test_plugin_roundtrip import _agent, _PRESETS
+from tests.unit_tests.rsi.test_plugin_roundtrip import _PRESETS, _agent
 
 pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
-
 
 def _package(tmp_path, *, legacy=False):
     source = tmp_path / "published"

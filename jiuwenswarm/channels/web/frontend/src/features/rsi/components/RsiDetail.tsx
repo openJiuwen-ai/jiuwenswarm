@@ -32,10 +32,20 @@ export function RsiDetail() {
     if (!selectedTaskId) return;
     const status = detail?.task?.status;
     if (status !== 'CREATED' && status !== 'QUEUED' && status !== 'RUNNING') return;
-    const timer = window.setInterval(() => {
-      void refreshDetail(selectedTaskId);
-    }, 3000);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer: number;
+    const poll = async () => {
+      try {
+        await refreshDetail(selectedTaskId);
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 3000);
+      }
+    };
+    timer = window.setTimeout(poll, 3000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [selectedTaskId, detail?.task?.status, refreshDetail]);
 
   if ((detailLoading && !detail) || !detail?.task) {

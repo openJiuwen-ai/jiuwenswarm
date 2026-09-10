@@ -495,9 +495,10 @@ class TestDeleteFailures:
         def _boom(*args, **kwargs):
             raise PermissionError("locked")
 
-        monkeypatch.setattr(ts.shutil, "rmtree", _boom)
-        with pytest.raises(PermissionError):
-            ctx.task_service.delete({"task_id": t})
+        with monkeypatch.context() as patch:
+            patch.setattr(ts.shutil, "rmtree", _boom)
+            with pytest.raises(PermissionError):
+                ctx.task_service.delete({"task_id": t})
 
     def test_delete_idempotent_when_dir_already_gone(self, ctx):
         """目录已消失视作幂等成功（guard 通过后 rmtree 抛 FileNotFoundError 不误报）。"""

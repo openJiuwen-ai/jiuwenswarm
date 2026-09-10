@@ -273,6 +273,21 @@ test('structured harness stage payloads localize by status instead of using the 
   assert.equal(presentation.runtimeLabel, '评测中');
 });
 
+test('parallel evaluation displays completed count rather than last finished case index', () => {
+  const node = {
+    node_id: 'epoch-001', iteration: 1, parent_id: 'ROOT', type: 'PROVISIONAL', adopted: false,
+    score: null, changes: [], extra: { stage: {
+      id: 'evaluate.parallel', name: 'Cases 1/5 completed', status: 'running',
+      case_index: 4, case_id: 'fourth', total_cases: 5, completed_cases: 1, score: 1,
+    } },
+  };
+  const presentation = presentRsiNode(node, context('HARNESS', null, [node], true));
+  assert.equal(presentation.lifecycle, 'evaluating');
+  assert.equal(presentation.stageLabel, 'Cases 1/5 completed');
+  const label = nodeStageLocalizedLabel(node, () => 'wrong case index') ?? presentation.stageLabel;
+  assert.equal(label, 'Cases 1/5 completed');
+});
+
 test('program scores are shown out of 100; other scenarios are unchanged', () => {
   // 引擎给的是 [0,1] 的归一化分数，在 0.5 附近以千分位变化：论文那套 1 位原值
   // 会把相邻两代抹成同一个数，所以程序演进按百分制显示。

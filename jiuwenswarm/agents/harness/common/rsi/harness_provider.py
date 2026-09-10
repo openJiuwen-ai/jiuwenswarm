@@ -13,21 +13,29 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
-import hashlib
 import tempfile
+from collections import OrderedDict
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+from stat import S_ISREG
+from threading import Lock
 from typing import Any
 
 import yaml
-
 from openjiuwen.rsi import (
     AutoCoordinatingHarnessConfig,
     IterativeSingleHarnessRequest,
     SingleHarnessIterativeOptimizationOrchestrator,
+)
+from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
+    active_epoch_node_event,
+    epoch_node_event,
+    root_node_event,
 )
 from openjiuwen.rsi.schema import (
     ArtifactRef,
@@ -37,18 +45,13 @@ from openjiuwen.rsi.schema import (
     RsiTreeNode,
     TreeResponse,
 )
-from openjiuwen.rsi.harness_rsi.single_harness.events_translate import (
-    active_epoch_node_event,
-    epoch_node_event,
-    root_node_event,
-)
 
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiBadRequest,
     RsiDatasetInvalid,
-    RsiPathNotAllowed,
     RsiNotReady,
     RsiPathInvalid,
+    RsiPathNotAllowed,
     RsiResumeInputChanged,
     RsiResumeMismatch,
 )
@@ -180,6 +183,8 @@ class HarnessProvider:
         self._orchestrator_config = orchestrator_config
         self._orchestrator_config_path = orchestrator_config_path
         self._model_resolver = model_resolver
+        self._snapshot_cache: OrderedDict[Path, tuple[tuple[int, ...], Any]] = OrderedDict()
+        self._snapshot_lock = Lock()
 
     # -- 输入校验（引擎 load_cases 真校验） --
 
@@ -664,11 +669,36 @@ class HarnessProvider:
 
     def _load_yaml(self, task_id: str, name: str) -> dict[str, Any] | None:
         path = Path(self._tasks_root) / task_id / _RUN_DIR / name
-        if not path.is_file():
-            return None
-        with open(path, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
-        return data if isinstance(data, dict) else None
+        with self._snapshot_lock:
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                self._snapshot_cache.pop(path, None)
+                return None
+            if not S_ISREG(stat.st_mode):
+                self._snapshot_cache.pop(path, None)
+                return None
+            stamp = (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+            cached = self._snapshot_cache.get(path)
+            if cached is not None and cached[0] == stamp:
+                self._snapshot_cache.move_to_end(path)
+                data = cached[1]
+            else:
+                self._snapshot_cache.pop(path, None)
+                with path.open("r", encoding="utf-8") as fh:
+                    data = yaml.safe_load(fh) or {}
+                data = data if isinstance(data, dict) else None
+                # Do not cache a snapshot replaced or modified during parsing.
+                try:
+                    after = path.stat()
+                except FileNotFoundError:
+                    after = None
+                if after is not None and stamp == (after.st_ino, after.st_mtime_ns, after.st_ctime_ns, after.st_size):
+                    self._snapshot_cache[path] = (stamp, data)
+                    if len(self._snapshot_cache) > 32:
+                        self._snapshot_cache.popitem(last=False)
+        # Projection code must not mutate the shared parsed snapshot.
+        return deepcopy(data)
 
     def _artifact_index(self, task_id: str, state: dict[str, Any]) -> list[ArtifactRef]:
         refs: list[ArtifactRef] = []

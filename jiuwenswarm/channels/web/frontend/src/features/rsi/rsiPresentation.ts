@@ -428,7 +428,7 @@ function lifecycleForNode(node: RsiTreeNode, taskRunning: boolean): RsiNodeLifec
   if (node.type === 'PROVISIONAL') {
     if (!taskRunning) return 'pending';
     const stage = nodeStageSpec(node);
-    if (stage?.id.startsWith('evaluate.case.')) return 'evaluating';
+    if (stage?.id.startsWith('evaluate.case.') || stage?.id === 'evaluate.parallel') return 'evaluating';
     if (stage?.id === 'generate.candidate') return 'generating';
     return nodeStageLabel(node)?.includes('评测') ? 'evaluating' : 'generating';
   }
