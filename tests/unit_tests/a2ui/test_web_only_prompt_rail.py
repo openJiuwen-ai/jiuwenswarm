@@ -261,6 +261,44 @@ async def test_response_prompt_rail_reads_channel_after_sdk_normalization(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runtime_channel", "request_channel", "should_inject"),
+    [
+        ("web", "feishu", False),
+        ("feishu", "web", True),
+    ],
+)
+async def test_request_channel_overrides_reused_rail_channel(
+    monkeypatch,
+    runtime_channel,
+    request_channel,
+    should_inject,
+):
+    """Request metadata must win over mutable state left on a reused Rail."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.set_channel(runtime_channel)
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(
+        SimpleNamespace(
+            inputs=ModelCallInputs(),
+            extra={
+                "run_context": RunContext(
+                    extra={JIUWENSWARM_CHANNEL_CONTEXT_KEY: request_channel}
+                )
+            },
+        )
+    )
+
+    sections = rail.system_prompt_builder.sections
+    assert (LocalSectionName.A2UI in sections) is should_inject
+
+
+@pytest.mark.asyncio
 async def test_response_prompt_rail_uses_runtime_channel_for_model_call_inputs(monkeypatch):
     """Real ReAct model-call inputs need the adapter-synced runtime channel."""
     monkeypatch.setattr(
