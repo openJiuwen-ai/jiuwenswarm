@@ -3875,6 +3875,32 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
             return None
 
+    def _frozen_access_options(self, options: dict | None = None) -> dict:
+        """Attach the session-frozen extra.paths snapshot for sys-operation calls.
+
+        Retry / recreate / fallback must keep this same snapshot. User-supplied
+        ``options['extra']`` wins when already present.
+        """
+        merged: dict = dict(options or {})
+        extra = merged.get("extra")
+        if isinstance(extra, dict) and isinstance(extra.get("paths"), list):
+            merged["extra"] = {"paths": list(extra["paths"])}
+            return merged
+        paths: list[str] = []
+        card = self._sys_operation_card
+        try:
+            launcher = getattr(
+                getattr(card, "gateway_config", None), "launcher_config", None,
+            )
+            extra_params = getattr(launcher, "extra_params", None) or {}
+            raw = extra_params.get("access_extra_paths") if isinstance(extra_params, dict) else None
+            if isinstance(raw, list):
+                paths = [str(p) for p in raw if p]
+        except Exception:  # noqa: BLE001
+            paths = []
+        merged["extra"] = {"paths": paths}
+        return merged
+
     def _create_sys_operation(self) -> SysOperation | None:
         """Resolve this adapter's sys operation and take a reference on it.
 
@@ -8307,7 +8333,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             sys_operation = getattr(deep_config, "sys_operation", None) or self._sys_operation
             if workspace is not None and sys_operation is not None:
                 heartbeat_path = str(workspace.get_node_path(WorkspaceNode.HEARTBEAT_MD))
-                read_res = await sys_operation.fs().read_file(heartbeat_path, mode="text")
+                read_res = await sys_operation.fs().read_file(
+                    heartbeat_path, mode="text",
+                    options=self._frozen_access_options(),
+                )
                 if read_res.code == 0:
                     content = _clean_heartbeat_content(read_res.data.content)
                 else:

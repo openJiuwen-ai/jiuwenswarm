@@ -13,9 +13,10 @@
 - ``startup_mode='external'`` 时: 仅做健康检查; 不可达则直接失败, 提示用户
   自行 (含 ``sudo``) 启动 jiuwenbox-server, 配合 ``policy_path`` 传入相应 policy;
 - agent-server 进程退出时调用 ``stop()`` 终止子进程, 避免悬挂. Windows 上
-  ``stop()`` 用 ``proc.terminate()/proc.kill()`` (跨平台 asyncio API);
-  ``_sync_terminate`` 的 atexit 兜底在 Windows 上也走 ``proc.terminate()``
-  (不能用 ``os.kill(SIGTERM)`` —— Windows 不识别 SIGTERM, 见 §8.1 Q4).
+  ``stop()`` 先发 ``CTRL_BREAK`` 给 uvicorn 做 lifespan shutdown, 超时再
+  ``terminate()/kill()``; 进程挂到 Job Object (``KILL_ON_JOB_CLOSE``),
+  父进程异常退出时 OS 会带走 jiuwenbox. ``_sync_terminate`` atexit 兜底走
+  进程树 terminate (Windows ``TerminateProcess`` 杀不到孙进程).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import atexit
 import contextlib
 import logging
 import os
+import secrets
 import signal
 import sys
 import time
@@ -45,6 +47,8 @@ _PR_SET_PDEATHSIG = 1
 # 实际范围由调用方按当前 policy 决定, 这里只提供按范围清理的能力.
 _WIN_PROXY_DEFAULT_PORT_START = 60080
 _WIN_PROXY_DEFAULT_PORT_END = 60089
+_ENV_API_TOKEN = "JIUWENBOX_API_TOKEN"
+_ENV_SAVE_LOGS_DIR = "JIUWENBOX_SAVE_LOGS_DIR"
 
 
 def _get_powershell() -> str:
@@ -189,6 +193,15 @@ def _frozen_exe_error_log_tail(max_chars: int = 4000) -> str:
     return text
 
 
+def _default_save_logs_dir() -> str:
+    """``jiuwenbox-server --save-logs`` 的 swarm 默认目录: ``~/.jiuwenbox/logs``.
+
+    内部 spawn 走 ``python -m uvicorn jiuwenbox.server.app:app``, 没有 launcher
+    CLI, 因此把同一语义写成 ``JIUWENBOX_SAVE_LOGS_DIR`` 注入子进程.
+    """
+    return str((Path.home() / ".jiuwenbox" / "logs").expanduser().resolve())
+
+
 def _try_set_pdeathsig() -> None:
     """Linux: 让子进程在父进程退出时收到 SIGTERM, 避免 SIGKILL 父进程时 jiuwenbox 残留.
 
@@ -203,6 +216,130 @@ def _try_set_pdeathsig() -> None:
         libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
     except Exception:  # noqa: BLE001
         pass
+
+
+# Windows Job Object: parent death → kill jiuwenbox (equivalent of PR_SET_PDEATHSIG).
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+_JobObjectExtendedLimitInformation = 9
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_SET_QUOTA = 0x0100
+
+
+class _WinKillOnCloseJob:
+    """Holds a Job Object handle so KILL_ON_JOB_CLOSE stays armed."""
+
+    def __init__(self, handle: int) -> None:
+        self.handle = handle
+
+    def close(self) -> None:
+        handle = self.handle
+        self.handle = 0
+        if not handle:
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _attach_kill_on_close_job(pid: int) -> _WinKillOnCloseJob | None:
+    """Put ``pid`` in a job that dies when this process exits (handle close)."""
+    if sys.platform != "win32" or not pid:
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", wintypes.ULARGE_INTEGER),
+            ("WriteOperationCount", wintypes.ULARGE_INTEGER),
+            ("OtherOperationCount", wintypes.ULARGE_INTEGER),
+            ("ReadTransferCount", wintypes.ULARGE_INTEGER),
+            ("WriteTransferCount", wintypes.ULARGE_INTEGER),
+            ("OtherTransferCount", wintypes.ULARGE_INTEGER),
+        ]
+
+    class JobObjBaseLimit(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class JobObjExtenLimit(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JobObjBaseLimit),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        logger.warning(
+            "[JiuwenBoxRunner] CreateJobObjectW failed: %s",
+            ctypes.WinError(ctypes.get_last_error()),
+        )
+        return None
+    ext = JobObjExtenLimit()
+    ext.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(
+        job,
+        _JobObjectExtendedLimitInformation,
+        ctypes.byref(ext),
+        ctypes.sizeof(ext),
+    ):
+        err = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(job)
+        logger.warning("[JiuwenBoxRunner] SetInformationJobObject failed: %s", err)
+        return None
+    access = _PROCESS_TERMINATE | _PROCESS_SET_QUOTA
+    proc = kernel32.OpenProcess(access, False, int(pid))
+    if not proc:
+        err = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(job)
+        logger.warning("[JiuwenBoxRunner] OpenProcess(%s) failed: %s", pid, err)
+        return None
+    try:
+        if not kernel32.AssignProcessToJobObject(job, proc):
+            err = ctypes.WinError(ctypes.get_last_error())
+            kernel32.CloseHandle(job)
+            logger.warning(
+                "[JiuwenBoxRunner] AssignProcessToJobObject pid=%s failed: %s",
+                pid, err,
+            )
+            return None
+    finally:
+        kernel32.CloseHandle(proc)
+    logger.info(
+        "[JiuwenBoxRunner] assigned pid=%s to kill-on-close job (Windows parent-death)",
+        pid,
+    )
+    return _WinKillOnCloseJob(int(job))
 
 
 class JiuwenBoxRunner:
@@ -233,6 +370,9 @@ class JiuwenBoxRunner:
         # 上次 spawn 的 policy 内容指纹 (sha256). 网络配置变更改写运行时副本 (path 不变内容变),
         # 须比指纹才检测到 → 触发 stop+spawn 重启 box-server 重建 EgressFilter.
         self._spawned_policy_fingerprint: Optional[str] = None
+        # Windows Job Object handle; closing it (or this process dying) kills jiuwenbox.
+        self._win_kill_job: Optional[_WinKillOnCloseJob] = None
+        self.api_token: Optional[str] = None
 
     @classmethod
     def instance(cls) -> "JiuwenBoxRunner":
@@ -307,13 +447,20 @@ class JiuwenBoxRunner:
         except OSError:
             return None
 
+    def _auth_headers(self) -> dict[str, str]:
+        token = self.api_token or os.environ.get(_ENV_API_TOKEN) or ""
+        token = token.strip()
+        if not token:
+            return {}
+        return {"Authorization": f"Bearer {token}"}
+
     async def health_check(self, host: str | None = None, port: int | None = None) -> bool:
         target_host = host or self.host
         target_port = port or self.port
         url = f"http://{target_host}:{target_port}/health"
         try:
             async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
-                resp = await client.get(url)
+                resp = await client.get(url, headers=self._auth_headers())
                 return resp.status_code == 200
         except Exception:
             return False
@@ -325,7 +472,7 @@ class JiuwenBoxRunner:
         url = f"http://{target_host}:{target_port}/health"
         try:
             async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
-                resp = await client.get(url)
+                resp = await client.get(url, headers=self._auth_headers())
                 if resp.status_code != 200:
                     return None
                 data = resp.json()
@@ -464,7 +611,7 @@ class JiuwenBoxRunner:
                 "PATH", "PATHEXT", "SystemRoot", "windir", "COMSPEC",
                 "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
                 "HOME", "LANG", "LC_ALL", "LC_CTYPE",
-                "PYTHONIOENCODING",
+                "PYTHONIOENCODING", "PYTHONUTF8",
                 "JIUWENCLAW_DATA_DIR", "OFFICE_CLAW_DATA_DIR",
                 "JIUWENSWARM_DATA_DIR", "JIUWENSWARM_HOME",
                 "CLAW_PYTHON_HOME", "JIUWENCLAW_BASE_PYTHON",
@@ -508,6 +655,31 @@ class JiuwenBoxRunner:
             else:
                 env.pop("JIUWENBOX_POLICY_PATH", None)
 
+            # Equivalent of ``jiuwenbox-server --save-logs DIR``.
+            # Internal spawn is raw uvicorn (not the launcher), so inject the
+            # env ``app._build_sandbox_manager`` already honors. extra_env /
+            # inherited JIUWENBOX_SAVE_LOGS_DIR win if the caller set them.
+            if not (env.get(_ENV_SAVE_LOGS_DIR) or "").strip():
+                env[_ENV_SAVE_LOGS_DIR] = _default_save_logs_dir()
+            logger.info(
+                "[JiuwenBoxRunner] injecting %s=%s (jiuwenbox --save-logs)",
+                _ENV_SAVE_LOGS_DIR,
+                env[_ENV_SAVE_LOGS_DIR],
+            )
+
+            # ``_pump_stream`` decodes pipes as UTF-8. Windows CREATE_NO_WINDOW
+            # has no console, so Python defaults stdio to the ANSI code page
+            # (cp936) and Chinese log lines become mojibake unless we force UTF-8.
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
+
+            env["JIUWENBOX_LISTEN"] = f"http://{host}:{port}"
+            token = secrets.token_urlsafe(32)
+            self.api_token = token
+            env[_ENV_API_TOKEN] = token
+            # Parent process clients (agent-core) read the same env var.
+            os.environ[_ENV_API_TOKEN] = token
+
             logger.info("[JiuwenBoxRunner] spawning: %s", " ".join(cmd))
             try:
                 spawn_kwargs: dict = {
@@ -532,6 +704,9 @@ class JiuwenBoxRunner:
                 self.owns_process = True
                 self.spawned_policy_path = policy_path
                 self._spawned_policy_fingerprint = new_fp
+                self._close_win_kill_job()
+                if sys.platform == "win32" and self.process.pid:
+                    self._win_kill_job = _attach_kill_on_close_job(self.process.pid)
                 # 同步退出兜底: 即便没走 stop() 也尽可能 terminate 子进程
                 self._register_atexit_once()
                 # 后台持续 drain stdout/stderr, 防止管道堆积阻塞子进程; 同时
@@ -545,6 +720,7 @@ class JiuwenBoxRunner:
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error("[JiuwenBoxRunner] spawn failed: %s", exc)
+                self._close_win_kill_job()
                 self.process = None
                 self.owns_process = False
                 self.spawned_policy_path = None
@@ -589,7 +765,9 @@ class JiuwenBoxRunner:
                 if not line_bytes:
                     return
                 try:
-                    line = line_bytes.decode("utf-8", errors="replace").rstrip()
+                    line = line_bytes.decode("utf-8").rstrip()
+                except UnicodeDecodeError:
+                    line = line_bytes.decode("gbk", errors="replace").rstrip()
                 except Exception:  # noqa: BLE001
                     line = repr(line_bytes)
                 if kind == "stderr":
@@ -633,60 +811,42 @@ class JiuwenBoxRunner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[JiuwenBoxRunner] atexit register failed: %s", exc)
 
+    def _close_win_kill_job(self) -> None:
+        job = self._win_kill_job
+        self._win_kill_job = None
+        if job is not None:
+            job.close()
+
     def _sync_terminate(self) -> None:
         """同步退出兜底: ``atexit`` / 异常退出场景调用, 不依赖事件循环.
 
         - 若 ``stop()`` 已正常清理, 则什么都不做;
-        - 否则尽可能 ``terminate`` / ``kill`` 子进程, 避免 jiuwenbox 残留.
+        - 否则尽可能 ``terminate`` / ``kill`` 整棵子进程树, 避免 jiuwenbox 残留.
+        Windows 上 ``TerminateProcess`` 杀不到孙进程; 这里走 ``terminate_pid_tree``,
+        最后再关 Job Object (``KILL_ON_JOB_CLOSE``) 清漏网的 job 成员.
         """
         proc = self.process
         if proc is None or not self.owns_process:
+            self._close_win_kill_job()
             return
-        # asyncio.subprocess.Process exposes returncode / pid 同步可读
         if proc.returncode is not None:
+            self._close_win_kill_job()
             return
         pid = proc.pid
         logger.info("[JiuwenBoxRunner] atexit: terminating subprocess pid=%s", pid)
-        if sys.platform == "win32":
-            # Windows: SIGTERM 不被识别 (见 docs §8.1 Q4), 用 Process 同步 API。
-            # asyncio.subprocess.Process.terminate()/kill() 是同步方法, atexit
-            # 上下文可直接调; 等 returncode 最多 3s (atexit 不能 await wait())。
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                return
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[JiuwenBoxRunner] atexit terminate failed: %s", exc)
-                return
-            deadline = time.monotonic() + 3.0
-            while time.monotonic() < deadline:
-                if proc.returncode is not None:
-                    return
-                time.sleep(0.1)
-            with contextlib.suppress(ProcessLookupError, Exception):
-                proc.kill()
-            return
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[JiuwenBoxRunner] atexit SIGTERM failed: %s", exc)
-            return
-        # 等待最多 3s
+        from jiuwenswarm.common.process_tree import terminate_pid_tree
+
+        terminate_pid_tree(pid, force=False)
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            try:
-                # 0 信号: 探测进程是否存在
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return
-            except Exception:  # noqa: BLE001
-                return
+            if proc.returncode is not None:
+                break
             time.sleep(0.1)
-        # 超时则 SIGKILL
-        with contextlib.suppress(ProcessLookupError, Exception):
-            os.kill(pid, signal.SIGKILL)
+        if proc.returncode is None:
+            terminate_pid_tree(pid, force=True)
+            with contextlib.suppress(ProcessLookupError, Exception):
+                proc.kill()
+        self._close_win_kill_job()
 
     async def stop(self) -> None:
         """优雅停止由本 runner 启动的子进程."""
@@ -712,13 +872,20 @@ class JiuwenBoxRunner:
             self.process = None
             self.spawned_policy_path = None
             self._spawned_policy_fingerprint = None
+            self._close_win_kill_job()
             return
         if not self.owns_process:
             self.process = None
             self.spawned_policy_path = None
             self._spawned_policy_fingerprint = None
+            self._close_win_kill_job()
             return
         logger.info("[JiuwenBoxRunner] stopping subprocess pid=%s", proc.pid)
+        leftover_pids: list[int] = []
+        if proc.pid:
+            from jiuwenswarm.common.process_tree import collect_descendant_pids
+
+            leftover_pids = collect_descendant_pids(proc.pid)
         # P1-14: Windows proc.terminate()=TerminateProcess 即时强杀,
         # 不给 uvicorn lifespan shutdown 机会 → shutdown_all_sandboxes 跑不到, 活沙箱成孤儿.
         # 改用 CTRL_BREAK_EVENT (spawn 时已加 CREATE_NEW_PROCESS_GROUP):
@@ -743,6 +910,7 @@ class JiuwenBoxRunner:
                     self.process = None
                     self.spawned_policy_path = None
                     self._spawned_policy_fingerprint = None
+                    self._close_win_kill_job()
                     return
         else:
             try:
@@ -751,6 +919,7 @@ class JiuwenBoxRunner:
                 self.process = None
                 self.spawned_policy_path = None
                 self._spawned_policy_fingerprint = None
+                self._close_win_kill_job()
                 return
         # uvicorn SIGTERM 后跑 lifespan shutdown, 调 shutdown_all_sandboxes 给每个 sandbox 做 SIGTERM→wait→SIGKILL
         # 三段式 teardown (每个最坏 ~15s). grace 不够会让 lifespan 没清完就被 SIGKILL, sandbox-daemon 成孤儿留在 host.
@@ -768,7 +937,14 @@ class JiuwenBoxRunner:
                 await proc.wait()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[JiuwenBoxRunner] kill failed: %s", exc)
+        if leftover_pids:
+            from jiuwenswarm.common.process_tree import pid_is_running, terminate_pid_tree
+
+            for leftover_pid in leftover_pids:
+                if pid_is_running(leftover_pid):
+                    terminate_pid_tree(leftover_pid, force=True)
         self.process = None
         self.owns_process = False
         self.spawned_policy_path = None
         self._spawned_policy_fingerprint = None
+        self._close_win_kill_job()

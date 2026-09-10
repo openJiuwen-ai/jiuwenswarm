@@ -22,23 +22,14 @@ def _effective_user_home() -> Path:
         return Path.home()
 
 
-# Windows: JIUWENBOX_HOME 与 agent-server (jiuwenclaw) 同根, 放在 <workspace>/jiuwenbox 下.
-# agent-server 启动时设 JIUWENCLAW_DATA_DIR (~/.office-claw/.jiuwenclaw), box-server 继承该 env.
-# 同根保证 box-server 天然是目录 owner → 改 DACL 不会 WinError 5
-# 可能非当前用户或 ACL 被 revoke 残留 → upload/list Permission denied.
-# Linux 不变 (~/.jiuwenbox).
+# JIUWENBOX_HOME: ~/.jiuwenbox on Windows and Linux.
+# Per-sandbox cwd is JIUWENBOX_HOME/workspace/<id>.
 #
 # OFFICE_CLAW_DATA_ROOT: 上游产品数据根 (~/.office-claw),
 # 与 relay-claw 同算法 (env OFFICE_CLAW_DATA_DIR > fallback ~/.office-claw).
 # 该根不再给沙箱特殊授权; workspace 祖先 traverse 由 grant_parent_traverse 覆盖.
+JIUWENBOX_HOME = _effective_user_home() / ".jiuwenbox"
 if sys.platform == "win32":
-    _win_root_env = os.environ.get("JIUWENCLAW_DATA_DIR", "").strip()
-    JIUWENCLAW_DATA_DIR_PATH = (
-        Path(_win_root_env).expanduser().resolve()
-        if _win_root_env
-        else _effective_user_home() / ".jiuwenclaw"
-    )
-    JIUWENBOX_HOME = JIUWENCLAW_DATA_DIR_PATH / "jiuwenbox"
     _office_claw_env = os.environ.get("OFFICE_CLAW_DATA_DIR", "").strip()
     OFFICE_CLAW_DATA_ROOT = (
         Path(_office_claw_env).expanduser().resolve()
@@ -46,8 +37,6 @@ if sys.platform == "win32":
         else _effective_user_home() / ".office-claw"
     )
 else:
-    JIUWENCLAW_DATA_DIR_PATH = _effective_user_home() / ".jiuwenclaw"
-    JIUWENBOX_HOME = _effective_user_home() / ".jiuwenbox"
     OFFICE_CLAW_DATA_ROOT = _effective_user_home() / ".office-claw"
 SANDBOX_WORKSPACE = JIUWENBOX_HOME / "workspace"
 WIN_SANDBOX_WORKSPACE_ROOT = SANDBOX_WORKSPACE

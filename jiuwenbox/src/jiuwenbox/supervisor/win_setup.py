@@ -68,21 +68,16 @@ SW_UAC_SHOW = SW_SHOWNORMAL
 def _resolve_install_log_dir() -> str:
     """返回 install_force.log 应落盘的目录 (绝对路径)."""
     try:
-        home = Path(os.environ.get("USERPROFILE") or "") or Path.home()
+        from jiuwenbox.server.workspace import JIUWENBOX_HOME
+        path = Path(JIUWENBOX_HOME)
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
     except Exception:  # noqa: BLE001
-        home = Path.home()
-    office_root_env = os.environ.get("OFFICE_CLAW_DATA_DIR", "").strip()
-    jiuwen_env = os.environ.get("JIUWENCLAW_DATA_DIR", "").strip()
-    office_root = (
-        Path(office_root_env).expanduser().resolve()
-        if office_root_env
-        else home / ".office-claw"
-    )
-    if jiuwen_env:
-        data_dir = Path(jiuwen_env).expanduser().resolve()
-    else:
-        data_dir = office_root / ".jiuwenclaw"
-    return str(data_dir / "jiuwenbox")
+        try:
+            home = Path(os.environ.get("USERPROFILE") or "") or Path.home()
+        except Exception:  # noqa: BLE001
+            home = Path.home()
+        return str(home / ".jiuwenbox")
 
 
 def _install_log_path() -> str:
@@ -654,9 +649,7 @@ def _set_user_password(user_name: str, password: str) -> None:
 _COMPUTER_NAME_NETBIOS = 0
 _COMPUTER_NAME_DNS_HOSTNAME = 1
 _COMPUTER_NAME_PHYSICAL_DNS_HOSTNAME = 5
-_ADD_LOCALGROUP_MEMBER_OK = (
-    0, const.ERROR_MEMBER_IN_ALIAS, const.ERROR_MEMBER_NOT_IN_ALIAS,
-)
+_ADD_LOCALGROUP_MEMBER_OK = (0, const.ERROR_MEMBER_IN_ALIAS)
 
 
 def _computer_name_ex(name_format: int) -> str | None:
@@ -744,9 +737,10 @@ def _net_local_group_add_member_name(
     class LocalGroupMembersInfo3(ctypes.Structure):
         _fields_ = [("lgrpi3_domainandname", wintypes.LPWSTR)]
 
-    name_buf = ctypes.create_unicode_buffer(member_name)
     member = LocalGroupMembersInfo3()
-    member.lgrpi3_domainandname = name_buf
+    # LPWSTR 直接赋 str: ctypes 绑定生命周期. 不能 create_unicode_buffer
+    # (c_wchar_Array_N, py3.13 拒绝数组→指针赋值).
+    member.lgrpi3_domainandname = member_name
     return netapi32.NetLocalGroupAddMembers(
         None, group, const.LOCALGROUP_MEMBERS_INFO_3,
         ctypes.byref(member), 1,
@@ -788,8 +782,9 @@ def _add_user_to_group() -> None:
         _fields_ = [("lgrpi0_name", wintypes.LPWSTR)]
 
     grp_info = LocalGroupInfo0()
-    grp_name_buf = ctypes.create_unicode_buffer(const.SANDBOX_USER_GROUP)
-    grp_info.lgrpi0_name = grp_name_buf
+    # LPWSTR 直接赋 str: ctypes 绑定生命周期. 不能 create_unicode_buffer
+    # (c_wchar_Array_N, py3.13 拒绝数组→指针赋值).
+    grp_info.lgrpi0_name = const.SANDBOX_USER_GROUP
     ret = netapi32.NetLocalGroupAdd(
         None, 0, ctypes.byref(grp_info), None,
     )
@@ -1255,49 +1250,11 @@ def _purge_stale_profile_dirs() -> None:
 
 
 def _load_policy_preinstall_paths(policy_path: str) -> list[str]:
-    """从 windows-policy.yaml 读 read_acl_preinstall + tool_paths, 返回去重后的
-    预装路径列表 (含 git_dir 的 usr/bin, bin 子目录 + bash_path 父目录).
-
-    install 时调: 用户改 tool_paths 后 --force 重装, 把工具目录的读 ACL
-    预装上 (运行时普通用户无权改这些目录 DACL).
-
-    P1-11: 复用 PolicyReader.load_policy() 走 _resolve_tool_paths 探测填充
-    (基底 tool_paths 四字段为空串时, load_policy 用 sys.executable/PATH 自动
-    填充 python_dir/node_dir/git_dir/bash_path). 旧版直接 yaml.safe_load 读
-    原始值, --force --policy-path 重装时 tool_paths 全空 → 预装集丢失工具目录
-    → 重装后受限 token 读不了 tools/python. 现保证 install 与 runtime 读同一份
-    填充后 tool_paths.
-    """
+    """从 windows-policy.yaml 读 read_acl_preinstall."""
     from pathlib import Path as _Path
     from jiuwenbox.server.policy_reader import PolicyReader
-    # PolicyReader(policy_path=...) 加载指定文件; 若该路径等于基底则不合并副本
-    # (policy_reader.py:182-185), 即只读该文件本身, 符合 install 提权场景.
     reader = PolicyReader(policy_path=_Path(policy_path))
-    policy = reader.load_policy()
-    win_fs = policy.windows.filesystem
-    paths: list[str] = []
-    for p in win_fs.read_acl_preinstall or []:
-        if isinstance(p, str) and p:
-            paths.append(p)
-    tp = win_fs.tool_paths
-    for key in ("git_dir", "node_dir", "python_dir"):
-        v = getattr(tp, key, None)
-        if isinstance(v, str) and v:
-            paths.append(v)
-            if key == "git_dir":
-                paths.append(v.rstrip("\\/").replace("/", "\\") + "\\usr\\bin")  # pylint: disable=use-system-path
-                paths.append(v.rstrip("\\/").replace("/", "\\") + "\\bin")  # pylint: disable=use-system-path
-    bash_p = getattr(tp, "bash_path", None)
-    if isinstance(bash_p, str) and bash_p:
-        paths.append(os.path.dirname(bash_p))
-    # 去重保序.
-    seen: set[str] = set()
-    out: list[str] = []
-    for p in paths:
-        if p and p not in seen:
-            seen.add(p)
-            out.append(p)
-    return out
+    return collect_preinstall_paths(reader.load_policy())
 
 
 def _load_policy_acl_paths(policy_path: str) -> list[str]:
@@ -1306,7 +1263,7 @@ def _load_policy_acl_paths(policy_path: str) -> list[str]:
     from jiuwenbox.server.policy_engine import read_policy_text
     data = _yaml.safe_load(read_policy_text(policy_path)) or {}
     win_fs = ((data.get("windows") or {}).get("filesystem") or {})
-    keys = ("allow_read", "deny_read", "allow_write", "deny_write")
+    keys = ("allow_read", "deny_read", "allow_write", "deny_write", "workspace")
     paths: list[str] = []
     for k in keys:
         for p in win_fs.get(k) or []:
@@ -1393,8 +1350,32 @@ def _write_uac_python_launcher(payload_exe: str, payload_args: list[str]) -> str
     import tempfile
 
     argv = [payload_exe, *payload_args]
-    body = (
+    body = _uac_launcher_body(argv, src_root=None)
+    fd, path = tempfile.mkstemp(prefix="jbx-uac-", suffix=".py")
+    try:
+        os.write(fd, body.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return path
+
+
+def _jiuwenbox_src_root() -> str:
+    """Directory that contains the ``jiuwenbox`` package (…/src)."""
+    import jiuwenbox
+    return str(Path(jiuwenbox.__file__).resolve().parent.parent)
+
+
+def _uac_launcher_body(argv: list[str], *, src_root: str | None) -> str:
+    path_setup = ""
+    if src_root:
+        path_setup = (
+            f"_src = {src_root!r}\n"
+            "sys.path.insert(0, _src)\n"
+            "os.environ['PYTHONPATH'] = _src + os.pathsep + os.environ.get('PYTHONPATH', '')\n"
+        )
+    return (
         "import os, subprocess, sys\n"
+        f"{path_setup}"
         f"_argv = {argv!r}\n"
         "if sys.platform == 'win32':\n"
         "    try:\n"
@@ -1413,6 +1394,18 @@ def _write_uac_python_launcher(payload_exe: str, payload_args: list[str]) -> str
         "    except OSError:\n"
         "        pass\n"
     )
+
+
+def _write_uac_dev_install_launcher(python_exe: str, module_args: list[str]) -> str:
+    """提权 python 先插入当前源码树, 再 ``-m jiuwenbox... --install``.
+
+    ``ShellExecuteW(runas)`` 不继承开发机 PYTHONPATH, 否则会跑到
+    site-packages 旧包 (把「已在组中」1378 误判成失败).
+    """
+    import tempfile
+
+    argv = [python_exe, *module_args]
+    body = _uac_launcher_body(argv, src_root=_jiuwenbox_src_root())
     fd, path = tempfile.mkstemp(prefix="jbx-uac-", suffix=".py")
     try:
         os.write(fd, body.encode("utf-8"))
@@ -1504,7 +1497,7 @@ def _elevate_and_run_install(
     # 把完成 Event 名传给子进程, 子进程 install 跑完后 SetEvent 通知本进程.
     parts.append("--install-done-event")
     parts.append(event_name)
-    # install_force.log 落盘到用户数据目录 (~/.office-claw/.jiuwenclaw/jiuwenbox),
+    # install_force.log 落盘到用户数据目录 (~/.jiuwenbox),
     # 子进程需显式接收路径, 否则会 fallback 回包目录写日志.
     parts.append("--install-log-path")
     parts.append(_install_log_path())
@@ -1522,8 +1515,11 @@ def _elevate_and_run_install(
         parts.append(policy_path)
     if getattr(sys, "frozen", False) and py == sys.executable:
         uac_file, params = py, " ".join(_quote_arg(p) for p in parts)
-    else:
+    elif getattr(sys, "frozen", False):
         uac_file, params = _uac_shell_execute_target(py, parts)
+    else:
+        launcher = _write_uac_dev_install_launcher(py, parts)
+        uac_file, params = py, _quote_arg(launcher)
 
     logger.info(
         "install 提权调用: uac=%s payload=%s event=%s cmd='%s %s'",
@@ -1691,22 +1687,19 @@ def install(
     Args:
         force: 忽略幂等标记强制重装.
         preinstall_paths: 读 ACL 预装路径 (来自根 policy 的
-            ``windows.filesystem.read_acl_preinstall``). 为 None 时用
-            默认 4 个系统目录.
+            ``windows.filesystem.read_acl_preinstall``). 为 None 时不预装.
         proxy_port_start/end: WFP Permit filter 放行的 loopback 端口范围
             (来自根 policy 的 ``windows.proxy.port_range_*``). 必须与
             win_proxy 实际监听端口一致, 否则代理路径被 Block 拦截
             (review MAJOR #7: 旧版硬编码默认端口, 忽略 policy).
         policy_path: windows-policy.yaml 路径; install 时读其 read_acl_preinstall
-            + tool_paths 合并进预装路径. 用户改 tool_paths 后 --force 重装用.
+            合并进预装路径.
         recreate_user: True 时无论机器上是否已有沙箱, 都先删 jbx-sandbox
             用户/组/profile 再重建. 桌面安装器每次重装 exe 传入; 运行时
             --force 补预装不传, 以免误删正在使用的账户.
     """
     _require_windows()
-    # 若给了 policy_path, 读其 read_acl_preinstall + tool_paths 合并进预装路径.
-    # 用户改 tool_paths 后 --force --policy-path <yaml> 重装即可预装新工具目录
-    # (运行时普通用户无权改这些目录 DACL, 必须管理员预装).
+    # 若给了 policy_path, 读其 read_acl_preinstall 合并进预装路径.
     if policy_path:
         try:
             _pp = _load_policy_preinstall_paths(policy_path)
@@ -1841,6 +1834,11 @@ def install(
         # 2. 查 SID 并存注册表; 授允许本地登录 (致命: 域控机缺此权利第一跳 1385).
         sid = _lookup_user_sid(const.SANDBOX_USER_NAME)
         _reg_set_str(const.REG_VALUE_SANDBOX_USER_SID, sid)
+        try:
+            group_sid = _lookup_user_sid(const.SANDBOX_USER_GROUP)
+            _reg_set_str(const.REG_VALUE_SANDBOX_GROUP_SID, group_sid)
+        except Exception:  # noqa: BLE001
+            logger.warning("缓存沙箱组 SID 失败 (非致命)", exc_info=True)
         _save_sandbox_user_password(password)
         _grant_interactive_logon_right(sid)
 
@@ -1913,7 +1911,7 @@ def install(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("清理 ~/.office-claw ACL 失败 (非致命): %s", exc)
 
-        # 每次 exe 安装: 去掉主目录/Desktop 残留列出, 再授 claw-desktop 读写.
+        # 每次 exe 安装: 去掉主目录残留列出, 只补祖先 traverse.
         if _wa is not None:
             try:
                 _wa.reconcile_install_acl(sid)
@@ -2027,8 +2025,8 @@ def install(
             )
         _reg_set_str(const.REG_VALUE_INSTALLED, "1")
         _reg_set_str(const.REG_VALUE_READ_ACL_PROGRESS, "")
-        # 记录本次预装的路径集, 供 ensure_windows_setup 增量检测: 用户改了
-        # tool_paths 后首次起 sandbox 时对比出新增路径, 提示需 --force 重装
+        # 记录本次预装的路径集, 供 ensure_windows_setup 增量检测:
+        # read_acl_preinstall 新增路径后首次起 sandbox 时提示需 --force 重装
         # (运行时普通用户无 WRITE_DAC 权限改外部目录 ACL, 只能管理员补预装).
         _reg_set_str(
             const.REG_VALUE_PREINSTALLED_PATHS,
@@ -2056,43 +2054,17 @@ def install(
 
 
 def collect_preinstall_paths(policy) -> list[str]:
-    """收集 install 该预装读 ACL 的完整路径集.
+    """Install-time read ACL paths from ``windows.filesystem.read_acl_preinstall``.
 
-    = policy.windows.filesystem.read_acl_preinstall (系统目录, 静态)
-    + policy.windows.filesystem.tool_paths 展开的目录 (Git/Node/Python 安装路径,
-    每台机不同; 含 git_dir 的 usr/bin + bin 子目录, bash_path 的父目录).
-
-    lifespan (app.py) 和 _create_windows (process.py) 两处调
-    ensure_windows_setup 时都用本函数算 preinstall_paths, 保证两处传的集合一致
-    → install 记录进 REG_VALUE_PREINSTALLED_PATHS 的集合和后续创建沙箱时比对
-    的集合相同 → 不会因 tool_paths "新增" 而每次创建沙箱都弹 UAC (实测问题).
-
-    tool_paths 是 owner=Administrators 的外部目录, 运行时普通用户无 WRITE_DAC
-    权限改不了它们的 ACL, 必须 install 提权预装. read_acl_preinstall 同理 (系统
-    目录). 故本集合只含这两类"需提权预装"的路径, 不含 workspace/venv (那些
-    owner=当前用户, 会话时 apply_sandbox_acl 普通权限即可授权).
+    workspace / venv 由会话 ``apply_sandbox_acl`` 授权, 不进预装集.
     """
-    fs = policy.windows.filesystem
-    paths: list[str] = list(fs.read_acl_preinstall or [])
-    tp = fs.tool_paths
-    # git_dir / node_dir / python_dir
-    for i, attr in enumerate(("git_dir", "node_dir", "python_dir")):
-        d = (getattr(tp, attr, "") or "").strip()
-        if not d:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for raw in policy.windows.filesystem.read_acl_preinstall or []:
+        if not raw or raw in seen:
             continue
-        if d not in paths:
-            paths.append(d)
-        # git 安装根含 usr/bin/bash.exe + bin, 子目录也纳入 (PATH + 读 ACL).
-        if attr == "git_dir":
-            for sub in (os.path.join(d, "usr", "bin"), os.path.join(d, "bin")):
-                if sub not in paths:
-                    paths.append(sub)
-    # bash_path 的父目录 (git_dir 未覆盖时用)
-    bash_p = (getattr(tp, "bash_path", "") or "").strip()
-    if bash_p:
-        parent = os.path.dirname(bash_p)
-        if parent and parent not in paths:
-            paths.append(parent)
+        seen.add(raw)
+        paths.append(raw)
     return paths
 
 
@@ -2140,12 +2112,12 @@ def ensure_acl_policy_paths_authorized(
     new_acl_paths = {p for p in new_acl_paths if p}
     if not new_acl_paths:
         return
-    # 未展开的占位 / 当前用户已是 owner 的路径不弹 UAC:
+    # 未展开的 %VAR% / 当前用户已是 owner 的路径不弹 UAC:
     # per-sandbox workspace 每次都是新路径, 否则每个沙箱都要等 120s UAC.
     need_elevate: set[str] = set()
     skipped: list[str] = []
     for p in new_acl_paths:
-        if "{{" in p or (p.startswith("%") and "%" in p[1:] and not os.path.exists(p)):
+        if p.startswith("%") and "%" in p[1:] and not os.path.exists(p):
             skipped.append(p)
             continue
         if _path_owned_by_current_user(p):
@@ -2154,7 +2126,7 @@ def ensure_acl_policy_paths_authorized(
         need_elevate.add(p)
     if skipped:
         logger.info(
-            "新增 deny/allow 路径无需 UAC (占位或当前用户所有): %s",
+            "新增 deny/allow 路径无需 UAC (%VAR% 未展开或当前用户所有): %s",
             skipped,
         )
         _record_acl_policy_paths(set(skipped))
@@ -2226,7 +2198,7 @@ def ensure_windows_setup(
     _require_windows()
     try:
         if not force and reg_get_str(const.REG_VALUE_INSTALLED) == "1":
-            # 幂等: 已安装. 但若 preinstall_paths 含已预装集合外的新路径 (用户改 tool_paths 后首次起 sandbox),
+            # 幂等: 已安装. 但若 preinstall_paths 含已预装集合外的新路径,
             # 运行时普通用户无权改外部目录 DACL → 新路径读 ACL 没预装 → 后续 _create_windows 改 ACL 会 WinError 5.
             # 这里检测出新增并提示用户 --force 重装.
             self_check_paths = {
@@ -2381,6 +2353,27 @@ def get_sandbox_user_sid() -> str | None:
     """从注册表读 jbx-sandbox 用户 SID."""
     _require_windows()
     return reg_get_str(const.REG_VALUE_SANDBOX_USER_SID)
+
+
+def get_sandbox_group_sid() -> str | None:
+    """jbx-sandbox-users 组 SID, 用作写 ACE 的 normal-check trustee.
+
+    注册表缓存优先; 未命中则 LookupAccountName 并尽量回写.
+    """
+    _require_windows()
+    cached = reg_get_str(const.REG_VALUE_SANDBOX_GROUP_SID)
+    if cached:
+        return cached
+    try:
+        sid = _lookup_user_sid(const.SANDBOX_USER_GROUP)
+    except Exception:  # noqa: BLE001
+        logger.warning("解析沙箱组 SID 失败", exc_info=True)
+        return None
+    try:
+        _reg_set_str(const.REG_VALUE_SANDBOX_GROUP_SID, sid)
+    except Exception:  # noqa: BLE001
+        logger.debug("回写沙箱组 SID 缓存失败", exc_info=True)
+    return sid
 
 
 def get_sandbox_user_password() -> str | None:
@@ -2761,239 +2754,484 @@ def _install_rollback(steps_done: "set[str]") -> None:
     logger.info("install 局部回滚完成 (steps_done=%s)", steps_done)
 
 
-def _data_root_paths() -> list[str]:
-    """沙箱数据根路径 (apply 会 grant traverse, 不进差集清理).
-
-    不含 ~/.office-claw: 该目录不再特殊授权, 旧 ACE 应能被差集清理掉.
-    """
-    try:
-        from jiuwenbox.server.workspace import (
-            JIUWENBOX_HOME,
-            JIUWENCLAW_DATA_DIR_PATH,
-        )
-        return [str(p) for p in (JIUWENCLAW_DATA_DIR_PATH, JIUWENBOX_HOME) if p]
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def _applied_acl_paths_file() -> Path:
-    """施加路径历史清单的文件存储位置 (用户目录, 普通用户可写)."""
+def _acl_home() -> Path:
     try:
         from jiuwenbox.server.workspace import JIUWENBOX_HOME
         home = Path(JIUWENBOX_HOME)
     except Exception:  # noqa: BLE001
-        home = Path(os.path.expanduser("~")) / ".jiuwenclaw" / "jiuwenbox"
+        home = Path(os.path.expanduser("~")) / ".jiuwenbox"
     home.mkdir(parents=True, exist_ok=True)
-    return home / "applied_acl_paths.json"
+    return home
 
 
-def _load_applied_acl_paths() -> list[str]:
-    """读历史施加路径清单 (文件优先, 兼容旧注册表数据)."""
-    f = _applied_acl_paths_file()
+def _acl_state_file() -> Path:
+    return _acl_home() / "acl_state.json"
+
+
+def _applied_acl_paths_file() -> Path:
+    """兼容旧调用方; 新状态在 acl_state.json."""
+    return _acl_state_file()
+
+
+def _empty_acl_state() -> dict:
+    return {
+        "version": 3,
+        # 写授权: canonical path → {cap_sid, live, path}.
+        # live=True 表示盘上现在有写 ACE (reconcile 差集只看这些).
+        # cap_sid 在 live 变 False 后仍保留, 路径再次放行时复用同一 SID.
+        "write_acl": {},
+        # 非写授权 ACE: allow_read / deny_read / deny_write.
+        # 启动不再差集撤销, 以便复用上次 live 写根.
+        "read_acl": [],
+        "readonly_cap": "",
+        "migrated_legacy_synth": False,
+    }
+
+
+def _canonical_path_key(path: str) -> str:
+    raw = os.path.expandvars(os.path.expanduser(str(path or "").strip()))
+    if not raw:
+        return ""
+    try:
+        resolved = str(Path(raw).resolve())
+    except OSError:
+        resolved = raw
+    return resolved.replace("\\", "/").rstrip("/").lower()
+
+
+def _acl_list_key(path: str) -> str:
+    return str(path or "").replace("\\", "/").rstrip("/").lower()
+
+
+def _write_acl_entry(path: str, *, cap_sid: str = "", live: bool = False) -> dict:
+    return {"cap_sid": cap_sid or "", "live": bool(live), "path": path}
+
+
+def _parse_write_acl_map(raw: object) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        if not key:
+            continue
+        path = str(key)
+        cap = ""
+        live = False
+        if isinstance(value, dict):
+            cap = str(value.get("cap_sid") or "")
+            live = bool(value.get("live"))
+            path = str(value.get("path") or key)
+        elif isinstance(value, str) and value:
+            cap = value
+        canon = _canonical_path_key(path) or _canonical_path_key(str(key))
+        if not canon:
+            continue
+        prev = out.get(canon)
+        if prev is None:
+            out[canon] = _write_acl_entry(path, cap_sid=cap, live=live)
+            continue
+        if cap and not prev.get("cap_sid"):
+            prev["cap_sid"] = cap
+        prev["live"] = bool(prev.get("live")) or live
+        prev["path"] = path
+    return out
+
+
+def _dedupe_path_list(paths: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not isinstance(p, str) or not p:
+            continue
+        key = _acl_list_key(p)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        merged.append(p)
+    return merged
+
+
+def _make_random_cap_sid() -> str:
+    parts = [str(secrets.randbits(32)) for _ in range(4)]
+    return "S-1-5-21-" + "-".join(parts)
+
+
+# 施加清单 / cap SID 都是「读-改-写」整份文件.
+_acl_record_lock = threading.RLock()
+
+
+def _migrate_v2_acl_state(data: dict, state: dict) -> None:
+    """v1/v2 → write_acl + read_acl.
+
+    v1 把「全部施加路径」误写在 applied_write_roots: 整份进 read_acl,
+    写根清空, 避免 reconcile 拿 deny_read 去 purge.
+    """
+    caps = data.get("write_cap_by_path") or {}
+    if isinstance(caps, dict):
+        for raw_key, sid in caps.items():
+            if not raw_key or not sid:
+                continue
+            canon = _canonical_path_key(str(raw_key))
+            if not canon:
+                continue
+            state["write_acl"][canon] = _write_acl_entry(
+                str(raw_key), cap_sid=str(sid), live=False,
+            )
+    acl_paths = [
+        p for p in (data.get("applied_acl_paths") or [])
+        if isinstance(p, str) and p
+    ]
+    roots = [
+        p for p in (data.get("applied_write_roots") or [])
+        if isinstance(p, str) and p
+    ]
+    v1 = "applied_acl_paths" not in data and bool(roots)
+    if v1:
+        state["read_acl"] = _dedupe_path_list(roots)
+        return
+    live_keys: set[str] = set()
+    for p in roots:
+        canon = _canonical_path_key(p)
+        if not canon:
+            continue
+        live_keys.add(canon)
+        entry = state["write_acl"].get(canon)
+        if entry is None:
+            state["write_acl"][canon] = _write_acl_entry(p, live=True)
+        else:
+            entry["live"] = True
+            entry["path"] = p
+    state["read_acl"] = _dedupe_path_list(
+        [p for p in acl_paths if _canonical_path_key(p) not in live_keys]
+    )
+
+
+def _load_acl_state_unlocked() -> dict:
+    state = _empty_acl_state()
+    f = _acl_state_file()
+    data: object = None
     if f.exists():
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return [p for p in data if isinstance(p, str) and p]
         except (ValueError, OSError):
-            pass
-    #
-    raw = reg_get_str(const.REG_VALUE_APPLIED_ACL_PATHS)
-    if raw:
-        try:
-            return [p for p in json.loads(raw) if isinstance(p, str) and p]
-        except (ValueError, TypeError):
-            pass
-    return []
+            data = None
+    if isinstance(data, dict):
+        if isinstance(data.get("readonly_cap"), str):
+            state["readonly_cap"] = data["readonly_cap"]
+        state["migrated_legacy_synth"] = bool(data.get("migrated_legacy_synth"))
+        if isinstance(data.get("write_acl"), dict) and "write_cap_by_path" not in data:
+            state["write_acl"] = _parse_write_acl_map(data.get("write_acl"))
+            state["read_acl"] = _dedupe_path_list([
+                p for p in (data.get("read_acl") or [])
+                if isinstance(p, str) and p
+            ])
+        else:
+            _migrate_v2_acl_state(data, state)
+    elif isinstance(data, list):
+        state["read_acl"] = _dedupe_path_list(
+            [p for p in data if isinstance(p, str) and p]
+        )
+    if not state["read_acl"] and not state["write_acl"]:
+        old = _acl_home() / "applied_acl_paths.json"
+        if old.exists():
+            try:
+                legacy = json.loads(old.read_text(encoding="utf-8"))
+                if isinstance(legacy, list):
+                    state["read_acl"] = _dedupe_path_list(
+                        [p for p in legacy if isinstance(p, str) and p]
+                    )
+            except (ValueError, OSError):
+                pass
+        if not state["read_acl"]:
+            raw = reg_get_str(getattr(const, "REG_VALUE_APPLIED_ACL_PATHS", ""))
+            if raw:
+                try:
+                    state["read_acl"] = _dedupe_path_list(
+                        [p for p in json.loads(raw) if isinstance(p, str) and p]
+                    )
+                except (ValueError, TypeError):
+                    pass
+    return state
 
 
-# 施加清单 / 指纹缓存都是「读-改-写」整份文件. 并发 create 各自在 ACL 线程里
-# 记录, 不串行化会互相覆盖丢条目 (后果是下次少跳过一次传播, 但没必要).
-_acl_record_lock = threading.Lock()
-
-
-def _save_applied_acl_paths(paths: list[str]) -> None:
-    """写历史施加路径清单到文件 (用户目录, 普通用户可写)."""
-    f = _applied_acl_paths_file()
+def _save_acl_state_unlocked(state: dict) -> None:
+    f = _acl_state_file()
     try:
-        f.write_text(json.dumps(paths, ensure_ascii=False), encoding="utf-8")
+        f.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError as exc:
-        logger.warning("写施加路径历史文件失败 path=%s: %s", f, exc)
+        logger.warning("写 acl_state.json 失败 path=%s: %s", f, exc)
 
 
-def record_applied_acl_paths(paths: list[str], workspace: str) -> None:
-    """把 apply 施加过的非 workspace 路径追加进注册表历史清单 (去重)."""
-    _require_windows()
-    # 只记非 workspace 路径 (按 posix 归一比较).
-    ws_norm = workspace.replace("\\", "/").rstrip("/").lower() if workspace else ""
-    new_paths: list[str] = []
-    new_seen: set[str] = set()  # 小写键, 大小写不敏感去重 (Windows FS 大小写不敏感)
-    for p in paths:
-        norm = p.replace("\\", "/").rstrip("/")
-        if ws_norm and (norm.lower() == ws_norm or norm.lower().startswith(ws_norm + "/")):
-            continue
-        if norm.lower() not in new_seen:
-            new_seen.add(norm.lower())
-            new_paths.append(norm)
-
-    if not new_paths:
-        return
-
+def load_acl_state() -> dict:
     with _acl_record_lock:
-        existing = _load_applied_acl_paths()
-        # 合并去重保序: seen 用小写键判断存在性, merged 保留首次出现的原始大小写.
-        merged: list[str] = []
-        seen: set[str] = set()
-        for p in existing + new_paths:
-            key = p.lower()
-            if key in seen:
-                continue  # 已有同一路径 (任意大小写), 跳过重复添加
-            seen.add(key)
-            merged.append(p)
-        _save_applied_acl_paths(merged)
+        return _load_acl_state_unlocked()
+
+
+def load_or_create_write_cap_sid(path: str) -> str:
+    """Per-root write capability SID keyed by canonical path."""
+    key = _canonical_path_key(path)
+    if not key:
+        raise ValueError("empty write-root path")
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        entry = state["write_acl"].get(key)
+        existing = (entry or {}).get("cap_sid") or ""
+        if existing:
+            return existing
+        sid = _make_random_cap_sid()
+        if entry is None:
+            state["write_acl"][key] = _write_acl_entry(path, cap_sid=sid, live=False)
+        else:
+            entry["cap_sid"] = sid
+            entry["path"] = path
+        _save_acl_state_unlocked(state)
+        return sid
+
+
+def get_readonly_cap_sid() -> str:
+    """Filler restricting SID for zero-write tokens. Never used on ACEs."""
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        existing = state.get("readonly_cap") or ""
+        if existing:
+            return existing
+        sid = _make_random_cap_sid()
+        state["readonly_cap"] = sid
+        _save_acl_state_unlocked(state)
+        return sid
+
+
+def get_write_cap_sid_if_exists(path: str) -> str | None:
+    """Return a cached per-root cap SID, or None if this path has none yet."""
+    key = _canonical_path_key(path)
+    if not key:
+        return None
+    with _acl_record_lock:
+        entry = _load_acl_state_unlocked()["write_acl"].get(key) or {}
+        return entry.get("cap_sid") or None
+
+
+def write_cap_count() -> int:
+    """Number of per-root write capability SIDs in acl_state.json."""
+    with _acl_record_lock:
+        return sum(
+            1 for entry in (_load_acl_state_unlocked().get("write_acl") or {}).values()
+            if isinstance(entry, dict) and entry.get("cap_sid")
+        )
+
+
+def _write_acl_display_path(key: str, entry: dict) -> str:
+    path = entry.get("path") if isinstance(entry, dict) else ""
+    return path or key
+
+
+def _all_applied_acl_paths_from_state(state: dict) -> list[str]:
+    """live 写根 + read_acl. 给启动差集 / 旧 synth 迁移用."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for key, entry in (state.get("write_acl") or {}).items():
+        if not isinstance(entry, dict) or not entry.get("live"):
+            continue
+        path = _write_acl_display_path(str(key), entry)
+        nk = _acl_list_key(path)
+        if not nk or nk in seen:
+            continue
+        seen.add(nk)
+        paths.append(path)
+    for path in state.get("read_acl") or []:
+        if not isinstance(path, str) or not path:
+            continue
+        nk = _acl_list_key(path)
+        if not nk or nk in seen:
+            continue
+        seen.add(nk)
+        paths.append(path)
+    return paths
+
+
+def migrate_legacy_synthetic_aces(sandbox_user_sid: str | None = None) -> None:
+    """One-shot purge of the old global synthetic write SID from recorded roots."""
+    del sandbox_user_sid  # revoke targets the synth SID, not the user
+    _require_windows()
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        if state.get("migrated_legacy_synth"):
+            return
+        roots = _all_applied_acl_paths_from_state(state)
+    from jiuwenbox.supervisor import win_acl
+
+    try:
+        synth = win_acl.get_synthetic_write_sid()
+        sid_objs = [win_acl._resolve_sid(synth)]  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        sid_objs = []
+        logger.debug("resolve legacy synthetic SID failed", exc_info=True)
+    if sid_objs:
+        for root in roots:
+            p = os.path.expandvars(root)
+            if not os.path.exists(p):
+                continue
+            try:
+                win_acl.purge_sid_aces(p, sid_objs, propagate=True)
+            except Exception:  # noqa: BLE001
+                logger.debug("purge legacy synth ACE failed path=%s", p, exc_info=True)
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        state["migrated_legacy_synth"] = True
+        _save_acl_state_unlocked(state)
+    logger.info("migrated_legacy_synth: purged old synthetic write SID from %d roots", len(roots))
+
+
+def _load_all_applied_paths() -> list[str]:
+    """历史已施加 ACE 的路径: live write_acl ∪ read_acl."""
+    with _acl_record_lock:
+        return _all_applied_acl_paths_from_state(_load_acl_state_unlocked())
+
+
+def load_live_write_acl() -> list[str]:
+    """当前仍挂着写 ACE 的根 (reconcile 差集)."""
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        return [
+            _write_acl_display_path(str(key), entry)
+            for key, entry in (state.get("write_acl") or {}).items()
+            if isinstance(entry, dict) and entry.get("live")
+        ]
+
+
+def save_live_write_acl(paths: list[str]) -> None:
+    """整份覆盖 live 写根 (reconcile 的当前存活并集). cap_sid 保留."""
+    wanted: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for p in paths:
+        if not isinstance(p, str) or not p:
+            continue
+        key = _canonical_path_key(p)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        wanted.append((key, p))
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        write_acl = state["write_acl"]
+        live_keys = {key for key, _path in wanted}
+        for key, entry in write_acl.items():
+            if isinstance(entry, dict) and key not in live_keys:
+                entry["live"] = False
+        for key, path in wanted:
+            entry = write_acl.get(key)
+            if entry is None:
+                write_acl[key] = _write_acl_entry(path, live=True)
+            else:
+                entry["live"] = True
+                entry["path"] = path
+        _save_acl_state_unlocked(state)
+
+
+def record_write_acl(paths: list[str]) -> None:
+    """把写根标成 live (追加, 不去掉其它 live 根)."""
+    _require_windows()
+    new = [p for p in paths if isinstance(p, str) and p]
+    if not new:
+        return
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        write_acl = state["write_acl"]
+        for path in new:
+            key = _canonical_path_key(path)
+            if not key:
+                continue
+            entry = write_acl.get(key)
+            if entry is None:
+                write_acl[key] = _write_acl_entry(path, live=True)
+            else:
+                entry["live"] = True
+                entry["path"] = path
+        _save_acl_state_unlocked(state)
+
+
+def record_read_acl(paths: list[str]) -> None:
+    """追加非写授权 ACE 路径 (allow_read / deny_read / deny_write)."""
+    _require_windows()
+    new = [p for p in paths if isinstance(p, str) and p]
+    if not new:
+        return
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        live_keys = {
+            key for key, entry in (state.get("write_acl") or {}).items()
+            if isinstance(entry, dict) and entry.get("live")
+        }
+        filtered = [
+            p for p in new
+            if _canonical_path_key(p) not in live_keys
+        ]
+        state["read_acl"] = _dedupe_path_list(
+            list(state.get("read_acl") or []) + filtered
+        )
+        _save_acl_state_unlocked(state)
+
+
+def record_sandbox_acl(
+    *,
+    write_paths: list[str],
+    applied_paths: list[str] | None = None,
+) -> None:
+    """一次落盘写根 + 其余施加路径."""
+    writes = [p for p in write_paths if isinstance(p, str) and p]
+    applied = [
+        p for p in (applied_paths or writes)
+        if isinstance(p, str) and p
+    ]
+    record_write_acl(writes)
+    write_keys = {_canonical_path_key(p) for p in writes}
+    record_read_acl(
+        [p for p in applied if _canonical_path_key(p) not in write_keys]
+    )
+
+
+def _retain_applied_paths(remaining: list[str]) -> None:
+    """revoke_stale 之后: remaining 仍有效; 不在清单里的写根 live=False."""
+    keep = {_acl_list_key(p) for p in remaining}
+    with _acl_record_lock:
+        state = _load_acl_state_unlocked()
+        write_acl = state["write_acl"]
+        for key, entry in write_acl.items():
+            if not isinstance(entry, dict):
+                continue
+            path = _write_acl_display_path(str(key), entry)
+            entry["live"] = _acl_list_key(path) in keep
+        keep_write_keys = {
+            key for key, entry in write_acl.items()
+            if isinstance(entry, dict) and entry.get("live")
+        }
+        state["read_acl"] = [
+            p for p in remaining
+            if _canonical_path_key(p) not in keep_write_keys
+        ]
+        _save_acl_state_unlocked(state)
+
+
+# 兼容旧调用名 (测试 / 旧模块).
+load_applied_write_roots = load_live_write_acl
+save_applied_write_roots = save_live_write_acl
+record_applied_write_roots = record_write_acl
+
+
+def record_applied_acl_paths(paths: list[str], workspace: str = "") -> None:
+    """兼容旧调用: 非写根进 read_acl. 写根请走 record_write_acl."""
+    del workspace
+    record_read_acl(paths)
 
 
 # ---------------------------------------------------------------------------
-# ACL 指纹缓存 (path|kind → mask/flags/propagated); sandbox_user_sid 变则整体作废
+# 旧 ACL 指纹缓存 (已废弃): 幂等改为对根 DACL 做 check-then-set, 不再需要指纹.
+# 只留一个清理函数, 让升级上来的机器把残留文件删掉.
 # ---------------------------------------------------------------------------
-
-_ACL_FP_VERSION = 2
 
 
 def _acl_fingerprint_file() -> Path:
     return _applied_acl_paths_file().with_name("acl_fingerprints.json")
-
-
-def _save_acl_fingerprints(
-    entries: "list[dict]",
-    sandbox_user_sid: str | None,
-) -> None:
-    """整份覆盖写指纹缓存. 调用方须持 _acl_record_lock."""
-    payload = {
-        "version": _ACL_FP_VERSION,
-        "sandbox_user_sid": sandbox_user_sid or get_sandbox_user_sid() or "",
-        "entries": entries,
-    }
-    f = _acl_fingerprint_file()
-    try:
-        f.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as exc:
-        logger.warning("写 ACL 指纹缓存失败 path=%s: %s", f, exc)
-
-
-def _fingerprint_entry_key(path: str, kind: str) -> str:
-    """缓存 key. 复用 win_acl 的实现: 写入端和读取端漂了就永远不命中."""
-    from jiuwenbox.supervisor import win_acl
-
-    return win_acl._fingerprint_key(path, kind)  # noqa: SLF001
-
-
-def load_acl_fingerprint_cache(
-    *,
-    sandbox_user_sid: str | None = None,
-) -> dict[str, dict]:
-    """读指纹缓存. SID 不匹配或格式旧则返回空 (不跳过传播)."""
-    _require_windows()
-    f = _acl_fingerprint_file()
-    if not f.exists():
-        return {}
-    try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {}
-    if not isinstance(data, dict) or int(data.get("version", 0)) != _ACL_FP_VERSION:
-        return {}
-    cached_sid = str(data.get("sandbox_user_sid") or "")
-    if sandbox_user_sid and cached_sid and cached_sid != sandbox_user_sid:
-        logger.info(
-            "ACL 指纹缓存 SID 已变 (cache=%s now=%s), 作废跳过",
-            cached_sid, sandbox_user_sid,
-        )
-        return {}
-    entries = data.get("entries")
-    if not isinstance(entries, list):
-        return {}
-    out: dict[str, dict] = {}
-    for e in entries:
-        if not isinstance(e, dict):
-            continue
-        path = e.get("path")
-        kind = e.get("kind")
-        if not isinstance(path, str) or not isinstance(kind, str):
-            continue
-        out[_fingerprint_entry_key(path, kind)] = {
-            "path": path,
-            "kind": kind,
-            "mask": int(e.get("mask") or 0),
-            "flags": int(e.get("flags") or 0),
-            "propagated": bool(e.get("propagated")),
-        }
-    return out
-
-
-def record_acl_fingerprints(
-    grants: list,
-    *,
-    sandbox_user_sid: str | None = None,
-) -> None:
-    """合并写入指纹缓存. ``grants`` 为 AclGrantRecord 列表 (或同结构对象)."""
-    _require_windows()
-    if not grants:
-        return
-    with _acl_record_lock:
-        _record_acl_fingerprints_locked(grants, sandbox_user_sid)
-
-
-def _record_acl_fingerprints_locked(
-    grants: list,
-    sandbox_user_sid: str | None,
-) -> None:
-    existing = load_acl_fingerprint_cache(sandbox_user_sid=sandbox_user_sid)
-    for g in grants:
-        path = getattr(g, "path", None) or (g.get("path") if isinstance(g, dict) else None)
-        kind = getattr(g, "kind", None) or (g.get("kind") if isinstance(g, dict) else None)
-        if not path or not kind:
-            continue
-        # skipped 且未传播成功的条目不覆盖已有 propagated=True
-        propagated = bool(
-            getattr(g, "propagated", None)
-            if not isinstance(g, dict) else g.get("propagated")
-        )
-        skipped = bool(
-            getattr(g, "skipped", None)
-            if not isinstance(g, dict) else g.get("skipped")
-        )
-        key = _fingerprint_entry_key(str(path), str(kind))
-        if skipped and not propagated:
-            continue
-        mask = int(
-            getattr(g, "mask", 0) if not isinstance(g, dict) else (g.get("mask") or 0)
-        )
-        flags = int(
-            getattr(g, "flags", 0) if not isinstance(g, dict) else (g.get("flags") or 0)
-        )
-        prev = existing.get(key)
-        if prev and prev.get("propagated") and not propagated:
-            # 保留已有传播成功记录
-            continue
-        existing[key] = {
-            "path": str(path),
-            "kind": str(kind),
-            "mask": mask,
-            "flags": flags,
-            "propagated": propagated,
-        }
-
-    payload = {
-        "version": _ACL_FP_VERSION,
-        "sandbox_user_sid": sandbox_user_sid or get_sandbox_user_sid() or "",
-        "entries": list(existing.values()),
-    }
-    f = _acl_fingerprint_file()
-    try:
-        f.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as exc:
-        logger.warning("写 ACL 指纹缓存失败 path=%s: %s", f, exc)
 
 
 def clear_acl_fingerprint_cache() -> None:
@@ -3006,20 +3244,182 @@ def clear_acl_fingerprint_cache() -> None:
         logger.debug("清 ACL 指纹缓存失败", exc_info=True)
 
 
+_root_policy_acl_keys: set[str] = set()
+
+
+def _remember_root_policy_acl_paths(paths: list[str]) -> None:
+    """Record canonical keys of filesystem roots granted from the box-server policy."""
+    global _root_policy_acl_keys
+    keys: set[str] = set()
+    for raw in paths:
+        if not raw:
+            continue
+        key = _canonical_path_key(raw) or _normalize_acl_path(str(raw))
+        if key:
+            keys.add(key)
+    _root_policy_acl_keys = keys
+
+
+def drop_root_policy_acl_paths(paths: list[str]) -> list[str]:
+    """Create-time: drop roots already granted at box-server startup."""
+    if not _root_policy_acl_keys:
+        return list(paths)
+    out: list[str] = []
+    for raw in paths:
+        if not raw:
+            continue
+        key = _canonical_path_key(raw) or _normalize_acl_path(str(raw))
+        if key and key in _root_policy_acl_keys:
+            continue
+        out.append(raw)
+    return out
+
+
+def _configured_root_policy_acl_paths(
+    policy: object,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    fs = getattr(getattr(policy, "windows", None), "filesystem", None)
+    combined = getattr(fs, "combined_allow_write", None) if fs else None
+    if callable(combined):
+        allow_write = list(combined())
+    else:
+        allow_write = list(getattr(fs, "allow_write", None) or []) if fs else []
+        workspace = list(getattr(fs, "workspace", None) or []) if fs else []
+        seen: set[str] = set()
+        merged: list[str] = []
+        for raw in allow_write + workspace:
+            if not raw or raw in seen:
+                continue
+            seen.add(raw)
+            merged.append(raw)
+        allow_write = merged
+    deny_write = list(getattr(fs, "deny_write", None) or []) if fs else []
+    allow_read = list(getattr(fs, "allow_read", None) or []) if fs else []
+    deny_read = list(getattr(fs, "deny_read", None) or []) if fs else []
+    return allow_write, deny_write, allow_read, deny_read
+
+
+def schedule_root_policy_acl(policy: object) -> None:
+    """Remember roots immediately; apply ACE + tree walk on a daemon thread.
+
+    Create must not wait for USERPROFILE-sized SetNamedSecurityInfo.
+    Remembering first lets ``drop_root_policy_acl_paths`` skip those roots
+    while the walk is still running.
+    """
+    allow_write, deny_write, allow_read, deny_read = (
+        _configured_root_policy_acl_paths(policy)
+    )
+    configured = [
+        p for p in (allow_write + deny_write + allow_read + deny_read) if p
+    ]
+    _remember_root_policy_acl_paths(configured)
+    thread = threading.Thread(
+        target=apply_root_policy_acl,
+        args=(policy,),
+        name="jiuwenbox-root-acl",
+        daemon=True,
+    )
+    thread.start()
+    logger.info(
+        "根 policy ACL 已在后台施加 (write=%d deny_write=%d read=%d deny_read=%d), "
+        "不阻塞沙箱创建",
+        len(allow_write), len(deny_write), len(allow_read), len(deny_read),
+    )
+
+
+def apply_root_policy_acl(policy: object) -> None:
+    """Apply windows.filesystem allow/deny ACEs from the box-server root policy.
+
+    Tree propagate is queued in the background. Callers that must not block
+    create should use ``schedule_root_policy_acl``. Session overlays
+    (workspace / extra.paths) still apply at create/exec.
+    """
+    _require_windows()
+    from jiuwenbox.supervisor import win_acl as _wa
+
+    allow_write, deny_write, allow_read, deny_read = (
+        _configured_root_policy_acl_paths(policy)
+    )
+    configured = [
+        p for p in (allow_write + deny_write + allow_read + deny_read) if p
+    ]
+    # Remember before the grant so concurrent create can drop these roots.
+    _remember_root_policy_acl_paths(configured)
+    if not configured:
+        logger.info("根 policy 无 filesystem ACL 路径, 跳过启动授权")
+        return
+
+    sid = get_sandbox_user_sid()
+    try:
+        preinstalled = get_preinstalled_read_paths()
+    except Exception:  # noqa: BLE001
+        preinstalled = set()
+    result = _wa.apply_sandbox_acl(
+        "",
+        allow_write,
+        deny_write,
+        allow_read=allow_read,
+        deny_read=deny_read,
+        sandbox_user_sid=sid,
+        preinstalled_read_paths=preinstalled,
+    )
+    remembered = list(configured)
+    remembered.extend(result.paths or [])
+    _remember_root_policy_acl_paths(remembered)
+    try:
+        record_sandbox_acl(
+            write_paths=list(allow_write),
+            applied_paths=result.paths or list(allow_write),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("启动 record_sandbox_acl 失败", exc_info=True)
+    if result.failed:
+        logger.warning("启动施加根 policy ACL 部分失败 paths=%s", result.failed)
+    if sid:
+        group_sid = get_sandbox_group_sid()
+        preserve = list(allow_write)
+        seen: set[str] = set()
+        for raw in allow_write:
+            if not raw:
+                continue
+            key = _normalize_acl_path(raw)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            try:
+                _wa.grant_parent_traverse(
+                    raw, sid, preserve_roots=preserve,
+                )
+                if group_sid:
+                    _wa.grant_parent_traverse(
+                        raw, group_sid, preserve_roots=preserve,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "启动 grant_parent_traverse 失败 path=%s", raw, exc_info=True,
+                )
+    logger.info(
+        "启动施加根 policy ACL 完成: write=%d deny_write=%d read=%d deny_read=%d applied=%d failed=%d",
+        len(allow_write), len(deny_write), len(allow_read), len(deny_read),
+        len(result.paths or []), len(result.failed),
+    )
+
+
 def revoke_stale_acl(
     current_policy_paths: list[str],
     workspace: str = "",
     sandbox_user_sid: str | None = None,
 ) -> list[str]:
-    """启动时差集清理: 历史施加路径 − 当前 policy 路径 − 数据根 → 对差集 revoke."""
+    """差集撤销 (uninstall / 显式调用). 启动路径不再调用, 以便复用上次 ACE."""
     _require_windows()
     from jiuwenbox.supervisor import win_acl
 
-    historical = _load_applied_acl_paths()
+    historical = _load_all_applied_paths()
     if not historical:
         return []
 
-    # current: 当前 policy 路径 + workspace + 数据根.
+    # current: 当前 policy 路径 + workspace. 不再无条件保留数据根,
+    # 否则隐式 desktop/JIUWENBOX_HOME 写 ACE 永远清不掉.
     current: set[str] = set()
     ws_norm = workspace.replace("\\", "/").rstrip("/").lower() if workspace else ""
     if ws_norm:
@@ -3027,8 +3427,6 @@ def revoke_stale_acl(
     for p in current_policy_paths:
         if p:
             current.add(p.replace("\\", "/").rstrip("/").lower())
-    for p in _data_root_paths():
-        current.add(p.replace("\\", "/").rstrip("/").lower())
 
     # 差集: 历史里有、current 里没有的.
     stale = [p for p in historical if p.replace("\\", "/").rstrip("/").lower() not in current]
@@ -3045,29 +3443,7 @@ def revoke_stale_acl(
     stale_set = {p.replace("\\", "/").rstrip("/").lower() for p in stale}
     remaining = [p for p in historical if p.replace("\\", "/").rstrip("/").lower() not in stale_set]
     remaining = _gc_applied_acl_paths(remaining, current)
-    _save_applied_acl_paths(remaining)
-
-    # 同步裁掉指纹缓存里对应路径 (任意 kind). 策略变更时可能与并发 create 的
-    # record_acl_fingerprints 撞车, 同一把锁串行化.
-    try:
-        with _acl_record_lock:
-            fp = load_acl_fingerprint_cache(sandbox_user_sid=sandbox_user_sid)
-            kept = {
-                k: v for k, v in fp.items()
-                if str(v.get("path", "")).replace("\\", "/").rstrip("/").lower()
-                not in stale_set
-            }
-            if fp and len(kept) != len(fp):
-                payload = {
-                    "version": _ACL_FP_VERSION,
-                    "sandbox_user_sid": sandbox_user_sid or get_sandbox_user_sid() or "",
-                    "entries": list(kept.values()),
-                }
-                _acl_fingerprint_file().write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
-                )
-    except Exception:  # noqa: BLE001
-        logger.debug("差集清理后裁指纹缓存失败", exc_info=True)
+    _retain_applied_paths(remaining)
 
     logger.info("启动差集清理: 清除 %d 个残留路径的 ACE: %s", len(stale), stale)
     return stale
@@ -3174,7 +3550,11 @@ def _elevate_uninstall() -> None:
     shell32 = _get_shell32()
     py = (os.environ.get("JIUWENBOX_RUNNER_PYTHON") or "").strip() or sys.executable
     parts = ["-m", "jiuwenbox.supervisor.win_setup", const.UNINSTALL_SUBCOMMAND]
-    uac_file, params = _uac_shell_execute_target(py, parts)
+    if getattr(sys, "frozen", False):
+        uac_file, params = _uac_shell_execute_target(py, parts)
+    else:
+        launcher = _write_uac_dev_install_launcher(py, parts)
+        uac_file, params = py, _quote_arg(launcher)
     # SW_HIDE: 与 install 一致, 卸载提权子进程也静默, 不弹 CMD.
     result = shell32.ShellExecuteW(
         None, "runas", uac_file, params, None, SW_HIDE,
@@ -3237,7 +3617,7 @@ def _main(argv: list[str]) -> int:
     """
     try:
         # install_force.log 优先用命令行 --install-log-path 指定的路径,
-        # 否则 fallback 到用户数据目录 (~/.office-claw/.jiuwenclaw/jiuwenbox)
+        # 否则 fallback 到用户数据目录 (~/.jiuwenbox)
         _install_log_path_arg: str | None = None
         _strip_indices: list[int] = []
         for _i, _a in enumerate(argv):
@@ -3304,8 +3684,7 @@ def _main(argv: list[str]) -> int:
     )
     p_install.add_argument(
         "--policy-path", default=None,
-        help="windows-policy.yaml 路径; install 时读其 read_acl_preinstall + "
-        "tool_paths 合并进预装路径 (用户改 tool_paths 后 --force 重装用)",
+        help="windows-policy.yaml 路径; install 时读其 read_acl_preinstall 合并进预装路径",
     )
     p_install.add_argument(
         "--install-done-event", default=None,

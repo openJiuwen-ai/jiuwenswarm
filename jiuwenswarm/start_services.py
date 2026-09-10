@@ -520,22 +520,37 @@ def _start_process(
 
 
 def _terminate_processes(processes: dict[str, subprocess.Popen[bytes]]) -> None:
-    """Terminate all running processes gracefully."""
+    """Terminate launched processes and their descendants (AgentServer, jiuwenbox)."""
+    from jiuwenswarm.common.process_tree import (
+        collect_descendant_pids,
+        pid_is_running,
+        terminate_pid_tree,
+        terminate_popen_tree,
+    )
+
+    descendants: list[int] = []
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] terminating {name} (pid={proc.pid})")
-            proc.terminate()
+            descendants.extend(collect_descendant_pids(proc.pid))
+            terminate_popen_tree(proc, force=False)
 
     deadline = time.time() + 8
     while time.time() < deadline:
-        if all(proc.poll() is not None for proc in processes.values()):
+        roots_dead = all(proc.poll() is not None for proc in processes.values())
+        kids_dead = all(not pid_is_running(pid) for pid in descendants)
+        if roots_dead and kids_dead:
             return
         time.sleep(0.2)
 
     for name, proc in processes.items():
         if proc.poll() is None:
             logging.info(f"[start_services] killing {name} (pid={proc.pid})")
-            proc.kill()
+            terminate_popen_tree(proc, force=True)
+    for pid in descendants:
+        if pid_is_running(pid):
+            logging.info(f"[start_services] killing descendant pid={pid}")
+            terminate_pid_tree(pid, force=True)
 
 
 def _resolve_runtime_ports() -> dict[str, int]:
@@ -648,7 +663,7 @@ def _wait_for_services_ready(
     frontend_port = ports.get("frontend", 0)
     if frontend_alive and frontend_port:
         # Web UI first in the user-facing banner.
-        targets.insert(0, ("Web UI", frontend_port, f"http://localhost:{frontend_port}"))
+        targets.insert(0, ("Web UI", frontend_port, f"http://127.0.0.1:{frontend_port}"))
 
     if not targets:
         return

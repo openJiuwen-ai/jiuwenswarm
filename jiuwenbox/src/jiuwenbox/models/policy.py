@@ -17,6 +17,24 @@ def _expand_path(value: str) -> str:
     return str(Path(os.path.expandvars(value)).expanduser())
 
 
+def _dedupe_path_list(paths: list[str]) -> list[str]:
+    """Keep order; drop empty and path-key duplicates."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        if not raw:
+            continue
+        try:
+            key = os.path.normcase(os.path.abspath(os.path.expandvars(os.path.expanduser(raw))))
+        except OSError:
+            key = os.path.normcase(str(raw))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(raw)
+    return out
+
+
 def _contains_crlf_or_null(value: str) -> bool:
     """Check if string contains CRLF or null byte."""
     return "\r" in value or "\n" in value or "\x00" in value
@@ -766,12 +784,9 @@ class WindowsProxyPolicy(BaseModel):
 
 
 class WindowsToolPaths(BaseModel):
-    """Windows 沙箱非默认安装路径的工具目录/可执行.
+    """Kept so existing policy YAML with ``tool_paths`` still loads.
 
-    当 Git/Node/Python 不在默认的 %ProgramFiles% / %SystemRoot% 下时, 受限
-    token 读不了这些路径. _create_windows 读到此配置后, 把存在的目录加进
-    allow_read (补受限 token 读权限) 并拼进子进程 PATH (补可执行名解析).
-    全部留空则跳过, 依赖系统 PATH + 默认预装目录.
+    Runtime no longer auto-detects, preinstalls, or injects these paths.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -797,27 +812,38 @@ class WindowsFilesystemPolicy(BaseModel):
     """Windows 文件系统 ACL 配置.
 
           读黑名单 / 写白名单:
+            - workspace: 默认工作区. 与 allow_write 一样打写 ACE; 每次 exec
+              的受限 token 都带上这些根的 cap SID. 沙箱默认可写, 不必再走
+              extra.paths 审批.
             - allow_write: 写白名单. 目录递归传播 Allow Write 到已有子树.
+              只打 ACE, 不默认进入受限 token (写这些路径仍要 extra.paths).
             - deny_write: 目录递归传播 Deny Write (盖住 allow_write 已灌进子树的可写 ACE).
             - allow_read: 额外 Allow Read. 空 = 不额外授读.
             - deny_read: 读黑名单. 目录递归传播 Deny Read.
-      - tool_paths: 非默认安装路径的工具目录/可执行. 受限 token 默认读不了这些
-        路径 → CreateProcessAsUserW 返回 WinError 2/5. 在此配置后: ① 加进
-        read ACL 预装 (含 Execute, FILE_GENERIC_READ 已含) ② 拼进子进程 PATH.
-        留空则跳过, 依赖系统 PATH + 默认预装目录 (适合工具装在默认路径的场景).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     read_acl_preinstall: list[str] = Field(default_factory=list)
+    workspace: list[str] = Field(default_factory=list)
     allow_write: list[str] = Field(default_factory=list)
     deny_write: list[str] = Field(default_factory=list)
     allow_read: list[str] = Field(default_factory=list)
     deny_read: list[str] = Field(default_factory=list)
-    tool_paths: WindowsToolPaths = Field(default_factory=WindowsToolPaths)
+    tool_paths: WindowsToolPaths = Field(
+        default_factory=WindowsToolPaths,
+        description="Ignored at runtime; retained so existing YAML still loads.",
+    )
+
+    def combined_allow_write(self) -> list[str]:
+        """allow_write ∪ workspace; both get write ACE."""
+        return _dedupe_path_list(
+            list(self.allow_write or []) + list(self.workspace or []),
+        )
 
     @field_validator(
         "read_acl_preinstall",
+        "workspace",
         "allow_write", "deny_write",
         "allow_read", "deny_read",
         mode="before",

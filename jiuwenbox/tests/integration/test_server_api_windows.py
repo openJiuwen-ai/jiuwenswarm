@@ -24,6 +24,8 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -85,6 +87,7 @@ class TestWindowsPolicySchema:
         assert policy.windows.proxy.port_range_start == const.DEFAULT_PROXY_PORT_RANGE_START
         assert policy.windows.proxy.port_range_end == const.DEFAULT_PROXY_PORT_RANGE_END
         assert policy.windows.filesystem.allow_write == []
+        assert policy.windows.filesystem.workspace == []
         assert policy.windows.network.mode == "wfp_loopback_proxy"
         assert policy.windows.resource.is_empty() is True
         # Linux 字段不受影响.
@@ -129,6 +132,32 @@ class TestWindowsPolicySchema:
         # Linux 字段保持 base 默认.
         assert merged.network.mode == base.network.mode
 
+    def test_workspace_field_parsed_and_merged(self):
+        policy = SecurityPolicy.model_validate({
+            "windows": {"filesystem": {"workspace": ["/ws", "/proj"]}},
+        })
+        assert policy.windows.filesystem.workspace == [
+            str(Path("/ws")), str(Path("/proj")),
+        ]
+        assert policy.windows.filesystem.combined_allow_write() == [
+            str(Path("/ws")), str(Path("/proj")),
+        ]
+        extra = SecurityPolicy.model_validate({
+            "windows": {"filesystem": {
+                "workspace": ["/proj", "/venv"],
+                "allow_write": ["/home"],
+            }},
+        })
+        from jiuwenbox.server.policy_engine import PolicyEngine
+        merged = PolicyEngine().merge_policy(policy, extra)
+        assert merged.windows.filesystem.workspace == [
+            str(Path("/ws")), str(Path("/proj")), str(Path("/venv")),
+        ]
+        combined = merged.windows.filesystem.combined_allow_write()
+        assert str(Path("/home")) in combined
+        assert str(Path("/ws")) in combined
+        assert str(Path("/venv")) in combined
+
 
 # ---------------------------------------------------------------------------
 # WSL 可跑: win_constants 值校验.
@@ -154,7 +183,8 @@ class TestWinConstants:
         assert const.ALLOW_WRITE_RIGHTS & const.FILE_GENERIC_WRITE
         assert const.ALLOW_WRITE_RIGHTS & const.FILE_GENERIC_EXECUTE
         assert const.ALLOW_WRITE_RIGHTS & const.FILE_DELETE_ACCESS
-        assert const.ALLOW_WRITE_RIGHTS & const.FILE_DELETE_CHILD
+        assert not (const.ALLOW_WRITE_RIGHTS & const.FILE_DELETE_CHILD)
+        assert const.DENY_WRITE_RIGHTS & const.FILE_DELETE_CHILD
 
     def test_synthetic_sid_format(self):
         from jiuwenbox.supervisor import win_acl
@@ -174,6 +204,49 @@ class TestWinConstants:
     def test_reg_value_names(self):
         assert const.REG_VALUE_INSTALLED == "installed"
         assert const.REG_VALUE_SANDBOX_USER_SID == "sandbox_user_sid"
+        assert const.REG_VALUE_ACL_POLICY_PATHS == "acl_policy_paths"
+        assert const.REG_VALUE_APPLIED_ACL_PATHS == "applied_acl_paths"
+
+    def test_net_local_group_member_error_codes(self):
+        # winerror.h: 已在组中是 1378, 不在组中是 1377. 二者曾被写反,
+        # 导致 UAC install 把幂等加组当成失败并回滚.
+        assert const.ERROR_MEMBER_NOT_IN_ALIAS == 1377
+        assert const.ERROR_MEMBER_IN_ALIAS == 1378
+
+    def test_add_localgroup_member_ok_is_idempotent_1378(self):
+        from jiuwenbox.supervisor.win_setup import _ADD_LOCALGROUP_MEMBER_OK
+        assert 0 in _ADD_LOCALGROUP_MEMBER_OK
+        assert const.ERROR_MEMBER_IN_ALIAS in _ADD_LOCALGROUP_MEMBER_OK
+        assert const.ERROR_MEMBER_NOT_IN_ALIAS not in _ADD_LOCALGROUP_MEMBER_OK
+
+    def test_uac_dev_launcher_injects_src_on_sys_path(self):
+        from jiuwenbox.supervisor.win_setup import (
+            _jiuwenbox_src_root, _uac_launcher_body,
+        )
+        src = _jiuwenbox_src_root()
+        body = _uac_launcher_body(["python", "-m", "jiuwenbox.supervisor.win_setup"], src_root=src)
+        assert "sys.path.insert(0, _src)" in body
+        assert "PYTHONPATH" in body
+        assert repr(src) in body
+        # 冻包 launcher 不注入源码树.
+        frozen = _uac_launcher_body(["payload.exe", "--install"], src_root=None)
+        assert "sys.path.insert" not in frozen
+
+    def test_local_group_lpwstr_fields_assign_str_not_array(self):
+        """py3.13 ctypes 拒绝 c_wchar_Array → LPWSTR; 组名必须直接赋 str."""
+        import ctypes
+        from ctypes import wintypes
+
+        class LocalGroupInfo0(ctypes.Structure):
+            _fields_ = [("lgrpi0_name", wintypes.LPWSTR)]
+
+        info = LocalGroupInfo0()
+        info.lgrpi0_name = const.SANDBOX_USER_GROUP
+        assert info.lgrpi0_name == const.SANDBOX_USER_GROUP
+        if sys.version_info >= (3, 13):
+            buf = ctypes.create_unicode_buffer(const.SANDBOX_USER_GROUP)
+            with pytest.raises(TypeError):
+                info.lgrpi0_name = buf
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +266,11 @@ class TestEgressFilter:
         ok, _ = f.allow("badsite.com", 80)
         assert ok is False
 
-    def test_block_domain_wildcard(self):
+    def test_block_domain_wildcard(self, monkeypatch):
+        monkeypatch.setattr(
+            win_proxy.socket, "getaddrinfo",
+            lambda *a, **k: [(0, 0, 0, "", ("93.184.216.34", 0))],
+        )
         f = self._filter(default="allow", blocked_domains=["*.evil.com"])
         ok, _ = f.allow("x.evil.com", 443)
         assert ok is False
@@ -202,7 +279,11 @@ class TestEgressFilter:
         ok, _ = f.allow("good.com", 443)
         assert ok is True
 
-    def test_allow_domain_explicit(self):
+    def test_allow_domain_explicit(self, monkeypatch):
+        monkeypatch.setattr(
+            win_proxy.socket, "getaddrinfo",
+            lambda *a, **k: [(0, 0, 0, "", ("151.101.0.223", 0))],
+        )
         f = self._filter(default="deny", allowed_domains=["pypi.org"])
         ok, _ = f.allow("pypi.org", 443)
         assert ok is True
@@ -221,14 +302,14 @@ class TestEgressFilter:
 
     def test_blocked_port(self):
         f = self._filter(default="allow", blocked_ports=[22])
-        ok, _ = f.allow("10.0.0.1", 22)
+        ok, _ = f.allow("8.8.8.8", 22)
         assert ok is False
 
     def test_allowed_port_with_deny_default(self):
         f = self._filter(default="deny", allowed_ports=[443])
-        ok, _ = f.allow("10.0.0.1", 443)
+        ok, _ = f.allow("8.8.8.8", 443)
         assert ok is True
-        ok, _ = f.allow("10.0.0.1", 80)
+        ok, _ = f.allow("8.8.8.8", 80)
         assert ok is False
 
     def test_blocked_ip_cidr(self):
@@ -242,7 +323,11 @@ class TestEgressFilter:
         assert ok is True
         assert "default allow" in reason
 
-    def test_allow_default_with_allow_rules_matching(self):
+    def test_allow_default_with_allow_rules_matching(self, monkeypatch):
+        monkeypatch.setattr(
+            win_proxy.socket, "getaddrinfo",
+            lambda *a, **k: [(0, 0, 0, "", ("151.101.0.223", 0))],
+        )
         f = self._filter(default="allow", allowed_ports=[443], allowed_domains=["pypi.org"])
         ok, reason = f.allow("pypi.org", 443)
         assert ok is True
@@ -319,9 +404,15 @@ class TestProcessRuntimeWindowsBranch:
         fake_win_acl = MagicMock()
         # apply_sandbox_acl 返回 ApplyAclResult (paths/grants/failed).
         from jiuwenbox.supervisor.win_acl import ApplyAclResult
-        fake_win_acl.apply_sandbox_acl = MagicMock(
-            return_value=ApplyAclResult(paths=["/ws"]),
-        )
+        acl_started = threading.Event()
+        acl_release = threading.Event()
+
+        def _blocking_apply(*_a, **_k):
+            acl_started.set()
+            assert acl_release.wait(timeout=5)
+            return ApplyAclResult(paths=["/ws"])
+
+        fake_win_acl.apply_sandbox_acl = MagicMock(side_effect=_blocking_apply)
         fake_win_exec = MagicMock()
         # review #2: two_hop_spawn_and_authorize 封装 SUSPENDED→写 token→resume,
         # 返回 (pid, process_handle) (thread_handle/token_write_handle 内部释放).
@@ -338,6 +429,7 @@ class TestProcessRuntimeWindowsBranch:
         fake_win_setup.get_sandbox_user_password = MagicMock(
             return_value="secret-pw",
         )
+        fake_win_setup.drop_root_policy_acl_paths = lambda paths: list(paths)
         # 注入到 sys.modules.
         import jiuwenbox.supervisor as supervisor_pkg
         monkeypatch.setitem(
@@ -381,13 +473,61 @@ class TestProcessRuntimeWindowsBranch:
             _os, "fdopen",
             lambda fd, mode, **kw: MagicMock(),
         )
+        t0 = time.perf_counter()
         pid = _asyncio.run(runtime._create_windows("sb-1", Path("/tmp/p.yaml"), {}))  # noqa: SLF001
+        elapsed = time.perf_counter() - t0
 
         assert pid == 12345
-        # ACL 施加被调用 (含读控制参数, review M4).
-        fake_win_acl.apply_sandbox_acl.assert_called_once()
-        # 两跳启动被调用 (review #2: token 走 pipe, two_hop_spawn_and_authorize 封装).
+        # 创建必须在 ACL 完成前返回 (ACL 线程仍卡在 Event 上).
+        assert elapsed < 2.0
+        assert acl_started.wait(timeout=2.0)
+        assert not acl_release.is_set()
         fake_win_exec.two_hop_spawn_and_authorize.assert_called_once()
+        acl_release.set()
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not fake_win_acl.apply_sandbox_acl.called:
+            time.sleep(0.01)
+        fake_win_acl.apply_sandbox_acl.assert_called()
+
+
+class TestWindowsExecEnv:
+    def test_powershell_dir_is_under_system32(self, monkeypatch):
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.delenv("JIUWENBOX_VENV_DIR", raising=False)
+        monkeypatch.delenv("JIUWENBOX_BUNDLED_PYTHON", raising=False)
+        from jiuwenbox.server.sandbox_manager import _build_windows_exec_env
+
+        env = _build_windows_exec_env({"PATH": r"C:\custom"})
+        parts = env["PATH"].split(os.pathsep)
+        assert rf"C:\Windows\System32\WindowsPowerShell\v1.0" in parts
+        assert rf"C:\Windows\WindowsPowerShell\v1.0" not in parts
+
+    def test_resolve_powershell_uses_child_path(self, tmp_path, monkeypatch):
+        from jiuwenbox.supervisor import win_exec
+
+        ps_dir = tmp_path / "WindowsPowerShell" / "v1.0"
+        ps_dir.mkdir(parents=True)
+        ps_exe = ps_dir / "powershell.EXE"
+        ps_exe.write_bytes(b"mz")
+        monkeypatch.delenv("PATHEXT", raising=False)
+        resolved = win_exec._resolve_win_image_path(  # noqa: SLF001
+            "powershell",
+            {
+                "PATH": str(ps_dir),
+                "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+            },
+        )
+        assert resolved is not None
+        assert os.path.normcase(resolved) == os.path.normcase(str(ps_exe))
+
+    def test_resolve_bare_name_missing_returns_none(self, tmp_path):
+        from jiuwenbox.supervisor import win_exec
+
+        resolved = win_exec._resolve_win_image_path(  # noqa: SLF001
+            "powershell",
+            {"PATH": str(tmp_path), "PATHEXT": ".EXE"},
+        )
+        assert resolved is None
 
 
 class TestAppLifespanWindowsBranch:
@@ -478,6 +618,8 @@ class TestAppLifespanWindowsBranch:
         asyncio.run(_drive())
         # startup 期间 ensure_windows_setup 应被调.
         fake_win_setup.ensure_windows_setup.assert_called_once()
+        fake_win_setup.schedule_root_policy_acl.assert_called()
+        fake_win_setup.revoke_stale_acl.assert_not_called()
         # proxy 启动应被调.
         assert fake_win_proxy.serve_windows_proxy.called
 
@@ -500,8 +642,10 @@ class TestAppLifespanWindowsBranch:
         resp = HealthResponse(
             version="test", landlock_supported=False,
             sandboxes_active=0, windows_supported=windows_supported,
+            platform="windows",
         )
         assert resp.windows_supported is True
+        assert resp.platform == "windows"
 
     def test_health_reports_not_supported_when_uninstalled(self, monkeypatch):  # noqa: PLR6301,D100
         monkeypatch.setattr(sys, "platform", "win32")
@@ -520,8 +664,10 @@ class TestAppLifespanWindowsBranch:
         resp = HealthResponse(
             version="test", landlock_supported=False,
             sandboxes_active=0, windows_supported=windows_supported,
+            platform="windows",
         )
         assert resp.windows_supported is False
+        assert resp.platform == "windows"
 
 
 # ---------------------------------------------------------------------------
@@ -827,7 +973,7 @@ class TestWinAclAceConstruction:
         assert "owner" in sids
 
     def test_rebuild_acl_drop_deny_sid_keeps_allow(self, monkeypatch):
-        """主目录旧 Deny List 必须清掉, 否则穿过 USERPROFILE 进 claw-desktop 仍 5."""
+        """主目录旧 Deny List 必须清掉, 否则穿过 USERPROFILE 进子目录仍 5."""
         from jiuwenbox.supervisor import win_acl
         calls: list[tuple[str, int, object]] = []
         sandbox = "S-1-5-21-1-2-1001"
@@ -955,26 +1101,24 @@ class TestWinAclAceConstruction:
         ))
         assert r2.paths == [] and r2.grants == [] and r2.failed == []
 
-    def test_fingerprint_key_matches_between_modules(self):
-        """win_acl 查缓存与 win_setup 写缓存必须用同一套 key, 否则永不命中."""
+    def test_fingerprint_cache_is_gone(self):
+        """幂等改为对根 DACL check-then-set; 指纹缓存整套已删, 只留清理函数."""
         from jiuwenbox.supervisor import win_acl, win_setup
-        keys = set()
-        for path in (
-            "C:\\Users\\test\\Documents",
-            "C:/Users/test/Documents/",
-            "c:/users/TEST/documents",
+        for name in (
+            "load_acl_fingerprint_cache",
+            "record_acl_fingerprints",
+            "_record_acl_fingerprints_locked",
+            "_save_acl_fingerprints",
+            "_fingerprint_entry_key",
         ):
-            k_acl = win_acl._fingerprint_key(path, "allow_write")  # noqa: SLF001
-            k_setup = win_setup._fingerprint_entry_key(path, "allow_write")  # noqa: SLF001
-            assert k_acl == k_setup
-            keys.add(k_acl)
-        # 反斜杠 / 尾斜杠 / 大小写都归一到同一个 key.
-        assert keys == {"c:/users/test/documents|allow_write"}
-        # kind 参与 key: 同路径的 allow_write 与 deny_write 不能互相命中.
-        assert (
-            win_acl._fingerprint_key("C:/x", "allow_write")  # noqa: SLF001
-            != win_acl._fingerprint_key("C:/x", "deny_write")  # noqa: SLF001
-        )
+            assert not hasattr(win_setup, name), f"{name} 应已删除"
+        assert not hasattr(win_acl, "_fingerprint_key")
+        # apply_sandbox_acl 不再接受 fingerprint_cache 形参.
+        import inspect
+        params = inspect.signature(win_acl.apply_sandbox_acl).parameters
+        assert "fingerprint_cache" not in params
+        # 升级路径: 残留文件仍要能被删掉.
+        assert callable(win_setup.clear_acl_fingerprint_cache)
 
     def test_token_group_sid_filter_drops_volatile_sids(self):
         """随登录方式/会话变的 SID 不能进有效集合, 否则会误判"已可读"而少授权."""
@@ -997,43 +1141,20 @@ class TestWinAclAceConstruction:
         ):
             assert win_setup._filter_token_group_sid(sid)  # noqa: SLF001
 
-    def test_fingerprint_cache_helpers_exist(self):
+    def test_token_group_cache_helpers_exist(self):
         from jiuwenbox.supervisor import win_setup
-        assert callable(win_setup.load_acl_fingerprint_cache)
-        assert callable(win_setup.record_acl_fingerprints)
         assert callable(win_setup.get_sandbox_token_groups)
         assert callable(win_setup.invalidate_sandbox_token_groups)
 
-    def test_parent_traverse_plan_desktop_grants_list(self):
-        """claw-desktop 必须带 FILE_LIST_DIRECTORY, 且禁止继承, 不能只授 traverse."""
+    def test_parent_traverse_plan_is_traverse_only(self):
         from jiuwenbox.supervisor import win_acl
-        plan = win_acl._parent_traverse_plan(False, True)  # noqa: SLF001
-        assert int(plan["rights"]) & const.FILE_LIST_DIRECTORY
-        assert int(plan["rights"]) & const.FILE_GENERIC_READ
-        assert plan["ace_flags"] == const.RECURSIVE_ACE_FLAGS
-        assert plan["protect"] is True
-        assert plan["skip_inherited"] is False
-        assert plan["drop_world"] is False
-        assert plan["deny_list"] is False
-
-    def test_parent_traverse_plan_profile_no_deny_list(self):
-        from jiuwenbox.supervisor import win_acl
-        plan = win_acl._parent_traverse_plan(True, False)  # noqa: SLF001
+        plan = win_acl._parent_traverse_plan()  # noqa: SLF001
         assert int(plan["rights"]) == const.FILE_GENERIC_EXECUTE
         assert int(plan["rights"]) & const.FILE_LIST_DIRECTORY == 0
         assert plan["ace_flags"] == 0
         assert plan["protect"] is None
         assert plan["drop_world"] is False
         assert plan["skip_inherited"] is False
-        assert plan["deny_list"] is False
-
-    def test_parent_traverse_plan_mid_dir_traverse_only(self):
-        from jiuwenbox.supervisor import win_acl
-        plan = win_acl._parent_traverse_plan(False, False)  # noqa: SLF001
-        assert int(plan["rights"]) == const.FILE_GENERIC_EXECUTE
-        assert plan["protect"] is None
-        assert plan["skip_inherited"] is False
-        assert plan["drop_world"] is False
         assert plan["deny_list"] is False
 
     def test_host_dacl_frozen_volume_root_and_users(self):
@@ -1060,6 +1181,47 @@ class TestWinAclAceConstruction:
         win_acl.grant_ace(r"D:\\", "S-1-5-21-1-2-1001", rights=1, mode="DENY")
         win_acl.grant_ace(r"C:\\Users", "S-1-5-21-1-2-1001", rights=1, mode="ALLOW")
         win_acl.grant_aces(r"D:\\", [("S-1-5-21-1-2-1001", 1, "DENY")])
+
+    def test_grant_ace_writes_via_replace_aces_no_propagate(self, monkeypatch):
+        from jiuwenbox.supervisor import win_acl
+        monkeypatch.setattr(win_acl, "_require_windows", lambda: None)
+        monkeypatch.setattr(win_acl, "_resolve_sid", lambda s: s)
+        called: list[tuple] = []
+
+        def _fake_replace(path, aces, **kwargs):
+            called.append((path, aces, kwargs))
+
+        monkeypatch.setattr(win_acl, "replace_aces_no_propagate", _fake_replace)
+        win_acl.grant_ace(r"C:\\tmp\\ws", "S-1-5-21-1-2-1001", rights=7, mode="ALLOW")
+        win_acl.grant_aces(
+            r"C:\\tmp\\ws",
+            [("S-1-5-21-1-2-1001", 1, "DENY")],
+            recursive=False,
+        )
+        assert len(called) == 2
+        assert called[0][0] == r"C:\\tmp\\ws"
+        assert called[0][1] == [("S-1-5-21-1-2-1001", 7, "ALLOW")]
+        assert called[0][2].get("inheritable") is True
+        assert called[1][2].get("inheritable") is False
+
+    def test_grant_current_user_write_dac_uses_host_sid(self, monkeypatch, tmp_path):
+        from jiuwenbox.supervisor import win_acl, win_constants as const
+        target = tmp_path / "ws"
+        target.mkdir()
+        monkeypatch.setattr(win_acl, "_require_windows", lambda: None)
+        monkeypatch.setattr(win_acl, "_current_process_user_sid", lambda: "host-sid")
+        called: list[tuple] = []
+
+        def _fake_set(path, sid, **kwargs):
+            called.append((path, sid, kwargs))
+
+        monkeypatch.setattr(win_acl, "_set_ace_no_propagate", _fake_set)
+        win_acl.grant_current_user_write_dac(str(target), inheritable=True)
+        assert len(called) == 1
+        assert called[0][1] == "host-sid"
+        assert called[0][2]["rights"] == const.WRITE_DAC | const.READ_CONTROL
+        assert called[0][2]["mode"] == "ALLOW"
+        assert called[0][2]["inheritable"] is True
 
     def test_grant_parent_traverse_mid_dir_does_not_drop_users(
         self, monkeypatch, tmp_path,
@@ -1091,7 +1253,6 @@ class TestWinAclAceConstruction:
             win_acl, "_user_profile_stop_keys",
             lambda: {os.path.normcase(str(profile.resolve()))},
         )
-        monkeypatch.setattr(win_acl, "_desktop_data_dir_keys", lambda: set())
         monkeypatch.setattr(win_acl, "_resolve_sid", lambda s: s)
         monkeypatch.setattr(win_acl, "_is_host_dacl_frozen", lambda p: False)
         win_acl.grant_parent_traverse(str(mid), "S-1-5-21-1-2-3")
@@ -1100,28 +1261,6 @@ class TestWinAclAceConstruction:
             assert kw.get("keep_list_sid_keys") is None
             dropped = kw.get("drop_sid_keys") or set()
             assert not (dropped & const.WORLD_LIST_SID_SDDL)
-
-    def test_resolve_desktop_data_dir_from_appdata(self, tmp_path, monkeypatch):
-        from jiuwenbox.supervisor import win_acl
-        desktop = tmp_path / "claw-desktop"
-        desktop.mkdir()
-        monkeypatch.delenv("JIUWENBOX_DESKTOP_DATA_DIR", raising=False)
-        monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
-        monkeypatch.setenv("APPDATA", str(tmp_path))
-        assert os.path.normcase(win_acl.resolve_desktop_data_dir()) == os.path.normcase(
-            str(desktop.resolve()),
-        )
-
-    def test_resolve_desktop_data_dir_from_swarm_parent(self, tmp_path, monkeypatch):
-        from jiuwenbox.supervisor import win_acl
-        desktop = tmp_path / "claw-desktop"
-        swarm = desktop / "jiuwenswarm"
-        swarm.mkdir(parents=True)
-        monkeypatch.delenv("JIUWENBOX_DESKTOP_DATA_DIR", raising=False)
-        monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(swarm))
-        assert os.path.normcase(win_acl.resolve_desktop_data_dir()) == os.path.normcase(
-            str(desktop.resolve()),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1194,6 +1333,81 @@ class TestWindowsPolicyReadFields:
                 "allow_read": ["/x"], "bogus": 1,
             }}})
 
+    def test_use_restricted_token_field_removed(self):
+        p = SecurityPolicy.model_validate({"windows": {}})
+        assert not hasattr(p.windows.filesystem, "use_restricted_token")
+        with pytest.raises(Exception):
+            SecurityPolicy.model_validate({
+                "windows": {"filesystem": {"use_restricted_token": True}},
+            })
+
+
+class TestRestrictedTokenElevatedPath:
+    """Per-exec WRITE_RESTRICTED token 对齐 Codex elevated 的构造/spawn 细节."""
+
+    def test_create_restricted_token_matches_codex(self):
+        import inspect
+        from jiuwenbox.supervisor import win_exec
+        src = inspect.getsource(win_exec._create_restricted_token)  # noqa: SLF001
+        assert "ELEVATED_RESTRICTED_TOKEN_FLAGS" in src
+        assert "TOKEN_USER" in src
+        assert "SE_GROUP_LOGON_ID" in src
+        assert "== const.SE_GROUP_LOGON_ID" in src
+        assert "0x40000000" not in src
+        assert "Logon SID not present on token" in src
+        assert "TokenDefaultDacl" in src
+        assert "SeChangeNotifyPrivilege" in src
+        assert "get_synthetic_write_sid" not in src
+        assert "_get_runner_readonly_cap_sid" in src
+        # extra restricting (TokenUser) 不得进 DefaultDacl.
+        assert "dacl_sids = [logon_sid_val, everyone_ptr, write_sid_ptr" in src
+
+    def test_handle_exec_builds_per_call_token(self):
+        import inspect
+        from jiuwenbox.supervisor import win_exec
+        src = inspect.getsource(win_exec._handle_exec_request)  # noqa: SLF001
+        assert "write_cap_sids" in src
+        assert "_create_restricted_token" in src
+        assert "_duplicate_primary_token" in src
+        assert "bind_default_desktop=True" in src
+        spawn_src = inspect.getsource(win_exec._create_process_as_user)  # noqa: SLF001
+        assert "Winsta0\\\\Default" in spawn_src or "Winsta0\\Default" in spawn_src
+        assert "create_unicode_buffer(\"Winsta0" not in spawn_src
+        assert "create_unicode_buffer('Winsta0" not in spawn_src
+        runner_src = inspect.getsource(win_exec.runner_main)
+        assert "_startup_allow_null_device" in runner_src
+        assert "--use-restricted-token" not in runner_src
+        assert "use_restricted_token" not in runner_src
+        spawn_fn = inspect.getsource(win_exec.two_hop_spawn)
+        assert "use_restricted_token" not in spawn_fn
+        cmd = win_exec._build_runner_command(  # noqa: SLF001
+            "sb", "C:\\ws", 60080, 60089, 60100,
+        )
+        assert "--use-restricted-token" not in cmd
+
+    def test_empty_cap_sids_uses_readonly_filler(self):
+        import inspect
+        from jiuwenbox.supervisor import win_exec
+        sid1 = win_exec._get_runner_readonly_cap_sid()  # noqa: SLF001
+        sid2 = win_exec._get_runner_readonly_cap_sid()  # noqa: SLF001
+        assert sid1 == sid2
+        assert sid1.startswith("S-1-5-21-")
+        parts = sid1.split("-")
+        assert len(parts) == 8  # S-1-5-21-{u32}-{u32}-{u32}-{u32}
+        src = inspect.getsource(win_exec._create_restricted_token)  # noqa: SLF001
+        assert "_get_runner_readonly_cap_sid" in src
+        handle_src = inspect.getsource(win_exec._handle_exec_request)  # noqa: SLF001
+        assert 'if "write_cap_sids" not in header' in handle_src
+        assert "exec requires write_cap_sids" in handle_src
+
+    def test_startupinfo_lpdesktop_accepts_winsta0_default(self):
+        """py3.13: LPWSTR 不能接 c_wchar_Array, 必须能赋 str."""
+        from jiuwenbox.supervisor.win_exec import STARTUPINFOW
+
+        startup = STARTUPINFOW()
+        startup.lpDesktop = "Winsta0\\Default"
+        assert startup.lpDesktop == "Winsta0\\Default"
+
 
 class TestWinProxyEgressSemantics:
     """review MAJOR #10: IP-allow 与 port-allow 不做隐式 AND."""
@@ -1204,13 +1418,14 @@ class TestWinProxyEgressSemantics:
 
     def test_ip_allow_and_port_allow_not_anded(self):
         """
-            allowed_ips=[10/8] + allowed_ports=[443] 不应 AND: 10.1.2.3:8443
-            (IP 命中 allow) 必须放行 (Linux iptables 独立 ACCEPT 语义).
+            allowed_ips=[93.184.216.0/24] + allowed_ports=[443] 不应 AND:
+            93.184.216.34:8443 (IP 命中 allow) 必须放行.
+            私网/loopback 走硬拒, 不能再当 allow 用例.
         """
         f = self._filter(
-            allowed_ips=["10.0.0.0/8"], allowed_ports=[443], default="deny",
+            allowed_ips=["93.184.216.0/24"], allowed_ports=[443], default="deny",
         )
-        allowed, _ = f.allow("10.1.2.3", 8443)
+        allowed, _ = f.allow("93.184.216.34", 8443)
         assert allowed, "IP 命中 allow 应放行, 不与 port allow 做 AND"
 
     # 别名: 设计文档 windows_sandbox_review_fix_design.md §4 要求的测试名.
@@ -1220,15 +1435,35 @@ class TestWinProxyEgressSemantics:
 
     def test_port_allow_only_still_works(self):
         f = self._filter(allowed_ports=[443], default="deny")
-        allowed, _ = f.allow("10.1.2.3", 443)
+        allowed, _ = f.allow("8.8.8.8", 443)
         assert allowed
 
     def test_blocked_port_overrides_allow(self):
         f = self._filter(
             allowed_ports=[443], blocked_ports=[443], default="deny",
         )
-        allowed, _ = f.allow("10.1.2.3", 443)
+        allowed, _ = f.allow("8.8.8.8", 443)
         assert not allowed
+
+    def test_hard_deny_loopback_even_if_allowed(self):
+        f = self._filter(default="allow", allowed_ips=["127.0.0.1/32"])
+        ok, _ = f.allow("127.0.0.1", 8321)
+        assert ok is False
+
+    def test_hard_deny_private_even_if_allowed(self):
+        f = self._filter(default="allow", allowed_ips=["10.0.0.0/8"])
+        ok, _ = f.allow("10.0.0.1", 80)
+        assert ok is False
+
+    def test_hard_deny_localhost_hostname(self):
+        f = self._filter(default="allow")
+        ok, _ = f.allow("localhost", 8321)
+        assert ok is False
+
+    def test_hard_deny_link_local(self):
+        f = self._filter(default="allow", allowed_ips=["169.254.0.0/16"])
+        ok, _ = f.allow("169.254.1.1", 80)
+        assert ok is False
 
 
 # ---------------------------------------------------------------------------
@@ -1276,9 +1511,14 @@ class TestWindowsSandboxE2E:
                 break
             time.sleep(0.5)
         try:
+            extra = {"paths": [os.getcwd()]}
             exec_resp = client.post(
                 f"/api/v1/sandboxes/{sb_id}/exec",
-                json={"command": ["cmd", "/c", "echo hello"], "timeout_seconds": 10},
+                json={
+                    "command": ["cmd", "/c", "echo hello"],
+                    "timeout_seconds": 10,
+                    "extra": extra,
+                },
             )
             assert exec_resp.status_code == 200
             result = exec_resp.json()
@@ -1307,6 +1547,7 @@ class TestWindowsSandboxE2E:
                 json={
                     "command": ["cmd", "/c", "echo x > .git\\config"],
                     "timeout_seconds": 10,
+                    "extra": {"paths": [os.getcwd()]},
                 },
             )
             result = exec_resp.json()
@@ -1337,6 +1578,7 @@ class TestWindowsSandboxE2E:
                         "http://blocked.test/",
                     ],
                     "timeout_seconds": 15,
+                    "extra": {"paths": [os.getcwd()]},
                 },
             )
             result = exec_resp.json()

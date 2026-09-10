@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import socket
 import sys
@@ -232,6 +233,26 @@ class TokenGroup(ctypes.Structure):  # noqa: N801 - Win32 SDK 规范类名
     ]
 
 
+class TokenUser(ctypes.Structure):  # noqa: N801 - Win32 SDK 规范类名
+    """TOKEN_USER: { SID_AND_ATTRIBUTES User }."""
+    _fields_ = [("User", SidAndAttr)]
+
+
+class Luid(ctypes.Structure):
+    _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+
+class LuidAndAttributes(ctypes.Structure):
+    _fields_ = [("Luid", Luid), ("Attributes", wintypes.DWORD)]
+
+
+class TokenPrivileges(ctypes.Structure):  # noqa: N801 - Win32 SDK 规范类名
+    _fields_ = [
+        ("PrivilegeCount", wintypes.DWORD),
+        ("Privileges", LuidAndAttributes * 1),
+    ]
+
+
 def _get_advapi32() -> ctypes.WinDLL:
     global _advapi32
     if _advapi32 is None:
@@ -289,6 +310,32 @@ def _get_advapi32() -> ctypes.WinDLL:
             ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD),
         ]
         _advapi32.CreateWellKnownSid.restype = wintypes.BOOL
+        _advapi32.ConvertSidToStringSidW.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p),
+        ]
+        _advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+        _advapi32.ConvertStringSidToSidW.argtypes = [
+            wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        _advapi32.ConvertStringSidToSidW.restype = wintypes.BOOL
+        _advapi32.DuplicateTokenEx.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p,
+            wintypes.DWORD, wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        _advapi32.DuplicateTokenEx.restype = wintypes.BOOL
+        _advapi32.LookupPrivilegeValueW.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+        ]
+        _advapi32.LookupPrivilegeValueW.restype = wintypes.BOOL
+        _advapi32.AdjustTokenPrivileges.argtypes = [
+            wintypes.HANDLE, wintypes.BOOL, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        _advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
+        _advapi32.FreeSid.argtypes = [ctypes.c_void_p]
+        _advapi32.FreeSid.restype = ctypes.c_void_p
     return _advapi32
 
 
@@ -299,6 +346,10 @@ def get_kernel32() -> ctypes.WinDLL:
         _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
         _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         _kernel32.CloseHandle.restype = wintypes.BOOL
+        _kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        _kernel32.LocalFree.restype = ctypes.c_void_p
+        _kernel32.SetLastError.argtypes = [wintypes.DWORD]
+        _kernel32.SetLastError.restype = None
         _kernel32.CreatePipe.argtypes = [
             ctypes.POINTER(wintypes.HANDLE),
             ctypes.POINTER(wintypes.HANDLE),
@@ -415,6 +466,7 @@ def _build_runner_command(
         "--proxy-port-end", str(proxy_port_end),
         "--control-port", str(control_port),
     ]
+    # Restricted tokens are created per-exec inside the runner.
     # review #2: --control-token 不再拼进命令行 (token 走 pipe). runner 端
     # argparse 仍保留 --control-token 默认空串, 兼容旧 CLI 调用.
     # P2-18: 用 subprocess.list2cmdline 正确转义命令行 (修复旧版只加外层引号不
@@ -496,7 +548,7 @@ def two_hop_spawn(
     # 但 CreateProcessWithLogonW 不像 CreateProcess 有显式 bInheritHandles 形参 — 它默认继承可继承句柄,
     # 故 SECURITY_ATTRIBUTES.bInheritHandle=True 的 pipe 读端会被继承).
     creation_flags = const.CREATE_NO_WINDOW | const.CREATE_SUSPENDED
-    # env 块含 box-server 拼好的 PATH (tool_paths), runner 必须继承, 否则起 child 时 WinError 2.
+    # env 块含 box-server 拼好的 PATH (venv/System32), runner 必须继承, 否则起 child 时 WinError 2.
     # env_block_buf 须存活到调用返回 (悬垂指针防护).
     env_block_buf = None
     env_block_ptr = None
@@ -727,113 +779,316 @@ def two_hop_spawn_and_authorize(
 # padding 错位/nSubAuthorityCount 漏 21 的缺陷. P2-25 删除死代码 (需恢复见 git 5f841f7a).
 
 
-def _create_restricted_token() -> int:
-    """第二跳核心: 在 runner 上下文创建 Write-Restricted Token.
+def _sid_ptr_to_string(psid: object) -> str:
+    advapi32 = _get_advapi32()
+    out = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(psid, ctypes.byref(out)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return out.value or ""
+    finally:
+        if out:
+            get_kernel32().LocalFree(out)
 
-    受限 SID 列表 = [Everyone, 当前 LogonSession, JHXSandboxWrite].
-    Flags = DISABLE_MAX_PRIVILEGE | SANDBOX_INERT | WRITE_RESTRICTED.
+
+def _string_sid_to_ptr(sid_str: str) -> ctypes.c_void_p:
+    advapi32 = _get_advapi32()
+    psid = ctypes.c_void_p()
+    if not advapi32.ConvertStringSidToSidW(sid_str, ctypes.byref(psid)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return psid
+
+
+def _set_restricted_token_default_dacl(h_token: int, sid_ptrs: list) -> None:
+    """TokenDefaultDacl: Logon + Everyone + capability 授 GENERIC_ALL (Codex)."""
+    import win32security
+    import ntsecuritycon
+
+    acl = win32security.ACL()
+    for psid in sid_ptrs:
+        if not psid:
+            continue
+        sid_str = _sid_ptr_to_string(psid)
+        sid = win32security.ConvertStringSidToSid(sid_str)
+        acl.AddAccessAllowedAce(
+            win32security.ACL_REVISION, ntsecuritycon.GENERIC_ALL, sid,
+        )
+    win32security.SetTokenInformation(
+        h_token, win32security.TokenDefaultDacl, acl,
+    )
+
+
+def _enable_change_notify_privilege(h_token: int) -> None:
+    advapi32 = _get_advapi32()
+    kernel32 = get_kernel32()
+    luid = Luid()
+    if not advapi32.LookupPrivilegeValueW(
+        None, "SeChangeNotifyPrivilege", ctypes.byref(luid),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    tp = TokenPrivileges()
+    tp.PrivilegeCount = 1
+    tp.Privileges[0].Luid = luid
+    tp.Privileges[0].Attributes = const.SE_PRIVILEGE_ENABLED
+    # GetTokenInformation 会留下 ERROR_INSUFFICIENT_BUFFER, 先清再判.
+    kernel32.SetLastError(0)
+    if not advapi32.AdjustTokenPrivileges(
+        wintypes.HANDLE(h_token), False, ctypes.byref(tp), 0, None, None,
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    err = ctypes.get_last_error()
+    if err:
+        raise ctypes.WinError(err)
+
+
+def _allow_null_device(sid_str: str) -> None:
+    """给合成 SID 在 \\\\.\\NUL 打 Allow, 失败不阻断 (Codex allow_null_device)."""
+    try:
+        import win32security
+        import ntsecuritycon
+
+        path = r"\\.\NUL"
+        sid = win32security.ConvertStringSidToSid(sid_str)
+        sd = win32security.GetFileSecurity(
+            path, win32security.DACL_SECURITY_INFORMATION,
+        )
+        dacl = sd.GetSecurityDescriptorDacl()
+        if dacl is None:
+            dacl = win32security.ACL()
+        dacl.AddAccessAllowedAce(
+            win32security.ACL_REVISION,
+            ntsecuritycon.GENERIC_READ | ntsecuritycon.GENERIC_WRITE,
+            sid,
+        )
+        sd.SetSecurityDescriptorDacl(1, dacl, 0)
+        win32security.SetFileSecurity(
+            path, win32security.DACL_SECURITY_INFORMATION, sd,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("allow NUL ACE 失败 (非致命)", exc_info=True)
+
+
+def _ephemeral_cap_sid() -> str:
+    """Random S-1-5-21-... SID used only as a CreateRestrictedToken filler."""
+    return "S-1-5-21-" + "-".join(str(secrets.randbits(32)) for _ in range(4))
+
+
+_runner_readonly_cap_sid: str | None = None
+
+
+def _get_runner_readonly_cap_sid() -> str:
+    """Process-local readonly filler SID. Never placed on a file ACE.
+
+    CreateRestrictedToken requires a non-empty capability list. When
+    box-server sends ``write_cap_sids=[]`` (no write roots this call),
+    the runner must not read ``acl_state.json``; a local filler is enough.
+    """
+    global _runner_readonly_cap_sid
+    if not _runner_readonly_cap_sid:
+        _runner_readonly_cap_sid = _ephemeral_cap_sid()
+    return _runner_readonly_cap_sid
+
+
+def _current_token_user_sid_str() -> str:
+    """SID string of the current process token user (jbx-sandbox in the runner)."""
+    advapi32 = _get_advapi32()
+    kernel32 = get_kernel32()
+    h_token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(), const.TOKEN_QUERY, ctypes.byref(h_token),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        user_len = wintypes.DWORD(0)
+        advapi32.GetTokenInformation(
+            h_token, const.TOKEN_USER, None, 0, ctypes.byref(user_len),
+        )
+        if user_len.value == 0:
+            raise ctypes.WinError(ctypes.get_last_error() or 87)
+        user_buf = (ctypes.c_byte * user_len.value)()
+        if not advapi32.GetTokenInformation(
+            h_token, const.TOKEN_USER, user_buf, user_len, ctypes.byref(user_len),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        user_struct = ctypes.cast(user_buf, ctypes.POINTER(TokenUser)).contents
+        return _sid_ptr_to_string(user_struct.User.Sid)
+    finally:
+        kernel32.CloseHandle(h_token)
+
+
+def _startup_allow_null_device() -> None:
+    """Grant NUL to the sandbox user SID once at runner start.
+
+    User SID is also in the restricting set, so a user ACE on ``\\\\.\\NUL``
+    satisfies both WRITE_RESTRICTED halves (the point of this compatibility
+    ACE). Capability SIDs are per-exec and must not be re-granted here.
+    """
+    try:
+        sid = _current_token_user_sid_str()
+        if sid:
+            _allow_null_device(sid)
+    except Exception:  # noqa: BLE001
+        logger.debug("runner start NUL ACE 失败 (非致命)", exc_info=True)
+
+
+def _create_restricted_token(cap_sids: list[str] | None = None) -> int:
+    """WRITE_RESTRICTED token with per-exec capability SIDs.
+
+    restricting SID 顺序: [cap SIDs..., TokenUser, LogonSession, Everyone].
+    flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED.
+    随后 TokenDefaultDacl + SeChangeNotifyPrivilege.
+
+    Empty ``cap_sids`` uses a readonly filler SID so CreateRestrictedToken
+    stays valid and writes fail the restricted half (filler is never on
+    an ACE). Everyone is also in the restricting set — the same residual
+    Codex accepts: Everyone-writable paths pass both write-check halves.
+    The legacy global synthetic write SID is never added to the token.
     """
     advapi32 = _get_advapi32()
     kernel32 = get_kernel32()
     h_token = wintypes.HANDLE()
-    token_assign_primary = 0x0001  # noqa: N806 - Win32 SDK 常量风格
-    token_duplicate = 0x0002  # noqa: N806 - Win32 SDK 常量风格
-    token_query = 0x0008  # noqa: N806 - Win32 SDK 常量风格
-    token_adjust_default = 0x0080  # noqa: N806 - Win32 SDK 常量风格
     desired = (
-        token_assign_primary | token_duplicate | token_query | token_adjust_default
+        const.TOKEN_ASSIGN_PRIMARY
+        | const.TOKEN_DUPLICATE
+        | const.TOKEN_QUERY
+        | const.TOKEN_ADJUST_DEFAULT
+        | const.TOKEN_ADJUST_PRIVILEGES
+        | const.TOKEN_ADJUST_SESSIONID
     )
     if not advapi32.OpenProcessToken(
         kernel32.GetCurrentProcess(), desired, ctypes.byref(h_token),
     ):
         raise ctypes.WinError(ctypes.get_last_error())
+
+    cap_sid_ptrs: list[ctypes.c_void_p] = []
     try:
-        # 内联构造 SID buffer 并持有引用直到 CreateRestrictedToken 返回 (防悬垂指针 → WinError 998).
-        # Everyone SID (CreateWellKnownSid, 持久 buffer).
         everyone_buf = (ctypes.c_byte * 64)()
         everyone_size = wintypes.DWORD(64)
         if not advapi32.CreateWellKnownSid(
             const.WIN_WORLD_SID, None, everyone_buf, ctypes.byref(everyone_size),
         ):
             raise ctypes.WinError(ctypes.get_last_error())
+        everyone_ptr = ctypes.cast(everyone_buf, ctypes.c_void_p)
 
-        # Logon session SID (从 token TokenGroups 提取, 持久 buffer).
+        user_len = wintypes.DWORD(0)
+        advapi32.GetTokenInformation(
+            h_token, const.TOKEN_USER, None, 0, ctypes.byref(user_len),
+        )
+        if user_len.value == 0:
+            raise ctypes.WinError(ctypes.get_last_error() or 87)
+        user_buf = (ctypes.c_byte * user_len.value)()
+        if not advapi32.GetTokenInformation(
+            h_token, const.TOKEN_USER, user_buf, user_len, ctypes.byref(user_len),
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        user_struct = ctypes.cast(user_buf, ctypes.POINTER(TokenUser)).contents
+        user_sid_ptr = user_struct.User.Sid
+
         ret_len = wintypes.DWORD(0)
         advapi32.GetTokenInformation(
             h_token, const.TOKEN_GROUPS, None, 0, ctypes.byref(ret_len),
         )
+        if ret_len.value == 0:
+            raise ctypes.WinError(ctypes.get_last_error() or 87)
         logon_buf = (ctypes.c_byte * ret_len.value)()
         if not advapi32.GetTokenInformation(
             h_token, const.TOKEN_GROUPS, logon_buf, ret_len, ctypes.byref(ret_len),
         ):
             raise ctypes.WinError(ctypes.get_last_error())
         groups_struct = ctypes.cast(logon_buf, ctypes.POINTER(TokenGroup)).contents
-        count = groups_struct.GroupCount
+        count = int(groups_struct.GroupCount)
         arr_t = SidAndAttr * count
-        # groups 起始用 Groups.offset (ctypes 自动算对齐 padding), 手动加 sizeof(DWORD) 在 64 位会漏 padding.
         groups = ctypes.cast(
             ctypes.addressof(groups_struct) + TokenGroup.Groups.offset,
             ctypes.POINTER(arr_t),
         ).contents
-        se_group_logon_id = 0x40000000  # noqa: N806 - Win32 SDK 常量风格
         logon_sid_val = None
         for g in groups:
-            if g.Attributes & se_group_logon_id:
+            if (int(g.Attributes) & const.SE_GROUP_LOGON_ID) == const.SE_GROUP_LOGON_ID:
                 logon_sid_val = g.Sid
                 break
         if logon_sid_val is None:
-            logon_sid_val = groups[0].Sid if count else None
-        # 拿不到 logon SID 时只用 [Everyone, JHXSandboxWrite], 数组大小动态调整 (硬塞 NULL 会 WinError 87).
-        entries = [
-            SidAndAttr(ctypes.cast(everyone_buf, ctypes.c_void_p), 0),
+            raise RuntimeError("Logon SID not present on token")
+
+        effective_caps = [str(s) for s in (cap_sids or []) if s]
+        if not effective_caps:
+            effective_caps = [_get_runner_readonly_cap_sid()]
+        for sid_str in effective_caps:
+            cap_sid_ptrs.append(_string_sid_to_ptr(sid_str))
+        write_sid_ptr = cap_sid_ptrs[0]
+
+        # Codex Exact order: capabilities..., extra (user)..., Logon, Everyone.
+        entries_list: list[SidAndAttr] = [
+            *(SidAndAttr(ptr, 0) for ptr in cap_sid_ptrs),
+            SidAndAttr(user_sid_ptr, 0),
+            SidAndAttr(logon_sid_val, 0),
+            SidAndAttr(everyone_ptr, 0),
         ]
-        if logon_sid_val is not None:
-            entries.append(SidAndAttr(logon_sid_val, 0))
 
-        # 合成 JHXSandboxWrite SID (AllocateAndInitializeSid 堆分配, 不悬垂).
-        sid_auth_nt = (ctypes.c_byte * 6)(0, 0, 0, 0, 0, 5)  # noqa: N806 - Win32 SDK 常量风格
-        write_sid_ptr = ctypes.c_void_p()
-        ok = advapi32.AllocateAndInitializeSid(
-            ctypes.byref(sid_auth_nt), 4,
-            21,
-            const.SYNTHETIC_WRITE_SID_SUBAUTHS[0],
-            const.SYNTHETIC_WRITE_SID_SUBAUTHS[1],
-            const.SYNTHETIC_WRITE_SID_RID,
-            0, 0, 0, 0,
-            ctypes.byref(write_sid_ptr),
-        )
-        if not ok:
-            raise ctypes.WinError(ctypes.get_last_error())
-        entries.append(SidAndAttr(write_sid_ptr, 0))
-
-        restricting = (SidAndAttr * len(entries))(*entries)
+        restricting = (SidAndAttr * len(entries_list))(*entries_list)
         restricted = wintypes.HANDLE()
+        flags = const.ELEVATED_RESTRICTED_TOKEN_FLAGS
         logger.info(
             "CreateRestrictedToken 调用: restricting_sids=%d, flags=0x%x",
-            len(entries), const.RESTRICTED_TOKEN_FLAGS,
+            len(entries_list), flags,
         )
         ok = advapi32.CreateRestrictedToken(
-            h_token, const.RESTRICTED_TOKEN_FLAGS,
-            0, None,       # disabling sids (空)
-            0, None,       # deleting privileges (空)
-            len(entries), restricting,  # restricting sids (PSID_AND_ATTRIBUTES, 数组对象自动转指针)
+            h_token, flags,
+            0, None,
+            0, None,
+            len(entries_list), restricting,
             ctypes.byref(restricted),
         )
         if not ok:
             err = ctypes.WinError(ctypes.get_last_error())
             logger.error("CreateRestrictedToken 失败: %s", err)
             raise err
-        logger.info("CreateRestrictedToken 成功: handle=%d", int(restricted.value))
-        return int(restricted.value)
+
+        h_restricted = int(restricted.value)
+        try:
+            # DACL 不含 extra restricting (TokenUser): 身份 SID 不能当对象访问能力.
+            dacl_sids = [logon_sid_val, everyone_ptr, write_sid_ptr, *cap_sid_ptrs[1:]]
+            _set_restricted_token_default_dacl(h_restricted, dacl_sids)
+            _enable_change_notify_privilege(h_restricted)
+        except Exception:
+            kernel32.CloseHandle(wintypes.HANDLE(h_restricted))
+            raise
+        logger.info(
+            "CreateRestrictedToken 成功: handle=%d flags=0x%x",
+            h_restricted, flags,
+        )
+        return h_restricted
     finally:
+        for ptr in cap_sid_ptrs:
+            if ptr:
+                get_kernel32().LocalFree(ptr)
         kernel32.CloseHandle(h_token)
 
 
-def _get_runner_primary_token() -> int:
-    """拿 runner 自身进程的 primary token (未受限), 供 exec 起 child 用.
+def _duplicate_primary_token(h_token: int) -> int:
+    """DuplicateTokenEx 出 primary 副本; 调用方用完须 CloseHandle."""
+    advapi32 = _get_advapi32()
+    dup = wintypes.HANDLE()
+    desired = (
+        const.TOKEN_ASSIGN_PRIMARY
+        | const.TOKEN_DUPLICATE
+        | const.TOKEN_QUERY
+        | const.TOKEN_ADJUST_DEFAULT
+    )
+    if not advapi32.DuplicateTokenEx(
+        wintypes.HANDLE(h_token), desired, None,
+        const.SecurityImpersonation, const.TokenPrimary,
+        ctypes.byref(dup),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(dup.value)
 
-    受限 token 会让 child 0xC0000142 (desktop/全局对象机制硬限制), 故弃用受限 token,
-    改用未受限 primary token. 代价: 失去双重写检查, 写控制只剩 ACL. 调用方用完须 CloseHandle.
+
+def _get_runner_primary_token() -> int:
+    """拿 runner 自身进程的 primary token (未受限).
+
+    文件 IPC (write/read/list) 仍用 runner 自身 token; exec 子进程走
+    per-call WRITE_RESTRICTED token. 调用方用完须 CloseHandle.
     """
     advapi32 = _get_advapi32()
     kernel32 = get_kernel32()
@@ -900,6 +1155,56 @@ def get_sandbox_profile_dir() -> str | None:
         kernel32.CloseHandle(wintypes.HANDLE(token))
 
 
+def _resolve_win_image_path(
+    cmd0: str,
+    env: dict[str, str],
+    *,
+    workdir: str | None = None,
+) -> str | None:
+    """把裸命令名解析成绝对路径, 供 CreateProcessAsUserW lpApplicationName.
+
+    CreateProcessAsUserW 在 lpApplicationName=NULL 时按调用方 PATH /
+    System32 / Windows 搜索, **不会**用子进程 env 的 PATH.
+    powershell.exe 在 System32\\WindowsPowerShell\\v1.0, 裸名 ``powershell``
+    会直接 WinError 2. 用子进程 PATH+PATHEXT 解析后再把绝对路径传进去.
+    """
+    import ntpath
+
+    raw = (cmd0 or "").strip().strip('"')
+    if not raw:
+        return None
+    pathext = (
+        env.get("PATHEXT")
+        or os.environ.get("PATHEXT")
+        or ".COM;.EXE;.BAT;.CMD"
+    )
+    exts = [e.strip() for e in pathext.split(os.pathsep) if e.strip()]
+    has_ext = bool(ntpath.splitext(raw)[1])
+    names = [raw] if has_ext else [raw, *[raw + ext for ext in exts]]
+
+    def _first_file(candidates: list[str]) -> str | None:
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                return os.path.normpath(candidate)
+        return None
+
+    if ntpath.isabs(raw) or ntpath.dirname(raw):
+        hits = list(names)
+        if workdir and not ntpath.isabs(raw):
+            hits.extend(ntpath.join(workdir, name) for name in names)
+        return _first_file(hits)
+
+    path_val = env.get("PATH") or os.environ.get("PATH") or ""
+    for segment in path_val.split(os.pathsep):
+        segment = segment.strip().strip('"')
+        if not segment:
+            continue
+        found = _first_file([ntpath.join(segment, name) for name in names])
+        if found:
+            return found
+    return None
+
+
 def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
     restricted_token: int,
     command: list[str],
@@ -908,20 +1213,15 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
     stdin_fd: int,
     stdout_fd: int,
     workspace: str | None = None,
+    *,
+    bind_default_desktop: bool = False,
 ) -> "tuple[int, int]":
     """CreateProcessAsUserW 以受限 token 启动子命令.
 
     Returns: (child_pid, child_process_handle).
     """
     advapi32 = _get_advapi32()
-    # P2-18: 用 subprocess.list2cmdline 正确转义命令行. 旧版 " ".join 只对含空格参数加外层双引号不转义内部 ",
-    # command 形如 ['bash','-lc','python -c "print("ok")"'] 时 bash 收到的双引号被 Windows CRT 当边界 → argv 错位 → SyntaxError.
-    # list2cmdline 按 MSVCRT argv 规则把内部 " 转义为 \".
-    import subprocess as _sp
-    cmd_line = _sp.list2cmdline(command)
-    # CreateProcessAsUserW 的 lpCommandLine 需可变 buffer (Windows 原地修改),
-    # 不能直接传 str (ctypes 转 c_wchar_p 只读, 修改触发段错误).
-    cmd_line_buf = ctypes.create_unicode_buffer(cmd_line)
+    command = list(command)
     # 始终构造 env block (env=None 回退 os.environ). 不能传 NULL 给 CreateProcessAsUserW
     # (空环境无 PATH → WinError 2). 自动注入 HTTP(S)_PROXY 指向代理端口 (文档 §6.6).
     env_block_buf = None
@@ -1007,6 +1307,7 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
                 "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
                 "PATH",  # 覆盖 PATH 可劫持可执行解析
                 "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+                "JIUWENBOX_API_TOKEN",
             })
             _injected_keys = []
             _blocked_keys = []
@@ -1046,6 +1347,12 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
     startup.hStdInput = wintypes.HANDLE(stdin_fd)  # noqa: N815
     startup.hStdOutput = wintypes.HANDLE(stdout_fd)  # noqa: N815
     startup.hStdError = wintypes.HANDLE(stdout_fd)  # noqa: N815
+    # 受限 token 不设 lpDesktop 时 cmd/PowerShell 会 STATUS_DLL_INIT_FAILED.
+    # Codex 非 private 路径绑 Winsta0\Default.
+    # 直接赋 str: ctypes 转 LPWSTR 并挂生命周期到 startup. 不能 create_unicode_buffer
+    # (返回 c_wchar_Array_N, py3.13 拒绝数组→指针赋值).
+    if bind_default_desktop:
+        startup.lpDesktop = "Winsta0\\Default"  # noqa: N815
     pi = ProcessInfo()
 
     # env block 始终构造 (env=None 回退 os.environ), 故必须带 UNICODE flag,
@@ -1056,10 +1363,22 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
         | const.CREATE_UNICODE_ENVIRONMENT
     )
     cwd = workdir if workdir else None
+    # P2-18: subprocess.list2cmdline 按 MSVCRT argv 规则转义. 旧版 " ".join
+    # 只对含空格参数加外层双引号, command 形如
+    # ['bash','-lc','python -c "print("ok")"'] 时双引号被当边界 → SyntaxError.
+    import subprocess as _sp
+    image = _resolve_win_image_path(
+        str(command[0]) if command else "", env, workdir=cwd,
+    )
+    if image:
+        command[0] = image
+    cmd_line = _sp.list2cmdline(command)
+    # CreateProcessAsUserW 的 lpCommandLine 需可变 buffer (Windows 原地修改).
+    cmd_line_buf = ctypes.create_unicode_buffer(cmd_line)
 
     ok = advapi32.CreateProcessAsUserW(
         wintypes.HANDLE(restricted_token),
-        None,
+        image,
         cmd_line_buf,
         None, None,
         True,  # inherit handles
@@ -1070,24 +1389,15 @@ def _create_process_as_user(  # pylint: disable=huawei-too-many-arguments
     )
     if not ok:
         # 诊断: CreateProcessAsUserW 失败区分"PATH 找不到" vs "ACL 读不了" (WinError 2 常见).
-        # 打印 command[0]/PATH 片段/目标存在性+可读性, 经日志长连发回 box-server.
         _cmd0 = str(command[0]) if command else "<empty>"
         _path_val = env.get("PATH", "") if isinstance(env, dict) else ""
         _path_segs = (_path_val or "").split(os.pathsep)[:8]
-        import ntpath as _ntp
-        _resolved = None
-        for _seg in _path_segs:
-            if not _seg:
-                continue
-            _cand = _ntp.join(_seg, _cmd0)
-            if os.path.isfile(_cand):
-                _resolved = _cand
-                break
-        _exists = os.path.isfile(_cmd0)
-        _readable = os.access(_cmd0, os.R_OK) if _exists else False
+        _probe = image or _cmd0
+        _exists = os.path.isfile(_probe)
+        _readable = os.access(_probe, os.R_OK) if _exists else False
         _push_log(
             "ERROR",
-            f"CreateProcessAsUserW 失败 cmd0={_cmd0!r} resolved_in_PATH={_resolved!r} "
+            f"CreateProcessAsUserW 失败 cmd0={_cmd0!r} resolved_in_PATH={image!r} "
             f"cmd0_exists={_exists} cmd0_readable={_readable} "
             f"PATH_segs(8)={_path_segs}",
         )
@@ -1228,7 +1538,6 @@ def _handle_one_request(  # pylint: disable=huawei-too-many-arguments
     conn: Any,
     header: dict,
     req_type: str,
-    restricted_token: int | None,
     workspace: str,
     state: _WinRunnerState,
 ) -> None:
@@ -1245,7 +1554,7 @@ def _handle_one_request(  # pylint: disable=huawei-too-many-arguments
                 stdin_size = int(header.get("stdin_size", 0))
                 stdin_bytes = recv_frame(conn, MAX_STDIN_BYTES) if stdin_size > 0 else b""
                 _handle_exec_request(
-                    conn, header, restricted_token, workspace, stdin_bytes,
+                    conn, header, workspace, stdin_bytes,
                 )
             elif req_type == "write_file":
                 _handle_write_file_request(conn, header, conn)
@@ -1279,11 +1588,11 @@ def runner_main(argv: list[str]) -> int:
     """runner 入口 (运行在 jbx-sandbox 上下文, 由 broker 第一跳拉起).
 
     职责:
-      1. 创建 Write-Restricted Token.
+      1. 启动时给 \\\\.\\NUL 打用户 SID 兼容 ACE (不建长生命周期受限 token).
       2. 循环从 stdin 读长度前缀帧 (exec / write_file / read_file /
          list_dir / shutdown).
-      3. 对每个 exec 请求, 以受限 token CreateProcessAsUserW 起子命令,
-         收集 stdout/stderr/exit, 写回 stdout 帧.
+      3. 对每个 exec 请求按 write_cap_sids 建 WRITE_RESTRICTED token,
+         CreateProcessAsUserW 起子命令, 收集 stdout/stderr/exit.
     """
     import argparse
 
@@ -1317,22 +1626,8 @@ def runner_main(argv: list[str]) -> int:
                f"workspace={args.workspace} control_port={args.control_port}"
                f" local_log={_local_log_path}")
 
-    # 受限 token 当前未被 exec 消费 (exec 用 _get_runner_primary_token 起 child, 因受限 token
-    # 会让 child 0xC0000142). 保留构造为未来恢复双重写检查留底: 改 _handle_exec_request 内
-    # _self_token 取值回入参 restricted_token 即可. 构造失败降级 best-effort, 不杀 runner.
-    restricted_token: int | None = None
-    try:
-        restricted_token = _create_restricted_token()
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "_create_restricted_token 失败, 已弃用故不阻断 runner "
-            "(sandbox_id=%s)", args.sandbox_id, exc_info=True,
-        )
-        _push_log("WARNING",
-                  f"受限 token 构造失败但已弃用, 不阻断 runner "
-                  f"(sandbox_id={args.sandbox_id})")
-    if restricted_token is not None:
-        _push_log("INFO", f"restricted token 创建成功: handle={restricted_token}")
+    # NUL 兼容 ACE 只在启动做一次; 受限 token 改为每次 exec 按 write_cap_sids 创建.
+    _startup_allow_null_device()
 
     # TCP loopback 控制端口 (box-server 分配, 命令行参数传入). runner bind + listen,
     # box-server 每次 exec connect 一条新连接, 发一帧请求读一帧响应后 close.
@@ -1416,8 +1711,7 @@ def runner_main(argv: list[str]) -> int:
             # (对齐 Linux daemon 的 fork+execve 并发模型).
             worker = _threading.Thread(
                 target=_handle_one_request,
-                args=(conn, header, req_type, restricted_token,
-                       args.workspace, state),
+                args=(conn, header, req_type, args.workspace, state),
                 name=f"win-runner-worker",
                 daemon=True,
             )
@@ -1442,7 +1736,6 @@ def runner_main(argv: list[str]) -> int:
             except OSError:
                 pass
         kernel32 = get_kernel32()
-        kernel32.CloseHandle(wintypes.HANDLE(restricted_token))
         listener.close()
         # 关闭所有日志订阅连接, 通知订阅方 runner 已退出.
         with _log_sub_lock:
@@ -1725,8 +2018,16 @@ def _rewrite_cmd_builtins(command: list, env: dict[str, str] | None) -> None:
     )
 
 
-def _handle_exec_request(stream, header, restricted_token, workspace, stdin_bytes) -> None:
+def _handle_exec_request(stream, header, workspace, stdin_bytes) -> None:
     """处理 exec 请求: 起 child 子命令, 回传 stdout/stderr/exit. stdin_bytes 透传给子进程."""
+    if "write_cap_sids" not in header:
+        _send_error_response(stream, "exec requires write_cap_sids")
+        return
+    raw_caps = header.get("write_cap_sids")
+    if not isinstance(raw_caps, list):
+        _send_error_response(stream, "write_cap_sids must be a list")
+        return
+    cap_sids = [str(item) for item in raw_caps if item]
     command = header.get("command", [])
     if not command:
         _send_error_response(stream, "exec requires non-empty command")
@@ -1779,17 +2080,33 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
     except Exception as exc:  # noqa: BLE001 - Job 创建失败降级, 不阻断 exec
         _push_log("WARNING", f"exec ephemeral Job 创建失败, 超时将只杀 child: {exc}")
     try:
+        restricted_token = _create_restricted_token(cap_sids)
+    except Exception as exc:  # noqa: BLE001
+        _send_error_response(stream, f"restricted token failed: {exc}")
+        _push_log("ERROR", f"per-exec restricted token 创建失败: {exc}")
+        # 早退也要收干净: pipe 四个句柄 + ephemeral Job 都已建好.
+        for _h in (child_out_read, child_out_write, child_in_read, child_in_write):
+            try:
+                kernel32.CloseHandle(_h)
+            except Exception:  # noqa: BLE001
+                pass
+        if exec_job_handle:
+            try:
+                win_job.close_job(exec_job_handle)
+            except Exception:  # noqa: BLE001
+                pass
+        return
+    try:
         workdir = header.get("workdir")
         env = header.get("env")
-        # 用受限 token 起 child 会 0xC0000142 (desktop/全局对象机制硬限制, 非 ACL/env),
-        # 故 exec 用 runner 自身未受限 primary token. 代价: 失去双重写检查, 写控制只剩 ACL.
-        _self_token = _get_runner_primary_token()
+        _self_token = _duplicate_primary_token(int(restricted_token))
         try:
             pid, proc_handle = _create_process_as_user(
                 _self_token, list(command), env, workdir,
                 stdin_fd=int(child_in_read.value),
                 stdout_fd=int(child_out_write.value),
                 workspace=workspace,
+                bind_default_desktop=True,
             )
         finally:
             get_kernel32().CloseHandle(wintypes.HANDLE(_self_token))
@@ -1990,6 +2307,11 @@ def _handle_exec_request(stream, header, restricted_token, workspace, stdin_byte
             except Exception:  # noqa: BLE001
                 pass
             exec_job_handle = 0
+    finally:
+        try:
+            kernel32.CloseHandle(wintypes.HANDLE(restricted_token))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _handle_write_file_request(stream, header, stdin) -> None:

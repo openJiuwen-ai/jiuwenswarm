@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -63,14 +65,41 @@ def _sandbox_files_entry_path(entry: Any) -> str | None:
     return normalized["path"]
 
 
+def _is_windows_sandbox_platform(platform: str | None = None) -> bool:
+    """True when the sandbox host is Windows (``win32`` / ``win*``)."""
+    host = (platform if platform is not None else sys.platform).strip().lower()
+    return host.startswith("win")
+
+
+def _strip_trailing_path_sep(path: str) -> str:
+    """Strip trailing ``/`` or ``\\`` without collapsing a drive / POSIX root."""
+    text = str(path).strip()
+    if not text:
+        return text
+    stripped = text.rstrip("/\\")
+    if not stripped:
+        return "/"
+    if len(stripped) == 2 and stripped[1] == ":":
+        return stripped + "\\"
+    return stripped
+
+
+def _normalize_compare_path(path: str) -> str:
+    """Normalize a path for ancestor checks (slash-unified, casefold on Windows)."""
+    text = str(path).replace("\\", "/").rstrip("/") or "/"
+    return text.casefold() if sys.platform == "win32" else text
+
+
 def _is_strict_path_prefix(parent: str, child: str) -> bool:
     """Return True when ``parent`` is a strict directory ancestor of ``child``."""
-    parent_norm = parent.rstrip("/") or "/"
-    child_norm = child.rstrip("/") or "/"
+    parent_norm = _normalize_compare_path(parent)
+    child_norm = _normalize_compare_path(child)
     if parent_norm == child_norm:
         return False
     if parent_norm == "/":
         return child_norm != "/"
+    if len(parent_norm) == 2 and parent_norm.endswith(":"):
+        return child_norm.startswith(parent_norm + "/")
     return child_norm.startswith(parent_norm + "/")
 
 
@@ -391,55 +420,91 @@ def build_yuanrong_sandbox_status_view() -> dict[str, Any]:
     }
 
 
-def build_filesystem_policy(
-    files_runtime: dict[str, Any] | None,
-    *,
-    project_dir: str | Path | None = None,
-    is_code_agent: bool = False,
-    startup_mode: str | None = None,
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    """build jiuwenbox filesystem policy."""
-    del is_code_agent  # retained for caller compatibility
-    files_runtime = files_runtime or {}
-    validate_sandbox_files_runtime(files_runtime)
-    effective_startup_mode = (
-        startup_mode if startup_mode is not None else get_sandbox_startup_mode()
-    )
+@dataclass
+class _HostFsPlan:
+    """Platform-neutral sandbox file intents collected from runtime + auto mounts."""
 
+    workspace: str | None = None
+    rw_auto: list[str] = field(default_factory=list)
+    ro_auto: list[str] = field(default_factory=list)
+    user_rw: list[str] = field(default_factory=list)
+    user_ro: list[str] = field(default_factory=list)
+    upload_list: list[dict[str, str]] = field(default_factory=list)
+
+
+def _append_unique_path(target: list[str], path: str) -> None:
+    if path and path not in target:
+        target.append(path)
+
+
+def _collect_host_fs_plan(
+    files_runtime: dict[str, Any],
+    *,
+    project_dir: str | Path | None,
+    startup_mode: str,
+) -> _HostFsPlan:
+    """Resolve workspace / project / config / user allow-deny into a host path plan."""
+    plan = _HostFsPlan()
+
+    resolved_workspace = _resolve_workspace_dir()
+    if resolved_workspace is not None:
+        plan.workspace = str(resolved_workspace)
+        _append_unique_path(plan.rw_auto, plan.workspace)
+
+    resolved_project = _resolve_project_dir(project_dir)
+    if resolved_project is not None:
+        _append_unique_path(plan.rw_auto, str(resolved_project))
+
+    if startup_mode == "internal":
+        config_path = _resolve_config_ro_path()
+        if config_path is not None:
+            _append_unique_path(plan.ro_auto, str(config_path))
+
+    for entry in files_runtime.get("allow") or []:
+        normalized = _normalize_fs_entry(entry)
+        if normalized is None:
+            continue
+        path = _strip_trailing_path_sep(normalized["path"])
+        host = Path(path)
+        if not host.exists():
+            raise FileNotFoundError(
+                f"sandbox files.allow path does not exist on host: {path!r}"
+            )
+        _append_unique_path(plan.user_rw, path)
+
+    for entry in files_runtime.get("deny") or []:
+        normalized = _normalize_fs_entry(entry)
+        if normalized is None:
+            continue
+        path = _strip_trailing_path_sep(normalized["path"])
+        host = Path(path)
+        if not host.exists():
+            raise FileNotFoundError(
+                f"sandbox files.deny path does not exist on host: {path!r}"
+            )
+        _append_unique_path(plan.user_ro, path)
+
+    return plan
+
+
+def _emit_linux_filesystem_policy(plan: _HostFsPlan) -> dict[str, Any]:
+    """Linux / bwrap policy: identity bind mounts + read_write / read_only patches."""
     allow_files: list[dict[str, Any]] = []
     allow_dirs: list[dict[str, Any]] = []
     bind_mounts: list[dict[str, Any]] = []
-    upload_list: list[dict[str, str]] = []
     writable_paths: list[str] = []
     read_write_promote: list[str] = []
     read_only_promote: list[str] = []
 
-    def _record_rw_bind(
-        host_path: str,
-        sandbox_path: str,
-        *,
-        is_dir: bool,
-        permissions: str,
-    ) -> None:
-        """Register an rw bind mount (used by intrinsic / project-dir paths).
+    def _record_rw_bind(host_path: str, sandbox_path: str) -> None:
+        """Register an rw bind mount (intrinsic / project-dir / user allow).
 
         We deliberately do NOT also append the path to ``allow_files`` /
         ``allow_dirs``: jiuwenbox's policy validator rejects any
         ``bind_mount.sandbox_path`` that also appears in ``filesystem_policy
         .files`` (or ``.directories``) with
-        ``"Filesystem file path '<x>' conflicts with a bind mount"``. Earlier
-        revisions duplicated bind-mounted paths into the allow lists so that
-        ``/sandbox status`` could read "what's writable" from a single
-        place, but that view is now computed independently by
-        :func:`list_effective_sandbox_files`, so the redundancy serves no
-        purpose and actively breaks sandbox creation in mount mode.
-
-        ``permissions`` is intentionally unused for the same reason -- bind
-        mounts carry their own mode; the previous ``permissions`` value is
-        kept in the signature so the callers (intrinsic / intrinsic-dir /
-        project-dir) stay symmetric and self-documenting at the call site.
+        ``"Filesystem file path '<x>' conflicts with a bind mount"``.
         """
-        del permissions  # retained on the signature for caller-side symmetry
         bind_mounts.append({
             "host_path": host_path,
             "sandbox_path": sandbox_path,
@@ -463,33 +528,8 @@ def build_filesystem_policy(
 
         Used for resources the sandbox must be able to *read* but never
         write — currently only :func:`get_config_file` (sensitive
-        credentials). The intent is distinct from :func:`_record_user_deny_bind`,
-        which represents a user-driven ``files.deny`` entry where the
-        underlying host path is normally rw and deny is just an extra
-        constraint. Here the host path is *intrinsically* read-only from
-        the sandbox's perspective and there is no user-side rw semantics
-        to preserve.
-
-        The built-in skills directory is intentionally **not** routed
-        through this helper; it is rw-mountable so the sandboxed agent
-        can also edit / install skills. See the call site in
-        :func:`build_filesystem_policy`.
-
-        Implementation: ``mode=ro`` bind + ``read_only_promote`` belt-and-
-        suspenders.
-
-        - ``mode=ro`` makes the first-pass mount land in bwrap's
-          ``--ro-bind`` stage, which is the natural and self-documenting
-          encoding for "ro intrinsic resource".
-        - The :data:`read_only_promote` entry survives the case where a
-          later rw parent bind (e.g. a user-configured ``files.allow`` on
-          the parent directory of ``config.yaml``) overlays the same
-          subtree and silently upgrades the mount back to rw. bwrap's
-          ``created_paths`` set is the union of ro_binds + rw_binds
-          destinations (see ``bwrap.py``), so the trailing
-          ``--remount-ro <path>`` is guaranteed to fire on this dst and
-          flip it back to read-only regardless of which stage owned the
-          mount last.
+        credentials). Implementation: ``mode=ro`` bind + ``read_only_promote``
+        so a later rw parent bind cannot silently upgrade the mount.
         """
         bind_mounts.append({
             "host_path": host_path,
@@ -499,60 +539,15 @@ def build_filesystem_policy(
         if sandbox_path not in read_only_promote:
             read_only_promote.append(sandbox_path)
 
-    mounted_rw_paths: set[str] = set()
-
-    def _mount_rw_dir(resolved: Path) -> None:
-        path_str = str(resolved)
-        if path_str in mounted_rw_paths:
-            return
-        _record_rw_bind(path_str, path_str, is_dir=True, permissions="0777")
-        mounted_rw_paths.add(path_str)
-
-    resolved_workspace = _resolve_workspace_dir()
-    if resolved_workspace is not None:
-        _mount_rw_dir(resolved_workspace)
-
-    resolved_project = _resolve_project_dir(project_dir)
-    if resolved_project is not None:
-        _mount_rw_dir(resolved_project)
-
-    if effective_startup_mode == "internal":
-        config_path = _resolve_config_ro_path()
-        if config_path is not None:
-            config_str = str(config_path)
-            _record_ro_resource_bind(config_str, config_str)
-
-    for entry in files_runtime.get("allow") or []:
-        normalized = _normalize_fs_entry(entry)
-        if normalized is None:
-            continue
-        path = normalized["path"].rstrip("/") or "/"
-        normalized["path"] = path
-        host = Path(path)
-        if not host.exists():
-            raise FileNotFoundError(
-                f"sandbox files.allow path does not exist on host: {path!r}"
-            )
-        _record_rw_bind(
-            path,
-            path,
-            is_dir=host.is_dir(),
-            permissions="0666",
-        )
+    for path in plan.rw_auto:
+        _record_rw_bind(path, path)
+    for path in plan.ro_auto:
+        _record_ro_resource_bind(path, path)
+    for path in plan.user_rw:
+        _record_rw_bind(path, path)
         if path not in read_write_promote:
             read_write_promote.append(path)
-
-    for entry in files_runtime.get("deny") or []:
-        normalized = _normalize_fs_entry(entry)
-        if normalized is None:
-            continue
-        path = normalized["path"].rstrip("/") or "/"
-        normalized["path"] = path
-        host = Path(path)
-        if not host.exists():
-            raise FileNotFoundError(
-                f"sandbox files.deny path does not exist on host: {path!r}"
-            )
+    for path in plan.user_ro:
         _record_user_deny_bind(path, path)
 
     fs_policy: dict[str, Any] = {
@@ -565,8 +560,69 @@ def build_filesystem_policy(
         fs_policy["read_write"] = read_write_promote
     if read_only_promote:
         fs_policy["read_only"] = read_only_promote
+    return {"filesystem_policy": fs_policy}
 
-    return {"filesystem_policy": fs_policy}, upload_list
+
+def _resolve_runtime_venv_dir() -> str | None:
+    """Call pip_env directly; do not read JIUWENBOX_VENV_DIR from os.environ."""
+    try:
+        from jiuwenswarm.server.runtime.pip_env import ensure_runtime_venv
+
+        return str(ensure_runtime_venv())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[sysop_builder] ensure_runtime_venv failed: %s", exc)
+        return None
+
+
+def _emit_windows_filesystem_policy(plan: _HostFsPlan) -> dict[str, Any]:
+    """Windows ACL policy fragment merged onto ``windows-policy.yaml`` (append).
+
+    Emits create-time ``workspace`` (agent workspace, project, runtime venv).
+    Those roots get write ACE and are always present in the restricted token.
+    ``deny_write`` is left unset so the bundled ``windows-policy.yaml`` empty
+    list is not replaced with home/credential carve-outs — those are enforced
+    by jiuwenbox ``filter_write_roots``.
+    """
+    workspace: list[str] = []
+    for path in plan.rw_auto:
+        _append_unique_path(workspace, path)
+    venv = _resolve_runtime_venv_dir()
+    if venv:
+        _append_unique_path(workspace, venv)
+    if not workspace:
+        return {}
+    return {"windows": {"filesystem": {"workspace": workspace}}}
+
+
+def build_filesystem_policy(
+    files_runtime: dict[str, Any] | None,
+    *,
+    project_dir: str | Path | None = None,
+    is_code_agent: bool = False,
+    startup_mode: str | None = None,
+    platform: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Build the per-sandbox policy fragment sent to jiuwenbox (policy_mode=append).
+
+    Linux emits ``filesystem_policy`` bind mounts for bwrap/landlock.
+    Windows emits ``windows.filesystem.workspace`` (workspace, project,
+    venv) and does not set ``deny_write``.
+    ``platform`` overrides ``sys.platform`` (tests).
+    """
+    del is_code_agent  # retained for caller compatibility
+    files_runtime = files_runtime or {}
+    validate_sandbox_files_runtime(files_runtime)
+    effective_startup_mode = (
+        startup_mode if startup_mode is not None else get_sandbox_startup_mode()
+    )
+    plan = _collect_host_fs_plan(
+        files_runtime,
+        project_dir=project_dir,
+        startup_mode=effective_startup_mode,
+    )
+    if _is_windows_sandbox_platform(platform):
+        return _emit_windows_filesystem_policy(plan), plan.upload_list
+    return _emit_linux_filesystem_policy(plan), plan.upload_list
 
 
 def create_sandbox_sysop_card(
@@ -639,6 +695,18 @@ def create_sandbox_sysop_card(
             "preserve_file_sharing_mode": _PRESERVE_FILE_SHARING_MODE,
             "preserve_files_upload": upload_list,
         }
+        win_fs = (
+            (policy.get("windows") or {}).get("filesystem")
+            if isinstance(policy, dict)
+            else None
+        )
+        if isinstance(win_fs, dict):
+            extra_params["access_extra_paths"] = [
+                str(p) for p in (
+                    (win_fs.get("workspace") or [])
+                    + (win_fs.get("allow_write") or [])
+                ) if p
+            ]
 
         if idle_check_interval is not None:
             extra_params["idle_check_interval"] = idle_check_interval
@@ -663,6 +731,12 @@ def create_sandbox_sysop_card(
         )
 
         fs_policy = policy.get("filesystem_policy", {}) if isinstance(policy, dict) else {}
+        if not isinstance(fs_policy, dict):
+            fs_policy = {}
+        windows = policy.get("windows") if isinstance(policy, dict) else None
+        win_fs = windows.get("filesystem") if isinstance(windows, dict) else {}
+        if not isinstance(win_fs, dict):
+            win_fs = {}
         logger.info(
             "[sysop_builder] sandbox SysOperationCard created:\n"
             "  base_url=%s sandbox_type=%s\n"
@@ -670,6 +744,10 @@ def create_sandbox_sysop_card(
             "  idle_ttl=%s idle_check_interval=%s\n"
             "  preserve_file_sharing_mode=%s\n"
             "  excluded_commands(%d)=%s\n"
+            "  windows.filesystem.workspace(%d)=%s\n"
+            "  windows.filesystem.allow_write(%d)=%s\n"
+            "  windows.filesystem.deny_write(%d)=%s\n"
+            "  windows.filesystem.allow_read(%d)=%s\n"
             "  filesystem_policy.files(%d)=%s\n"
             "  filesystem_policy.directories(%d)=%s\n"
             "  filesystem_policy.bind_mounts(%d)=%s\n"
@@ -685,6 +763,14 @@ def create_sandbox_sysop_card(
             _PRESERVE_FILE_SHARING_MODE,
             len(extra_params["excluded_commands"]),
             extra_params["excluded_commands"] or "[]",
+            len(win_fs.get("workspace") or []),
+            win_fs.get("workspace") or [],
+            len(win_fs.get("allow_write") or []),
+            win_fs.get("allow_write") or [],
+            len(win_fs.get("deny_write") or []),
+            win_fs.get("deny_write") or [],
+            len(win_fs.get("allow_read") or []),
+            win_fs.get("allow_read") or [],
             len(fs_policy.get("files") or []),
             fs_policy.get("files") or [],
             len(fs_policy.get("directories") or []),
@@ -788,9 +874,60 @@ def _filesystem_policy_to_display_entries(
     return {"allow_write": allow, "deny_write": deny}
 
 
+def _windows_filesystem_to_display_entries(
+    win_fs: dict[str, Any],
+) -> dict[str, list[dict[str, str]]]:
+    """Convert ``windows.filesystem`` ACL lists into ``/sandbox`` display entries."""
+    allow: list[dict[str, str]] = []
+    deny: list[dict[str, str]] = []
+
+    def _display_entry(path: str, access: str) -> dict[str, str]:
+        kind = _classify_host_kind(path)
+        if kind == "directory" and path not in ("/",):
+            display_path = path if path.endswith(("/", "\\")) else path + "/"
+        else:
+            display_path = path
+        return {"path": display_path, "access": access, "kind": kind}
+
+    for raw in list(win_fs.get("workspace") or []) + list(win_fs.get("allow_write") or []):
+        path = str(raw).strip()
+        if path:
+            _append_unique(allow, _display_entry(path, "rw"))
+    deny_seen: set[str] = set()
+    for raw in win_fs.get("deny_write") or []:
+        path = str(raw).strip()
+        if not path:
+            continue
+        _append_unique(deny, _display_entry(path, "ro"))
+        deny_seen.add(path)
+    allow_write_paths = {
+        str(item).strip()
+        for item in list(win_fs.get("workspace") or []) + list(win_fs.get("allow_write") or [])
+        if str(item).strip()
+    }
+    for raw in win_fs.get("allow_read") or []:
+        path = str(raw).strip()
+        if not path or path in allow_write_paths or path in deny_seen:
+            continue
+        _append_unique(deny, _display_entry(path, "ro"))
+    return {"allow_write": allow, "deny_write": deny}
+
+
 def effective_files_from_policy(policy: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
     """Derive ``/sandbox`` display entries from a cached launcher policy dict."""
-    fs_policy = policy.get("filesystem_policy") if isinstance(policy, dict) else {}
+    if not isinstance(policy, dict):
+        return {"allow_write": [], "deny_write": []}
+    windows = policy.get("windows")
+    if isinstance(windows, dict):
+        win_fs = windows.get("filesystem")
+        if isinstance(win_fs, dict) and (
+            win_fs.get("workspace")
+            or win_fs.get("allow_write")
+            or win_fs.get("deny_write")
+            or win_fs.get("allow_read")
+        ):
+            return _windows_filesystem_to_display_entries(win_fs)
+    fs_policy = policy.get("filesystem_policy")
     if not isinstance(fs_policy, dict):
         fs_policy = {}
     return _filesystem_policy_to_display_entries(fs_policy)

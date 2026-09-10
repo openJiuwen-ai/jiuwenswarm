@@ -18,6 +18,11 @@ from pydantic import ValidationError
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox import __version__
+from jiuwenbox.server.access import (
+    AccessAclError,
+    AccessDeniedError,
+    AccessExtraValidationError,
+)
 from jiuwenbox.server.auth import BearerTokenAuthMiddleware, get_configured_token
 from jiuwenbox.server.audit_logger import AuditLogger
 from jiuwenbox.models.sandbox import InvalidJobIdError, InvalidSandboxIdError
@@ -246,6 +251,30 @@ def _chmod_uds_socket_if_any() -> None:
         logger.info("UDS socket %s chmod to %s", uds_path, mode_str)
 
 
+def _assert_listen_port_outside_proxy_range(proxy_start: int, proxy_end: int) -> None:
+    """Refuse to start if box-server listens inside the win_proxy port range.
+
+    Otherwise sandboxed code can CONNECT to the API through the proxy even
+    after loopback hard-deny is bypassed by a future policy mistake.
+    """
+    from jiuwenbox.server.launcher import DEFAULT_LISTEN, ENV_LISTEN, parse_listen
+
+    uri = os.environ.get(ENV_LISTEN) or DEFAULT_LISTEN
+    try:
+        spec = parse_listen(uri)
+    except Exception:  # noqa: BLE001
+        logger.warning("cannot parse %s=%r for proxy-range assertion", ENV_LISTEN, uri)
+        return
+    if spec[0] != "http":
+        return
+    listen_port = spec[2]
+    if proxy_start <= listen_port <= proxy_end:
+        raise RuntimeError(
+            f"box-server listen port {listen_port} is inside windows.proxy "
+            f"port range {proxy_start}-{proxy_end}; refuse to start"
+        )
+
+
 @asynccontextmanager
 async def lifespan(_application: FastAPI):
     global _sandbox_manager, _proxy_manager, _proxy_only_mode
@@ -284,11 +313,6 @@ async def lifespan(_application: FastAPI):
             # (review MAJOR #7: WFP Permit 端口必须与 win_proxy 监听端口一致).
             try:
                 _root_policy = policy_reader.load_policy()
-                # preinstall = read_acl_preinstall + tool_paths 展开, 用
-                # collect_preinstall_paths 与 _create_windows (process.py) 算同一
-                # 集合, 保证 lifespan install 记录的 REG_VALUE_PREINSTALLED_PATHS
-                # 和后续创建沙箱时比对的集合一致 → 不因 tool_paths "新增" 而每次
-                # 创建沙箱都弹 UAC (实测问题).
                 _preinstall = win_setup.collect_preinstall_paths(_root_policy)
                 _proxy_start = _root_policy.windows.proxy.port_range_start
                 _proxy_end = _root_policy.windows.proxy.port_range_end
@@ -328,23 +352,15 @@ async def lifespan(_application: FastAPI):
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("启动取沙箱 TOKEN_GROUPS 失败 (非致命)", exc_info=True)
-            # 启动时差集清理: 清掉历史 apply 过但当前 policy 不再包含的路径上的残留 ACE,
-            # 避免配置变更 (路径从 allow_read 移除) 后旧 ACE 残留导致配置不生效
+            # 启动不差集撤销: 复用上次盘上的沙箱 ACE, 避免 extra.paths / 写根
+            # 每次开机再整树授权. 根 ACE 已在时 apply 会跳过传播.
+            # 根 policy 的 filesystem 白/黑名单后台施加, 不挡首次 create.
             try:
-                _stale_sid = win_setup.get_sandbox_user_sid()
-                _stale_policy_paths: list[str] = []
-                _stale_policy_paths += list(_root_policy.windows.filesystem.allow_read or [])
-                _stale_policy_paths += list(_root_policy.windows.filesystem.deny_read or [])
-                _stale_policy_paths += list(_root_policy.windows.filesystem.allow_write or [])
-                _stale_policy_paths += list(_root_policy.windows.filesystem.deny_write or [])
-                await asyncio.to_thread(
-                    win_setup.revoke_stale_acl,
-                    _stale_policy_paths,
-                    "",
-                    _stale_sid,
-                )
+                win_setup.schedule_root_policy_acl(_root_policy)
             except Exception:  # noqa: BLE001
-                logger.debug("启动差集清理失败 (非致命)", exc_info=True)
+                logger.exception(
+                    "启动施加根 policy ACL 失败; 首次创建沙箱时将回退补做",
+                )
             # 启动出站代理 (egress 规则取根 policy 的 windows.network; 基底+副本已合并).
             try:
                 root_policy = policy_reader.load_policy()
@@ -353,6 +369,10 @@ async def lifespan(_application: FastAPI):
                 # disable_all 总开关 (officeAce sandbox.network.set): True 时 EgressFilter
                 # 短路拒绝所有出站, 用户 allow/blocked_domains 原样保留 (关掉即恢复).
                 net_disable_all = bool(root_policy.windows.network.disable_all)
+                _assert_listen_port_outside_proxy_range(
+                    root_policy.windows.proxy.port_range_start,
+                    root_policy.windows.proxy.port_range_end,
+                )
                 _win_proxy_stop = asyncio.Event()
                 _win_proxy_task, _win_proxy_stop = await win_proxy.serve_windows_proxy(
                     egress=egress,
@@ -528,6 +548,20 @@ def create_app() -> FastAPI:
         # sandbox lifecycle / state issues.
         return JSONResponse(status_code=403, content={"error": str(exc)})
 
+    @application.exception_handler(AccessDeniedError)
+    async def access_denied_handler(request: Request, exc: AccessDeniedError):
+        return JSONResponse(status_code=403, content={"error": str(exc)})
+
+    @application.exception_handler(AccessExtraValidationError)
+    async def access_extra_validation_handler(
+        request: Request, exc: AccessExtraValidationError,
+    ):
+        return JSONResponse(status_code=422, content={"error": str(exc)})
+
+    @application.exception_handler(AccessAclError)
+    async def access_acl_error_handler(request: Request, exc: AccessAclError):
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
     @application.exception_handler(SandboxConflictError)
     async def conflict_error_handler(request: Request, exc: SandboxConflictError):
         return JSONResponse(status_code=409, content={"error": str(exc)})
@@ -621,6 +655,7 @@ def create_app() -> FastAPI:
             landlock_supported=detect_landlock_abi() > 0,
             sandboxes_active=active,
             windows_supported=windows_supported,
+            platform="windows" if sys.platform == "win32" else "linux",
         )
 
     from jiuwenbox.server.routes.mcp import mcp_server
