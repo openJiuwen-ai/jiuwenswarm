@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import re
@@ -14,9 +15,10 @@ import tarfile
 import tempfile
 import time
 import zipfile
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 
@@ -31,15 +33,19 @@ from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
 )
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
     HubAssetDetail,
+    HubAssetKind,
     HubAssetPort,
     HubAssetQuery,
     HubAssetSummary,
-    HubAssetKind,
+    HubDownloadRequest,
     HubSearchRequest,
     create_default_hub_asset_port,
 )
 from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
     HubInstallStateStore,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
+    HubPackageDownloader,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,6 +69,15 @@ _AVATAR_MIME = {
 _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
+_HUB_PREVIEW_ARCHIVE_LIMIT = 8
+
+
+class _HubPreviewArchive(NamedTuple):
+    body: bytes
+    package_root: str
+
+
+_HUB_PREVIEW_ARCHIVES: OrderedDict[tuple[str, str, str], _HubPreviewArchive] = OrderedDict()
 
 
 def _reject_package_name(name: Any, kind: str) -> str:
@@ -881,14 +896,9 @@ def _validate_package_manifest(
     return candidate
 
 
-def _normalize_hub_equipment_manifest(package_root: Path, *, package_type: str) -> None:
-    """Translate Hub manifest aliases into Jiuwenswarm's canonical schema."""
-    manifest = _read_package_manifest(package_root)
-    if manifest is None:
-        raise ValueError(
-            f"{package_type} package missing/corrupt manifest.json: {package_root.name}"
-        )
-
+def _canonical_hub_manifest(manifest: dict, *, package_type: str) -> tuple[dict, bool]:
+    """Copy Hub manifest aliases into Jiuwenswarm's canonical schema."""
+    normalized = dict(manifest)
     changed = False
     aliases = {
         "packageType": "package_type",
@@ -898,23 +908,33 @@ def _normalize_hub_equipment_manifest(package_root: Path, *, package_type: str) 
         "quickInputs": "quick_inputs",
     }
     for hub_field, canonical_field in aliases.items():
-        if canonical_field not in manifest and hub_field in manifest:
-            manifest[canonical_field] = manifest[hub_field]
+        if canonical_field not in normalized and hub_field in normalized:
+            normalized[canonical_field] = normalized[hub_field]
             changed = True
 
     if package_type == "agent_template":
-        agent_card = manifest.get("agentCard")
+        agent_card = normalized.get("agentCard")
         if isinstance(agent_card, dict):
-            if "name" not in manifest and "id" in agent_card:
-                manifest["name"] = agent_card["id"]
+            if "name" not in normalized and "id" in agent_card:
+                normalized["name"] = agent_card["id"]
                 changed = True
-            if "description" not in manifest and "description" in agent_card:
-                manifest["description"] = agent_card["description"]
+            if "description" not in normalized and "description" in agent_card:
+                normalized["description"] = agent_card["description"]
                 changed = True
+    return normalized, changed
 
+
+def _normalize_hub_equipment_manifest(package_root: Path, *, package_type: str) -> None:
+    """Translate Hub manifest aliases into Jiuwenswarm's canonical schema."""
+    manifest = _read_package_manifest(package_root)
+    if manifest is None:
+        raise ValueError(
+            f"{package_type} package missing/corrupt manifest.json: {package_root.name}"
+        )
+    normalized, changed = _canonical_hub_manifest(manifest, package_type=package_type)
     if changed:
         (package_root / "manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(normalized, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -1043,6 +1063,39 @@ def _build_file_tree(directory: Path, root: Path) -> list[dict]:
                     {"path": rel, "type": "file", "size": entry.stat().st_size}
                 )
     return result
+
+
+def _nest_preview_tree(entries: list[tuple[str, int]]) -> list[dict]:
+    """Build the preview tree JSON from package-relative files."""
+    root: dict[str, Any] = {}
+    for rel, size in entries:
+        if not _is_previewable_file(rel):
+            continue
+        node = root
+        parts = rel.split("/")
+        for part in parts[:-1]:
+            child = node.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                node[part] = child
+            node = child
+        node[parts[-1]] = size
+
+    def walk(node: dict[str, Any], prefix: str) -> list[dict]:
+        dirs: list[dict] = []
+        files: list[dict] = []
+        for name in sorted(node):
+            value = node[name]
+            path = f"{prefix}{name}"
+            if isinstance(value, dict):
+                children = walk(value, path + "/")
+                if children:
+                    dirs.append({"path": path + "/", "type": "dir", "children": children})
+            else:
+                files.append({"path": path, "type": "file", "size": value})
+        return dirs + files
+
+    return walk(root, "")
 
 
 def _reject_preview_path_symlink(pkg_dir: Path, rel: str) -> Path:
@@ -1333,6 +1386,7 @@ async def _list_equipment_with_hub(
     params: dict | None,
     *,
     hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> list[dict]:
     hub_asset_kind = _hub_asset_kind(kind)
     local_cards = (
@@ -1398,18 +1452,24 @@ async def _list_equipment_with_hub(
 
 
 async def list_agent_templates_with_hub(
-    params: dict | None = None, *, hub_port: HubAssetPort | None = None
+    params: dict | None = None,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> list[dict]:
     return await _list_equipment_with_hub(
-        _AGENT_TEMPLATE_KIND, params, hub_port=hub_port
+        _AGENT_TEMPLATE_KIND, params, hub_port=hub_port, downloader=downloader
     )
 
 
 async def list_plugin_packages_with_hub(
-    params: dict | None = None, *, hub_port: HubAssetPort | None = None
+    params: dict | None = None,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> list[dict]:
     return await _list_equipment_with_hub(
-        _PLUGIN_PACKAGE_KIND, params, hub_port=hub_port
+        _PLUGIN_PACKAGE_KIND, params, hub_port=hub_port, downloader=downloader
     )
 
 
@@ -1686,7 +1746,11 @@ def _hub_detail_card(
 
 
 async def _show_equipment_with_hub(
-    kind: str, name: str, *, hub_port: HubAssetPort | None = None
+    kind: str,
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
 ) -> dict | None:
     hub_asset_kind = _hub_asset_kind(kind)
     state_store = _hub_install_state_store(kind)
@@ -1730,18 +1794,18 @@ async def _show_equipment_with_hub(
 
 
 async def show_agent_template_with_hub(
-    name: str, *, hub_port: HubAssetPort | None = None
+    name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
     return await _show_equipment_with_hub(
-        _AGENT_TEMPLATE_KIND, name, hub_port=hub_port
+        _AGENT_TEMPLATE_KIND, name, hub_port=hub_port, downloader=downloader
     )
 
 
 async def show_plugin_package_with_hub(
-    name: str, *, hub_port: HubAssetPort | None = None
+    name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
 ) -> dict | None:
     return await _show_equipment_with_hub(
-        _PLUGIN_PACKAGE_KIND, name, hub_port=hub_port
+        _PLUGIN_PACKAGE_KIND, name, hub_port=hub_port, downloader=downloader
     )
 
 
@@ -2034,15 +2098,238 @@ def _agent_template_preview_dir(name: str) -> Path:
     return pkg_dir
 
 
-def list_agent_template_files(name: str) -> list[dict]:
-    """Return the previewable file tree for one agent_template package."""
-    pkg_dir = _agent_template_preview_dir(name)
-    return _build_file_tree(pkg_dir, pkg_dir)
+def _clear_hub_preview_archives() -> None:
+    """Drop the in-process Hub preview ZIP cache."""
+    _HUB_PREVIEW_ARCHIVES.clear()
 
 
-def read_agent_template_file(name: str, rel_path: str) -> dict:
-    """Read one previewable file from an agent_template package."""
-    pkg_dir = _agent_template_preview_dir(name)
+def _store_hub_preview_archive(
+    key: tuple[str, str, str], archive: _HubPreviewArchive
+) -> _HubPreviewArchive:
+    _HUB_PREVIEW_ARCHIVES.pop(key, None)
+    _HUB_PREVIEW_ARCHIVES[key] = archive
+    while len(_HUB_PREVIEW_ARCHIVES) > _HUB_PREVIEW_ARCHIVE_LIMIT:
+        _HUB_PREVIEW_ARCHIVES.popitem(last=False)
+    return archive
+
+
+def _zip_package_root(file_paths: list[PurePosixPath], kind_label: str) -> PurePosixPath:
+    """Return the package root inside a ZIP: this archive, or exactly one child folder."""
+    if any(path == PurePosixPath("manifest.json") for path in file_paths):
+        return PurePosixPath()
+    candidates = [
+        path.parts[0]
+        for path in file_paths
+        if len(path.parts) == 2 and path.name == "manifest.json"
+    ]
+    unique = list(dict.fromkeys(candidates))
+    if len(unique) != 1:
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+    return PurePosixPath(unique[0])
+
+
+def _zip_info_for_relative(
+    members: list[tuple[zipfile.ZipInfo, PurePosixPath]], relative: PurePosixPath
+) -> zipfile.ZipInfo:
+    wanted = relative.as_posix()
+    for info, path in members:
+        if path.as_posix() == wanted and not info.is_dir():
+            return info
+    raise ValueError(f"file not found: {wanted}")
+
+
+def _inspect_hub_preview_zip(
+    body: bytes, *, kind_label: str, package_type: str
+) -> str:
+    """Validate a Hub ZIP and return the package-root prefix inside it."""
+    if not body.startswith(b"PK"):
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+    try:
+        with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+            members = HubPackageDownloader.validated_members(archive)
+            files = [relative for info, relative in members if not info.is_dir()]
+            package_root = _zip_package_root(files, kind_label)
+            manifest_path = (
+                package_root / "manifest.json"
+                if package_root.parts
+                else PurePosixPath("manifest.json")
+            )
+            info = _zip_info_for_relative(members, manifest_path)
+            raw = archive.read(info)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json") from exc
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            f"{kind_label} package missing/corrupt manifest.json"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+    canonical, _changed = _canonical_hub_manifest(parsed, package_type=package_type)
+    declared = canonical.get("package_type")
+    if declared != package_type:
+        label = package_root.name if package_root.parts else kind_label
+        raise ValueError(
+            f"{kind_label} package wrong package_type: {label} "
+            f"(expected {package_type}, got {declared!r})"
+        )
+    return "" if not package_root.parts else package_root.as_posix()
+
+
+def _package_relative_from_zip(
+    relative: PurePosixPath, package_root: PurePosixPath
+) -> str | None:
+    if not package_root.parts:
+        rel = relative.as_posix()
+        return None if rel in {".", ""} else rel
+    try:
+        stripped = relative.relative_to(package_root)
+    except ValueError:
+        return None
+    rel = stripped.as_posix()
+    if rel in {".", ""}:
+        return None
+    return rel
+
+
+def _build_file_tree_from_zip(body: bytes, package_root: str) -> list[dict]:
+    root = PurePosixPath(package_root) if package_root else PurePosixPath()
+    with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+        members = HubPackageDownloader.validated_members(archive)
+        entries: list[tuple[str, int]] = []
+        for info, relative in members:
+            if info.is_dir():
+                continue
+            rel = _package_relative_from_zip(relative, root)
+            if rel is None:
+                continue
+            entries.append((rel, info.file_size))
+    return _nest_preview_tree(entries)
+
+
+def _read_previewable_file_from_zip(
+    body: bytes, package_root: str, rel_path: str
+) -> dict:
+    rel = str(rel_path or "").strip().replace("\\", "/")
+    if not _is_previewable_file(rel):
+        raise ValueError(f"file not previewable: {rel}")
+    relative = PurePosixPath(rel)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise ValueError(f"path escapes package: {rel}")
+    root = PurePosixPath(package_root) if package_root else PurePosixPath()
+    member = root / relative if root.parts else relative
+    with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+        members = HubPackageDownloader.validated_members(archive)
+        try:
+            info = _zip_info_for_relative(members, member)
+        except ValueError as exc:
+            raise ValueError(f"file not found: {rel}") from exc
+        mode = info.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"symlink not allowed: {rel}")
+        if info.file_size > _MAX_PREVIEW_FILE_BYTES:
+            raise ValueError(f"file too large: {rel} ({info.file_size} bytes)")
+        data = archive.read(info)
+    size = len(data)
+    if size > _MAX_PREVIEW_FILE_BYTES:
+        raise ValueError(f"file too large: {rel} ({size} bytes)")
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError:
+        content = f"[二进制文件，大小 {size} bytes]"
+    return {"path": rel, "content": content}
+
+
+async def _download_hub_preview_bytes(downloader: Any, artifact: Any) -> bytes:
+    download_bytes = getattr(downloader, "download_bytes", None)
+    if not callable(download_bytes):
+        raise ValueError("Hub preview downloader cannot provide ZIP bytes")
+    body = await download_bytes(artifact)
+    if not isinstance(body, (bytes, bytearray)):
+        raise ValueError("Hub preview download did not return bytes")
+    return bytes(body)
+
+
+async def _load_hub_preview_archive(
+    kind: str,
+    identifier: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> _HubPreviewArchive:
+    """Download a Hub package ZIP for preview without installing or extracting it."""
+    hub_asset_kind = _hub_asset_kind(kind)
+    kind_label = hub_asset_kind
+    package_type = hub_asset_kind
+    asset_id = _reject_package_name(identifier, kind_label)
+    port = hub_port or create_default_hub_asset_port()
+    detail = await port.query_asset(
+        HubAssetQuery(kind=hub_asset_kind, asset_id=asset_id)
+    )
+    if detail.kind != hub_asset_kind:
+        raise ValueError(f"Hub package type mismatch: {asset_id}")
+    if detail.asset_id != asset_id:
+        raise ValueError(
+            f"Hub asset id mismatch: expected {asset_id!r}, got {detail.asset_id!r}"
+        )
+    version = str(detail.version or "").strip()
+    if not version:
+        raise ValueError(f"Hub package has no public version: {asset_id}")
+    cache_key = (kind, asset_id, version)
+    cached = _HUB_PREVIEW_ARCHIVES.get(cache_key)
+    if cached is not None:
+        _HUB_PREVIEW_ARCHIVES.move_to_end(cache_key)
+        return cached
+
+    artifact = await port.resolve_download(
+        HubDownloadRequest(kind=hub_asset_kind, asset_id=asset_id, version=version)
+    )
+    if artifact.kind != hub_asset_kind:
+        raise ValueError(f"Hub artifact type mismatch: {asset_id}")
+    if artifact.asset_id != asset_id:
+        raise ValueError(
+            f"Hub artifact asset id mismatch: expected {asset_id!r}, "
+            f"got {artifact.asset_id!r}"
+        )
+    if artifact.version != version:
+        raise ValueError(
+            f"Hub artifact version mismatch: expected {version!r}, "
+            f"got {artifact.version!r}"
+        )
+
+    package_downloader = downloader or HubPackageDownloader()
+    body = await _download_hub_preview_bytes(package_downloader, artifact)
+    package_root = _inspect_hub_preview_zip(
+        body, kind_label=kind_label, package_type=package_type
+    )
+    return _store_hub_preview_archive(
+        cache_key, _HubPreviewArchive(body=body, package_root=package_root)
+    )
+
+
+async def _resolve_agent_template_preview_with_hub(
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> tuple[Path | None, _HubPreviewArchive | None]:
+    """Resolve local expert files, or a Hub preview ZIP if the package is not installed."""
+    try:
+        return _agent_template_preview_dir(name), None
+    except ValueError as exc:
+        if "package not found" not in str(exc):
+            raise
+        archive = await _load_hub_preview_archive(
+            _AGENT_TEMPLATE_KIND,
+            name,
+            hub_port=hub_port,
+            downloader=downloader,
+        )
+        return None, archive
+
+
+def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
     rel = str(rel_path or "").strip().replace("\\", "/")
     if not _is_previewable_file(rel):
         raise ValueError(f"file not previewable: {rel}")
@@ -2055,6 +2342,54 @@ def read_agent_template_file(name: str, rel_path: str) -> dict:
     except UnicodeDecodeError:
         content = f"[二进制文件，大小 {size} bytes]"
     return {"path": rel, "content": content}
+
+
+def list_agent_template_files(name: str) -> list[dict]:
+    """Return the previewable file tree for one agent_template package."""
+    pkg_dir = _agent_template_preview_dir(name)
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+def read_agent_template_file(name: str, rel_path: str) -> dict:
+    """Read one previewable file from an agent_template package."""
+    return _read_previewable_file(_agent_template_preview_dir(name), rel_path)
+
+
+async def list_agent_template_files_with_hub(
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> list[dict]:
+    """List previewable files, downloading an uninstalled Hub expert if needed."""
+    pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
+        name, hub_port=hub_port, downloader=downloader
+    )
+    if archive is not None:
+        return _build_file_tree_from_zip(archive.body, archive.package_root)
+    if pkg_dir is None:
+        raise ValueError(f"agent_template package not found: {name}")
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+async def read_agent_template_file_with_hub(
+    name: str,
+    rel_path: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> dict:
+    """Read one previewable file, downloading an uninstalled Hub expert if needed."""
+    pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
+        name, hub_port=hub_port, downloader=downloader
+    )
+    if archive is not None:
+        return _read_previewable_file_from_zip(
+            archive.body, archive.package_root, rel_path
+        )
+    if pkg_dir is None:
+        raise ValueError(f"agent_template package not found: {name}")
+    return _read_previewable_file(pkg_dir, rel_path)
 
 
 def list_agent_group_files(name: str) -> list[dict]:
