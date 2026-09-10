@@ -53,7 +53,7 @@ class ExpertSummary:
     avatar_url: str = ""  # 仓库下发的头像绝对地址（<img> 直连）；空 = 无头像
     # 专家团成员摘要（type="team" 时非空，leader 置顶）：
     # [{"id", "name", "description", "role": "lead"|"member"}]
-    members: list[dict[str, str]] = field(default_factory=list)
+    members: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ExpertNotFound(Exception):
@@ -404,7 +404,7 @@ class LocalDirExpertPackageSource:
         metadata: dict[str, Any] = {}
         card: dict[str, Any] = {}
         group: dict[str, str] = {}
-        members: list[dict[str, str]] = []
+        members: list[dict[str, Any]] = []
         skills: list[dict[str, str]] = []
         pkg_type = "agent"
         try:
@@ -423,6 +423,25 @@ class LocalDirExpertPackageSource:
 
                 group = read_group_display(package_dir)
                 members = read_group_members(package_dir)
+                # 团队自身的展示/溯源信息仍在顶层 metadata；此前团分支没有
+                # 赋值，导致 workflow、deliverables、tags 等在 experts.list
+                # 静默丢失。共享 skills 仍按顶层声明读取，成员私有 skills 则
+                # 由 read_group_members 挂在对应成员上，二者不可混为全员共享。
+                metadata = (
+                    dict(manifest.get("metadata"))
+                    if isinstance(manifest.get("metadata"), dict)
+                    else {}
+                )
+                raw_shared_skills = manifest.get("skills") or []
+                shared_entries = [
+                    {"dir": f"skills/{name}"}
+                    for name in raw_shared_skills
+                    if isinstance(name, str) and name.strip()
+                ]
+                skills = _read_expert_skill_summaries(
+                    package_dir,
+                    {"skills": shared_entries},
+                )
             else:
                 card = manifest.get("agentCard") or {}
                 metadata = manifest.get("metadata") or {}

@@ -993,6 +993,18 @@ def test_web_does_not_expose_symphony_evolution_rpc_methods():
     assert "symphony.evolution_rebuild" not in app_web_handlers._FORWARD_REQ_METHODS
 
 
+def test_web_forwards_expert_graph_rpc_methods_to_agentserver():
+    methods = {
+        "experts.inventory.refresh",
+        "experts.graph.build",
+        "experts.graph.get",
+        "experts.teams.mine",
+        "experts.teams.materialize",
+    }
+    assert methods <= app_web_handlers._FORWARD_REQ_METHODS
+    assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+
+
 # =====================================================================
 # _normalize_feishu_conf 纯函数测试
 # =====================================================================

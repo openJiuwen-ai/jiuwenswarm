@@ -337,7 +337,7 @@ def read_group_display(package_dir: Path) -> dict[str, str]:
     return display
 
 
-def read_group_members(package_dir: Path) -> list[dict[str, str]]:
+def read_group_members(package_dir: Path) -> list[dict[str, Any]]:
     """列表展示用：成员摘要（leader 置顶），尽力而为、不抛错。
 
     返回 [{"id", "name", "description", "role"}]，role 为 "lead" | "member"；
@@ -350,16 +350,19 @@ def read_group_members(package_dir: Path) -> list[dict[str, str]]:
             return []
         # leader 置顶，其余按声明序
         ordered = sorted(raw_agents, key=lambda n: 0 if n == "leader" else 1)
-        members: list[dict[str, str]] = []
+        members: list[dict[str, Any]] = []
         for raw_name in ordered:
             if not isinstance(raw_name, str):
                 continue
             name = raw_name.strip()
-            manifest_path = package_dir / "agents" / name / "manifest.json"
+            member_dir = package_dir / "agents" / name
+            manifest_path = member_dir / "manifest.json"
             display_name, description = name, ""
+            manifest: dict[str, Any] = {}
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(manifest, dict):
+                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    manifest = parsed
                     card = manifest.get("agentCard")
                     if isinstance(card, dict):
                         display_name = str(card.get("name") or name)
@@ -369,11 +372,21 @@ def read_group_members(package_dir: Path) -> list[dict[str, str]]:
                         description = str(manifest.get("description") or "")
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
+            # 只展示该成员 manifest 真正挂载的原始 Skill；禁止将顶层共享
+            # Skill 或其他成员 Skill 误标为该成员私有能力。
+            member_skills: list[dict[str, str]] = []
+            if isinstance(manifest, dict):
+                from jiuwenswarm.server.runtime.expert.expert_store import (
+                    _read_expert_skill_summaries,
+                )
+
+                member_skills = _read_expert_skill_summaries(member_dir, manifest)
             members.append({
                 "id": name,
                 "name": display_name,
                 "description": description,
                 "role": "lead" if name == "leader" else "member",
+                "skills": member_skills,
                 # 成员头像（avatars/<id>.png 存在时）：本地源给绝对路径（前端只认
                 # http(s) 直链，本地路径会回退首字头像）；仓库源由仓库下发 URL
                 **(
