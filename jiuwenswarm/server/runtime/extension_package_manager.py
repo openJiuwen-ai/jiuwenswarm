@@ -217,12 +217,8 @@ def _read_agent_template_persona(pkg_dir: Path) -> str:
     return ""
 
 
-def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
-    """Parse SKILL.md YAML frontmatter for name/description (best-effort)."""
-    try:
-        text = skill_md.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return {}
+def _parse_skill_frontmatter_text(text: str) -> dict[str, Any]:
+    """Parse SKILL.md YAML frontmatter text for name/description (best-effort)."""
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, re.DOTALL)
     if not match:
         return {}
@@ -233,8 +229,7 @@ def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
             return loaded
     except Exception:
         logger.debug(
-            "SKILL.md frontmatter YAML parse failed, falling back to line parser: %s",
-            skill_md,
+            "SKILL.md frontmatter YAML parse failed, falling back to line parser",
             exc_info=True,
         )
     meta: dict[str, Any] = {}
@@ -245,6 +240,15 @@ def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
         key, _, val = line.partition(":")
         meta[key.strip()] = val.strip().strip("'\"")
     return meta
+
+
+def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
+    """Parse SKILL.md YAML frontmatter for name/description (best-effort)."""
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    return _parse_skill_frontmatter_text(text)
 
 
 def _skill_id_from_spec(spec: Any) -> str | None:
@@ -258,8 +262,18 @@ def _skill_id_from_spec(spec: Any) -> str | None:
     return None
 
 
-def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
-    """Map manifest skills → ability cards (id from dir name)."""
+def _read_package_text(pkg_dir: Path, rel: str) -> str | None:
+    path = pkg_dir.joinpath(*PurePosixPath(rel).parts)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _map_skills_with_reader(manifest: dict, read_text: Any) -> list[dict]:
+    """Map manifest skills → ability cards using a package-relative text reader."""
     specs = manifest.get("skills")
     if not isinstance(specs, list):
         return []
@@ -268,8 +282,8 @@ def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
         skill_id = _skill_id_from_spec(spec)
         if not skill_id:
             continue
-        skill_md = pkg_dir / "skills" / skill_id / "SKILL.md"
-        meta = _parse_skill_frontmatter(skill_md) if skill_md.is_file() else {}
+        text = read_text(f"skills/{skill_id}/SKILL.md")
+        meta = _parse_skill_frontmatter_text(text) if text else {}
         name = meta.get("name") if isinstance(meta.get("name"), str) else skill_id
         desc = meta.get("description")
         if not isinstance(desc, str):
@@ -283,6 +297,13 @@ def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
             }
         )
     return cards
+
+
+def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
+    """Map manifest skills → ability cards (id from dir name)."""
+    return _map_skills_with_reader(
+        manifest, lambda rel: _read_package_text(pkg_dir, rel)
+    )
 
 
 def _map_class_entries(manifest: dict, key: str) -> list[dict]:
@@ -322,8 +343,8 @@ def _connector_display(name: str) -> tuple[dict[str, str], dict[str, str]]:
         return _i18n(name, name), _i18n("")
 
 
-def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
-    """Map mcps from manifest: package ``file``/``dir`` plus host ``connector`` deps."""
+def _map_mcps_with_reader(manifest: dict, read_text: Any) -> list[dict]:
+    """Map mcps from manifest using a package-relative text reader."""
     cards: list[dict] = []
     seen: set[str] = set()
 
@@ -346,12 +367,12 @@ def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
             }
         )
 
-    def _add_from_mcp_file(path: Path) -> None:
-        if not path.is_file():
+    def _add_from_mcp_text(text: str | None) -> None:
+        if not text:
             return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+            data = json.loads(text)
+        except ValueError:
             return
         if not isinstance(data, dict):
             return
@@ -398,17 +419,24 @@ def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
             continue
         file_ref = spec.get("file")
         if isinstance(file_ref, str) and file_ref.strip():
-            _add_from_mcp_file(pkg_dir / file_ref)
+            _add_from_mcp_text(read_text(file_ref.replace("\\", "/")))
             continue
         dir_ref = spec.get("dir")
         if isinstance(dir_ref, str) and dir_ref.strip():
-            mcp_dir = pkg_dir / dir_ref
+            prefix = dir_ref.strip().replace("\\", "/").rstrip("/")
             for filename in ("mcp.json", "mcps.json"):
-                candidate = mcp_dir / filename
-                if candidate.is_file():
-                    _add_from_mcp_file(candidate)
+                text = read_text(f"{prefix}/{filename}")
+                if text is not None:
+                    _add_from_mcp_text(text)
                     break
     return cards
+
+
+def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
+    """Map mcps from manifest: package ``file``/``dir`` plus host ``connector`` deps."""
+    return _map_mcps_with_reader(
+        manifest, lambda rel: _read_package_text(pkg_dir, rel)
+    )
 
 
 def _connector_names_from_manifest(manifest: dict) -> list[str]:
@@ -1771,6 +1799,71 @@ def _hub_detail_card(
     }
 
 
+def _apply_hub_identity(card: dict[str, Any], detail: HubAssetDetail) -> dict[str, Any]:
+    card["id"] = detail.asset_id
+    card["packageName"] = detail.package_name or detail.asset_id
+    card["source"] = "hub"
+    if not card.get("avatar"):
+        card["avatar"] = detail.icon_uri
+    if not card.get("version"):
+        card["version"] = detail.version
+    return card
+
+
+def _build_show_card_from_zip(
+    body: bytes,
+    package_root: str,
+    *,
+    package_type: str,
+    package_id: str,
+) -> dict | None:
+    """Build a show card from a Hub ZIP without extracting it to disk."""
+    text = _zip_member_text(body, package_root, "manifest.json")
+    if text is None:
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    manifest, _changed = _canonical_hub_manifest(parsed, package_type=package_type)
+    if manifest.get("package_type") != package_type:
+        return None
+
+    def read_text(rel: str) -> str | None:
+        return _zip_member_text(body, package_root, rel)
+
+    version = manifest.get("version")
+    tags = manifest.get("tags")
+    details = read_text("README.md") or ""
+    if package_type == "agent_template":
+        description = manifest.get("description")
+        details = description if isinstance(description, str) else ""
+    card: dict[str, Any] = {
+        "id": package_id,
+        "displayName": manifest.get("display_name") or package_id,
+        "displayDescription": manifest.get("display_description") or {},
+        "source": "hub",
+        "avatar": _resolve_zip_avatar(body, package_root, manifest),
+        "version": version if isinstance(version, str) else "",
+        "details": details,
+        "tags": tags if isinstance(tags, list) else [],
+        "skills": _map_skills_with_reader(manifest, read_text),
+        "tools": _map_class_entries(manifest, "tools"),
+        "rails": _map_class_entries(manifest, "rails"),
+        "mcps": _map_mcps_with_reader(manifest, read_text),
+        "installed": False,
+    }
+    card["connection_state"] = _package_connection_state(manifest, installed=False)
+    card["pending_connectors"] = unready_connectors(
+        _connector_names_from_manifest(manifest)
+    )
+    quick = manifest.get("quick_inputs")
+    card["quickInputs"] = quick if isinstance(quick, list) else []
+    return card
+
+
 async def _show_equipment_with_hub(
     kind: str,
     name: str,
@@ -1787,13 +1880,7 @@ async def _show_equipment_with_hub(
         if kind == _AGENT_TEMPLATE_KIND
         else show_plugin_package(local_name)
     )
-    pending_hub = bool(
-        local_card is not None
-        and record is not None
-        and record.kind == hub_asset_kind
-        and local_card.get("installed") is False
-    )
-    if local_card is not None and not pending_hub:
+    if local_card is not None:
         if record is not None and record.kind == hub_asset_kind:
             local_card.update(
                 {
@@ -1816,7 +1903,22 @@ async def _show_equipment_with_hub(
             f"Hub asset id mismatch: expected {remote_asset_id!r}, "
             f"got {remote.asset_id!r}"
         )
-    return _hub_detail_card(remote)
+    archive = await _load_hub_preview_archive(
+        kind,
+        remote.asset_id,
+        hub_port=port,
+        downloader=downloader,
+        detail=remote,
+    )
+    card = _build_show_card_from_zip(
+        archive.body,
+        archive.package_root,
+        package_type=hub_asset_kind,
+        package_id=remote.package_name or remote.asset_id,
+    )
+    if card is None:
+        return _hub_detail_card(remote)
+    return _apply_hub_identity(card, remote)
 
 
 async def show_agent_template_with_hub(
@@ -2164,6 +2266,49 @@ def _zip_info_for_relative(
     raise ValueError(f"file not found: {wanted}")
 
 
+def _zip_member_bytes(body: bytes, package_root: str, rel: str) -> bytes | None:
+    relative = PurePosixPath(str(rel or "").strip().replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        return None
+    root = PurePosixPath(package_root) if package_root else PurePosixPath()
+    member = root / relative if root.parts else relative
+    try:
+        with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+            members = HubPackageDownloader.validated_members(archive)
+            info = _zip_info_for_relative(members, member)
+            if stat.S_ISLNK(info.external_attr >> 16):
+                return None
+            return archive.read(info)
+    except (ValueError, zipfile.BadZipFile):
+        return None
+
+
+def _zip_member_text(body: bytes, package_root: str, rel: str) -> str | None:
+    data = _zip_member_bytes(body, package_root, rel)
+    if data is None:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _resolve_zip_avatar(body: bytes, package_root: str, manifest: dict) -> str:
+    raw = manifest.get("avatar")
+    if not isinstance(raw, str):
+        return ""
+    rel = raw.strip().replace("\\", "/")
+    if not rel or rel.startswith("/") or ".." in PurePosixPath(rel).parts:
+        return ""
+    mime = _AVATAR_MIME.get(Path(rel).suffix.lower())
+    if mime is None:
+        return ""
+    data = _zip_member_bytes(body, package_root, rel)
+    if not data:
+        return ""
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 def _inspect_hub_preview_zip(
     body: bytes, *, kind_label: str, package_type: str
 ) -> str:
@@ -2283,6 +2428,7 @@ async def _load_hub_preview_archive(
     *,
     hub_port: HubAssetPort | None = None,
     downloader: Any = None,
+    detail: HubAssetDetail | None = None,
 ) -> _HubPreviewArchive:
     """Download a Hub package ZIP for preview without installing or extracting it."""
     hub_asset_kind = _hub_asset_kind(kind)
@@ -2290,9 +2436,10 @@ async def _load_hub_preview_archive(
     package_type = hub_asset_kind
     asset_id = _reject_package_name(identifier, kind_label)
     port = hub_port or create_default_hub_asset_port()
-    detail = await port.query_asset(
-        HubAssetQuery(kind=hub_asset_kind, asset_id=asset_id)
-    )
+    if detail is None:
+        detail = await port.query_asset(
+            HubAssetQuery(kind=hub_asset_kind, asset_id=asset_id)
+        )
     if detail.kind != hub_asset_kind:
         raise ValueError(f"Hub package type mismatch: {asset_id}")
     if detail.asset_id != asset_id:
