@@ -68,6 +68,8 @@ export interface Message {
    * 仅作为「任务用时」终点，避免 live 一直停在首包 delta 时间、刷新后变成 final 落盘时间。
    */
   completedAt?: string;
+  /** Local failed submission; deliberately not restored from persisted history. */
+  failedRequestId?: string;
   /** 前端渲染身份，避免业务 id 重复或历史 prepend 导致 React key 抖动 */
   renderKey?: string;
   audioBase64?: string;

@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:chat-retry": "esbuild src/features/chatRetry.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/chat-retry/chatRetry.mjs && node --test tests/chatRetry.test.mjs",
     "predev": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "prebuild": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "dev": "vite",

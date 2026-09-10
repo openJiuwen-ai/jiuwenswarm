@@ -24,6 +24,7 @@ import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '..
 import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import { MessageList } from './MessageList';
+import { Button } from '../ui/Button/Button';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
@@ -74,6 +75,8 @@ export interface ChatHistoryPagerProps {
 
 interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
+  onRetryMessage?: (sessionId: string, requestId: string) => Promise<boolean>;
+  canRetryMessage?: (sessionId: string, requestId: string) => boolean;
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (
     content: string,
@@ -900,6 +903,8 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
  */
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
+  onRetryMessage,
+  canRetryMessage,
   onInputIntent,
   onPersistMedia,
   onPersistDocuments,
@@ -1049,6 +1054,32 @@ export const ChatPanel = React.memo(function ChatPanel({
       turnChangeError,
       turnChangeOperation,
     ],
+  );
+
+  const renderAfterMessage = useCallback(
+    (message: Message) => (
+      <>
+        {renderCodeChangesAfterMessage(message)}
+        {activeSessionId &&
+        message.failedRequestId &&
+        onRetryMessage &&
+        canRetryMessage?.(activeSessionId, message.failedRequestId) ? (
+          <div className="flex justify-center mb-4" data-testid="chat-panel-retry-actions" data-variant={message.id}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={isProcessing}
+              onClick={() => void onRetryMessage(activeSessionId, message.failedRequestId!)}
+              data-testid="chat-panel-retry-button"
+              data-variant={message.id}
+            >
+              {t('common.retry')}
+            </Button>
+          </div>
+        ) : null}
+      </>
+    ),
+    [activeSessionId, canRetryMessage, isProcessing, onRetryMessage, renderCodeChangesAfterMessage, t],
   );
 
   // 跟踪用户是否正在查看历史消息（不在底部）
@@ -1551,7 +1582,7 @@ export const ChatPanel = React.memo(function ChatPanel({
               )}
               {hasTimelineContent ? (
                 <>
-                  <MessageList messages={messages} renderAfterMessage={renderCodeChangesAfterMessage} />
+                  <MessageList messages={messages} renderAfterMessage={renderAfterMessage} />
                   {shouldShowHumanShare && (
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}

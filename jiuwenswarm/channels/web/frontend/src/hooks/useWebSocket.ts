@@ -57,6 +57,7 @@ import {
   shouldClearPermissionQuestionsForLifecycleEvent,
 } from '../stores/pendingQuestionQueue';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
+import { ChatRetryRequests, canRetryRequest } from '../features/chatRetry';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
   fetchTtsAudio,
@@ -635,6 +636,8 @@ interface UseWebSocketReturn {
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[]) => Promise<boolean>;
+  retryMessage: (sessionId: string, requestId: string) => Promise<boolean>;
+  canRetryMessage: (sessionId: string, requestId: string) => boolean;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -917,6 +920,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const onModelsUpdatedRef = useRef(onModelsUpdated);
   const onCronResultArrivedRef = useRef(onCronResultArrived);
   const sendMessageRef = useRef<typeof sendMessage>();
+  const retryRequestsRef = useRef(new ChatRetryRequests());
   // 标记本地 sendMessage 刚发起但后端尚未确认 processing_status=true 的 session。
   // 用于区分"旧任务被打断的 false"和"任务正常结束的 false"——前者应跳过自动排空，
   // 因为新任务即将由后端启动（会紧跟一条 processing_status=true）。
@@ -1518,8 +1522,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // pruneEnabledExtensions）兜底重新核对一遍"我的插件/我的MCP里已连接的"，避免把早就失效的
       // 名字发给后端；被摘掉的项同步从 sessionStore 里移除，让"+"扩展面板的开关同步变回关闭。
       const extensionPayload = buildExtensionSendPayload(sessionId);
+      retryRequestsRef.current.clearSession(sessionId);
+      const userMessageId = `user-${Date.now()}`;
       useChatStore.getState().addMessage(sessionId, {
-        id: `user-${Date.now()}`,
+        id: userMessageId,
         role: 'user',
         content: stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content,
         mediaItems,
@@ -1602,7 +1608,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const outgoingMode = resolveOutgoingMode(sessionId, currentMode);
         const sessionMetadata = useSessionStore.getState().getRuntime(sessionId)?.metadata;
         const sessionRt = useSessionStore.getState().getRuntime(sessionId);
-        await request('chat.send', {
+        const requestPayload = {
           session_id: sessionId,
           content: outgoingContent,
           ...(outgoingMediaItems ? { media_items: outgoingMediaItems } : {}),
@@ -1622,6 +1628,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
             : {}),
+        };
+        await request('chat.send', requestPayload, {
+          onRequestId: (requestId) => {
+            retryRequestsRef.current.remember(requestId, requestPayload, userMessageId);
+          },
         });
         if (sessionMetadata) {
           useSessionStore.getState().setSessionMetadata(sessionId, null);
@@ -1653,6 +1664,79 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       resetContextCompressionTurn,
       t,
     ]
+  );
+
+  const canRetryMessage = useCallback((sessionId: string, requestId: string): boolean => {
+    const runtime = useChatStore.getState().getRuntime(sessionId);
+    return Boolean(runtime && canRetryRequest(retryRequestsRef.current.get(requestId), sessionId, runtime.messages));
+  }, []);
+
+  const retryMessage = useCallback(
+    async (sessionId: string, requestId: string): Promise<boolean> => {
+      const chat = useChatStore.getState();
+      const runtime = chat.getRuntime(sessionId);
+      const saved = retryRequestsRef.current.get(requestId);
+      if (
+        !runtime ||
+        runtime.isProcessing ||
+        runtime.isLoadingHistory ||
+        !saved ||
+        !canRetryMessage(sessionId, requestId)
+      ) {
+        return false;
+      }
+      // Synchronously lock the turn before awaiting connection readiness.
+      chat.setProcessing(sessionId, true);
+      chat.setThinking(sessionId, true);
+      localSendPendingRef.current.add(sessionId);
+      resetContextCompressionTurn(sessionId);
+      userInputVersionRef.current += 1;
+      let attemptId = requestId;
+      // Retire the previous action even if connection readiness fails before a new ID is assigned.
+      for (const message of runtime.messages) {
+        if (message.failedRequestId === requestId) {
+          chat.updateMessage(sessionId, message.id, { failedRequestId: undefined });
+        }
+      }
+      try {
+        // The original user turn is already in server history; only record the new response.
+        await request(
+          'chat.send',
+          { ...structuredClone(saved.payload), log_as_user: false },
+          {
+            onRequestId: (id) => {
+              attemptId = id;
+              retryRequestsRef.current.remember(id, saved.payload, saved.userMessageId);
+            },
+          },
+        );
+        return true;
+      } catch (error) {
+        localSendPendingRef.current.delete(sessionId);
+        chat.setProcessing(sessionId, false);
+        chat.setThinking(sessionId, false);
+        const errorMsg = error instanceof Error ? error.message : t('network.sendMessageFailed');
+        chat.setExecutionError(sessionId, errorMsg);
+        chat.setSessionError(sessionId, errorMsg);
+        chat.addMessage(sessionId, {
+          id: `error-${Date.now()}`,
+          role: 'system',
+          content: t('network.errorPrefix', { message: errorMsg }),
+          timestamp: new Date().toISOString(),
+          failedRequestId: attemptId,
+        });
+        return false;
+      }
+    },
+    [canRetryMessage, request, resetContextCompressionTurn, t],
+  );
+
+  useEffect(
+    () =>
+      useChatStore.subscribe((state) => {
+        retryRequestsRef.current.pruneSessions(new Set(Object.keys(state.runtimes)));
+      }),
+    [],
   );
 
   const sendStructuredChatContent = useCallback(
@@ -2227,7 +2311,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         payload.rid,
         payload.request_id,
         Date.now()
-      );  
+      );
       teamMemberOutputEventRef.current.set(key, id);
       return id;
     },
@@ -2547,6 +2631,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('chat.final', ({ payload }) => {
         if (shouldDropDuplicatedEvent('chat.final', payload)) return;
+        const completedRequestId = getPayloadRequestId(payload);
+        if (completedRequestId) retryRequestsRef.current.forget(completedRequestId);
 
         const cronMeta = payload.cron as Record<string, unknown> | undefined;
 
@@ -3257,6 +3343,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_call', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        retryRequestsRef.current.clearSession(sessionId);
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
         const activityRuntime = useChatStore.getState().getRuntime(sessionId);
@@ -3839,6 +3926,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           closeHeartbeatSessionState(sessionId, hbChatErrorAutomation.run_id);
           return;
         }
+        const failedRequestId = getPayloadRequestId(payload);
+        if (failedRequestId && canRetryMessage(sessionId, failedRequestId)) {
+          localSendPendingRef.current.delete(sessionId);
+          useChatStore.getState().setProcessing(sessionId, false);
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
@@ -3847,6 +3939,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
+          failedRequestId: failedRequestId && canRetryMessage(sessionId, failedRequestId) ? failedRequestId : undefined,
         });
       }),
       webClient.on('security.alert', ({ payload }) => {
@@ -4529,6 +4622,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       unsubs.forEach((fn) => fn());
     };
   }, [
+    canRetryMessage,
     appendTeamMemberOutputDelta,
     clearPendingTeamMemberContextCompressionStart,
     clearTeamMemberContextCompressionStatus,
@@ -4711,6 +4805,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     persistMedia,
     persistDocuments,
     sendMessage,
+    retryMessage,
+    canRetryMessage,
     sendStructuredChatContent,
     interrupt,
     pause,
