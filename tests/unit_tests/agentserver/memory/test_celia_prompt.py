@@ -53,7 +53,7 @@ def test_celia_prompt_loader_fails_open(monkeypatch):
 def test_provider_compatibility_prompt_preserves_dynamic_runtime_path(monkeypatch):
     monkeypatch.setattr(
         provider_module,
-        "load_celia_agent_prompt",
+        "load_old_celia_agent_prompt",
         lambda: "packaged Celia instructions",
     )
     provider = SimpleNamespace(
@@ -105,7 +105,7 @@ async def test_celia_rail_owns_prompt_injection_and_removal(monkeypatch):
 
     assert captured == [(prompt_text, "en")]
     assert len(builder.added) == 1
-    assert builder.added[0].priority == 15
+    assert builder.added[0].priority == 57
 
     rail.uninit(agent)
     await asyncio.sleep(0)

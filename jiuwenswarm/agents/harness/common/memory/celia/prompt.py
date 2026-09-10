@@ -10,6 +10,8 @@ from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails.memory.external_memory_rail import build_external_memory_section
 
+from jiuwenswarm.agents.harness.common.prompt.prompt_builder import PromptPriority
+
 logger = logging.getLogger(__name__)
 
 _PROMPT_RESOURCE = ("resources", "memory", "celia", "AGENTS.md")
@@ -19,9 +21,19 @@ _PROMPT_RESOURCE = ("resources", "memory", "celia", "AGENTS.md")
 def load_celia_agent_prompt() -> str:
     """Load the packaged Celia instructions, failing open when unavailable."""
 
+    return _load_prompt(_PROMPT_RESOURCE)
+
+
+@lru_cache(maxsize=1)
+def load_old_celia_agent_prompt() -> str:
+    """Load the original instructions matching the old private client tools."""
+    return _load_prompt(("resources", "memory", "old-celia", "AGENTS.md"))
+
+
+def _load_prompt(parts: tuple[str, ...]) -> str:
     try:
         resource = files("jiuwenswarm")
-        for part in _PROMPT_RESOURCE:
+        for part in parts:
             resource = resource.joinpath(part)
         return resource.read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError, UnicodeError) as exc:
@@ -45,7 +57,7 @@ class CeliaMcpPromptRail(DeepAgentRail):
                 load_celia_agent_prompt(), language=getattr(builder, "language", "cn")
             )
             if section is not None:
-                section.priority = 15
+                section.priority = PromptPriority.MEMORY
                 builder.add_section(section)
 
     async def before_model_call(self, ctx) -> None:
@@ -59,4 +71,4 @@ class CeliaMcpPromptRail(DeepAgentRail):
         super().uninit(agent)
 
 
-__all__ = ["CeliaMcpPromptRail", "load_celia_agent_prompt"]
+__all__ = ["CeliaMcpPromptRail", "load_celia_agent_prompt", "load_old_celia_agent_prompt"]

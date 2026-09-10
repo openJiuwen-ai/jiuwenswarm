@@ -47,9 +47,13 @@ def build_external_memory_rail(
     provider = None
     try:
         if provider_name == "celia":
+            from .celia.prompt import CeliaMcpPromptRail
+
+            return CeliaMcpPromptRail()
+        if provider_name == "old-celia":
             celia_source_config = dict(config or {})
             celia_source_config["__celia_workspace_dir"] = workspace_dir
-            return _build_celia_rail(
+            return _build_old_celia_rail(
                 celia_source_config, ext_cfg, session_id=session_id,
                 request_metadata=request_metadata,
             )
@@ -90,18 +94,37 @@ def build_external_memory_rail(
         return None
 
 
-def _build_celia_rail(
+def _build_old_celia_rail(
     config: Dict[str, Any],
     ext_cfg: Dict[str, Any],
     *,
     session_id: str,
     request_metadata: Optional[Dict[str, Any]] = None,
 ):
-    from .celia.prompt import CeliaMcpPromptRail
+    from .celia.config import build_celia_config
+    from .celia.provider import CeliaMemoryProvider
+    from .celia.rail import CeliaMemoryRail
 
-    # Celia is already registered through the ordinary MCP integration.
-    # Its extension owns recall/ingestion; do not start a second Celia provider.
-    return CeliaMcpPromptRail()
+    celia_config = build_celia_config(
+        config,
+        ext_cfg,
+        workspace_dir=str(config.get("__celia_workspace_dir") or "."),
+    )
+    provider = CeliaMemoryProvider(
+        celia_config,
+        user_id=ext_cfg.get("user_id", celia_config.user_id),
+        scope_id=ext_cfg.get("scope_id", celia_config.scope_id),
+        session_id=session_id,
+        request_metadata=request_metadata,
+    )
+    # Mount prompt and tools even when the backend cannot start. Optional
+    # preflight belongs to provider initialization, whose failures the rail handles.
+    return CeliaMemoryRail(
+        provider,
+        user_id=ext_cfg.get("user_id", celia_config.user_id),
+        scope_id=ext_cfg.get("scope_id", celia_config.scope_id),
+        session_id=session_id,
+    )
 
 
 def _build_openjiuwen_provider(ext_cfg: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None):

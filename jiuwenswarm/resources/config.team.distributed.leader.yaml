@@ -13,26 +13,35 @@ logging:
   agent_server: INFO
   full: INFO
 
+# 仅控制 Swarm 旧提取器；不控制 Celia 二进制。
+auto_memory_enabled: false
+
 memory:
   # ============================================================
   # 记忆系统配置
   # ============================================================
   # 两个正交开关：
   #   1) engine — 挂载哪套 rail（内置 / 外接 / 都挂 / 都不挂）
-  #   2) mode   — 内置记忆的存储位置（local | cloud），不影响外接
+  #   2) mode   — local=旧本地记忆；cloud=部署侧对话投递/召回 Hook
   #
   # 外接 rail 的启用 = (engine ∈ {external, both}) AND (external.provider 非空)
   # 内置 rail 的启用 = (engine ∈ {builtin, both})  AND (mode=local)
   #                    AND modes.agent.memory.enabled=true
   # ============================================================
 
-  mode: ${MEMORY_MODE:-local}            # 内置记忆存储位置：local | cloud
+  mode: ${MEMORY_MODE:-cloud}            # local=旧本地记忆；cloud=部署侧记忆扩展 Hook
   # 记忆引擎总开关：builtin | external | both | none
   #   builtin  — 仅内置记忆（兼容旧配置）
   #   external — 仅外接记忆（默认 Celia，也可选 LTM / Mem0 / OpenViking / 插件）
   #   both     — 内置 + 外接并存
-  #   none     — 全部关闭
+  #   none     — 关闭记忆 Rail；通用 MCP 服务和扩展 Hook 独立配置
   engine: ${MEMORY_ENGINE:-external}
+  # 仅关闭 Swarm 旧 Sweeper；Celia 二进制的 Dreaming 由二进制自身管理。
+  dreaming:
+    agent:
+      enabled: false
+    code:
+      enabled: false
   forbidden_memory_definition:
     enabled: false
     patterns: []
@@ -79,12 +88,12 @@ memory:
   # - 失败降级：provider 构建失败或网络异常不阻塞主流程
   external:
     # 选哪家 provider。空字符串 = 禁用外接（等价于 engine=builtin）
-    provider: ${MEMORY_EXTERNAL_PROVIDER:-celia}   # '' | openjiuwen | mem0 | openviking | celia | <plugin-name>
+    provider: ${MEMORY_EXTERNAL_PROVIDER:-celia}   # celia（新 MCP）| old-celia（旧私有客户端）| openjiuwen | mem0 | openviking | <plugin-name>
     # 数据隔离标识（所有 provider 共用）
     user_id: ${MEMORY_USER_ID:-__default__}
     scope_id: ${MEMORY_SCOPE_ID:-__default__}
 
-    # -- Celia Memory MCP --
+    # -- 仅 provider=old-celia 使用以下私有客户端参数 --
     celia:
       # 关闭静态平台/二进制预检查；实际启动失败由 Rail 降级处理。
       preflight_enabled: false
@@ -714,13 +723,14 @@ modes:
   agent:
     # plan / fast 已合并为单一 agent 模式：记忆固定被动（is_proactive 开关已下线）。
     memory:
-      enabled: true
+      enabled: false  # Swarm 旧文件记忆；不控制 Celia 二进制
     rails:
     tools:
   code:
     # 关闭 code 模式内置记忆，避免加载 ProjectMemoryRail / CodingMemoryRail
     memory:
       enabled: false
+      auto_coding_memory: false  # Swarm 旧代码记忆提取
 
     # 动态 Rails — 列表中出现的 = 启用；不出现的 = 不启用
     # 固定 Rails（以下 Rails 已在代码中固定挂载，无需在此配置）：

@@ -7068,8 +7068,12 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         )
                     except Exception:
                         pass
-            # 非群聊数字分身且记忆启用时，恢复写入工具
-            else:
+            # 仅在旧本地记忆启用时恢复写入工具，避免绕过配置开关。
+            elif (
+                get_memory_mode(get_config()) == "local"
+                and is_builtin_memory_allowed(get_config())
+                and is_memory_enabled(runtime_config.mode, get_config())
+            ):
                 try:
                     from openjiuwen.core.memory.lite.memory_tools import (
                         get_decorated_tools as _get_sdk_memory_tools,

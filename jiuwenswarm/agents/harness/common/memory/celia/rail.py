@@ -19,7 +19,7 @@ from openjiuwen.harness.rails.memory.external_memory_rail import (
 )
 from openjiuwen.harness.prompts.sections import SectionName
 
-from .prompt import load_celia_agent_prompt
+from .prompt import load_old_celia_agent_prompt
 from .provider import CeliaMemoryProvider, _redact_diagnostic
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ class CeliaMemoryRail(DeepAgentRail):
         if self._agent is not None:
             self._system_prompt_builder = getattr(self._agent, "system_prompt_builder", None)
         if self._system_prompt_builder is not None:
-            block = load_celia_agent_prompt()
+            block = load_old_celia_agent_prompt()
             if block:
                 language = getattr(self._system_prompt_builder, "language", "cn")
                 section = build_external_memory_section(block, language=language)

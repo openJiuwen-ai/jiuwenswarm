@@ -1,20 +1,34 @@
-# Celia 提示词与 Celia MCP 工具
+# Celia 记忆接入与旧实现切换
 
-Swarm 使用通用 MCP 流程中已注册的 `celiamcp` 服务。模型收到的工具名为 `mcp_celiamcp_*`，工具描述、参数 schema 和执行均沿用该服务。
+默认使用新 Celia 接入。旧客户端、工具、文件记忆、初始化和历史查询代码保留，通过配置选择是否启用。
 
-## 挂载入口
+| provider | 提示词和工具 | 对话投递 |
+|---|---|---|
+| `celia`（默认） | `CeliaMcpPromptRail` 注入新提示词；通用 MCP 提供 `mcp_celiamcp_*` 工具与原始 schema | 部署侧现有扩展负责投递给记忆二进制 |
+| `old-celia` | 原 `CeliaMemoryRail`、`CeliaMemoryProvider` 和私有客户端，保留无前缀的 `memory_*` 工具及独立旧提示词 | 旧 Rail 的 `sync_turn` 调用私有客户端 |
 
-`memory.external.provider: celia` 现在只挂载 `CeliaMcpPromptRail`，负责注入静态 Memory 段，优先级仍为 15。普通、代码、设计和集群模式共用此入口；模式切换后恢复提示词，卸载时移除该段。
-
-旧 `CeliaMemoryProvider` 和 `CeliaMemoryRail` 不再从这个入口创建，因此不注册无前缀的 `memory_*` 工具，不启动旧私有 MCP 客户端。旧模块保留在仓库中，本次不做模块清理。
-
-## 配置与职责
+## 新 Celia 配置
 
 ```yaml
+auto_memory_enabled: false  # Swarm 旧提取器
 memory:
-  engine: external
+  mode: cloud              # 触发现有记忆扩展 Hook
+  engine: external         # 只挂外接记忆 Rail
   external:
     provider: celia
+  dreaming:                # Swarm 旧 Sweeper，不控制 Celia 二进制
+    agent:
+      enabled: false
+    code:
+      enabled: false
+modes:
+  agent:
+    memory:
+      enabled: false       # Swarm 旧文件记忆
+  code:
+    memory:
+      enabled: false       # 旧 CodingMemory / ProjectMemory
+      auto_coding_memory: false
 mcp:
   servers:
     - name: celiamcp
@@ -23,14 +37,33 @@ mcp:
       command: ${CELIA_MCP_EXE}
 ```
 
-Celia 服务在部署环境的 `mcp.servers` 中使用服务名称 `celiamcp`，通用 MCP 流程据此生成 `mcp_celiamcp_*` 工具名。上例的 `CELIA_MCP_EXE` 指向部署环境的 MCP 可执行文件；使用 HTTP 等传输时填写对应的连接参数。项目 ID 的环境变量兜底名称为 `CELIA_CELIAWORK_PROJECT_ID`。
+`CELIA_MCP_EXE` 指向部署环境的 MCP 可执行文件；HTTP 等传输应填写已有连接参数。模板的 `mcp.servers` 保持空列表，服务由部署环境配置。项目 ID 的环境变量兜底名称为 `CELIA_CELIAWORK_PROJECT_ID`。
 
-自动摘要读取和对话入库由现有 Celia 接入负责；Swarm 的提示词 Rail 不再重复执行。现有扩展 Hook、参数处理、连接管理及工具白名单保持原有流程。
+Celia 二进制内部负责自动提取和 Dreaming。上述 Swarm 旧实现开关不配置二进制内部功能。`mode: cloud` 只触发记忆 Hook；实际召回、对话投递需要部署环境安装并注册对应扩展。
 
-旧 Celia 私有客户端的配置不参与新的提示词挂载。没有新增连接适配层、schema 表或生命周期切换配置。
+普通、代码、设计和集群成员共用新的提示词入口。Memory 优先级为 57，位于运行时 Skills（56）之后；模式切换重建提示词时恢复该段，避免重复。新提示词不包含 `USER.md` / `MEMORY.md` 的读写指令。
 
-## 验证
+旧本地记忆关闭时，请求处理不会重新注册旧写入工具；普通模式上下文也跳过旧记忆文件内容。初始化、迁移和历史查询实现继续保留，已有文件不删除。配置默认值可被用户配置或环境变量覆盖，应以运行时最终配置为准。
 
-测试使用真实 DeepAgent 和 MCP 工具执行器，验证模型仅收到已注册的 Celia 工具、参数 schema 与服务端一致、工具能够执行，以及移除提示词 Rail 后 MCP 工具仍然可用。同时覆盖各模式挂载、流式请求、模式切换和 MCP 缺失场景，并断言旧客户端与预检查均未调用。
+## 切换为 old-celia
 
-实际 Celia 数据库和自动记忆效果仍需部署环境联调。
+修改以下配置并重启 Swarm，同时把现有 `celiamcp` 服务的 `enabled` 设为 `false`：
+
+```yaml
+memory:
+  mode: local              # 关闭部署侧记忆 Hook，避免与旧 Rail 重复投递
+  engine: external
+  external:
+    provider: old-celia
+    celia:                 # 复用旧私有客户端的原配置段
+      server_binary_path: ${CELIA_MEMORY_BINARY_PATH}
+      # db_path、embed、chat 等继续使用原参数
+```
+
+`old-celia` 使用 `resources/memory/old-celia/AGENTS.md`，与旧工具名及旧文件同步规则匹配。修改 provider 不会自动关闭通用 MCP 服务；切换时应同时应用上述配置，避免两套工具或两条入库路径并存。
+
+Swarm 内置文件记忆独立于 `old-celia`。如需启用，使用 `mode: local`、`engine: builtin` 及 `modes.agent.memory.enabled: true`；代码记忆、旧自动提取、旧 Sweeper 分别由各自原开关启用。
+
+## 验证范围
+
+回归覆盖新旧 provider 构建、原身份隔离和旧客户端契约、新 MCP schema 透传及执行、各模式挂载、流式请求、模式切换、Skills/Memory 顺序、旧工具恢复开关以及旧文件上下文的禁用和重新启用。MCP 后端由测试替身提供，真实二进制和部署侧投递扩展需要联调。

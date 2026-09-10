@@ -61,16 +61,16 @@ def test_child_env_keeps_dedicated_headers_out_of_extra_headers():
     assert "x-api-key" not in env["OPENAI_EMBED_HEADERS_JSON"]
 
 
-def test_external_builder_dispatches_celia_provider(monkeypatch):
+def test_external_builder_dispatches_old_celia_provider(monkeypatch):
     config = {
         "memory": {
             "engine": "external",
-            "external": {"provider": "CELIA", "celia": {"tenant_id": "t"}},
+            "external": {"provider": "OLD-CELIA", "celia": {"tenant_id": "t"}},
         }
     }
-    assert get_external_memory_config(config)["provider"] == "celia"
+    assert get_external_memory_config(config)["provider"] == "old-celia"
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.memory.external_memory_builder._build_celia_rail",
+        "jiuwenswarm.agents.harness.common.memory.external_memory_builder._build_old_celia_rail",
         lambda config, ext_cfg, *, session_id, request_metadata: "celia-rail",
     )
     assert build_external_memory_rail(config, session_id="conversation-a") == "celia-rail"
