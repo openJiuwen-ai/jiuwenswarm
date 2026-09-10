@@ -82,10 +82,6 @@ def build_shared_system_section(*, priority: int = PromptPriority.CONTENT_POLICY
     content = (
         "# System\n"
         "\n"
-        "- All text you output outside of tool use is displayed to the user. "
-        "Output text to communicate with the user. "
-        "Format your replies with GitHub-flavored Markdown; "
-        "it is rendered in a monospace font following the CommonMark specification.\n"
         "- Every tool runs under a permission mode chosen by the user. "
         "If you invoke a tool that the active permission mode "
         "or permission settings do not auto-approve, "

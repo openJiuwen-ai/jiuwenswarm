@@ -58,12 +58,12 @@ def test_code_system_prompt_does_not_reference_disabled_subagents():
     assert "plan_agent" not in prompt
 
 
-def test_code_system_prompt_disambiguates_media_generation_from_coding():
+def test_code_system_prompt_keeps_media_generation_routing_in_skills():
     prompt = build_code_system_prompt()
     assert "# Doing tasks" in prompt
-    assert "media deliverable" in prompt
-    assert "`skill_tool`" in prompt
-    assert "SKILL.md" in prompt
+    assert "media deliverable" not in prompt
+    assert "If the user wants an image, video, or audio file generated" not in prompt
+    assert "If the user asks for help or wants to give feedback" not in prompt
     assert "## Generative media skills" not in prompt
     assert "`seedream-image-gen`" not in prompt
     assert "`invoke`" not in prompt

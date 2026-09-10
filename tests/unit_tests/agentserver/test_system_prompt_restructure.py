@@ -209,6 +209,7 @@ def test_all_modes_place_the_shared_system_section_before_regional_conventions()
     for prompt in prompts:
         assert prompt.index("# Content policy") < prompt.index("# System")
         assert prompt.index("# System") < prompt.index("# Regional conventions")
+        assert "All text you output outside of tool use" not in prompt
 
 
 def test_design_mode_static_section_priorities_are_explicitly_ordered():
@@ -317,6 +318,8 @@ def test_find_skills_policy_lives_in_tool_usage_rules_not_skills_preamble():
     assert "Tool results are the source of truth" not in tools_content
     assert "find-skills-win" in tools_content
     assert "skill discovery and installation" in tools_content.lower()
+    assert "Default skill for skill discovery and installation" in tools_content
+    assert "Default tool for skill discovery and installation" not in tools_content
     assert "Skill Discovery and Installation" not in skills_goal_override._SKILLS_PREAMBLE_EN
     assert skills_goal_override._SKILLS_PREAMBLE_EN.startswith("# Skills")
 

@@ -105,9 +105,6 @@ def _code_doing_tasks_prompt() -> PromptSection:
         '"methodName" to snake case, '
         'do not just answer with "method_name"; '
         "locate the method in the code and edit it there.\n"
-        "- If the user wants an image, video, or audio file generated "
-        "(a media deliverable, not a generator implemented in the repo), "
-        "load the matching skill with `skill_tool` and follow its SKILL.md.\n"
         "- You are highly capable and can help users "
         "accomplish ambitious tasks "
         "that would otherwise be too complex or time-consuming. "
@@ -231,12 +228,7 @@ def _code_doing_tasks_prompt() -> PromptSection:
         "not skipping the finish line. "
         "If you can't verify "
         "(no test exists, can't run the code), "
-        "say so explicitly rather than claiming success.\n"
-        "- If the user asks for help or wants to give feedback "
-        "inform them of the following:\n"
-        "  - /help: Get help with using 小艺Work\n"
-        "  - To give feedback, users should report the issue "
-        "at the project's issue tracker."
+        "say so explicitly rather than claiming success."
     )
     return PromptSection(
         name="code_doing_tasks",
