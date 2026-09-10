@@ -195,6 +195,7 @@
 
 .subagent-expanded-panel {
   display: flex;
+  flex: 1;
   height: 100%;
   min-width: 0;
   overflow: hidden;
@@ -250,7 +251,7 @@
 
 .subagent-assignment {
   width: fit-content;
-  margin: 16px 0 var(--subagent-content-gap);
+  margin: 16px 0 var(--subagent-content-gap) auto;
   border-radius: var(--radius-xl);
   background: var(--color-surface-muted);
   padding: 16px 20px;
@@ -292,7 +293,6 @@
   min-width: 0;
   align-items: flex-start;
   gap: var(--subagent-inline-gap);
-  margin: var(--subagent-content-gap) 0 24px;
 }
 
 .subagent-message__body {
@@ -307,7 +307,6 @@
 }
 
 .subagent-message__content {
-  margin-top: 8px;
   font-size: var(--font-size-sm);
   line-height: 1.75;
 }

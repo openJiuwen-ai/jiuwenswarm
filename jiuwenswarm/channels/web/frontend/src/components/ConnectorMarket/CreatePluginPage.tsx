@@ -9,7 +9,7 @@ import { computeMySkills, buildInstalledSkillNames, filterEnabledMySkills } from
 import { EntityAvatar } from './EntityAvatar';
 import { PickerModal, type PickerItem } from './PickerModal';
 
-const DESCRIPTION_MAX = 226;
+const DESCRIPTION_MAX = 512;
 
 // 头像上传入口暂时隐藏：后端 plugin_packages.create 没有头像/图标字段
 // （backend-requests.md 需求9），选中的图片只能本地预览、保存不了。等后端支持后把这个
