@@ -22,8 +22,8 @@ def test_packaged_celia_prompt_contains_current_memory_contract():
     assert "`mcp_gausspdmcp_memory_scene_load`" in content
     assert "`mcp_gausspdmcp_memory_record_search`" in content
     assert "searchType='atomic_fact'" in content
-    assert "CELIA_MEMORY_OVERVIEW_BEGIN" in content
-    assert "CELIA_MEMORY_SCENES_BEGIN" in content
+    assert "USER.md" not in content and "MEMORY.md" not in content
+    assert "CELIA_MEMORY_OVERVIEW" not in content and "CELIA_MEMORY_SCENES" not in content
 
 
 def test_celia_prompt_loader_fails_open(monkeypatch):

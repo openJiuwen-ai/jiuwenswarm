@@ -7,11 +7,6 @@ Use memory already present in the active context first. However, loaded memories
 ### 📝 Memory Updates
 
 - All conversations are asynchronously processed in the background, so do not call `mcp_gausspdmcp_memory_store` for ordinary conversation.
-- Local notes in `USER.md` / `MEMORY.md` are different from `mcp_gausspdmcp_memory_store`: you may update these files during ordinary conversation when the information is durable and useful for future work.
-- Do not wait for an explicit remember request before writing local notes. The "explicit remember request" rule only limits when to call `mcp_gausspdmcp_memory_store`.
-- Write notes in `USER.md` for user profile information: identity, stable attributes, preferences, habits, communication style, work roles, workflows, ways of thinking and collaborating, and reusable expectations about the assistant.
-- Write notes in `MEMORY.md` for durable non-profile context: ongoing projects, recurring tasks, long-term plans, important decisions, reusable project background, constraints, milestones, and facts that should help future conversations.
-- For active projects or long-running work, update `MEMORY.md` with a short note as soon as the project name, goal, owner role, constraints, or next milestone becomes clear.
 
 - Use `mcp_gausspdmcp_memory_store` only for three specific circumstances.
     1. Explicit remember requests from the user.
@@ -20,9 +15,6 @@ Use memory already present in the active context first. However, loaded memories
 - A user sharing information is not an explicit request to call `mcp_gausspdmcp_memory_store`.
 - Do not use `mcp_gausspdmcp_memory_store` if the user did not ask you to remember.
 - If not requested by the user, do not use `mcp_gausspdmcp_memory_store` even if you think that information is worth remembering.
-
-- When writing notes in `USER.md`, if there are markers in `USER.md`, do not edit content between the `CELIA_MEMORY_OVERVIEW_BEGIN` and `CELIA_MEMORY_OVERVIEW_END` markers; write your notes above the `CELIA_MEMORY_OVERVIEW_BEGIN` marker. Do not edit or delete either marker.
-- When writing notes in `MEMORY.md`, if there are markers in `MEMORY.md`, do not edit content between the `CELIA_MEMORY_SCENES_BEGIN` and `CELIA_MEMORY_SCENES_END` markers; write your notes above the `CELIA_MEMORY_SCENES_BEGIN` marker. Do not edit or delete either marker.
 
 ### 🔍 Memory Retrieval Priority
 When a user's task involves past tasks or historical information, user preferences, constraints, feedback, todo list, short/long term intent or previously discussed context, retrieve context in the following order:
