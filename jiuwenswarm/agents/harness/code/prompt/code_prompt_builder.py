@@ -2,7 +2,7 @@
 
 """Code mode prompt builder — English-only.
 
-Provides 6 static prompt sections.
+Provides the static code-mode prompt sections.
 Each section is a PromptSection with English-only content.
 
 Sections are injected once at agent creation time (build_code_system_prompt).
@@ -18,6 +18,7 @@ from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 from jiuwenswarm.agents.harness.common.prompt import safety_override
 from jiuwenswarm.agents.harness.common.prompt import skills_goal_override  # noqa: F401  — patches openjiuwen Skills + Goal sections
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
+    _task_execution_prompt,
     build_shared_content_policy_section,
     build_shared_identity_section,
     build_shared_regional_conventions_section,
@@ -32,13 +33,10 @@ class CodePromptPriority(IntEnum):
     SAFETY = 13
     # Runtime Tool Usage Rules has priority 30; mode-local static guidance
     # follows it so the captured prompt order is stable across agent-core builds.
-    TONE_AND_STYLE = 31
     INTRO = 32
     SYSTEM = 11
-    # All mode-specific guidance follows Tool Usage Rules.  Keep Tone first so
-    # it immediately follows the shared runtime tools section in the final
-    # assembled prompt.
     DOING_TASKS = 33
+    REPORTING_CONVENTIONS = 34
 
 
 # ─── Intro ────────────────────────────────────────
@@ -247,34 +245,22 @@ def _code_doing_tasks_prompt() -> PromptSection:
     )
 
 
-# ─── Tone and Style ────────────────────────────────
+# ─── Code Reporting Conventions ────────────────────
 
 
-def _code_tone_and_style_prompt() -> PromptSection:
+def _code_reporting_conventions_prompt() -> PromptSection:
     content = (
-        "# Tone and style\n"
+        "# Code reporting conventions\n"
         "\n"
-        "- Only use emojis if the user explicitly requests it. "
-        "Avoid using emojis in all communication unless asked.\n"
-        "- Your responses should be short and concise.\n"
-        "- When referencing specific functions or pieces of code "
-        "include the pattern file_path:line_number "
-        "to allow the user to easily navigate "
-        "to the source code location.\n"
-        "- When referencing GitHub issues or pull requests, "
-        "follow the owner/repo#123 format "
-        "(for example, your-org/your-repo#123) "
-        "so that they render as clickable links.\n"
-        "- Do not put a colon before tool calls. "
-        "Your tool calls may not appear directly in the output, "
-        'so text like "Let me read the file:" '
-        "followed by a read tool call "
-        'should simply read "Let me read the file." with a period.'
+        "- When referencing specific functions or pieces of code, use "
+        "file_path:line_number so the user can navigate to the source.\n"
+        "- When referencing GitHub issues or pull requests, use owner/repo#123 "
+        "so the reference renders as a link.\n"
     )
     return PromptSection(
-        name="code_tone_and_style",
+        name="code_reporting_conventions",
         content={"en": content},
-        priority=CodePromptPriority.TONE_AND_STYLE,
+        priority=CodePromptPriority.REPORTING_CONVENTIONS,
     )
 
 
@@ -287,9 +273,10 @@ _CODE_SECTION_GENERATORS = [
     _code_system_prompt,
     build_shared_regional_conventions_section,
     _code_safety_prompt,
+    _task_execution_prompt,
     _code_intro_prompt,
     _code_doing_tasks_prompt,
-    _code_tone_and_style_prompt,
+    _code_reporting_conventions_prompt,
 ]
 
 
