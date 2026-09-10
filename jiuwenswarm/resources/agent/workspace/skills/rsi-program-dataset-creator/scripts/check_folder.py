@@ -36,7 +36,13 @@ else:
                                      for p in (root / "seed").rglob("*") if p.is_file())
                      if not rel.endswith(".pyc") and not any(part in rel + "/" for part in IGNORED))
     if manifest.get("files_in_seed") != listing: problems.append(f"task.json files_in_seed != seed/ listing {listing}")
-    if manifest.get("artifact_path") != f"seed/{card.get('entrypoint')}": problems.append("task.json artifact_path should be seed/<entrypoint>")
+    # The provider loads exactly what artifact_path names: one file for a
+    # one-file seed, the whole directory for a tree. Naming the entrypoint of a
+    # tree loads that file alone and every sibling module goes missing.
+    expected = f"seed/{card.get('entrypoint')}" if len(listing) == 1 else "seed"
+    if manifest.get("artifact_path") != expected:
+        problems.append(f"task.json artifact_path should be {expected!r} for a seed of "
+                        f"{len(listing)} file(s), not {manifest.get('artifact_path')!r}")
     if manifest.get("run_dir") != "run": problems.append("task.json run_dir should be 'run'")
 if not (root / "seed" / card.get("entrypoint", "")).is_file():
     problems.append(f"seed/ does not contain entrypoint {card.get('entrypoint')!r}")
