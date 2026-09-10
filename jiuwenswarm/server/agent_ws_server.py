@@ -8626,17 +8626,29 @@ class AgentWebSocketServer:
                 and request.req_method == ReqMethod.SESSION_CREATE
                 and channel_id.strip().lower() == "tui"
             )
+            # xiaoyi external：沿用上层 conversationId 作 session_id（裸值）。
+            # 目录已存在则复用，不再自造 xiaoyi_*。
+            external_xiaoyi_session = bool(
+                requested_session_id
+                and request.req_method == ReqMethod.SESSION_CREATE
+                and channel_id.strip().lower() == "xiaoyi"
+            )
+            external_session = external_tui_session or external_xiaoyi_session
+            # 仅 TUI external 绑定真实代码项目；xiaoyi external 保持 default/work，
+            # 不改 work_mode 语义（D2=A）。
+            bind_project = external_tui_session
             existing_metadata: dict[str, Any] | None = None
-            if requested_session_id and not external_tui_session:
+            if requested_session_id and not external_session:
                 raise ValueError(
                     "session.create no longer accepts session_id; use session.switch to restore"
                 )
             external_id_lock: asyncio.Lock | None = None
             external_id_lock_acquired = False
-            if external_tui_session:
+            if external_session:
                 logger.warning(
-                    "[AgentServer] TUI supplied session_id via session.create; "
+                    "[AgentServer] %s supplied session_id via session.create; "
                     "bypassing prewarm compatibility path: session_id=%s",
+                    "TUI" if external_tui_session else "xiaoyi external",
                     requested_session_id,
                 )
                 if not is_valid_session_id(requested_session_id):
@@ -8650,9 +8662,9 @@ class AgentWebSocketServer:
                 await external_id_lock.acquire()
                 external_id_lock_acquired = True
 
-                # Existing TUI metadata is authoritative. The frontend injects its
-                # current cwd into every RPC, which must not rebind a restored session
-                # when `--session` is launched from another directory.
+                # Existing external metadata is authoritative. TUI 前端每条 RPC 注入
+                # 当前 cwd，恢复时不得因从其它目录启动而重绑；xiaoyi external 同样
+                # 以既有 metadata 为准，避免重启后改 project/work_mode 语义。
                 from jiuwenswarm.server.runtime.session.session_metadata import (
                     get_session_metadata,
                 )
@@ -8661,16 +8673,43 @@ class AgentWebSocketServer:
                     existing_channel = str(
                         existing_metadata.get("channel_id") or ""
                     ).strip().lower()
-                    if existing_channel not in {"", "tui"}:
-                        raise ValueError("session_id is already owned by another channel")
-                    for field in ("project_id", "project_dir", "work_mode", "mode"):
+                    if external_tui_session:
+                        if existing_channel not in {"", "tui"}:
+                            raise ValueError(
+                                "session_id is already owned by another channel"
+                            )
+                    else:
+                        # xiaoyi：目录名即 requested_session_id，同一会话复用。
+                        # mobileMirror 可能把 channel_id 写成 desktop，不视为易主。
+                        # 仅拒绝明显属于其它产品命名空间的 id / 渠道。
+                        sid = str(requested_session_id or "").strip()
+                        foreign_id = sid.startswith("desktop_") or sid.startswith("tui")
+                        foreign_channel = existing_channel not in {
+                            "",
+                            "xiaoyi",
+                            "desktop",
+                        }
+                        if foreign_id or foreign_channel:
+                            raise ValueError(
+                                "session_id is already owned by another channel"
+                            )
+                    # xiaoyi：工作空间不绑在 session.create 上（与 gateway 一致，
+                    # 每轮 chat.send 的 project_dir/cwd 生效）。拷盘上
+                    # default+project_dir 会撞规则3 BAD_REQUEST，重启续聊全灭。
+                    # TUI 仍拷 project_dir，它绑的是真实代码项目。
+                    copy_fields = (
+                        ("project_id", "project_dir", "work_mode", "mode")
+                        if external_tui_session
+                        else ("project_id", "work_mode", "mode")
+                    )
+                    for field in copy_fields:
                         value = existing_metadata.get(field)
                         if isinstance(value, str) and value.strip():
                             params[field] = value.strip()
                     mode, _, canonical_mode = resolve_agent_request_mode(
                         params.get("mode", "agent")
                     )
-                else:
+                elif bind_project:
                     # Resolve a new external TUI id while holding the per-id lock.
                     # This keeps concurrent windows from rebinding the same id to
                     # different projects before metadata becomes visible.
@@ -8683,6 +8722,11 @@ class AgentWebSocketServer:
                         params["project_id"] = project.project_id
                         params["project_dir"] = project.project_dir
                         params["work_mode"] = project.work_mode
+                else:
+                    # xiaoyi external 新会话：不绑定真实代码项目，
+                    # project_id/work_mode 交由后续 resolve_session_work_mode_params
+                    # 按 channel_id="xiaoyi" 推断为 default/work（D2=A）。
+                    pass
             # Step 1: 归一化 work_mode / project_id / project_dir 三元组
             # (与 web _session_create 共用同一 helper，保持主路径/fallback 一致)
             from jiuwenswarm.server.runtime.session.work_mode import resolve_session_work_mode_params
@@ -8844,7 +8888,7 @@ class AgentWebSocketServer:
                 and canonical_mode in {"agent", "code", "code.normal"}
             )
             create_token = str(params.get("create_token") or "").strip()
-            if external_tui_session:
+            if external_session:
                 claim = WarmClaim(
                     session_id=requested_session_id,
                     prewarm_hit=False,
@@ -8867,7 +8911,7 @@ class AgentWebSocketServer:
             # 会话目录已存在则拒绝,避免覆盖既有会话元数据(与 web 本地 handler 一致)
             session_dir = get_agent_sessions_dir() / session_id
             if (session_dir / "metadata.json").is_file():
-                if not external_tui_session:
+                if not external_session:
                     self._agent_manager.activate_session_prewarm(session_id)
                     resp = AgentResponse(
                         request_id=request.request_id,
@@ -8924,7 +8968,7 @@ class AgentWebSocketServer:
                     team_template_id=expert_binding.get("team_template_id", ""),
                     channel_metadata=channel_metadata,
                 )
-                if not external_tui_session:
+                if not external_session:
                     self._agent_manager.activate_session_prewarm(session_id)
 
             # team prepare 必须在 ack 前完成，避免首条 chat.send 与分布式切换竞态；
@@ -8960,7 +9004,7 @@ class AgentWebSocketServer:
                     "prewarm_status": claim.prewarm_status,
                     **(
                         {"created": session_created, "mode": canonical_mode}
-                        if external_tui_session
+                        if external_session
                         else {}
                     ),
                 },
@@ -8990,7 +9034,7 @@ class AgentWebSocketServer:
 
         except Exception as e:
             logger.exception("[AgentServer] %s failed: %s", operation, e)
-            if not locals().get("external_tui_session", False):
+            if not locals().get("external_session", False):
                 await self._agent_manager.release_session_prewarm_claim(
                     locals().get("session_id")
                 )

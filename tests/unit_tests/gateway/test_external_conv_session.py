@@ -81,3 +81,18 @@ def test_find_by_channel_metadata_when_prefix_mismatch(tmp_path: Path) -> None:
 def test_find_returns_none_for_non_conv_or_missing(tmp_path: Path) -> None:
     assert find_local_session_for_external_conv_id("1788330011489", sessions_dir=tmp_path) is None
     assert find_local_session_for_external_conv_id("conv_nosuch", sessions_dir=tmp_path) is None
+
+
+def test_find_conv_path_hits_desktop_by_to_local_conv_id(tmp_path: Path) -> None:
+    """conv_*（desktop-mirror）路径按 to_local_conv_id 命中。"""
+    desktop = "desktop_1a061727c1f_65690918081e"
+    conv = to_local_conv_id(desktop)
+    desk_dir = tmp_path / desktop
+    desk_dir.mkdir()
+    (desk_dir / "metadata.json").write_text(
+        json.dumps(
+            {"session_id": desktop, "channel_id": "desktop", "last_message_at": 1.0}
+        ),
+        encoding="utf-8",
+    )
+    assert find_local_session_for_external_conv_id(conv, sessions_dir=tmp_path) == desktop
