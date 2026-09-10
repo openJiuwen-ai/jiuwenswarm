@@ -1959,7 +1959,10 @@ class JiuWenSwarm:
             metadata = dict(request.metadata) if isinstance(request.metadata, dict) else {}
             metadata["skills_rebuild_silent"] = True
 
-            rebuild_session_id = f"skills-rebuild:{request.request_id}"
+            # Windows 禁止路径分量含 ':'；用 '-' 隔离，避免 sessions 目录 mkdir 失败。
+            raw_rid = str(request.request_id or "").strip() or "anon"
+            safe_rid = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_rid).strip("._-") or "anon"
+            rebuild_session_id = f"skills-rebuild-{safe_rid}"
             chat_request = AgentRequest(
                 request_id=f"{request.request_id}-rebuild-followup",
                 channel_id=request.channel_id,
