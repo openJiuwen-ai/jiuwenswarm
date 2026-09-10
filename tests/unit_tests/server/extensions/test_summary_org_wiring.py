@@ -160,6 +160,7 @@ async def test_recover_converges_on_deterministic_team_id(
         organization_id="org-1",
         root_task_id="root-1",
         summary_task_id=task_id,
+        owner_team_id="team-owner",
         session_id="sess-1",
     )
     # A second recovery of the same execution must converge on the same team
@@ -169,8 +170,100 @@ async def test_recover_converges_on_deterministic_team_id(
         organization_id="org-1",
         root_task_id="root-1",
         summary_task_id=task_id,
+        owner_team_id="team-owner",
         session_id="sess-1",
     )
     assert first.team_id == expected
     assert second.team_id == expected
     assert [c["team_id"] for c in launched_calls] == [expected, expected]
+
+
+@pytest.mark.asyncio
+async def test_provision_borrows_the_owner_team_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """owner_team_id 决定供体：按 id 显式取 owner 的 DB，不扫描 session 池。"""
+    borrowed_db = object()  # the owner's TeamDatabase (identity matters)
+
+    class _OwnerBackend:
+        db = borrowed_db
+
+    class _OwnerAgent:
+        team_backend = _OwnerBackend()
+
+    class _OwnerEntry:
+        agent = _OwnerAgent()
+
+    class _Pool:
+        def __init__(self) -> None:
+            self.requested: list[str] = []
+
+        async def get(self, team_name):
+            self.requested.append(team_name)
+            return _OwnerEntry() if team_name == "team-owner" else None
+
+        async def teams_for_session(self, session_id):  # pragma: no cover - must not run
+            raise AssertionError("must not scan the session pool")
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.pool = _Pool()
+
+        async def activate(self, spec, session_id):
+            # The activated agent must share the very same DB instance.
+            return SimpleNamespace(agent=SimpleNamespace(team_backend=_OwnerBackend()))
+
+    class _Backend:
+        async def build_team(self, **kwargs):
+            return None
+
+    async def _fake_build_spec(**kwargs):
+        return SimpleNamespace(team_name=kwargs["team_id"])
+
+    async def _fake_materialize(agent, spec0=None):
+        return None
+
+    runtime = _Runtime()
+    factory = JiuwenSummaryTeamFactory(runtime_manager=runtime)
+    # Keep the real _resolve_donor_backend; only stub spec building and build_team.
+    monkeypatch.setattr(factory, "_build_enriched_spec", _fake_build_spec)
+    monkeypatch.setattr(factory, "_materialize_team_in_db", _fake_materialize)
+
+    await factory.provision(
+        organization_id="org-1",
+        root_task_id="root-1",
+        summary_task_id="summary-1",
+        owner_team_id="team-owner",
+        session_id="sess-1",
+    )
+
+    # The owner was looked up by id, and nothing scanned the pool.
+    assert runtime.pool.requested == ["team-owner"]
+
+
+@pytest.mark.asyncio
+async def test_provision_fails_when_the_owner_team_is_absent() -> None:
+    """owner 不在池里时抛错，而不是退回扫描会话里的其它团队。"""
+
+    class _Pool:
+        async def get(self, team_name):
+            return None
+
+        async def teams_for_session(self, session_id):  # pragma: no cover - must not run
+            raise AssertionError("must not scan the session pool")
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.pool = _Pool()
+
+        async def activate(self, spec, session_id):  # pragma: no cover - never reached
+            raise AssertionError("must not activate without an owner DB")
+
+    factory = JiuwenSummaryTeamFactory(runtime_manager=_Runtime())
+
+    with pytest.raises(ValueError, match="no pooled TeamDatabase"):
+        await factory.provision(
+            organization_id="org-1",
+            root_task_id="root-1",
+            summary_task_id="summary-1",
+            owner_team_id="team-missing",
+            session_id="sess-1",
+        )

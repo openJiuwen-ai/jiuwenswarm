@@ -103,6 +103,7 @@ class JiuwenSummaryTeamFactory:
         organization_id: str,
         root_task_id: str,
         summary_task_id: str,
+        owner_team_id: str,
         session_id: str,
     ) -> Any:
         from openjiuwen.agent_teams.organization.summary import LaunchedSummaryTeam
@@ -115,6 +116,7 @@ class JiuwenSummaryTeamFactory:
             organization_id=organization_id,
             root_task_id=root_task_id,
             summary_task_id=summary_task_id,
+            owner_team_id=owner_team_id,
             session_id=session_id,
         )
         return LaunchedSummaryTeam(
@@ -132,6 +134,7 @@ class JiuwenSummaryTeamFactory:
         organization_id: str,
         root_task_id: str,
         summary_task_id: str,
+        owner_team_id: str,
         session_id: str,
     ) -> Any:
         """Re-attach or recreate a Summary Team for an interrupted execution (§8).
@@ -151,6 +154,7 @@ class JiuwenSummaryTeamFactory:
             organization_id=organization_id,
             root_task_id=root_task_id,
             summary_task_id=summary_task_id,
+            owner_team_id=owner_team_id,
             session_id=session_id,
         )
         return LaunchedSummaryTeam(
@@ -189,30 +193,29 @@ class JiuwenSummaryTeamFactory:
     async def _resolve_donor_backend(
         self,
         *,
+        owner_team_id: str,
         session_id: str,
-        team_id: str,
-        share_db_from_team_id: str | None,
-    ) -> Any | None:
+    ) -> Any:
+        """Return the owner team's backend, whose DB the Summary Team shares.
+
+        The owner is resolved explicitly instead of scanning the session pool:
+        the organization's storage is the owner's, and picking whichever team
+        happens to sit first in the pool would silently depend on insertion
+        order.  A missing (or DB-less) owner is an error rather than a fallback,
+        because a Summary Team without the organization's DB cannot see its
+        source tasks.
+        """
         runtime = self._get_runtime()
-        donor_id = str(share_db_from_team_id or "").strip()
-        donor_backend = None
-        if donor_id:
-            entry = await runtime.pool.get(donor_id)
-            if entry is not None:
-                donor_backend = getattr(entry.agent, "team_backend", None)
+        owner_id = str(owner_team_id or "").strip()
+        if not owner_id:
+            raise ValueError("summary team requires an owner_team_id to share storage with")
+        entry = await runtime.pool.get(owner_id)
+        donor_backend = getattr(entry.agent, "team_backend", None) if entry is not None else None
         if donor_backend is None or getattr(donor_backend, "db", None) is None:
-            teams_for_session = getattr(runtime.pool, "teams_for_session", None)
-            if callable(teams_for_session):
-                for entry in await teams_for_session(session_id):
-                    if getattr(entry, "team_name", None) == team_id:
-                        continue
-                    candidate = getattr(entry.agent, "team_backend", None)
-                    if (
-                        candidate is not None
-                        and getattr(candidate, "db", None) is not None
-                    ):
-                        donor_backend = candidate
-                        break
+            raise ValueError(
+                "summary team cannot share storage: owner team "
+                f"{owner_id!r} has no pooled TeamDatabase in session {session_id!r}"
+            )
         return donor_backend
 
     async def _launch_team(
@@ -223,6 +226,7 @@ class JiuwenSummaryTeamFactory:
         organization_id: str,
         root_task_id: str,
         summary_task_id: str,
+        owner_team_id: str,
         session_id: str,
     ) -> Any:
         """Build the TeamAgentSpec, activate it, and park it PAUSED."""
@@ -234,14 +238,13 @@ class JiuwenSummaryTeamFactory:
             leader_id: str
 
         runtime = self._get_runtime()
+        # The summary team shares the organization's storage: borrow the owner
+        # team's DB explicitly rather than scanning for the first available one.
         donor_backend = await self._resolve_donor_backend(
+            owner_team_id=owner_team_id,
             session_id=session_id,
-            team_id=team_id,
-            share_db_from_team_id=None,
         )
-        shared_db = (
-            getattr(donor_backend, "db", None) if donor_backend is not None else None
-        )
+        shared_db = donor_backend.db
 
         spec = await self._build_enriched_spec(
             spec0=spec0,
@@ -257,9 +260,8 @@ class JiuwenSummaryTeamFactory:
             if agent is None:
                 raise ValueError(f"activate returned no agent for team: {team_id}")
 
-            if donor_backend is not None:
-                _verify_shared_database(agent, donor_backend)
-                await self._materialize_team_in_db(agent, spec0)
+            _verify_shared_database(agent, donor_backend)
+            await self._materialize_team_in_db(agent, spec0)
 
             # Design: Summary Team should sit PAUSED without an idle warm-up so
             # the framework's summary-turn drain can resume it on demand.
