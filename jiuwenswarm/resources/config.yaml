@@ -1574,7 +1574,7 @@ modes:
 # Per-session agent profiles (template). A session selects a profile via the
 # relay signal (params.agent_kind / metadata.agent_kind) or the agent_id
 # breed_map. When no signal is present, the global react config applies
-# unchanged. One sidecar serves both normal and minimal sessions, each in its
+# unchanged. One sidecar serves both normal and flash sessions, each in its
 # own child adapter + DeepAgent, no restart. Override in the user-dir config.
 agent_profiles:
   normal:
@@ -1583,7 +1583,7 @@ agent_profiles:
       evolution:
         skill_create: false
         review_trigger: false
-  minimal:
+  flash:
     react:
       enable_task_loop: false
       evolution:
@@ -1603,4 +1603,4 @@ agent_profiles:
         - _ask_user_rail
   # breed_map:
   #   agent-normal: normal
-  #   agent-minimal: minimal
+  #   agent-flash: flash

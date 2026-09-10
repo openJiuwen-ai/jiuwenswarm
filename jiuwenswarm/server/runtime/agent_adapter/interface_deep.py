@@ -2255,10 +2255,10 @@ class JiuWenSwarmDeepAdapter:
         self._reload_lock = asyncio.Lock()
         self._working_checker: Callable[[], bool] | None = None
         self._session_instance_config: dict[str, Any] | None = None
-        # Per-session agent profile kind ("normal" | "minimal" | None). Resolved
+        # Per-session agent profile kind ("normal" | "flash" | None). Resolved
         # at create_instance from the request signal (params.agent_kind /
         # metadata) or the agent_id breed_map; persisted across reload so a
-        # minimal session isn't flipped back to normal by a hot reload.
+        # flash session isn't flipped back to normal by a hot reload.
         self._active_agent_kind: str | None = None
         self._session_instance_mode: str = "agent"
         self._session_instance_sub_mode: str | None = None
@@ -8327,7 +8327,7 @@ class JiuWenSwarmDeepAdapter:
           2. agent_profiles.breed_map[agent_id] (two-breed relay approach where
              the breed name carries the kind, no relay code change needed)
 
-        Returns "normal" | "minimal" | None (None => no profile; use global config).
+        Returns "normal" | "flash" | None (None => no profile; use global config).
         """
         raw: Any = None
         if request is not None:
@@ -8340,14 +8340,14 @@ class JiuWenSwarmDeepAdapter:
                     raw = md.get("agent_kind") or md.get("agentKind")
         if isinstance(raw, str) and raw.strip():
             k = raw.strip().lower()
-            if k in ("normal", "minimal"):
+            if k in ("normal", "flash"):
                 return k
         profiles = (config_base or {}).get("agent_profiles", {})
         if isinstance(profiles, dict):
             breed_map = profiles.get("breed_map", {})
             if isinstance(breed_map, dict):
                 mapped = breed_map.get(self._agent_id)
-                if isinstance(mapped, str) and mapped.strip().lower() in ("normal", "minimal"):
+                if isinstance(mapped, str) and mapped.strip().lower() in ("normal", "flash"):
                     return mapped.strip().lower()
         return None
 
@@ -8370,7 +8370,7 @@ class JiuWenSwarmDeepAdapter:
         Only the react section (incl. the evolution sub-tree) is overlaid;
         models, routing, etc. are untouched. Returns config_base unchanged when
         no profile is active. Force-revive safe: the merge runs before
-        _resolve_enable_task_loop so a minimal profile's
+        _resolve_enable_task_loop so a flash profile's
         evolution.skill_create=false keeps task_loop=false.
         """
         spec = self._active_profile_spec(config_base)
@@ -9205,7 +9205,7 @@ class JiuWenSwarmDeepAdapter:
             # then merge the named profile's react/evolution overrides into
             # config_base BEFORE _resolve_enable_task_loop and _build_agent_rails
             # read them. This is what lets one sidecar serve both normal and
-            # minimal sessions, each in its own child adapter + DeepAgent.
+            # flash sessions, each in its own child adapter + DeepAgent.
             kind = self._resolve_agent_kind(bootstrap_request, config_base)
             if kind is not None:
                 self._active_agent_kind = kind
@@ -9780,7 +9780,7 @@ class JiuWenSwarmDeepAdapter:
             # (set at cold start) and re-merge the profile. Without this,
             # _apply_reload_config_snapshot resets both _config_base_cache and
             # _config_cache to the global react (no profile), which would flip a
-            # normal (task_loop=true) session back to minimal on hot reload.
+            # normal (task_loop=true) session back to flash on hot reload.
             if self._active_agent_kind is not None:
                 config_base = self._apply_active_profile(config_base)
                 self._config_base_cache = config_base.copy()
