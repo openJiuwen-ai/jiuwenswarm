@@ -183,11 +183,14 @@ def test_work_code_and_design_share_the_same_static_prefix():
 
     assert code_prompt.startswith(shared_prefix)
     assert design_prompt.startswith(shared_prefix)
-    # The mode-specific tone section is deliberately the first static section
-    # after Safety: the runtime Tools section (P30) is inserted between them
-    # in the fully assembled prompt.
-    assert code_prompt[len(shared_prefix) :].startswith("# Tone and style")
-    assert design_prompt[len(shared_prefix) :].startswith("# Tone and style")
+    for prompt, mode_heading, trailing_heading in (
+        (code_prompt, "# Code mode", "# Code reporting conventions"),
+        (design_prompt, "# Design mode", "# Design communication"),
+    ):
+        assert prompt[len(shared_prefix) :].startswith("# Task Execution Strategy")
+        assert prompt.index("# Task Execution Strategy") < prompt.index(mode_heading)
+        assert prompt.index(mode_heading) < prompt.index(trailing_heading)
+        assert "# Tone and style" not in prompt
 
 
 def test_all_modes_place_the_shared_system_section_before_regional_conventions():
@@ -206,6 +209,7 @@ def test_all_modes_place_the_shared_system_section_before_regional_conventions()
     for prompt in prompts:
         assert prompt.index("# Content policy") < prompt.index("# System")
         assert prompt.index("# System") < prompt.index("# Regional conventions")
+        assert "All text you output outside of tool use" not in prompt
 
 
 def test_design_mode_static_section_priorities_are_explicitly_ordered():
@@ -215,16 +219,16 @@ def test_design_mode_static_section_priorities_are_explicitly_ordered():
 
     ordered = [
         DesignPromptPriority.SYSTEM,
-        DesignPromptPriority.TONE_AND_STYLE,
         DesignPromptPriority.INTRO,
         DesignPromptPriority.CORE_CAPABILITIES,
+        DesignPromptPriority.COMMUNICATION,
     ]
 
     assert ordered == sorted(ordered)
     assert len(ordered) == len(set(ordered))
 
 
-def test_code_and_design_tone_follow_tool_usage_rules_priority():
+def test_code_and_design_profile_guidance_follow_tool_usage_rules_priority():
     from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import CodePromptPriority
     from jiuwenswarm.agents.harness.design.prompt.design_prompt_builder import (
         DesignPromptPriority,
@@ -233,21 +237,22 @@ def test_code_and_design_tone_follow_tool_usage_rules_priority():
     for priority in (CodePromptPriority, DesignPromptPriority):
         assert priority.SAFETY == 13
         # agent-core's runtime Tool Usage Rules is priority 30 in the packaged
-        # application.  Static guidance must follow it without relying on a
-        # monkey-patch of an external module.
-        assert priority.TONE_AND_STYLE == 31
+        # application. Shared Task Execution has priority 31; mode-specific
+        # guidance follows it without relying on an external monkey-patch.
         assert priority.INTRO == 32
 
     assert CodePromptPriority.DOING_TASKS == 33
+    assert CodePromptPriority.REPORTING_CONVENTIONS == 34
     assert DesignPromptPriority.CORE_CAPABILITIES == 33
+    assert DesignPromptPriority.COMMUNICATION == 34
 
 
 @pytest.mark.parametrize(
     ("profile", "expected_after_tools"),
     (
         ("work", ("# Task Execution Strategy",)),
-        ("code", ("# Tone and style", "# Code mode")),
-        ("design", ("# Tone and style", "# Design mode")),
+        ("code", ("# Task Execution Strategy", "# Code mode")),
+        ("design", ("# Task Execution Strategy", "# Design mode")),
     ),
 )
 def test_runtime_builder_keeps_tools_between_safety_and_profile_guidance(
@@ -313,6 +318,8 @@ def test_find_skills_policy_lives_in_tool_usage_rules_not_skills_preamble():
     assert "Tool results are the source of truth" not in tools_content
     assert "find-skills-win" in tools_content
     assert "skill discovery and installation" in tools_content.lower()
+    assert "Default skill for skill discovery and installation" in tools_content
+    assert "Default tool for skill discovery and installation" not in tools_content
     assert "Skill Discovery and Installation" not in skills_goal_override._SKILLS_PREAMBLE_EN
     assert skills_goal_override._SKILLS_PREAMBLE_EN.startswith("# Skills")
 
@@ -489,10 +496,8 @@ async def test_response_prompt_rail_no_longer_injects_input_or_output_sections()
 
 @pytest.mark.asyncio
 async def test_runtime_env_section_includes_message_rules_subsections():
-    """RuntimePromptRail's ``env`` section hosts the Output Rules /
-    Subagent Usage Rules subsections (headings demoted one level) so they
-    read as subsections of ``# Runtime Environment`` and are shared across
-    office / code / design / team profiles.
+    """RuntimePromptRail's ``env`` section hosts Output Rules, shared Text
+    output, and Subagent Usage Rules in that order for every Work profile.
     """
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -517,11 +522,11 @@ async def test_runtime_env_section_includes_message_rules_subsections():
     assert not builder.has_section("input")
     assert not builder.has_section("output")
     assert "# 消息说明" not in prompt
-    # Text output (does not apply to tool calls) was relocated from the
-    # per-mode prompt builders (code/design) into the shared Runtime
-    # Environment ``env`` section so all three modes (office/code/design)
-    # receive the same output-efficiency guidance.
-    assert "## Text output (does not apply to tool calls)" in prompt
+    # Text output is a child of Output Rules rather than a competing Runtime
+    # Environment subsection, and appears before Subagent Usage Rules.
+    assert "### Text output (does not apply to tool calls)" in prompt
+    assert prompt.index("## Output Rules") < prompt.index("### Text output")
+    assert prompt.index("### Text output") < prompt.index("## Subagent Usage Rules")
     assert "Go straight to the point." in prompt
 
 

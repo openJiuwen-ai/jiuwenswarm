@@ -145,7 +145,7 @@ _TOOL_USAGE_RULES = {
 - If the previous result is empty or has no new information, adjust parameters, switch to another tool, or state that the result is insufficient.
 - Prefer dedicated tools for file search, read, edit, and write — do not reimplement them with Shell.
 - Chain Shell commands only when there are dependencies; for long-running commands, increase `timeout` as needed — do not poll with `sleep`.
-- Default tool for skill discovery and installation: the `find-skills-win` skill. Complete all skill discovery, retrieval, and installation tasks through this skill by default; use another method only when the user explicitly requests it.
+- Default skill for skill discovery and installation: `find-skills-win`. Complete all skill discovery, retrieval, and installation tasks through this skill by default; use another method only when the user explicitly requests it.
 
 Do NOT use bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
 - To read files use read_file instead of cat, head, tail, or sed

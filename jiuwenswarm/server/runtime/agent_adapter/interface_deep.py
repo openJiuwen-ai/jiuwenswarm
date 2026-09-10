@@ -155,6 +155,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     RuntimePromptRail,
     StructuredAskUserRail,
     SymphonyOrchestrationRail,
+    XiaoyiDefaultToolVisibilityRail,
 )
 from jiuwenswarm.common.invocation_context.codec import attach_invocation_context
 from jiuwenswarm.server.invocation_context_builder import build_invocation_context
@@ -268,12 +269,7 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
     SkillRetrievalPromptRail,
 )
 from jiuwenswarm.symphony.config import load_symphony_config
-from jiuwenswarm.agents.harness.common.tools.wiki_tools import wiki_ingest, wiki_query, wiki_lint
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
-from jiuwenswarm.agents.harness.common.tools.channel_config_tools import (
-    configure_channel,
-    get_wechat_login_status,
-)
 from jiuwenswarm.agents.harness.common.tools.multi_session_toolkits import MultiSessionToolkit
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.agents.harness.common.tools.invoke_meta.invoke_tool import InvokeTool
@@ -559,6 +555,35 @@ _SKILL_RETRIEVAL_TOOL_NAMES = frozenset(
         "skill_branch_peek",
     }
 )
+_XIAOYI_FETCH_WEBPAGE_DESCRIPTION = {
+    "cn": (
+        "抓取网页文本，返回状态码、标题和正文文本。可用于核实具体页面内容，不要只依赖摘要。"
+        "可设置 max_chars=0 关闭截断，也可以调大 timeout_seconds 处理慢站点。"
+        "适用场景：文档、博客、新闻、API 参考等普通网页。"
+        "代码仓地址（GitHub/GitLab/Gitee/Gitcode/Bitbucket 等）一般不适合用本工具——"
+        "网页只能看到渲染后的目录页；要读源码、看历史、跨文件搜索，"
+        "更顺手的方式是用 shell 工具（bash 或 powershell）执行 `git clone` 拉到本地。"
+    ),
+    "en": (
+        "Fetch webpage text content from a URL and return status, title, and plain text. "
+        "Use it to verify a specific page instead of relying only on summaries. Set max_chars=0 "
+        "to disable clipping and use a larger timeout_seconds for slow pages. "
+        "Best fit: documentation, blog posts, news, API references, and similar general web content. "
+        "Git repository URLs (GitHub/GitLab/Gitee/Gitcode/Bitbucket, etc.) are usually a poor fit; "
+        "reading source, history, or searching across files is easier after a local `git clone` "
+        "via the shell tool (bash or powershell)."
+    ),
+}
+
+
+def _apply_xiaoyi_fetch_webpage_description(tool: Any, language: str) -> Any:
+    """Replace upstream search-tool wording with the Xiaoyi Work entry point."""
+    card = getattr(tool, "card", None)
+    if card is not None and getattr(card, "name", "") == "fetch_webpage":
+        card.description = _XIAOYI_FETCH_WEBPAGE_DESCRIPTION.get(
+            language, _XIAOYI_FETCH_WEBPAGE_DESCRIPTION["en"]
+        )
+    return tool
 # Total ``_update_runtime_config`` cost above which its per-stage breakdown is
 # worth an INFO line. It runs once per turn ahead of the model call, so anything
 # at this scale is directly visible in time-to-first-token.
@@ -1197,6 +1222,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._skill_create_rail: SkillCreateRail | None = None
         self._subagent_rail: SubagentRail | None = None
         self._ask_user_rail: StructuredAskUserRail | None = None
+        self._tool_visibility_rail: XiaoyiDefaultToolVisibilityRail | None = None
         self._permission_rail: Any = None
         self._avatar_rail: Any = None
         self._memory_forbidden_rail: Any = None
@@ -3117,19 +3143,13 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             warn_label="vision tools",
         )
 
-        desired_audio_tools = self._iter_runtime_audio_tools(agent_id)
-        if self._audio_tools_registered:
-            current_names = {tool.card.name for tool in self._audio_tools}
-            desired_names = {tool.card.name for tool in desired_audio_tools}
-            if current_names != desired_names:
-                self._remove_registered_tools(self._audio_tools)
-                self._audio_tools = []
-                self._audio_tools_registered = False
+        # Audio tools (including the otherwise always-visible audio_metadata)
+        # are deliberately excluded from the Xiaoyi Work default set.
         self._audio_tools, self._audio_tools_registered = self._sync_tool_group(
             current_tools=self._audio_tools,
             registered=self._audio_tools_registered,
-            enabled=bool(desired_audio_tools),
-            create_fn=lambda: desired_audio_tools,
+            enabled=False,
+            create_fn=list,
             warn_label="audio tools",
         )
 
@@ -5059,6 +5079,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             return None
 
     @staticmethod
+    def _build_xiaoyi_default_tool_visibility_rail() -> XiaoyiDefaultToolVisibilityRail:
+        """Build the final model-tool filter shared by all Xiaoyi Work modes."""
+        return XiaoyiDefaultToolVisibilityRail()
+
+    @staticmethod
     def _build_work_plan_approval_rail() -> Any | None:
         """构建 work plan 的审批 rail（``exit_plan_mode`` 即时弹窗）。"""
         try:
@@ -5106,6 +5131,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_cspl_sentinel_rail", self._build_cspl_sentinel_rail),
+            _RailBuildInfo(
+                "_tool_visibility_rail",
+                self._build_xiaoyi_default_tool_visibility_rail,
+            ),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             _RailBuildInfo("_subagent_rail", self._build_subagent_rail),
@@ -5441,15 +5470,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """Get tool cards."""
         tool_cards = []
 
-        for wtool in [wiki_ingest, wiki_query, wiki_lint]:
-            self._register_shared_tool(wtool)
-            tool_cards.append(wtool.card)
-
-        for channel_tool in (configure_channel, get_wechat_login_status):
-            if not Runner.resource_mgr.get_tool(channel_tool.card.id):
-                Runner.resource_mgr.add_tool(channel_tool)
-            tool_cards.append(channel_tool.card)
-
         # 付费搜索工具：有任意一个付费 key 就注册
         if is_paid_search_enabled():
             self._paid_search_tool = WebPaidSearchTool(
@@ -5461,6 +5481,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         for tool_cls in [WebFreeSearchTool, WebFetchWebpageTool]:
             tool_instance = tool_cls(agent_id=agent_id)
+            _apply_xiaoyi_fetch_webpage_description(
+                tool_instance,
+                self._resolve_output_language(),
+            )
             self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(tool_instance.card)
 
@@ -5484,20 +5508,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     exc,
                 )
 
+        # Do not register audio_metadata or any other audio tool by default.
+        # An explicit product integration may still instantiate audio tools.
         self._audio_tools = []
         self._audio_tools_registered = False
-        try:
-            self._audio_tools = self._iter_runtime_audio_tools(agent_id)
-            for tool in self._audio_tools:
-                self._register_agent_owned_tool(tool, agent_id)
-                tool_cards.append(tool.card)
-            self._audio_tools_registered = bool(self._audio_tools)
-        except Exception as exc:
-            self._audio_tools = []
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] audio tools registration failed: %s",
-                exc,
-            )
 
         self._video_tool_registered = False
         if self._video_model_config and not _runtime_tool_is_disabled("video_understanding"):

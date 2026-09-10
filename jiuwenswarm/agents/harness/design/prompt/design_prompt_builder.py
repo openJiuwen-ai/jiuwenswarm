@@ -19,6 +19,7 @@ from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 from jiuwenswarm.agents.harness.common.prompt import safety_override
 from jiuwenswarm.agents.harness.common.prompt import skills_goal_override  # noqa: F401  — patches openjiuwen Skills + Goal sections
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
+    _task_execution_prompt,
     build_shared_content_policy_section,
     build_shared_identity_section,
     build_shared_regional_conventions_section,
@@ -33,10 +34,10 @@ class DesignPromptPriority(IntEnum):
     SAFETY = 13
     # Runtime Tool Usage Rules has priority 30; mode-local static guidance
     # follows it so the captured prompt order is stable across agent-core builds.
-    TONE_AND_STYLE = 31
     INTRO = 32
     SYSTEM = 11
     CORE_CAPABILITIES = 33
+    COMMUNICATION = 34
 
 
 # ─── Intro ────────────────────────────────────────
@@ -104,34 +105,23 @@ def _design_system_prompt() -> PromptSection:
     return build_shared_system_section(priority=DesignPromptPriority.SYSTEM)
 
 
-# ─── Tone and Style ────────────────────────────────
+# ─── Design Communication ──────────────────────────
 
 
-def _design_tone_and_style_prompt() -> PromptSection:
+def _design_communication_prompt() -> PromptSection:
     content = (
-        "# Tone and style\n"
+        "# Design communication\n"
         "\n"
-        "- Only use emojis if the user explicitly requests it. Avoid using emojis "
-        "in all communication unless asked.\n"
-        "- Your responses should be short and concise. Design tasks often involve "
-        "multi-step generation — give brief status updates at key milestones, not "
-        "a running commentary.\n"
-        "- When referencing specific files or slides, include the pattern "
-        "file_path:line_number or slide_number to allow the user to easily "
-        "navigate.\n"
-        "- Do not put a colon before tool calls. Your tool calls may not appear "
-        "directly in the output, so text like \"Let me load the skill:\" followed "
-        "by a skill_tool call should simply read \"Let me load the skill.\" with "
-        "a period.\n"
-        "- Communicate as a designer; never expose tool names, internal phases, "
-        "or other implementation details. Describe actions in the language of "
-        "design activities (e.g. \"analyzing the visual style\", \"building the "
-        "slides\").\n"
+        "- For multi-step generation, give brief updates only at meaningful milestones.\n"
+        "- When referencing a file or slide, use file_path:line_number or "
+        "slide_number so the user can navigate to it.\n"
+        "- Describe work as design activity; do not expose tool names, internal "
+        "phases, or implementation details.\n"
     )
     return PromptSection(
-        name="design_tone_and_style",
+        name="design_communication",
         content={"en": content},
-        priority=DesignPromptPriority.TONE_AND_STYLE,
+        priority=DesignPromptPriority.COMMUNICATION,
     )
 
 
@@ -144,9 +134,10 @@ _DESIGN_SECTION_GENERATORS = [
     _design_system_prompt,
     build_shared_regional_conventions_section,
     _design_safety_prompt,
+    _task_execution_prompt,
     _design_intro_prompt,
     _design_core_capabilities_prompt,
-    _design_tone_and_style_prompt,
+    _design_communication_prompt,
 ]
 
 
