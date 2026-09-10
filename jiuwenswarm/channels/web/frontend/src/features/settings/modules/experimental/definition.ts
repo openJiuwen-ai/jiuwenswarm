@@ -1,7 +1,6 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
-  A2UISetting,
   ExternalCliSettingsItem,
   ProactiveLimitsSetting,
   TrajectoryUiSetting,
@@ -23,11 +22,6 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'rsi',
       titleKey: 'settingsPanel.experimental.rsi',
       items: [{ id: 'rsi-enabled', component: 'custom', render: RSISetting }],
-    },
-    {
-      id: 'a2ui',
-      titleKey: 'settingsPanel.experimental.a2ui',
-      items: [{ id: 'a2ui', component: 'custom', render: A2UISetting }],
     },
     {
       id: 'trajectory-ui',
