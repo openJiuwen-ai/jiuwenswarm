@@ -3234,6 +3234,9 @@ class JiuWenSwarmDeepAdapter:
             await self._clear_skill_turbo_resume_ctx_via_isolated_session(target_sid)
             if context_engine is not None:
                 await context_engine.save_contexts(loop_session)
+            # 强制落盘（须在 save_contexts 之后），防 post_run 幂等导致清除不持久化
+            if callable(getattr(loop_session, "commit", None)):
+                await loop_session.commit()
         except Exception:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] interrupt: failed to clear pending "
@@ -12178,19 +12181,17 @@ class JiuWenSwarmDeepAdapter:
                     yield summary_chunk
 
             async def _clear_resume_ctx() -> None:
-                # session 已被 mark_resume_in_flight post_run 过（_post_run_done=True），
-                # 直接再 post_run 是 no-op，update_state(None) 不会落盘。新请求 pre_run
-                # 会从 checkpointer 读回残留 ctx，触发 skill_acceleration_exec 重复执行。
-                # 用独立 session 重新 pre_run+clear+post_run 保证清除一定持久化。
+                # 清掉 DeepAgent 键的 pending HITL 状态与隔离键的 resume_ctx，
+                # 避免下一条消息重放中断点重跑已完成任务。
                 sid = request.session_id or "default"
                 try:
-                    await self._clear_skill_turbo_resume_ctx_via_isolated_session(sid)
+                    if not await self._clear_pending_skill_turbo_hitl(sid):
+                        await self._clear_skill_turbo_resume_ctx_via_isolated_session(sid)
                 except Exception:
-                    # 清除失败时残留 resume_ctx 会让后续请求重跑已完成任务，
-                    # 提升到 warning 保证该复发信号生产可观测。
+                    # 清除失败时残留断点会重跑任务，warning 保证可观测。
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] skill_turbo resume clear via "
-                        "isolated session failed session_id=%s (stale resume_ctx "
+                        "[JiuWenSwarmDeepAdapter] skill_turbo resume clear "
+                        "failed session_id=%s (stale interrupt state "
                         "may trigger task rerun)",
                         sid,
                         exc_info=True,
