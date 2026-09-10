@@ -104,6 +104,7 @@ export default {
           'action-link': color('--color-cron-action-link'),
           'auto-managed-surface': color('--color-cron-auto-managed-surface'),
           'auto-managed-text': color('--color-cron-auto-managed-text'),
+          'table-header-surface': color('--color-cron-table-header-surface'),
         },
         connector: {
           'tag-surface': color('--color-connector-tag-surface'),

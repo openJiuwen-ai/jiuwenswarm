@@ -4,6 +4,7 @@
   useCallback,
   KeyboardEvent,
   useEffect,
+  useLayoutEffect,
   ClipboardEvent,
   DragEvent,
   ChangeEvent,
@@ -1503,6 +1504,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     };
   }, [isModeMenuOpen]);
 
+  useLayoutEffect(() => {
+    if (!isModeMenuOpen) return;
+    function updateModeMenuPosition() {
+      if (!modeMenuRef.current) return;
+      const rect = modeMenuRef.current.getBoundingClientRect();
+      setModeMenuAnchor(rect);
+      setMenuDirection(resolveMenuDirection(rect.bottom, 160));
+    }
+    window.addEventListener('resize', updateModeMenuPosition);
+    window.addEventListener('scroll', updateModeMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateModeMenuPosition);
+      window.removeEventListener('scroll', updateModeMenuPosition, true);
+    };
+  }, [isModeMenuOpen]);
+
   useEffect(() => {
     if (!attachMenuOpen) return;
 
@@ -1533,9 +1550,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     };
   }, [attachMenuOpen]);
 
+  useLayoutEffect(() => {
+    if (!attachMenuOpen) return;
+    function updateAttachMenuPosition() {
+      if (!attachMenuRef.current) return;
+      const rect = attachMenuRef.current.getBoundingClientRect();
+      setAttachMenuAnchor(rect);
+      setAttachMenuDirection(window.innerHeight - rect.bottom >= 200 ? 'down' : 'up');
+    }
+    window.addEventListener('resize', updateAttachMenuPosition);
+    window.addEventListener('scroll', updateAttachMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateAttachMenuPosition);
+      window.removeEventListener('scroll', updateAttachMenuPosition, true);
+    };
+  }, [attachMenuOpen]);
+
   useEffect(() => {
     if (!attachmentMenuId) return;
-
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Element | null;
       if (

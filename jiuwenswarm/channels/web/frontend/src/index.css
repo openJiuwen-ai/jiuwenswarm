@@ -114,6 +114,20 @@ body.workspace-resize-active iframe {
   pointer-events: none;
 }
 
+@layer components {
+  .form-label {
+    @apply block text-sm text-text-strong;
+    line-height: 22px;
+  }
+}
+
+.border-input {
+  border: 1px solid var(--color-border-input-strong);
+}
+.border-input:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+}
+
 /* ===========================================
    Animations
    =========================================== */

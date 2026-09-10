@@ -22,6 +22,8 @@ type TooltipHandlers = {
 interface UseAdaptiveTooltipOptions {
   offsetX?: number;
   placement?: TooltipPlacement;
+  /** 最大宽度（px），不传时用 .adaptive-tooltip 的默认 320px */
+  maxWidth?: number;
 }
 
 /**
@@ -36,12 +38,14 @@ interface UseAdaptiveTooltipOptions {
  *   const { tooltip, handlers } = useAdaptiveTooltip();
  *   const { tooltip, handlers } = useAdaptiveTooltip({ offsetX: -50 });
  *   const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top' });
+ *   const { tooltip, handlers } = useAdaptiveTooltip({ maxWidth: 400 });
  *   <button data-tooltip="提示" {...handlers}>...</button>
  *   {tooltip}
  */
 export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { tooltip: ReactNode; handlers: TooltipHandlers } {
   const offsetPct = options?.offsetX ?? 0;
   const placement = options?.placement ?? 'bottom';
+  const maxWidth = options?.maxWidth;
   const [state, setState] = useState<TooltipState | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number; visible: boolean } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -125,6 +129,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
             left: position ? position.left : -9999,
             visibility: position?.visible ? 'visible' : 'hidden',
             zIndex: 10000,
+            maxWidth: maxWidth !== undefined ? `${maxWidth}px` : undefined,
           }}
           role="tooltip"
         >
