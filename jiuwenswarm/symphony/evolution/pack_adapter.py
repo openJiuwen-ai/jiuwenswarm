@@ -37,15 +37,17 @@ def events_to_evidence(graph_dir: Path) -> list[RecipeEvidence]:
             continue
 
         selected_edges = event.get("selected_edges") or []
-        failed_edges = event.get("failed_edges") or []
 
-        # Build set of failed edge keys
+        # Build set of failed edge keys from selected_edges with failed=True marker
+        # record_plan_outcome marks failed edges with "failed": True field,
+        # not as a top-level "failed_edges" list
         failed_edge_keys = set()
-        for edge in failed_edges:
-            source = skill_id(edge.get("source_id"))
-            target = skill_id(edge.get("target_id"))
-            if source and target:
-                failed_edge_keys.add((source, target))
+        for edge in selected_edges:
+            if edge.get("failed") is True:
+                source = skill_id(edge.get("source_id"))
+                target = skill_id(edge.get("target_id"))
+                if source and target:
+                    failed_edge_keys.add((source, target))
 
         # Convert edges with success metadata
         edges = []

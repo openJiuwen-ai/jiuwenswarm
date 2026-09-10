@@ -338,8 +338,19 @@ def _consume_records(
         # a plan from the observed skills so we can still distill packs.
         # Also handle the case when symphony_compose_graph was called but
         # returned no_plan (empty selected_skill_ids).
-        should_fallback = (not markers and not pending) or (
-            pending and not pending.get("selected_skill_ids")
+        #
+        # 关键约束:只在当前 request 有 skill_tool 调用时触发 fallback。
+        # 否则 pending 被清空后(not markers and not pending)恒为 True,
+        # 会导致同一批 records 被二次消费,或错误地为没有技能调用的请求合成 plan。
+        has_skill_calls = any(
+            r.get("event_type") == "chat.tool_call"
+            and str(r.get("tool_name") or "") == "skill_tool"
+            for r in request_records
+        )
+        should_fallback = has_skill_calls and (
+            (not markers and not pending) or (
+                pending and not pending.get("selected_skill_ids")
+            )
         )
         if should_fallback:
             synthetic = _synthesize_plan_from_skill_calls(
@@ -636,7 +647,15 @@ def _classify_outcome(
         if record.get("event_type") == "chat.error":
             error = str(record.get("error") or record.get("content") or "execution failed")
             return "failure", str(record.get("error_type") or "agent_error"), error[:1000]
-    # 2. 检查 chat.final（有最终回复就算成功）
+    # 2. 检查失败的 tool_result（在 chat.final 之前检查，因为工具失败应该优先于最终回复）
+    for record in records:
+        if record.get("event_type") != "chat.tool_result":
+            continue
+        if _tool_result_failed(record):
+            tool_name = str(record.get("tool_name") or "tool")
+            detail = str(record.get("error") or record.get("result") or "tool execution failed")
+            return "failure", f"{tool_name}_failed", detail[:1000]
+    # 3. 检查 chat.final（有最终回复就算成功）
     final_text = "\n".join(
         str(record.get("content") or "").strip()
         for record in records
@@ -646,14 +665,6 @@ def _classify_outcome(
         if _NON_EXECUTION_FINAL_RE.search(final_text):
             return None
         return "success", "", final_text[-1000:]
-    # 3. 检查失败的 tool_result（只有没有 chat.final 时才检查）
-    for record in records:
-        if record.get("event_type") != "chat.tool_result":
-            continue
-        if _tool_result_failed(record):
-            tool_name = str(record.get("tool_name") or "tool")
-            detail = str(record.get("error") or record.get("result") or "tool execution failed")
-            return "failure", f"{tool_name}_failed", detail[:1000]
     # 4. 检查 chat.ask_user_question
     if any(record.get("event_type") == "chat.ask_user_question" for record in records):
         return "needs_input", "missing_input", "execution paused for user input"
