@@ -2343,6 +2343,7 @@
     "skillApproval": {
       "title": "Skill load approval",
       "trustBuiltin": "builtin",
+      "trustPrebuilt": "enterprise prebuilt",
       "versionLocal": "local (no version)",
       "source": "Source",
       "version": "Version",

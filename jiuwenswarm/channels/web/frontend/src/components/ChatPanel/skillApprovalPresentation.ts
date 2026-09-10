@@ -1,8 +1,16 @@
 export type SkillSourceDisplayNames = ReadonlyMap<string, string>;
+export type SkillSourceTypes = ReadonlyMap<string, string>;
+export type SkillTrustBadge = 'builtin' | 'prebuilt' | null;
 
 type SkillSourceProviderSummary = {
   source_id?: unknown;
   display_name?: unknown;
+};
+
+type SkillInstallationSummary = {
+  name?: unknown;
+  skill_name?: unknown;
+  source_type?: unknown;
 };
 
 export function buildSkillSourceDisplayNameMap(
@@ -24,6 +32,24 @@ export function resolveSkillSourceDisplayName(
   return displayNames.get(sourceId) || sourceId;
 }
 
-export function shouldShowSkillTrustBadge(trust: string | undefined): boolean {
-  return trust === 'builtin';
+export function buildSkillSourceTypeMap(
+  skills: readonly SkillInstallationSummary[] | undefined,
+): SkillSourceTypes {
+  const sourceTypes = new Map<string, string>();
+  for (const skill of skills ?? []) {
+    const rawName = skill.name ?? skill.skill_name;
+    const name = typeof rawName === 'string' ? rawName.trim() : '';
+    const sourceType =
+      typeof skill.source_type === 'string' ? skill.source_type.trim().toLowerCase() : '';
+    if (name && sourceType) sourceTypes.set(name, sourceType);
+  }
+  return sourceTypes;
+}
+
+export function resolveSkillTrustBadge(
+  trust: string | undefined,
+  sourceType: string | undefined,
+): SkillTrustBadge {
+  if (trust !== 'builtin') return null;
+  return sourceType?.trim().toLowerCase() === 'prebuilt' ? 'prebuilt' : 'builtin';
 }

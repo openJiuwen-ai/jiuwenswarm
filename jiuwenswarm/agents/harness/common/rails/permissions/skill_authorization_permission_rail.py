@@ -15,6 +15,7 @@ resume 答案。openjiuwen 解析失败会再弹 ``匹配规则: N/A`` 的卡，
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Optional
 
@@ -32,6 +33,21 @@ def is_unparseable_permission_resume_text(user_input: Any) -> bool:
     if not isinstance(user_input, str):
         return False
     return PermissionInterruptRail.parse_confirm_payload(user_input) is None
+
+
+def _compose_active_skill_permissions(
+    base_config: dict[str, Any],
+    session_id: str,
+    agent_scope_id: str,
+    grant_store: Any,
+) -> dict[str, Any]:
+    """Compose the active Skill overlay into one permission snapshot."""
+    from openjiuwen.harness.security.skill_authorization import compose_skill_permissions
+
+    active = grant_store.get_active(session_id, agent_scope_id)
+    if active is None or not active.overlay_snapshot:
+        return copy.deepcopy(base_config)
+    return compose_skill_permissions(base_config, active.overlay_snapshot)
 
 
 class SkillAuthorizationPermissionRail(PermissionInterruptRail):
@@ -60,6 +76,40 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         return await super().resolve_interrupt(
             ctx, tool_call, user_input, auto_confirm_config
         )
+
+    def _refresh_permissions_for_tool_call(self, ctx: AgentCallbackContext) -> None:
+        """Apply the active Skill overlay without mutating the static baseline."""
+        from openjiuwen.harness.security.skill_authorization import (
+            get_skill_authorization_context,
+            get_skill_grant_store,
+        )
+
+        authorization = get_skill_authorization_context()
+        if (
+            authorization is None
+            or not authorization.session_id
+            or not authorization.agent_scope_id
+        ):
+            super()._refresh_permissions_for_tool_call(ctx)
+            return
+        grant_store = get_skill_grant_store()
+        active = grant_store.get_active(
+            authorization.session_id,
+            authorization.agent_scope_id,
+        )
+        if active is None:
+            super()._refresh_permissions_for_tool_call(ctx)
+            return
+        base_config = super()._get_permissions_snapshot(ctx)
+        if base_config is None:
+            base_config = self._static_config
+        effective_config = _compose_active_skill_permissions(
+            base_config,
+            authorization.session_id,
+            authorization.agent_scope_id,
+            grant_store,
+        )
+        self._engine.update_config(effective_config)
 
     def _skill_authorization_gate_handled(self, ctx: AgentCallbackContext) -> bool:
         """本次 skill_tool/skill_complete 是否已被动态授权门禁接管。"""
