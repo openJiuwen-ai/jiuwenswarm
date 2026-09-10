@@ -206,6 +206,18 @@ def test_required_validation_rejects_invalid_composition(
         JiuWenSwarmDeepAdapter._validate_required_agent_rails(
             adapter, rails, **required
         )
+    if case in {"wrong_auto", "auto_provider"}:
+        group = permission_rail_group.PermissionRailGroup(
+            required["permission_rail"], queue_rail, required["root_context_rail"],
+            required["completion_rail"], required["stream_event_rail"], adapter._ask_user_rail,
+        )
+        instance = SimpleNamespace(
+            find_rails_by_type=lambda types: [rail for rail in rails if isinstance(rail, types)],
+            is_registered_rail=lambda rail: True,
+        )
+        with pytest.raises(RuntimeError, match=message):
+            group.verify(instance, smart=True, queue=adapter._root_permission_queue,
+                         sys_operation=adapter._sys_operation)
 
 
 def test_real_build_rejects_duplicate_required_rail(
@@ -389,6 +401,50 @@ def test_code_profile_cannot_activate_smart_permission() -> None:
     ) is False
 
 
+@pytest.mark.parametrize("adapter_type", [JiuWenSwarmDeepAdapter, JiuwenSwarmCodeAdapter])
+def test_permission_group_uses_existing_interaction_binding(adapter_type) -> None:
+    adapter = adapter_type()
+    group = permission_rail_group.PermissionRailGroup(None, None, None, None, None, object())
+    bindings = adapter._permission_group_bindings(group)
+    name = adapter._user_interaction_rail_attribute()
+    assert bindings[name] is group.ask_user_rail
+    assert [key for key in bindings if "ask_user" in key] == [name]
+
+
+@pytest.mark.parametrize("mode", ["disabled", "manual", "auto"])
+@pytest.mark.parametrize("fault", [None, "missing", "duplicate", "unregistered", "queue", "strictness"])
+def test_registered_permission_group_contract(mode, fault) -> None:
+    adapter = _adapter()
+    smart = mode == "auto"
+    group = permission_rail_group.build_permission_group(
+        {}, permission_builder=lambda **kwargs: None if mode == "disabled" else _permission(adapter, smart),
+        permission_inputs={"enable_auto_permission": smart, "sys_operation": adapter._sys_operation},
+        queue=adapter._root_permission_queue, answer_claimed=lambda key: None,
+        sandboxed=False, language="en",
+    )
+    actual = group.rails()
+    group.validate_composition(actual, smart=smart, sys_operation=adapter._sys_operation)
+    if fault == "missing":
+        actual.remove(group.stream_event_rail)
+    elif fault == "duplicate":
+        actual.append(group.stream_event_rail)
+    elif fault == "queue":
+        group.stream_event_rail._root_permission_queue = object()
+    elif fault == "strictness":
+        group.ask_user_rail.set_strict_continuation_contract(not smart)
+    instance = SimpleNamespace(
+        find_rails_by_type=lambda types: actual,
+        is_registered_rail=lambda rail: fault != "unregistered",
+    )
+    if fault:
+        with pytest.raises(RuntimeError, match="permission_.*(?:graph|stream|ask)"):
+            group.verify(instance, smart=smart, queue=adapter._root_permission_queue,
+                         sys_operation=adapter._sys_operation)
+    else:
+        group.verify(instance, smart=smart, queue=adapter._root_permission_queue,
+                     sys_operation=adapter._sys_operation)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("smart", [False, True])
 async def test_built_permission_group_registers_once_and_cleans_up_in_real_sdk(
@@ -402,17 +458,25 @@ async def test_built_permission_group_registers_once_and_cleans_up_in_real_sdk(
     _stub_profile(adapter, monkeypatch)
     for name in _PROFILE_BUILDERS:
         monkeypatch.setattr(adapter, name, lambda **kwargs: None)
+    monkeypatch.setattr(adapter, "_build_structured_ask_user_rail",
+                        lambda: StructuredAskUserRail(strict_continuation_contract=smart))
     monkeypatch.setattr(interface_deep, "_build_context_processor_rail", lambda **kwargs: None)
     monkeypatch.setattr(permissions_layers, "load_user_permissions", lambda: {})
     monkeypatch.setattr(permissions_layers, "load_session_permissions", lambda session_id: {})
     rails = adapter._build_agent_rails(
         {}, {"permissions": {"enabled": True, "mode": "auto" if smart else "manual"}},
     )
+    group = permission_rail_group.PermissionRailGroup(
+        adapter._permission_rail, adapter._root_permission_queue_rail, adapter._root_context_rail,
+        adapter._root_permission_completion_rail, adapter._stream_event_rail, adapter._ask_user_rail,
+    )
     agent = DeepAgent(AgentCard(name="permission-composition-contract"))
     try:
         agent.configure(DeepAgentConfig(rails=rails, auto_create_workspace=False))
         for _ in range(2):
             await agent.ensure_initialized()
+            group.verify(agent, smart=smart, queue=adapter._root_permission_queue,
+                         sys_operation=adapter._sys_operation)
             for rail in rails:
                 assert agent.is_registered_rail(rail)
                 assert agent.find_rails_by_type((type(rail),)) == [rail]

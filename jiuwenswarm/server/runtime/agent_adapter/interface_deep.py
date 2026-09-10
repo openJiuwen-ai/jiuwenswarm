@@ -8190,48 +8190,15 @@ class JiuWenSwarmDeepAdapter:
         stream_event_rail: JiuSwarmStreamEventRail,
         permission_rail: Any,
     ) -> None:
-        """Validate the exact objects required by an enabled Smart Approval group."""
-        required_rails = (
-            (
-                "_root_permission_queue_rail",
-                queue_rail,
-                RootPermissionQueueRail,
-            ),
-            (
-                "_root_context_rail",
-                root_context_rail,
-                RootContextRail,
-            ),
-            (
-                "_root_permission_completion_rail",
-                completion_rail,
-                RootPermissionCompletionRail,
-            ),
-            ("_stream_event_rail", stream_event_rail, JiuSwarmStreamEventRail),
+        """Validate candidates, then check this adapter's attribute bindings."""
+        group = PermissionRailGroup(
+            permission_rail, queue_rail, root_context_rail, completion_rail,
+            stream_event_rail, getattr(self, self._user_interaction_rail_attribute(), None),
         )
-        for attr_name, expected_rail, rail_type in required_rails:
-            if sum(isinstance(rail, rail_type) for rail in rails) != 1:
-                raise RuntimeError(
-                    f"required_agent_rail_count_invalid:{rail_type.__name__}"
-                )
-            if sum(rail is expected_rail for rail in rails) != 1:
-                raise RuntimeError(f"required_agent_rail_graph_identity_mismatch:{attr_name}")
+        group.validate_composition(rails, smart=True, sys_operation=self._sys_operation)
+        for attr_name, expected_rail in self._permission_group_bindings(group).items():
             if getattr(self, attr_name, None) is not expected_rail:
                 raise RuntimeError(f"required_agent_rail_attr_identity_mismatch:{attr_name}")
-
-        permission_types = PERMISSION_RAIL_TYPES
-        permission_rails = [rail for rail in rails if isinstance(rail, permission_types)]
-        if len(permission_rails) != 1:
-            raise RuntimeError("required_permission_rail_count_invalid")
-        if (
-            sum(rail is permission_rail for rail in rails) != 1
-            or self._permission_rail is not permission_rail
-        ):
-            raise RuntimeError("required_permission_rail_identity_mismatch")
-        if not isinstance(permission_rail, permission_types[1]):
-            raise RuntimeError("required_permission_rail_type_invalid")
-        if permission_rail.sys_operation is not self._sys_operation:
-            raise RuntimeError("required_permission_rail_identity_mismatch")
 
     def _build_agent_rails(
         self,
@@ -8630,16 +8597,15 @@ class JiuWenSwarmDeepAdapter:
         )
 
 
-    @staticmethod
-    def _permission_group_bindings(group: PermissionRailGroup) -> dict[str, Any]:
-        """Translate a rail recipe into the existing Deep build-info attributes."""
+    def _permission_group_bindings(self, group: PermissionRailGroup) -> dict[str, Any]:
+        """Translate a rail recipe using the adapter's existing binding names."""
         return {
             "_permission_rail": group.permission_rail,
             "_root_permission_queue_rail": group.root_permission_queue_rail,
             "_root_context_rail": group.root_context_rail,
             "_root_permission_completion_rail": group.root_permission_completion_rail,
             "_stream_event_rail": group.stream_event_rail,
-            "_ask_user_rail": group.ask_user_rail,
+            self._user_interaction_rail_attribute(): group.ask_user_rail,
         }
 
     def _capture_permission_version(self) -> tuple[str, dict[str, Any], dict[str, Any]]:

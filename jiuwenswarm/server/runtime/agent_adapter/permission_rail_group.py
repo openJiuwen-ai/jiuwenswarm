@@ -40,6 +40,34 @@ class PermissionRailGroup:
             self.root_permission_completion_rail, self.stream_event_rail, self.ask_user_rail,
         ) if rail is not None]
 
+    def validate_composition(self, rails: list[Any], *, smart: bool, sys_operation: Any) -> None:
+        """Check candidate membership without requiring SDK registration."""
+        if smart:
+            for name, rail_type in (
+                ("root_permission_queue_rail", RootPermissionQueueRail),
+                ("root_context_rail", RootContextRail),
+                ("root_permission_completion_rail", RootPermissionCompletionRail),
+                ("stream_event_rail", JiuSwarmStreamEventRail),
+            ):
+                if sum(isinstance(rail, rail_type) for rail in rails) != 1:
+                    raise RuntimeError(f"required_agent_rail_count_invalid:{rail_type.__name__}")
+                if sum(rail is getattr(self, name) for rail in rails) != 1:
+                    raise RuntimeError(f"required_agent_rail_graph_identity_mismatch:_{name}")
+        permission = self.permission_rail
+        expected_count = int(smart or permission is not None)
+        if sum(isinstance(rail, PERMISSION_RAIL_TYPES) for rail in rails) != expected_count:
+            raise RuntimeError("required_permission_rail_count_invalid")
+        if permission is None:
+            if smart:
+                raise RuntimeError("required_permission_rail_identity_mismatch")
+            return
+        if sum(rail is permission for rail in rails) != 1:
+            raise RuntimeError("required_permission_rail_identity_mismatch")
+        if isinstance(permission, AutoPermissionInterruptRail) is not smart:
+            raise RuntimeError("required_permission_rail_type_invalid")
+        if smart and permission.sys_operation is not sys_operation:
+            raise RuntimeError("required_permission_rail_identity_mismatch")
+
     def verify(self, instance: Any, *, smart: bool, queue: RootPermissionQueue, sys_operation: Any) -> None:
         """Check the SDK graph, not just adapter fields or a configure list."""
         actual = instance.find_rails_by_type(PERMISSION_GROUP_TYPES)
@@ -50,13 +78,7 @@ class PermissionRailGroup:
             for item in wanted
         ):
             raise RuntimeError("permission_registered_graph_mismatch")
-        permission = self.permission_rail
-        if permission is not None and (
-            isinstance(permission, AutoPermissionInterruptRail) is not smart
-        ):
-            raise RuntimeError("permission_registered_type_mismatch")
-        if smart and (permission is None or permission.sys_operation is not sys_operation):
-            raise RuntimeError("permission_registered_owner_mismatch")
+        self.validate_composition(actual, smart=smart, sys_operation=sys_operation)
         stream = self.stream_event_rail
         # Assembly must verify the exact installed queue; no public getter exists.
         if (
