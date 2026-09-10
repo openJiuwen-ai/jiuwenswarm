@@ -1276,6 +1276,7 @@ class AgentWebSocketServer:
         # 当前 Gateway 连接，用于 send_push 主动推送
         self._current_ws: Any = None
         self._current_send_lock: asyncio.Lock | None = None
+        self._connection_lifecycle_lock = asyncio.Lock()
         self._acp_client_capabilities_by_ws: dict[int, dict[str, Any]] = {}
         # AgentManager 实例
         self._agent_manager = AgentManager()
@@ -1948,8 +1949,9 @@ class AgentWebSocketServer:
         logger.info("[AgentWebSocketServer] 新连接: %s", remote)
 
         send_lock = asyncio.Lock()
-        self._current_ws = ws
-        self._current_send_lock = send_lock
+        async with self._connection_lifecycle_lock:
+            self._current_ws = ws
+            self._current_send_lock = send_lock
 
         # 发送 connection.ack 事件，通知 Gateway 服务端已就绪
         try:
@@ -1993,46 +1995,48 @@ class AgentWebSocketServer:
         except Exception as e:
             logger.exception("[AgentWebSocketServer] 连接处理异常 (%s): %s", remote, e)
         finally:
-            owns_current_connection = self._release_current_connection(ws)
             self._clear_ws_acp_client_capabilities(ws)
             connection_tasks = list(tasks)
             for task in connection_tasks:
                 if not task.done():
                     task.cancel()
-            if owns_current_connection:
-                # Gateway 进程退出/端口关闭时，必须先取消各 session 内流式生产者（SessionManager）
-                # 并中止 DeepAgent 内层循环；否则仅等待 _handle_message 任务结束会一直阻塞到任务自然完成。
-                try:
-                    await self._agent_manager.cancel_all_inflight_work(
-                        reason=f"[gateway ws closed {remote}] ",
-                        exclude_session_ids=(
-                            self._heartbeat_runtime.execution.active_session_ids()
-                        ),
-                    )
-                except Exception:
-                    logger.exception(
-                        "[AgentWebSocketServer] cancel_all_inflight_work failed"
-                    )
-                # Stop scheduler on server shutdown
-                try:
-                    await self._stop_scheduler()
-                except Exception:
-                    logger.exception("[AgentWebSocketServer] scheduler stop failed")
-                try:
-                    from jiuwenswarm.agents.harness.team import cancel_all_team_stream_tasks_across_managers
+            async with self._connection_lifecycle_lock:
+                owns_current_connection = self._release_current_connection(ws)
+                if owns_current_connection:
+                    # Gateway 进程退出/端口关闭时，必须先取消各 session 内流式生产者（SessionManager）
+                    # 并中止 DeepAgent 内层循环；否则仅等待 _handle_message 任务结束会一直阻塞到任务自然完成。
+                    try:
+                        await self._agent_manager.cancel_all_inflight_work(
+                            reason=f"[gateway ws closed {remote}] ",
+                            exclude_session_ids=(
+                                self._heartbeat_runtime.execution.active_session_ids()
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[AgentWebSocketServer] cancel_all_inflight_work failed"
+                        )
+                    # Stop scheduler on server shutdown
+                    try:
+                        await self._stop_scheduler()
+                    except Exception:
+                        logger.exception("[AgentWebSocketServer] scheduler stop failed")
+                    try:
+                        from jiuwenswarm.agents.harness.team import cancel_all_team_stream_tasks_across_managers
 
-                    await cancel_all_team_stream_tasks_across_managers(
-                        reason=f"[gateway ws closed {remote}] ",
-                        exclude_session_ids=(
-                            self._heartbeat_runtime.execution.active_session_ids()
-                        ),
-                    )
-                except Exception:
-                    logger.exception("[AgentWebSocketServer] team stream cancel failed")
-            if connection_tasks:
+                        await cancel_all_team_stream_tasks_across_managers(
+                            reason=f"[gateway ws closed {remote}] ",
+                            exclude_session_ids=(
+                                self._heartbeat_runtime.execution.active_session_ids()
+                            ),
+                        )
+                    except Exception:
+                        logger.exception("[AgentWebSocketServer] team stream cancel failed")
+                    if connection_tasks:
+                        await asyncio.gather(*connection_tasks, return_exceptions=True)
+                    self._session_stream_tasks.clear()
+            if not owns_current_connection and connection_tasks:
                 await asyncio.gather(*connection_tasks, return_exceptions=True)
-            if owns_current_connection:
-                self._session_stream_tasks.clear()
 
     async def _dispatch_gateway_adapter_request(
         self,

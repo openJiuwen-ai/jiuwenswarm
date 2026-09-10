@@ -315,6 +315,7 @@ async def test_stale_gateway_disconnect_keeps_new_push_connection(monkeypatch) -
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._current_ws = None
     server._current_send_lock = None
+    server._connection_lifecycle_lock = asyncio.Lock()
     server._acp_client_capabilities_by_ws = {}
     server._session_stream_tasks = {"new-session": object()}
     server._agent_manager = Manager()
@@ -354,6 +355,82 @@ async def test_stale_gateway_disconnect_keeps_new_push_connection(monkeypatch) -
     assert server._current_send_lock is None
     assert server._session_stream_tasks == {}
     assert cleanup_calls == ["runtime.cancel", "scheduler.stop", "team.cancel"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_waits_for_authoritative_disconnect_cleanup(monkeypatch) -> None:
+    from jiuwenswarm.agents.harness import team as team_module
+
+    cleanup_started = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+    cleanup_calls: list[str] = []
+
+    class Manager:
+        async def cancel_all_inflight_work(self, **_kwargs) -> None:
+            cleanup_calls.append("runtime.cancel")
+            if cleanup_calls.count("runtime.cancel") == 1:
+                cleanup_started.set()
+                await allow_cleanup.wait()
+
+    async def stop_scheduler() -> None:
+        cleanup_calls.append("scheduler.stop")
+
+    async def cancel_team_streams(**_kwargs) -> None:
+        cleanup_calls.append("team.cancel")
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._current_ws = None
+    server._current_send_lock = None
+    server._connection_lifecycle_lock = asyncio.Lock()
+    server._acp_client_capabilities_by_ws = {}
+    server._session_stream_tasks = {}
+    server._agent_manager = Manager()
+    server._heartbeat_runtime = SimpleNamespace(
+        protocol_version="heartbeat-test-v1",
+        is_available=True,
+        execution=SimpleNamespace(active_session_ids=lambda: ()),
+    )
+    monkeypatch.setattr(server, "_stop_scheduler", stop_scheduler)
+    monkeypatch.setattr(
+        team_module,
+        "cancel_all_team_stream_tasks_across_managers",
+        cancel_team_streams,
+    )
+
+    old_ws = BlockingConnectionWebSocket(19001)
+    new_ws = BlockingConnectionWebSocket(19002)
+    old_handler = asyncio.create_task(server._connection_handler(old_ws))
+    await old_ws.ack_sent.wait()
+
+    old_ws.close_requested.set()
+    await cleanup_started.wait()
+    new_handler = asyncio.create_task(server._connection_handler(new_ws))
+    await asyncio.sleep(0)
+
+    assert server._connection_lifecycle_lock.locked()
+    assert new_ws.ack_sent.is_set() is False
+    assert server._current_ws is None
+
+    allow_cleanup.set()
+    await old_handler
+    await new_ws.ack_sent.wait()
+
+    assert server._current_ws is new_ws
+    assert await server.send_push({"channel_id": "web"}) is True
+    assert len(new_ws.sent) == 2
+
+    new_ws.close_requested.set()
+    await new_handler
+
+    assert cleanup_calls == [
+        "runtime.cancel",
+        "scheduler.stop",
+        "team.cancel",
+        "runtime.cancel",
+        "scheduler.stop",
+        "team.cancel",
+    ]
+    assert server._current_ws is None
 
 
 @pytest.mark.asyncio
