@@ -14,8 +14,11 @@ framework's summary-turn drain can resume it, and returns a
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _ORG_SUMMARY_CAPABILITY = "summary"
 
@@ -212,10 +215,16 @@ class JiuwenSummaryTeamFactory:
         entry = await runtime.pool.get(owner_id)
         donor_backend = getattr(entry.agent, "team_backend", None) if entry is not None else None
         if donor_backend is None or getattr(donor_backend, "db", None) is None:
+            logger.error(
+                "[SummaryTeamFactory] owner team %s has no pooled TeamDatabase in session %s",
+                owner_id,
+                session_id,
+            )
             raise ValueError(
                 "summary team cannot share storage: owner team "
                 f"{owner_id!r} has no pooled TeamDatabase in session {session_id!r}"
             )
+        logger.debug("summary team will share storage with owner team %s", owner_id)
         return donor_backend
 
     async def _launch_team(
@@ -253,6 +262,14 @@ class JiuwenSummaryTeamFactory:
             shared_db=shared_db,
         )
         activation_attempted = False
+        logger.info(
+            "launching summary team %s (task=%s root=%s org=%s session=%s)",
+            team_id,
+            summary_task_id,
+            root_task_id,
+            organization_id,
+            session_id,
+        )
         try:
             activation_attempted = True
             activation = await runtime.activate(spec, session_id)
@@ -260,19 +277,23 @@ class JiuwenSummaryTeamFactory:
             if agent is None:
                 raise ValueError(f"activate returned no agent for team: {team_id}")
 
+            # The activated team must land on the owner's DB, otherwise it cannot
+            # see the organization's tasks; build_team then writes its own rows.
             _verify_shared_database(agent, donor_backend)
             await self._materialize_team_in_db(agent, spec0)
+            logger.debug("summary team %s activated and materialized in shared DB", team_id)
 
             # Design: Summary Team should sit PAUSED without an idle warm-up so
-            # the framework's summary-turn drain can resume it on demand.
+            # the framework's summary-turn drain can resume it on demand.  A
+            # failed pause is not fatal: the team is alive and can still be
+            # resumed, so log and keep going rather than rolling back.
             pause = getattr(runtime, "pause", None)
             if callable(pause):
                 try:
                     await pause(team_name=team_id, session_id=session_id)
+                    logger.debug("summary team %s parked PAUSED", team_id)
                 except Exception as exc:  # pragma: no cover - best effort
-                    import logging
-
-                    logging.getLogger(__name__).warning(
+                    logger.warning(
                         "[SummaryTeamFactory] pause after activate failed team=%s: %s",
                         team_id,
                         exc,
@@ -281,10 +302,9 @@ class JiuwenSummaryTeamFactory:
                 team_id=team_id, leader_id=await _leader_id_from_agent(agent, team_id)
             )
         except Exception as exc:
-            import logging
             import traceback
 
-            logging.getLogger(__name__).error(
+            logger.error(
                 "[SummaryTeamFactory] _launch_team FAILED team=%s session=%s "
                 "activation_attempted=%s exc_type=%s exc=%r\n%s",
                 team_id,
@@ -362,19 +382,20 @@ class JiuwenSummaryTeamFactory:
         )
 
     async def stop(self, *, team_id: str, session_id: str) -> None:
+        """Best-effort teardown of a Summary Team; used by release and rollback."""
         name = str(team_id or "").strip()
         if not name:
             return
         runtime = self._get_runtime()
         stop_team = getattr(runtime, "stop_team", None)
         if not callable(stop_team):
+            logger.debug("runtime has no stop_team; cannot stop %s", name)
             return
         try:
             await stop_team(team_name=name, session_id=session_id)
+            logger.debug("stopped summary team %s", name)
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "[SummaryTeamFactory] stop_team failed team=%s session=%s: %s",
                 name,
                 session_id,
