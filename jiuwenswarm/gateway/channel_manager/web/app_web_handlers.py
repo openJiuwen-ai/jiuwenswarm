@@ -3008,7 +3008,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["proactive_recommendation_max_rounds_per_tick"] = str(
                 proactive_cfg.get("max_rounds_per_tick", 20))
             models_cfg = resolved.get("models") or {}
-            payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", True) else "false"
+            payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
         except Exception:  # noqa: BLE001
             payload.setdefault("context_engine_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
@@ -3035,7 +3035,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("proactive_recommendation_enabled", "false")
             payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
             payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
-            payload.setdefault("enable_free_models", "true")
+            payload.setdefault("enable_free_models", "false")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _external_cli_detect(ws, req_id, params, session_id):

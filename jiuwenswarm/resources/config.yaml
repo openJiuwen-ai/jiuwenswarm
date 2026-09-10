@@ -255,8 +255,6 @@ proactive_recommendation:
 endpoint_profile_overrides:
 
 models:
-  # 开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。
-  enable_free_models: true
   defaults:
     - model_client_config:
         api_base: ${API_BASE}
