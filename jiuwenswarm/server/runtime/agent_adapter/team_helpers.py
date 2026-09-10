@@ -24,6 +24,7 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
@@ -1699,6 +1700,9 @@ async def _announce_team_roster(
         fresh: list[dict[str, Any]] = []
         for member in members:
             candidate_id = str(member.get("member_id") or "").strip()
+            member_status = str(member.get("status") or "").strip().lower()
+            if member_status == MemberStatus.SHUTDOWN.value:
+                continue
             if not candidate_id or candidate_id in announced_members:
                 continue
             fresh.append(member)

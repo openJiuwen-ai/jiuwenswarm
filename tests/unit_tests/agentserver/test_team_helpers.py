@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 
 from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
@@ -5755,7 +5756,7 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
 
 @pytest.mark.anyio
 async def test_announce_team_roster_broadcasts_created_members_once(monkeypatch):
-    """Created-but-unstarted members are announced, and only once per stream."""
+    """Active roster members are announced once while shutdown members stay hidden."""
     broadcast_events: list[dict] = []
 
     class _FakeMonitorHandler:
@@ -5777,6 +5778,14 @@ async def test_announce_team_roster_broadcasts_created_members_once(monkeypatch)
                     "execution_status": "idle",
                     "mode": "build_mode",
                     "role": "human_agent",
+                },
+                {
+                    "member_id": "retired-member",
+                    "name": "Retired member",
+                    "status": MemberStatus.SHUTDOWN.value,
+                    "execution_status": "idle",
+                    "mode": "build_mode",
+                    "role": "teammate",
                 },
             ]
 
