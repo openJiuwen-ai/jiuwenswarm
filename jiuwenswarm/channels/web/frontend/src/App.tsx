@@ -1099,11 +1099,6 @@ function AppContent({
             applySubagentHistoryReplay(sid, items);
           }
         };
-        const hasSubagentFinal = () => {
-          const currentRuntime = useSubagentStore.getState().getRuntime(sid);
-          return Object.values(currentRuntime?.turnsBySubagentId[subagentId] ?? {})
-            .some(turn => turn.result?.source === 'transcript');
-        };
 
         const firstPage = await fetchSubagentHistoryPage(1, 1);
         if (disposed || !firstPage) {
@@ -1120,20 +1115,6 @@ function AppContent({
           applyPage,
           waitForNextPaint: async () => {},
         });
-        if (prefetchOutcome === 'completed' && firstPage.totalPages === 1 && !hasSubagentFinal()) {
-          const fallbackPage = await fetchSubagentHistoryPage(2, 2);
-          if (fallbackPage) {
-            applyPage(fallbackPage);
-            await prefetchHistoryPages({
-              initialLoadedPages: 2,
-              initialTotalPages: fallbackPage.totalPages,
-              isCurrent: () => !disposed,
-              fetchPage: (pageIdx, totalPages) => fetchSubagentHistoryPage(pageIdx, totalPages),
-              applyPage,
-              waitForNextPaint: async () => {},
-            });
-          }
-        }
         if (disposed || prefetchOutcome !== 'completed') {
           cleanup();
           return;
@@ -1344,10 +1325,7 @@ function AppContent({
           settle({ pageIdx, totalPages, result });
         },
         onEmpty: (emptyTotalPages) => {
-          if (pageIdx > 1) {
-            settle(null);
-            return;
-          }
+          // 已正常结束的页面即使没有主对话展示项，也必须推进页码。
           const totalPages = emptyTotalPages ?? fallbackTotalPages;
           settle({ pageIdx, totalPages, result: null });
         },
