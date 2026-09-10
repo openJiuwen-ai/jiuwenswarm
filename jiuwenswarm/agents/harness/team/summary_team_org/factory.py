@@ -161,9 +161,15 @@ class JiuwenSummaryTeamFactory:
             spec=spec0,
         )
 
-    async def release(self, *, execution_id: str, session_id: str) -> None:
+    async def release(
+        self,
+        *,
+        execution_id: str,
+        summary_team_id: str,
+        session_id: str,
+    ) -> None:
         """Stop and reclaim a previously provisioned Summary Team instance."""
-        await self.stop(team_id=execution_id, session_id=session_id)
+        await self.stop(team_id=summary_team_id, session_id=session_id)
 
     # -- shared launch machinery ----------------------------------------------
 
