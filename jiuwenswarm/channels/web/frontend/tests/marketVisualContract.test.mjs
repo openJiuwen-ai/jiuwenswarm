@@ -50,7 +50,7 @@ test('market cards use the design card dimensions and typography', async () => {
       React.createElement(MarketCard, {
         title: '示例插件',
         description: '用于验证卡片布局',
-        avatar: { firstChar: '示', color: 'bg-blue-500' },
+        avatar: { firstChar: '示', style: { backgroundColor: 'rgba(157, 189, 252, 0.2)', boxShadow: '0 0 0 1px #9DBDFC', color: '#0b51de' } },
         state: 'idle',
         canOpenDetail: true,
         onOpenDetail() {},

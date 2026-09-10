@@ -47,6 +47,10 @@ from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRp
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -1866,16 +1870,14 @@ class JiuWenSwarm:
                         f"rebuild Agent 失败: {exc}",
                     ) from exc
                 payload = {"success": True}
-            elif (
-                handler_name == "handle_skills_create_from_knowledge"
-                and self._is_skills_create_from_knowledge_followup(payload)
-            ):
-                payload = await self._run_skills_create_from_knowledge_silent(
-                    request, payload
-                )
-                if payload.get("success"):
-                    await self.create_instance()
-                    await self._reload_team_skill_rails(request.session_id)
+            elif handler_name == "handle_skills_create_from_knowledge":
+                if self._is_skills_create_from_knowledge_followup(payload):
+                    payload = await self._run_skills_create_from_knowledge_silent(
+                        request, payload
+                    )
+                    if payload.get("success"):
+                        await self.create_instance()
+                        await self._reload_team_skill_rails(request.session_id)
         except Exception as exc:
             logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
             err_payload: dict = {"error": str(exc), "message": str(exc)}
@@ -2046,10 +2048,13 @@ class JiuWenSwarm:
         metadata["skills_create_from_knowledge_silent"] = True
         metadata["scene"] = "create_skill"
 
+        # Windows 禁止路径分量含 ':'；用 '-' 隔离，避免 sessions 目录 mkdir 失败。
+        raw_rid = str(request.request_id or "").strip() or "anon"
+        safe_rid = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_rid).strip("._-") or "anon"
         return AgentRequest(
             request_id=f"{request.request_id}-knowledge-followup",
             channel_id=request.channel_id,
-            session_id=f"skills-knowledge:{request.request_id}",
+            session_id=f"skills-knowledge-{safe_rid}",
             chat_id=request.chat_id,
             req_method=ReqMethod.CHAT_SEND,
             params=params,
@@ -2086,6 +2091,8 @@ class JiuWenSwarm:
         skills = self._coerce_optional_str_list(payload.get("skills"))
         trusted_dirs = self._coerce_optional_str_list(payload.get("trusted_dirs"))
         input_file = str(payload.get("input_file") or "").strip()
+        skills_root = Path(self._skill_manager.skills_dir)
+        before_names = set(self._skill_manager.list_installed_skill_dir_names())
 
         try:
             chat_request = self._build_skills_knowledge_followup_request(
@@ -2100,8 +2107,30 @@ class JiuWenSwarm:
             async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
                 pass
 
-            result = self._skill_manager.finalize_create_from_knowledge(output_dir)
-            await self._refresh_skill_rails_after_change()
+            after_names = set(self._skill_manager.list_installed_skill_dir_names())
+            skip_names = {
+                "_marketplace",
+                "_pending_knowledge",
+                "skill-omni-creation",
+                "skill-creator",
+                "skill-creator-normal",
+                "skill-creator-router",
+                "swarmskill-creator",
+                "agent-creator",
+                "plugin-creator",
+            }
+            workspace_candidates = [
+                skills_root / name
+                for name in sorted(after_names - before_names)
+                if name not in skip_names
+            ]
+            result = self._skill_manager.finalize_create_from_knowledge(
+                output_dir,
+                workspace_candidates=workspace_candidates,
+                existing_skill_names=before_names,
+            )
+            if result.get("success"):
+                await self._refresh_skill_rails_after_change()
             return result
         finally:
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -2401,8 +2430,17 @@ class JiuWenSwarm:
                 )
                 message = "团队已暂停" if paused else "当前没有可暂停的团队任务"
             else:
-                # Use cancel_session_runtime to remove from Runner pool
-                cancelled = await team_manager.cancel_session_runtime(session_id, reason=reason)
+                # 断连兜底（client_disconnect）→ pause_all 保账本（可冷启动续跑）；用户主动终止 → stop_all 落 seal。
+                metadata = request.metadata if isinstance(request.metadata, dict) else {}
+                cancel_source = metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY)
+                workflow_disposition = (
+                    "pause"
+                    if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
+                    else "stop"
+                )
+                cancelled = await team_manager.cancel_session_runtime(
+                    session_id, reason=reason, workflow_disposition=workflow_disposition
+                )
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,

@@ -53,7 +53,7 @@ interface McpDetailPageProps {
    * initialEnabledMcps 一起传给 requestSessionNavigation（跟 initialInputValue 走的是同一条
    * NewConversationOptions 通道，两者本来就能同时带，只是这条调用之前没传第二个字段）。
    */
-  onUseExample?: (text: string, mcpName: string) => void;
+  onUseExample?: (text: string, mcpName: string, displayName?: string) => void;
   /**
    * "编辑"按钮——只对 connector.source==='customize' 展示（见下方 JSX 门控），真正的编辑表单
    * （RegisterMcpPage 复用，见该文件 editName prop）由父容器（ConnectorMarket/index.tsx）承接
@@ -217,12 +217,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-mcp-detail">
-      <button
-        type="button"
-        onClick={onBack}
-        className="detail-back mb-[35px]"
-        data-testid="connector-market-mcp-detail-back"
-      >
+      <button type="button" onClick={onBack} className="detail-back" data-testid="connector-market-mcp-detail-back">
         <BackIcon aria-hidden="true" />
         {t('connectorMarket.common.back')}
       </button>
@@ -233,7 +228,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             <EntityAvatar
               iconUrl={connector.icon ?? undefined}
               avatar={avatar}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-semibold"
             />
             <h1 className="text-[20px] font-semibold leading-8 text-text">{connector.displayName}</h1>
             <span
@@ -393,7 +388,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   <button
                     key={example}
                     type="button"
-                    onClick={() => onUseExample(example, runtimeName)}
+                    onClick={() => onUseExample(example, runtimeName, connector.displayName)}
                     data-testid="connector-market-mcp-detail-example"
                     data-variant={example}
                     className="flex items-center gap-1.5 rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted transition-colors hover:border-[color:var(--color-chat-accent)] hover:text-[color:var(--color-chat-accent)]"

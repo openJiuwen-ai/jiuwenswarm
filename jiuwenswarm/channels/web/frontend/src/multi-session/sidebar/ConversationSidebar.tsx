@@ -71,6 +71,12 @@ export type NewConversationOptions = {
    * 集群模式，跳转会话时必须回到单 agent 模式（bug003）。见 App.tsx enterNewConversation。
    */
   forceMode?: AgentMode;
+  /**
+   * 进入新对话时的一次性会话 metadata，随首条消息经 chat.send 发送后清除。MCP 推荐问题
+   * 等场景用「prefer_mcp」把「优先使用哪个 MCP」这类后台意图透传给后端，见 App.tsx
+   * enterNewConversation / onUseExample。
+   */
+  metadata?: Record<string, unknown>;
 };
 
 function isDefaultProject(project: ProjectInfo): boolean {

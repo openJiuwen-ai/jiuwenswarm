@@ -729,11 +729,12 @@ export function AgentManagementPanel({
               autoComplete="off"
               disabled={connectorFlowId !== null}
               value={isMine ? mineQuery : query}
-              onChange={(nextValue) =>
+              onChange={(e) => {
+                const nextValue = e.target.value;
                 isMine
                   ? (setMineQuery(nextValue), setMinePage(1))
-                  : (setQuery(nextValue), setCatalogPage(1))
-              }
+                  : (setQuery(nextValue), setCatalogPage(1));
+              }}
               placeholder={t(isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
             />
             {isMine ? (

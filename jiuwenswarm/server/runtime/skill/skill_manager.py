@@ -4336,7 +4336,7 @@ class SkillManager:
         """
         params = params or {}
         path_str = str(params.get("path") or "").strip()
-        overwrite = bool(params.get("overwrite", False))
+        overwrite = self._parse_overwrite(params.get("overwrite", False))
         if not path_str:
             raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少上传文件 path")
 
@@ -4382,12 +4382,14 @@ class SkillManager:
     async def handle_skills_create_from_knowledge(self, params: dict) -> dict:
         """知识转 Skill：校验输入并准备隔离临时目录与 Agent follow-up.
 
-        由上层静默跑主 Agent 后，再调用 ``_finalize_create_from_knowledge`` 安装。
+        由上层静默跑主 Agent 后，再调用 ``finalize_create_from_knowledge`` 安装。
+        历史同名时仅提示已存在，不提供覆盖安装路径。
         """
         params = params or {}
         link = str(params.get("link") or "").strip()
         file_path = str(params.get("file_path") or "").strip()
         skill_description = str(params.get("skill_description") or "").strip()
+        preferred_name = str(params.get("skill_name") or "").strip()
 
         has_link = bool(link)
         has_file = bool(file_path)
@@ -4416,6 +4418,21 @@ class SkillManager:
                 )
             file_path = str(src)
 
+        occupied = self.list_installed_skill_dir_names()
+        early_name = self._match_existing_knowledge_skill_name(
+            preferred_name=preferred_name,
+            link=link,
+            file_path=file_path if has_file else "",
+            occupied=occupied,
+        )
+        if early_name:
+            return {
+                "success": False,
+                "code": ERROR_SKILL_ALREADY_EXISTS,
+                "detail": f"skill {early_name} 已存在",
+                "skill_name": early_name,
+            }
+
         output_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_from_knowledge_"))
         skills = ["skill-omni-creation"] if has_link else ["skill-creator-router"]
         prompt_parts = [
@@ -4424,9 +4441,21 @@ class SkillManager:
             "要求：",
             "1. SKILL.md 必须含有效 YAML front matter，name 与 description 均为非空字符串；",
             "2. 不得创建根级 .archive/；",
-            "3. 不要调用 send_file_to_user；不要打包投递给用户；直接把完整 Skill 目录写到输出目录；",
-            "4. 生成后确保输出目录内可唯一定位 Skill 根目录。",
+            "3. 不要调用 send_file_to_user；不要打包投递给用户；",
+            "4. 最终 Skill 根目录只能写在上述输出目录内；禁止写入 workspace/skills/<name>（系统随后统一安装）；",
+            "5. skill-omni-creation 仅允许用 scripts/work/<slug>/ 做中间缓存，完成后不要再复制到 workspace/skills；",
+            "6. 若来源是文档/示例页且无需可执行脚本，跳过 code-writer/code-verifier，直接写 SKILL.md（可含 references），以缩短耗时；",
+            "7. 生成后确保输出目录内可唯一定位 Skill 根目录。",
+            "8. Skill 的 name 不得与已安装名称重复；若冲突请自动换一个未占用的 name（可加后缀）。",
         ]
+        if occupied:
+            preview = ", ".join(sorted(occupied)[:80])
+            more = "…" if len(occupied) > 80 else ""
+            prompt_parts.append(f"已安装 Skill 名称（禁止复用）: {preview}{more}")
+        if preferred_name:
+            prompt_parts.append(
+                f"用户期望的 Skill name（若未被占用则必须使用）: {preferred_name}"
+            )
         if skill_description:
             prompt_parts.append(
                 f"用户对目标 Skill 的补充约束（不得当作 Skill 名称直接使用）: {skill_description}"
@@ -4450,27 +4479,173 @@ class SkillManager:
             + ([str(Path(file_path).parent)] if has_file else []),
         }
 
-    def finalize_create_from_knowledge(self, output_dir: str | Path) -> dict[str, Any]:
-        """校验隔离目录中的生成结果并安装到 workspace（不覆盖已有同名 Skill）."""
-        root = Path(output_dir)
-        if not root.is_dir():
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_PACKAGE,
-                "知识转 Skill 输出目录不存在",
-            )
-        skill_dir = self._locate_skill_dir(root)
+    @property
+    def skills_dir(self) -> Path:
+        """已安装 skills 的 workspace 根目录（公开只读访问）。"""
+        return self._skills_dir
+
+    @staticmethod
+    def _parse_overwrite(raw: Any) -> bool:
+        """与 HTTP multipart 入口一致：仅显式真值才视为覆盖。"""
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw or "").strip().lower()
+        return text in {"1", "true", "yes", "on"}
+
+    def list_installed_skill_dir_names(self) -> set[str]:
+        if not self._skills_dir.is_dir():
+            return set()
+        return {
+            p.name
+            for p in self._skills_dir.iterdir()
+            if p.is_dir() and not p.name.startswith(("_", "."))
+        }
+
+    @staticmethod
+    def _knowledge_skill_name_candidates(
+        *,
+        preferred_name: str = "",
+        link: str = "",
+        file_path: str = "",
+    ) -> list[str]:
+        """推导可能的目标 skill 名，用于跑 Agent 前的同名早检。"""
+        names: list[str] = []
+        preferred = str(preferred_name or "").strip()
+        if preferred:
+            names.append(preferred)
+        if file_path:
+            stem = Path(file_path).stem.strip()
+            if stem:
+                names.append(stem)
+        link_value = str(link or "").strip()
+        if link_value:
+            try:
+                path = urlparse(link_value).path.rstrip("/")
+            except Exception:
+                path = ""
+            segment = path.rsplit("/", 1)[-1] if path else ""
+            if segment:
+                stem = Path(segment).stem.strip() or segment.strip()
+                if stem:
+                    names.append(stem)
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in names:
+            try:
+                safe = _safe_path_name(raw, "skill")
+            except ValueError:
+                continue
+            if safe in seen:
+                continue
+            seen.add(safe)
+            out.append(safe)
+        return out
+
+    def _match_existing_knowledge_skill_name(
+        self,
+        *,
+        preferred_name: str = "",
+        link: str = "",
+        file_path: str = "",
+        occupied: set[str] | None = None,
+    ) -> str:
+        occupied_names = (
+            occupied if occupied is not None else self.list_installed_skill_dir_names()
+        )
+        for name in self._knowledge_skill_name_candidates(
+            preferred_name=preferred_name,
+            link=link,
+            file_path=file_path,
+        ):
+            if name in occupied_names:
+                return name
+        return ""
+
+    def finalize_create_from_knowledge(
+        self,
+        output_dir: str | Path,
+        *,
+        workspace_candidates: list[str | Path] | None = None,
+        existing_skill_names: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """校验生成结果并安装到 workspace.
+
+        - 运行前不存在同名：直接安装/登记成功。
+        - 运行前已存在同名：不覆盖，仅返回已存在提示。
+        """
+        skill_dir: Path | None = None
+        root = Path(output_dir) if str(output_dir or "").strip() else None
+        if root is not None and root.is_dir():
+            skill_dir = self._locate_skill_dir(root)
+        if skill_dir is None:
+            for raw in workspace_candidates or []:
+                candidate = Path(raw)
+                if not candidate.is_dir():
+                    continue
+                try:
+                    candidate.resolve().relative_to(self._skills_dir.resolve())
+                except ValueError:
+                    continue
+                located = self._locate_skill_dir(candidate)
+                if located is not None:
+                    skill_dir = located
+                    break
         if skill_dir is None:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
                 "未在输出目录找到有效 Skill（缺少 SKILL.md）",
             )
-        self._assert_skill_package_safe(skill_dir)
-        installed = self._install_imported_skill_dir(
-            skill_dir,
-            force=False,
-            origin="file-api:create-from-knowledge",
-            conflict_code=ERROR_SKILL_ALREADY_EXISTS,
-        )
+
+        meta = self._assert_skill_package_safe(skill_dir)
+        raw_skill_name = str(meta.get("name") or "").strip()
+        try:
+            skill_name = _safe_path_name(raw_skill_name, "skill")
+        except ValueError as exc:
+            _log_rejected_name(
+                "skills.create_from_knowledge", "skill", raw_skill_name, exc
+            )
+            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+
+        if existing_skill_names is not None:
+            occupied = {str(n).strip() for n in existing_skill_names if str(n).strip()}
+        else:
+            occupied = self.list_installed_skill_dir_names()
+
+        dest = _safe_child_path(self._skills_dir, skill_name, "skill")
+        try:
+            same_workspace_target = (
+                dest.exists() and skill_dir.resolve() == dest.resolve()
+            )
+        except OSError:
+            same_workspace_target = False
+
+        historically_exists = skill_name in occupied
+        if historically_exists:
+            return {
+                "success": False,
+                "code": ERROR_SKILL_ALREADY_EXISTS,
+                "detail": f"skill {skill_name} 已存在",
+                "skill_name": skill_name,
+            }
+
+        if same_workspace_target:
+            if self._is_builtin_skill(skill_name, self._get_installed_plugins(), dest):
+                raise SkillRpcError(
+                    ERROR_SKILL_BUILTIN_READ_ONLY,
+                    f"内置 Skill 不可覆盖: {skill_name}",
+                )
+            installed = self._register_existing_workspace_skill(
+                dest,
+                meta=meta,
+                origin="file-api:create-from-knowledge",
+            )
+        else:
+            installed = self._install_imported_skill_dir(
+                skill_dir,
+                force=False,
+                origin="file-api:create-from-knowledge",
+                conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+            )
         if not installed.get("success"):
             return installed
         skill = dict(installed.get("skill") or {})
@@ -4483,7 +4658,67 @@ class SkillManager:
         skill["content"] = content
         skill["version"] = None
         skill["source"] = "local"
+        self._cleanup_omni_work_slug(skill_name)
         return {"success": True, "skill": skill}
+
+    def _register_existing_workspace_skill(
+        self,
+        dest: Path,
+        *,
+        meta: dict[str, Any],
+        origin: str,
+    ) -> dict[str, Any]:
+        """将已存在于 workspace 的 Skill 登记进 local_skills."""
+        skill_name = dest.name
+        existing_record = next(
+            (
+                s
+                for s in self._state.get("local_skills", [])
+                if isinstance(s, dict) and s.get("name") == skill_name
+            ),
+            None,
+        )
+        record = {
+            "name": skill_name,
+            "origin": origin,
+            "source": (
+                existing_record.get("source")
+                if isinstance(existing_record, dict) and existing_record.get("source")
+                else "local"
+            ),
+        }
+        if isinstance(existing_record, dict) and existing_record.get("display_name"):
+            record["display_name"] = existing_record.get("display_name")
+        self._add_local_skill(record)
+        self._refresh_agent_data_indexes()
+        try:
+            preserved_version = get_current_version(dest)
+        except SkillArchiveError:
+            preserved_version = None
+        return {
+            "success": True,
+            "skill": {
+                "name": skill_name,
+                "description": str(meta.get("description") or "").strip(),
+                "version": preserved_version,
+                "skill_type": detect_skill_type(dest),
+                "source": self._resolve_display_source_for_import(skill_name),
+                "workspace_path": str(dest),
+            },
+        }
+
+    def _cleanup_omni_work_slug(self, skill_name: str) -> None:
+        """清理 skill-omni-creation 流水线残留的 scripts/work/<slug>."""
+        name = str(skill_name or "").strip()
+        if not name or name in {".", ".."}:
+            return
+        if "/" in name or "\\" in name:
+            return
+        work_dir = (
+            self._skills_dir / "skill-omni-creation" / "scripts" / "work" / name
+        )
+        if work_dir.is_dir():
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     def _assert_skill_package_safe(
         self,

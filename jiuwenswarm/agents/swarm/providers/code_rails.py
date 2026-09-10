@@ -278,9 +278,13 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
             apply_permission_trusted_dirs,
             build_permission_rail,
         )
-        from jiuwenswarm.common.cron_session import is_cron_execution_session
-
-        if is_cron_execution_session(getattr(ctx, "session_id", None)):
+        # Skip cron executions: the scheduler tags every cron request with
+        # ``request_metadata["cron"]`` (see ``CronScheduler._stream_team_round``
+        # at jiuwenswarm/gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
+        # fallback covers single-agent sessions where the SDK may not propagate
+        # ``request_metadata`` into ``SwarmBuildContext``.
+        request_meta = getattr(ctx, "request_metadata", None) or {}
+        if request_meta.get("cron") or getattr(ctx, "channel_id", None) == "__cron__":
             return None
 
         inp = PermissionInterruptInput.resolve(params, ctx)

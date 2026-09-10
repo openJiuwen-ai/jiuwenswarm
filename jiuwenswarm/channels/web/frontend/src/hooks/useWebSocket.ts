@@ -4191,23 +4191,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           | undefined;
         if (workflow && typeof workflow === 'object' && workflow.id) {
           useSessionStore.getState().applyWorkflowUpdate(sessionId, workflow);
+          // swarmflow 提问弹窗跟随节点状态，而非只等用户回答：human 超时
+          // （AGENT_FAILED → 节点 failed）、run 终态时，弹窗若不清会永久残留。
+          const swarmflowQuestions = (useChatStore.getState().getRuntime(sessionId)?.pendingQuestions ?? [])
+            .filter((question) => question.swarmflowMeta?.run_id === workflow.id);
+          if (swarmflowQuestions.length) {
+            const run = useSessionStore.getState().getRuntime(sessionId)?.workflowRuns
+              .find((item) => item.id === workflow.id);
+            const isTerminal = workflow.status === 'completed'
+              || workflow.status === 'failed'
+              || workflow.status === 'stopped';
+            const agents = run?.phases?.flatMap((phase) => phase.agents ?? []) ?? [];
+            swarmflowQuestions.forEach((question) => {
+              const node = agents.find((agent) => agent.correlation_id === question.swarmflowMeta?.correlation_id);
+              if (isTerminal || node?.status !== 'waiting_for_human') {
+                useChatStore.getState().consumePendingQuestion(sessionId, question);
+              }
+            });
+          }
         }
-      }),
-
-      // ── SwarmFlow: swarmflow.activated → 前端切换树视图（黏性视图标志，不触碰用户配置）──
-      webClient.on('swarmflow.activated', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
-        if (!sessionId) return;
-        useSessionStore.getState().setSwarmflowViewActive(sessionId);
-      }),
-
-      // ── SwarmFlow: swarmflow.deactivated → 不切回看板 ──
-      // 一旦会话出现过 swarmflow 事件，就保持树视图布局。
-      // deactivated 事件仅用于日志/状态标记，不改变视图。
-      webClient.on('swarmflow.deactivated', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
-        if (!sessionId) return;
-        // 粘性标志：不设回 false，保持树视图
       }),
 
       webClient.on('team.task', ({ payload }) => {

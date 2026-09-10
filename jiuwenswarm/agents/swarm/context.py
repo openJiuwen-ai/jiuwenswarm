@@ -124,6 +124,21 @@ class SwarmBuildContext(BuildContext):
     config: dict[str, Any] | None = None
     skill_retrieval_toolkit: Any = None
 
+    def __post_init__(self) -> None:
+        """Bridge the cron signal into the SDK's ``BuildContext.extras`` slot.
+
+        The cron scheduler writes ``request_metadata["cron"]`` on every cron
+        request (see ``CronScheduler._stream_team_round``). The openjiuwen SDK
+        ``BuildContext`` does not expose ``request_metadata``, so chat-team
+        rails that receive an SDK ``BuildContext`` (e.g.
+        ``jiuwenswarm.permission_rail_bundle``) cannot read that key directly.
+        Mirroring it into ``extras["is_cron"]`` lets the SDK-derived context
+        pick the same signal up via ``extras.get("is_cron")`` after
+        ``context.derive(...)`` flows the dict through.
+        """
+        if (self.request_metadata or {}).get("cron"):
+            self.extras["is_cron"] = True
+
     def resolve_member_skill_visibility_path(self) -> str | None:
         """Resolve the current member's Skill visibility metadata file path.
 

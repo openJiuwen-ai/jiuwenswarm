@@ -956,7 +956,7 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
     """path.* must use the current AgentServer config, never Gateway config."""
     from jiuwenswarm.common import config as config_module
 
-    current = {"browser": {"chrome_path": "/agent/chrome", "browser_type": "msedge", "headless": False}}
+    current = {"browser": {"chrome_path": "/agent/chrome", "headless": False}}
     updates: list[dict] = []
     monkeypatch.setattr(config_module, "get_config", lambda: current)
     monkeypatch.setattr(config_module, "update_browser_in_config", lambda payload: updates.append(payload))
@@ -964,11 +964,11 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
 
     got = await adapter.handle(_request(ReqMethod.PATH_GET))
     changed = await adapter.handle(
-        _request(ReqMethod.PATH_SET, {"chrome_path": "/agent/new-chrome", "browser_type": "chrome", "headless": True})
+        _request(ReqMethod.PATH_SET, {"chrome_path": "/agent/new-chrome", "headless": True})
     )
 
-    assert got.payload == {"chrome_path": "/agent/chrome", "browser_type": "msedge", "headless": False}
-    assert updates == [{"chrome_path": "/agent/new-chrome", "browser_type": "chrome", "headless": True}]
+    assert got.payload == {"chrome_path": "/agent/chrome", "headless": False}
+    assert updates == [{"chrome_path": "/agent/new-chrome", "headless": True}]
     assert changed.metadata["config_changed"] is True
     assert changed.metadata["browser_runtime_restart"] is True
 
@@ -981,7 +981,6 @@ async def test_config_adapter_resolves_platform_browser_path_for_runtime_restart
     current = {
         "browser": {
             "chrome_path": {"default": "  /agent/chrome  "},
-            "browser_type": "chrome",
             "headless": True,
         }
     }
@@ -991,7 +990,6 @@ async def test_config_adapter_resolves_platform_browser_path_for_runtime_restart
 
     assert response.payload == {
         "chrome_path": "/agent/chrome",
-        "browser_type": "chrome",
         "headless": True,
     }
 

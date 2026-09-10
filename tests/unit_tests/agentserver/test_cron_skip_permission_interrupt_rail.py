@@ -54,7 +54,7 @@ def _stub_deep_rail_builders(adapter, monkeypatch, *, permission_rail):
 def test_deep_adapter_omits_permission_interrupt_rail_for_cron_session(monkeypatch):
     permission_rail = object()
     adapter = JiuWenSwarmDeepAdapter()
-    adapter.mark_as_session_scoped("cron_19abc_job1")
+    adapter._is_cron_execution = True
     _stub_deep_rail_builders(adapter, monkeypatch, permission_rail=permission_rail)
 
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
@@ -65,7 +65,7 @@ def test_deep_adapter_omits_permission_interrupt_rail_for_cron_session(monkeypat
 def test_deep_adapter_keeps_permission_interrupt_rail_for_user_session(monkeypatch):
     permission_rail = object()
     adapter = JiuWenSwarmDeepAdapter()
-    adapter.mark_as_session_scoped("sess_19abc")
+    adapter._is_cron_execution = False
     _stub_deep_rail_builders(adapter, monkeypatch, permission_rail=permission_rail)
 
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
@@ -82,7 +82,7 @@ def test_update_permission_rail_does_not_create_rail_for_cron_session(monkeypatc
         return rail
 
     adapter = JiuWenSwarmDeepAdapter()
-    adapter.mark_as_session_scoped("cron_19abc_job1")
+    adapter._is_cron_execution = True
     adapter._permission_rail = None
     adapter._model = None
     monkeypatch.setattr(

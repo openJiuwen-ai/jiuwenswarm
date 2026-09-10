@@ -47,7 +47,7 @@ interface ConnectorMarketPanelProps {
    * onUse/handleUseNotWired）。跟 CronPanel「通过对话创建」onCreateViaChat 是同一条路径
    * （App.tsx:2431），只是入口从定时任务面板换成了 MCP 详情页。
    */
-  onUseExample?: (text: string, mcpName: string) => void;
+  onUseExample?: (text: string, mcpName: string, displayName?: string) => void;
   /**
    * 插件详情页"试试这样用"里点某条示例——跟 onUseExample 是同一个设计，但插件版 quickInputs
    * 是后端 2026-08-21 新增的字段，第二个参数是 pluginId（不是 mcpName），单独开一个 prop

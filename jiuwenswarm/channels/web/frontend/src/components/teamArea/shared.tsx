@@ -316,6 +316,7 @@ const getTaskEventTitle = (event: TeamTaskEvent): string => {
   if (type.includes('created')) return i18n.t('team.taskEvents.created');
   if (type.includes('cancelled')) return i18n.t('team.taskEvents.cancelled');
   if (type.includes('unblocked')) return i18n.t('team.taskEvents.unblocked');
+  if (type.includes('paused')) return i18n.t('team.taskEvents.paused');
   return i18n.t('team.taskEvents.updated');
 };
 

@@ -147,7 +147,7 @@ export function DefinitionDetailPage({
   const canDelete = detail.source === 'local' && !detail.installed;
   return (
     <div className="agent-management-detail" data-testid="agent-detail">
-      <button type="button" className="detail-back mb-[35px]" onClick={onBack}>
+      <button type="button" className="detail-back" onClick={onBack}>
         <BackIcon aria-hidden="true" />
         {t('agentManagement.actions.back')}
       </button>

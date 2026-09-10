@@ -26,6 +26,7 @@ from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import (
+    RuntimeSessionProvisioner,
     SessionProvisionCommitTiming,
     SessionProvisionState,
     SessionSwitchResult,
@@ -219,6 +220,10 @@ def patch_session_roots(monkeypatch, sessions_root):
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        lambda: sessions_root,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_sessions_dir",
         lambda: sessions_root,
     )
 
@@ -1259,14 +1264,18 @@ async def test_cancelled_tui_explicit_create_waiter_does_not_release_owner_lock(
     release_owner = asyncio.Event()
     prepare_calls = 0
 
-    async def hold_owner(**_kwargs):
+    async def hold_owner(_provisioner, **_kwargs):
         nonlocal prepare_calls
         prepare_calls += 1
         owner_entered.set()
         await release_owner.wait()
-        return False, "code.normal", None, None, None
+        return None, None
 
-    server._prepare_session_switch_owner = hold_owner
+    monkeypatch.setattr(
+        RuntimeSessionProvisioner,
+        "_prepare_create_owner",
+        hold_owner,
+    )
 
     async def register(request_id: str):
         ws = FakeWebSocket()
@@ -1529,9 +1538,14 @@ async def test_handle_session_create_acks_before_async_kvc(monkeypatch, tmp_path
     kvc_release = asyncio.Event()
     kvc_calls = []
 
-    async def _prepare(**kwargs):
+    def _resolve_context(**kwargs):
         prepare_calls.append(kwargs)
-        return False, "agent", object(), None, object()
+        return types.SimpleNamespace(
+            target_is_team=False,
+            previous_is_team=False,
+            resolved_mode="agent",
+            affinity_enabled=True,
+        )
 
     async def _slow_kvc(**kwargs):
         kvc_calls.append(kwargs)
@@ -1544,8 +1558,20 @@ async def test_handle_session_create_acks_before_async_kvc(monkeypatch, tmp_path
         fake_encode_agent_response_for_wire,
     )
     patch_session_roots(monkeypatch, tmp_path)
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", _prepare)
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", _slow_kvc)
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_product_hooks,
+    )
+
+    monkeypatch.setattr(
+        kv_cache_product_hooks,
+        "resolve_session_switch_context",
+        _resolve_context,
+    )
+    monkeypatch.setattr(
+        kv_cache_product_hooks,
+        "dispatch_session_switch_signals",
+        _slow_kvc,
+    )
 
     request = AgentRequest(
         request_id="req-session-create-async-kvc",
@@ -1718,14 +1744,27 @@ async def test_handle_session_create_existing_metadata_fast_path_skips_owner_and
         mode="agent.work.normal",
     )
 
-    async def _prepare(**kwargs):
+    async def _prepare(_provisioner, **kwargs):
         owner_calls.append(kwargs)
+        return None, None
 
     async def _dispatch(**kwargs):
         kvc_calls.append(kwargs)
 
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", _prepare)
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", _dispatch)
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_product_hooks,
+    )
+
+    monkeypatch.setattr(
+        RuntimeSessionProvisioner,
+        "_prepare_create_owner",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        kv_cache_product_hooks,
+        "dispatch_session_switch_signals",
+        _dispatch,
+    )
 
     request = AgentRequest(
         request_id="req-session-create-existing",
@@ -1762,14 +1801,26 @@ async def test_handle_session_create_owner_error_releases_claim_and_uses_legacy_
     )
     patch_session_roots(monkeypatch, tmp_path / "sessions")
 
-    async def _prepare(**_kwargs):
+    async def _prepare(_provisioner, **_kwargs):
         raise RuntimeError("owner prepare failed")
 
     async def _dispatch(**kwargs):
         kvc_calls.append(kwargs)
 
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", _prepare)
-    monkeypatch.setattr(server, "_dispatch_session_switch_kvc", _dispatch)
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_product_hooks,
+    )
+
+    monkeypatch.setattr(
+        RuntimeSessionProvisioner,
+        "_prepare_create_owner",
+        _prepare,
+    )
+    monkeypatch.setattr(
+        kv_cache_product_hooks,
+        "dispatch_session_switch_signals",
+        _dispatch,
+    )
 
     request = AgentRequest(
         request_id="req-session-create-owner-error",
@@ -1809,7 +1860,7 @@ async def test_handle_session_create_metadata_is_visible_before_owner_prepare(
     )
     patch_session_roots(monkeypatch, sessions_root)
 
-    async def _prepare(**_kwargs):
+    async def _prepare(_provisioner, **_kwargs):
         from jiuwenswarm.server.runtime.session.session_metadata import (
             get_session_metadata,
         )
@@ -1817,9 +1868,13 @@ async def test_handle_session_create_metadata_is_visible_before_owner_prepare(
         observed_metadata.append(
             get_session_metadata("metadata-order-session", cache_bust=True)
         )
-        return False, "agent", None, None, None
+        return None, None
 
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", _prepare)
+    monkeypatch.setattr(
+        RuntimeSessionProvisioner,
+        "_prepare_create_owner",
+        _prepare,
+    )
 
     request = AgentRequest(
         request_id="req-session-create-metadata-order",
@@ -1872,9 +1927,9 @@ async def test_handle_session_create_prewarm_miss_preserves_success_contract(
             prewarm_status="warming",
         )
 
-    async def _prepare(**kwargs):
+    async def _prepare(_provisioner, **kwargs):
         prepare_calls.append(kwargs)
-        return False, "agent", None, None, None
+        return None, None
 
     fake_manager.claim_prewarmed_session = _claim
     monkeypatch.setattr(
@@ -1883,7 +1938,11 @@ async def test_handle_session_create_prewarm_miss_preserves_success_contract(
         fake_encode_agent_response_for_wire,
     )
     patch_session_roots(monkeypatch, tmp_path / "sessions")
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", _prepare)
+    monkeypatch.setattr(
+        RuntimeSessionProvisioner,
+        "_prepare_create_owner",
+        _prepare,
+    )
 
     request = AgentRequest(
         request_id="req-session-create-prewarm-miss",
@@ -1897,7 +1956,7 @@ async def test_handle_session_create_prewarm_miss_preserves_success_contract(
     assert fake_manager.claim_session_calls[0]["prewarm_eligible"] is True
     assert fake_manager.activated_sessions == ["prewarm-miss-session"]
     assert len(prepare_calls) == 1
-    assert prepare_calls[0]["target_session_id"] == "prewarm-miss-session"
+    assert prepare_calls[0]["session_id"] == "prewarm-miss-session"
     assert fake_ws.sent == [
         {
             "response_id": "req-session-create-prewarm-miss",
@@ -1933,10 +1992,14 @@ async def test_handle_session_create_preserves_legacy_response_metadata_contract
     fake_ws = FakeWebSocket()
     patch_session_roots(monkeypatch, tmp_path / "sessions")
 
-    async def _prepare(**_kwargs):
-        return False, "agent", None, None, None
+    async def _prepare(_provisioner, **_kwargs):
+        return None, None
 
-    monkeypatch.setattr(server, "_prepare_session_switch_owner", _prepare)
+    monkeypatch.setattr(
+        RuntimeSessionProvisioner,
+        "_prepare_create_owner",
+        _prepare,
+    )
     request = AgentRequest(
         request_id=f"req-session-create-metadata-{expected_ok}",
         channel_id="web",
