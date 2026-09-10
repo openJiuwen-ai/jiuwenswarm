@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -373,6 +374,7 @@ def _loop_session_fixture(interruption_state):
     loop_session = MagicMock()
     loop_session.get_session_id.return_value = "tui_sess_1"
     loop_session.get_state.return_value = interruption_state
+    loop_session.commit = AsyncMock()
     context = MagicMock()
     context.get_messages.return_value = [
         SimpleNamespace(tool_calls=[]),
@@ -425,6 +427,12 @@ async def test_interaction_cancel_clears_pending_skill_turbo_hitl_state(
         if INTERRUPTION_KEY in state:
             call_order.append("clear_hitl")
     loop_session.update_state = MagicMock(side_effect=_track_update_state)
+    # 追踪 commit 与 save_contexts 的相对顺序：commit 必须在 save_contexts
+    # 之后，否则弹出悬挂 tool_call 后的 context 写回仅进内存、不落盘
+    loop_session.commit = AsyncMock(side_effect=lambda: call_order.append("commit"))
+    context_engine.save_contexts = AsyncMock(
+        side_effect=lambda *_a, **_k: call_order.append("save_contexts")
+    )
 
     skill_turbo_session = MagicMock()
     skill_turbo_session.pre_run = AsyncMock()
@@ -457,6 +465,9 @@ async def test_interaction_cancel_clears_pending_skill_turbo_hitl_state(
     # 待回答的 skill_acceleration_exec tool_call 从上下文尾部弹出，不留悬挂调用
     context.pop_messages.assert_called_once_with(1, with_history=True)
     context_engine.save_contexts.assert_awaited_once_with(loop_session)
+    # 清除（含 context 弹出写回）必须 commit 落盘，且晚于 save_contexts
+    loop_session.commit.assert_awaited()
+    assert call_order.index("save_contexts") < call_order.index("commit")
     # ToolInterruptionState 清空：下一条消息将进入全新 invocation 做意图判断
     assert call({INTERRUPTION_KEY: None}) in loop_session.update_state.call_args_list
     # resume_ctx 经 {card.id}__skill_turbo 隔离键清除（而非 loop_session 的 DeepAgent 键）
@@ -626,3 +637,111 @@ async def test_interrupt_cleanup_skips_other_sessions_and_pure_ask_user(
 
     # 纯 ask_user interrupt 不走 skill_turbo 清理（不创建 __skill_turbo session）
     create_session_spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_success_clears_deep_agent_hitl_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resume_stream 成功后必须清掉 DeepAgent 侧 pending HITL 状态，否则下一条消息重放中断点重跑任务。"""
+
+    class _FakeTurbo:
+        def __init__(self, _config: Any) -> None:
+            self.artifact_holder = {}
+
+        async def resume_stream(self, **_kwargs: Any):
+            if False:
+                yield None
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+        _FakeTurbo,
+    )
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._model = None
+    adapter.build_skill_turbo_config = lambda: {}  # type: ignore[method-assign]
+    adapter._log_and_make_usage_summary_chunk = lambda **_k: None  # type: ignore[method-assign]
+    adapter._rewrite_skill_turbo_usage_chunk = lambda chunk, **_k: (chunk, None)  # type: ignore[method-assign]
+    clear_hitl = AsyncMock(return_value=True)
+    adapter._clear_pending_skill_turbo_hitl = clear_hitl  # type: ignore[method-assign]
+    isolated_clear = AsyncMock()
+    adapter._clear_skill_turbo_resume_ctx_via_isolated_session = isolated_clear  # type: ignore[method-assign]
+
+    class _Session:
+        async def post_run(self) -> None:
+            return None
+
+    request = AgentRequest(
+        request_id="req-resume-ok",
+        channel_id="officeclaw",
+        session_id="sess-resume-ok",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"source": "ask_user_interrupt", "answers": [{"question": "风格"}]},
+    )
+    stream = adapter._make_skill_turbo_resume_stream(
+        request=request,
+        inputs={},
+        session=_Session(),
+        resume_ctx={"plan_code": "x", "pending_tool_call_id": "tc-1", "inputs": {}},
+        answers=[{"question": "风格", "selected_options": ["商务经典"]}],
+    )
+    assert stream is not None
+    _ = [chunk async for chunk in stream]
+
+    # DeepAgent 侧 pending HITL 状态被清除（含上下文尾部 tool_call + INTERRUPTION_KEY）
+    clear_hitl.assert_awaited_once_with("sess-resume-ok")
+    # 命中 _clear_pending_skill_turbo_hitl 时不再走 isolated fallback
+    isolated_clear.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resume_success_falls_back_to_isolated_clear_when_hitl_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """loop session 不匹配（无 DeepAgent pending）时退化为仅清隔离键 resume_ctx。"""
+
+    class _FakeTurbo:
+        def __init__(self, _config: Any) -> None:
+            self.artifact_holder = {}
+
+        async def resume_stream(self, **_kwargs: Any):
+            if False:
+                yield None
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
+        _FakeTurbo,
+    )
+
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._model = None
+    adapter.build_skill_turbo_config = lambda: {}  # type: ignore[method-assign]
+    adapter._log_and_make_usage_summary_chunk = lambda **_k: None  # type: ignore[method-assign]
+    adapter._rewrite_skill_turbo_usage_chunk = lambda chunk, **_k: (chunk, None)  # type: ignore[method-assign]
+    adapter._clear_pending_skill_turbo_hitl = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    isolated_clear = AsyncMock()
+    adapter._clear_skill_turbo_resume_ctx_via_isolated_session = isolated_clear  # type: ignore[method-assign]
+
+    class _Session:
+        async def post_run(self) -> None:
+            return None
+
+    request = AgentRequest(
+        request_id="req-resume-miss",
+        channel_id="officeclaw",
+        session_id="sess-resume-miss",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"source": "ask_user_interrupt", "answers": [{"question": "风格"}]},
+    )
+    stream = adapter._make_skill_turbo_resume_stream(
+        request=request,
+        inputs={},
+        session=_Session(),
+        resume_ctx={"plan_code": "x", "pending_tool_call_id": "tc-1", "inputs": {}},
+        answers=[{"question": "风格", "selected_options": ["商务经典"]}],
+    )
+    assert stream is not None
+    _ = [chunk async for chunk in stream]
+
+    isolated_clear.assert_awaited_once_with("sess-resume-miss")
