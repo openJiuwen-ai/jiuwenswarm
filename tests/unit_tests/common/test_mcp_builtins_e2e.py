@@ -81,7 +81,7 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
     assert mcp_builtins.is_dir(), "mcp_builtins 未解压"
     assert not (mcp_builtins / "index.json").exists()
     assert not (mcp_builtins / "manifest.json").exists()
-    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip() == "v0.2.3"
+    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip() == "v0.2.4"
     pkg_dirs = [p for p in mcp_builtins.iterdir() if p.is_dir() and not p.name.startswith(".")]
     assert {package.name for package in pkg_dirs} == EXPECTED_BUILTIN_MCPS
     packages = [load_mcp_package(package) for package in pkg_dirs]
