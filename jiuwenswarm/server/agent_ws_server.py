@@ -2398,24 +2398,43 @@ class AgentWebSocketServer:
         """
         channel_id = request.channel_id or "default"
 
-        # 1. 尝试按 params 中的 mode 查找已有 agent
-        project_dir = resolve_request_project_dir(request)
-        mode_param = request.params.get("mode", "")
-        if mode_param:
-            mode, sub_mode, _canonical = resolve_agent_request_mode(mode_param)
-            agent_mode = "agent" if mode == "auto_harness" else mode
-            agent = self._agent_manager.get_agent_nowait(
+        # 0. 按 session_id 反查持有该会话运行时的 agent（优先级最高）。
+        # cancel 请求通常只带 session_id（无 mode/project_dir），按缓存键或
+        # "任意 agent" 兜底会命中同 channel 的无关实例——interrupt 落到没有
+        # 该 session 子 adapter 的 root 上空转：DeepAgent round 收不到 abort、
+        # 输出租约不释放，该会话后续 chat.send 全部 attach_output=None 只回
+        # runtime.accepted（前端"本轮无响应"）。
+        # getattr 防御：老测试替身/自定义 AgentManager 可能没有该方法。
+        _lookup_by_session = getattr(self._agent_manager, "get_agent_for_session", None)
+        agent = (
+            _lookup_by_session(channel_id, request.session_id)
+            if callable(_lookup_by_session)
+            else None
+        )
+        if agent is not None:
+            logger.info(
+                "[AgentWebSocketServer] cancel: session reverse-lookup hit: "
+                "channel_id=%s session_id=%s",
                 channel_id,
-                mode=agent_mode,
-                project_dir=project_dir,
-                sub_mode=sub_mode,
+                request.session_id,
             )
         else:
-            agent = None
+            # 1. 尝试按 params 中的 mode 查找已有 agent
+            project_dir = resolve_request_project_dir(request)
+            mode_param = request.params.get("mode", "")
+            if mode_param:
+                mode, sub_mode, _canonical = resolve_agent_request_mode(mode_param)
+                agent_mode = "agent" if mode == "auto_harness" else mode
+                agent = self._agent_manager.get_agent_nowait(
+                    channel_id,
+                    mode=agent_mode,
+                    project_dir=project_dir,
+                    sub_mode=sub_mode,
+                )
 
-        # 2. 如果按 mode 没找到，用 get_agent_nowait 找任何已有 agent
-        if agent is None:
-            agent = self._agent_manager.get_agent_nowait(channel_id, project_dir=project_dir)
+            # 2. 如果按 mode 没找到，用 get_agent_nowait 找任何已有 agent
+            if agent is None:
+                agent = self._agent_manager.get_agent_nowait(channel_id, project_dir=project_dir)
 
         resp: AgentResponse | None = None
 

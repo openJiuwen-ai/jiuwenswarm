@@ -957,6 +957,21 @@ class JiuWenSwarm:
         # SkillDev 模式：懒初始化，首次 skilldev.* 请求时构造
         self._skilldev_service = None
 
+    def owns_session(self, session_id: str | None) -> bool:
+        """该 agent 实例是否持有 *session_id* 的会话运行时（session-scoped 子 adapter）。
+
+        interrupt/cancel 按 session 精确路由用：chat.send 的 agent 按
+        (channel, mode, project_dir) 缓存，而 cancel 请求通常不带这些路由键，
+        只有 session_id——按缓存键找会命中同 channel 的其它 agent，interrupt
+        落到无关实例上空转（被停的 DeepAgent round 收不到 abort）。这里暴露
+        root adapter 内现成的 session 归属表，供 AgentManager 反查。
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return False
+        owns = getattr(adapter, "has_session_runtime", None)
+        return callable(owns) and bool(owns(session_id))
+
     def _get_skilldev_service(self):
         """懒初始化并返回 SkillDevService 实例.
 
