@@ -129,6 +129,27 @@ class TeamBindingStore:
         with self._lock:
             return self._read_unlocked().get(normalized)
 
+    def find_by_session(self, session_id: str) -> TeamBinding | None:
+        """Return the binding that owns ``session_id``, or ``None``.
+
+        ``bind_session`` keeps a session in at most one team's ``session_ids``
+        (re-binding evicts it from the previous team), so normally at most one
+        binding matches. Hand-edited stores are tolerated by preferring the
+        most recently updated hit.
+        """
+        normalized = str(session_id or "").strip()
+        if not normalized:
+            return None
+        with self._lock:
+            hits = [
+                binding
+                for binding in self._read_unlocked().values()
+                if normalized in binding.session_ids
+            ]
+        if not hits:
+            return None
+        return max(hits, key=lambda item: item.updated_at)
+
     def create(
         self,
         *,
