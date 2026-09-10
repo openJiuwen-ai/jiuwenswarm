@@ -79,9 +79,10 @@ _WORKSPACE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # the host workspace bind path (``/home/agentos/users/<user_id>``).
 USER_DIRECTORY_ENV_KEY = "JIUWENSWARM_USER_DIRECTORY"
 
-# Gateway-side file transfer limits (design: stricter than YuanRong 512MB).
+# Container file root. Upload size is not capped on Gateway; YuanRong
+# Frontend / working-directory quota (default 512MB) rejects oversized files
+# with HTTP 413, mapped to ``file_too_large``.
 _AGENT_FILE_PATH_ROOT = "/home/agentos"
-_MAX_AGENT_FILE_UPLOAD_BYTES = 50 * 1024 * 1024
 
 _TEAM_MODES = frozenset({"team", "code.team", "team.plan"})
 # Web/TUI 握手成功后预热内置沙箱；SSH/IM 等不走 agentserver WS，不预热。
@@ -276,16 +277,6 @@ def normalize_agent_file_download_path(path: str) -> str:
             code="BAD_REQUEST",
         )
     return text
-
-
-def enforce_agent_file_upload_size(content: bytes) -> None:
-    """Reject uploads larger than the Gateway-side 50MB limit."""
-    size = len(content)
-    if size > _MAX_AGENT_FILE_UPLOAD_BYTES:
-        raise AgentOSFileTransferError(
-            f"file size exceeds {_MAX_AGENT_FILE_UPLOAD_BYTES} bytes limit",
-            code="file_too_large",
-        )
 
 
 def build_auth_headers_from_mapping(headers: Mapping[str, str] | None) -> dict[str, str]:
@@ -852,8 +843,11 @@ class AgentOSRouterClient(AgentServerClient):
         instance_id: str | None = None,
         auth_headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Upload bytes into the user's agent container workspace."""
-        enforce_agent_file_upload_size(content)
+        """Upload bytes into the user's agent container workspace.
+
+        Gateway does not enforce a file-size cap. Oversized payloads are
+        rejected by YuanRong (HTTP 413 / ``file_too_large``).
+        """
         normalized_path = normalize_agent_file_upload_path(
             path, dir_prefix=dir_prefix, user_id=user_id
         )
