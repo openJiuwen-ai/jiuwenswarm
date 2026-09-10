@@ -950,6 +950,9 @@ permissions:
     viking_add_resource: allow
     web_search: allow
     mcp_fetch_webpage: allow
+    # 通用客户端工具：具体能力和资源仍由 custom_tool_context 清单及
+    # client_session_id / tool_call_id 回传校验约束。
+    custom_tool: allow
     cron_list_jobs: allow
     cron_get_job: allow
     cron_create_job: allow
