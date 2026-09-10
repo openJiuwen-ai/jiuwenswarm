@@ -97,30 +97,11 @@ def _build_celia_rail(
     session_id: str,
     request_metadata: Optional[Dict[str, Any]] = None,
 ):
-    from .celia.config import build_celia_config
-    from .celia.provider import CeliaMemoryProvider
-    from .celia.rail import CeliaMemoryRail
+    from .celia.prompt import CeliaMcpPromptRail
 
-    celia_config = build_celia_config(
-        config,
-        ext_cfg,
-        workspace_dir=str(config.get("__celia_workspace_dir") or "."),
-    )
-    provider = CeliaMemoryProvider(
-        celia_config,
-        user_id=ext_cfg.get("user_id", celia_config.user_id),
-        scope_id=ext_cfg.get("scope_id", celia_config.scope_id),
-        session_id=session_id,
-        request_metadata=request_metadata,
-    )
-    # Mount prompt and tools even when the backend cannot start. Optional
-    # preflight belongs to provider initialization, whose failures the rail handles.
-    return CeliaMemoryRail(
-        provider,
-        user_id=ext_cfg.get("user_id", celia_config.user_id),
-        scope_id=ext_cfg.get("scope_id", celia_config.scope_id),
-        session_id=session_id,
-    )
+    # GaussPD is already registered through the ordinary MCP integration.
+    # Its extension owns recall/ingestion; do not start a second Celia provider.
+    return CeliaMcpPromptRail()
 
 
 def _build_openjiuwen_provider(ext_cfg: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None):
