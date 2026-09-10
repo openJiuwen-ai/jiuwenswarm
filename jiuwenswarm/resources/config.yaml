@@ -1570,3 +1570,37 @@ modes:
         # 控制记忆内容如何注入到每个成员的 system prompt 中：
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
+
+# Per-session agent profiles (template). A session selects a profile via the
+# relay signal (params.agent_kind / metadata.agent_kind) or the agent_id
+# breed_map. When no signal is present, the global react config applies
+# unchanged. One sidecar serves both normal and minimal sessions, each in its
+# own child adapter + DeepAgent, no restart. Override in the user-dir config.
+agent_profiles:
+  normal:
+    react:
+      enable_task_loop: true
+      evolution:
+        skill_create: false
+        review_trigger: false
+  minimal:
+    react:
+      enable_task_loop: false
+      evolution:
+        skill_create: false
+        review_trigger: false
+    rails:
+      keep:
+        - _runtime_prompt_rail
+        - _response_prompt_rail
+        - _stream_event_rail
+        - _task_planning_rail
+        - _security_rail
+        - _heartbeat_rail
+        - _subagent_rail
+        - _permission_rail
+        - _context_processor_rail
+        - _ask_user_rail
+  # breed_map:
+  #   agent-normal: normal
+  #   agent-minimal: minimal

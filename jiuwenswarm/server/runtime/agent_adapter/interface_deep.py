@@ -2255,6 +2255,11 @@ class JiuWenSwarmDeepAdapter:
         self._reload_lock = asyncio.Lock()
         self._working_checker: Callable[[], bool] | None = None
         self._session_instance_config: dict[str, Any] | None = None
+        # Per-session agent profile kind ("normal" | "minimal" | None). Resolved
+        # at create_instance from the request signal (params.agent_kind /
+        # metadata) or the agent_id breed_map; persisted across reload so a
+        # minimal session isn't flipped back to normal by a hot reload.
+        self._active_agent_kind: str | None = None
         self._session_instance_mode: str = "agent"
         self._session_instance_sub_mode: str | None = None
         # Fail closed after a rewrite checkpoint rollback cannot be proven
@@ -8253,6 +8258,7 @@ class JiuWenSwarmDeepAdapter:
             )
         )
 
+        rail_infos = self._filter_rail_infos_by_profile(rail_infos, config_base)
         return self._instantiate_rails(rail_infos, config_base)
 
     @staticmethod
@@ -8296,6 +8302,139 @@ class JiuWenSwarmDeepAdapter:
                 )
             return True
         return configured_value
+
+    # Per-profile rail filtering. PROTECTED rails are always built even under a
+    # keep-whitelist (dropping them would orphan a dependent that reuses an
+    # engine they build, leaving it half-built). DENY_CASCADE: dropping the key
+    # also drops the listed dependents, so neither is left half-built.
+    _PROFILE_PROTECTED_RAILS = frozenset({
+        "_permission_rail",
+    })
+    _RAIL_DENY_CASCADE = {
+        "_permission_rail": ("_skill_authorization_rail",),
+    }
+
+    def _resolve_agent_kind(
+        self,
+        request: Any,
+        config_base: dict[str, Any] | None,
+    ) -> str | None:
+        """Resolve the per-session agent profile kind from the request signal.
+
+        Sources, in priority order:
+          1. request.params.agent_kind / request.metadata.agent_kind
+             (single-breed + per-request field relay approach)
+          2. agent_profiles.breed_map[agent_id] (two-breed relay approach where
+             the breed name carries the kind, no relay code change needed)
+
+        Returns "normal" | "minimal" | None (None => no profile; use global config).
+        """
+        raw: Any = None
+        if request is not None:
+            params = getattr(request, "params", None)
+            if isinstance(params, dict):
+                raw = params.get("agent_kind") or params.get("agentKind")
+            if not raw:
+                md = getattr(request, "metadata", None)
+                if isinstance(md, dict):
+                    raw = md.get("agent_kind") or md.get("agentKind")
+        if isinstance(raw, str) and raw.strip():
+            k = raw.strip().lower()
+            if k in ("normal", "minimal"):
+                return k
+        profiles = (config_base or {}).get("agent_profiles", {})
+        if isinstance(profiles, dict):
+            breed_map = profiles.get("breed_map", {})
+            if isinstance(breed_map, dict):
+                mapped = breed_map.get(self._agent_id)
+                if isinstance(mapped, str) and mapped.strip().lower() in ("normal", "minimal"):
+                    return mapped.strip().lower()
+        return None
+
+    def _active_profile_spec(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
+        """Return the named profile dict for self._active_agent_kind (or {})."""
+        kind = self._active_agent_kind
+        if not kind:
+            return {}
+        profiles = (config_base or {}).get("agent_profiles", {})
+        if not isinstance(profiles, dict):
+            return {}
+        spec = profiles.get(kind, {})
+        return spec if isinstance(spec, dict) else {}
+
+    def _apply_active_profile(
+        self, config_base: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Merge the active profile's react/evolution overrides into config_base.
+
+        Only the react section (incl. the evolution sub-tree) is overlaid;
+        models, routing, etc. are untouched. Returns config_base unchanged when
+        no profile is active. Force-revive safe: the merge runs before
+        _resolve_enable_task_loop so a minimal profile's
+        evolution.skill_create=false keeps task_loop=false.
+        """
+        spec = self._active_profile_spec(config_base)
+        if not spec:
+            return config_base
+        react_ov = spec.get("react", {})
+        if not isinstance(react_ov, dict) or not react_ov:
+            return config_base
+        out = copy.deepcopy(config_base) if isinstance(config_base, dict) else {}
+        base_react = out.get("react")
+        if not isinstance(base_react, dict):
+            base_react = {}
+            out["react"] = base_react
+        for k, v in react_ov.items():
+            if isinstance(v, dict) and isinstance(base_react.get(k), dict):
+                base_react[k] = {**base_react[k], **v}
+            else:
+                base_react[k] = v
+        return out
+
+    def _filter_rail_infos_by_profile(
+        self,
+        rail_infos: list["_RailBuildInfo"],
+        config_base: dict[str, Any] | None,
+    ) -> list["_RailBuildInfo"]:
+        """Filter the declared rail set by the active profile's keep/drop list.
+
+        keep: whitelist (attr_names); only these plus PROTECTED are built.
+        drop: blacklist (attr_names); these are skipped (PROTECTED always kept).
+        Both empty => no filtering (full set, e.g. normal profile).
+        """
+        spec = self._active_profile_spec(config_base)
+        rc = spec.get("rails", {}) if isinstance(spec, dict) else {}
+        if not isinstance(rc, dict):
+            rc = {}
+        keep = set(rc.get("keep", []) or [])
+        drop = set(rc.get("drop", []) or [])
+        if not keep and not drop:
+            return rail_infos
+        for d in list(drop):
+            drop.update(self._RAIL_DENY_CASCADE.get(d, ()))
+        out: list["_RailBuildInfo"] = []
+        dropped: list[str] = []
+        for info in rail_infos:
+            name = info.attr_name
+            if name in self._PROFILE_PROTECTED_RAILS:
+                out.append(info)
+                continue
+            if keep:
+                if name in keep:
+                    out.append(info)
+                else:
+                    dropped.append(name)
+            elif name in drop:
+                dropped.append(name)
+            else:
+                out.append(info)
+        if dropped:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] profile=%s dropped rails: %s",
+                self._active_agent_kind,
+                dropped,
+            )
+        return out
 
     def _make_deep_agent_config(
         self,
@@ -9061,6 +9200,16 @@ class JiuWenSwarmDeepAdapter:
                 await self._load_enterprise_config(bootstrap_request)
             config_base = merge_memory_config_into_config(config_base)
             config_base = self._merge_enterprise_models_into_config(config_base)
+            # Per-session agent profile: resolve the kind from the bootstrap
+            # request (params.agent_kind / metadata) or the agent_id breed_map,
+            # then merge the named profile's react/evolution overrides into
+            # config_base BEFORE _resolve_enable_task_loop and _build_agent_rails
+            # read them. This is what lets one sidecar serve both normal and
+            # minimal sessions, each in its own child adapter + DeepAgent.
+            kind = self._resolve_agent_kind(bootstrap_request, config_base)
+            if kind is not None:
+                self._active_agent_kind = kind
+            config_base = self._apply_active_profile(config_base)
             # 与模型槽位一致：Agent 级 permissions 模板在构建 rail 前绑定到 Task
             token_perm_agent = self._bind_agent_permissions_base()
             try:
@@ -9627,6 +9776,15 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             config_base = await self._apply_reload_config_snapshot(config_base, env_overrides)
+            # Reload has no request, so reuse the persisted _active_agent_kind
+            # (set at cold start) and re-merge the profile. Without this,
+            # _apply_reload_config_snapshot resets both _config_base_cache and
+            # _config_cache to the global react (no profile), which would flip a
+            # normal (task_loop=true) session back to minimal on hot reload.
+            if self._active_agent_kind is not None:
+                config_base = self._apply_active_profile(config_base)
+                self._config_base_cache = config_base.copy()
+                self._config_cache = config_base.get("react", {}).copy()
             config = self._config_cache.copy()
 
             model = self._create_model(config_base)
