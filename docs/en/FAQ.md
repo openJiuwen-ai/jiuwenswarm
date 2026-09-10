@@ -18,7 +18,10 @@ If the version doesn't match, install a supported version and try again.
 
 ### Q: On start I see "Node.js not found"
 
-JiuwenSwarm's frontend depends on Node.js. Install version 18.x or newer.
+Normal installed application use does not require Node.js. Source frontend
+development requires Node.js 18 or newer; browser runtime use from a pip/wheel
+or source installation requires Node.js 20 or newer. Desktop releases bundle
+Node 22.11.0.
 
 ```bash
 node --version

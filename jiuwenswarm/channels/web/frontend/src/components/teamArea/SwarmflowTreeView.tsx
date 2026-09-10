@@ -786,6 +786,12 @@ function RunNode({
       : run.budget?.total != null && run.budget?.exhausted
         ? 'session'
         : null);
+  // 机械按钮只在 team 活着（方块亮）时可用：灰飞机 = 无 leader harness 可宿主 run；
+  // recovered = 冷启动后 controller 无票据。两种情况恢复都只能由 Leader 经 ask_user 裁决。
+  const teamRunning = useChatStore((s) => s.runtimes[sessionId]?.isProcessing ?? false);
+  const controlsDisabled = !teamRunning || run.recovered === true;
+  const controlBtnClass =
+    'flex items-center justify-center w-7 h-7 rounded text-text-muted hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-muted';
 
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-card/50">
@@ -860,8 +866,11 @@ function RunNode({
           >
             <button
               type="button"
-              title={t('swarmflow.pauseResumeHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors"
+              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.pauseResumeHint')}
+              className={`${controlBtnClass} hover:text-amber-500`}
+              disabled={controlsDisabled}
+              data-testid="team-area-swarmflow-run-pause-btn"
+              data-variant={run.status === 'running' ? 'pause' : 'resume'}
               onClick={() => {
                 const method =
                   run.status === 'running' ? 'swarmflow.pause' : 'swarmflow.resume';
@@ -878,8 +887,10 @@ function RunNode({
             </button>
             <button
               type="button"
-              title={t('swarmflow.stopHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors"
+              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.stopHint')}
+              className={`${controlBtnClass} hover:text-red-500`}
+              disabled={controlsDisabled}
+              data-testid="team-area-swarmflow-run-stop-btn"
               onClick={() => {
                 void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
                   (err) => console.error('[swarmflow] control failed:', err),

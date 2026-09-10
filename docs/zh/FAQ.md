@@ -18,7 +18,7 @@ python --version
 
 ### Q: 启动时报错 "Node.js not found"
 
-JiuwenSwarm 前端依赖 Node.js，请安装 18.x 或更高版本。
+普通安装与启动不需要 Node.js。源码前端开发需要 Node.js 18 或更高版本；pip/wheel 或源码安装如需使用浏览器运行时，则需要 Node.js 20 或更高版本。桌面版已内置 Node 22.11.0。
 
 ```bash
 node --version

@@ -84,10 +84,6 @@ workspace/agent/memory/*.db
 workspace/agent/memory/*.db-shm
 workspace/agent/memory/*.db-wal
 
-jiuwenswarm/agentserver/tools/browser-move/.browser
-jiuwenswarm/agentserver/tools/browser-move/.browser-profiles
-jiuwenswarm/agentserver/tools/browser-move/screenshots
-
 jiuwenswarm/workspace/.whatsapp-auth/
 jiuwenswarm/resources/agent/workspace/
 jiuwenswarm/resources/tui/bin/

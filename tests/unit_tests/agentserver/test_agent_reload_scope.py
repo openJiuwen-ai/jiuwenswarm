@@ -41,6 +41,7 @@ class FakeWebSocket:
 class FakeAgent:
     def __init__(self):
         self.reload_calls = []
+        self._instance = None
 
     async def reload_agent_config(self, *args, **kwargs):
         if args:
@@ -61,6 +62,9 @@ class FakeAgent:
 
     def persist_skill_retrieval_session_profile(self) -> None:
         """Match the child adapter's public profile persistence hook."""
+
+    def refresh_paid_search_tool_for_runtime(self) -> None:
+        """Match the child adapter's public paid-search refresh hook."""
 
 
 class FailingReloadAgent(FakeAgent):
@@ -436,7 +440,8 @@ async def test_agent_reload_config_handler_warms_zen_cache_on_model_scope(monkey
 
 
 @pytest.mark.asyncio
-async def test_multimodal_reload_refreshes_agents_without_model_probes(monkeypatch):
+@pytest.mark.parametrize("scope", ["multimodal", "search"])
+async def test_tool_reload_refreshes_agents_without_model_probes(monkeypatch, scope):
     from jiuwenswarm.agents.harness import team as team_harness_module
     from jiuwenswarm.server.runtime import image_modality_warmup, opencode_zen
 
@@ -476,7 +481,7 @@ async def test_multimodal_reload_refreshes_agents_without_model_probes(monkeypat
             "config": {"models": {"vision": {}}},
             "env": {"VISION_ENABLED": "true"},
             "target_channel_id": "web",
-            "reload_scopes": ["multimodal"],
+            "reload_scopes": [scope],
         },
     )
 
@@ -488,7 +493,7 @@ async def test_multimodal_reload_refreshes_agents_without_model_probes(monkeypat
         {"models": {"vision": {}}},
         {"VISION_ENABLED": "true"},
         target_channel_id="web",
-        reload_scopes={"multimodal"},
+        reload_scopes={scope},
     )
     refresh_image_modality.assert_not_awaited()
     warm_zen.assert_not_awaited()

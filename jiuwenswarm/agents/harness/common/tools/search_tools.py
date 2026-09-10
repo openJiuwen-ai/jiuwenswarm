@@ -8,13 +8,15 @@ import asyncio
 import base64
 import os
 import re
+from copy import deepcopy
 from html import unescape
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 import urllib3
-from openjiuwen.core.foundation.tool import tool
+from openjiuwen.core.foundation.tool import LocalFunction, tool
+from openjiuwen.harness.prompts.tools import get_tool_description, get_tool_input_params
 
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 from jiuwenswarm.common.utils import env_url
@@ -529,23 +531,29 @@ async def mcp_free_search(query: str, max_results: int = 8, timeout_seconds: int
     return "\n".join(lines)
 
 
-@tool(
-    name="mcp_paid_search",
-    description="Paid search via Bocha/Perplexity/SERPER/JINA. Support provider=auto|bocha|perplexity|serper|jina.",
-)
-async def mcp_paid_search(
+def configured_paid_search_providers() -> list[str]:
+    """Return providers with nonblank keys in the MCP fallback order."""
+    return [
+        provider
+        for provider in ("bocha", "perplexity", "serper", "jina")
+        if str(os.environ.get(f"{provider.upper()}_API_KEY", "") or "").strip()
+    ]
+
+
+async def run_paid_search_structured(
     query: str,
     provider: str = "auto",
     max_results: int = 8,
     timeout_seconds: int = 45,
-) -> str:
+) -> tuple[str, str, list[str]]:
+    """Dispatch only configured providers and return a structured result."""
     query = (query or "").strip()
     if not query:
-        return "[ERROR]: query cannot be empty."
+        raise ValueError("query cannot be empty.")
 
     provider = (provider or "auto").strip().lower()
     if provider not in {"auto", "bocha", "jina", "serper", "perplexity"}:
-        return "[ERROR]: provider must be one of auto|bocha|jina|serper|perplexity."
+        raise ValueError("provider must be auto or a configured search provider.")
 
     timeout_seconds = max(10, min(timeout_seconds, 120))
     max_results = max(1, min(max_results, 20))
@@ -562,47 +570,93 @@ async def mcp_paid_search(
             query=query, max_results=max_results, timeout_seconds=timeout_seconds
         ),
     }
-    
-    available_providers = []
-    if os.environ.get("BOCHA_API_KEY"):
-        available_providers.append("bocha")
-    if os.environ.get("PERPLEXITY_API_KEY"):
-        available_providers.append("perplexity")
-    if os.environ.get("SERPER_API_KEY"):
-        available_providers.append("serper")
-    if os.environ.get("JINA_API_KEY"):
-        available_providers.append("jina")
-    
+    available_providers = configured_paid_search_providers()
+
     if not available_providers:
-        return "[ERROR]: no paid search API keys configured."
-    
-    if provider != "auto":
-        if provider not in available_providers:
-            return f"[ERROR]: {provider} API key not configured. Available providers: {', '.join(available_providers)}"
-        order = [provider]
-    else:
-        order = [p for p in ["bocha", "perplexity", "serper", "jina"] if p in available_providers]
+        raise RuntimeError("no paid search API keys configured.")
+
+    # Queued calls can outlive a provider's configuration. Use a configured
+    # fallback without invoking a runner that is guaranteed to lack a key.
+    order = [provider] if provider in available_providers else available_providers
 
     errors: list[str] = []
     for name in order:
+        if name not in configured_paid_search_providers():
+            continue
+        runner = runners.get(name)
+        if runner is None:
+            errors.append(f"{name}: provider runner unavailable")
+            continue
         try:
-            result = await asyncio.to_thread(runners[name])
+            result = await asyncio.to_thread(runner)
         except Exception as exc:
             errors.append(f"{name}: {exc}")
             continue
 
         answer = str(result.get("answer", "") or "").strip()
         urls = [str(u) for u in (result.get("urls", []) or []) if u][:max_results]
-        lines = [f"Paid search provider: {name}"]
-        if answer:
-            lines.append("Answer:")
-            lines.append(answer)
-        if urls:
-            lines.append("URLs:")
-            for idx, url in enumerate(urls, 1):
-                lines.append(f"{idx}. {url}")
-        if not answer and not urls:
-            lines.append("No usable result payload.")
-        return "\n".join(lines)
+        return name, answer, urls
 
-    return "[ERROR]: paid search failed. " + " | ".join(errors)
+    raise RuntimeError("paid search failed. " + " | ".join(errors))
+
+
+async def _run_paid_search(
+    query: str,
+    provider: str = "auto",
+    max_results: int = 8,
+    timeout_seconds: int = 45,
+) -> str:
+    """Preserve the release MCP tool's text result and error contract."""
+    try:
+        provider_used, answer, urls = await run_paid_search_structured(
+            query=query,
+            provider=provider,
+            max_results=max_results,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        return f"[ERROR]: {exc}"
+
+    lines = [f"Paid search provider: {provider_used}"]
+    if answer:
+        lines.append("Answer:")
+        lines.append(answer)
+    if urls:
+        lines.append("URLs:")
+        for idx, url in enumerate(urls, 1):
+            lines.append(f"{idx}. {url}")
+    if not answer and not urls:
+        lines.append("No usable result payload.")
+    return "\n".join(lines)
+
+
+class _ConfiguredPaidSearchTool(LocalFunction):
+    """Normalize queued provider choices before LocalFunction schema validation."""
+
+    async def invoke(self, inputs, **kwargs):
+        provider = str(inputs.get("provider", "auto") or "auto").strip().lower()
+        if provider in {"auto", "bocha", "perplexity", "serper", "jina"}:
+            if provider != "auto" and provider not in configured_paid_search_providers():
+                provider = "auto"
+            inputs = {**inputs, "provider": provider}
+        return await super().invoke(inputs, **kwargs)
+
+
+mcp_paid_search = _ConfiguredPaidSearchTool(
+    card=tool(
+        name="mcp_paid_search",
+        description=get_tool_description("paid_search", "en"),
+    )(_run_paid_search).card,
+    func=_run_paid_search,
+)
+
+
+def refresh_paid_search_metadata() -> None:
+    """Refresh the shared MCP card after environment configuration is loaded."""
+    mcp_paid_search.card.description = get_tool_description("paid_search", "en")
+    params = deepcopy(mcp_paid_search.card.input_params)
+    params["properties"]["provider"] = get_tool_input_params("paid_search", "en")["properties"]["provider"]
+    mcp_paid_search.card.input_params = params
+
+
+refresh_paid_search_metadata()

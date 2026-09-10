@@ -140,22 +140,11 @@ def _new_team_event_queue() -> asyncio.Queue:
     return asyncio.Queue(maxsize=TEAM_EVENT_QUEUE_MAXSIZE)
 
 
-# Session-scoped BackgroundTaskController instances (one per session_id). This
-# is the leader's external pause/resume/stop surface for background work
-# (today: swarmflow runs). It must be reused across streaming rounds of the
-# same session so a pause in one round and a resume in a later round observe
-# the same _paused registry, so it lives here keyed by session_id, mirroring
-# the per-session team state held on the singleton TeamManager.
-_BACKGROUND_TASK_CONTROLLERS: dict[str, BackgroundTaskController] = {}
-
-
 def get_background_task_controller(session_id: str) -> BackgroundTaskController:
-    """Return the session's BackgroundTaskController, lazily creating it once."""
-    controller = _BACKGROUND_TASK_CONTROLLERS.get(session_id)
-    if controller is None:
-        controller = BackgroundTaskController()
-        _BACKGROUND_TASK_CONTROLLERS[session_id] = controller
-    return controller
+    """Return the session's BackgroundTaskController (owned by TeamManager)."""
+    from jiuwenswarm.agents.harness.team import get_team_manager
+
+    return get_team_manager().get_background_task_controller(session_id)
 
 
 def _safe_team_path_segment(value: str, fallback: str = "_") -> str:
@@ -753,6 +742,33 @@ def restore_workflow_runs(session_id: str) -> dict[str, WorkflowRunState] | None
     }
 
 
+def _normalize_recovered_runs(
+    runs: dict[str, WorkflowRunState] | None, session_id: str,
+) -> dict[str, WorkflowRunState] | None:
+    """Normalize disk-restored runs after cold start.
+
+    A crash leaves runs ``running`` in the snapshot although no events will
+    ever arrive; park every non-terminal run to ``paused`` and mark it
+    ``recovered`` — the controller registries are empty after a restart, so
+    the tree-view buttons are greyed and only the leader (launch plane via
+    advisory) can resume it.
+    """
+    if not runs:
+        return runs
+    changed = False
+    for run in runs.values():
+        if not run.is_terminal:
+            if run.status != "paused":
+                run.status = "paused"
+                changed = True
+            if not run.recovered:
+                run.recovered = True
+                changed = True
+    if changed:
+        persist_workflow_runs(runs, session_id)
+    return runs
+
+
 def persist_session_budget(session_id: str, snapshot: dict) -> None:
     """Persist the session-wide (leader-shared) budget snapshot to session metadata.
 
@@ -930,6 +946,85 @@ def _resolve_user_turn(
         language=language,
         files={},
     )
+
+
+# 历史渲染过滤锚点：advisory 文本进历史时按此标记剔除（渲染层/摘要层各自过滤）。
+_ADVISORY_MARK = ("[swarmflow-advisory]", "[/swarmflow-advisory]")
+
+
+def _advisory_runs(team_manager: Any, session_id: str) -> dict[str, WorkflowRunState]:
+    """Runs the advisory should list: live handler states, else the snapshot.
+
+    A team pause pops the workflow handler with the runtime, so the next
+    chat.send has no handler to ask — but the persisted snapshot still holds
+    the paused runs and is the only ledger left until runtime_ready rebuilds
+    the handler. Without this fallback the leader gets a bare query and guesses.
+    """
+    wf_handler = team_manager.get_workflow_handler(session_id)
+    if wf_handler is not None:
+        return wf_handler.get_run_states()
+    return restore_workflow_runs(session_id) or {}
+
+
+def _inject_swarmflow_context(
+    turn: UserTurn,
+    runs: dict[str, WorkflowRunState],
+    *,
+    cold_start: bool,
+    controller: Any,
+) -> UserTurn:
+    """Prepend a resume-advisory prefix to the leader's user turn.
+
+    ``cold_start`` lists every non-terminal run; otherwise only paused runs.
+    ``controller`` decides each run's resume plane: a run it still holds a
+    pause ticket for resumes in-process (``action="resume"``); any other goes
+    through the launch plane (``resume_id + script_path``). Returns ``turn``
+    unchanged when there is nothing to inject or the text is not a plain
+    string (A2UI / InteractiveInput keep their own payload).
+    """
+    eligible = [
+        r for r in runs.values()
+        if ((not r.is_terminal) if cold_start else (r.status == "paused"))
+    ]
+    if not eligible or not isinstance(turn.text, str):
+        return turn
+    lines = [
+        _ADVISORY_MARK[0],
+        f"当前有 {len(eligible)} 个 swarmflow 工作流处于已暂停状态：",
+    ]
+    for r in eligible:
+        script = r.script_path or r.script or ""
+        lines.append(f"- run_id: {r.id}  脚本: {script}")
+        # Two resume planes, keyed on the ticket — not on the request shape:
+        # a team pause pops the handler so the next chat.send looks like a
+        # cold start, yet the controller still holds the ticket in-process and
+        # ``action="resume"`` relaunches the cached prefix. Only a run with no
+        # ticket (process restart / session switch) needs the launch plane
+        # (``resume_id + script_path``, args recovered from the journal).
+        # Handing the leader the wrong one makes it bypass the ticket and start
+        # a brand-new run instead of resuming.
+        if controller.is_paused(r.id):
+            lines.append(f'  恢复调用: swarmflow(resume_id="{r.id}", action="resume")')
+        elif r.script_path:
+            lines.append(
+                f'  恢复调用: swarmflow(resume_id="{r.id}", script_path="{r.script_path}")'
+            )
+        # stop works on both planes: the tool announces stopped itself when the
+        # controller no longer holds the ticket (cold start), no journal seal.
+        lines.append(f'  停止调用: swarmflow(resume_id="{r.id}", action="stop")')
+    # The tree-view buttons are greyed while the team sleeps,
+    # so the leader is the only control path: act on an explicit request,
+    # otherwise ask — coarse first, per-run only on demand, so N runs never
+    # overflow ask_user's 2-4 options per question.
+    lines.extend([
+        "处理规则：",
+        "- 若用户本条消息已明确要求恢复或停止某个（或全部）工作流，直接执行对应调用，不要询问。",
+        "- 否则先调用 ask_user 单题：「已暂停的工作流如何处理？」选项「全部恢复 / 全部停止 / "
+        "逐个选择 / 暂不处理」。选「逐个选择」再按每个工作流各出一题（恢复 / 停止 / 暂不处理）。"
+        "「暂不处理」保持暂停，不要自行恢复。",
+    ])
+    lines.append(_ADVISORY_MARK[1])
+    return turn.with_text("\n".join(lines) + "\n\n" + turn.text)
 
 
 def _request_trusted_dirs(request: Any) -> list[str]:
@@ -1115,7 +1210,9 @@ async def ensure_monitor_handlers_for_active_runtime(
         # Stopped handler still holds _runs in memory — prefer these
         initial_runs = existing_wf.get_run_states()
         # Merge disk-restored runs for any IDs not present in memory
-        restored_from_disk = restore_workflow_runs(session_id)
+        restored_from_disk = _normalize_recovered_runs(
+            restore_workflow_runs(session_id), session_id,
+        )
         if restored_from_disk:
             for run_id, run_state in restored_from_disk.items():
                 if run_id not in initial_runs:
@@ -1124,7 +1221,9 @@ async def ensure_monitor_handlers_for_active_runtime(
         tm.pop_workflow_handler(session_id)
     else:
         # No in-memory handler — restore from disk only
-        initial_runs = restore_workflow_runs(session_id)
+        initial_runs = _normalize_recovered_runs(
+            restore_workflow_runs(session_id), session_id,
+        )
 
     # Bind the explicit session_id so create_monitor freezes the real id
     # instead of an empty contextvar (same rationale as the TeamMonitor
@@ -1378,11 +1477,6 @@ def _try_finish_cron_team_stream(
         )
 
 
-_TEAM_BUILDING_EVENT_TYPES = frozenset({
-    "team.member", "team.task", "workflow.updated",
-})
-
-
 async def _broadcast_event(
     channel_id: str | None, session_id: str, event: dict[str, Any]
 ) -> None:
@@ -1393,9 +1487,6 @@ async def _broadcast_event(
     result = tm.broadcast_event(session_id, event)
     if inspect.isawaitable(result):
         await result
-    # Track team-building events so chat.final can be gated correctly.
-    if (not tm.has_seen_team_events(session_id)) and event.get("event_type") in _TEAM_BUILDING_EVENT_TYPES:
-        tm.mark_seen_team_events(session_id)
     _try_finish_cron_team_stream(channel_id, session_id, event)
 
 
@@ -2516,6 +2607,16 @@ async def _process_team_message_stream(
             if query:
                 # Follow-up rounds carry their own attachments and context, so
                 # they are rendered exactly like the first one.
+                # 暂停后恢复裁决：仅把 paused run 清单前缀注入路由到 leader 的
+                # team-wide 纯文本；member/A2UI/InteractiveInput 保持原路径。
+                # args 由 agent-core 从 journal 自动恢复，提示只含 resume_id+script_path。
+                runs = _advisory_runs(team_manager, session_id)
+                if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
+                    turn = _inject_swarmflow_context(
+                        turn.with_text(query), runs, cold_start=False,
+                        controller=get_background_task_controller(session_id),
+                    )
+                    query = turn.text if isinstance(turn.text, str) else query
                 followup_payload = _deliverable(turn, query)
                 await _begin_team_round()
                 success, reason = await team_manager.interact(
@@ -2718,6 +2819,15 @@ async def _process_team_message_stream(
             # Detaching it before prepare_runtime_activation() leaves a window
             # where another follow-up installs a second persistent consumer.
             await _begin_team_round()
+            # 冷启动恢复裁决：可恢复 run 清单以文本前缀注入 leader 上下文——非终态
+            # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
+            runs = _advisory_runs(team_manager, session_id)
+            if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
+                turn = _inject_swarmflow_context(
+                    turn.with_text(query), runs, cold_start=True,
+                    controller=get_background_task_controller(session_id),
+                )
+                query = turn.text if isinstance(turn.text, str) else query
             try:
                 request_queue = await _start_team_stream_round(
                     channel_id=channel_id,
@@ -2852,8 +2962,6 @@ async def _process_team_message_stream(
         # 当前 stream 已结束，清除初始化标记，
         # 下次请求需重新创建 stream task（gate 在 stream 结束时已关闭）。
         team_manager.clear_session_initialized(session_id)
-        team_manager.reset_seen_team_events(session_id)
-        team_manager.reset_workflow_completed(session_id)
         logger.info(
             "[TeamHelpers] stream ended, cleared round markers: "
             "channel_id=%s session_id=%s",
@@ -2899,6 +3007,22 @@ async def _process_team_message_stream(
             await _complete_user_submission(accepted=False)
 
 
+def _run_lamp_active(run: WorkflowRunState) -> bool:
+    """Whether ``run`` still produces output, judged at agent level.
+
+    Run-level ``not is_terminal`` over-holds the lamp: a paused run is not
+    terminal yet produces nothing, so the frontend square would spin forever.
+    Only an agent actually running or awaiting a human reply keeps the lamp on.
+    """
+    if run.is_terminal or run.status == "paused":
+        return False
+    return any(
+        a.status in ("running", "waiting_for_human")
+        for phase in run.phases
+        for a in phase.agents
+    )
+
+
 async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
@@ -2919,11 +3043,6 @@ async def _consume_stream_with_query(
     # only emits what is new. See _announce_team_roster.
     announced_members: set[str] = set()
     roster_team_name = str(getattr(team_spec, "team_name", "") or "")
-    # Reset the team-events flag at the start of a new round so chat.final
-    # can correctly determine whether the team is active.
-    tm_ = get_team_manager(channel_id)
-    tm_.reset_seen_team_events(session_id)
-    tm_.reset_workflow_completed(session_id)
     lg: TeamStreamLogger | None = None
     stream_cancelled = False
     try:
@@ -3148,9 +3267,10 @@ async def _consume_stream_with_query(
                 elif parsed.get("event_type") == "team.idle":
                     # A swarmflow workflow may still be running while the leader
                     # is idle; do not end the round until it reaches terminal.
-                    wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
+                    tm = get_team_manager(channel_id)
+                    wf_handler = tm.get_workflow_handler(session_id)
                     if wf_handler is not None and any(
-                        not run.is_terminal for run in wf_handler.get_run_states().values()
+                        _run_lamp_active(run) for run in wf_handler.get_run_states().values()
                     ):
                         logger.info(
                             "[TeamHelpers] team idle ignored (workflow still running): "
@@ -3158,7 +3278,15 @@ async def _consume_stream_with_query(
                             _resolve_channel_id(channel_id),
                             session_id,
                         )
+                        # Park the marker: a later pause/stop that drains the
+                        # active set must be able to release it (see
+                        # _consume_workflow_events).
+                        tm.hold_idle(
+                            session_id,
+                            {"rid": round_id, "member_count": parsed.get("member_count")},
+                        )
                         continue
+                    tm.pop_held_idle(session_id)
                     # Every member has been at rest for the framework's debounce
                     # window: nothing is producing output any more, even though
                     # the leader stream deliberately stays open in case the team
@@ -3229,16 +3357,6 @@ async def _consume_stream_with_query(
                         )
                         terminal_broadcasted = True
                     continue
-                # chat.final: if team events (team.member / team.task /
-                # workflow.updated) have already been broadcast (tracked
-                # via TeamManager.seen_team_events), the team is still
-                # running — suppress chat.final so the frontend does not
-                # prematurely set isProcessing=false.  Exception: once the
-                # workflow has completed (workflow_completed=True), chat.final
-                # is no longer suppressed and serves as the normal
-                # end-of-round signal.  In non-swarmflow mode,
-                # workflow_completed stays False so the original behavior
-                # is preserved.
                 if parsed.get("event_type") == "chat.final":
                     # A persistent Team stream may emit several leader finals
                     # within one real round.  They are result content, not a
@@ -3414,6 +3532,12 @@ async def _consume_monitor_events(
 _WF_PHASE_STATUS_TO_TASK: dict[str, tuple[str, str]] = {
     "planned": ("team.task.created", "pending"),
     "running": ("team.task.claimed", "in_progress"),
+    # paused stays in_progress (same column, same start time) but freezes the
+    # board's visual progress: the board eases in_progress tasks toward 85% on
+    # wall-clock alone, so an untouched paused phase keeps creeping, while a
+    # status change to blocked/pending snaps the bar to zero. progress_frozen
+    # (set below) stops the easing clock instead; "running" thaws it.
+    "paused": ("team.task.paused", "in_progress"),
     "completed": ("team.task.completed", "completed"),
     "failed": ("team.task.cancelled", "cancelled"),
     "stopped": ("team.task.cancelled", "cancelled"),
@@ -3499,6 +3623,8 @@ def _workflow_updated_to_team_events(
                     "status": task_status,
                     "workflow_run_id": run_id,
                 }
+                if status in ("paused", "running"):
+                    task_event["progress_frozen"] = status == "paused"
                 if terminal_planned:
                     task_event["content"] = _WF_TERMINAL_PLANNED_CONTENT
                 out.append(
@@ -3624,7 +3750,6 @@ async def _consume_workflow_events(
     seen_agent: dict[str, str] = {}
     spawned_members: set[str] = set()
     seen_human_waiting: set[str] = set()
-    swarmflow_activated_sent = False
     try:
         logger.info(
             "[TeamHelpers] workflow event loop started: channel_id=%s session_id=%s is_tui=%s",
@@ -3652,22 +3777,40 @@ async def _consume_workflow_events(
             )
             wf_status = (wf.get("status") or "").strip()
 
-            # ── swarmflow.activated: 首次收到活跃 workflow 时通知前端切树视图 ──
-            if (
-                not swarmflow_activated_sent
-                and wf_status in ("running", "planned", "pending")
-                and wf.get("id")
-            ):
-                swarmflow_activated_sent = True
-                await _broadcast_event(channel_id, session_id, {
-                    "event_type": "swarmflow.activated",
-                    "session_id": session_id,
-                    "run_id": wf.get("id", ""),
-                    "workflow_name": wf.get("name", ""),
-                })
-
             # ── 所有通道都广播原始 workflow.updated（供 web 树视图渲染）──
             await _broadcast_event(channel_id, session_id, event)
+
+            # The idle guard may be holding a swallowed team.idle for this
+            # session. A pause / stop takes the run out of the active set
+            # without waking the leader, so nothing else will re-emit idle:
+            # release it here, same shape the guard would have broadcast.
+            # Natural completion / failure must NOT release it — the completion
+            # injection wakes the leader, whose own idle turns the lamp off
+            # after it reports; releasing on the last agent_completed turned
+            # the lamp off ~12ms before that wake-up and it flickered back on.
+            run_states = getattr(workflow_handler, "get_run_states", lambda: {})()
+            if wf_status in ("paused", "stopped") and not any(
+                _run_lamp_active(r) for r in run_states.values()
+            ):
+                held = get_team_manager(channel_id).pop_held_idle(session_id)
+                if held is not None:
+                    logger.info(
+                        "[TeamHelpers] releasing held team.idle (no active run): "
+                        "channel_id=%s session_id=%s",
+                        _resolve_channel_id(channel_id), session_id,
+                    )
+                    await _broadcast_event(
+                        channel_id,
+                        session_id,
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": session_id,
+                            "rid": held.get("rid"),
+                            "is_processing": False,
+                            "is_complete": True,
+                            "member_count": held.get("member_count"),
+                        },
+                    )
 
             if is_tui:
                 # TUI: 只需原始事件 + 终态检查
@@ -3676,7 +3819,6 @@ async def _consume_workflow_events(
                         "[TeamHelpers] workflow terminal: channel_id=%s session_id=%s wf_status=%s",
                         _resolve_channel_id(channel_id), session_id, wf_status,
                     )
-                    get_team_manager(channel_id).mark_workflow_completed(session_id)
                 continue
 
             # ── 非 TUI: 额外转换扁平 team.task/team.member 事件（向后兼容）──
@@ -3696,12 +3838,6 @@ async def _consume_workflow_events(
                     "[TeamHelpers] workflow terminal: channel_id=%s session_id=%s wf_status=%s",
                     _resolve_channel_id(channel_id), session_id, wf_status,
                 )
-                get_team_manager(channel_id).mark_workflow_completed(session_id)
-                await _broadcast_event(channel_id, session_id, {
-                    "event_type": "swarmflow.deactivated",
-                    "session_id": session_id,
-                    "run_id": wf.get("id", ""),
-                })
         logger.info(
             "[TeamHelpers] workflow event loop ended: channel_id=%s session_id=%s",
             _resolve_channel_id(channel_id),

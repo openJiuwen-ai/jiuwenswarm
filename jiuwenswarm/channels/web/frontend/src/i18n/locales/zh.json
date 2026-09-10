@@ -444,6 +444,7 @@
       "created": "任务已创建",
       "cancelled": "任务已取消",
       "unblocked": "任务解除阻塞",
+      "paused": "任务已暂停",
       "updated": "任务状态更新"
     },
     "taskDetail": {
@@ -3433,6 +3434,7 @@
     "layoutGraph": "流程图",
     "pauseResumeHint": "暂停/恢复",
     "stopHint": "停止",
+    "controlsDisabledHint": "团队未在运行，工作流暂不可直接操作；请在主会话发送消息以恢复或停止",
     "sessionBudget": "会话预算（团队共享，不随运行重置）",
     "runBudget": "本次运行预算（META.workflow_token_limit）",
     "sessionBudgetShort": "会话累计",

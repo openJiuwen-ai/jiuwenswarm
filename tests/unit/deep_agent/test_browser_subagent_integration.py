@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,6 +30,7 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.playwright_mcp_runtime import PlaywrightMcpLaunch
 
 
 class MockLLMModel:
@@ -165,9 +167,15 @@ def test_browser_runtime_environment_tracks_mode_and_chrome_path(
 ) -> None:
     adapter = _TestableJiuWenSwarmDeepAdapter()
     monkeypatch.setenv("BROWSER_MANAGED_BINARY", "C:\\stale\\chrome.exe")
-    monkeypatch.setenv(
-        "PLAYWRIGHT_MCP_ARGS",
-        "-y @playwright/mcp@latest --headless",
+    monkeypatch.setattr(
+        deep_interface_module,
+        "resolve_playwright_mcp_launch",
+        lambda: PlaywrightMcpLaunch(
+            source="override",
+            command="C:\\Node Runtime\\node.exe",
+            args=("C:\\MCP Runtime\\cli.js", "--headless", "--headless"),
+            version="administrator-override",
+        ),
     )
 
     adapter._sync_browser_runtime_environment(
@@ -176,20 +184,61 @@ def test_browser_runtime_environment_tracks_mode_and_chrome_path(
                 "chrome_path": "C:\\custom\\chrome.exe",
                 "headless": False,
             }
-        }
+        },
+        runtime_enabled=True,
     )
 
     assert os.environ["BROWSER_MANAGED_BINARY"] == "C:\\custom\\chrome.exe"
     assert "BROWSER_MANAGED_ARGS" not in os.environ
-    assert "--headless" not in os.environ["PLAYWRIGHT_MCP_ARGS"].split()
+    assert os.environ["PLAYWRIGHT_MCP_COMMAND"] == "C:\\Node Runtime\\node.exe"
+    assert json.loads(os.environ["PLAYWRIGHT_MCP_ARGS"]) == [
+        "C:\\MCP Runtime\\cli.js"
+    ]
 
     adapter._sync_browser_runtime_environment(
-        {"browser": {"chrome_path": "", "headless": True}}
+        {"browser": {"chrome_path": "", "headless": True}},
+        runtime_enabled=True,
     )
 
     assert "BROWSER_MANAGED_BINARY" not in os.environ
     assert os.environ["BROWSER_MANAGED_ARGS"] == "--headless=new"
-    assert os.environ["PLAYWRIGHT_MCP_ARGS"].split().count("--headless") == 1
+    assert json.loads(os.environ["PLAYWRIGHT_MCP_ARGS"]).count("--headless") == 1
+
+
+def test_browser_runtime_bundle_remains_lazy_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    monkeypatch.setenv("PLAYWRIGHT_MCP_COMMAND", "C:\\Node Runtime\\node.exe")
+    monkeypatch.setenv("PLAYWRIGHT_MCP_ARGS", '["C:\\\\MCP Runtime\\\\cli.js"]')
+    monkeypatch.setenv(
+        "JIUWENSWARM_PLAYWRIGHT_MCP_LAUNCH_SOURCE",
+        "bundled",
+    )
+    monkeypatch.setenv(
+        "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_COMMAND",
+        "C:\\Node Runtime\\node.exe",
+    )
+    monkeypatch.setenv(
+        "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_ARGS",
+        '["C:\\\\MCP Runtime\\\\cli.js"]',
+    )
+    monkeypatch.setattr(
+        deep_interface_module,
+        "resolve_playwright_mcp_launch",
+        lambda: pytest.fail("disabled browser runtime must not resolve the bundle"),
+    )
+
+    adapter._sync_browser_runtime_environment(
+        {"browser": {"headless": True}},
+        runtime_enabled=False,
+    )
+
+    assert "PLAYWRIGHT_MCP_COMMAND" not in os.environ
+    assert "PLAYWRIGHT_MCP_ARGS" not in os.environ
+    assert "JIUWENSWARM_PLAYWRIGHT_MCP_LAUNCH_SOURCE" not in os.environ
+    assert "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_COMMAND" not in os.environ
+    assert "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_ARGS" not in os.environ
 
 
 def test_deep_adapter_subagents_includes_browser_by_default_when_runtime_enabled(

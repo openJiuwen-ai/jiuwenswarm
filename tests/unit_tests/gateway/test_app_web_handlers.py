@@ -1125,11 +1125,31 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "params,keys,scopes",
+    [
+        ({"api_base": "https://example.com/one"}, {"API_BASE"}, ["model"]),
+        ({"bocha_api_key": "test-key"}, {"BOCHA_API_KEY"}, ["search"]),
+        ({"serper_api_key": ""}, {"SERPER_API_KEY"}, ["search"]),
+        (
+            {"bocha_api_key": "test-key", "vision_api_key": "test-vision-key"},
+            {"BOCHA_API_KEY", "VISION_API_KEY"},
+            ["multimodal", "search"],
+        ),
+    ],
+)
+async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, tmp_path, params, keys, scopes):
     channel = FakeWebChannel()
     reload_started = asyncio.Event()
     release_first_reload = asyncio.Event()
     reload_calls: list[tuple[set[str], dict, dict]] = []
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+    )
+    for key in keys:
+        monkeypatch.setenv(key, "")
 
     monkeypatch.setattr(
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ENV_FILE",
@@ -1156,19 +1176,20 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     task = asyncio.create_task(channel.methods["config.set"](
         object(),
         "req-1",
-        {"api_base": "https://example.com/one"},
+        params,
         "sess-1",
     ))
 
-    await asyncio.wait_for(reload_started.wait(), timeout=1)
-    assert channel.responses == []
+    try:
+        await asyncio.wait_for(reload_started.wait(), timeout=1)
+        assert channel.responses == []
+    finally:
+        release_first_reload.set()
+        await task
 
-    release_first_reload.set()
-    await task
-
-    assert reload_calls[0][0] == {"API_BASE"}
+    assert reload_calls[0][0] == keys
     assert reload_calls[0][2]["target_channel_id"] == "web"
-    assert reload_calls[0][2]["reload_scopes"] == ["model"]
+    assert reload_calls[0][2]["reload_scopes"] == scopes
     assert channel.responses[-1]["id"] == "req-1"
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["applied_without_restart"] is True

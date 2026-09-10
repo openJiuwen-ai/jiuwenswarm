@@ -10,6 +10,13 @@ executable and display mode in the web UI, and the agent starts the browser on
 the first browser task. There is no separate browser service to start from the
 frontend.
 
+JiuwenSwarm ships a browser-free `@playwright/mcp@0.0.78` runtime, so the
+healthy browser path does not contact npm. Chrome itself is not bundled.
+Desktop releases and the Docker image include Node 22.11.0; pip/wheel and
+source installations need Node.js 20 or newer only when browser runtime
+support is enabled. Normal application startup and non-browser agents do not
+require Node.js.
+
 The managed browser can:
 
 - Open pages and wait for loading
@@ -115,9 +122,16 @@ Most installations do not need these variables. The `BROWSER_MANAGED_*` series a
 | `BROWSER_MANAGED_USER_DATA_DIR` | managed profile directory (default under the runtime state root) | Overrides the managed profile directory. |
 | `BROWSER_MANAGED_ARGS` | derived from display mode (e.g., `--headless=new`) | Additional Chrome startup arguments; derived at runtime from `browser.headless`, etc. |
 | `BROWSER_MANAGED_KILL_EXISTING` | `false` | Allows the driver to terminate a matching existing Chrome before launch. Use only when profile ownership is understood. |
+| `PLAYWRIGHT_MCP_COMMAND` | unset | External-mode command override. Setting either Playwright MCP override disables the bundle. |
+| `PLAYWRIGHT_MCP_ARGS` | unset | JSON list or shell-style external-mode arguments. Set both variables for a direct executable. |
 
 `PLAYWRIGHT_CDP_URL` is intended for explicit remote-driver setups. It is not
 required for the normal managed-browser flow.
+
+When only one Playwright MCP override is set, the unspecified field uses the
+pinned `npx -y @playwright/mcp@0.0.78` default. The same pinned npx command is
+used, with a prominent warning, if bundle verification or local Node
+resolution fails; that fallback may access the npm registry.
 
 #### 5.2.1 Browser MCP runtime variables
 
@@ -142,7 +156,7 @@ The following variables control how the browser MCP runtime wrapper starts and c
 
 The browser lifecycle is:
 
-`frontend settings -> agent browser task -> managed Chrome start -> task execution -> session reuse`
+`frontend settings -> bundled MCP extraction -> managed Chrome start -> CDP injection -> task execution -> session reuse`
 
 - The frontend `BrowserPanel` only reads and saves Chrome path and display mode.
 - JiuwenSwarm maps those settings to the browser-agent runtime.
@@ -158,11 +172,11 @@ The browser lifecycle is:
 |--------|-----------|-------------|
 | Frontend BrowserPanel | `jiuwenswarm/channels/web/frontend/src/components/BrowserPanel/index.tsx` | Reads and saves Chrome path and display mode |
 | Backend Web RPC handlers | `jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py` | Provides `path.get`, `path.set` endpoints |
-| Browser MCP integration | `jiuwenswarm/agents/harness/common/tools/browser_tools.py` | MCP client, auto-start wrapper, configuration builder |
-| Chrome launch and management | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/drivers/managed_browser.py` | `ManagedBrowserDriver`: port allocation, Chrome process management, profile reuse |
-| Browser runtime orchestration | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/runtime.py` | Runtime orchestration layer |
-| Browser task execution | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/service.py` | Task execution, session reuse, timeout guardrails, driver lifecycle management |
-| Browser runtime config | `jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/config.py` | Playwright MCP and runtime configuration parsing |
+| Browser subagent integration | `openjiuwen.harness.subagents.browser_agent` | Browser subagent configuration and lifecycle integration |
+| Chrome launch and management | `openjiuwen.harness.tools.browser_move.drivers.managed_browser` | `ManagedBrowserDriver`: port allocation, Chrome process management, profile reuse |
+| Browser runtime orchestration | `openjiuwen.harness.tools.browser_move.playwright_runtime.runtime` | Runtime orchestration layer |
+| Browser task execution | `openjiuwen.harness.tools.browser_move.playwright_runtime.service` | Task execution, session reuse, timeout guardrails, driver lifecycle management |
+| Browser runtime config | `openjiuwen.harness.tools.browser_move.playwright_runtime.config` | Playwright MCP and runtime configuration parsing |
 
 ## 7. Summary
 

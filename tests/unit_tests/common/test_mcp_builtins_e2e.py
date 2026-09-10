@@ -80,7 +80,7 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
     assert mcp_builtins.is_dir(), "mcp_builtins 未解压"
     assert not (mcp_builtins / "index.json").exists()
     assert not (mcp_builtins / "manifest.json").exists()
-    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip() == "v0.2.3"
+    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip() == "v0.2.5"
     pkg_dirs = [p for p in mcp_builtins.iterdir() if p.is_dir() and not p.name.startswith(".")]
     assert {package.name for package in pkg_dirs} == EXPECTED_BUILTIN_MCPS
     packages = [load_mcp_package(package) for package in pkg_dirs]
@@ -206,8 +206,11 @@ def test_gitcode_init_works_without_bare_pip_on_path(
     )
     python3_shim.chmod(0o755)
 
+    # install() pins the init command via the `{version}` placeholder, so mirror
+    # that here: the runner must receive the concrete `gitcode-cli==<pin>` target.
+    init_cmd = cli_driver._pin_init_command(manifest.init_cmd, manifest.min_version)
     result = cli_driver.default_runner(
-        manifest.init_cmd,
+        init_cmd,
         env={"PATH": str(shim_dir), **({"SYSTEMROOT": os.environ["SYSTEMROOT"]} if "SYSTEMROOT" in os.environ else {})},
     )
 
@@ -216,15 +219,18 @@ def test_gitcode_init_works_without_bare_pip_on_path(
         "-m",
         "pip",
         "install",
-        "gitcode-cli",
+        f"gitcode-cli=={manifest.min_version}",
     ]
 
 
-def test_upgrade_removes_retired_canva_builtin(temp_workspace: Path) -> None:
+@pytest.mark.parametrize("previous_version", ["v0.2.2", "v0.2.3", "v0.2.4"])
+def test_upgrade_removes_retired_canva_builtin(
+    temp_workspace: Path, previous_version: str
+) -> None:
     """Updating an existing workspace removes Canva from the built-in marketplace."""
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
     builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
-    (builtins / ".mcp_builtins_version").write_text("v0.2.2\n", encoding="utf-8")
+    (builtins / ".mcp_builtins_version").write_text(f"{previous_version}\n", encoding="utf-8")
     retired = builtins / "canva"
     retired.mkdir(exist_ok=True)
     (retired / "manifest.json").write_text("{}", encoding="utf-8")

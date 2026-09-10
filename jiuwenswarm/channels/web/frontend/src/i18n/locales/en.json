@@ -456,6 +456,7 @@
       "created": "Task created",
       "cancelled": "Task cancelled",
       "unblocked": "Task unblocked",
+      "paused": "Task paused",
       "updated": "Task status updated"
     },
     "taskDetail": {
@@ -3451,6 +3452,7 @@
     "layoutGraph": "Flow Graph",
     "pauseResumeHint": "Pause / Resume",
     "stopHint": "Stop",
+    "controlsDisabledHint": "Team is not running, so this workflow can't be controlled here. Send a message in the main session to resume or stop it.",
     "sessionBudget": "Session budget (team-wide, never resets)",
     "runBudget": "Run budget (META.workflow_token_limit)",
     "sessionBudgetShort": "Session",

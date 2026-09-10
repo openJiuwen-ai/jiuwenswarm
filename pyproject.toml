@@ -141,6 +141,7 @@ jiuwenbox-server = "jiuwenbox.server.launcher:main"
 # 入口脚本现在是 jiuwenswarm 包内的一部分，不需要 py-modules
 py-modules = []
 include-package-data = true
+license-files = ["LICENSE", "OPEN_SOURCE_SOFTWARE_NOTICE.md"]
 package-dir = {"jiuwenbox" = "jiuwenbox/src/jiuwenbox"}
 
 [tool.setuptools.packages.find]
