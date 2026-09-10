@@ -176,6 +176,24 @@ async def discard_permission_continuation(
     return True
 
 
+def validate_manual_resume(loop_session: Any, query: InteractiveInput) -> None:
+    """Retain the SDK's manual batch/subset contract during Smart activation."""
+    state = loop_session.get_state(INTERRUPTION_KEY)
+    interrupted = getattr(state, "interrupted_tools", None)
+    if not isinstance(interrupted, Mapping) or not query.user_inputs:
+        raise RootPermissionQueueError("interaction_resume_state_missing")
+    pending_ids = set()
+    for entry in interrupted.values():
+        requests = getattr(entry, "interrupt_requests", None)
+        if not isinstance(requests, Mapping):
+            raise RootPermissionQueueError("interaction_resume_state_invalid")
+        pending_ids.update(requests)
+    # Manual SDK batches may answer a nonempty subset. Do not
+    # impose Smart's single-card or structured-ask contract.
+    if not set(query.user_inputs).issubset(pending_ids):
+        raise RootPermissionQueueError("interaction_resume_identity_mismatch")
+
+
 def prepare_nonpermission_resume(
     loop_session: Any,
     inputs: Mapping[str, Any],

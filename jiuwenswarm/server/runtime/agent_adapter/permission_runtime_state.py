@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,3 +34,23 @@ class SessionPermissionState:
     def begin_permission_isolation(self) -> None:
         self.permission_isolated = True
         self.permission_cleanup_complete = False
+
+    @contextmanager
+    def updating(self):
+        self.permission_update_in_progress = True
+        try:
+            yield
+        finally:
+            self.permission_update_in_progress = False
+
+    def publish(self, epoch: str | None) -> None:
+        self.permission_epoch = epoch
+        self.permission_cleanup_candidates = []
+
+    def track_cleanup(self, rails: list[Any]) -> None:
+        self.permission_cleanup_candidates = rails
+
+    def finish_cleanup(self, *, complete: bool) -> None:
+        self.permission_cleanup_complete = complete
+        if complete:
+            self.permission_cleanup_candidates = []

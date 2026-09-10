@@ -217,34 +217,39 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scopes", [None, set(), {"search"}, {"search", "model"}])
 async def test_search_reload_updates_active_sessions_before_lazy_full_reload(scopes):
-    root = object.__new__(JiuWenSwarmDeepAdapter)
-    root._is_session_scoped_adapter = False
+    root = JiuWenSwarmDeepAdapter()
     calls = MagicMock()
     root._session_adapters = {
-        "first": SimpleNamespace(refresh_paid_search_tool_for_runtime=calls.refresh_first),
-        "second": SimpleNamespace(refresh_paid_search_tool_for_runtime=calls.refresh_second),
+        "first": root._new_session_scoped_adapter("first"),
+        "second": root._new_session_scoped_adapter("second"),
     }
+    root._session_adapters["first"].refresh_paid_search_tool_for_runtime = calls.refresh_first
+    root._session_adapters["second"].refresh_paid_search_tool_for_runtime = calls.refresh_second
     root._mark_session_adapters_stale_for_reload = calls.mark_stale
     await root._fan_out_reload_to_session_adapters({}, {}, None, scopes)
     assert calls.mock_calls == [
         call.refresh_first(),
         call.refresh_second(),
-        call.mark_stale({}, {}, scopes),
+        call.mark_stale({}, {}, scopes, permission_notification=False),
     ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scopes", [{"model"}, {"multimodal"}])
-async def test_unrelated_reload_does_not_refresh_session_paid_search(scopes):
-    root = object.__new__(JiuWenSwarmDeepAdapter)
-    root._is_session_scoped_adapter = False
+@pytest.mark.parametrize("scopes", [{"model"}, {"multimodal"}, {"permissions"}])
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_unrelated_reload_does_not_refresh_session_paid_search(scopes, mode):
+    root = JiuWenSwarmDeepAdapter()
+    config = {"permissions": {"enabled": True, "mode": mode}}
     refresh = MagicMock()
     root._session_adapters = {
-        "session": SimpleNamespace(refresh_paid_search_tool_for_runtime=refresh),
+        "session": root._new_session_scoped_adapter("session"),
     }
+    root._session_adapters["session"].refresh_paid_search_tool_for_runtime = refresh
     root._mark_session_adapters_stale_for_reload = MagicMock()
 
-    await root._fan_out_reload_to_session_adapters({}, {}, None, scopes)
+    await root._fan_out_reload_to_session_adapters(config, {}, None, scopes)
 
     refresh.assert_not_called()
-    root._mark_session_adapters_stale_for_reload.assert_called_once_with({}, {}, scopes)
+    root._mark_session_adapters_stale_for_reload.assert_called_once_with(
+        config, {}, scopes, permission_notification=False,
+    )

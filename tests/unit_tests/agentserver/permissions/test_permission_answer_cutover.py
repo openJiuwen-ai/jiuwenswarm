@@ -219,6 +219,39 @@ async def test_invalid_answer_cannot_consume_or_reexecute_pending_work(answer_ho
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["free_text", "empty_id", "wrong_id"])
+async def test_smart_ask_rejects_legacy_answers_before_sdk_send(answer_host, monkeypatch, invalid):
+    h = answer_host
+    answer = await _interrupt(h, monkeypatch, mode="auto", kind="ask")
+    if invalid == "free_text":
+        answer["answers"][0].pop("question")
+    else:
+        answer["request_id"] = "" if invalid == "empty_id" else "foreign-call"
+    before = deepcopy(h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY))
+    error = "permission_queue_card_id_invalid" if invalid == "empty_id" else "interaction_resume_"
+    with pytest.raises(RootPermissionQueueError, match=error):
+        await _request(h, **answer)
+    assert h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY) == before
+    assert len(h.dispatches) == len(h.script.calls) == 1
+    assert h.executions == []
+
+
+@pytest.mark.asyncio
+async def test_pending_manual_ask_keeps_free_text_after_smart_is_requested(answer_host, monkeypatch):
+    h = answer_host
+    answer = await _interrupt(h, monkeypatch, mode="manual", kind="ask")
+    answer["answers"][0].pop("question")
+    h.raw["permissions"]["mode"] = "auto"
+    h.change()
+    assert (await _request(h, **answer)).ok
+    assert len(h.script.calls) == len(h.dispatches) == 2
+    assert "blue" in repr(h.script.calls[-1])
+    state = h.adapter._instance.loop_session.get_state(INTERRUPTION_KEY)
+    assert not state or not state.interrupted_tools
+    assert h.adapter._permission_state.permission_epoch is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["permission", "ask"])
 @pytest.mark.parametrize("desired_smart", [False, True])
 async def test_partial_manual_batch_answer_preserves_sdk_semantics(answer_host, monkeypatch, kind, desired_smart):

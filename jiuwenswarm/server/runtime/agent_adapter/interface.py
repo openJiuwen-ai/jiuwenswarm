@@ -191,17 +191,16 @@ def _permission_card_ids_from_answers(answers: list[dict]) -> list[str]:
 
     if len(answers) != 1:
         return []
-    for answer in answers:
-        if not isinstance(answer, dict):
-            return []
-        raw_card_id = answer.get("card_id")
-        if not isinstance(raw_card_id, str):
-            return []
-        card_id = raw_card_id.strip()
-        if not card_id or len(card_id) > 128:
-            return []
-        return [card_id]
-    return []
+    answer = answers[0]
+    if not isinstance(answer, dict):
+        return []
+    raw_card_id = answer.get("card_id")
+    if not isinstance(raw_card_id, str):
+        return []
+    card_id = raw_card_id.strip()
+    if not card_id or len(card_id) > 128:
+        return []
+    return [card_id]
 
 
 def _schedule_symphony_session_feedback(
@@ -1326,6 +1325,16 @@ class JiuWenSwarm:
             asyncio.create_task(adapter.try_start_dreaming(
                 busy_checker=lambda: sm.has_active_tasks(),))
 
+    def has_smart_permission_lifecycle(self, config: dict[str, Any]) -> bool:
+        checker = getattr(self._adapter, "has_smart_permission_lifecycle", None)
+        return bool(callable(checker) and checker(config))
+
+    async def reload_permissions_config(self, config: dict[str, Any], *, include_legacy: bool) -> None:
+        if self.has_smart_permission_lifecycle(config):
+            await self._adapter.notify_permissions_changed(config, include_legacy=include_legacy)
+        elif include_legacy:
+            await self.reload_agent_config(config_base=config, env_overrides={})
+
     async def prepare_session(
         self,
         *,
@@ -1661,10 +1670,8 @@ class JiuWenSwarm:
         interactive_input = InteractiveInput()
 
         if source == "ask_user_interrupt":
-            request_id = str(request_id or "").strip()
-            if not request_id:
-                return interactive_input
             answers_dict = {}
+            free_text_answer: str | None = None
             for answer in answers:
                 if isinstance(answer, dict):
                     question_text = str(answer.get("question", "") or "").strip()
@@ -1705,8 +1712,14 @@ class JiuWenSwarm:
                         answer_value = ""
                     if question_text and answer_value:
                         answers_dict[question_text] = answer_value
-            if not answers_dict:
-                return interactive_input
+                    elif answer_value:
+                        free_text_answer = (
+                            answer_value
+                            if isinstance(answer_value, str)
+                            else ", ".join(answer_value)
+                        )
+            if not answers_dict and free_text_answer:
+                answers_dict["__free_text__"] = free_text_answer
             interactive_input.update(request_id, {"answers": answers_dict})
             logger.info(
                 "[JiuWenSwarm] AskUserRail InteractiveInput.update: request_id=%s "

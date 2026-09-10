@@ -11,6 +11,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import RootPermissionDispatch
 
 
 def _smart_owner():
@@ -20,6 +21,7 @@ def _smart_owner():
     adapter._enable_auto_permission = True
     queue = RootPermissionQueue(id_factory=lambda: "batch-invocation-1")
     adapter._root_permission_queue = queue
+    adapter._permission_dispatch = RootPermissionDispatch(queue)
     card = queue.begin(
         root_session_id="wire-session", request_id="wire-request",
         execution_session_id="wire-session", tool_call_id="batch-call-1", tool_name="bash",
@@ -208,15 +210,17 @@ def test_non_permission_answer_does_not_forward_locator() -> None:
 
 
 @pytest.mark.parametrize(
-    ("request_id", "answers"),
+    ("request_id", "answers", "expected"),
     [
-        ("", [{"question": "Continue?", "selected_options": ["Yes"]}]),
-        ("question-1", [{"selected_options": ["Yes"]}]),
+        ("", [{"question": "Continue?", "selected_options": ["Yes"]}], {"Continue?": "Yes"}),
+        ("question-1", [{"selected_options": ["Yes"]}], {"__free_text__": "Yes"}),
+        ("question-1", [{"custom_input": "Take the train"}], {"__free_text__": "Take the train"}),
     ],
 )
-def test_ask_user_requires_exact_call_and_question_keys(
+def test_ordinary_ask_user_preserves_develop_answer_conversion(
     request_id: str,
     answers: list[dict],
+    expected: dict,
 ) -> None:
     interactive = JiuWenSwarm._build_interactive_input_from_answers(
         request_id,
@@ -225,7 +229,7 @@ def test_ask_user_requires_exact_call_and_question_keys(
     )
 
     assert interactive.raw_inputs is None
-    assert interactive.user_inputs == {}
+    assert interactive.user_inputs == {request_id: {"answers": expected}}
 
 
 def test_ask_user_does_not_accept_original_request_legacy_argument() -> None:

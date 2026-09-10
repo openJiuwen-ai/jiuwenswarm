@@ -271,12 +271,11 @@ def test_composition_scope_resolver_accepts_only_host_profiles(
         ("auto_harness", "unknown"),
     ],
 )
-def test_composition_scope_resolver_rejects_unclassified_profiles(
+def test_composition_scope_resolver_excludes_unknown_profiles_from_smart(
     mode: str,
     sub_mode: str | None,
 ) -> None:
-    with pytest.raises(RuntimeError, match="agent_composition_scope_unclassified"):
-        interface_deep._resolve_agent_composition_scope(mode, sub_mode)
+    assert interface_deep._resolve_agent_composition_scope(mode, sub_mode) == "unsupported"
 
 
 @pytest.mark.parametrize(
@@ -285,6 +284,8 @@ def test_composition_scope_resolver_rejects_unclassified_profiles(
         ("team", None, "team_root"),
         ("code", "team", "team_member"),
         ("auto_harness", "auto_harness", "auto_harness"),
+        ("unknown", None, "unsupported"),
+        ("agent", "unknown", "unsupported"),
     ],
 )
 def test_excluded_scope_keeps_manual_factory_without_smart_lifecycle(
@@ -415,7 +416,7 @@ async def test_built_permission_group_registers_once_and_cleans_up_in_real_sdk(
             for rail in rails:
                 assert agent.is_registered_rail(rail)
                 assert agent.find_rails_by_type((type(rail),)) == [rail]
-            assert agent.find_rails_by_type(adapter._permission_rail_types()) == [
+            assert agent.find_rails_by_type(permission_rail_group.PERMISSION_RAIL_TYPES) == [
                 adapter._permission_rail,
             ]
         for rail in rails:

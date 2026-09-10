@@ -8,6 +8,13 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import prepare_nonpermission_resume
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+    put_root_nonpermission_resume_in_inputs,
+)
+
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionAnswer, RootPermissionQueue, RootPermissionQueueError,
 )
@@ -32,6 +39,44 @@ class RootPermissionDispatch:
         self.queue = queue
         self.lock = asyncio.Lock()
         self.handoff: RootPermissionDispatchHandoff | None = None
+
+    def prepare_resume(
+        self, inputs: dict[str, Any], *, root_session_id: str, loop_session: Any,
+    ) -> dict[str, Any]:
+        """Reserve the exact head or prepare an ordinary SDK ask continuation."""
+        self.queue.raise_if_quarantined(root_session_id)
+        query = inputs.get("query")
+        if not isinstance(query, InteractiveInput):
+            return put_root_nonpermission_resume_in_inputs(inputs, None)
+        if loop_session is not None:
+            get_session_id = getattr(loop_session, "get_session_id", None)
+            loop_session_id = (
+                str(get_session_id() or "") if callable(get_session_id) else ""
+            )
+            if ((loop_session_id or "default").strip() or "default") != root_session_id:
+                raise RootPermissionQueueError("permission_queue_session_mismatch")
+        try:
+            answer = self.queue.reserve_answer(
+                root_session_id,
+                query,
+            )
+        except RootPermissionQueueError as exc:
+            if str(exc) != "permission_queue_empty":
+                raise
+            if self.queue.has_live(root_session_id=root_session_id):
+                raise RootPermissionQueueError(
+                    "nonpermission_resume_permission_conflict"
+                ) from exc
+            return prepare_nonpermission_resume(
+                loop_session,
+                inputs,
+                query,
+                root_session_id=root_session_id,
+            )
+        prepared = put_root_nonpermission_resume_in_inputs(inputs, None)
+        prepared["query"] = answer.interactive_input
+        prepared[ROOT_PERMISSION_ANSWER_KEY] = answer
+        return prepared
 
     def has_live(self, root_session_id: str | None) -> bool:
         return self.queue.has_live(root_session_id=root_session_id) or self.lock.locked() or bool(

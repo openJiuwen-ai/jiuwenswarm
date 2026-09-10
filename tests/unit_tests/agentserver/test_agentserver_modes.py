@@ -830,7 +830,11 @@ def test_build_inputs_drops_bare_other_without_custom_input(monkeypatch):
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
 
     assert isinstance(inputs["query"], InteractiveInput)
-    assert inputs["query"].user_inputs == {}
+    assert inputs["query"].user_inputs == {
+        "tool-ask-1": {
+            "answers": {},
+        }
+    }
 
 
 @pytest.mark.asyncio

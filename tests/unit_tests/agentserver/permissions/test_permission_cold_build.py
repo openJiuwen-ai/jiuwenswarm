@@ -224,6 +224,20 @@ async def test_cold_create_uses_one_snapshot_and_consistent_model_session_sysop(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode,sub_mode", [("unknown", None), ("agent", "unknown")])
+async def test_unknown_mode_builds_without_smart_activation(cold, mode, sub_mode):
+    h = cold
+    await h.adapter.create_instance(
+        {"channel_id": "web", "project_dir": str(h.root)}, mode=mode, sub_mode=sub_mode,
+    )
+    assert isinstance(h.adapter._instance, DeepAgent)
+    assert not h.adapter._enable_auto_permission
+    assert not h.adapter._instance.find_rails_by_type(AutoPermissionInterruptRail)
+    assert h.adapter._root_permission_queue_rail is None
+    assert h.adapter._permission_state.permission_epoch is None
+
+
+@pytest.mark.asyncio
 async def test_cold_registration_policy_change_installs_latest_version(cold, monkeypatch):
     h = cold
     original = DeepAgent._register_rail_selective
