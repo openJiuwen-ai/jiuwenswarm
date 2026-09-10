@@ -34,6 +34,7 @@ from openjiuwen.agent_teams.harness.manifest import (
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
+from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
 logger = logging.getLogger(__name__)
@@ -153,8 +154,8 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
 def _is_send_file_enabled(config: dict[str, Any] | None, channel_id: str) -> bool:
     """Resolve whether file sending is allowed for *channel_id*.
 
-    Reads ``channels.<channel_id>.send_file_allowed``; when unset, the ``web``
-    channel defaults to enabled and all other channels default to disabled.
+    Reads ``channels.<channel_id>.send_file_allowed``. The internal full-duplex
+    delegate inherits Web policy when no channel-specific switch is configured.
 
     Args:
         config: The resolved ``config.yaml`` mapping.
@@ -163,14 +164,7 @@ def _is_send_file_enabled(config: dict[str, Any] | None, channel_id: str) -> boo
     Returns:
         ``True`` when file sending is allowed for the channel.
     """
-    send_file_allowed = None
-    if isinstance(config, dict):
-        send_file_allowed = (
-            config.get("channels", {}).get(str(channel_id), {}).get("send_file_allowed")
-        )
-    if send_file_allowed is None:
-        return channel_id == "web"
-    return bool(send_file_allowed)
+    return is_send_file_enabled(config, channel_id)
 
 
 class SendFileInput(ConstructionInput):

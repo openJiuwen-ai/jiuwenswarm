@@ -271,6 +271,8 @@
       "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
+      "taskAsr": "ASR 模型配置",
+      "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
@@ -304,6 +306,21 @@
       "embed_api_base": { "title": "API 地址" },
       "embed_api_key": { "title": "API 密钥" },
       "embed_model": { "title": "模型名称" },
+      "asr_api_base": {
+        "title": "ASR API 地址",
+        "description": "填写 OpenAI 兼容 Base URL 或完整的 /audio/transcriptions 地址。",
+        "placeholder": "例如：https://api.example.com/v1"
+      },
+      "asr_api_key": {
+        "title": "ASR API 密钥",
+        "description": "用于通用语音转写；JoyAI 使用独立配置。",
+        "placeholder": "例如：sk-..."
+      },
+      "asr_model": {
+        "title": "ASR 模型",
+        "description": "用于通用语音转写的模型名称。",
+        "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
+      },
       "enable_free_models": {
         "title": "启用免费模型",
         "description": "开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。免费模型来源于 Opencode Zen 网关（https://opencode.ai/zen），由 models.dev 目录（https://models.opencode.ai/api.json）与 Zen 实时模型列表取交集得到（判定标准：输入价格为 0）。"
@@ -348,6 +365,10 @@
       "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
       "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
       "trajectory_ui_enabled": { "title": "启用轨迹界面", "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。" },
+      "task_full_duplex_enabled": {
+        "title": "启用任务对话全双工入口",
+        "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
+      },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
         "description": "仅支持使用 Ascend vLLM 推理服务部署的模型，不支持通过第三方 API Key 接入的模型。"
@@ -643,7 +664,10 @@
     "modeAgentTeam": "集群模式",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
-    "recording": "正在录音...（松开按钮自动发送）",
+    "recording": "正在录音...（再次点击麦克风结束）",
+    "transcribing": "正在转写语音...",
+    "startRecording": "语音输入",
+    "stopRecording": "结束录音并转写",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
     "waitingTasksCount": "等待任务 ({{count}})",
@@ -667,6 +691,9 @@
     "holdToSpeak": "按住说话",
     "send": "发送 (Enter)",
     "stop": "停止",
+    "taskFullDuplexStart": "共享整个屏幕并开始全双工对话",
+    "taskFullDuplexStarting": "正在启动全双工对话",
+    "taskFullDuplexStop": "停止全双工对话和屏幕共享",
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
       "configured": "已配置模型",
@@ -719,6 +746,25 @@
     "extensionManageMcps": "管理我的连接器",
     "extensionMore": "更多",
     "recentTasks": "进度",
+    "applicationTasks": {
+      "cancelling": "正在停止",
+      "cancelled": "已取消",
+      "controls": {
+        "drag": "拖动到另一项以调整顺序",
+        "next": "设为下一项",
+        "stop": "停止此任务",
+        "more": "任务操作",
+        "up": "上移",
+        "down": "下移",
+        "preempt": "停止当前任务并执行此项",
+        "close": "关闭",
+        "failed": "任务操作失败"
+      },
+      "queued": "排队中",
+      "running": "执行中",
+      "completed": "已完成",
+      "failed": "失败"
+    },
     "contextCompressionCommandRunning": "正在压缩上下文",
     "teamPause": "暂停",
     "teamPauseHint": "团队暂停后，直接发送下一条消息即可继续",
@@ -2857,6 +2903,7 @@
   },
   "speech": {
     "recognitionUnsupported": "浏览器不支持语音识别",
+    "recordingUnsupported": "浏览器不支持麦克风录音",
     "synthesisUnsupported": "浏览器不支持语音合成",
     "errors": {
       "noSpeech": "未检测到语音",

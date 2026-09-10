@@ -63,6 +63,10 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: string;
+  /** Full answer delivered by a delegated agent, distinct from spoken replies. */
+  presentation?: 'tool_result';
+  /** User-facing conversation output that must remain outside collapsed work. */
+  keepExpanded?: boolean;
   /**
    * 流式收尾 / chat.final 完成时刻。不参与时间线排序（排序仍用 timestamp，避免与 goal 卡抢序），
    * 仅作为「任务用时」终点，避免 live 一直停在首包 delta 时间、刷新后变成 final 落盘时间。

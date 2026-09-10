@@ -727,6 +727,7 @@ export const MessageItem = memo(function MessageItem({
             className={clsx(
               'chat-bubble relative group',
               isUser ? 'user' : 'assistant',
+              !isUser && message.presentation === 'tool_result' && 'chat-bubble--tool-result',
               !isUser && !isStreaming && 'markdown',
               isStreaming && 'streaming'
             )}
@@ -734,6 +735,9 @@ export const MessageItem = memo(function MessageItem({
             data-variant={isUser ? 'user' : 'assistant'}
             data-state={isStreaming ? 'streaming' : 'final'}
           >
+            {!isUser && message.presentation === 'tool_result' && (
+              <div className="chat-bubble__result-label">{t('chat.toolResultLabel', '工具结果')} · Jiuwen Core Agent</div>
+            )}
             {isStreaming ? (
               isUser ? (
                 <StreamingContent content={displayContent} />

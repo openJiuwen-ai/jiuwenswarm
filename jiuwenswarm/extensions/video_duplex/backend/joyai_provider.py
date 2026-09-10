@@ -182,8 +182,12 @@ async def request_completion(
     streaming = data.get("streamingharness")
     if not isinstance(streaming, dict):
         streaming = {}
+    model_raw_content = streaming.get("raw_content")
+    if not isinstance(model_raw_content, str):
+        model_raw_content = raw_content
     return {
         "raw_content": raw_content,
+        "model_raw_content": model_raw_content,
         "latency_ms": round((time.perf_counter() - started_at) * 1_000, 1),
         "timing": streaming.get("timing") if isinstance(streaming.get("timing"), dict) else {},
     }

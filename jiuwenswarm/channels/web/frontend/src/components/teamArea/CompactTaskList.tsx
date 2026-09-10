@@ -21,6 +21,7 @@
  */
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
 import statusProcessingIcon from '../../assets/work-mode/status-processing.svg';
@@ -129,9 +130,11 @@ export function CompactTaskList({
                 ) : (
                   <UnassignedTeamAvatar className="h-4 w-4 rounded-full shrink-0" />
                 ))}
-            <span className="flex-1 text-sm leading-[22px] text-text truncate" data-testid="team-area-task-planning-task-title">
-              {title}
-            </span>
+            <ApplicationTaskControls taskId={task.task_id}>
+              <span className="min-w-0 flex-1 text-sm leading-[22px] text-text truncate" data-testid="team-area-task-planning-task-title">
+                {title}
+              </span>
+            </ApplicationTaskControls>
             {statusIconAtEnd && statusIcon}
           </div>
         );

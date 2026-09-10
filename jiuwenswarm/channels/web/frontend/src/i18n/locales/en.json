@@ -271,6 +271,8 @@
       "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
+      "taskAsr": "ASR model configuration",
+      "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-Party Agents",
       "externalCliAgentsDescription": "For Team mode only.",
       "a2ui": "A2UI generation",
@@ -304,6 +306,21 @@
       "embed_api_base": { "title": "API URL" },
       "embed_api_key": { "title": "API key" },
       "embed_model": { "title": "Model name" },
+      "asr_api_base": {
+        "title": "ASR API URL",
+        "description": "Enter an OpenAI-compatible base URL or the full /audio/transcriptions URL.",
+        "placeholder": "e.g. https://api.example.com/v1"
+      },
+      "asr_api_key": {
+        "title": "ASR API key",
+        "description": "Used for general speech transcription; JoyAI has separate settings.",
+        "placeholder": "e.g. sk-..."
+      },
+      "asr_model": {
+        "title": "ASR model",
+        "description": "Model used for general speech transcription.",
+        "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
+      },
       "enable_free_models": {
         "title": "Enable free models",
         "description": "When enabled, available free models are fetched live. Note that free models may have limitations such as rate limits or restricted context window size. Free models are sourced from the Opencode Zen gateway (https://opencode.ai/zen), obtained by intersecting the models.dev catalog (https://models.opencode.ai/api.json) with the Zen live model list (criterion: input price is 0)."
@@ -366,6 +383,10 @@
       },
       "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
       "trajectory_ui_enabled": { "title": "Enable trajectory UI", "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path." },
+      "task_full_duplex_enabled": {
+        "title": "Enable Full-duplex in task chat",
+        "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
+      },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
         "description": "Supported only for models deployed with Ascend vLLM inference services, not models accessed through third-party API keys."
@@ -661,7 +682,10 @@
     "modeAgentTeam": "Cluster Mode",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
-    "recording": "Recording... (release to send)",
+    "recording": "Recording... (click the microphone again to finish)",
+    "transcribing": "Transcribing speech...",
+    "startRecording": "Voice input",
+    "stopRecording": "Stop recording and transcribe",
     "messageQueue": "Message queue",
     "waitingTasks": "Waiting tasks",
     "waitingTasksCount": "Waiting tasks ({{count}})",
@@ -685,6 +709,9 @@
     "holdToSpeak": "Hold to speak",
     "send": "Send (Enter)",
     "stop": "Stop",
+    "taskFullDuplexStart": "Share the entire screen and start a Full-duplex conversation",
+    "taskFullDuplexStarting": "Starting Full-duplex conversation",
+    "taskFullDuplexStop": "Stop Full-duplex conversation and screen sharing",
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
       "configured": "Configured Models",
@@ -737,6 +764,25 @@
     "extensionManageMcps": "Manage My Connectors",
     "extensionMore": "More",
     "recentTasks": "Progress",
+    "applicationTasks": {
+      "cancelling": "Stopping",
+      "cancelled": "Cancelled",
+      "controls": {
+        "drag": "Drag onto another task to reorder",
+        "next": "Run next",
+        "stop": "Stop this task",
+        "more": "Task actions",
+        "up": "Move up",
+        "down": "Move down",
+        "preempt": "Stop current task and run this",
+        "close": "Close",
+        "failed": "Task operation failed"
+      },
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
     "contextCompressionCommandRunning": "Compressing context",
     "teamPause": "Pause",
     "teamPauseHint": "After pausing a team, send the next message to continue",
@@ -2876,6 +2922,7 @@
   },
   "speech": {
     "recognitionUnsupported": "Speech recognition is not supported by this browser",
+    "recordingUnsupported": "Microphone recording is not supported by this browser",
     "synthesisUnsupported": "Speech synthesis is not supported by this browser",
     "errors": {
       "noSpeech": "No speech detected",

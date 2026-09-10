@@ -125,6 +125,10 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
+  yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
+  envField('asr_api_base', 'experimental', 'text', 'ASR_API_BASE'),
+  envField('asr_api_key', 'experimental', 'text', 'ASR_API_KEY'),
+  envField('asr_model', 'experimental', 'text', 'ASR_MODEL_NAME'),
   yamlField(
     'kv_cache_affinity_enabled',
     'experimental',

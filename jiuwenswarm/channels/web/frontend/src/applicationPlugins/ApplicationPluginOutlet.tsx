@@ -3,12 +3,16 @@ import type { ComponentType } from 'react';
 import type {
   ApplicationPluginContribution,
   ApplicationPluginSettingsProps,
+  ApplicationPluginTaskInputActionProps,
+  ApplicationPluginTaskRuntimeProps,
 } from './types';
 import './applicationPlugins.css';
 
 type BundledPluginModule = {
   applicationPluginId?: string;
   applicationPluginSettings?: ComponentType<ApplicationPluginSettingsProps>;
+  applicationPluginTaskInputAction?: ComponentType<ApplicationPluginTaskInputActionProps>;
+  applicationPluginTaskRuntime?: ComponentType<ApplicationPluginTaskRuntimeProps>;
   default?: ComponentType;
 };
 
@@ -16,6 +20,8 @@ const bundledModules = import.meta.glob<BundledPluginModule>('../../../../../ext
 
 const bundledComponents = new Map<string, ComponentType>();
 const bundledSettingsComponents = new Map<string, ComponentType<ApplicationPluginSettingsProps>>();
+const bundledTaskInputActions: ComponentType<ApplicationPluginTaskInputActionProps>[] = [];
+const bundledTaskRuntimes: ComponentType<ApplicationPluginTaskRuntimeProps>[] = [];
 for (const module of Object.values(bundledModules)) {
   if (module.applicationPluginId && module.default) {
     bundledComponents.set(module.applicationPluginId, module.default);
@@ -23,12 +29,31 @@ for (const module of Object.values(bundledModules)) {
   if (module.applicationPluginId && module.applicationPluginSettings) {
     bundledSettingsComponents.set(module.applicationPluginId, module.applicationPluginSettings);
   }
+  if (module.applicationPluginTaskInputAction) {
+    bundledTaskInputActions.push(module.applicationPluginTaskInputAction);
+  }
+  if (module.applicationPluginTaskRuntime) {
+    bundledTaskRuntimes.push(module.applicationPluginTaskRuntime);
+  }
 }
 
 export function applicationPluginSettingsComponent(
   pluginId: string,
 ): ComponentType<ApplicationPluginSettingsProps> | undefined {
   return bundledSettingsComponents.get(pluginId);
+}
+
+export function ApplicationPluginTaskInputActions(props: ApplicationPluginTaskInputActionProps) {
+  return bundledTaskInputActions.reduceRight(
+    (fallback, Action) => <Action {...props} fallback={fallback} />,
+    props.fallback,
+  );
+}
+
+export function ApplicationPluginTaskRuntimes(props: ApplicationPluginTaskRuntimeProps) {
+  return bundledTaskRuntimes.map((Runtime, index) => (
+    <Runtime key={`application-plugin-task-runtime-${index}`} {...props} />
+  ));
 }
 
 function iframePermissions(permissions: string[] = []): string {

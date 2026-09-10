@@ -1,6 +1,6 @@
 ---
 name: ui_e2e
-description: 运行 JiuwenSwarm Web UI 端到端测试并收集截图、日志、report.md、report.json。用于验证 Todo 和 Cron Web UI 流程、复现浏览器交互问题、选择运行解释器、准备 Playwright 环境，或返回可操作的失败证据时。
+description: 运行 JiuwenSwarm Web UI 端到端测试并收集截图、日志、report.md、report.json。用于验证任务多模态、Todo 和 Cron Web UI 流程、复现浏览器交互问题、选择运行解释器、准备 Playwright 环境，或返回可操作的失败证据时。
 ---
 
 # UI E2E
@@ -11,6 +11,7 @@ description: 运行 JiuwenSwarm Web UI 端到端测试并收集截图、日志�
 
 - `todo_ui_report.py`：验证待办创建、状态更新、Tool Panel 展示。
 - `cron_ui_report.py`：验证定时任务面板、结构化提醒、预览、立即执行、开关、删除。
+- `task_multimodal_ui_report.py`：验证任务输入框 ASR 录音态、实验功能 ASR 配置和全双工入口。
 - `run_suite.py`：顺序执行多个场景并汇总结果。
 
 ## 准备环境
@@ -84,6 +85,7 @@ python3 tests/ui_e2e/cron_ui_report.py \
 
 - `todo_ui_report.py`：启动真实 `jiuwenswarm.app`，验证待办工具链和 Tool Panel。
 - `cron_ui_report.py`：启动真实 `jiuwenswarm.app`，验证 Cron 面板和结构化提醒。
+- `task_multimodal_ui_report.py`：启动真实服务和浏览器，以确定性麦克风夹具验证任务多模态入口。
 
 ## 输出结论
 

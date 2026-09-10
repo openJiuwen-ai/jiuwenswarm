@@ -744,6 +744,21 @@ body.workspace-resize-active iframe {
     animation: chatStreamPulse 1.5s ease-in-out infinite;
   }
 
+  .chat-bubble.assistant.chat-bubble--tool-result {
+    border: 1px solid var(--color-action-primary);
+    border-left-width: 4px;
+    border-radius: 12px;
+    padding: 12px 16px;
+    background: var(--color-action-primary-subtle);
+  }
+
+  .chat-bubble__result-label {
+    margin-bottom: 8px;
+    color: var(--color-action-primary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
   .chat-bubble.assistant.streaming {
     animation: none;
   }

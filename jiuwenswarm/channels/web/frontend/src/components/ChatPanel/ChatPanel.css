@@ -3787,6 +3787,14 @@
   transform: none;
 }
 
+.chat-input-btn--microphone {
+  flex: 0 0 auto;
+}
+
+.chat-input-btn-icon--spin {
+  animation: harness-spin 0.9s linear infinite;
+}
+
 .chat-input-btn--send {
   width: 32px;
   height: 32px;

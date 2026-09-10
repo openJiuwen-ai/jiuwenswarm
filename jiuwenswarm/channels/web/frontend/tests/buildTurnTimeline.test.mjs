@@ -7,6 +7,60 @@ const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
 const A = 1_700_000_035_000; // reasoning 末帧（updatedAt）
 
+test('全双工简短确认和后续发言在运行中及完成后均保持展开', () => {
+  for (const isTeam of [false, true]) {
+    for (const isProcessing of [false, true]) {
+      const ack = assistantMessage(U + 1_000, U + 1_000, 'spoken-ack');
+      ack.message.content = '好的，没问题，我现在就帮你生成这道题的代码。';
+      ack.message.keepExpanded = true;
+      const result = assistantMessage(U + 2_000, U + 2_000, 'result');
+      result.message.presentation = 'tool_result';
+      const receipt = assistantMessage(U + 3_000, U + 3_000, 'spoken-receipt');
+      receipt.message.keepExpanded = true;
+      const out = buildRenderItems([userMessage(U), ack, result, receipt], isTeam, isProcessing);
+      const replies = out.filter((item) => item.type === 'message' && item.message.role === 'assistant');
+      assert.equal(replies.length, 3);
+      for (const item of replies) assert.equal(item.hideMeta, false);
+    }
+  }
+});
+
+test('完整工具结果在后续简报到来后仍独立显示，普通中间回应保持折叠', () => {
+  for (const isTeam of [false, true]) {
+    for (const isProcessing of [false, true]) {
+      const first = assistantMessage(U + 2_000, U + 2_000, 'result-1');
+      first.message.presentation = 'tool_result';
+      const second = assistantMessage(U + 3_000, U + 3_000, 'result-2');
+      second.message.presentation = 'tool_result';
+      const out = buildRenderItems([
+        userMessage(U),
+        assistantMessage(U + 1_000, U + 1_000, 'ack'),
+        first,
+        second,
+        assistantMessage(U + 4_000, U + 4_000, 'brief'),
+      ], isTeam, isProcessing);
+      const messages = out.filter((item) => item.type === 'message');
+      assert.equal(messages.find((item) => item.message.id === 'result-1').hideMeta, false);
+      assert.equal(messages.find((item) => item.message.id === 'result-2').hideMeta, false);
+      assert.equal(messages.find((item) => item.message.id === 'ack').hideMeta, true);
+      if (!isProcessing) assert.equal(messages.find((item) => item.message.id === 'brief').hideMeta, false);
+    }
+  }
+});
+
+test('异步工具结果不把它前面的普通最终回答变成中间过程', () => {
+  const result = assistantMessage(U + 3_000, U + 3_000, 'result');
+  result.message.presentation = 'tool_result';
+  const out = buildRenderItems([
+    userMessage(U),
+    assistantMessage(U + 2_000, U + 2_000, 'answer'),
+    result,
+  ], false, false);
+  for (const item of out.filter((item) => item.type === 'message' && item.message.role === 'assistant')) {
+    assert.equal(item.hideMeta, false);
+  }
+});
+
 function iso(ms) {
   return new Date(ms).toISOString();
 }

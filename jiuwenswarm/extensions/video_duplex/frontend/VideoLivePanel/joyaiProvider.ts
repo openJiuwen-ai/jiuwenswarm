@@ -1,23 +1,15 @@
 import { webClient, webRequest } from '../../../../channels/web/frontend/src/services/webClient';
-import {
-  canPlayJoyAIResponse,
-  JoyAITtsInterruptionState,
-  JoyAIVoiceSession,
-} from './joyaiVoice';
-import {
-  assistantSpeechText,
-} from './searchPresentation';
+import { canPlayJoyAIResponse, JoyAITtsInterruptionState, JoyAIVoiceSession } from './joyaiVoice';
+import { assistantSpeechText } from './searchPresentation';
 import {
   AgentAction,
   JoyAIFrameResult,
+  RealtimeBrief,
   SearchJobPayload,
   SearchJobState,
   TtsStreamPayload,
 } from './types';
-import {
-  JoyAIFrameClock,
-  JoyAIPromptLifecycle,
-} from './joyaiPromptLifecycle';
+import { JoyAIFrameClock, JoyAIPromptLifecycle } from './joyaiPromptLifecycle';
 import {
   buildJoyAIToolContextBatch,
   JoyAIToolContextEntry,
@@ -33,8 +25,7 @@ const FRAME_POLL_CLIENT_BUILD = 'joyai-tool-context-v11';
 function isJoyAIRateLimit(error: unknown): boolean {
   const candidate = error as { code?: string; message?: string } | null;
   const message = candidate?.message || '';
-  return candidate?.code === 'JOYAI_RATE_LIMIT'
-    || /(?:\b429\b|RATE_LIMIT|tokens limit for minute)/i.test(message);
+  return candidate?.code === 'JOYAI_RATE_LIMIT' || /(?:\b429\b|RATE_LIMIT|tokens limit for minute)/i.test(message);
 }
 
 export interface JoyAIProviderCallbacks {
@@ -46,8 +37,7 @@ export interface JoyAIProviderCallbacks {
   finishTranscription: () => void;
   appendChat: (role: 'user' | 'assistant' | 'tool', text: string) => void;
   commitAssistantAnswer: (text: string, toolJobId?: string) => void;
-  rememberSearchJob: (job: AgentAction['search_job']) => void;
-  updateSearchJob: (job: SearchJobState) => void;
+  rememberSearchJob: (job: AgentAction['search_job'], currentMedia?: boolean) => void;
   setAwaitingVoiceTranscript: (awaiting: boolean) => void;
   setError: (message: string) => void;
   setToolStatus: (status: string) => void;
@@ -106,6 +96,7 @@ export class JoyAIProvider {
 
     const voice = new JoyAIVoiceSession({
       onSpeechStart: () => {
+        if (this.sessionId !== sessionId) return;
         this.userSpeechActive = true;
         this.userSpeechEpoch += 1;
         this.ttsInterruption.capture(this.activeTtsText, this.userSpeechEpoch);
@@ -119,24 +110,27 @@ export class JoyAIProvider {
         void this.handleTurnAudio(audioDataUrl, turnId, sessionId);
       },
       onState: (state) => {
+        if (this.sessionId !== sessionId) return;
         if (state === 'closed') {
           this.callbacks.setRecording(false);
           this.callbacks.setStatus('');
           return;
         }
         this.callbacks.setRecording(true);
-        this.callbacks.setStatus(state === 'connecting'
-          ? '正在申请麦克风权限…'
-          : state === 'speaking'
-            ? '模型正在回答…'
-            : '');
+        this.callbacks.setStatus(
+          state === 'connecting' ? '正在申请麦克风权限…' : state === 'speaking' ? '模型正在回答…' : '',
+        );
         if (state === 'listening') this.callbacks.setStarting(false);
       },
-      onError: this.callbacks.setError,
+      onError: (message) => {
+        if (this.sessionId === sessionId) this.callbacks.setError(message);
+      },
+      onDiagnostic: this.callbacks.report,
     });
     this.voice = voice;
     this.callbacks.setStatus('正在申请麦克风权限…');
     await voice.start();
+    if (this.sessionId !== sessionId) voice.stop();
   }
 
   stop(): void {
@@ -148,8 +142,7 @@ export class JoyAIProvider {
     const activeTtsStream = this.activeTtsStream;
     this.activeTtsStream = '';
     if (activeTtsStream) {
-      void webRequest('tts.stream.cancel', { stream_id: activeTtsStream }, { timeoutMs: 5_000 })
-        .catch(() => undefined);
+      void webRequest('tts.stream.cancel', { stream_id: activeTtsStream }, { timeoutMs: 5_000 }).catch(() => undefined);
     }
     this.voice?.stop();
     this.voice = null;
@@ -181,80 +174,46 @@ export class JoyAIProvider {
     return pendingResult;
   }
 
-  handleCompletedSearch(payload: SearchJobPayload, existing?: SearchJobState): boolean {
+  handleCompletedSearch(payload: SearchJobPayload, brief: RealtimeBrief, existing?: SearchJobState): boolean {
     const jobId = payload.job_id?.trim() || '';
     if (!this.active || !jobId) return false;
-    const result = payload.result?.trim() || '';
+    const result = payload.display_result?.trim() || payload.result?.trim() || '';
     const question = payload.question?.trim() || existing?.question || '';
     if (!result || !question) return false;
 
     const sessionId = this.sessionId;
-    this.callbacks.updateSearchJob({
-      id: jobId,
-      searchSessionId: payload.search_session_id || existing?.searchSessionId || '',
+    // The shared result handler has already displayed the full answer. Retain it
+    // for follow-up questions, but send only Core Agent's brief to the TTS queue.
+    this.pendingToolContext = rememberJoyAIToolContext(this.pendingToolContext, {
+      jobId,
       question,
       query: payload.query?.trim() || existing?.query || '',
-      status: 'queued',
+      result,
+      completedAt: new Date().toISOString(),
     });
-    this.callbacks.setToolStatus('搜索完成，等待输出结果…');
-    this.callbacks.report('search_result_waiting_for_output_slot', {
+    this.callbacks.report('joyai_tool_context_buffered', {
       job_id: jobId,
-      message: 'Core Agent final answer queued for display',
+      context_job_count: this.pendingToolContext.length,
     });
 
     const deliver = async () => {
-      if (!await this.waitForAnswerSlot(sessionId)) return;
-      this.callbacks.setToolStatus('正在整理搜索结果…');
-      const responseGeneration = this.ttsGeneration;
-      try {
-        const finalAnswer = result.trim();
-        if (!finalAnswer) {
-          throw new Error('Core Agent 未返回有效最终答案');
-        }
-        this.pendingToolContext = rememberJoyAIToolContext(this.pendingToolContext, {
-          jobId,
-          question,
-          query: payload.query?.trim() || existing?.query || '',
-          result: finalAnswer,
-          completedAt: new Date().toISOString(),
-        });
-        this.callbacks.report('joyai_tool_context_buffered', {
-          job_id: jobId,
-          context_job_count: this.pendingToolContext.length,
-        });
-        this.callbacks.report('search_result_dispatched', {
-          job_id: jobId,
-          attempt: 1,
-          decision: 'core_agent',
-          response_chars: finalAnswer.length,
-          message: 'Core Agent chat.final content sent directly to the output queue',
-        });
-        this.commitAndSpeak(finalAnswer, jobId, responseGeneration);
-        this.callbacks.setToolStatus('');
-        this.callbacks.report('search_result_answered', {
-          job_id: jobId,
-          realtime_answer: finalAnswer,
-          message: 'Core Agent final answer displayed directly without JoyAI summarization',
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : '请重试';
-        this.callbacks.updateSearchJob({
-          id: jobId,
-          searchSessionId: payload.search_session_id || existing?.searchSessionId || '',
-          question,
-          query: payload.query?.trim() || existing?.query || '',
-          status: 'failed',
-        });
-        this.callbacks.setToolStatus(`搜索已完成，但结果处理失败：${message}`);
-        this.callbacks.report('search_result_response_empty', {
-          job_id: jobId,
-          message,
-        });
-      }
+      if (!(await this.waitForAnswerSlot(sessionId))) return;
+      this.speakText(brief.summary, this.ttsGeneration);
+      this.callbacks.setToolStatus('');
+      this.callbacks.report('search_result_dispatched', {
+        job_id: jobId,
+        question,
+        status: brief.status,
+        brief_chars: brief.summary.length,
+        message: 'Core Agent brief queued for TTS; full result displayed separately',
+      });
       await this.ttsQueue;
     };
     const queued = this.searchDeliveryQueue.then(deliver, deliver);
-    this.searchDeliveryQueue = queued.then(() => undefined, () => undefined);
+    this.searchDeliveryQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
     return true;
   }
 
@@ -270,19 +229,20 @@ export class JoyAIProvider {
     let speechReleased = false;
     this.callbacks.beginTranscription();
     try {
-      const asr = await webRequest<{ transcript?: string }>('video.transcribe', {
-        audio_data_url: audioDataUrl,
-      }, { timeoutMs: 45_000 });
+      const asr = await webRequest<{ transcript?: string }>(
+        'video.transcribe',
+        {
+          audio_data_url: audioDataUrl,
+        },
+        { timeoutMs: 45_000 },
+      );
       if (!this.active || this.sessionId !== sessionId) return;
       const transcript = asr.transcript?.trim();
       if (!transcript) {
         if (speechEpochAtTurn === this.userSpeechEpoch) {
           this.userSpeechActive = false;
           speechReleased = true;
-          const interruptedText = this.ttsInterruption.takeAfterRejectedTurn(
-            speechEpochAtTurn,
-            transcript,
-          );
+          const interruptedText = this.ttsInterruption.takeAfterRejectedTurn(speechEpochAtTurn, transcript);
           this.callbacks.report('joyai_barge_in_rejected', {
             speech_epoch: speechEpochAtTurn,
             tts_generation: this.ttsGeneration,
@@ -318,16 +278,18 @@ export class JoyAIProvider {
         this.callbacks.setError(error instanceof Error ? error.message : 'JoyAI 语音处理失败');
       }
     } finally {
-      if (!speechReleased && speechEpochAtTurn === this.userSpeechEpoch) {
-        this.ttsInterruption.discard(speechEpochAtTurn);
-        this.interruptTts();
-        this.userSpeechActive = false;
-        this.callbacks.report('joyai_barge_in_released_without_instruction', {
-          speech_epoch: speechEpochAtTurn,
-          tts_generation: this.ttsGeneration,
-        });
+      if (this.active && this.sessionId === sessionId) {
+        if (!speechReleased && speechEpochAtTurn === this.userSpeechEpoch) {
+          this.ttsInterruption.discard(speechEpochAtTurn);
+          this.interruptTts();
+          this.userSpeechActive = false;
+          this.callbacks.report('joyai_barge_in_released_without_instruction', {
+            speech_epoch: speechEpochAtTurn,
+            tts_generation: this.ttsGeneration,
+          });
+        }
+        this.callbacks.finishTranscription();
       }
-      this.callbacks.finishTranscription();
     }
   }
 
@@ -345,30 +307,26 @@ export class JoyAIProvider {
       const frameDataUrl = this.callbacks.getLatestFrameDataUrl();
       if (!frameDataUrl) return;
       const pendingPrompt = this.promptLifecycle.claim();
-      const request = this.requestFrame(
-        pendingPrompt?.instruction || '',
-        pendingPrompt?.question || '',
-        frameDataUrl,
-      );
-      void request.then((result) => {
-        pendingPrompt?.complete(result);
-        if (pendingPrompt) {
-          this.callbacks.report('joyai_prompt_consumed_by_frame', {
-            response_received: Boolean(result),
-          });
-        }
-      }).catch((error) => {
-        if (isJoyAIRateLimit(error) && pendingPrompt && !this.promptLifecycle.hasPending) {
-          const retry = this.promptLifecycle.enqueue(
-            pendingPrompt.instruction,
-            pendingPrompt.question,
-          );
-          void retry.then(pendingPrompt.complete, pendingPrompt.fail);
-        } else {
-          pendingPrompt?.fail(error);
-        }
-        this.callbacks.setError(error instanceof Error ? error.message : 'JoyAI 画面请求失败');
-      });
+      const request = this.requestFrame(pendingPrompt?.instruction || '', pendingPrompt?.question || '', frameDataUrl);
+      void request
+        .then((result) => {
+          pendingPrompt?.complete(result);
+          if (pendingPrompt) {
+            this.callbacks.report('joyai_prompt_consumed_by_frame', {
+              response_received: Boolean(result),
+            });
+          }
+        })
+        .catch((error) => {
+          if (!this.active) return;
+          if (isJoyAIRateLimit(error) && pendingPrompt && !this.promptLifecycle.hasPending) {
+            const retry = this.promptLifecycle.enqueue(pendingPrompt.instruction, pendingPrompt.question);
+            void retry.then(pendingPrompt.complete, pendingPrompt.fail);
+          } else {
+            pendingPrompt?.fail(error);
+          }
+          this.callbacks.setError(error instanceof Error ? error.message : 'JoyAI 画面请求失败');
+        });
     };
     sendLatestFrame();
     this.framePollTimer = window.setInterval(sendLatestFrame, FRAME_POLL_INTERVAL_MS);
@@ -382,6 +340,7 @@ export class JoyAIProvider {
     if (!this.active) return null;
     const activeSessionId = this.sessionId;
     const sessionId = activeSessionId;
+    const searchSessionId = this.callbacks.getSearchSessionId();
     if (!sessionId || !frameDataUrl) return null;
 
     const ttsGenerationAtRequest = this.ttsGeneration;
@@ -392,27 +351,27 @@ export class JoyAIProvider {
       }
       const requestKind = originalQuestion ? 'user' : 'frame';
       const prompt = instruction.trim();
-      const toolContext = requestKind === 'user'
-        ? buildJoyAIToolContextBatch(this.pendingToolContext)
-        : { text: '', jobIds: [] };
+      const toolContext =
+        requestKind === 'user' ? buildJoyAIToolContextBatch(this.pendingToolContext) : { text: '', jobIds: [] };
       const frameTimeRange = this.frameClock.nextRange();
       let result: JoyAIFrameResult;
       try {
-        result = await webRequest<JoyAIFrameResult>('video.joyai.frame', {
-          frame_data_url: frameDataUrl,
-          instruction: prompt.slice(0, 2_000),
-          question: originalQuestion.slice(0, 500),
-          request_kind: requestKind,
-          joyai_session_id: sessionId,
-          search_session_id: this.callbacks.getSearchSessionId(),
-          frame_time_range: frameTimeRange,
-          ...(toolContext.text ? { tool_context: toolContext.text } : {}),
-        }, { timeoutMs: 60_000 });
+        result = await webRequest<JoyAIFrameResult>(
+          'video.joyai.frame',
+          {
+            frame_data_url: frameDataUrl,
+            instruction: prompt.slice(0, 2_000),
+            question: originalQuestion.slice(0, 500),
+            request_kind: requestKind,
+            joyai_session_id: sessionId,
+            search_session_id: searchSessionId,
+            frame_time_range: frameTimeRange,
+            ...(toolContext.text ? { tool_context: toolContext.text } : {}),
+          },
+          { timeoutMs: 60_000 },
+        );
         if (toolContext.jobIds.length > 0) {
-          this.pendingToolContext = removeSentJoyAIToolContext(
-            this.pendingToolContext,
-            toolContext.jobIds,
-          );
+          this.pendingToolContext = removeSentJoyAIToolContext(this.pendingToolContext, toolContext.jobIds);
           this.callbacks.report('joyai_tool_context_attached', {
             job_id: toolContext.jobIds.join(','),
             context_job_count: toolContext.jobIds.length,
@@ -438,16 +397,20 @@ export class JoyAIProvider {
       }
       this.rateLimitStrikes = 0;
       this.framePollingPausedUntil = 0;
+      // A stopped media run may still have created backend work. Preserve its conversation owner.
+      this.callbacks.rememberSearchJob(result.search_job, this.active && this.sessionId === activeSessionId);
       if (!this.active || this.sessionId !== activeSessionId) {
         return null;
       }
       const response = result.response?.trim() || '';
       if (response) this.commitAndSpeak(response, undefined, ttsGenerationAtRequest);
-      this.callbacks.rememberSearchJob(result.search_job);
       return result;
     };
     const queuedRequest = this.requestQueue.then(execute, execute);
-    this.requestQueue = queuedRequest.then(() => undefined, () => undefined);
+    this.requestQueue = queuedRequest.then(
+      () => undefined,
+      () => undefined,
+    );
     try {
       return await queuedRequest;
     } finally {
@@ -477,51 +440,53 @@ export class JoyAIProvider {
     this.voice?.interruptPlayback();
     this.ttsQueue = Promise.resolve();
     if (activeTtsStream) {
-      void webRequest('tts.stream.cancel', { stream_id: activeTtsStream }, { timeoutMs: 5_000 })
-        .catch(() => undefined);
+      void webRequest('tts.stream.cancel', { stream_id: activeTtsStream }, { timeoutMs: 5_000 }).catch(() => undefined);
     }
   }
 
   private speakText(text: string, generation: number): void {
     const voice = this.voice;
     const spokenText = assistantSpeechText(text, 500);
-    if (!this.active || !voice || !spokenText
-      || !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
+    if (
+      !this.active ||
+      !voice ||
+      !spokenText ||
+      !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)
+    )
+      return;
 
     const play = async () => {
       if (!canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
-      const streamId = typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `tts-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const streamId =
+        typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `tts-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       let receivedStreamAudio = false;
       let streamStarted = false;
       const playback = voice.beginPcmStream(streamId);
       this.activeTtsStream = streamId;
       this.activeTtsText = spokenText;
       const unsubscribeChunk = webClient.on<TtsStreamPayload>('video.tts.chunk', ({ payload }) => {
-        if (payload.stream_id !== streamId
-          || !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
+        if (
+          payload.stream_id !== streamId ||
+          !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)
+        )
+          return;
         const audioBase64 = payload.audio_base64 || '';
         if (!audioBase64) return;
         receivedStreamAudio = true;
         try {
           voice.appendPcm16Chunk(streamId, audioBase64, payload.sample_rate || 24_000);
         } catch (error) {
-          voice.failPcmStream(
-            streamId,
-            error instanceof Error ? error.message : 'JoyAI 音频分块解析失败',
-          );
+          voice.failPcmStream(streamId, error instanceof Error ? error.message : 'JoyAI 音频分块解析失败');
         }
       });
       const unsubscribeDone = webClient.on<TtsStreamPayload>('video.tts.done', ({ payload }) => {
         if (payload.stream_id === streamId) voice.finishPcmStream(streamId);
       });
-      const unsubscribeCancelled = webClient.on<TtsStreamPayload>(
-        'video.tts.cancelled',
-        ({ payload }) => {
-          if (payload.stream_id === streamId) voice.interruptPlayback();
-        },
-      );
+      const unsubscribeCancelled = webClient.on<TtsStreamPayload>('video.tts.cancelled', ({ payload }) => {
+        if (payload.stream_id === streamId) voice.interruptPlayback();
+      });
       const unsubscribeError = webClient.on<TtsStreamPayload>('video.tts.error', ({ payload }) => {
         if (payload.stream_id === streamId) {
           voice.failPcmStream(streamId, payload.error || 'JoyAI 语音流失败');
@@ -532,15 +497,10 @@ export class JoyAIProvider {
           text_chars: spokenText.length,
           stream_id: streamId,
         });
-        await webRequest(
-          'tts.stream.start',
-          { text: spokenText, stream_id: streamId },
-          { timeoutMs: 10_000 },
-        );
+        await webRequest('tts.stream.start', { text: spokenText, stream_id: streamId }, { timeoutMs: 10_000 });
         streamStarted = true;
         await playback;
-        if (!this.active
-          || !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
+        if (!this.active || !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
         this.callbacks.report('realtime_tts_playback_completed', {
           text_chars: spokenText.length,
           stream_id: streamId,
@@ -548,8 +508,7 @@ export class JoyAIProvider {
         });
       } catch (caughtError) {
         let ttsError: unknown = caughtError;
-        if (!this.active
-          || !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
+        if (!this.active || !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
         voice.interruptPlayback();
         if (!streamStarted && !receivedStreamAudio) {
           try {
@@ -558,8 +517,13 @@ export class JoyAIProvider {
               { text: spokenText },
               { timeoutMs: 60_000 },
             );
-            if (!this.active || this.voice !== voice || !result.audio_base64
-              || !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)) return;
+            if (
+              !this.active ||
+              this.voice !== voice ||
+              !result.audio_base64 ||
+              !canPlayJoyAIResponse(generation, this.ttsGeneration, this.userSpeechActive)
+            )
+              return;
             await voice.speak(`data:${result.audio_mime || 'audio/wav'};base64,${result.audio_base64}`);
             this.callbacks.report('realtime_tts_playback_completed', {
               text_chars: spokenText.length,
@@ -590,20 +554,19 @@ export class JoyAIProvider {
       }
     };
     const queued = this.ttsQueue.then(play, play);
-    this.ttsQueue = queued.then(() => undefined, () => undefined);
+    this.ttsQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   private async waitForAnswerSlot(sessionId: string): Promise<boolean> {
     while (this.active && this.sessionId === sessionId) {
-      const requestBarrier = this.requestQueue;
-      await requestBarrier;
       const ttsBarrier = this.ttsQueue;
       await ttsBarrier;
-      if (!this.callbacks.hasPendingTranscriptions()
-        && !this.userSpeechActive
-        && this.queuedRequestCount === 0
-        && requestBarrier === this.requestQueue
-        && ttsBarrier === this.ttsQueue) return true;
+      if (!this.active || this.sessionId !== sessionId) return false;
+      if (!this.callbacks.hasPendingTranscriptions() && !this.userSpeechActive && ttsBarrier === this.ttsQueue)
+        return true;
       await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
     return false;

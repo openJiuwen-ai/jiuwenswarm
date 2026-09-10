@@ -18,8 +18,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, Loader2, Plus, Settings, Square, Workflow, X } from 'lucide-react';
-import { useSpeechRecognition } from '../../hooks';
+import { AtSign, ChevronRight, CircleX, Loader2, Mic, Plus, Settings, Square, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -110,6 +109,8 @@ import { buildInstalledSkillNames, filterEnabledMySkills } from '../../utils/myS
 import { createAgentManagementClient, getAgentAvatarUrl, type AgentCatalogItem } from '../../features/agentManagement';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
+import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
+import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
 
 /** 输入栏下拉所需的最小技能数据结构（与 SkillPanel 中的 SkillItem 保持一致） */
 type InputAreaSkillItem = {
@@ -238,6 +239,7 @@ function isDefaultProject(project: ProjectInfo): boolean {
 
 interface InputAreaProps {
   onSubmit: (content: string, mediaItems?: MediaItem[]) => void;
+  onEnsureSession: (initialTitle?: string) => Promise<string | null>;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
@@ -595,6 +597,7 @@ function buildSubmitContent(text: string, attachments: AttachmentDraft[]): strin
 export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function InputArea(
   {
     onSubmit,
+    onEnsureSession,
     onInputIntent,
     onPersistMedia,
     onPersistDocuments,
@@ -613,7 +616,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   },
   ref,
 ) {
-  const [pendingVoiceText, setPendingVoiceText] = useState('');
+  const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
@@ -681,12 +684,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const skillPanelRef = useRef<HTMLDivElement>(null);
   const swarmflowConfigBtnRef = useRef<HTMLButtonElement>(null);
   const swarmflowConfigPanelRef = useRef<HTMLDivElement>(null);
-  const autoSendTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attachmentMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attachmentMenuOpenedByLongPressRef = useRef(false);
   const isComposingRef = useRef(false);
-  // const activePointerIdRef = useRef<number | null>(null);
-  const isVoicePressingRef = useRef(false);
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const hasPendingQuestion = useChatStore(
@@ -962,32 +962,39 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
 
+  const appendTaskAsrTranscript = useCallback((transcript: string) => {
+    const text = transcript.trim();
+    const sid = useChatStore.getState().activeSessionId;
+    const editor = inputRef.current;
+    if (!text || !sid || !editor) return;
+
+    const current = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
+    const separator = current && !/\s$/.test(current) ? ' ' : '';
+    editor.appendChild(document.createTextNode(`${separator}${text}`));
+    useChatStore.getState().setInputValue(sid, `${current}${separator}${text}`);
+    if (sid !== NEW_CONVERSATION_ID) onInputIntent?.(sid);
+
+    editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, [onInputIntent]);
+
   const {
-    isListening,
-    // startListening,
-    stopListening,
-    // isSupported: speechSupported,
-  } = useSpeechRecognition({
-    language: 'cmn-Hans-CN',
-    continuous: true,
-    interimResults: true,
-    silenceTimeoutMs: 8000,
-    restartWhen: () => isVoicePressingRef.current,
-    onResult: (text, isFinal) => {
-      if (isFinal) {
-        setPendingVoiceText((prev) => prev + text);
-      }
-    },
-    onEnd: () => {
-      autoSendTimeoutRef.current = setTimeout(() => {}, 100);
-    },
-    onError: (error) => {
-      console.error('Speech recognition error:', error);
-    },
+    isRecording: isListening,
+    isTranscribing,
+    isSupported: taskAsrSupported,
+    toggleRecording,
+  } = useTaskAsr({
+    onTranscript: appendTaskAsrTranscript,
+    onError: setSpeechError,
   });
 
   const imageInputDisabled = isImageInputDisabled({
-    isListening,
+    isListening: isListening || isTranscribing,
     isCompactRunning,
     isInterruptible,
     isTeamMode,
@@ -996,7 +1003,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isDesktopBridgeReady = useDesktopLocalFilePickerReady();
   // "+" 触发按钮本身不跟图片/目标的可用性挂钩：菜单以后可能挂其他跟图片/目标无关的功能，
   // 触发按钮只要不在录音就该能点开；具体某一项能不能选，交给菜单里每一项各自的禁用态处理。
-  const attachTriggerDisabled = isListening || composerDisabled;
+  const attachTriggerDisabled = isListening || isTranscribing || composerDisabled;
   const readyAttachments = useMemo(
     () =>
       attachments.filter(
@@ -1014,38 +1021,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   useEffect(() => {
-    if (!isListening && pendingVoiceText) {
-      const finalText = (inputValue + pendingVoiceText).trim();
-      if (finalText) {
-        const sid = useChatStore.getState().activeSessionId;
-        if (sid) {
-          useChatStore.getState().setInputValue(sid, finalText);
-        }
-        setPendingVoiceText('');
-        if (composerDisabled) return;
-
-        setTimeout(() => {
-          if (sid && useChatStore.getState().runtimes[sid]?.pendingQuestions[0]) return;
-          if (isTeamMode) {
-            onSubmit(finalText);
-          } else if (isInterruptible) {
-            onInterrupt(finalText);
-          } else {
-            onSubmit(finalText);
-          }
-          if (sid) {
-            useChatStore.getState().setInputValue(sid, '');
-          }
-        }, 150);
-      }
-    }
-  }, [composerDisabled, isListening, pendingVoiceText, inputValue, isInterruptible, isTeamMode, onSubmit, onInterrupt]);
-
-  useEffect(() => {
     return () => {
-      if (autoSendTimeoutRef.current) {
-        clearTimeout(autoSendTimeoutRef.current);
-      }
       if (attachmentMenuTimerRef.current) {
         clearTimeout(attachmentMenuTimerRef.current);
       }
@@ -1075,6 +1051,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       { id, message },
     ].slice(-3));
   }, []);
+
+  useEffect(() => {
+    if (!speechError) return;
+    pushAttachmentAlert(speechError);
+    setSpeechError('');
+  }, [pushAttachmentAlert, speechError]);
 
   const dismissAttachmentAlert = useCallback((id: string) => {
     const timeoutId = attachmentAlertTimersRef.current.get(id);
@@ -1699,7 +1681,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
     // 用富文本（含 chip 标记）作为发送内容，气泡可交织渲染技能
     const richContent = extractRichContent();
-    const trimmedBase = (richContent + pendingVoiceText).trim();
+    const trimmedBase = richContent.trim();
 
     // 单 Agent 下拦截斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
     // Team 下不拦截，以普通文本发送，不会触发 command.compact 等 RPC。
@@ -1709,9 +1691,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       const slashSid = useChatStore.getState().activeSessionId;
       const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? mode;
       if (cmd && shouldExecuteRegisteredSlashCommand(name, args, slashMode)) {
-        if (isListening) stopListening();
         if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
-        setPendingVoiceText('');
         setAttachments([]);
         setAttachmentAlerts([]);
         if (inputRef.current) inputRef.current.innerHTML = '';
@@ -1753,10 +1733,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // Other non-team modes still go through the text-only onInterrupt channel where
     // attachments would be lost, so keep blocking there.
     if (isInterruptible && !isTeamMode && !isAgentMode && hasReadyMedia) return;
-
-    if (isListening) {
-      stopListening();
-    }
 
     const sid = useChatStore.getState().activeSessionId;
     if (goalArmed && trimmedBase && sid && onSetGoal && sid !== NEW_CONVERSATION_ID) {
@@ -1805,7 +1781,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (sid) {
       useChatStore.getState().setInputValue(sid, '');
     }
-    setPendingVoiceText('');
     setAttachments([]);
     setAttachmentAlerts([]);
 
@@ -1818,16 +1793,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     attachments,
     executeSlashCommand,
     extractRichContent,
-    pendingVoiceText,
     readyMediaItems,
     hasUploadingAttachments,
     hasAttachmentErrors,
     composerDisabled,
     isInterruptible,
-    isListening,
     onSubmit,
     onInterrupt,
-    stopListening,
     mode,
     isAgentMode,
     isTeamMode,
@@ -1839,11 +1811,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     t,
   ]);
 
-  const trimmedDraft = (inputValue + pendingVoiceText).trim();
+  const trimmedDraft = inputValue.trim();
   const hasTextDraft = trimmedDraft.length > 0;
   // Attachments / listening count as "composer busy" so Stop stays hidden while
   // preparing a follow-up. A pending approval keeps Stop available and blocks Send.
-  const hasDraft = hasTextDraft || attachments.length > 0 || isListening;
+  const hasDraft = hasTextDraft || attachments.length > 0 || isListening || isTranscribing;
   const isImageInterruptBlocked =
     isInterruptible && !isTeamMode && !isAgentMode && readyMediaItems.length > 0;
   const showStop = isProcessing && !isPaused && (!hasDraft || hasPendingQuestion);
@@ -1865,6 +1837,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
     handleSubmit();
   }, [handleSubmit, showStop, onCancel]);
+
+  const fullDuplexActionEligible =
+    !showStop &&
+    !composerDisabled &&
+    !hasTextDraft &&
+    attachments.length === 0 &&
+    !isListening &&
+    !isTranscribing &&
+    !isLoadingHistory;
 
   const getCurrentComposerTrigger = useCallback((): ComposerSuggestionState | null => {
     const el = inputRef.current;
@@ -2740,6 +2721,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           <span>{t('chat.recording')}</span>
         </div>
       )}
+      {isTranscribing && (
+        <div className="chat-input-recording-bar" role="status" data-testid="chat-panel-input-transcribing-bar">
+          <Loader2 className="chat-input-attachment-spin" size={14} strokeWidth={2} aria-hidden="true" />
+          <span>{t('chat.transcribing')}</span>
+        </div>
+      )}
 
       <div className="chat-input-body" data-testid="chat-panel-input-body">
       {attachments.length > 0 && (
@@ -3604,28 +3591,69 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
           <button
             type="button"
-            onClick={handleSendButtonClick}
-            disabled={!canSubmit}
+            onClick={toggleRecording}
+            disabled={composerDisabled || isTranscribing || !taskAsrSupported}
             className={cx(
-              'chat-input-btn chat-input-btn--send',
-              showStop && 'chat-input-btn--stop',
-              canSubmit ? 'chat-input-btn--send-active' : 'chat-input-btn--disabled',
+              'chat-input-btn chat-input-btn--microphone',
+              isListening && 'chat-input-btn--recording',
+              (composerDisabled || isTranscribing || !taskAsrSupported) && 'chat-input-btn--disabled',
             )}
-            title={showStop ? t('chat.stop') : t('chat.send')}
-            data-testid="chat-panel-input-send"
-            data-variant={showStop ? 'stop' : 'send'}
+            title={
+              isTranscribing
+                ? t('chat.transcribing')
+                : isListening
+                  ? t('chat.stopRecording')
+                  : taskAsrSupported
+                    ? t('chat.startRecording')
+                    : t('speech.recordingUnsupported')
+            }
+            aria-label={isListening ? t('chat.stopRecording') : t('chat.startRecording')}
+            aria-pressed={isListening}
+            data-testid="chat-panel-input-microphone"
           >
-            {showStop ? (
-              <Square className="chat-input-btn-icon" fill="currentColor" strokeWidth={1.8} aria-hidden="true" />
+            {isTranscribing ? (
+              <Loader2 className="chat-input-btn-icon chat-input-btn-icon--spin" strokeWidth={1.8} aria-hidden="true" />
             ) : (
-              <img
-                className="chat-input-btn-icon chat-input-btn-icon--image"
-                src={canSubmit ? sendActiveIcon : sendIcon}
-                alt=""
-                aria-hidden="true"
-              />
+              <Mic className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
             )}
           </button>
+
+          <ApplicationPluginTaskInputActions
+            eligible={fullDuplexActionEligible}
+            sessionId={activeSessionId}
+            ensureSession={onEnsureSession}
+            labels={{
+              start: t('chat.taskFullDuplexStart'),
+              starting: t('chat.taskFullDuplexStarting'),
+              stop: t('chat.taskFullDuplexStop'),
+            }}
+            fallback={(
+              <button
+                type="button"
+                onClick={handleSendButtonClick}
+                disabled={!canSubmit}
+                className={cx(
+                  'chat-input-btn chat-input-btn--send',
+                  showStop && 'chat-input-btn--stop',
+                  canSubmit ? 'chat-input-btn--send-active' : 'chat-input-btn--disabled',
+                )}
+                title={showStop ? t('chat.stop') : t('chat.send')}
+                data-testid="chat-panel-input-send"
+                data-variant={showStop ? 'stop' : 'send'}
+              >
+                {showStop ? (
+                  <Square className="chat-input-btn-icon" fill="currentColor" strokeWidth={1.8} aria-hidden="true" />
+                ) : (
+                  <img
+                    className="chat-input-btn-icon chat-input-btn-icon--image"
+                    src={canSubmit ? sendActiveIcon : sendIcon}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            )}
+          />
         </div>
       </div>
       </div>

@@ -314,6 +314,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     multimodal_model_enabled,
 )
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
+from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
     generate_video,
@@ -9239,12 +9240,7 @@ class JiuWenSwarmDeepAdapter:
             cron_channel = str(_CRON_TOOL_CHANNEL_ID.get() or "").strip()
             if cron_channel:
                 channel = cron_channel
-        send_file_enabled = (
-            config_base.get("channels", {}).get(channel, {}).get("send_file_allowed")
-        )
-        # web channel defaults to True, others default to False
-        if send_file_enabled is None:
-            send_file_enabled = (channel == "web")
+        send_file_enabled = is_send_file_enabled(config_base, channel)
         if send_file_enabled and request_id and session_id:
             channel_for_tool = _CRON_TOOL_CHANNEL_ID.get()
             metadata_for_tool = _CRON_TOOL_METADATA.get()
