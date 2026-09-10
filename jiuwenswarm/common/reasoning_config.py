@@ -25,26 +25,6 @@ def _parse_api_base(api_base: str | None):
     return urlparse(value)
 
 
-# 部分模型对采样参数有硬性约束(传错值直接 400)。Kimi 模型要求
-# temperature=1、top_p=0.95(报错 "only 1 is allowed for this model" /
-# "only 0.95 is allowed for this model"):
-#   - "api.moonshot.cn": 自定义API(通用Token)端点, kimi-k2.6 实测 2026-08-27。
-#   - "api.kimi.com": Coding Plan 端点(model_vendor_registry 里 kimi 的
-#     coding_plan 预设 api_base=https://api.kimi.com/coding/v1), 用户实测
-#     同样报 "invalid temperature: only 1 is allowed for this model"。
-# 两个 host 是同一厂商的两套 plan 域名；此外百炼等聚合厂商也提供 Kimi，
-# 因此既按官方 host 识别，也按 kimi-* 模型 ID 识别。
-# core 的 ModelRequestConfig 默认 temperature=0.95 正好踩雷,故在此按 api_base
-# 识别后强制覆盖,且无视用户填值——因为传任何其它值都必失败,无协商余地。
-# Moonshot/Kimi 无专属 endpoint_profile,与 deepseek_official 一样靠 api_base
-# host 识别。约束带 "for this model" 字样可能按模型配置,但对无约束的模型
-# 固定到安全值不会报错,故按厂商识别即可。
-SAMPLING_OVERRIDE_RULES: dict[str, dict[str, float]] = {
-    "api.moonshot.cn": {"temperature": 1.0, "top_p": 0.95},
-    "api.kimi.com": {"temperature": 1.0, "top_p": 0.95},
-}
-
-
 # 按 api_base host 识别的 endpoint_profile 覆盖表,来源是用户配置 config.yaml
 # 顶层的 endpoint_profile_overrides(host -> profile),源码不内置任何 host。
 # 用途:自建网关(如 vLLM 起的 DashScope 风格服务,认 enable_thinking /
@@ -75,25 +55,6 @@ def effective_endpoint_profile(api_base: str | None, endpoint_profile: Any = Non
     if explicit:
         return explicit
     return resolve_endpoint_profile_override(api_base)
-
-
-def resolve_sampling_override(
-    api_base: str | None,
-    model_name: str | None = None,
-) -> dict[str, float] | None:
-    """Return forced sampling params for endpoints/models that reject defaults.
-
-    Kimi requires exactly temperature=1 and top_p=0.95; the core default
-    temperature=0.95 trips this. Kimi can be reached through Moonshot's own
-    endpoints or an aggregator such as DashScope, so model ID matching is
-    required in addition to host matching.
-    """
-    host = (_parse_api_base(api_base).hostname or "").lower()
-    host_override = SAMPLING_OVERRIDE_RULES.get(host)
-    normalized_model = str(model_name or "").strip().lower().rsplit("/", 1)[-1]
-    if host_override or normalized_model.startswith("kimi-"):
-        return {"temperature": 1.0, "top_p": 0.95}
-    return None
 
 
 def normalize_reasoning_level(raw: Any) -> ReasoningLevel | None:
@@ -199,6 +160,5 @@ __all__ = [
     "reasoning_config_for_level",
     "reasoning_level_options",
     "resolve_endpoint_profile_override",
-    "resolve_sampling_override",
     "validate_reasoning_level_for_model",
 ]

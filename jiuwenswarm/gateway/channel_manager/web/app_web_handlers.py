@@ -590,7 +590,10 @@ def _merge_models_for_replace_all(
             ):
                 new_mcc["client_provider"] = item["model_provider"]
             if not _values_match(item["temperature"], resolved_mco.get("temperature")):
-                new_mco["temperature"] = item["temperature"]
+                if item["temperature"] is None:
+                    new_mco.pop("temperature", None)
+                else:
+                    new_mco["temperature"] = item["temperature"]
             reasoning_level = str(item.get("reasoning_level") or "").strip()
             # 不能用 _values_match：legacy YAML 1.1 会把裸 on/off 读成布尔，
             # 其布尔分支使 bool("")==bool(False) 成立，「清空档位」会被误判为
@@ -647,7 +650,7 @@ def _merge_models_for_replace_all(
                     **({"endpoint_profile": item["endpoint_profile"]} if item.get("endpoint_profile") else {}),
                 },
                 "model_config_obj": {
-                    "temperature": item["temperature"],
+                    **({"temperature": item["temperature"]} if item["temperature"] is not None else {}),
                     **({"reasoning_level": _serialize_reasoning_level(item.get("reasoning_level"))}
                        if item.get("reasoning_level") else {}),
                 },
@@ -3380,10 +3383,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 raise _ConfigBadRequest(f"models[{idx}].api_key is required")
             if model_provider and model_provider not in available_model_providers:
                 raise _ConfigBadRequest(f"models[{idx}].model_provider must be one of: {available_model_providers}")
-            try:
-                temperature = float(item.get("temperature", 0.95))
-            except (ValueError, TypeError):
-                temperature = 0.95
+            raw_temperature = item.get("temperature")
+            if raw_temperature in (None, ""):
+                temperature = None
+            else:
+                try:
+                    temperature = float(raw_temperature)
+                except (ValueError, TypeError) as exc:
+                    raise _ConfigBadRequest(
+                        f"models[{idx}].temperature must be a number or empty"
+                    ) from exc
             try:
                 timeout = int(item.get("timeout", 1800))
             except (ValueError, TypeError):
@@ -3726,7 +3735,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "api_base": mcc.get("api_base", ""),
                     "api_key": mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature", 0.95),
+                    "temperature": mco.get("temperature"),
                     "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
                     "is_default": is_default,
                     # agentos 备份模型标记：由 get_default_models 经 _source=="agentos"
@@ -3761,7 +3770,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "api_base": mcc.get("api_base", ""),
                         "api_key": mcc.get("api_key", ""),
                         "model_provider": mcc.get("client_provider", ""),
-                        "temperature": mco.get("temperature", 0.95),
+                        "temperature": mco.get("temperature"),
                         "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
                         "is_default": entry.get("is_default"),
                         "is_agentos": False,

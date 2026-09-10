@@ -46,8 +46,8 @@ class LLMConfig:
     model: str = ""
     model_client_config: Dict[str, Any] | None = None
     model_config_obj: Dict[str, Any] | None = None
-    temperature: float = 0.0
-    top_p: float = 1.0
+    temperature: float | None = None
+    top_p: float | None = None
 
     @classmethod
     def from_default_model(cls) -> "LLMConfig":
@@ -207,17 +207,10 @@ class LLMConfig:
     def model_request_kwargs(self) -> Dict[str, Any]:
         request_config = deepcopy(self.model_config_obj or {})
         request_config["model"] = self.model
-        request_config["temperature"] = self.temperature
-        request_config["top_p"] = self.top_p
-        # 兜底:部分厂商(如 Moonshot api.moonshot.cn 的 kimi-k2.6)对采样参数有
-        # 硬性约束,传默认值(此处 0.0/1.0)会 400。symphony 路径不经
-        # reasoning_injector,故在此按 api_base/model 识别后强制覆盖,与主路径同源规则。
-        # 见 common.reasoning_config.resolve_sampling_override。
-        from jiuwenswarm.common.reasoning_config import resolve_sampling_override
-
-        override = resolve_sampling_override(self.base_url, self.model)
-        if override:
-            request_config.update(override)
+        if self.temperature is not None:
+            request_config["temperature"] = self.temperature
+        if self.top_p is not None:
+            request_config["top_p"] = self.top_p
         return request_config
 
     def create_model(self):
