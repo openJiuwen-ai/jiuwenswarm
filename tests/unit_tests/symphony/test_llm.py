@@ -127,16 +127,16 @@ def test_llm_config_from_default_models(monkeypatch):
     assert config.model_client_config["client_provider"] == "openai"
     assert "timeout_seconds" not in LLMConfig.__dataclass_fields__
     assert "max_tokens" not in LLMConfig.__dataclass_fields__
-    assert config.temperature == 0.0
-    assert config.top_p == 1.0
+    assert config.temperature is None
+    assert config.top_p is None
     assert "batch_size" not in LLMConfig.__dataclass_fields__
     assert not hasattr(config, "timeout_seconds")
     assert not hasattr(config, "max_tokens")
     assert config.model_client_kwargs()["custom_headers"] == {"X-Test": "1"}
     assert config.model_client_kwargs()["timeout"] == 12
     assert config.model_client_kwargs()["verify_ssl"] is False
-    assert config.model_request_kwargs()["temperature"] == 0.0
-    assert config.model_request_kwargs()["top_p"] == 1.0
+    assert config.model_request_kwargs()["temperature"] == 0.2
+    assert config.model_request_kwargs()["top_p"] == 0.8
     assert config.model_request_kwargs()["max_tokens"] == 99
 
 

@@ -165,7 +165,12 @@ class WorkspaceFileAdapter(GatewayAdapter):
         normalized = dict(params)
         try:
             # 文档校验含逐条 path.is_file/stat 同步 IO，放线程池避免阻塞事件循环。
-            await asyncio.to_thread(persist_and_parse_documents, normalized)
+            # 浏览器 base64 文档落盘同样放在线程池（与 media.persist 一致）。
+            await asyncio.to_thread(
+                persist_and_parse_documents,
+                normalized,
+                request.session_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[WorkspaceFileAdapter] document.persist failed: %s", exc)
             return build_error_response(request, str(exc), code="INTERNAL_ERROR")

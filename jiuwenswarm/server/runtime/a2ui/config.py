@@ -38,15 +38,10 @@ def _to_bool(value: Any, default: bool) -> bool:
 
 
 def get_a2ui_config(config: dict[str, Any] | None = None) -> A2UIConfig:
-    """Build A2UI config from a config dictionary plus environment overrides."""
+    """Build A2UI config with the feature unconditionally disabled."""
     raw = config or {}
     section = raw.get("a2ui") if isinstance(raw, dict) else {}
     section = section if isinstance(section, dict) else {}
-
-    enabled = _to_bool(section.get("enabled"), False)
-    env_enabled = os.getenv("JIUWENSWARM_A2UI_ENABLED")
-    if env_enabled is not None:
-        enabled = _to_bool(env_enabled, enabled)
 
     protocol_version = str(
         os.getenv("JIUWENSWARM_A2UI_PROTOCOL_VERSION")
@@ -62,7 +57,8 @@ def get_a2ui_config(config: dict[str, Any] | None = None) -> A2UIConfig:
         dev_smoke_tools_enabled = _to_bool(env_smoke, dev_smoke_tools_enabled)
 
     return A2UIConfig(
-        enabled=enabled,
+        # A2UI is disabled by backend policy; config and env cannot enable it.
+        enabled=False,
         protocol_version=protocol_version,
         stream_validation_enabled=_to_bool(section.get("stream_validation_enabled"), True),
         non_web_fallback_enabled=_to_bool(section.get("non_web_fallback_enabled"), False),

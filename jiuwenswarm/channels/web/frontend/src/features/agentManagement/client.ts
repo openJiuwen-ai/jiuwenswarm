@@ -182,6 +182,31 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
         return rethrowAgentError(error);
       }
     },
+    async updateAgent(draft) {
+      try {
+        await webRequest('agent_templates.update', {
+          id: draft.id,
+          name: draft.name,
+          description: draft.description,
+          persona: draft.persona,
+          tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
+          skills: draft.skillRefs,
+          mcps: draft.mcpRefs,
+          quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
+        });
+        invalidateAgentCatalog();
+      } catch (error) {
+        return rethrowAgentError(error);
+      }
+    },
+    async deleteDefinition(id) {
+      try {
+        await webRequest('agent_templates.delete', { id });
+        invalidateAgentCatalog();
+      } catch (error) {
+        return rethrowAgentError(error);
+      }
+    },
     async importAgentTemplate(path) {
       try {
         const payload = await webRequest<{ id?: string }>('agent_templates.import_local', { path });

@@ -423,7 +423,7 @@ class TestWorkspaceFileAdapter:
         assert resp.payload["content"] == "x"
 
     async def test_document_persist(self, monkeypatch) -> None:
-        def _fake_persist(normalized):
+        def _fake_persist(normalized, session_id):
             normalized["documents"] = [{"path": "/tmp/d.md"}]
             normalized["forbidden_formats"] = [".exe"]
 

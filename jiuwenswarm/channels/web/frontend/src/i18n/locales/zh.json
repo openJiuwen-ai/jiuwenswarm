@@ -2209,7 +2209,12 @@
       "createByUpload": "上传文件创建",
       "uploading": "上传中…",
       "createViaChatPrompt": "帮我创建一个xxx专家，擅长xxx",
-      "back": "返回"
+      "back": "返回",
+      "edit": "编辑",
+      "updating": "保存中…"
+    },
+    "confirm": {
+      "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。"
     },
     "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作", "moreTagsTooltip": "更多标签：{{tags}}" },
     "states": {
@@ -2278,6 +2283,7 @@
     },
     "form": {
       "title": "手动创建",
+      "editTitle": "编辑专家",
       "subtitle": "创建一个可复用的专家定义",
       "createOnly": "仅支持创建",
       "createTabsLabel": "创建类型",

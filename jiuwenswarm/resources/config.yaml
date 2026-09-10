@@ -278,7 +278,6 @@ models:
         verify_ssl: true
         custom_headers: {}
       model_config_obj:
-        temperature: 0.95
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
         # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
@@ -303,8 +302,7 @@ models:
         endpoint_profile: ${VIDEO_ENDPOINT_PROFILE:-openai_compatible}
         timeout: 1800
         verify_ssl: true
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   audio:
       model_client_config:
         api_base: ${AUDIO_API_BASE}
@@ -315,8 +313,7 @@ models:
         endpoint_profile: ${AUDIO_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   vision:
       model_client_config:
         api_base: ${VISION_API_BASE}
@@ -327,8 +324,7 @@ models:
         endpoint_profile: ${VISION_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   image_gen:
       model_client_config:
         api_base: ${IMAGE_GEN_API_BASE}
@@ -340,8 +336,7 @@ models:
         endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   # ---- AgentOS 备份模型（可选，不预置；需手动添加）----
   # 此处不预置任何 agentos 条目：jiuwenswarm-init 生成的 config.yaml 不含 agentos 字段。
   # 如需启用备份模型，请手动在 config.yaml 添加 models.agentos 列表段（见文档）。

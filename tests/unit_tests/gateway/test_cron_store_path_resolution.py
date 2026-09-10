@@ -1,10 +1,4 @@
-"""``get_cron_jobs_path`` must follow wherever a workspace keeps its jobs.
-
-``_migrate_legacy_workspace`` relocates the file to ``gateway/`` while the getter
-pointed at ``agent/home/``, so after a migration the scheduler read a missing
-path and every schedule stopped firing silently. These pin the resolution order
-that repairs it without stranding anyone.
-"""
+"""Cron always uses agent/home, regardless of stores under gateway."""
 
 from __future__ import annotations
 
@@ -34,39 +28,15 @@ def _write(path, jobs=("job-1",)):
     return path
 
 
-def test_fresh_workspace_adopts_the_gateway_layout(workspace):
-    """Nothing on disk: use the new location, so agent/home -- the marker that
-    makes a workspace look 'legacy' -- is never created."""
-    assert get_cron_jobs_path() == workspace / "gateway" / "cron_jobs.json"
-
-
-def test_existing_deployment_keeps_its_legacy_file(workspace):
-    """The upgrade case that must not break: repointing unconditionally would
-    empty the schedule of a deployment that never migrated."""
-    legacy = _write(workspace / "agent" / "home" / "cron_jobs.json")
-    assert get_cron_jobs_path() == legacy
-
-
-def test_migrated_deployment_uses_gateway(workspace):
-    """The bug: once the migration relocated the file, the reader must follow."""
-    new = _write(workspace / "gateway" / "cron_jobs.json")
-    assert get_cron_jobs_path() == new
-
-
-def test_gateway_wins_when_both_exist(workspace):
-    """The migration can leave the old file behind; the relocated copy wins."""
-    _write(workspace / "agent" / "home" / "cron_jobs.json", jobs=("stale",))
-    new = _write(workspace / "gateway" / "cron_jobs.json", jobs=("current",))
-    assert get_cron_jobs_path() == new
-
-
-def test_an_empty_agent_home_does_not_count(workspace):
-    """A leftover lock file is not a store, or a workspace whose cron_jobs.json
-    was removed would pin itself to the legacy path forever."""
-    lock_dir = workspace / "agent" / "home"
-    lock_dir.mkdir(parents=True)
-    (lock_dir / "cron_jobs.json.lock").write_text("", encoding="utf-8")
-    assert get_cron_jobs_path() == workspace / "gateway" / "cron_jobs.json"
+@pytest.mark.parametrize("home_exists", [False, True])
+@pytest.mark.parametrize("gateway_exists", [False, True])
+def test_cron_path_always_uses_agent_home(workspace, home_exists, gateway_exists):
+    home = workspace / "agent" / "home" / "cron_jobs.json"
+    if home_exists:
+        _write(home)
+    if gateway_exists:
+        _write(workspace / "gateway" / "cron_jobs.json")
+    assert get_cron_jobs_path() == home
 
 
 _JOB = {
@@ -107,10 +77,10 @@ async def test_the_real_migration_no_longer_orphans_the_store(workspace):
 
     _migrate_legacy_workspace(workspace)
 
-    # Only the migrated cron source is removed; home remains for heartbeat.
-    assert not legacy.exists()
+    # Workspace migration leaves the cron store and home directory in place.
+    assert legacy.exists()
     assert (workspace / "agent" / "home").exists()
-    assert (workspace / "gateway" / "cron_jobs.json").exists()
+    assert not (workspace / "gateway" / "cron_jobs.json").exists()
 
     # ...and the job is still reachable, which is the part that used to fail.
     jobs = await CronJobStore(path=get_cron_jobs_path()).list_jobs()
@@ -119,47 +89,20 @@ async def test_the_real_migration_no_longer_orphans_the_store(workspace):
 
 
 @pytest.mark.asyncio
-async def test_relocating_the_store_no_longer_loses_jobs(workspace):
-    """Reproduces the original failure: relocate, then read. Before the fix the
-    store read a missing path and reported zero jobs."""
+async def test_gateway_store_is_not_read_or_written(workspace):
     from jiuwenswarm.gateway.cron.store import CronJobStore
 
-    legacy = workspace / "agent" / "home" / "cron_jobs.json"
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "jobs": [
-                    {
-                        "id": "job-1",
-                        "name": "Example job",
-                        "enabled": True,
-                        "expired": False,
-                        "cron_expr": "0 0 8 * * ? *",
-                        "timezone": "UTC",
-                        "description": "Example scheduled job.",
-                        "targets": "web",
-                        "session_id": "web_session_1",
-                        "mode": "agent",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
+    gateway = _write_job(workspace / "gateway" / "cron_jobs.json")
+    original = gateway.read_bytes()
+    store = CronJobStore()
+    assert await store.list_jobs() == []
 
-    assert len(await CronJobStore(path=get_cron_jobs_path()).list_jobs()) == 1
-
-    # What the migration does: copy to gateway/, then remove agent/home.
-    new = workspace / "gateway" / "cron_jobs.json"
-    new.parent.mkdir(parents=True, exist_ok=True)
-    new.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
-    legacy.unlink()
-
-    jobs = await CronJobStore(path=get_cron_jobs_path()).list_jobs()
-    assert len(jobs) == 1, "the relocated store must still be found"
-    assert jobs[0].id == "job-1"
+    # Persist through the same store and verify only agent/home is written.
+    store._write_json_unlocked({"version": 1, "jobs": [_JOB]})
+    assert (workspace / "agent" / "home" / "cron_jobs.json").exists()
+    assert gateway.read_bytes() == original
+    assert not gateway.with_suffix(".json.lock").exists()
+    assert len(await store.list_jobs()) == 1
 
 
 @contextlib.contextmanager

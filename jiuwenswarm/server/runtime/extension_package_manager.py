@@ -188,6 +188,20 @@ def _read_readme_details(pkg_dir: Path) -> str:
         return ""
 
 
+def _read_agent_template_persona(pkg_dir: Path) -> str:
+    """Return the persona markdown text, or empty string."""
+    persona_dir = pkg_dir / "persona"
+    if not persona_dir.is_dir():
+        return ""
+    for entry in sorted(persona_dir.iterdir(), key=lambda p: p.name):
+        if entry.is_file() and entry.suffix.lower() == ".md":
+            try:
+                return entry.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return ""
+    return ""
+
+
 def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
     """Parse SKILL.md YAML frontmatter for name/description (best-effort)."""
     try:
@@ -524,6 +538,8 @@ def _build_show_card(
         "rails": _map_class_entries(manifest, "rails"),
         "mcps": _map_mcps(pkg_dir, manifest),
     }
+    if package_type == "agent_template":
+        card["persona"] = _read_agent_template_persona(pkg_dir)
     if installed is not None:
         card["installed"] = installed
     elif marketplace is not None:
@@ -1215,13 +1231,23 @@ def _skills_manifest_entries(skill_names: list[str]) -> list[dict[str, str]]:
 
 
 def _copy_workspace_skills(pkg_dir: Path, skill_names: list[str]) -> None:
-    """Copy workspace/skills/{name}/ into the new package skills/ tree."""
+    """Copy workspace/skills/{name}/ into the package skills/ tree.
+
+    Overwrites the package skills/ tree so update flows replace removed or
+    changed skills instead of leaving stale copies behind. An empty
+    ``skill_names`` still clears a pre-existing skills/ dir so an update that
+    drops all skills leaves no stale copies.
+    """
+    skills_dir = pkg_dir / "skills"
+    if skills_dir.exists():
+        shutil.rmtree(skills_dir)
     if not skill_names:
         return
     skills_root = get_agent_skills_dir()
+    skills_dir.mkdir(parents=True, exist_ok=True)
     for name in skill_names:
         src = skills_root / name
-        dst = pkg_dir / "skills" / name
+        dst = skills_dir / name
         shutil.copytree(src, dst)
 
 
@@ -2086,6 +2112,45 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
     return {"path": rel, "content": content}
 
 
+def _write_agent_template_package(
+    pkg_dir: Path,
+    *,
+    package_id: str,
+    name: str,
+    description: str,
+    persona: str,
+    skill_names: list[str],
+    mcp_names: list[str],
+    quick_inputs: list[dict[str, str]],
+    tags: list[dict[str, str]],
+) -> None:
+    """(Re)write an agent_template package directory under an existing pkg_dir.
+
+    Overwrites persona + skills + manifest in place. Any failure leaves the
+    caller to decide rollback; this helper does not touch the marketplace.
+    """
+    persona_dir = pkg_dir / "persona"
+    persona_dir.mkdir(parents=True, exist_ok=True)
+    (persona_dir / f"{package_id}.md").write_text(persona, encoding="utf-8")
+    _copy_workspace_skills(pkg_dir, skill_names)
+    manifest = {
+        "package_type": "agent_template",
+        "name": name,
+        "description": description,
+        "persona": {"dir": "./persona"},
+        "display_name": {"zh": name, "en": name},
+        "display_description": {"zh": description, "en": description},
+        "skills": _skills_manifest_entries(skill_names),
+    }
+    if mcp_names:
+        manifest["mcps"] = [{"connector": n} for n in mcp_names]
+    if quick_inputs:
+        manifest["quick_inputs"] = quick_inputs
+    if tags:
+        manifest["tags"] = tags
+    _write_json(pkg_dir / "manifest.json", manifest)
+
+
 def create_agent_template(params: dict) -> None:
     """Create a local expert package."""
     if not isinstance(params, dict):
@@ -2113,26 +2178,17 @@ def create_agent_template(params: dict) -> None:
     local_root.mkdir(parents=True, exist_ok=True)
     try:
         pkg_dir.mkdir(parents=False, exist_ok=False)
-        persona_dir = pkg_dir / "persona"
-        persona_dir.mkdir()
-        (persona_dir / f"{package_id}.md").write_text(persona, encoding="utf-8")
-        _copy_workspace_skills(pkg_dir, skill_names)
-        manifest = {
-            "package_type": "agent_template",
-            "name": name,
-            "description": description,
-            "persona": {"dir": "./persona"},
-            "display_name": {"zh": name, "en": name},
-            "display_description": {"zh": description, "en": description},
-            "skills": _skills_manifest_entries(skill_names),
-        }
-        if mcp_names:
-            manifest["mcps"] = [{"connector": n} for n in mcp_names]
-        if quick_inputs:
-            manifest["quick_inputs"] = quick_inputs
-        if tags:
-            manifest["tags"] = tags
-        _write_json(pkg_dir / "manifest.json", manifest)
+        _write_agent_template_package(
+            pkg_dir,
+            package_id=package_id,
+            name=name,
+            description=description,
+            persona=persona,
+            skill_names=skill_names,
+            mcp_names=mcp_names,
+            quick_inputs=quick_inputs,
+            tags=tags,
+        )
     except Exception:
         if pkg_dir.exists():
             shutil.rmtree(pkg_dir, ignore_errors=True)
@@ -2140,6 +2196,70 @@ def create_agent_template(params: dict) -> None:
     upsert_agent_template_marketplace_entry(
         package_id, installed=False, source="local"
     )
+
+
+def update_agent_template(params: dict) -> None:
+    """Update a user-created (local) expert package in place.
+
+    Reuses the create field validation and rewrites persona/skills/manifest,
+    preserving the package id and its marketplace installed/source state.
+    Only ``local`` packages are editable; built_in/resources are read-only.
+    """
+    if not isinstance(params, dict):
+        raise ValueError("invalid params")
+    package_id = _reject_package_name(params.get("id"), "agent_template")
+    name = _require_nonempty_str(params, "name")
+    description = _require_nonempty_str(params, "description")
+    persona = _require_nonempty_str(params, "persona")
+    skill_names = _require_skill_names(params)
+    mcp_names = _require_mcp_names(params)
+    quick_inputs = _require_quick_inputs(params)
+    tags = _require_tags(params)
+
+    local_root = _local_root(_AGENT_TEMPLATE_KIND)
+    pkg_dir = local_root / package_id
+    if not pkg_dir.is_dir():
+        raise ValueError(f"agent_template not found: {package_id}")
+
+    # Failures in the in-place rewrite propagate to the caller unchanged; there
+    # is no partial state to clean up here (unlike create, which removes a
+    # freshly created package directory on error).
+    _write_agent_template_package(
+        pkg_dir,
+        package_id=package_id,
+        name=name,
+        description=description,
+        persona=persona,
+        skill_names=skill_names,
+        mcp_names=mcp_names,
+        quick_inputs=quick_inputs,
+        tags=tags,
+    )
+    # Preserve existing marketplace installed/source state; default local/uninstalled
+    # when the entry is missing (e.g. edited before first install).
+    existing = next(
+        (entry for entry in read_agent_template_marketplace_entries() if entry.get("id") == package_id),
+        {},
+    )
+    installed = bool(existing.get("installed", False))
+    upsert_agent_template_marketplace_entry(
+        package_id, installed=installed, source="local"
+    )
+
+
+def delete_agent_template(params: dict) -> None:
+    """Permanently delete a user-created (local) expert package.
+
+    Unlike ``uninstall_agent_template`` (which only marks the package
+    uninstalled but keeps the definition), this removes the local package
+    directory and its marketplace entry irreversibly.
+    """
+    package_id = _lifecycle_package_id(params, "agent_template")
+    pkg_dir = _local_root(_AGENT_TEMPLATE_KIND) / package_id
+    if not pkg_dir.is_dir():
+        raise ValueError(f"agent_template not found: {package_id}")
+    _rmtree(pkg_dir)
+    remove_agent_template_marketplace_entry(package_id)
 
 
 def _require_agent_group_members(params: dict) -> tuple[str, list[str]]:

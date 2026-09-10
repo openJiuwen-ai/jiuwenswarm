@@ -15,6 +15,7 @@ import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 
 type AgentEditorProps = {
   draft: AgentDraft;
+  mode?: 'create' | 'edit';
   skillOptions: SkillOption[];
   skillsStatus: RequestStatus;
   mcpOptions: McpOption[];
@@ -40,6 +41,7 @@ const MCP_TYPE_OPTIONS = [
 
 export function AgentEditor({
   draft,
+  mode = 'create',
   skillOptions,
   skillsStatus,
   mcpOptions,
@@ -245,7 +247,7 @@ export function AgentEditor({
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
       <div className="agent-management-editor__inner">
       <header className="agent-management-editor__header">
-        <h1>{t('agentManagement.form.title')}</h1>
+        <h1>{mode === 'edit' ? t('agentManagement.form.editTitle') : t('agentManagement.form.title')}</h1>
         <div className="agent-management-editor__tabs" role="tablist" aria-label={t('agentManagement.form.createTabsLabel')}>
           <span className="is-active" role="tab" aria-selected="true">
             {t('agentManagement.form.createAgentTab')}
@@ -556,7 +558,7 @@ export function AgentEditor({
       {error ? <div className="agent-management-form-error agent-management-form-error--submit" role="alert">{error}</div> : null}
       <footer className="agent-management-editor__footer">
         <button type="button" className="agent-management-button agent-management-button--secondary" onClick={onCancel} disabled={saving}>{t('common.cancel')}</button>
-        <button type="submit" className="agent-management-button agent-management-button--primary" disabled={saving}>{saving ? t('common.saving') : t('common.confirm')}</button>
+        <button type="submit" className="agent-management-button agent-management-button--primary" disabled={saving}>{saving ? (mode === 'edit' ? t('agentManagement.actions.updating') : t('common.saving')) : t('common.confirm')}</button>
       </footer>
 
       {skillDialogOpen ? createPortal(

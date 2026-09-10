@@ -95,6 +95,7 @@ export function normalizeAgentTemplateDetail(raw: RawAgentTemplateDetail, locale
     ...base,
     prompt: raw.prompt || '',
     details: raw.details || '',
+    persona: raw.persona || '',
     skills: (raw.skills || []).map((item) => normalizeCapability(item, locale)),
     tools: (raw.tools || []).map((item) => normalizeCapability(item, locale)),
     rails: (raw.rails || []).map((item) => normalizeCapability(item, locale)),

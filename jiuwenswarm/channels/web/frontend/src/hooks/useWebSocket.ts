@@ -1332,13 +1332,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           documents: mediaItems.map((item) => ({
             filename: item.filename,
             mime_type: getMediaMimeType(item),
-            path: item.path,
-            original_path: item.path,
+            // 桌面端传本机路径；浏览器端（Docker/远程）传 base64 内容由服务器落盘。
+            ...(item.path ? { path: item.path, original_path: item.path } : {}),
+            ...(item.base64Data || item.base64_data
+              ? { base64_data: item.base64Data || item.base64_data }
+              : {}),
             size_bytes: item.size_bytes ?? item.sizeBytes,
           })),
         },
-        // Path validation only — no base64 transfer / parse
-        { timeoutMs: 30_000 },
+        // Base64 内容上传可能超过默认超时
+        { timeoutMs: 60_000 },
       );
     },
     [request],

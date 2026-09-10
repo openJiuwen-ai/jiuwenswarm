@@ -535,7 +535,9 @@ function getDocumentValidationError(
   if (file && !isDocumentFile(file)) {
     return t('chat.inputAttachment.unsupportedFileType', { name: filename });
   }
-  if (!getLocalFilePath(file, options?.localPath)) {
+  // 桌面端依赖本机绝对路径；浏览器端（Docker/远程，无服务器侧路径）由 base64 内容上传，
+  // 因此没有本地路径时只要携带浏览器 File 即视为可上传。
+  if (!getLocalFilePath(file, options?.localPath) && !file) {
     return t('chat.inputAttachment.localPathUnavailable', { name: filename });
   }
   return null;
@@ -1133,10 +1135,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     updateAttachment(attachment.id, { status: 'uploading', error: undefined });
 
-    // Documents: validate local path only — no base64 transfer / no disk persist / no parse.
+    // Documents: desktop 走本机路径；浏览器（Docker/远程）走 base64 内容上传。
     if (attachment.kind === 'document') {
       const localPath = getLocalFilePath(attachment.file, attachment.localPath);
-      if (!localPath) {
+      const browserFile = attachment.file && !localPath ? attachment.file : undefined;
+      if (!localPath && !browserFile) {
         const error = t('chat.inputAttachment.localPathUnavailable', { name: attachment.filename || t('chat.inputAttachment.unnamedFile') });
         pushAttachmentAlert(error);
         updateAttachment(attachment.id, { status: 'error', error });
@@ -1144,29 +1147,35 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }
       void (async () => {
         if (!canPersistAttachments) {
+          // 新会话尚无服务器侧会话路径：浏览器端无法获得 persistedMediaItem.path，
+          // 需携带 base64 作为发送载体，否则附件进不了 ready 列表、发送按钮保持灰色。
+          const base64Payload = browserFile ? await readBinaryFileAsBase64(browserFile) : null;
           updateAttachment(attachment.id, {
             persistedMediaItem: {
               type: 'document',
               filename: attachment.filename,
               mime_type: attachment.mimeType,
-              path: localPath,
-              original_path: localPath,
+              ...(localPath ? { path: localPath, original_path: localPath } : {}),
               size_bytes: attachment.size,
             },
+            ...(base64Payload?.base64Data ? { base64Data: base64Payload.base64Data } : {}),
             status: 'ready',
             error: undefined,
           });
           return;
         }
         try {
+          // 浏览器端没有服务器侧路径：读取为 base64，交给 document.persist 落盘到注入目录。
+          const base64Payload = browserFile ? await readBinaryFileAsBase64(browserFile) : null;
           const persisted = await onPersistDocuments('', [
             {
               type: 'document',
               mimeType: attachment.mimeType,
               filename: attachment.filename,
-              path: localPath,
               sizeBytes: attachment.size,
               size_bytes: attachment.size,
+              ...(localPath ? { path: localPath } : {}),
+              ...(base64Payload?.base64Data ? { base64Data: base64Payload.base64Data } : {}),
             },
           ]);
           const persistedMediaItem = persisted.media_items?.[0];
@@ -1411,9 +1420,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const openAttachmentPicker = useCallback(async () => {
     if (imageInputDisabled) return;
     setAttachMenuOpen(false);
-    // 文档上传依赖本机绝对路径：桌面 pywebview 或浏览器后端 path.select_files。
-    // 不要回落 HTML <input type="file">，浏览器拿不到 File.path，只会得到
-    // 「无法获取本地文件路径」的假失败。
+    // 文档上传优先走本机绝对路径：桌面 pywebview 或浏览器后端 path.select_files。
+    // 在无 GUI 的 Docker / 远程服务器部署下，后端原生文件对话框不可用（返回
+    // unsupported/failed），此时回退到浏览器 HTML <input type="file">，由浏览器
+    // 在本机弹选择框，文件内容以 base64 上传到服务器（图片走 media.persist，
+    // 文档走 document.persist 的 base64 分支）。
     const result = await selectLocalFiles(true);
     if (result.ok) {
       appendLocalFilePicks(result.files);
@@ -1422,11 +1433,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (result.reason === 'cancelled') {
       return;
     }
-    const hint =
-      result.reason === 'unsupported'
-        ? t('chat.inputAttachment.filePickerUnsupported')
-        : (result.message || t('chat.inputAttachment.filePickerFailed'));
-    pushAttachmentAlert(hint);
+    // 原生选择器不可用（Docker/远程/无 GUI）：回退浏览器文件选择器。
+    fileInputRef.current?.click();
   }, [appendLocalFilePicks, imageInputDisabled, pushAttachmentAlert, t]);
 
   const acceptExternalLocalFilePicks = useCallback(
@@ -1472,6 +1480,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (!attachMenuOpen) return;
 
     const handlePointerDown = (event: PointerEvent) => {
+      // 授权/连接弹窗（ConnectTokenModal/CliAuthModal）现在 createPortal 到 document.body，不在
+      // 下面任何 ref 的子树内——靠 data-connector-auth-modal 识别“点的是弹窗内部”，跳过关闭（与
+      // ExtensionPickerPanel.tsx 的同款监听一致；bug 2026091001-001 portal 化后的回归修复）。
+      if ((event.target as HTMLElement | null)?.closest?.('[data-connector-auth-modal]')) return;
       if (
         !attachMenuRef.current?.contains(event.target as Node) &&
         !attachMenuPortalRef.current?.contains(event.target as Node) &&
@@ -3406,7 +3418,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 document.body
               )}
             </div>
-          <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+          {!isTeamMode && (
+            <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+          )}
 
           {selectedAgentId && (
             <div className="chat-agent-tag">

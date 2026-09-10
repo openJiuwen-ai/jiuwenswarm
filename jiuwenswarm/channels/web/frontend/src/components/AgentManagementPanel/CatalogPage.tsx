@@ -35,6 +35,7 @@ type CatalogPageProps = {
   onReconnect: (id: string) => void;
   onInstall: (id: string) => void;
   onUninstall: (id: string) => void;
+  onEdit: (id: string) => void;
   onCreate: () => void;
 };
 
@@ -57,6 +58,7 @@ export function CatalogPage({
   onReconnect,
   onInstall,
   onUninstall,
+  onEdit,
   onCreate,
 }: CatalogPageProps) {
   const { t } = useTranslation();
@@ -125,6 +127,7 @@ export function CatalogPage({
                   onReconnect={onReconnect}
                   onInstall={onInstall}
                   onUninstall={onUninstall}
+                  onEdit={onEdit}
                 />
               ))}
             </div>
