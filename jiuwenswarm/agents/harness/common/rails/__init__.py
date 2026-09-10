@@ -16,6 +16,12 @@ from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimeP
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
 )
+from jiuwenswarm.agents.harness.common.rails.prompt_optimizer_prompt_rail import (
+    PromptOptimizerPromptRail,
+)
+from jiuwenswarm.agents.harness.common.rails.prompt_optimizer_review_rail import (
+    PromptOptimizerReviewRail,
+)
 from jiuwenswarm.agents.harness.team.rails.team_member_skill_toolkit_rail import (
     MemberSkillToolkitRail,
 )
@@ -33,6 +39,8 @@ __all__ = [
     "ResponsePromptRail",
     "RuntimePromptRail",
     "SymphonyOrchestrationRail",
+    "PromptOptimizerPromptRail",
+    "PromptOptimizerReviewRail",
     "MemberSkillToolkitRail",
     "StructuredAskUserRail",
 ]

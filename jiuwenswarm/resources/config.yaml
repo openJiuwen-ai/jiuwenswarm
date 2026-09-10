@@ -81,6 +81,38 @@ symphony:
     # Index construction uses the default configured model. An optional llm
     # mapping can override model, api_key, base_url and seed for this builder.
 
+  # RLAF-P runtime prompt optimizer: iteratively improves system prompts via an
+  # LLM policy + reward feedback loop (no weight training). See docs/prompt-optimization.md.
+  optimization:
+    enabled: false
+    candidate_prompts: 5            # candidate system prompts generated per iteration
+    max_iterations: 6
+    parallel_execution: true        # execute candidate prompts concurrently
+    convergence_threshold: 0.01     # min reward gain that counts as an improvement
+    convergence_window: 3           # stop after K iterations with no improvement
+    drift_penalty: 0.5              # penalty weight applied to semantic drift from the objective
+    min_correctness: 0.5            # hard gate: below this, reward is floored (anti reward-hacking)
+    memory_enabled: true
+    memory_dir: ""                  # default: <workspace>/symphony/optimization/prompt_kb
+    policy_temperature: 0.9
+    reward_weights:                 # CompositeReward component weights (normalized internally)
+      correctness: 1.0
+      completeness: 0.3
+      latency: 0.1
+      token_usage: 0.1
+      cost: 0.0
+      structured_validation: 0.0
+    models:
+      policy_model: ""              # "" => JiuwenSwarm default model
+      environment_model: ""
+      judge_model: ""               # correctness + drift judges
+    embedding:                      # prompt-memory embeddings (reuses EmbeddingClient)
+      base_url: ""
+      api_key: ""
+      model: ""
+      model_name: ""
+      dimension:
+
 # Auto Memory：对话结束后自动提取记忆，按项目隔离存储
 # 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/
 # 类似 Claude Code 的 auto-memory 功能
