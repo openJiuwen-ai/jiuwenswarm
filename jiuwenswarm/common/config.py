@@ -1447,7 +1447,7 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
             "timeout": 1800,
             "verify_ssl": False,
         },
-        "model_config_obj": {"temperature": 0.95},
+        "model_config_obj": {},
     }
     if alias:
         entry["alias"] = alias
@@ -1534,7 +1534,7 @@ def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
                     "client_provider": "${MODEL_PROVIDER}",
                     "endpoint_profile": "${ENDPOINT_PROFILE:-openai}",
                 },
-                "model_config_obj": {"temperature": 0.95},
+                "model_config_obj": {},
                 "is_default": True,
             }]
         models["defaults"] = defaults_list
