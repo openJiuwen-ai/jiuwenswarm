@@ -3445,7 +3445,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 document.body
               )}
             </div>
-          <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+          {!isTeamMode && (
+            <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+          )}
 
           {selectedAgentId && (
             <div className="chat-agent-tag">
