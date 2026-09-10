@@ -61,6 +61,7 @@ agent_profiles:
         - _permission_rail
         - _context_processor_rail
         - _ask_user_rail
+        - _filesystem_rail        # SysOperationRail: init() registers ReadFile/WriteFile/EditFile/Glob/ListDir/Grep/Bash tools; dropping it leaves the agent with NO file/shell tools
 ```
 
 - `default` values: `flash` → default to trimmed mode; `normal` → default to full mode; omit or `null` → no profile activated (uses global `react`, equivalent to normal).

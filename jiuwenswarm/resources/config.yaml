@@ -1613,6 +1613,7 @@ agent_profiles:
         - _permission_rail
         - _context_processor_rail
         - _ask_user_rail
+        - _filesystem_rail        # SysOperationRail: registers ReadFile/WriteFile/EditFile/Glob/ListDir/Grep/Bash tools in init(); dropping it leaves the agent with NO file/shell tools
   # breed_map:
   #   agent-normal: normal
   #   agent-flash: flash
