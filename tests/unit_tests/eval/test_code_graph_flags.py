@@ -81,10 +81,52 @@ def test_product_template_defaults_code_graph_off() -> None:
     path = REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert data["code_graph"]["profile"] == PROFILE_OFF
+    assert data["code_graph"]["agent"] == "root"
     flags = resolve_code_graph_flags(data)
     assert flags.enabled is False
     assert flags.on_root is False
     assert flags.on_code_agent is False
+
+
+_FOCUSED_PRODUCT_TOOLS = (
+    "resolve_symbol",
+    "find_code_symbols",
+    "search_source_text",
+    "inspect_code_structure",
+    "focus_code",
+)
+_CLASSIC_ONLY_TOOLS = (
+    "find_callers",
+    "find_callees",
+    "read_symbol",
+    "read_code",
+    "select_code_context",
+    "submit_code_context",
+    "trace_call_paths",
+)
+
+
+def test_product_template_security_table_lists_focused_tools() -> None:
+    import yaml
+
+    path = REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    tools = data["permissions"]["tools"]
+    for name in _FOCUSED_PRODUCT_TOOLS:
+        assert tools.get(name) == "allow"
+    for name in _CLASSIC_ONLY_TOOLS:
+        assert name not in tools
+
+
+def test_product_template_code_graph_is_sibling_after_react() -> None:
+    text = (REPO_ROOT / "jiuwenswarm" / "resources" / "config.yaml").read_text(
+        encoding="utf-8"
+    )
+    react_at = text.find("\nreact:\n")
+    graph_at = text.find("\ncode_graph:\n")
+    tools_at = text.find("\ntools:\n")
+    assert 0 < react_at < graph_at < tools_at
+    assert "retrieval_interface" not in text.split("\ncode_graph:\n", 1)[1].split("\ntools:\n", 1)[0]
 
 
 def test_profile_is_read_from_config() -> None:
@@ -98,14 +140,6 @@ def test_bool_profile_is_off() -> None:
     assert resolve_code_graph_flags({"code_graph": {"profile": False}}).profile == PROFILE_OFF
 
 
-def test_unknown_profile_including_retropus_falls_back_to_off() -> None:
-    for spelling in ("retropus", "on", "default", "query"):
-        assert (
-            resolve_code_graph_flags({"code_graph": {"profile": spelling}}).profile
-            == PROFILE_OFF
-        )
-
-
 def test_legacy_commit_guard_yaml_is_ignored() -> None:
     flags = resolve_code_graph_flags(
         {"code_graph": {"profile": "graph", "require_context_commit_before_edit": True}}
@@ -115,10 +149,11 @@ def test_legacy_commit_guard_yaml_is_ignored() -> None:
 
 
 def test_unknown_profile_falls_back_to_off() -> None:
-    assert (
-        resolve_code_graph_flags({"code_graph": {"profile": "nonsense"}}).profile
-        == PROFILE_OFF
-    )
+    for spelling in ("nonsense", "on", "default", "query"):
+        assert (
+            resolve_code_graph_flags({"code_graph": {"profile": spelling}}).profile
+            == PROFILE_OFF
+        )
 
 
 def test_missing_agent_hangs_on_code_agent() -> None:

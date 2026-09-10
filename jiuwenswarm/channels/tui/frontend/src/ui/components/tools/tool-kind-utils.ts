@@ -77,6 +77,13 @@ export function getStringArg(args: Record<string, unknown>, ...keys: string[]): 
   return undefined;
 }
 
+function formatRelationArg(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (!Array.isArray(value)) return undefined;
+  const parts = value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+  return parts.length ? parts.join(",") : undefined;
+}
+
 export function getNumericArg(
   args: Record<string, unknown>,
   ...keys: string[]
@@ -163,14 +170,7 @@ const CODE_GRAPH_TOOLS = new Set([
   "find_code_symbols",
   "search_source_text",
   "inspect_code_structure",
-  "read_symbol",
-  "read_code",
-  "find_callers",
-  "find_callees",
-  "find_importers",
-  "find_base_classes",
-  "find_subclasses",
-  "trace_call_paths",
+  "focus_code",
 ]);
 
 export function isCodeGraphTool(name: string): boolean {
@@ -185,11 +185,14 @@ export function summarizeCodeGraphArguments(
     getStringArg(args, "name", "query", "symbol_id", "file", "path", "parent_symbol") ??
     (typeof args.symbol_id === "string" ? args.symbol_id : undefined);
   const direction = getStringArg(args, "direction");
+  const relations = formatRelationArg(args.include_relations ?? args.relations);
   const short = primary ? summarize(primary, 56) : undefined;
-  if (name.toLowerCase() === "trace_call_paths" && direction && short) {
-    return `${short} ${direction}`;
+  if (name.toLowerCase() === "focus_code" && relations && short) {
+    return `${short} ${relations}`;
   }
-  if (name.toLowerCase() === "trace_call_paths" && direction) return direction;
+  if (name.toLowerCase() === "focus_code" && relations) return relations;
+  if (direction && short) return `${short} ${direction}`;
+  if (direction) return direction;
   return short;
 }
 

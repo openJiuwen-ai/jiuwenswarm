@@ -29,6 +29,7 @@
   - [Task Memory](TaskMemory.md)
   - [Context Compression](ContextCompression.md)
   - [Coding Memory](CodingMemory.md)
+  - [Code Graph](CodeGraph.md)
   - [Skills](Skills.md)
   - [Symphony](symphony.md)
   - [Team Skills](SwarmSkills.md)

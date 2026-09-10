@@ -101,6 +101,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">System parameters, LLM APIs, and runtime environment configuration.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Code Graph</strong></td>
+      <td width="28%"><a href="en/CodeGraph.md">Code Graph</a></td>
+      <td width="50%">Index-based code retrieval: focused tools, mount point, and build caps.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Browser Service</strong></td>
       <td width="28%"><a href="en/Browser.md">Browser</a></td>
       <td width="50%">Web access, information retrieval, and browser tool invocation capabilities.</td>

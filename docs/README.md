@@ -111,6 +111,11 @@
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Code Graph</strong></td>
+      <td width="28%"><a href="zh/CodeGraph.md">Code Graph 代码检索</a></td>
+      <td width="50%">基于仓库索引的代码检索：focused 工具、挂载点与建图上限。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>浏览器服务</strong></td>
       <td width="28%"><a href="zh/浏览器.md">浏览器</a></td>
       <td width="50%">网页访问、信息获取与浏览器工具调用能力。</td>

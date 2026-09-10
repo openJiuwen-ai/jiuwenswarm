@@ -1980,7 +1980,7 @@ def test_config_panel_flatten_reads_code_graph_knobs():
 
 def test_config_panel_flatten_code_graph_defaults_and_unknown_values():
     unknown = app_web_handlers._flatten_code_graph_for_config_panel(
-        {"code_graph": {"profile": "retropus", "agent": "nope"}}
+        {"code_graph": {"profile": "nonsense", "agent": "nope"}}
     )
     missing = app_web_handlers._flatten_code_graph_for_config_panel({})
 
@@ -2042,6 +2042,43 @@ async def test_config_set_routes_code_graph_payload_to_config_helper(monkeypatch
     assert recorded == [{"profile": "graph", "agent": "root", "max_files": 100}]
     assert channel.responses[-1]["ok"] is True
     assert "code_graph_profile" in channel.responses[-1]["payload"]["updated"]
+
+
+def test_web_config_panel_profile_is_off_or_graph_only() -> None:
+    from pathlib import Path
+
+    panel = (
+        Path(__file__).resolve().parents[3]
+        / "jiuwenswarm/channels/web/frontend/src/components/ConfigPanel/index.tsx"
+    ).read_text(encoding="utf-8")
+    start = panel.index("code_graph_profile: [")
+    block = panel[start : panel.index("code_graph_agent:", start)]
+    assert 'value: "off"' in block
+    assert 'value: "graph"' in block
+    assert "classic" not in block
+    assert "focused" not in block
+    assert "retrieval_interface" not in panel
+
+
+def test_web_permissions_tool_help_covers_focused_tools() -> None:
+    import json
+    from pathlib import Path
+
+    locales = Path(__file__).resolve().parents[3] / "jiuwenswarm/channels/web/frontend/src/i18n/locales"
+    focused = (
+        "resolve_symbol",
+        "find_code_symbols",
+        "search_source_text",
+        "inspect_code_structure",
+        "focus_code",
+    )
+    for name in ("zh.json", "en.json"):
+        help_map = json.loads((locales / name).read_text(encoding="utf-8"))["config"][
+            "permissionsTools"
+        ]["toolHelp"]
+        for tool in focused:
+            assert tool in help_map, f"{name} missing {tool}"
+        assert "find_callers" not in help_map
 
 
 def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():

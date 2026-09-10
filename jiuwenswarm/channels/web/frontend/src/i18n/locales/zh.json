@@ -1252,7 +1252,12 @@
         "read_file": "读取文件内容（文本、图片、PDF、Notebook 等）。",
         "read": "文件读取类工具的权限别名（常对应 read_file）。",
         "acp_chat": "向配置中的外部 ACP Agent 子进程发送消息。",
-        "grep": "在工作区文件中搜索匹配内容。"
+        "grep": "在工作区文件中搜索匹配内容。",
+        "resolve_symbol": "按精确符号名解析定义位置（Code Graph focused）。",
+        "find_code_symbols": "按模糊名搜索符号候选，再对候选调用 focus_code。",
+        "search_source_text": "按字面量检索源码（报错、配置键、decorator）。",
+        "inspect_code_structure": "查看文件或类的结构概览。",
+        "focus_code": "打开符号源码窗口；需要关系时打开 include_relations。"
       }
     },
     "proactive": {
