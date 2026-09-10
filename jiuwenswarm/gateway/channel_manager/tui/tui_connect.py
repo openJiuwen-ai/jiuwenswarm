@@ -1176,7 +1176,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                                 "model_name": "${MODEL_NAME}",
                                 "client_provider": "${MODEL_PROVIDER}",
                             },
-                            "model_config_obj": {"temperature": 0.95},
+                            "model_config_obj": {},
                             "is_default": True,
                         }]
                         _models["defaults"] = _defs
@@ -2746,8 +2746,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 client_cfg["verify_ssl"] = False
             if "timeout" not in client_cfg:
                 client_cfg["timeout"] = 1800
-            if "temperature" not in model_config_obj:
-                model_config_obj["temperature"] = 0.95
             # target 作为 model_name 的回退：若未通过 model= 参数指定，则以 target 为准
             if not client_cfg.get("model_name"):
                 client_cfg["model_name"] = target
@@ -2807,7 +2805,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                                 "model_name": "${MODEL_NAME}",
                                 "client_provider": "${MODEL_PROVIDER}",
                             },
-                            "model_config_obj": {"temperature": 0.95},
+                            "model_config_obj": {},
                             "is_default": True,
                         }]
                         models["defaults"] = _raw_defs
@@ -3278,7 +3276,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                             "api_base": "${API_BASE}", "api_key": "${API_KEY}",
                             "model_name": "${MODEL_NAME}", "client_provider": "${MODEL_PROVIDER}",
                         },
-                        "model_config_obj": {"temperature": 0.95}, "is_default": True,
+                        "model_config_obj": {}, "is_default": True,
                     }]
                     models["defaults"] = _raw_defaults
                     models.pop("default", None)
@@ -3434,7 +3432,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     "api_base": mcc.get("api_base", ""),
                     "api_key": mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature", 0.95),
+                    "temperature": mco.get("temperature"),
                     "reasoning_level": "off" if mco.get("reasoning_level") is False else mco.get("reasoning_level", ""),
                     "alias": entry.get("alias", ""),
                     "context_window_tokens": context_window_tokens,
