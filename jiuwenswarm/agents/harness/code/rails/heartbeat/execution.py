@@ -235,6 +235,11 @@ class SessionRunAdmission:
     async def begin_user(self, session_id: str) -> None:
         await self._begin_interactive_user(session_id, team=False)
 
+    async def begin_control(self, session_id: str) -> None:
+        """Block new Heartbeats while input resumes existing Session work."""
+        async with self._condition:
+            self._state(session_id).active_users += 1
+
     async def begin_team_user(self, session_id: str) -> None:
         """Mark an interactive Team iteration without serializing its steers.
 
@@ -305,6 +310,9 @@ class SessionRunAdmission:
             state.active_users = max(0, state.active_users - 1)
             self._drop_idle_state(session_id, state)
             self._condition.notify_all()
+
+    async def end_control(self, session_id: str) -> None:
+        await self.end_user(session_id)
 
     async def try_begin_heartbeat(self, session_id: str, run_id: str) -> bool:
         async with self._condition:
@@ -447,23 +455,23 @@ class HeartbeatExecutionService:
                 user_id=str(request_message.user_id or ""),
                 agent_ref=request_message.agent_ref,
             )
-            execution_deadline = asyncio.timeout(self._execution_timeout_seconds)
-            try:
-                async with execution_deadline:
-                    await self._server.execute_internal_heartbeat(request)
-            except TimeoutError:
-                if not execution_deadline.expired():
-                    raise
-                outcome = "failed"
-                timeout = self._execution_timeout_seconds
-                error = f"heartbeat execution timed out after {timeout:g} seconds"
-                logger.error(
-                    "[HeartbeatExecution] run timed out: "
-                    "job=%s run=%s timeout=%.3fs",
-                    job.id,
-                    run_id,
-                    timeout,
-                )
+
+            async def execute() -> None:
+                # The deadline belongs inside the managed execution. Otherwise
+                # Runtime would record CANCELLED while the store records FAILED.
+                execution_deadline = asyncio.timeout(self._execution_timeout_seconds)
+                try:
+                    async with execution_deadline:
+                        await self._server.execute_internal_heartbeat(request)
+                except TimeoutError as exc:
+                    if not execution_deadline.expired():
+                        raise
+                    timeout = self._execution_timeout_seconds
+                    raise TimeoutError(
+                        f"heartbeat execution timed out after {timeout:g} seconds"
+                    ) from exc
+
+            await self._server.get_runtime().run_heartbeat(request, execute)
         except asyncio.CancelledError:
             outcome = "cancelled"
             if run_id in self._user_preempted_runs:

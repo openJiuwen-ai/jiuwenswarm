@@ -323,17 +323,18 @@ class AgentRuntime:
     async def _mark_pending_interaction(self, event: RuntimeEvent) -> None:
         if event.event_type != "chat.ask_user_question":
             return
-        marker = getattr(
-            self._admission_controller,
-            "mark_interaction_pending",
-            None,
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        await self._mark_pending_interaction_id(
+            event.session_id or "default",
+            str(payload.get("request_id") or ""),
         )
+
+    async def _mark_pending_interaction_id(
+        self, session_id: str, request_id: str
+    ) -> None:
+        marker = getattr(self._admission_controller, "mark_interaction_pending", None)
         if callable(marker):
-            payload = event.payload if isinstance(event.payload, dict) else {}
-            await marker(
-                event.session_id or "default",
-                str(payload.get("request_id") or ""),
-            )
+            await marker(session_id, request_id)
 
     async def _clear_pending_interaction(
         self, session_id: str, request_id: str | None = None
@@ -764,12 +765,7 @@ class AgentRuntime:
             if work_kind is not None:
                 await self._ensure_session_registered(request)
                 if self._has_control_target(request):
-                    return await self._session_coordinator.deliver_control(
-                        request.session_id or "default",
-                        self._control_request_id(request),
-                        lambda: self._deliver_control_started(request),
-                        suspension_key=self._waiting_control_id,
-                    )
+                    return await self._deliver_control(request)
                 return await self._session_coordinator.run_unary(
                     request.session_id or "default",
                     request.request_id,
@@ -985,6 +981,41 @@ class AgentRuntime:
             on_control_event=on_control_event,
         )
 
+    async def run_heartbeat(
+        self,
+        request: AgentRequest,
+        operation: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Own one admitted Heartbeat, including its execution deadline.
+
+        The Heartbeat scheduler retains trigger/claim persistence and admission.
+        The coordinator adopts the caller task, so its exact cancellation and
+        Session close also await the caller's durable run-finalization cleanup.
+        Do not enter the chat lane or foreground admission: an arriving user
+        must be able to preempt this background execution.
+        """
+        if not request.session_id:
+            raise ValueError("heartbeat session_id is required")
+        # Adopt before initialization. The callback's stream starts Runtime
+        # under the Heartbeat deadline, keeping cold startup cancellable too.
+        await self._ensure_session_registered(request)
+        from jiuwenswarm.runtime.context import (
+            reset_runtime_context,
+            set_runtime_context,
+        )
+
+        token = set_runtime_context(self, self._agent_manager)
+        try:
+            await self._session_coordinator.run_unary(
+                request.session_id,
+                request.request_id,
+                SessionWorkKind.HEARTBEAT,
+                operation,
+                wait_for_terminal=True,
+            )
+        finally:
+            reset_runtime_context(token)
+
     async def stream(
         self,
         request: AgentRequest,
@@ -1005,12 +1036,7 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if self._has_control_target(request):
-                events = await self._session_coordinator.deliver_control(
-                    request.session_id or "default",
-                    self._control_request_id(request),
-                    lambda: self._deliver_control_started(request),
-                    suspension_key=self._waiting_control_id,
-                )
+                events = await self._deliver_control(request)
                 for event in events:
                     yield event
                 return
@@ -1147,6 +1173,13 @@ class AgentRuntime:
                 ready_result = on_agent_ready(agent)
                 if inspect.isawaitable(ready_result):
                     await ready_result
+            managed_heartbeat = (
+                background
+                and self.is_single_agent_session_mode(
+                    (request.params or {}).get("mode"),
+                    work_mode=(request.params or {}).get("work_mode"),
+                )
+            )
             response_stream = agent.process_message_stream(request)
             try:
                 async for chunk in response_stream:
@@ -1157,7 +1190,22 @@ class AgentRuntime:
                         session_id=request.session_id,
                         default_agent_ref=request.agent_ref,
                     )
-                    await self._mark_pending_interaction(event)
+                    # A Heartbeat owns the entire callback, rather than this
+                    # nested output stream. Single-agent interaction answers
+                    # must still find its execution before the stream ends.
+                    if managed_heartbeat:
+                        control_id = self._waiting_control_id(event)
+                        if (
+                            control_id
+                            and not self._session_coordinator.record_interaction(
+                                request.session_id or "default",
+                                request.request_id,
+                                control_id,
+                            )
+                        ):
+                            continue
+                    else:
+                        await self._mark_pending_interaction(event)
                     yield event
                 kvc_task_succeeded = True
             finally:
@@ -1265,6 +1313,49 @@ class AgentRuntime:
                 metadata=request.metadata,
             )
 
+    async def _deliver_control(self, request: AgentRequest) -> list[RuntimeEvent]:
+        """Resume existing work while keeping later Heartbeats out."""
+        session_id = request.session_id or "default"
+        request_id = self._control_request_id(request)
+        heartbeat_control = (
+            self._session_coordinator.control_target_work_kind(
+                session_id, request_id
+            )
+            is SessionWorkKind.HEARTBEAT
+        )
+        begin_control = getattr(self._admission_controller, "begin_control", None)
+        end_control = getattr(self._admission_controller, "end_control", None)
+        admitted = callable(begin_control) and callable(end_control)
+        if admitted:
+            await begin_control(session_id)
+        try:
+            events = await self._session_coordinator.deliver_control(
+                session_id,
+                request_id,
+                lambda: self._deliver_control_started(request),
+                suspension_key=self._waiting_control_id,
+            )
+            if not heartbeat_control:
+                for event in events:
+                    control_id = self._waiting_control_id(event)
+                    if control_id and self._session_coordinator.has_control_target(
+                        session_id, control_id
+                    ):
+                        await self._mark_pending_interaction(event)
+            return events
+        except BaseException:
+            if (
+                not heartbeat_control
+                and self._session_coordinator.has_control_target(
+                    session_id, request_id
+                )
+            ):
+                await self._mark_pending_interaction_id(session_id, request_id)
+            raise
+        finally:
+            if admitted:
+                await end_control(session_id)
+
     async def _deliver_control_started(
         self,
         request: AgentRequest,
@@ -1294,15 +1385,14 @@ class AgentRuntime:
         response_stream = deliver(request)
         try:
             async for chunk in response_stream:
-                events.append(
-                    RuntimeEvent.from_agent_message(
-                        chunk,
-                        request_id=request.request_id,
-                        channel_id=channel_id,
-                        session_id=request.session_id,
-                        default_agent_ref=request.agent_ref,
-                    )
+                event = RuntimeEvent.from_agent_message(
+                    chunk,
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    session_id=request.session_id,
+                    default_agent_ref=request.agent_ref,
                 )
+                events.append(event)
         finally:
             close_stream = getattr(response_stream, "aclose", None)
             if callable(close_stream):

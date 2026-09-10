@@ -27,6 +27,7 @@ class SessionWorkKind(str, Enum):
     GOAL_CONTROL = "goal_control"
     GOAL_ATTACH = "goal_attach"
     CONTROL_INPUT = "control_input"
+    HEARTBEAT = "heartbeat"
 
     @property
     def scheduled(self) -> bool:
@@ -69,6 +70,8 @@ class SessionExecutionHandle:
     error: str | None = None
     cancellation_requested: bool = False
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
+    terminal_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    retain_task_while_waiting: bool = field(default=False, repr=False)
 
     def snapshot(self) -> SessionExecutionSnapshot:
         return SessionExecutionSnapshot(
