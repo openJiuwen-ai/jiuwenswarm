@@ -180,4 +180,4 @@ The extractor agent autonomously reads existing memory, analyzes the round, and 
 
 ## Retrieval
 
-Memory retrieval uses the configured external provider. For GaussPD, tool names, parameter schemas and execution come directly from the registered MCP server. See [Celia prompt and GaussPD integration](../zh/Celia新版MCP工具适配.md) for mounting and validation details.
+Memory retrieval uses the configured external provider. For Celia, tool names, parameter schemas and execution come directly from the registered MCP server. See [Celia prompt and Celia integration](../zh/Celia新版MCP工具适配.md) for mounting and validation details.

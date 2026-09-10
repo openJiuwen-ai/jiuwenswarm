@@ -167,11 +167,11 @@ def _memory_hook_extra(request: AgentRequest) -> dict[str, Any]:
 
     常规续聊只携带 ``session_id``，不会重复传 ``project_id``。项目归属已经在
     AgentServer 收包时写入 session metadata；Memory Hook 若只透传
-    ``request.params``，GaussPD 的 MemoryAdd 会退化到默认隔离桶。MCP Rail 已按
+    ``request.params``，Celia 的 MemoryAdd 会退化到默认隔离桶。MCP Rail 已按
     session metadata 取值，此处使用同一真源，保持两条记忆链路一致。
 
     ``project_id`` 与 ``project_dir`` 都优先采用本轮请求值。后者是桌面工作区
-    的稳定隔离候选值：旧桌面会话仍可能只有 ``project_id=default``，GaussPD
+    的稳定隔离候选值：旧桌面会话仍可能只有 ``project_id=default``，Celia
     胶水会在这种情况下以该目录作为动态 ``project_id``。
     """
     extra = dict(request.params) if isinstance(request.params, dict) else {}

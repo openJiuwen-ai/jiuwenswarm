@@ -177,7 +177,7 @@ memory:
     user_id: ${MEMORY_USER_ID:-openclaw-user}
     scope_id: ${MEMORY_SCOPE_ID:-user}
 
-    # -- Celia memory UI state; GaussPD tools use mcp.servers --
+    # -- Celia memory UI state; Celia tools use mcp.servers --
     celia:
       runtime_state_path: ${CELIA_XIAOYI_RUNTIME_PATH:-}
 
