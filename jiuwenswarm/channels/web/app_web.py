@@ -139,7 +139,7 @@ def _probe_identity_service(target: str, timeout: float = 3.0) -> tuple[bool, st
 
 def _probe_manager_service(target: str, timeout: float = 3.0) -> tuple[bool, str]:
     return _probe_http_service(
-        target, "/api/v1/user-console/gateways", "Manager业务接口", timeout
+        target, "/api/v1/user-console/agent-contexts", "Manager业务接口", timeout
     )
 
 

@@ -330,7 +330,7 @@
   z-index: 1500;
   left: 72px;
   bottom: 56px;
-  width: 240px;
+  width: 280px;
   padding: 14px;
   border: 1px solid var(--color-border-default);
   border-radius: 12px;
@@ -442,10 +442,92 @@
 }
 
 /* 企业版用户面：与主侧栏统一的克制弹层样式。 */
-.enterprise-context-popover { padding: 12px; border-radius: 12px; background: var(--color-surface-popover); box-shadow: var(--effect-shadow-lg); }
+.enterprise-context-popover { width: 280px; padding: 12px; border-radius: 12px; background: var(--color-surface-popover); box-shadow: var(--effect-shadow-lg); }
 .enterprise-context-popover__user { margin: 0 2px 8px; padding: 4px 4px 10px; font-size: 13px; }
+.enterprise-context-popover__modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 0 4px;
+  padding: 3px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface-card) 70%, transparent);
+}
+.enterprise-context-popover__mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+.enterprise-context-popover__mode--active {
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  box-shadow: var(--effect-shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+.enterprise-context-popover__mode-check {
+  color: #16a34a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.enterprise-context-popover__mode:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
 .enterprise-context-popover label { margin-top: 8px; font-size: 11px; }
 .enterprise-context-popover .editable-combobox { margin-top: 4px; }
+.enterprise-context-popover__input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  margin-top: 4px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 7px;
+  outline: none;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+.enterprise-context-popover__input:focus {
+  border-color: var(--color-action-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-action-primary) 16%, transparent);
+}
+.enterprise-context-popover__input:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.enterprise-context-popover__apply {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 7px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: center;
+}
+.enterprise-context-popover__apply:hover:not(:disabled) {
+  border-color: var(--color-action-primary);
+  color: var(--color-action-primary);
+}
+.enterprise-context-popover__apply:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
 .enterprise-context-popover__status { margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }
 .enterprise-context-popover__error { margin-top: 10px; color: var(--color-feedback-danger); font-size: 11px; line-height: 1.45; }
 .enterprise-context-popover__logout { width: 100%; margin-top: 12px; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: 7px; background: transparent; color: var(--color-feedback-danger); cursor: pointer; font-size: 12px; text-align: center; }

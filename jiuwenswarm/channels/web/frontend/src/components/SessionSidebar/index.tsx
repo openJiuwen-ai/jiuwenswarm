@@ -4,7 +4,7 @@
  * Redesigned sidebar with logo, navigation, and advanced config panel.
  */
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
 import ChannelIcon from '../../assets/sidebar/channel.svg?react';
@@ -21,10 +21,16 @@ import SkillDesignIcon from '../../assets/技能.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import MoreDesignIcon from '../../assets/更多.svg?react';
 import { webRequest } from '../../services/webClient';
-import { useEnterpriseContext } from '../../services/enterpriseContext';
+import {
+  agentContextKey,
+  formatAgentContextLabel,
+  useEnterpriseContext,
+} from '../../services/enterpriseContext';
 import { isClickOutside } from './clickOutside';
 import { EditableCombobox } from './EditableCombobox';
 import type { MainNavKey } from '../../features/mainNavigationState';
+
+type ContextMode = 'select' | 'custom';
 
 interface SessionSidebarProps {
   activeNav: MainNavKey;
@@ -156,6 +162,11 @@ export function SessionSidebar({
   const settingsRef = useRef<HTMLButtonElement>(null);
   const enterprise = useEnterpriseContext();
   const [contextOpen, setContextOpen] = useState(false);
+  const [contextMode, setContextMode] = useState<ContextMode>('select');
+  const [listSelectionKey, setListSelectionKey] = useState('');
+  const [customBotId, setCustomBotId] = useState('');
+  const [customGroupId, setCustomGroupId] = useState('');
+  const [customUserId, setCustomUserId] = useState('');
   const contextButtonRef = useRef<HTMLButtonElement>(null);
   const contextPanelRef = useRef<HTMLDivElement>(null);
 
@@ -213,6 +224,49 @@ export function SessionSidebar({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [contextOpen]);
 
+  useEffect(() => {
+    if (!enterprise || !contextOpen) return;
+    setCustomBotId(enterprise.selected.bot_id);
+    setCustomGroupId(enterprise.selected.group_id);
+    setCustomUserId(enterprise.selected.user_id);
+  }, [contextOpen, enterprise?.selected]);
+
+  const activeMode: ContextMode = useMemo(() => {
+    if (!enterprise) return 'select';
+    const selectedKey = agentContextKey(enterprise.selected);
+    return enterprise.contexts.some(item => agentContextKey(item) === selectedKey) ? 'select' : 'custom';
+  }, [enterprise]);
+
+  // 生效身份变化后（含自定义应用后刷新）自动落到对应页签，避免误以为还在「选择 Agent」。
+  useEffect(() => {
+    setContextMode(activeMode);
+  }, [activeMode]);
+
+  // 「选择 Agent」下拉只跟授权列表走；自定义生效时不预选第一项，
+  // 否则点选同一项时 combobox 认为值未变、不会触发切换。
+  useEffect(() => {
+    if (!enterprise?.contexts.length) return;
+    const selectedKey = agentContextKey(enterprise.selected);
+    if (enterprise.contexts.some(item => agentContextKey(item) === selectedKey)) {
+      setListSelectionKey(selectedKey);
+      return;
+    }
+    setListSelectionKey('');
+  }, [
+    enterprise?.contexts,
+    enterprise?.selected.bot_id,
+    enterprise?.selected.group_id,
+    enterprise?.selected.user_id,
+  ]);
+
+  const agentContextOptions = useMemo(
+    () =>
+      (enterprise?.contexts ?? []).map(item => ({
+        value: agentContextKey(item),
+        label: formatAgentContextLabel(item),
+      })),
+    [enterprise?.contexts],
+  );
   return (
     <aside className="sidebar sidebar--icon-rail">
       <div className="icon-rail-logo">
@@ -280,11 +334,11 @@ export function SessionSidebar({
           type="button"
           className={`icon-rail-nav-item${contextOpen ? ' icon-rail-nav-item--active' : ''}`}
           onClick={() => setContextOpen(open => !open)}
-          aria-label="用户上下文"
-          title="用户上下文"
+          aria-label={t('sessionSidebar.enterpriseContext.userContext')}
+          title={t('sessionSidebar.enterpriseContext.userContext')}
         >
           <span className="icon-rail-nav-item__icon">{(enterprise.user.display_name || enterprise.user.user_id).slice(0, 1).toUpperCase()}</span>
-          <span className="icon-rail-nav-item__label">用户</span>
+          <span className="icon-rail-nav-item__label">{t('sessionSidebar.enterpriseContext.user')}</span>
         </button>
       )}
       {enterprise && contextOpen && (
@@ -293,43 +347,112 @@ export function SessionSidebar({
             {enterprise.user.display_name || enterprise.user.user_id}
             <small>{enterprise.user.user_id}</small>
           </div>
-          <label>
-            组织（group_id）
-            <EditableCombobox
-              ariaLabel="组织（group_id）"
-              value={enterprise.org.group_id}
+          <div className="enterprise-context-popover__modes" role="tablist" aria-label={t('sessionSidebar.enterpriseContext.modeAria')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={contextMode === 'select'}
+              className={`enterprise-context-popover__mode${contextMode === 'select' ? ' enterprise-context-popover__mode--active' : ''}`}
               disabled={enterprise.contextSwitching}
-              options={enterprise.orgs.map(item => ({ value: item.group_id, label: `${item.name} · ${item.group_id}` }))}
-              onChange={enterprise.onOrgChange}
-            />
-          </label>
-          <label>
-            组网（gateway_id）
-            <EditableCombobox
-              ariaLabel="组网（gateway_id）"
-              value={enterprise.gateway.jiuwenclaw_id}
+              onClick={() => {
+                // 自定义生效时清空下拉，避免仍显示上次项导致再点同一项无反应。
+                if (activeMode === 'custom') setListSelectionKey('');
+                setContextMode('select');
+              }}
+            >
+              {t('sessionSidebar.enterpriseContext.selectAgent')}
+              {activeMode === 'select' && (
+                <span className="enterprise-context-popover__mode-check" aria-hidden>
+                  ✓
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={contextMode === 'custom'}
+              className={`enterprise-context-popover__mode${contextMode === 'custom' ? ' enterprise-context-popover__mode--active' : ''}`}
               disabled={enterprise.contextSwitching}
-              options={enterprise.gateways.map(item => ({ value: item.jiuwenclaw_id, label: `${item.jiuwenclaw_name} · ${item.jiuwenclaw_id}` }))}
-              onChange={enterprise.onGatewayChange}
-            />
-          </label>
-          <label>
-            Agent（bot_id）
-            <EditableCombobox
-              ariaLabel="Agent（bot_id）"
-              value={enterprise.selectedBot}
-              disabled={enterprise.contextSwitching}
-              options={enterprise.agents.map(item => ({
-                value: item.resource_id || item.template_id,
-                label: `${item.template_name} · ${item.resource_id || item.template_id}`,
-              }))}
-              onChange={enterprise.onBotChange}
-            />
-          </label>
-          {enterprise.contextSwitching && <div className="enterprise-context-popover__status">正在切换...</div>}
+              onClick={() => setContextMode('custom')}
+            >
+              {t('sessionSidebar.enterpriseContext.custom')}
+              {activeMode === 'custom' && (
+                <span className="enterprise-context-popover__mode-check" aria-hidden>
+                  ✓
+                </span>
+              )}
+            </button>
+          </div>
+          {contextMode === 'select' ? (
+            <label>
+              {t('sessionSidebar.enterpriseContext.agentOrgLabel')}
+              <EditableCombobox
+                ariaLabel={t('sessionSidebar.enterpriseContext.agentOrgLabel')}
+                emptyText={t('sessionSidebar.enterpriseContext.noMatch')}
+                placeholder={t('sessionSidebar.enterpriseContext.pleaseSelect')}
+                value={listSelectionKey}
+                disabled={enterprise.contextSwitching}
+                options={agentContextOptions}
+                onChange={key => {
+                  setListSelectionKey(key);
+                  enterprise.onContextChange(key);
+                }}
+              />
+            </label>
+          ) : (
+            <>
+              <label>
+                {t('sessionSidebar.enterpriseContext.botId')}
+                <input
+                  className="enterprise-context-popover__input"
+                  value={customBotId}
+                  disabled={enterprise.contextSwitching}
+                  onChange={event => setCustomBotId(event.target.value)}
+                  aria-label={t('sessionSidebar.enterpriseContext.botId')}
+                />
+              </label>
+              <label>
+                {t('sessionSidebar.enterpriseContext.groupId')}
+                <input
+                  className="enterprise-context-popover__input"
+                  value={customGroupId}
+                  disabled={enterprise.contextSwitching}
+                  onChange={event => setCustomGroupId(event.target.value)}
+                  aria-label={t('sessionSidebar.enterpriseContext.groupId')}
+                />
+              </label>
+              <label>
+                {t('sessionSidebar.enterpriseContext.userId')}
+                <input
+                  className="enterprise-context-popover__input"
+                  value={customUserId}
+                  disabled={enterprise.contextSwitching}
+                  onChange={event => setCustomUserId(event.target.value)}
+                  aria-label={t('sessionSidebar.enterpriseContext.userId')}
+                />
+              </label>
+              <button
+                type="button"
+                className="enterprise-context-popover__apply"
+                disabled={enterprise.contextSwitching}
+                onClick={() =>
+                  enterprise.onCustomContextApply({
+                    botId: customBotId,
+                    groupId: customGroupId,
+                    userId: customUserId,
+                  })
+                }
+              >
+                {t('sessionSidebar.enterpriseContext.apply')}
+              </button>
+            </>
+          )}
+          {enterprise.contextSwitching && (
+            <div className="enterprise-context-popover__status">{t('sessionSidebar.enterpriseContext.switching')}</div>
+          )}
           {enterprise.contextError && <div className="enterprise-context-popover__error">{enterprise.contextError}</div>}
           <button type="button" className="enterprise-context-popover__logout" onClick={enterprise.onLogout}>
-            注销登录
+            {t('sessionSidebar.enterpriseContext.logout')}
           </button>
         </div>
       )}
