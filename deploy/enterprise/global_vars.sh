@@ -112,6 +112,7 @@ declare -A DEPLOY_VARS=(
     ["CLAW_STORAGE_SIZE"]="1Gi"
     ["COLLECT_LOG_MASK_ENABLED"]="false"
     ["DB_TYPE"]="mysql"
+    ["DB_CONNECT_TIMEOUT"]="15"
     ["WEB_PORT"]="19000"
     ["GATEWAY_PORT"]="19001"
     ["GATEWAY_HTTP_PORT"]="19001"
@@ -236,7 +237,7 @@ declare -A DEPLOY_VARS=(
     ["AGENT_RUNTIME_LOG_LEVEL"]="INFO"
     ["WS_ALLOWED_ORIGINS"]=""
     ["WS_ORIGIN_CHECK_ENABLED"]="false"
-    ["CLAW_HOME"]="/home/app"
+    ["CLAW_HOME"]="/root"
     ["AGENT_SERVER_NAME"]="jiuwenclaw-agentserver"
     ["AGENT_SERVER_PORT"]="8766"
     ["AGENT_SERVER_SERVICE_CONCURRENCY"]="10"
@@ -250,6 +251,7 @@ declare -A DEPLOY_VARS=(
     ["JIUWENBOX_PORT"]="8321"
     ["JIUWENBOX_HOME"]="/home/app"
     ["APPLY_PATCH"]="false"
+    ["LOGIN_AUTH_SIMULATE"]="false"
 )
 
 declare -A OYR_COMPONENTS=(

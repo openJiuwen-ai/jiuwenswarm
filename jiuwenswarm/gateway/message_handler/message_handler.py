@@ -173,6 +173,16 @@ class ModeChangeCancelParams:
     new_mode_label: str
 
 
+@dataclass
+class StreamEmitParams:
+    """流式异常收尾补发(chat.error / chat.final)所需的具名参数(避免过长形参列表)。"""
+
+    request_id: str
+    channel_id: str
+    session_id: str | None
+    request_metadata: dict[str, Any] | None
+
+
 if TYPE_CHECKING:
     from jiuwenswarm.common.e2a.models import E2AEnvelope
     from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
@@ -3555,22 +3565,20 @@ class MessageHandler(FileTransferMixin, ABC):
 
     async def _publish_stream_cancelled_final(
         self,
-        request_id: str,
-        channel_id: str,
-        session_id: str | None,
-        request_metadata: dict[str, Any] | None,
+        params: StreamEmitParams,
     ) -> None:
         """流式任务被网关取消时补发 chat.final，带 is_complete（供飞书等通道合并缓冲）。"""
         from jiuwenswarm.common.schema.message import Message, EventType
 
+        request_metadata = params.request_metadata
         group_digital_avatar = bool(request_metadata.get("group_digital_avatar", False)) if request_metadata else False
         enable_memory = bool(request_metadata.get("enable_memory", True)) if request_metadata else True
 
         out = Message(
-            id=request_id,
+            id=params.request_id,
             type="event",
-            channel_id=channel_id,
-            session_id=session_id,
+            channel_id=params.channel_id,
+            session_id=params.session_id,
             params={},
             timestamp=time.time(),
             ok=True,
@@ -3587,42 +3595,40 @@ class MessageHandler(FileTransferMixin, ABC):
         await self.publish_robot_messages(out)
         logger.info(
             "[MessageHandler] 已发送流式取消结束帧: request_id=%s session_id=%s",
-            request_id,
-            session_id,
+            params.request_id,
+            params.session_id,
         )
 
     async def _publish_stream_connection_error(
         self,
-        request_id: str,
-        channel_id: str,
-        session_id: str | None,
-        request_metadata: dict[str, Any] | None,
+        params: StreamEmitParams,
         error: str,
+        code: str = "AGENT_SERVER_CONNECTION_CLOSED",
     ) -> None:
         """Publish a visible stream error when the AgentServer connection drops."""
         from jiuwenswarm.common.schema.message import Message, EventType
 
         out = Message(
-            id=request_id,
+            id=params.request_id,
             type="event",
-            channel_id=channel_id,
-            session_id=session_id,
+            channel_id=params.channel_id,
+            session_id=params.session_id,
             params={},
             timestamp=time.time(),
             ok=False,
             payload={
                 "event_type": EventType.CHAT_ERROR.value,
                 "error": error,
-                "code": "AGENT_SERVER_CONNECTION_CLOSED",
+                "code": code,
                 "is_complete": True,
             },
             event_type=EventType.CHAT_ERROR,
-            metadata=request_metadata,
+            metadata=params.request_metadata,
         )
         await self.publish_robot_messages(out)
         logger.warning(
             "[MessageHandler] Stream 因 AgentServer WebSocket 断开而结束: request_id=%s error=%s",
-            request_id,
+            params.request_id,
             error,
         )
 
@@ -4829,6 +4835,13 @@ class MessageHandler(FileTransferMixin, ABC):
         rid = env.request_id or ""
         channel_id = env.channel or ""
         stream_app_id = self._stream_app_ids.get(rid, "")  # 提前捕获，_pop_stream_tracking 后会清除
+        # 流式异常收尾补发(chat.error/chat.final)共用的具名参数
+        emit_params = StreamEmitParams(
+            request_id=rid,
+            channel_id=channel_id,
+            session_id=session_id,
+            request_metadata=request_metadata,
+        )
         cancelled = False
         has_processing_status_false = False
         _proc_count = 0
@@ -4897,10 +4910,7 @@ class MessageHandler(FileTransferMixin, ABC):
             if "AgentServer WebSocket connection closed" not in str(exc):
                 raise
             await self._publish_stream_connection_error(
-                rid,
-                channel_id,
-                session_id,
-                request_metadata,
+                emit_params,
                 str(exc),
             )
         except Exception as exc:
@@ -4910,9 +4920,13 @@ class MessageHandler(FileTransferMixin, ABC):
                 "[MessageHandler] Stream 异常: request_id=%s total_chunks=%s error=%s",
                 rid, _proc_count, exc,
             )
-            await self._publish_stream_cancelled_final(
-                rid, channel_id, session_id, request_metadata,
+            # 快失败/路由类异常(如 SCOPE_FULL)必须以 CHAT_ERROR 事件外显,
+            # 否则前端只收到空 chat.final,表现为静默无响应
+            await self._publish_stream_connection_error(
+                emit_params, str(exc),
+                code="GATEWAY_STREAM_ERROR",
             )
+            await self._publish_stream_cancelled_final(emit_params)
             raise  # 重新抛出，让调用者知道任务被取消
         finally:
             telemetry_outcome["error"] = request_error

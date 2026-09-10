@@ -100,12 +100,6 @@ gen_gateway_file() {
 render_gateway_files() {
     local mode="${DEPLOY_VARS["MODE"]}"
 
-    if [ "${mode}" == "dev" ]; then
-        DEPLOY_VARS["CLAW_HOME"]="/root"
-    else
-        DEPLOY_VARS["CLAW_HOME"]="/home/app"
-    fi
-
     render_secret_configmap
     gen_gateway_env_file
     gen_gateway_config_file

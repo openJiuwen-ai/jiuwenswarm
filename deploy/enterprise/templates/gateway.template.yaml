@@ -15,6 +15,8 @@ spec:
       labels:
         app: <<GATEWAY_NAME>>
     spec:
+      securityContext:
+        fsGroup: 0
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:  # 软限制：优先把pod分开部署，但如果资源紧张、只有一个节点可用的时候，也允许它们挤在同一台机器上
@@ -31,6 +33,9 @@ spec:
         - name: gateway
           image: <<GATEWAY_IMAGE>>
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
           # 调试模式：gateway 崩溃后容器不退出（sleep 保活），便于进 Pod 排查。
           # command: ["/bin/sh", "-c"]
           # args: ["jiuwenswarm-gateway; echo '[debug-keepalive] gateway exited rc=$?, sleeping'; sleep infinity"]

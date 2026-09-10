@@ -49,6 +49,8 @@ spec:
       labels:
         app: <<MANAGER_SERVER_NAME>>
     spec:
+      securityContext:
+        fsGroup: 1000
       containers:
       - name: manager
         image: <<MANAGER_SERVER_IMAGE>>
