@@ -253,7 +253,13 @@ export function OnlineSkillSearchPanel({
           } else if (item.source === 'teamskillshub') {
             const data = await webRequest<InstallResponse>(
               'skills.teamskillshub.install',
-              withSession({ asset_id: item.identifier, force })
+              withSession({
+                asset_id: item.identifier,
+                force,
+                ...((item.display_name || item.name)
+                  ? { display_name: item.display_name || item.name }
+                  : {}),
+              })
             );
             throwIfAborted(abortController.signal);
             if (!data.success) {
