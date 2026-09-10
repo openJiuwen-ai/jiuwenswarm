@@ -1,0 +1,46 @@
+ARG BASE_IMAGE=python:3.11.4-slim-bookworm
+FROM ${BASE_IMAGE}
+
+# Frontend build dependencies and git (required by the openjiuwen VCS dependency).
+
+RUN apt-get update && \
+    apt-get install -y git curl ca-certificates git net-tools fonts-noto-cjk fonts-wqy-microhei pkg-config && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g npm@latest && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create app user and set up working directory
+RUN useradd --create-home --shell /bin/bash app
+RUN mkdir -p /app
+
+# 创建 .jiuwenswarm 目录并设置权限
+RUN mkdir -p /home/app/.jiuwenswarm/agent/.logs && \
+    mkdir -p /home/app/.jiuwenswarm/agent/pids && \
+    chown -R app:app /home/app/.jiuwenswarm
+
+# Copy project files
+COPY --chown=app:app . /app/jiuwenswarm/
+
+USER app
+
+# Build web
+WORKDIR /app/jiuwenswarm/jiuwenswarm/channels/web/frontend
+RUN npm config set allow-remote all
+RUN npm install
+RUN npm run build
+
+# Install server dependencies
+WORKDIR /app/jiuwenswarm
+ENV PATH=$PATH:/home/app/.local/bin
+# Bind outside the container without changing the localhost default used by
+# source, desktop, and pip installations.
+ENV FRONTEND_HOST=0.0.0.0
+RUN pip install cairosvg svglib reportlab  -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple .  --no-cache-dir
+
+#RUN pip install cairosvg svglib reportlab  -i https://mirrors.aliyun.com/pypi/simple/ 
+#RUN pip install -i  https://mirrors.aliyun.com/pypi/simple/ . --no-cache-dir
+# Start claw app
+EXPOSE 5173
+CMD ["jiuwenswarm-start"]

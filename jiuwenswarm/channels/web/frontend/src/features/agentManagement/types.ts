@@ -32,6 +32,7 @@ export type AgentCapability = {
 export type AgentDetail = AgentCatalogItem & {
   prompt: string;
   details: string;
+  persona: string;
   skills: AgentCapability[];
   tools: AgentCapability[];
   rails: AgentCapability[];

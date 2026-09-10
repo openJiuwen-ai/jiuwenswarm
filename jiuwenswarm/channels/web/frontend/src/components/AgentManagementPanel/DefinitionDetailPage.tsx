@@ -38,6 +38,8 @@ type DefinitionDetailPageProps = {
   onReconnect: (id: string) => void;
   onInstall: (id: string) => void;
   onUninstall: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
+  onEdit: (id: string) => void;
 };
 
 function Avatar({ name, avatarUrl }: { name: string; avatarUrl: string | null }) {
@@ -109,6 +111,8 @@ export function DefinitionDetailPage({
   onReconnect,
   onInstall,
   onUninstall,
+  onDelete,
+  onEdit,
 }: DefinitionDetailPageProps) {
   const { t } = useTranslation();
 
@@ -145,6 +149,7 @@ export function DefinitionDetailPage({
   const canUse = detail.installed && detail.connectionState === 'connected' && detail.enabled !== false;
   const needsConnection = detail.installed && detail.connectionState !== 'connected';
   const canDelete = detail.source === 'local' && !detail.installed;
+  const canEdit = detail.source === 'local';
   return (
     <div className="agent-management-detail" data-testid="agent-detail">
       <button type="button" className="detail-back mb-[35px]" onClick={onBack}>
@@ -175,6 +180,16 @@ export function DefinitionDetailPage({
             </div>
           </div>
           <div className="agent-management-detail__actions">
+            {canEdit ? (
+              <button
+                type="button"
+                className="agent-management-button agent-management-button--secondary agent-management-detail-action--edit"
+                disabled={busy}
+                onClick={() => onEdit(detail.id)}
+              >
+                {t('agentManagement.actions.edit')}
+              </button>
+            ) : null}
             {detail.installed ? (
               <>
                 {needsConnection ? (
@@ -216,7 +231,7 @@ export function DefinitionDetailPage({
                     className="agent-management-detail-action agent-management-detail-action--uninstall"
                     disabled={busy}
                     aria-busy={busy}
-                    onClick={() => onUninstall(detail.id)}
+                    onClick={() => onDelete(detail.id, detail.displayName)}
                   >
                     <UninstallIcon aria-hidden="true" />
                     {busy ? t('agentManagement.actions.deleting') : t('agentManagement.actions.delete')}

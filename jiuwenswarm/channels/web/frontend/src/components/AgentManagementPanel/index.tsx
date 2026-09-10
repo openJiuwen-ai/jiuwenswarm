@@ -12,6 +12,7 @@ import {
   createAgentManagementClient,
   extractRpcErrorMessage,
   type AgentCatalogItem,
+  type AgentDetail,
   type AgentDraft,
   type AgentManagementClient,
   type DefinitionFileEntry,
@@ -24,6 +25,7 @@ import {
   isPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../../features/agentManagement';
+import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
 import { PageHeader, PageToolbarSearch } from '../ui';
@@ -49,6 +51,25 @@ const EMPTY_DRAFT: AgentDraft = {
   mcpRefs: [],
   suggestedPrompts: [],
 };
+
+function detailToDraft(detail: AgentDetail): AgentDraft {
+  const presetIds = new Set<string>(AGENT_TAG_OPTIONS.map((option) => option.id));
+  const tagIds = detail.tags
+    .map((tag) => tag.id)
+    .filter((id): id is string => presetIds.has(id));
+  const customTags = detail.tags.filter((tag) => !presetIds.has(tag.id)).map((tag) => tag.label);
+  return {
+    id: detail.id,
+    name: detail.displayName,
+    description: detail.description,
+    persona: detail.persona,
+    tagIds,
+    customTags,
+    skillRefs: detail.skills.map((skill) => skill.id),
+    mcpRefs: detail.mcps.map((mcp) => mcp.id),
+    suggestedPrompts: detail.suggestedPrompts,
+  };
+}
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -158,6 +179,7 @@ export function AgentManagementPanel({
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
@@ -499,6 +521,7 @@ export function AgentManagementPanel({
   const openCreate = () => {
     setCreateMenuOpen(false);
     setDraft(EMPTY_DRAFT);
+    setEditingId(null);
     setCreateError(null);
     setActionError(null);
     setActionNotice(null);
@@ -507,14 +530,35 @@ export function AgentManagementPanel({
     void loadMcps();
   };
 
+  const handleEdit = async (id: string) => {
+    setActionError(null);
+    setActionNotice(null);
+    setCreateError(null);
+    try {
+      const detail = state.detail?.id === id ? state.detail : await client.getDefinition(id);
+      setDraft(detailToDraft(detail));
+      setEditingId(id);
+      setView('create');
+      if (state.skillsStatus === 'idle') void loadSkills();
+      void loadMcps();
+    } catch (error) {
+      setActionError(formatActionError(error, t('agentManagement.states.detailError')));
+    }
+  };
+
   const handleCreate = async () => {
     setSaving(true);
     setCreateError(null);
     setActionError(null);
     setActionNotice(null);
     try {
-      await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+      if (editingId) {
+        await client.updateAgent({ ...draft, id: editingId });
+      } else {
+        await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+      }
       await loadCatalog();
+      setEditingId(null);
       setMineQuery('');
       setMinePage(1);
       setView('mine');
@@ -522,6 +566,23 @@ export function AgentManagementPanel({
       setCreateError(formatActionError(error, t('agentManagement.form.saveError')));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    const confirmed = window.confirm(t('agentManagement.confirm.deleteMessage', { name }));
+    if (!confirmed) return;
+    setBusyId(id);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      await client.deleteDefinition(id);
+      await loadCatalog();
+      setView('mine');
+    } catch (error) {
+      setActionError(formatActionError(error, t('agentManagement.states.actionError')));
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -625,6 +686,8 @@ export function AgentManagementPanel({
             onReconnect={handleReconnect}
             onInstall={handleInstall}
             onUninstall={handleUninstall}
+            onDelete={handleDelete}
+            onEdit={handleEdit}
           />
         </main>
         {pendingConnectorModals}
@@ -818,6 +881,7 @@ export function AgentManagementPanel({
           onReconnect={handleReconnect}
           onInstall={handleInstall}
           onUninstall={handleUninstall}
+          onEdit={handleEdit}
           onCreate={openCreate}
         />
         {pendingConnectorModals}

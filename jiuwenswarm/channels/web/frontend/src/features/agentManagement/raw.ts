@@ -36,6 +36,7 @@ export type RawAgentTemplateDetail = RawAgentTemplateListItem & {
   version?: string;
   details?: string;
   prompt?: string;
+  persona?: string;
   skills?: RawAgentCapability[];
   tools?: RawAgentCapability[];
   rails?: RawAgentCapability[];

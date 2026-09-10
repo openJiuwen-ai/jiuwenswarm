@@ -719,39 +719,58 @@ class TestCreateInstallUninstall:
             catalog.install_agent_template({"id": "ghost"})
         assert catalog.read_agent_template_marketplace_entries() == []
 
-    @pytest.mark.parametrize("kind", _KINDS)
     @pytest.mark.parametrize("origin", ["preset", "local"])
-    def test_uninstall_deletes_user_copy(
+    def test_uninstall_deletes_agent_definition(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         extension_workspace: Path,
-        kind: str,
         origin: str,
     ) -> None:
+        """Expert uninstall removes the definition (SkillHub semantics)."""
         package_id = "preset-pkg" if origin == "preset" else "my-local"
         if origin == "preset":
-            kwargs = (
-                {"experts": [package_id]}
-                if kind == AGENT_TEMPLATES
-                else {"plugins": [package_id]}
-            )
-            point_resources_shelf(monkeypatch, tmp_path, **kwargs)
+            point_resources_shelf(monkeypatch, tmp_path, experts=[package_id])
         else:
-            seed_package(extension_workspace, kind, package_id)
-        if kind == AGENT_TEMPLATES:
-            catalog.install_agent_template({"id": package_id})
-            catalog.uninstall_agent_template({"id": package_id})
-            cards = catalog.list_agent_templates()
+            seed_package(extension_workspace, AGENT_TEMPLATES, package_id)
+        catalog.install_agent_template({"id": package_id})
+        catalog.uninstall_agent_template({"id": package_id})
+        cards = catalog.list_agent_templates()
+        # SkillHub uninstall removes the package body from the workspace.
+        local = extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / package_id
+        built_in = extension_workspace / "plugins" / AGENT_TEMPLATES / "built_in" / package_id
+        assert not local.is_dir()
+        assert not built_in.is_dir()
+        ids = {c["id"] for c in cards}
+        if origin == "preset":
+            # Preset packages still surface from the resources shelf, uninstalled.
+            assert package_id in ids
+            assert next(c for c in cards if c["id"] == package_id)["installed"] is False
         else:
-            catalog.install_plugin_package({"id": package_id})
-            catalog.uninstall_plugin_package({"id": package_id})
-            cards = catalog.list_plugin_packages()
+            assert package_id not in ids
+
+    @pytest.mark.parametrize("origin", ["preset", "local"])
+    def test_uninstall_plugin_still_deletes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        extension_workspace: Path,
+        origin: str,
+    ) -> None:
+        """Plugin uninstall keeps the legacy destructive behavior."""
+        package_id = "preset-pkg" if origin == "preset" else "my-local"
+        if origin == "preset":
+            point_resources_shelf(monkeypatch, tmp_path, plugins=[package_id])
+        else:
+            seed_package(extension_workspace, PLUGIN_PACKAGES, package_id)
+        catalog.install_plugin_package({"id": package_id})
+        catalog.uninstall_plugin_package({"id": package_id})
+        cards = catalog.list_plugin_packages()
         assert not (
-            extension_workspace / "plugins" / kind / "built_in" / package_id
+            extension_workspace / "plugins" / PLUGIN_PACKAGES / "built_in" / package_id
         ).exists()
         assert not (
-            extension_workspace / "plugins" / kind / "local" / package_id
+            extension_workspace / "plugins" / PLUGIN_PACKAGES / "local" / package_id
         ).exists()
         ids = {c["id"] for c in cards}
         if origin == "preset":
@@ -778,7 +797,10 @@ class TestCreateInstallUninstall:
             AGENT_TEMPLATES, {"id": "with-conn"}
         )
         assert "notice" in payload
+        # SkillHub uninstall removes the package body.
         assert not pkg.exists()
+        # Marketplace entry is dropped on uninstall.
+        assert all(e["id"] != "with-conn" for e in marketplace_entries(AGENT_TEMPLATES))
         rec = mcp_state.get_mcp_record("feishu")
         assert rec is not None
         assert rec.get("state") == "connected"
@@ -1195,3 +1217,133 @@ class TestListShowAndFileRead:
             catalog.read_agent_template_file("alpha", "../secret.txt")
         with pytest.raises((ValueError, RuntimeError)):
             catalog.read_agent_template_file("alpha", "model.json")
+
+
+class TestUpdateAndDeleteAgentTemplate:
+    """Update / delete semantics for user-created (local) expert packages.
+
+    ``update_agent_template`` rewrites a local package in place and preserves
+    its marketplace installed/source state. ``delete_agent_template`` is the
+    only destructive operation: it physically removes the package. Plain
+    ``uninstall_agent_template`` keeps the definition and only flips
+    installed=false.
+    """
+
+    def _create(self, package_id: str = "mine") -> None:
+        catalog.create_agent_template(
+            {
+                "id": package_id,
+                "name": "Old Name",
+                "description": "Old description",
+                "persona": "Old persona",
+                "skills": [],
+            }
+        )
+
+    def _manifest(self, extension_workspace: Path, package_id: str) -> dict:
+        pkg = extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / package_id
+        return json.loads((pkg / "manifest.json").read_text(encoding="utf-8"))
+
+    def test_update_rewrites_definition_in_place(
+        self, extension_workspace: Path
+    ) -> None:
+        self._create("mine")
+        catalog.update_agent_template(
+            {
+                "id": "mine",
+                "name": "New Name",
+                "description": "New description",
+                "persona": "New persona",
+                "skills": [],
+            }
+        )
+        manifest = self._manifest(extension_workspace, "mine")
+        assert manifest["name"] == "New Name"
+        assert manifest["description"] == "New description"
+        assert manifest["display_name"] == {"zh": "New Name", "en": "New Name"}
+        persona = (
+            extension_workspace
+            / "plugins"
+            / AGENT_TEMPLATES
+            / "local"
+            / "mine"
+            / "persona"
+            / "mine.md"
+        )
+        assert persona.read_text(encoding="utf-8") == "New persona"
+        # id / package_type stay stable across an update.
+        assert manifest["package_type"] == "agent_template"
+        entry = next(e for e in marketplace_entries(AGENT_TEMPLATES) if e["id"] == "mine")
+        assert entry["installed"] is False
+        assert entry["source"] == "local"
+
+    def test_update_preserves_installed_state(self, extension_workspace: Path) -> None:
+        self._create("mine")
+        catalog.install_agent_template({"id": "mine"})
+        catalog.update_agent_template(
+            {
+                "id": "mine",
+                "name": "Renamed",
+                "description": "D2",
+                "persona": "P2",
+                "skills": [],
+            }
+        )
+        entry = next(e for e in marketplace_entries(AGENT_TEMPLATES) if e["id"] == "mine")
+        assert entry["installed"] is True
+        assert entry["source"] == "local"
+
+    def test_update_replaces_stale_skills(self, monkeypatch, extension_workspace: Path) -> None:
+        skills_root = extension_workspace.parent / "fake-skills"
+        (skills_root / "keep").mkdir(parents=True)
+        (skills_root / "keep" / "SKILL.md").write_text("keep", encoding="utf-8")
+        monkeypatch.setattr(catalog, "get_agent_skills_dir", lambda: skills_root)
+        catalog.create_agent_template(
+            {
+                "id": "mine",
+                "name": "N",
+                "description": "D",
+                "persona": "P",
+                "skills": ["keep"],
+            }
+        )
+        # Update drops the skill: the previously copied skills/ tree is removed.
+        catalog.update_agent_template(
+            {"id": "mine", "name": "N2", "description": "D2", "persona": "P2", "skills": []}
+        )
+        skills_dir = extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / "mine" / "skills"
+        assert not skills_dir.exists()
+
+    def test_update_rejects_missing_package(self, extension_workspace: Path) -> None:
+        with pytest.raises(ValueError, match="agent_template not found: ghost"):
+            catalog.update_agent_template(
+                {"id": "ghost", "name": "N", "description": "D", "persona": "P", "skills": []}
+            )
+
+    def test_update_validates_fields(self, extension_workspace: Path) -> None:
+        self._create("mine")
+        with pytest.raises(ValueError, match="missing or invalid name"):
+            catalog.update_agent_template(
+                {"id": "mine", "name": "", "description": "D", "persona": "P", "skills": []}
+            )
+
+    def test_delete_removes_package_and_marketplace(self, extension_workspace: Path) -> None:
+        self._create("mine")
+        pkg = extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / "mine"
+        assert pkg.is_dir()
+        catalog.delete_agent_template({"id": "mine"})
+        assert not pkg.exists()
+        assert all(e["id"] != "mine" for e in marketplace_entries(AGENT_TEMPLATES))
+
+    def test_delete_rejects_missing_package(self, extension_workspace: Path) -> None:
+        with pytest.raises(ValueError, match="agent_template not found: ghost"):
+            catalog.delete_agent_template({"id": "ghost"})
+
+    def test_uninstall_removes_definition(self, extension_workspace: Path) -> None:
+        """SkillHub uninstall removes the package body and marketplace entry."""
+        self._create("mine")
+        pkg = extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / "mine"
+        catalog.install_agent_template({"id": "mine"})
+        catalog.uninstall_agent_template({"id": "mine"})
+        assert not pkg.exists()
+        assert all(e["id"] != "mine" for e in marketplace_entries(AGENT_TEMPLATES))

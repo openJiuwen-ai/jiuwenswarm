@@ -60,6 +60,8 @@ export interface AgentManagementClient {
   listSkillOptions(): Promise<SkillOption[]>;
   listMcpOptions(): Promise<McpOption[]>;
   createAgent(draft: AgentDraft): Promise<void>;
+  updateAgent(draft: AgentDraft): Promise<void>;
+  deleteDefinition(id: string): Promise<void>;
   importAgentTemplate(path: string): Promise<{ id: string }>;
   installDefinition(id: string): Promise<AgentInstallResult>;
   uninstallDefinition(id: string): Promise<{ notice?: string }>;

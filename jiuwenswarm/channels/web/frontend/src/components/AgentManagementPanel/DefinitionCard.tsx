@@ -13,6 +13,7 @@ type DefinitionCardProps = {
   onReconnect: (id: string) => void;
   onInstall: (id: string) => void;
   onUninstall: (id: string) => void;
+  onEdit: (id: string) => void;
 };
 
 function getAvatarLetter(name: string): string {
@@ -114,13 +115,14 @@ function TagSummary({ tags, fallback }: TagSummaryProps) {
   );
 }
 
-export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, onInstall, onUninstall }: DefinitionCardProps) {
+export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, onInstall, onUninstall, onEdit }: DefinitionCardProps) {
   const { t } = useTranslation();
   const canInstall = !item.installed;
   const canUse = item.installed && item.connectionState === 'connected' && item.enabled !== false;
   const needsConnection = item.installed && item.connectionState !== 'connected';
   const avatarUrl = getAgentAvatarUrl(item);
   const description = item.description || t('agentManagement.unknownDescription');
+  const canEdit = scope === 'mine' && item.source === 'local';
 
   return (
     <article className={`agent-management-card page-card agent-management-card--${scope}${item.installed ? ' agent-management-card--multi-action' : ''}`} data-testid={`agent-card-${item.id}`}>
@@ -160,6 +162,16 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
         <span className="agent-management-card__description" title={description}>{description}</span>
       </button>
       <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
+        {canEdit ? (
+          <button
+            type="button"
+            className="agent-management-button agent-management-button--secondary agent-management-card-action--edit"
+            disabled={busy}
+            onClick={() => onEdit(item.id)}
+          >
+            {t('agentManagement.actions.edit')}
+          </button>
+        ) : null}
         {item.installed ? (
           <button
             type="button"
