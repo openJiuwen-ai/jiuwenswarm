@@ -8,6 +8,9 @@ import pytest
 from jiuwenswarm.common import utils
 
 
+HEARTBEAT_DOC = {"version": 1, "jobs": [{"id": "hb-old"}]}
+
+
 @pytest.fixture
 def home(tmp_path):
     path = tmp_path / "agent/home"
@@ -15,15 +18,22 @@ def home(tmp_path):
     (path / "cron_jobs.json").write_text(
         json.dumps({"version": 1, "jobs": [{"id": "old"}]}), encoding="utf-8",
     )
-    (path / "heartbeat_jobs.json").write_text("heartbeat", encoding="utf-8")
+    (path / "heartbeat_jobs.json").write_text(
+        json.dumps(HEARTBEAT_DOC), encoding="utf-8",
+    )
     (path / "other").mkdir()
     (path / "other/history.json").write_text("history", encoding="utf-8")
     return path
 
 
 def assert_home_preserved(home):
-    assert (home / "heartbeat_jobs.json").read_text(encoding="utf-8") == "heartbeat"
     assert (home / "other/history.json").read_text(encoding="utf-8") == "history"
+
+
+def assert_heartbeat_migrated(tmp_path, home):
+    target = tmp_path / "agent/heartbeat_jobs.json"
+    assert not (home / "heartbeat_jobs.json").exists()
+    assert json.loads(target.read_text(encoding="utf-8")) == HEARTBEAT_DOC
 
 
 @pytest.mark.parametrize("existing_gateway", [False, True])
@@ -35,6 +45,7 @@ def test_only_migrated_cron_is_removed(tmp_path, home, existing_gateway, monkeyp
         target.write_text('{"jobs": [{"id": "gateway"}]}', encoding="utf-8")
     utils._migrate_legacy_workspace(tmp_path)
     assert_home_preserved(home)
+    assert_heartbeat_migrated(tmp_path, home)
     assert not (home / "cron_jobs.json").exists()
     jobs = json.loads(target.read_text(encoding="utf-8"))["jobs"]
     if existing_gateway:
@@ -46,7 +57,7 @@ def test_only_migrated_cron_is_removed(tmp_path, home, existing_gateway, monkeyp
         assert jobs == [{"id": "old", "expired": False}]
     monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path)
     assert utils.get_cron_jobs_path() == target
-    assert utils.get_heartbeat_jobs_path() == home / "heartbeat_jobs.json"
+    assert utils.get_heartbeat_jobs_path() == tmp_path / "agent/heartbeat_jobs.json"
 
 
 @pytest.mark.parametrize("failure", ["invalid_json", "write", "backup"])
@@ -67,15 +78,19 @@ def test_migration_failure_keeps_source(tmp_path, home, monkeypatch, failure):
     else:
         target.parent.mkdir()
         target.write_text('{"jobs": []}', encoding="utf-8")
+        original_copy2 = utils.shutil.copy2
 
-        def fail_backup(*args, **kwargs):
-            raise OSError("backup denied")
+        def fail_backup(source_path, *args, **kwargs):
+            if Path(source_path) == source:
+                raise OSError("backup denied")
+            return original_copy2(source_path, *args, **kwargs)
 
         monkeypatch.setattr(utils.shutil, "copy2", fail_backup)
     original = source.read_bytes()
     utils._migrate_legacy_workspace(tmp_path)
     assert source.read_bytes() == original
     assert_home_preserved(home)
+    assert_heartbeat_migrated(tmp_path, home)
 
 
 def test_unlink_failure_does_not_mask_successful_migration(tmp_path, home, monkeypatch):
@@ -95,6 +110,7 @@ def test_unlink_failure_does_not_mask_successful_migration(tmp_path, home, monke
     assert jobs == [{"id": "old", "expired": False}]
     assert source.exists()
     assert_home_preserved(home)
+    assert_heartbeat_migrated(tmp_path, home)
 
 
 def test_init_does_not_remove_home(tmp_path, home, monkeypatch):
@@ -113,3 +129,6 @@ def test_init_does_not_remove_home(tmp_path, home, monkeypatch):
         utils.prepare_workspace(overwrite=True, workspace_dir=tmp_path)
     assert (home / "cron_jobs.json").read_bytes() == original
     assert_home_preserved(home)
+    assert json.loads(
+        (home / "heartbeat_jobs.json").read_text(encoding="utf-8")
+    ) == HEARTBEAT_DOC
