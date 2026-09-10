@@ -44,6 +44,10 @@ class AgentServerChatHookContext:
     req_method: str | None
     # 扩展可直接原地修改 params，AgentServer 后续逻辑会继续使用 request.params
     params: dict[str, Any] = field(default_factory=dict)
+    # 仅由 AgentServer 内已加载的扩展写入，不接受客户端请求字段。宿主分别将
+    # 稳定策略放入 system prompt，将动态参考数据放在当前 user message 之前。
+    system_prompt_blocks: list[str] = field(default_factory=list)
+    reference_context_blocks: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

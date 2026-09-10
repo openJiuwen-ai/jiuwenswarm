@@ -2360,6 +2360,10 @@ class AgentWebSocketServer:
         if not self._should_trigger_before_chat_request_hook(request):
             return
         from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from jiuwenswarm.extensions.prompt_context import (
+            clear_extension_prompt_context,
+            set_extension_prompt_context,
+        )
 
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):
@@ -2373,7 +2377,25 @@ class AgentWebSocketServer:
             params=params,
         )
 
+        session_id = request.session_id or "default"
+        # 先清除上轮快照；本轮扩展超时、跳过或失败时不得继续使用陈旧记忆。
+        clear_extension_prompt_context(session_id)
         await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.BEFORE_CHAT_REQUEST, ctx)
+        prompt_context = set_extension_prompt_context(
+            session_id,
+            system_prompt_blocks=ctx.system_prompt_blocks,
+            reference_context_blocks=ctx.reference_context_blocks,
+        )
+        logger.info(
+            "[ExtensionPromptContext] session=%s request=%s system_blocks=%d "
+            "reference_blocks=%d system_chars=%d reference_chars=%d",
+            session_id,
+            request.request_id,
+            len(prompt_context.system_prompt_blocks),
+            len(prompt_context.reference_context_blocks),
+            sum(len(block) for block in prompt_context.system_prompt_blocks),
+            sum(len(block) for block in prompt_context.reference_context_blocks),
+        )
 
     async def _handle_cancel(
         self,
