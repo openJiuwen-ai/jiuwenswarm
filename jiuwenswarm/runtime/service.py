@@ -18,9 +18,10 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     RuntimeSessionProvisioner,
-    SessionDeleteResult,
     SessionCreateInput,
     SessionCreateResult,
+    SessionDeleteResult,
+    SessionDescriptor,
     SessionForkInput,
     SessionForkResult,
     SessionProvisionCommitContext,
@@ -419,6 +420,52 @@ class AgentRuntime:
             channel_id=channel_id,
         )
         return resolved_session_id
+
+    async def describe_session(
+        self,
+        *,
+        session_id: str,
+    ) -> SessionDescriptor | None:
+        """Return persisted routing facts without exposing storage internals.
+
+        This transport-neutral lookup lets local Runtime clients validate an
+        explicit resume target without importing storage helpers or relying on
+        AgentServer's ``session.list`` handler.
+        """
+        self._require_started()
+        target = str(session_id or "").strip()
+        if not target:
+            return None
+
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+        from jiuwenswarm.server.runtime.session.session_history import (
+            resolve_session_dir,
+        )
+
+        session_dir, _invalid_reason = resolve_session_dir(
+            target,
+            sessions_root=get_agent_sessions_dir(),
+        )
+        if session_dir is None or not session_dir.is_dir():
+            return None
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(
+            target,
+            cache_bust=True,
+            enable_writeback=False,
+        )
+        return SessionDescriptor(
+            session_id=target,
+            channel_id=str(metadata.get("channel_id") or "").strip(),
+            mode=str(metadata.get("mode") or "").strip(),
+            work_mode=str(metadata.get("work_mode") or "").strip().lower(),
+            project_id=str(metadata.get("project_id") or "").strip(),
+            project_dir=str(metadata.get("project_dir") or "").strip(),
+        )
 
     async def prepare_session_fork(
         self,

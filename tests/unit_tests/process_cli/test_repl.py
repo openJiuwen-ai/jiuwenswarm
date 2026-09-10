@@ -16,6 +16,9 @@ import pytest
 
 from jiuwenswarm.channels.process_cli import app, main as main_module, repl
 from jiuwenswarm.channels.process_cli.display_context import (
+    resolve_cli_work_mode,
+)
+from jiuwenswarm.channels.process_cli.display_context import (
     select_configured_model_name,
 )
 from jiuwenswarm.channels.process_cli.main import build_parser
@@ -45,6 +48,35 @@ def test_parser_enters_interactive_mode_without_prompt() -> None:
     assert args.output == "human"
 
 
+def test_process_cli_applies_requested_cwd_before_runtime_imports(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    launch_dir = tmp_path / "launch"
+    requested = tmp_path / "requested"
+    launch_dir.mkdir()
+    requested.mkdir()
+    monkeypatch.chdir(launch_dir)
+    args = _args(cwd=str(requested))
+
+    main_module._activate_requested_cwd(args, build_parser())
+
+    assert Path.cwd() == requested.resolve()
+    assert args.cwd == str(requested.resolve())
+
+
+def test_process_cli_rejects_inaccessible_requested_cwd(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    args = _args(cwd=str(tmp_path / "missing"))
+
+    with pytest.raises(SystemExit, match="2"):
+        main_module._activate_requested_cwd(args, build_parser())
+
+    assert "--cwd 无法访问" in capsys.readouterr().err
+
+
 def test_process_cli_help_uses_chinese_labels() -> None:
     help_text = build_parser().format_help()
 
@@ -52,6 +84,24 @@ def test_process_cli_help_uses_chinese_labels() -> None:
     assert "位置参数：" in help_text
     assert "选项：" in help_text
     assert "显示帮助信息并退出" in help_text
+
+
+@pytest.mark.parametrize(
+    ("mode", "work_mode", "expected"),
+    [
+        ("agent.work.normal", "code", "work"),
+        ("team.code.plan", "work", "code"),
+        ("code.team", "work", "code"),
+        ("agent", "code", "code"),
+        ("team", "work", "work"),
+    ],
+)
+def test_cli_work_mode_follows_self_describing_mode(
+    mode: str,
+    work_mode: str,
+    expected: str,
+) -> None:
+    assert resolve_cli_work_mode(mode, work_mode) == expected
 
 
 def test_invalid_choice_error_is_fully_chinese(capsys) -> None:
@@ -97,6 +147,19 @@ def test_worker_command_uses_a_fresh_process_entry_and_runtime_session() -> None
     assert command[command.index("--work-mode") + 1] == "code"
     assert command[command.index("--_prompt-file") + 1] == "D:/temp/prompt.txt"
     assert "inspect this project" not in command
+    assert "--_operation" not in command
+
+
+def test_worker_command_marks_runtime_invoke_operation() -> None:
+    command = repl._worker_command(
+        _args(),
+        prompt_file="D:/temp/prompt.txt",
+        session_id="process_cli_session_1",
+        session_result_file="D:/temp/session.txt",
+        operation="skills.list",
+    )
+
+    assert command[command.index("--_operation") + 1] == "skills.list"
 
 
 def test_worker_entry_reads_prompt_from_internal_file(monkeypatch, tmp_path) -> None:
@@ -348,10 +411,11 @@ models:
 @pytest.mark.parametrize(
     ("mode", "work_mode", "expected"),
     [
-        ("code.normal", "code", "code.normal"),
-        ("agent", "work", "agent"),
-        ("agent", "code", "code.normal"),
-        ("agent.plan", "code", "code.plan"),
+        ("code.normal", "code", "agent.code"),
+        ("agent", "work", "agent.work"),
+        ("agent", "code", "agent.code"),
+        ("agent.plan", "code", "agent.code.plan"),
+        ("team.code.normal", "work", "team.code"),
     ],
 )
 def test_display_mode_collapses_mode_and_work_mode(
@@ -368,7 +432,7 @@ async def test_repl_runs_every_instruction_in_a_new_worker_and_reuses_session(
     capsys,
 ) -> None:
     prompts = iter(("first", "second", "/new", "third", "/session", "/exit"))
-    calls: list[tuple[str, str | None]] = []
+    calls: list[tuple[str, str | None, str]] = []
 
     async def fake_read_prompt(_session) -> str:
         return next(prompts)
@@ -378,9 +442,20 @@ async def test_repl_runs_every_instruction_in_a_new_worker_and_reuses_session(
         *,
         prompt: str,
         session_id: str | None,
+        operation: str = "chat",
     ) -> tuple[int, str]:
-        calls.append((prompt, session_id))
-        return 0, session_id or f"runtime-session-{len(calls)}"
+        calls.append((prompt, session_id, operation))
+        next_session = (
+            f"runtime-session-{len(calls)}"
+            if operation == "session.create"
+            else session_id or f"runtime-session-{len(calls)}"
+        )
+        args._last_worker_result = {
+            "operation": operation,
+            "session_id": next_session,
+            "mode": args.mode,
+        }
+        return 0, next_session
 
     monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
     monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
@@ -395,19 +470,112 @@ async def test_repl_runs_every_instruction_in_a_new_worker_and_reuses_session(
 
     assert result == 0
     assert calls == [
-        ("first", None),
-        ("second", "runtime-session-1"),
-        ("third", None),
+        ("first", None, "chat"),
+        ("second", "runtime-session-1", "chat"),
+        ("", "runtime-session-1", "session.create"),
+        ("third", "runtime-session-3", "chat"),
     ]
     output = capsys.readouterr().out
     assert ">_ JiuwenSwarm" in output
     assert "模型（配置推断）：  gpt-5.6-sol" in output
-    assert "模式（请求推断）：  code.normal" in output
+    assert "模式（请求推断）：  agent.code" in output
     assert "工作模式" not in output
     assert "进程式 CLI · 本地 Runtime" in output
     assert "每条指令均在独立进程中运行" in output
-    assert "下一条指令将创建新的 Runtime 会话" in output
     assert "runtime-session-3" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_mode_switch_is_local_and_next_worker_uses_canonical_mode(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(
+        ("/mode", "/mode team.code", "hello", "/mode plan", "/exit")
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(args, *, prompt: str, session_id: str | None):
+        calls.append((prompt, args.mode, args.work_mode))
+        return 0, session_id or "runtime-session"
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+    args = _args()
+
+    assert await repl.run_repl(args) == 0
+    assert calls == [("hello", "team.code.normal", "code")]
+    assert args.mode == "team.code.normal"
+    output = capsys.readouterr().out
+    assert "当前模式：agent.code" in output
+    assert "已切换模式：team.code" in output
+    assert "用法：/mode <agent.work|agent.code|team.work|team.code>" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_status_is_local_and_does_not_start_worker(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(("/status", "/exit"))
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fail_run_worker(*_args, **_kwargs):
+        pytest.fail("/status must not start a Runtime worker")
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fail_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    output = capsys.readouterr().out
+    assert "model · agent.code · 会话 runtime-sess…" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_skills_list_uses_fresh_runtime_worker_without_changing_session(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(
+        ("/skills list", "/skills", "/skills install demo", "/session", "/exit")
+    )
+    calls: list[tuple[str, str | None, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(
+        args,
+        *,
+        prompt: str,
+        session_id: str | None,
+        operation: str = "chat",
+    ):
+        calls.append((prompt, session_id, operation))
+        return 0, "must-not-replace-parent-session"
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    assert calls == [
+        ("/skills list", "runtime-session", "skills.list"),
+        ("/skills list", "runtime-session", "skills.list"),
+    ]
+    output = capsys.readouterr().out
+    assert "用法：/skills list" in output
+    assert "当前 Runtime 会话：runtime-session" in output
 
 
 @pytest.mark.asyncio
@@ -485,3 +653,215 @@ async def test_repl_refreshes_display_metadata_between_turns(monkeypatch) -> Non
 
     assert await repl.run_repl(_args()) == 0
     assert seen == ["first-turn", "second-turn"]
+
+
+@pytest.mark.asyncio
+async def test_repl_session_lifecycle_commands_use_workers_and_update_state(
+    monkeypatch,
+) -> None:
+    prompts = iter(
+        (
+            "/new --persist",
+            "/continue process_cli_original",
+            "/fork copied branch",
+            "/delete process_cli_forked",
+            "/exit",
+        )
+    )
+    calls: list[tuple[str, str | None, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(
+        args,
+        *,
+        prompt: str,
+        session_id: str | None,
+        operation: str = "chat",
+    ):
+        calls.append((prompt, session_id, operation))
+        if operation == "session.create":
+            next_session = "process_cli_created"
+            mode, work_mode = "agent.work.normal", "work"
+        elif operation == "session.switch":
+            next_session = "process_cli_original"
+            mode, work_mode = "team.code.normal", "code"
+        elif operation == "session.fork":
+            next_session = "process_cli_forked"
+            mode, work_mode = "team.code.normal", "code"
+        else:
+            next_session = session_id
+            mode, work_mode = args.mode, args.work_mode
+        args._last_worker_result = {
+            "operation": operation,
+            "session_id": next_session or "",
+            "mode": mode,
+            "work_mode": work_mode,
+            "project_dir": "D:/restored-project",
+        }
+        args.mode = mode
+        args.work_mode = work_mode
+        return 0, next_session
+
+    async def confirm_delete(_target: str) -> bool:
+        return True
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_confirm_delete", confirm_delete)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+    args = _args(session="process_cli_initial")
+
+    assert await repl.run_repl(args) == 0
+    assert calls == [
+        ("--persist", "process_cli_initial", "session.create"),
+        ("process_cli_original", "process_cli_created", "session.switch"),
+        ("copied branch", "process_cli_original", "session.fork"),
+        ("process_cli_forked", "process_cli_forked", "session.delete"),
+    ]
+    assert args.mode == "team.code.normal"
+    assert args.work_mode == "code"
+
+
+@pytest.mark.asyncio
+async def test_stateful_worker_result_restores_mode_work_mode_and_project(
+    monkeypatch,
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.stderr = asyncio.StreamReader()
+            self.stderr.feed_eof()
+
+        async def wait(self) -> int:
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*command, **_kwargs):
+        command_list = list(command)
+        result_path = Path(
+            command_list[command_list.index("--_worker-result-file") + 1]
+        )
+        result_path.write_text(
+            """{
+              "operation": "session.switch",
+              "session_id": "process_cli_target",
+              "mode": "agent.work.normal",
+              "work_mode": "work",
+              "project_dir": "D:/restored-project"
+            }""",
+            encoding="utf-8",
+        )
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    args = _args(mode="team.code.normal", work_mode="code")
+
+    result = await repl._run_worker(
+        args,
+        prompt="process_cli_target",
+        session_id="process_cli_current",
+        operation="session.switch",
+    )
+
+    assert result == (0, "process_cli_target")
+    assert args.mode == "agent.work.normal"
+    assert args.work_mode == "work"
+    assert args.project_dir == "D:/restored-project"
+
+
+@pytest.mark.asyncio
+async def test_session_switch_result_clears_previous_project_binding(
+    monkeypatch,
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.stderr = asyncio.StreamReader()
+            self.stderr.feed_eof()
+
+        async def wait(self) -> int:
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*command, **_kwargs):
+        command_list = list(command)
+        result_path = Path(
+            command_list[command_list.index("--_worker-result-file") + 1]
+        )
+        result_path.write_text(
+            """{
+              "operation": "session.switch",
+              "session_id": "process_cli_projectless",
+              "mode": "agent.work.normal",
+              "work_mode": "work",
+              "project_dir": ""
+            }""",
+            encoding="utf-8",
+        )
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    args = _args(project_dir="D:/previous-project")
+
+    result = await repl._run_worker(
+        args,
+        prompt="process_cli_projectless",
+        session_id="process_cli_current",
+        operation="session.switch",
+    )
+
+    assert result == (0, "process_cli_projectless")
+    assert args.project_dir == ""
+
+
+@pytest.mark.asyncio
+async def test_successful_stateful_worker_without_result_is_reported_as_failure(
+    monkeypatch,
+    capsys,
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.stderr = asyncio.StreamReader()
+            self.stderr.feed_eof()
+
+        async def wait(self) -> int:
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*_command, **_kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    result = await repl._run_worker(
+        _args(),
+        prompt="process_cli_target",
+        session_id="process_cli_current",
+        operation="session.switch",
+    )
+
+    assert result == (1, "process_cli_current")
+    assert "Session" in capsys.readouterr().err
+
+
+def test_mode_switch_updates_the_matching_work_mode() -> None:
+    class NoticeUI:
+        def notice(self, _message: str) -> None:
+            return
+
+    args = _args(mode="team.code.normal", work_mode="code")
+
+    display_mode = repl._handle_mode_command(
+        args,
+        arguments="agent.work",
+        display_mode="team.code",
+        ui=NoticeUI(),
+    )
+
+    assert display_mode == "agent.work"
+    assert args.mode == "agent.work.normal"
+    assert args.work_mode == "work"

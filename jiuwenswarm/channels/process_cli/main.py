@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
+from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mode
+
 
 logger = logging.getLogger(__name__)
 
@@ -168,15 +170,51 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--_worker-result-file",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--_prompt-file",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--_operation",
+        choices=(
+            "chat",
+            "skills.list",
+            "session.create",
+            "session.switch",
+            "session.fork",
+            "session.delete",
+        ),
+        default="chat",
         help=argparse.SUPPRESS,
     )
     return parser
 
 
+def _activate_requested_cwd(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    """Apply ``--cwd`` to the whole local process before Runtime imports."""
+    requested = str(args.cwd or "").strip()
+    if not requested:
+        return
+    try:
+        target = Path(requested).expanduser().resolve(strict=True)
+        if not target.is_dir():
+            raise NotADirectoryError(target)
+        os.chdir(target)
+    except OSError as exc:
+        parser.error(f"--cwd 无法访问：{exc}")
+    args.cwd = str(target)
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    args.work_mode = resolve_cli_work_mode(args.mode, args.work_mode)
     worker_interrupt = _WindowsWorkerInterruptController(
         enabled=bool(getattr(args, "_interactive_worker", False)),
     )
@@ -187,6 +225,7 @@ def main() -> None:
             if args.prompt is not None:
                 parser.error("内部 prompt 文件不能与位置参数同时使用")
             args.prompt = Path(prompt_file).read_text(encoding="utf-8")
+        _activate_requested_cwd(args, parser)
         if args.timeout is not None and args.timeout <= 0:
             parser.error("--timeout 必须大于零")
         if args.prompt is None and args.output != "human":

@@ -167,6 +167,18 @@ class SessionForkResult:
     title: str
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SessionDescriptor:
+    """Transport-neutral persisted Session identity and routing metadata."""
+
+    session_id: str
+    channel_id: str
+    mode: str
+    work_mode: str
+    project_id: str = ""
+    project_dir: str = ""
+
+
 SessionProvisionInput: TypeAlias = (
     SessionCreateInput | SessionSwitchInput | SessionForkInput
 )
@@ -1617,6 +1629,7 @@ __all__ = [
     "SessionCreateResult",
     "SessionDeleteLifecycle",
     "SessionDeleteResult",
+    "SessionDescriptor",
     "SessionForkInput",
     "SessionForkResult",
     "SessionProvisionCommitContext",

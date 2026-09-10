@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -378,11 +379,64 @@ async def test_session_create_commit_registers_single_agent_runtime(
 
 
 @pytest.mark.asyncio
+async def test_describe_session_returns_transport_neutral_persisted_facts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    session_dir = sessions_root / "process_cli_described"
+    session_dir.mkdir(parents=True)
+    (session_dir / "metadata.json").write_text(
+        """{
+          "channel_id": "process_cli",
+          "mode": "team.code.normal",
+          "work_mode": "code",
+          "project_id": "project-1",
+          "project_dir": "D:/project"
+        }""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr(
+        session_metadata,
+        "get_agent_sessions_dir",
+        lambda: sessions_root,
+    )
+
+    async def initialize() -> None:
+        return None
+
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=initialize,
+    )
+    await runtime.start()
+
+    descriptor = await runtime.describe_session(session_id="process_cli_described")
+
+    assert descriptor == runtime_package.SessionDescriptor(
+        session_id="process_cli_described",
+        channel_id="process_cli",
+        mode="team.code.normal",
+        work_mode="code",
+        project_id="project-1",
+        project_dir="D:/project",
+    )
+    assert await runtime.describe_session(session_id="missing") is None
+    assert await runtime.describe_session(session_id="../invalid") is None
+
+
+@pytest.mark.asyncio
 async def test_session_operations_require_started_runtime() -> None:
     runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=lambda: None)
 
     with pytest.raises(RuntimeStateError, match="not started"):
         await runtime.create_or_resume_session(channel_id="process_cli")
+    with pytest.raises(RuntimeStateError, match="not started"):
+        await runtime.describe_session(session_id="process_cli_target")
 
 
 @pytest.mark.asyncio

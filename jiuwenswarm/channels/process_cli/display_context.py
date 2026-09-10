@@ -15,6 +15,8 @@ from jiuwenswarm.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
     canonicalize_mode_text,
+    deprecate_mode,
+    resolve_new_canonical_mode,
     resolve_request_mode,
 )
 
@@ -173,6 +175,9 @@ def _resolve_cli_mode(
 ) -> tuple[str, str | None, str]:
     """Mirror Runtime's transport-free legacy mode normalization for display."""
     mode_text = canonicalize_mode_text(raw_mode)
+    new_mode = resolve_new_canonical_mode(mode_text)
+    if new_mode is not None:
+        return new_mode
     normalized_work_mode = (
         work_mode.strip().lower() if isinstance(work_mode, str) else ""
     )
@@ -210,16 +215,45 @@ def _resolve_cli_mode(
 
 
 def resolve_display_mode(mode: str, work_mode: str) -> str:
-    """Collapse mode/work_mode into the canonical mode shown by the UI."""
+    """Return Runtime-equivalent mode text in the compact TUI display form."""
     resolved = resolve_request_mode(
         {"mode": mode, "work_mode": work_mode},
         _resolve_cli_mode,
         work_mode=work_mode,
     )
-    return resolved.canonical_mode
+    canonical = str(deprecate_mode(resolved.canonical_mode))
+    return canonical.removesuffix(".normal")
+
+
+def resolve_cli_work_mode(mode: object, work_mode: object) -> str:
+    """Keep Process CLI work mode aligned with modes that encode a profile.
+
+    Legacy composable values such as ``agent`` and ``team`` continue to honor
+    the separate ``--work-mode`` option.  New three-part modes and historical
+    code-profile modes are self-describing, so their embedded profile wins.
+    """
+    mode_text = canonicalize_mode_text(mode)
+    parts = mode_text.split(".")
+    if (
+        len(parts) >= 2
+        and parts[0] in {"agent", "team"}
+        and parts[1] in {"code", "work"}
+    ):
+        return parts[1]
+    if mode_text in {
+        "code",
+        "code.normal",
+        "code.plan",
+        "code.team",
+        TEAM_PLAN_CODE_MODE,
+    }:
+        return "code"
+    normalized = str(work_mode or "").strip().lower()
+    return normalized if normalized in {"code", "work"} else "code"
 
 
 __all__ = [
+    "resolve_cli_work_mode",
     "resolve_configured_model_name",
     "resolve_display_mode",
     "select_configured_model_name",
