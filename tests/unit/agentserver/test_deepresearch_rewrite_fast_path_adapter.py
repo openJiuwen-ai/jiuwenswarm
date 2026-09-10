@@ -364,11 +364,15 @@ def _stream_adapter(fast_path_result: RewriteFastPathResult | None):
     adapter._instance = SimpleNamespace()
     adapter._model = SimpleNamespace(
         model_config=SimpleNamespace(model_name="test-model"),
+        model_client_config=SimpleNamespace(
+            api_key="key", api_base="https://example", client_provider="OpenAI",
+        ),
     )
     adapter._stream_event_rail = None
     adapter._telemetry_rail = None
     adapter._request_summary_rail = None
     adapter._skill_evolution_rail = None
+    adapter._runtime_prompt_rail = None
     adapter._try_skill_turbo_resume = AsyncMock(return_value=None)
     adapter._has_valid_model_config = Mock(return_value=True)
     adapter._on_chat_request_start = AsyncMock(

@@ -4,16 +4,10 @@
 
 from __future__ import annotations
 
-import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from jiuwenclaw.local_env_config import (
-    bind_task_env_overlay,
-    reset_task_env_overlay,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +39,8 @@ def _make_adapter_stub(**kwargs):
         _model_request_config=None,
         _latest_config_base=None,
         _last_sync_env=None,
+        _merge_service_model_cache=lambda: None,
+        _resolve_from_shared_model_cache=lambda name: None,
     )
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -257,13 +253,14 @@ class TestResolveModelForRequestRebuild:
             _latest_config_base=None,
         )
 
-        result = JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))
-
-        # Should fall back to self._model
-        assert result is default_model
+        # No sync env and no service cache — raises ValueError to surface
+        # model_not_found rather than silently falling back to a default
+        # model that may carry placeholder credentials.
+        with pytest.raises(ValueError, match="not found in service model cache"):
+            JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))
 
     def test_cache_miss_falls_back_when_model_name_mismatch(self):
-        """If _last_sync_env has a different MODEL_NAME than requested, fall back."""
+        """If _last_sync_env has a different MODEL_NAME than requested, raise ValueError."""
         from jiuwenclaw.agentserver.deep_agent.interface_deep import JiuWenClawDeepAdapter
 
         default_model = _make_fake_model("default-model")
@@ -274,9 +271,8 @@ class TestResolveModelForRequestRebuild:
             _latest_config_base={"models": {"default": {}}},
         )
 
-        result = JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))
-
-        assert result is default_model
+        with pytest.raises(ValueError, match="not found in service model cache"):
+            JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))
 
     def test_cache_miss_logs_warning_on_fallback(self):
         from jiuwenclaw.agentserver.deep_agent.interface_deep import JiuWenClawDeepAdapter
@@ -289,15 +285,12 @@ class TestResolveModelForRequestRebuild:
             _latest_config_base=None,
         )
 
-        with patch("jiuwenclaw.agentserver.deep_agent.interface_deep.logger") as mock_logger:
-            JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))
-
-        # Should have a WARNING about cache miss and fallback
-        warning_calls = [c for c in mock_logger.warning.call_args_list if "not_in_cache" in str(c)]
-        assert len(warning_calls) >= 1
+        with patch("jiuwenclaw.agentserver.deep_agent.interface_deep.logger"):
+            with pytest.raises(ValueError, match="not found in service model cache"):
+                JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))
 
     def test_rebuild_failure_falls_back_gracefully(self):
-        """If rebuild throws, should fall back to self._model without crashing."""
+        """If rebuild throws, should raise ValueError (not crash with RuntimeError)."""
         from jiuwenclaw.agentserver.deep_agent.interface_deep import JiuWenClawDeepAdapter
 
         default_model = _make_fake_model("your-model-name")
@@ -313,7 +306,5 @@ class TestResolveModelForRequestRebuild:
         )
         adapter._build_model_from_entry = _failing_build
 
-        result = JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))
-
-        # Should fall back to default, not crash
-        assert result is default_model
+        with pytest.raises(ValueError, match="not found in service model cache"):
+            JiuWenClawDeepAdapter._resolve_model_for_request(adapter, self._make_request("glm-5.2"))

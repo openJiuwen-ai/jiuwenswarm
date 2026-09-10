@@ -125,6 +125,7 @@ class TestCreateModelWithEnvOverrides:
             _model=None,
             _model_client_config=None,
             _model_request_config=None,
+            _merge_service_model_cache=lambda: None,
         )
         adapter._build_model_from_entry = _capture_entry
         adapter._build_model_cache_from_defaults = (

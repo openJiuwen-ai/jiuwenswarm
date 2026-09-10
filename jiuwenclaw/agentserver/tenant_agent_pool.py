@@ -86,6 +86,9 @@ class TenantAgentPool:
         self._global_lock = asyncio.Lock()
         self._sync_lock = asyncio.Lock()
         self._last_sync_revision: dict[str, str] = {}
+        self._service_model_cache: dict[str, dict[str, Any]] = {}
+        # Thread-safety: _service_model_cache is written under _sync_lock (sync_agents_configs)
+        # and read from adapter code in asyncio event loop; safe under single-threaded asyncio.
 
         self._last_reload_trace_id: str | None = None
 
@@ -121,8 +124,59 @@ class TenantAgentPool:
             cls._instance._locks.clear()
             cls._instance._lock_loops.clear()
             cls._instance._last_sync_revision.clear()
+            cls._instance._service_model_cache.clear()
         TenantCatalogRegistry.reset_for_tests()
         cls._instance = None
+
+    def _build_service_model_cache(
+        self,
+        service_id: str,
+        models_entries: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Build a shared model cache dict keyed by alias (preferred) or model_name.
+
+        Each entry is stored under a single key: ``alias`` when present,
+        otherwise ``model_name``.  This avoids duplicate Model builds when
+        ``_merge_service_model_cache`` / ``_resolve_from_shared_model_cache``
+        iterate the cache.
+
+        Returns a dict mapping alias/model_name -> model entry dict (not yet
+        resolved into ``Model`` instances; resolution happens in
+        ``JiuWenClawDeepAdapter._merge_service_model_cache`` /
+        ``_resolve_from_shared_model_cache``).
+        """
+        cache: dict[str, Any] = {}
+        for entry in models_entries:
+            mcc = entry.get("model_client_config") or {}
+            model_name = str(mcc.get("model_name") or "").strip()
+            if not model_name:
+                continue
+            alias = str(entry.get("alias") or "").strip()
+            key = alias if alias else model_name
+            if key in cache:
+                logger.warning(
+                    "[TenantAgentPool] _build_service_model_cache: "
+                    "duplicate key=%s in service=%s, last entry wins",
+                    key, service_id,
+                )
+            cache[key] = entry
+        self._service_model_cache[service_id] = cache
+        logger.info(
+            "[TenantAgentPool] built service model cache: service_id=%s entries=%d keys=%d",
+            service_id,
+            len(models_entries),
+            len(cache),
+        )
+        return cache
+
+    def get_service_model_cache(self, service_id: str) -> dict[str, Any]:
+        """Return the shared model cache for ``service_id`` (read-only view).
+
+        Returns an empty dict when ``service_id`` has no cache yet. Callers
+        must not mutate the returned dict in place — the cache is written
+        exclusively under ``_sync_lock`` in ``sync_agents_configs``.
+        """
+        return self._service_model_cache.get(service_id, {})
 
     def _get_lock(self, cache_key: Hashable) -> asyncio.Lock:
         current_loop = asyncio.get_running_loop()
@@ -702,12 +756,18 @@ class TenantAgentPool:
             service_id = validated["service_id"]
             agents_payload = validated["agents"]
             shared_env = validated.get("shared_env")
+            models_payload = validated.get("models")
             if shared_env is not None:
                 logger.info(
                     "[TenantAgentPool] sync_agents_configs shared_env keys=%d service_id=%s",
                     len(shared_env),
                     service_id,
                 )
+
+            if models_payload is not None:
+                self._build_service_model_cache(service_id, models_payload)
+            else:
+                self._service_model_cache.pop(service_id, None)
 
             registry = TenantCatalogRegistry.get_instance()
 

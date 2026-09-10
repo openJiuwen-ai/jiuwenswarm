@@ -1743,6 +1743,186 @@ async def _start_team_stream_round(
     return request_queue
 
 
+def _build_team_model_config(model_config_dict: dict[str, Any]) -> Any:
+    from openjiuwen.agent_teams.schema.deep_agent_spec import TeamModelConfig
+    from openjiuwen.harness.schema.deep_agent_spec import ModelClientConfig, ModelRequestConfig
+
+    mcc = ModelClientConfig.model_validate(
+        model_config_dict.get("model_client_config", {})
+    )
+    mrc_raw = model_config_dict.get("model_request_config")
+    mrc = ModelRequestConfig.model_validate(mrc_raw) if mrc_raw else None
+    return TeamModelConfig(model_client_config=mcc, model_request_config=mrc)
+
+
+async def _apply_resolved_model_to_team(
+    team_name: str,
+    model_config_dict: dict[str, Any],
+) -> None:
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+    from jiuwenclaw.agentserver.team.team_manager import _runner_team_runtime_manager
+
+    team_model = _build_team_model_config(model_config_dict)
+
+    runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
+    active_team = await runtime_mgr.pool.get(team_name)
+    if active_team is None or active_team.agent is None:
+        logger.warning(
+            '[TeamHelpers] _apply_resolved_model_to_team: no active team: team=%s',
+            team_name,
+        )
+        return
+
+    team_agent = active_team.agent
+    model_name = (
+        team_model.model_request_config.model_name
+        if team_model.model_request_config else None
+    )
+
+    # Leader hot-reload — TeamHarness.apply_model_config logs the per-member
+    # "model config applied" line; no need to duplicate it here.
+    leader_harness = getattr(team_agent, 'harness', None)
+    if leader_harness is not None and hasattr(leader_harness, 'apply_model_config'):
+        leader_harness.apply_model_config(team_model)
+    else:
+        logger.warning(
+            '[TeamHelpers] leader harness not ready for hot-reload: '
+            'leader_harness_is_none=%s team=%s',
+            leader_harness is None,
+            team_name,
+        )
+
+    # Teammate hot-reload only applies to in-process teammates
+    # (spawn_mode='inprocess' / external_cli). The default spawn_mode is
+    # 'process' (subprocess), whose handles carry no agent_ref — those
+    # teammates cannot be hot-reloaded and will pick up the new model on
+    # their next spawn via build_context_from_db (which reads the spec's
+    # predefined_members / model_pool reinjected by TeamRuntimeManager
+    # on RESUME_FROM_PAUSE, or by recover_from_session on COLD_RECOVER).
+    spawn_mgr = getattr(team_agent, 'spawn_manager', None)
+    if spawn_mgr is not None:
+        handles = getattr(spawn_mgr, 'spawned_handles', {}) or {}
+        for member_name in list(handles.keys()):
+            handle = handles[member_name]
+            member_agent = getattr(handle, 'agent_ref', None)
+            if member_agent is None:
+                # subprocess teammate — graceful skip; cold-resume path
+                # (build_context_from_db) will apply the switch on re-spawn.
+                continue
+            member_harness = getattr(member_agent, 'harness', None)
+            if member_harness is not None and hasattr(member_harness, 'apply_model_config'):
+                member_harness.apply_model_config(team_model)
+
+    logger.info(
+        '[TeamHelpers] model applied to team: team=%s model_name=%s',
+        team_name,
+        model_name,
+    )
+
+
+async def _reset_team_model_to_per_role_default(
+    team_name: str,
+    spec: Any,
+    *,
+    config_base: dict[str, Any] | None = None,
+) -> None:
+    """Reset leader + in-process teammate harnesses to their per-role default model.
+
+    Invoked on team-mode chat.send WITHOUT model_name so in-process teammates that
+    were hot-switched to a non-default model (via _apply_resolved_model_to_team on
+    a prior request carrying model_name) are hot-reloaded back to their per-role
+    default declared in ``spec.agents[role].model``. Subprocess teammates are
+    unaffected (no agent_ref) and will pick up the default on next spawn via
+    build_context_from_db which reads the freshly rebuilt spec.
+
+    For each role:
+      - If ``spec.agents[role].model`` is a TeamModelConfig → apply it directly.
+      - If None (yaml did not declare a per-role model) → fall back to
+        ``get_default_models(config_base)[0]`` rebuilt via _build_team_model_config
+        so the member still gets a usable default rather than staying on the
+        previously-switched model.
+    """
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+    from jiuwenclaw.agentserver.team.team_manager import _runner_team_runtime_manager
+    from jiuwenclaw.config import get_default_models
+
+    runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
+    active_team = await runtime_mgr.pool.get(team_name)
+    if active_team is None or active_team.agent is None:
+        logger.info(
+            '[TeamHelpers] reset to per-role default skipped: no active team team=%s',
+            team_name,
+        )
+        return
+
+    agents_spec = getattr(spec, 'agents', None) if spec is not None else None
+    if not isinstance(agents_spec, dict):
+        logger.warning(
+            '[TeamHelpers] reset to per-role default: spec.agents not a dict, skip team=%s',
+            team_name,
+        )
+        return
+
+    fallback_model: Any = None
+    try:
+        entries = get_default_models(config_base)
+        if entries:
+            base_entry = entries[0]
+            fallback_model = _build_team_model_config({
+                "model_client_config": base_entry.get("model_client_config", {}),
+                "model_request_config": base_entry.get("model_config_obj") or {},
+            })
+    except Exception as exc:
+        logger.warning(
+            '[TeamHelpers] reset to per-role default: fallback model build failed team=%s error=%s',
+            team_name, exc,
+        )
+
+    team_agent = active_team.agent
+
+    def _resolve_role_model(role_value: str) -> Any | None:
+        role_model = None
+        role_spec = agents_spec.get(role_value)
+        if role_spec is not None:
+            role_model = getattr(role_spec, 'model', None)
+        if role_model is None and fallback_model is not None:
+            role_model = fallback_model
+        return role_model
+
+    # Leader hot-reload
+    leader_role = 'leader'
+    leader_harness = getattr(team_agent, 'harness', None)
+    if leader_harness is not None and hasattr(leader_harness, 'apply_model_config'):
+        leader_model = _resolve_role_model(leader_role)
+        if leader_model is not None:
+            leader_harness.apply_model_config(leader_model)
+
+    # In-process teammate hot-reload (subprocess teammates have no agent_ref)
+    spawn_mgr = getattr(team_agent, 'spawn_manager', None)
+    if spawn_mgr is not None:
+        handles = getattr(spawn_mgr, 'spawned_handles', {}) or {}
+        for member_name in list(handles.keys()):
+            handle = handles[member_name]
+            member_agent = getattr(handle, 'agent_ref', None)
+            if member_agent is None:
+                continue
+            member_harness = getattr(member_agent, 'harness', None)
+            if member_harness is None or not hasattr(member_harness, 'apply_model_config'):
+                continue
+            role_obj = getattr(member_agent, 'role', None)
+            role_value = getattr(role_obj, 'value', None) or str(role_obj or '')
+            role_model = _resolve_role_model(role_value)
+            if role_model is None:
+                continue
+            member_harness.apply_model_config(role_model)
+
+    logger.info(
+        '[TeamHelpers] reset to per-role default applied: team=%s roles=%s',
+        team_name,
+        sorted(agents_spec.keys()),
+    )
+
+
 async def process_team_message_stream(request: Any,
                                       inputs: dict[str,
                                                    Any],
@@ -1893,6 +2073,10 @@ async def process_team_message_stream(request: Any,
         params_obj = getattr(request, 'params', None)
         requested_model_name = (str(params_obj.get('model_name') or '').strip()
                                 if isinstance(params_obj, dict) else '') or None
+        _resolved_model_config = (
+            params_obj.get('_resolved_model_config')
+            if isinstance(params_obj, dict) else None
+        )
         # Bound expert team: relay chat.send params.team_name → modes.team template key.
         # Without this, load_team_spec_dict always picks the first modes.team entry
         # (often a preset), ignoring the thread-bound user team.
@@ -1919,6 +2103,101 @@ async def process_team_message_stream(request: Any,
             channel_id=channel_id,
         )
         _persist_team_file_monitor_roots(session_id, team_spec)
+
+        if _resolved_model_config is not None:
+            team_model = _build_team_model_config(_resolved_model_config)
+            model_name = (
+                team_model.model_request_config.model_name
+                if team_model.model_request_config else ''
+            )
+            leader_spec = getattr(team_spec, 'leader', None)
+            if leader_spec is not None and model_name:
+                leader_spec.model_name = model_name
+            # 覆盖所有 role（leader + teammate + human_agent 等）的 model，
+            # 不只是 leader。_reinject_runtime_model_fields 在 RESUME_FROM_PAUSE /
+            # COLD_RECOVER 时只在 live_agent_spec.model is not None 时覆盖恢复后
+            # spec 的 agents[role].model；如果这里只设 leader，teammate role 的
+            # model 仍为 YAML 默认（None），reinject 跳过，teammate re-spawn 时
+            # resolve_member_model 未命中 pool 就走 agent_spec.model 回退到
+            # YAML 默认模型（如 glm-5.2），导致 teammate 模型不随切换变更。
+            agents = getattr(team_spec, 'agents', None)
+            if isinstance(agents, dict):
+                for agent_spec_entry in agents.values():
+                    agent_spec_entry.model = team_model
+                logger.info(
+                    '[TeamHelpers] agent model set from request: model_name=%s session_id=%s',
+                    model_name,
+                    session_id,
+                )
+            existing_pool = list(getattr(team_spec, 'model_pool', None) or [])
+            already_in_pool = any(
+                getattr(e, 'model_name', '') == model_name
+                for e in existing_pool
+                if isinstance(e, object)
+            )
+            if not already_in_pool and model_name:
+                from openjiuwen.agent_teams.schema.team import ModelPoolEntry
+                mcc = _resolved_model_config.get("model_client_config", {})
+                mco = _resolved_model_config.get("model_request_config") or {}
+                # client_provider is already a plain string here: interface_deep
+                # serializes the live ModelClientConfig via model_dump(mode="json"),
+                # which stringifies ProviderType enums. No need to handle the enum
+                # branch defensively.
+                _provider_str = mcc.get('client_provider', '') or ''
+                excluded = ('model_name', 'api_key', 'api_base', 'client_provider')
+                client_extra = {}
+                for k, v in mcc.items():
+                    if k not in excluded and v is not None:
+                        client_extra[k] = v
+                pool_entry = ModelPoolEntry(
+                    model_name=model_name,
+                    api_key=mcc.get('api_key', ''),
+                    api_base_url=mcc.get('api_base', ''),
+                    api_provider=_provider_str,
+                    metadata={
+                        'client': client_extra,
+                        'request': dict(mco) if isinstance(mco, dict) else {},
+                    },
+                )
+                existing_pool.append(pool_entry)
+                team_spec.model_pool = existing_pool
+                if not getattr(team_spec, 'model_pool_strategy', ''):
+                    team_spec.model_pool_strategy = 'by_model_name'
+                logger.info(
+                    '[TeamHelpers] model injected into pool: model_name=%s pool_size=%d',
+                    model_name,
+                    len(existing_pool),
+                )
+            # ── 覆盖 predefined_members 的 model_name，使 teammate spawn 时
+            #    allocator 能从注入的 pool 命中请求模型 ──
+            #    resolve_member_model 在 model_name 为空时返回 None，teammate 会
+            #    走 agent_spec.model 回退（配置默认 glm-5.2），而非 pool 里的请求
+            #    模型。给每个 predefined member 设 model_name = 请求模型，spawn 时
+            #    get_member_model_ref 拿到该名，resolve_member_model 从 pool 命中。
+            predefined_members = getattr(team_spec, 'predefined_members', None) or []
+            if model_name:
+                for member in predefined_members:
+                    try:
+                        member.model_name = model_name
+                    except Exception as exc:
+                        # PredefinedMemberSpec / BridgeMemberSpec are not frozen,
+                        # so an assignment failure here is likely a real bug
+                        # (type mismatch, validation error, etc.) — log it so the
+                        # teammate doesn't silently fall back to the default model.
+                        logger.warning(
+                            '[TeamHelpers] failed to set predefined member model_name: '
+                            'member=%s model_name=%s error=%s',
+                            getattr(member, 'member_name', '?'),
+                            model_name,
+                            exc,
+                        )
+                if predefined_members:
+                    logger.info(
+                        '[TeamHelpers] predefined members model_name set: '
+                        'model_name=%s count=%d',
+                        model_name,
+                        len(predefined_members),
+                    )
     except Exception as exc:
         logger.exception('[TeamHelpers] TeamAgent create failed: %s', exc)
         yield AgentResponseChunk(
@@ -1930,6 +2209,45 @@ async def process_team_message_stream(request: Any,
         yield AgentResponseChunk(request_id=rid, channel_id=channel_id, payload=None, is_complete=True)
         return
     team_name = team_spec.team_name
+    # ── 运行时模型热重载（对所有路径统一执行） ──
+    # resume_from_pause 场景下 is_first_request=True，但 team runtime 已存在且不会 rebuild，
+    # 此时 spec 覆盖（上文的 agents["leader"].model = ...）不生效，必须靠热重载
+    # `_apply_resolved_model_to_team` → `TeamHarness.apply_model_config` 才能让 leader/
+    # in-process teammate 的 NativeHarness 立即换模型。冷启动时 team 还没 build，
+    # `_apply_resolved_model_to_team` 内部 pool.get 返回 None 会 warning + return（无害），
+    # 此时由上文的 spec 覆盖在 build 时生效。两条路径互补。
+    if _resolved_model_config is not None and team_name:
+        try:
+            await _apply_resolved_model_to_team(team_name, _resolved_model_config)
+        except Exception as exc:
+            logger.warning(
+                '[TeamHelpers] runtime model switch failed: '
+                'session_id=%s error=%s',
+                session_id,
+                exc,
+            )
+    elif team_name and is_first_request:
+        # New conversation (is_first_request) WITHOUT model_name → reset
+        # leader + in-process teammate harnesses to their per-role default so a
+        # prior hot-switch (carried by a previous request with model_name) does
+        # not linger. This covers both truly-cold starts and same-session new
+        # queries that jiuwen resolves to RESUME_FROM_PAUSE (relay reuses the
+        # session id). A genuine pause-resume that wants to keep the switched
+        # model is NOT affected: relay carries model_name on resume, so it
+        # enters the `if _resolved_model_config is not None` branch above
+        # (apply), not this else. Follow-up replies (is_first_request=False,
+        # e.g. tool confirmations) are also excluded by the is_first_request
+        # guard. Subprocess teammates are unaffected and will read the freshly
+        # rebuilt spec on next spawn. Cold start (team not built yet) is a no-op.
+        try:
+            await _reset_team_model_to_per_role_default(team_name, team_spec)
+        except Exception as exc:
+            logger.warning(
+                '[TeamHelpers] runtime model reset to per-role default failed: '
+                'session_id=%s error=%s',
+                session_id,
+                exc,
+            )
     try:
         team_manager.ensure_leader_prompt_skills_ready_for_session(
             session_id,
@@ -1981,6 +2299,8 @@ async def process_team_message_stream(request: Any,
                         resume_from_pause,
                     )
                 else:
+                    # 运行时热重载已在 team_name 解析后统一执行（resume_from_pause /
+                    # follow-up 均覆盖），此处不再重复调用。
                     success, reason = await team_manager.interact(session_id, query)
                     first_request_ready = False
                     boundary_resume = False
