@@ -940,6 +940,8 @@ permissions:
   enabled: true
   schema: tiered_policy
   permission_mode: normal
+  # Host-only switch: load command/file/network builtin rules from agent-core.
+  package_builtin_rules: true
   shell_guard:
     unknown_structure: false
     interpreter_sink: false
