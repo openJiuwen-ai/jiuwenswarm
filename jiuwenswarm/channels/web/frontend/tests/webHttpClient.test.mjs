@@ -172,6 +172,8 @@ const ENTERPRISE_ASSEMBLE = [
   ['connection.status', 'GET', '/api/v1/connection/status', {}, 'unary'],
   ['session.list', 'GET', '/api/v1/sessions', { limit: 20, offset: 0 }, 'unary'],
   ['session.create', 'POST', '/api/v1/sessions', { mode: 'agent' }, 'unary'],
+  ['session.delete', 'DELETE', '/api/v1/sessions/sid', { session_id: 'sid' }, 'unary'],
+  ['session.rename', 'PATCH', '/api/v1/sessions/sid', { session_id: 'sid', name: 'renamed' }, 'unary'],
   ['history.get', 'GET', '/api/v1/sessions/sid/history', { session_id: 'sid', page_idx: 1 }, 'history-stream'],
   ['chat.send', 'POST', '/api/v1/chat/completions', { session_id: 'sid', query: 'hi' }, 'sse'],
   ['chat.interrupt', 'POST', '/api/v1/chat/sid/actions/interrupt', { session_id: 'sid', intent: 'pause' }, 'unary'],
@@ -184,12 +186,14 @@ const ENTERPRISE_ASSEMBLE = [
   ['locale.get_conf', 'GET', '/api/v1/locale', {}, 'unary'],
   ['locale.set_conf', 'PUT', '/api/v1/locale', { preferred_language: 'zh' }, 'unary'],
   ['cron.job.list', 'GET', '/api/v1/cron/jobs', {}, 'unary'],
+  ['cron.job.create', 'POST', '/api/v1/cron/jobs', { name: 'new-job' }, 'unary'],
   ['cron.job.get', 'GET', '/api/v1/cron/jobs/job-1', { id: 'job-1' }, 'unary'],
   ['cron.job.update', 'PATCH', '/api/v1/cron/jobs/job-1', { id: 'job-1', patch: { name: 'n' } }, 'unary'],
   ['cron.job.delete', 'DELETE', '/api/v1/cron/jobs/job-1', { id: 'job-1' }, 'unary'],
   ['cron.job.toggle', 'POST', '/api/v1/cron/jobs/job-1/actions/toggle', { id: 'job-1', enabled: true }, 'unary'],
   ['cron.job.preview', 'POST', '/api/v1/cron/jobs/job-1/actions/preview', { id: 'job-1', count: 3 }, 'unary'],
   ['cron.job.run_now', 'POST', '/api/v1/cron/jobs/job-1/actions/run-now', { id: 'job-1' }, 'unary'],
+  ['skills.list', 'GET', '/api/v1/skills', {}, 'unary'],
   ['skills.enterprise.list', 'GET', '/api/v1/skills/enterprise', {}, 'unary'],
   ['skills.enterprise.install', 'POST', '/api/v1/skills/enterprise/actions/install', { url: 'http://x' }, 'unary'],
   ['skills.enterprise.uninstall', 'POST', '/api/v1/skills/enterprise/actions/uninstall', { name: 's' }, 'unary'],
@@ -210,7 +214,7 @@ const ENTERPRISE_ASSEMBLE = [
 ];
 
 test('every enterprise mapped method assembles verb+url+kind', () => {
-  assert.equal(ENTERPRISE_ASSEMBLE.length, 38);
+  assert.equal(ENTERPRISE_ASSEMBLE.length, 42);
   const seen = new Set();
   for (const [method, verb, url, params, kind] of ENTERPRISE_ASSEMBLE) {
     seen.add(method);
@@ -318,14 +322,10 @@ test('unmapped A2 and personal methods stay null', () => {
     'files.get',
     'tts.synthesize',
     'command.goal',
-    'session.delete',
-    'session.rename',
-    'cron.job.create',
     'config.set',
     'chat.resume',
     'permissions.tools.get',
     'harness.packages',
-    'skills.list',
   ];
   for (const method of unmapped) {
     assert.equal(assembleWebRest(method, { session_id: 's', id: '1', name: 'n' }, BASE), null, method);

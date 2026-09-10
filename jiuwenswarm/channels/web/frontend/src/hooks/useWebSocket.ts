@@ -2584,7 +2584,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // In team mode the backend suppresses chat.final while the team is
         // still running and only sends chat.processing_status(is_complete=true)
         // on team.completed, so we must NOT reset isProcessing here.
-        if (!useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) {
+        // 企业版错误后的 final 只是回复段收尾，保留错误并等待任务终态/错误 EOF 兜底。
+        if (
+          !useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory &&
+          !(isEnterprise() && getWebTransport() === 'http' && useChatStore.getState().getRuntime(sessionId)?.executionError)
+        ) {
           useChatStore.getState().setExecutionError(sessionId, null);
           if (currentMode !== 'team') {
             // 有 active Goal 时，普通问答轮和 Goal 后续执行走同一条流；这次 chat.final 可能只是
@@ -3275,6 +3279,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const payload = event.payload;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        // HTTP 错误流 EOF 的本地兜底只收尾所属请求，不能终止后续新任务。
+        const errorEof = isEnterprise() && payload.source === 'http_error_eof';
+        if (
+          errorEof &&
+          (!shouldHandleCurrentRequestEvent(event) || !useChatStore.getState().getRuntime(sessionId)?.isProcessing)
+        ) {
+          return;
+        }
         // supplement 流认领：后端 supplement 后新 chat.send 的 request_id 含 interrupt id
         const eventRid = typeof event.request_id === 'string' ? event.request_id.trim() : '';
         if (eventRid) {
@@ -3319,6 +3331,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             useChatStore.getState().settlePendingToolExecutions(sessionId);
           }
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
+
+          // EOF 不是后端任务完成确认，只复用展示收尾，不触发队列发送。
+          if (errorEof) return;
 
           // 检查是否有等待的任务队列
           const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -4189,6 +4204,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     updateSession,
     resolveEventSessionId,
     shouldDropDuplicatedEvent,
+    shouldHandleCurrentRequestEvent,
     shouldRecoverProcessingFromReasoning,
     t,
     takeTeamMemberOutputEventId,
