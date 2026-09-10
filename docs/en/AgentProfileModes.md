@@ -84,6 +84,24 @@ A `profile=flash dropped rails: [...]` line confirms flash is active.
 
 ---
 
+## ⚠️ Free-roaming rails: rails the keep/drop list cannot reach
+
+The `rails.keep`/`drop` list **only governs the 31 `_RailBuildInfo` entries in `_build_agent_rails`**. Some rails are not in that table and register via "another path" that the profile's keep/drop list never touches; each must be turned off by its own gate:
+
+| rail | registration path | gate switch | flash handling |
+|---|---|---|---|
+| SkillEvolutionRail | `_reconcile_evolution_rails` → `configure_skill_evolution_runtime` | `evolution.skill_evolution` (read by `get_evolution_enabled`) | `false` turns it off ✅ (configured) |
+| ContextAssembleRail | `_update_agent_rails` direct `register_rail` | agent mode (no config switch) | **keep** — core rail; injects workspace dir/context/tools sections into the system prompt; disabling breaks the agent |
+| SkillCreateRail | separate `_build_skill_create_rail` | `skill_create` + `enable_task_loop` | `skill_create:false` (configured) + `task_loop:false` double-gate |
+| TaskCompletionRail | openjiuwen framework auto-inject | `enable_task_loop=true` | `task_loop:false` → not injected ✅ |
+| ObservabilityRail / AgentTraceBindingRail | framework standing rail (unconditional) | none | not filterable (framework-level) |
+
+**SkillEvolutionRail is the easiest trap**: it is gated by `react.evolution.skill_evolution`, **not** `skill_create`/`review_trigger`. Setting only the latter two to false still leaves SkillEvolutionRail registered with `signal_trigger=True` (the log prints `SkillEvolutionRail configured`). You must set `evolution.skill_evolution: false` explicitly to turn it off.
+
+**Verify SkillEvolutionRail is off**: after restart the `SkillEvolutionRail configured` line should be gone (`grep -c` returns 0).
+
+---
+
 ## ⚠️ Pitfall: new config keys must also exist in the template, or they get pruned on restart
 
 At startup the sidecar runs config migration `migrate_config_from_template` (`jiuwenswarm/common/config.py`), a three-way merge where the **`resources/config.yaml` template is the structural authority: keys absent from the template are pruned as deprecated** (`_deep_merge` iterates only template keys; user-only keys are dropped; migration also `yaml.safe_dump`s the file, stripping comments).

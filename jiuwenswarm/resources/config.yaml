@@ -1593,6 +1593,12 @@ agent_profiles:
     react:
       enable_task_loop: false
       evolution:
+        # skill_evolution is read by get_evolution_enabled, which gates the
+        # free-roaming SkillEvolutionRail (registered via configure_skill_evolution_runtime,
+        # NOT via the _build_agent_rails keep/drop list). Setting it false here is the
+        # only way to keep SkillEvolutionRail out of flash mode — the keep/drop
+        # list cannot reach it.
+        skill_evolution: false
         skill_create: false
         review_trigger: false
     rails:

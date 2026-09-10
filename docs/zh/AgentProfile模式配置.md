@@ -84,6 +84,24 @@ agent_profiles:
 
 ---
 
+## ⚠️ 游离 rail：keep/drop 白名单管不到的 rail
+
+`rails.keep`/`drop` 白名单**只管 `_build_agent_rails` 那张 31 条 `_RailBuildInfo` 表**。有些 rail 不在这张表里、走"另一条注册路径"，profile 的 keep/drop 完全碰不到它们，必须用各自的门控开关单独关：
+
+| rail | 注册路径 | 门控开关 | flash 处理 |
+|---|---|---|---|
+| SkillEvolutionRail | `_reconcile_evolution_rails` → `configure_skill_evolution_runtime` | `evolution.skill_evolution`（`get_evolution_enabled` 读） | `false` 关掉 ✅（已配） |
+| ContextAssembleRail | `_update_agent_rails` 直接 `register_rail` | agent mode（无 config 开关） | **保留**——核心必需 rail，注入 workspace 目录/context/工具段到 system prompt，关掉会破坏 agent |
+| SkillCreateRail | 单独 `_build_skill_create_rail` | `skill_create` + `enable_task_loop` | `skill_create:false`（已配）+ `task_loop:false` 双关 |
+| TaskCompletionRail | openjiuwen framework auto-inject | `enable_task_loop=true` | `task_loop:false` 自然不注入 ✅ |
+| ObservabilityRail / AgentTraceBindingRail | framework standing rail（无条件） | 无 | 不可过滤（框架级行为） |
+
+**SkillEvolutionRail 是最容易踩的坑**：它由 `react.evolution.skill_evolution` 门控，**不是** `skill_create`/`review_trigger`。flash profile 只设后两者为 false 时，SkillEvolutionRail 仍会以 `signal_trigger=True` 注册（日志会打印 `SkillEvolutionRail configured`）。必须显式设 `evolution.skill_evolution: false` 才真正关掉。
+
+**验证 SkillEvolutionRail 已关**：重启后日志里 `SkillEvolutionRail configured` 行应消失（`grep -c` 返回 0）。
+
+---
+
 ## ⚠️ 踩坑：新 config key 必须同时进模板，否则重启被 prune
 
 sidecar 启动会执行 config 迁移 `migrate_config_from_template`（`jiuwenswarm/common/config.py`），做三方合并：**`resources/config.yaml` 模板是结构权威，模板里没有的 key 会被当废弃字段剪掉**（`_deep_merge` 只迭代模板 key，user-only key 直接丢弃；迁移还会 `yaml.safe_dump` 重写文件，注释一并清除）。
