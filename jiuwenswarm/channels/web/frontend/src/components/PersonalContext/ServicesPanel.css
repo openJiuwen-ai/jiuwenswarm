@@ -200,6 +200,15 @@
   display: block;
 }
 
+/* GitCode 彩色方形 logo 四周留白，避免贴边（与其他 SVG 图标的全幅占满区分）。 */
+.pc-services__cat-icon--gitcode img {
+  width: 100%;
+  height: 100%;
+  padding: 7px;
+  box-sizing: border-box;
+  object-fit: contain;
+}
+
 .pc-services__cat-name {
   flex: 1;
   font-size: 14px;
@@ -284,6 +293,14 @@
   width: 40px;
   height: 40px;
   display: block;
+}
+
+.pc-services__list-icon--gitcode img {
+  width: 100%;
+  height: 100%;
+  padding: 7px;
+  box-sizing: border-box;
+  object-fit: contain;
 }
 
 .pc-services__list-title {

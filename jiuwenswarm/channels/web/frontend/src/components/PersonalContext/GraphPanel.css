@@ -183,27 +183,35 @@
   flex-shrink: 0;
 }
 
-/* 主区域：左侧面板 + 画布 + 右侧详情 */
+/* 主区域：画布铺满，左右面板浮动其上 */
 .pc-graph__main {
   flex: 1;
   min-height: 0;
-  display: flex;
-  gap: 12px;
+  position: relative;
   overflow: hidden;
 }
 
-/* 侧边面板：r16 白底带阴影 */
+/* 侧边面板：浮动于画布左上，r16 白底带阴影 */
 .pc-graph__tree {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  bottom: 12px;
   width: 296px;
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
   padding: 12px;
-  flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  z-index: 2;
+}
+
+/* 树内容收起后：面板收缩到头部高度，不再铺满整列 */
+.pc-graph__tree--collapsed {
+  bottom: auto;
 }
 
 /* 固定头部：页签 + 搜索框，不随内容滚动 */
@@ -257,6 +265,32 @@
   font-size: 18px;
   font-weight: 600;
   color: #191919;
+}
+
+/* 树内容展开/收起按钮：靠右 */
+.pc-graph__tree-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #808080;
+  flex-shrink: 0;
+}
+
+.pc-graph__tree-collapse:hover {
+  color: #191919;
+}
+
+.pc-graph__tree-collapse-icon {
+  transition: transform 0.15s ease;
+}
+
+.pc-graph__tree-collapse-icon--expanded {
+  transform: rotate(180deg);
 }
 
 .pc-graph__tree-list {
@@ -336,12 +370,12 @@
   white-space: nowrap;
 }
 
-/* 画布区域：r16 白底 */
+/* 画布区域：铺满主区域，r16 白底 */
 .pc-graph__canvas-wrap {
-  flex: 1;
-  min-width: 0;
+  position: absolute;
+  inset: 0;
   display: flex;
-  position: relative;
+  flex-direction: column;
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
@@ -367,19 +401,83 @@
   background: #ffffff;
 }
 
-/* 详情面板 */
+/* 图例：主区域底部居中，透明容器水平排布四项 */
+.pc-graph__legend {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 3;
+}
+
+/* 每个图例项：独立白底胶囊描边 */
+.pc-graph__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 22px;
+  border-radius: 99px;
+  background: #ffffff;
+  border: 1px solid #e6e6e6;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+
+/* 图例节点圆点：8×8，颜色对齐画布调色板（根=紫 / 目录=橙 / 文档=灰） */
+.pc-graph__legend-node {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pc-graph__legend-node--root {
+  background: #a5acff;
+}
+
+.pc-graph__legend-node--folder {
+  background: #ff9600;
+}
+
+.pc-graph__legend-node--doc {
+  background: #cccccc;
+}
+
+/* 图例边：12×0 的水平线（画布 belongs 边蓝） */
+.pc-graph__legend-edge {
+  width: 12px;
+  height: 1px;
+  background: #6fa9ff;
+  flex-shrink: 0;
+}
+
+.pc-graph__legend-text {
+  font-size: 12px;
+  line-height: 18px;
+  color: #191919;
+  white-space: nowrap;
+}
+
+/* 详情面板：浮动于画布右上 */
 .pc-graph__detail {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  bottom: 12px;
   width: 420px;
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
   padding: 16px;
-  flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  position: relative;
+  z-index: 2;
 }
 
 /* 关闭按钮：右上角浮动 */
@@ -482,6 +580,33 @@
   padding: 32px 8px;
 }
 
+/* 来源卡片悬浮弹窗：跟随鼠标，位于锚点下方；可交互（选中文本/点击链接），移入保持、移出延迟收起 */
+.pc-graph__source-popover {
+  position: fixed;
+  z-index: 100;
+  width: max-content;
+  max-width: 340px;
+  user-select: text;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  border-radius: 12px;
+}
+
+.pc-graph__source-popover .pc-graph__source-card {
+  background: #ffffff;
+  border-color: #e6e6e6;
+}
+
+.pc-graph__source-popover-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+  background: #ffffff;
+  border: 1px solid #e6e6e6;
+  border-radius: 12px;
+  color: #808080;
+}
+
 /* 来源详情卡片 */
 .pc-graph__source-card {
   padding: 12px 14px;
@@ -506,16 +631,6 @@
   color: #fff;
   font-size: 12px;
   font-weight: 500;
-}
-
-.pc-graph__source-close {
-  background: transparent;
-  border: none;
-  font-size: 1rem;
-  line-height: 1;
-  cursor: pointer;
-  color: #808080;
-  padding: 0 4px;
 }
 
 .pc-graph__source-title {
@@ -749,8 +864,9 @@
 }
 
 .pc-graph__tree-row--active {
-  background: #f0f0f0;
+  background: #F0F7FF;
   font-weight: 500;
+  color:#1476FF;
 }
 
 /* 文件夹行：semibold */

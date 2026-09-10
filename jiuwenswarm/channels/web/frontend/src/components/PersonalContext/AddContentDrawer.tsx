@@ -15,31 +15,39 @@ import { ChevronDown, Loader2, X } from 'lucide-react';
 import { usePersonalContextStore } from '../../stores';
 import {
   type FetchProvider,
+  type FetchServiceConfig,
   type FeishuMode,
   type FeishuResource,
   type GithubResource,
+  type GitcodeResource,
+  type TimeRange,
   FEISHU_MODES,
   FEISHU_RESOURCE_LABEL_KEYS,
   FEISHU_RESOURCES,
   FREQUENCY_SECONDS,
   GITHUB_RESOURCE_LABEL_KEYS,
   GITHUB_RESOURCES,
+  GITCODE_RESOURCE_LABEL_KEYS,
+  GITCODE_RESOURCES,
+  INTERVAL_MAX_SECONDS,
   MAX_ITEMS_MAX,
   MAX_ITEMS_MIN,
   PROVIDER_LABEL_KEYS,
   PROVIDER_ORDER,
-  getGithubToken,
   parseGithubRepoUrl,
+  parseGitcodeRepoUrl,
   validateServiceId,
   validateToutiaoProfileUrl,
   validateZhihuColumnUrl,
 } from '../../services/personalContextApi';
+import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
 import zhihuIcon from '../../assets/settings/channels/zhihu.svg';
 import toutiaoIcon from '../../assets/settings/channels/toutiao.svg';
 import feishuIcon from '../../assets/settings/channels/feishu.svg';
 import githubIcon from '../../assets/settings/channels/GitHub.svg';
+import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
 import './AddContentDrawer.css';
 
 const PROVIDER_ICON: Record<FetchProvider, string> = {
@@ -49,69 +57,123 @@ const PROVIDER_ICON: Record<FetchProvider, string> = {
   toutiao_reader: toutiaoIcon,
   feishu: feishuIcon,
   github: githubIcon,
+  gitcode: gitcodeIcon,
 };
 
 interface AddContentDrawerProps {
   /** 从内容页级联分类带入的预选 provider；缺省回退到首个。 */
   initialProvider?: FetchProvider;
+  /** 传入则进入「编辑」模式：名称/来源锁定，只改参数，提交走保存而非新建。 */
+  editService?: FetchServiceConfig | null;
   onClose: () => void;
   onCreated: () => void;
 }
 
-export function AddContentDrawer({ initialProvider, onClose, onCreated }: AddContentDrawerProps) {
+/** 由 interval_seconds 反推频率单位与数值（创建时用 day=86400 才回填得干净）。 */
+function freqFromSeconds(sec: number): { unit: 'hour' | 'day'; value: number } {
+  if (sec % FREQUENCY_SECONDS.day === 0) {
+    return { unit: 'day', value: Math.max(1, sec / FREQUENCY_SECONDS.day) };
+  }
+  return { unit: 'hour', value: Math.max(1, Math.round(sec / FREQUENCY_SECONDS.hour)) };
+}
+
+/** 给定频率单位下的数值上限，对齐后端 interval_seconds le=31_536_000（day=365 / hour=8760）。 */
+function maxFreqValue(unit: 'hour' | 'day'): number {
+  return Math.floor(INTERVAL_MAX_SECONDS / FREQUENCY_SECONDS[unit]);
+}
+
+/** 把频率数值钳制到 [1, 单位上限]，单位切换时也据此收敛（day↔hour 上限不同）。 */
+function clampFreq(value: number, unit: 'hour' | 'day'): number {
+  return Math.min(maxFreqValue(unit), Math.max(1, value));
+}
+
+/**
+ * 由后端 time_range 反推时间范围表单态。
+ * 新建任务（无 time_range）默认「最近三个月」（recent 90 天），而非自定义。
+ */
+function timeRangeFromConfig(tr?: TimeRange): {
+  timeRange: 'week' | 'month' | 'quarter' | 'custom';
+  customStart: string;
+  customEnd: string;
+} {
+  if (tr?.mode === 'fixed') {
+    return {
+      timeRange: 'custom',
+      customStart: rfc3339ToLocalDate(tr.start_at),
+      customEnd: rfc3339ToLocalDate(tr.end_at, true),
+    };
+  }
+  if (tr?.mode === 'recent') {
+    if (tr.recent_days === 7) return { timeRange: 'week', customStart: '', customEnd: '' };
+    if (tr.recent_days === 30) return { timeRange: 'month', customStart: '', customEnd: '' };
+    if (tr.recent_days === 90) return { timeRange: 'quarter', customStart: '', customEnd: '' };
+  }
+  return { timeRange: 'quarter', customStart: '', customEnd: '' };
+}
+
+export function AddContentDrawer({ initialProvider, editService, onClose, onCreated }: AddContentDrawerProps) {
   const { t } = useTranslation();
-  const { config, createService, pendingWrites, isProviderAuthorized } = usePersonalContextStore();
+  const { config, createService, updateService, pendingWrites, isProviderAuthorized } = usePersonalContextStore();
   const isConfigured = config.collection_enabled === true;
+  const isEdit = !!editService;
 
   // 通用字段
-  // 预选 provider；若未授权则回退到首个已授权的，避免 select 落到 disabled option。
-  const [name, setName] = useState('');
+  const [name, setName] = useState(editService?.service_id ?? '');
   const [provider, setProvider] = useState<FetchProvider>(() => {
+    if (editService) return editService.provider;
     const init = initialProvider ?? 'local_files';
     return isProviderAuthorized(init) ? init : PROVIDER_ORDER.find((p) => isProviderAuthorized(p)) ?? 'local_files';
   });
-  const [freqUnit, setFreqUnit] = useState<'hour' | 'day'>('day');
-  const [freqValue, setFreqValue] = useState(3);
-  const [timeRange, setTimeRange] = useState<'week' | 'month' | 'quarter' | 'custom'>('week');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+  const [freqUnit, setFreqUnit] = useState<'hour' | 'day'>(() => freqFromSeconds(editService?.interval_seconds ?? 3 * FREQUENCY_SECONDS.day).unit);
+  const [freqValue, setFreqValue] = useState(() => freqFromSeconds(editService?.interval_seconds ?? 3 * FREQUENCY_SECONDS.day).value);
+  const [timeRange, setTimeRange] = useState<'week' | 'month' | 'quarter' | 'custom'>(() => timeRangeFromConfig(editService?.time_range).timeRange);
+  const [customStart, setCustomStart] = useState(() => timeRangeFromConfig(editService?.time_range).customStart);
+  const [customEnd, setCustomEnd] = useState(() => timeRangeFromConfig(editService?.time_range).customEnd);
   // 默认 20 条；填值须 [1,10000]
-  const [maxItems, setMaxItems] = useState<number | null>(20);
-const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [maxItems, setMaxItems] = useState<number | null>(editService?.max_items_per_run ?? 20);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [timeDropdownOpen, setTimeDropdownOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
 
   // 分支字段
-  const [rootDir, setRootDir] = useState('');
-  const [columnUrl, setColumnUrl] = useState('');
-  const [profileUrl, setProfileUrl] = useState('');
-  const [edgeProfile, setEdgeProfile] = useState('');
-  const [edgeBookmarksPath, setEdgeBookmarksPath] = useState('');
-  const [edgeFolderList, setEdgeFolderList] = useState<string[]>([]);
-  const [githubRepoUrl, setGithubRepoUrl] = useState('');
-  const [feishuDocIdList, setFeishuDocIdList] = useState<string[]>([]);
-  const [githubResources, setGithubResources] = useState<GithubResource[]>(['readme']);
+  const [rootDir, setRootDir] = useState(() => (editService?.provider === 'local_files' ? String(editService.source.root_dir ?? '') : ''));
+  const [columnUrl, setColumnUrl] = useState(() => (editService?.provider === 'zhihu_reader' ? String(editService.source.column_url ?? '') : ''));
+  const [profileUrl, setProfileUrl] = useState(() => (editService?.provider === 'toutiao_reader' ? String(editService.source.profile_url ?? '') : ''));
+  const [edgeProfile, setEdgeProfile] = useState(() => (editService?.provider === 'browser_bookmarks' ? String(editService.source.profile ?? '') : ''));
+  const [edgeBookmarksPath, setEdgeBookmarksPath] = useState(() => (editService?.provider === 'browser_bookmarks' ? String(editService.source.bookmarks_path ?? '') : ''));
+  const [edgeFolderList, setEdgeFolderList] = useState<string[]>(() => (editService?.provider === 'browser_bookmarks' && Array.isArray(editService.source.bookmark_folder_paths) ? (editService.source.bookmark_folder_paths as string[]) : []));
+  const [githubRepoUrl, setGithubRepoUrl] = useState(() => {
+    if (editService?.provider !== 'github') return '';
+    const owner = String(editService.source.owner ?? '');
+    const repo = String(editService.source.repo ?? '');
+    return owner && repo ? `https://github.com/${owner}/${repo}` : '';
+  });
+  const [feishuDocIdList, setFeishuDocIdList] = useState<string[]>(() => (editService?.provider === 'feishu' && Array.isArray(editService.source.document_ids) ? (editService.source.document_ids as string[]) : []));
+  const [githubResources, setGithubResources] = useState<GithubResource[]>(() => (editService?.provider === 'github' && Array.isArray(editService.source.resources) ? (editService.source.resources as GithubResource[]) : ['readme']));
+  const [gitcodeRepoUrl, setGitcodeRepoUrl] = useState(() => {
+    if (editService?.provider !== 'gitcode') return '';
+    const owner = String(editService.source.owner ?? '');
+    const repo = String(editService.source.repo ?? '');
+    return owner && repo ? `https://gitcode.com/${owner}/${repo}` : '';
+  });
+  const [gitcodeResources, setGitcodeResources] = useState<GitcodeResource[]>(() => (editService?.provider === 'gitcode' && Array.isArray(editService.source.resources) ? (editService.source.resources as GitcodeResource[]) : ['readme']));
   // 飞书：先建 service 再去设置页授权（后端授权需 service 已存在以派生 scope）。
-  const [feishuMode, setFeishuMode] = useState<FeishuMode>('account');
-  const [feishuResources, setFeishuResources] = useState<FeishuResource[]>(['docs']);
-  const [feishuWikiSpaceId, setFeishuWikiSpaceId] = useState('');
-  const [feishuCalendarStart, setFeishuCalendarStart] = useState('');
-  const [feishuCalendarEnd, setFeishuCalendarEnd] = useState('');
+  const [feishuMode, setFeishuMode] = useState<FeishuMode>(() => (editService?.provider === 'feishu' && editService.source.mode === 'wiki_space' ? 'wiki_space' : 'account'));
+  const [feishuResources, setFeishuResources] = useState<FeishuResource[]>(() => (editService?.provider === 'feishu' && Array.isArray(editService.source.resources) ? (editService.source.resources as FeishuResource[]) : ['docs']));
+  const [feishuWikiSpaceId, setFeishuWikiSpaceId] = useState(() => (editService?.provider === 'feishu' ? String(editService.source.wiki_space_id ?? '') : ''));
+  const [feishuCalendarStart, setFeishuCalendarStart] = useState(() => (editService?.provider === 'feishu' ? String(editService.source.start ?? '') : ''));
+  const [feishuCalendarEnd, setFeishuCalendarEnd] = useState(() => (editService?.provider === 'feishu' ? String(editService.source.end ?? '') : ''));
   const [feishuCalendarOpen, setFeishuCalendarOpen] = useState(false);
-  const [feishuWikiDir, setFeishuWikiDir] = useState('');
 
   const [error, setError] = useState<string | null>(null);
-  const submitting = !!pendingWrites.create_service;
+  const submitting = editService ? !!pendingWrites[`patch:${editService.service_id}`] : !!pendingWrites.create_service;
 
   // 飞书允许未授权时新建（先配 service 再授权）；其余 provider 仍需先授权。
   const requiresAuth = provider !== 'feishu';
   const authorized = isProviderAuthorized(provider);
 
-  const canSubmit = useMemo(() => {
-    if (!isConfigured) return false;
-    if (!name.trim() || submitting) return false;
-    if (requiresAuth && !authorized) return false;
-    if (validateServiceId(name)) return false;
+  // 分支表单是否满足提交条件（编辑与新建共用）
+  const branchValid = useMemo(() => {
     if (provider === 'feishu') {
       if (feishuMode === 'wiki_space') return !!feishuWikiSpaceId.trim();
       return feishuResources.length > 0; // account 模式需至少选一项资源
@@ -124,8 +186,22 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
       const parsed = parseGithubRepoUrl(githubRepoUrl);
       return !('error' in parsed) && !!parsed.owner && githubResources.length > 0;
     }
+    if (provider === 'gitcode') {
+      const parsed = parseGitcodeRepoUrl(gitcodeRepoUrl);
+      return !('error' in parsed) && !!parsed.owner && gitcodeResources.length > 0;
+    }
     return false;
-  }, [isConfigured, name, submitting, requiresAuth, authorized, provider, feishuMode, feishuResources, feishuWikiSpaceId, rootDir, columnUrl, profileUrl, githubRepoUrl, githubResources, timeRange, customStart, customEnd]);
+  }, [provider, feishuMode, feishuResources, feishuWikiSpaceId, rootDir, columnUrl, profileUrl, githubRepoUrl, githubResources, gitcodeRepoUrl, gitcodeResources]);
+
+  const canSubmit = useMemo(() => {
+    if (!isConfigured || submitting) return false;
+    if (!branchValid) return false;
+    if (isEdit) return true; // 编辑：名称/来源已锁定，跳过名称与授权校验
+    if (!name.trim()) return false;
+    if (requiresAuth && !authorized) return false;
+    if (validateServiceId(name)) return false;
+    return true;
+  }, [isConfigured, submitting, branchValid, isEdit, name, requiresAuth, authorized]);
 
   const handleSubmit = async () => {
     setError(null);
@@ -133,22 +209,28 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
       setError(t('personalContext.addContent.notConfigured'));
       return;
     }
-    if (requiresAuth && !authorized) {
-      setError(t('personalContext.addContent.providerUnauthorized'));
-      return;
-    }
-    const idErr = validateServiceId(name);
-    if (idErr) {
-      setError(idErr);
-      return;
+    if (!isEdit) {
+      if (requiresAuth && !authorized) {
+        setError(t('personalContext.addContent.providerUnauthorized'));
+        return;
+      }
+      const idErr = validateServiceId(name);
+      if (idErr) {
+        setError(idErr);
+        return;
+      }
     }
     if (maxItems !== null && (maxItems < MAX_ITEMS_MIN || maxItems > MAX_ITEMS_MAX)) {
       setError(t('personalContext.addContent.maxItemsRangeError'));
       return;
     }
+    // 选「自定义」但没挑具体起止日期时不允许创建/保存（否则会静默退化成 mode=all 全量）。
+    if (timeRange === 'custom' && (!customStart || !customEnd)) {
+      setError(t('personalContext.addContent.dateRangeRequired'));
+      return;
+    }
 
     let source: Record<string, unknown> = {};
-    let credentials: Record<string, string> = {};
 
     if (provider === 'local_files') {
       if (!rootDir.trim()) {
@@ -178,14 +260,15 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
         setError(t('personalContext.addContent.github.resourcesRequired'));
         return;
       }
-      // GitHub PAT 从设置页授权的 localStorage 取（后端无 GitHub 授权接口）
-      const token = getGithubToken() ?? '';
-      if (!token) {
-        setError(t('personalContext.addContent.github.tokenMissing'));
+      source = { owner: parsed.owner, repo: parsed.repo, resources: [...githubResources] };
+    } else if (provider === 'gitcode') {
+      const parsed = parseGitcodeRepoUrl(gitcodeRepoUrl);
+      if ('error' in parsed) { setError(parsed.error); return; }
+      if (gitcodeResources.length === 0) {
+        setError(t('personalContext.addContent.gitcode.resourcesRequired'));
         return;
       }
-      source = { owner: parsed.owner, repo: parsed.repo, resources: [...githubResources] };
-      credentials = { token };
+      source = { owner: parsed.owner, repo: parsed.repo, resources: [...gitcodeResources] };
     } else if (provider === 'feishu') {
       // 飞书先建 service（未授权也可建），建完后需去设置页授权。
       // 后端 _normalize_service_source feishu 分支：mode ∈ {account, wiki_space}；
@@ -215,24 +298,38 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
       }
     }
 
+    const intervalSeconds = freqValue * FREQUENCY_SECONDS[freqUnit];
+    const timeRangePayload: TimeRange = (() => {
+      if (timeRange === 'custom' && customStart && customEnd) {
+        return {
+          mode: 'fixed',
+          start_at: dateToStartRFC3339(customStart),
+          end_at: dateToEndRFC3339(customEnd),
+        };
+      }
+      const recentDays = timeRange === 'week' ? 7 : timeRange === 'month' ? 30 : 90;
+      return { mode: 'recent', recent_days: recentDays };
+    })();
+
     try {
-      await createService({
-        service_id: name.trim(),
-        provider,
-        enabled: true,
-        interval_seconds: freqValue * FREQUENCY_SECONDS[freqUnit],
-        max_items_per_run: maxItems ?? 20,
-        time_range: (() => {
-          if (timeRange === 'custom' && customStart && customEnd) {
-            return { mode: 'fixed', start_at: customStart, end_at: customEnd };
-          }
-          if (timeRange === 'custom') return { mode: 'all' };
-          const recentDays = timeRange === 'week' ? 7 : timeRange === 'month' ? 30 : 90;
-          return { mode: 'recent', recent_days: recentDays };
-        })(),
-        source,
-        credentials,
-      });
+      if (editService) {
+        await updateService(editService.service_id, {
+          interval_seconds: intervalSeconds,
+          max_items_per_run: maxItems,
+          time_range: timeRangePayload,
+          source,
+        });
+      } else {
+        await createService({
+          service_id: name.trim(),
+          provider,
+          enabled: true,
+          interval_seconds: intervalSeconds,
+          max_items_per_run: maxItems,
+          time_range: timeRangePayload,
+          source,
+        });
+      }
       onCreated();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -247,7 +344,7 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
         data-testid="pc-add-content-drawer"
       >
         <header className="pc-drawer__head">
-          <h3 className="pc-drawer__title">{t('personalContext.addContent.title')}</h3>
+          <h3 className="pc-drawer__title">{t(isEdit ? 'personalContext.addContent.editTitle' : 'personalContext.addContent.title')}</h3>
           <button type="button" className="pc-drawer__close" onClick={onClose} aria-label="close">
             <X size={18} />
           </button>
@@ -257,53 +354,71 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
           {/* 采集内容名称 */}
           <div className="pc-drawer__field">
             <label>{t('personalContext.addContent.nameLabel')}</label>
-            <input
-              className="pc-drawer__input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t('personalContext.addContent.namePlaceholder')}
-            />
+            {isEdit ? (
+              <div className="pc-drawer__locked">{name}</div>
+            ) : (
+              <input
+                className="pc-drawer__input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={t('personalContext.addContent.namePlaceholder')}
+              />
+            )}
           </div>
 
           {/* 内容采集来源 */}
           <div className="pc-drawer__field">
             <label>{t('personalContext.addContent.providerLabel')}</label>
-            <div className="pc-drawer__provider-grid">
-              {PROVIDER_ORDER.map((p) => {
-                const authed = isProviderAuthorized(p);
-                const disabled = p !== 'feishu' && !authed;
-                const active = provider === p;
-                return (
-                  <button
-                    key={p}
-                    type="button"
-                    className={'pc-drawer__provider-card' + (active ? ' pc-drawer__provider-card--active' : '') + (disabled ? ' pc-drawer__provider-card--disabled' : '')}
-                    onClick={() => { if (!disabled) { setProvider(p); setError(null); } }}
-                    disabled={disabled}
-                  >
-                    <span className="pc-drawer__provider-icon">
-                      <img src={PROVIDER_ICON[p]} alt="" />
-                    </span>
-                    <span className="pc-drawer__provider-name">{t(PROVIDER_LABEL_KEYS[p])}</span>
-                    {disabled && (
-                      <span
-                        className="pc-drawer__provider-authorize"
-                        onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('jiuwen:nav', { detail: 'personalContextSettings' })); onClose(); }}
-                      >
-                        {t('personalContext.authorization.authorize')}
+            {isEdit ? (
+              <div className="pc-drawer__provider-locked">
+                <span className={'pc-drawer__provider-icon' + (provider === 'gitcode' ? ' pc-drawer__provider-icon--gitcode' : '')}>
+                  <img src={PROVIDER_ICON[provider]} alt="" />
+                </span>
+                <span className="pc-drawer__provider-name">{t(PROVIDER_LABEL_KEYS[provider])}</span>
+              </div>
+            ) : (
+              <div className="pc-drawer__provider-grid">
+                {PROVIDER_ORDER.map((p) => {
+                  const authed = isProviderAuthorized(p);
+                  const disabled = p !== 'feishu' && !authed;
+                  const active = provider === p;
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      className={'pc-drawer__provider-card' + (active ? ' pc-drawer__provider-card--active' : '') + (disabled ? ' pc-drawer__provider-card--disabled' : '')}
+                      onClick={() => {
+                        if (disabled) {
+                          // 未授权（GitHub/GitCode）→ 跳设置页授权
+                          requestSettingsModule('personalContext');
+                          onClose();
+                          return;
+                        }
+                        setProvider(p);
+                        setError(null);
+                      }}
+                    >
+                      <span className={'pc-drawer__provider-icon' + (p === 'gitcode' ? ' pc-drawer__provider-icon--gitcode' : '')}>
+                        <img src={PROVIDER_ICON[p]} alt="" />
                       </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-            {provider === 'feishu' && !authorized && (
+                      <span className="pc-drawer__provider-name">{t(PROVIDER_LABEL_KEYS[p])}</span>
+                      {disabled && (
+                        <span className="pc-drawer__provider-authorize">
+                          {t('personalContext.authorization.goAuthorize')}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {!isEdit && provider === 'feishu' && !authorized && (
               <div className="pc-drawer__field-hint">
                 {t('personalContext.addContent.feishu.authorizeAfterCreate')}
                 <button
                   type="button"
                   className="pc-drawer__link"
-                  onClick={() => { window.dispatchEvent(new CustomEvent('jiuwen:nav', { detail: 'personalContextSettings' })); onClose(); }}
+                  onClick={() => { requestSettingsModule('personalContext'); onClose(); }}
                 >
                   {t('personalContext.addContent.goAuthorize')}
                 </button>
@@ -311,7 +426,7 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
             )}
           </div>
 
-          {/* provider 分支表单 */}          {/* provider 分支表单 */}
+          {/* provider 分支表单 */}
           <ProviderFields
             provider={provider}
             rootDir={rootDir} setRootDir={setRootDir}
@@ -322,6 +437,8 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
             edgeFolderList={edgeFolderList} setEdgeFolderList={setEdgeFolderList}
             githubRepoUrl={githubRepoUrl} setGithubRepoUrl={setGithubRepoUrl}
             githubResources={githubResources} setGithubResources={setGithubResources}
+            gitcodeRepoUrl={gitcodeRepoUrl} setGitcodeRepoUrl={setGitcodeRepoUrl}
+            gitcodeResources={gitcodeResources} setGitcodeResources={setGitcodeResources}
             feishuMode={feishuMode} setFeishuMode={setFeishuMode}
             feishuResources={feishuResources} setFeishuResources={setFeishuResources}
             feishuWikiSpaceId={feishuWikiSpaceId} setFeishuWikiSpaceId={setFeishuWikiSpaceId}
@@ -329,7 +446,6 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
             feishuCalendarEnd={feishuCalendarEnd} setFeishuCalendarEnd={setFeishuCalendarEnd}
             feishuCalendarOpen={feishuCalendarOpen} setFeishuCalendarOpen={setFeishuCalendarOpen}
             feishuDocIdList={feishuDocIdList} setFeishuDocIdList={setFeishuDocIdList}
-            feishuWikiDir={feishuWikiDir} setFeishuWikiDir={setFeishuWikiDir}
           />
 
           {/* 高级配置 */}
@@ -408,12 +524,13 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
                       className="pc-drawer__spinner-input"
                       value={freqValue}
                       min={1}
-                      onChange={(e) => setFreqValue(Math.max(1, Number(e.target.value) || 1))}
+                      max={maxFreqValue(freqUnit)}
+                      onChange={(e) => setFreqValue(clampFreq(Number(e.target.value) || 1, freqUnit))}
                     />
                     <button
                       type="button"
                       className="pc-drawer__spinner-btn"
-                      onClick={() => setFreqValue(freqValue + 1)}
+                      onClick={() => setFreqValue(clampFreq(freqValue + 1, freqUnit))}
                     >
                       {'+'}
                     </button>
@@ -421,14 +538,14 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
                   <button
                     type="button"
                     className={'pc-drawer__freq-pill' + (freqUnit === 'hour' ? ' pc-drawer__freq-pill--active' : '')}
-                    onClick={() => setFreqUnit('hour')}
+                    onClick={() => { setFreqUnit('hour'); setFreqValue(clampFreq(freqValue, 'hour')); }}
                   >
                     {t('personalContext.addContent.unitHour')}
                   </button>
                   <button
                     type="button"
                     className={'pc-drawer__freq-pill' + (freqUnit === 'day' ? ' pc-drawer__freq-pill--active' : '')}
-                    onClick={() => setFreqUnit('day')}
+                    onClick={() => { setFreqUnit('day'); setFreqValue(clampFreq(freqValue, 'day')); }}
                   >
                     {t('personalContext.addContent.unitDay')}
                   </button>
@@ -484,7 +601,7 @@ const [advancedOpen, setAdvancedOpen] = useState(false);
             onClick={handleSubmit}
             disabled={!canSubmit}
           >
-            {submitting ? <Loader2 className="spin" size={14} /> : t('personalContext.addContent.submit')}
+            {submitting ? <Loader2 className="spin" size={14} /> : t(isEdit ? 'personalContext.addContent.save' : 'personalContext.addContent.submit')}
           </button>
         </footer>
         <CalendarRangeModal
@@ -518,6 +635,8 @@ interface ProviderFieldsProps {
   edgeFolderList: string[]; setEdgeFolderList: (v: string[]) => void;
   githubRepoUrl: string; setGithubRepoUrl: (v: string) => void;
   githubResources: GithubResource[]; setGithubResources: (v: GithubResource[]) => void;
+  gitcodeRepoUrl: string; setGitcodeRepoUrl: (v: string) => void;
+  gitcodeResources: GitcodeResource[]; setGitcodeResources: (v: GitcodeResource[]) => void;
   feishuMode: FeishuMode; setFeishuMode: (v: FeishuMode) => void;
   feishuResources: FeishuResource[]; setFeishuResources: (v: FeishuResource[]) => void;
   feishuWikiSpaceId: string; setFeishuWikiSpaceId: (v: string) => void;
@@ -525,7 +644,6 @@ interface ProviderFieldsProps {
   feishuCalendarEnd: string; setFeishuCalendarEnd: (v: string) => void;
   feishuCalendarOpen: boolean; setFeishuCalendarOpen: (v: boolean) => void;
   feishuDocIdList: string[]; setFeishuDocIdList: (v: string[]) => void;
-  feishuWikiDir: string; setFeishuWikiDir: (v: string) => void;
 }
 
 
@@ -544,6 +662,26 @@ function parseISO(s: string): Date | null {
   const [y, m, d] = s.split('-').map(Number);
   if (!y || !m || !d) return null;
   return new Date(y, m - 1, d);
+}
+
+/** 后端固定区间存的是带时区的 RFC 3339 时间戳，读回本地日期（end_at 为开区间，回显需减一天）。 */
+function rfc3339ToLocalDate(ts: string, exclusiveEnd = false): string {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  if (exclusiveEnd) d.setDate(d.getDate() - 1);
+  return toISO(d);
+}
+
+/** 把日历选的「YYYY-MM-DD」转成后端 _normalize_rfc3339 要求的带时区时间戳（当日 00:00，UTC 表达）。 */
+function dateToStartRFC3339(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0).toISOString();
+}
+
+/** end_at 语义为开区间：取所选日期次日的 00:00，这样整日都被包含。 */
+function dateToEndRFC3339(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d + 1, 0, 0, 0).toISOString();
 }
 
 function addMonths(d: Date, n: number): Date {
@@ -870,17 +1008,6 @@ function ProviderFields(props: ProviderFieldsProps) {
                 placeholder={t('personalContext.addContent.feishu.wikiSpaceIdPlaceholder')}
               />
             </div>
-
-            {/* Wiki 目录 */}
-            <div className="pc-drawer__field">
-              <label>{t('personalContext.addContent.feishu.wikiDirLabel')}</label>
-              <input
-                className="pc-drawer__input"
-                value={props.feishuWikiDir}
-                onChange={(e) => props.setFeishuWikiDir(e.target.value)}
-                placeholder={t('personalContext.addContent.feishu.wikiDirPlaceholder')}
-              />
-            </div>
           </>
         )}
       </div>
@@ -989,6 +1116,37 @@ function ProviderFields(props: ProviderFieldsProps) {
             labelKey={(r) => GITHUB_RESOURCE_LABEL_KEYS[r]}
             onToggle={toggleResource}
             placeholder={t('personalContext.addContent.github.resourcesLabel')}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (provider === 'gitcode') {
+    const toggleResource = (r: GitcodeResource) => {
+      const has = props.gitcodeResources.includes(r);
+      const next = has ? props.gitcodeResources.filter((x) => x !== r) : [...props.gitcodeResources, r];
+      props.setGitcodeResources(next);
+    };
+    return (
+      <div className="pc-drawer__fields-group">
+        <div className="pc-drawer__field">
+          <label>{t('personalContext.addContent.gitcode.repoUrlLabel')}</label>
+          <input
+            className="pc-drawer__input"
+            value={props.gitcodeRepoUrl}
+            onChange={(e) => props.setGitcodeRepoUrl(e.target.value)}
+            placeholder={t('personalContext.addContent.gitcode.repoUrlPlaceholder')}
+          />
+        </div>
+        <div className="pc-drawer__field">
+          <label>{t('personalContext.addContent.gitcode.resourcesLabel')}</label>
+          <MultiSelectDropdown
+            options={GITCODE_RESOURCES}
+            selected={props.gitcodeResources}
+            labelKey={(r) => GITCODE_RESOURCE_LABEL_KEYS[r]}
+            onToggle={toggleResource}
+            placeholder={t('personalContext.addContent.gitcode.resourcesLabel')}
           />
         </div>
       </div>

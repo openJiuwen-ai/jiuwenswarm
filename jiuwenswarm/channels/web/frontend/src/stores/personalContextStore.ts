@@ -10,13 +10,11 @@ import {
   type AuthorizationResult,
   type ContextGraph,
   type FetchServiceConfig,
+  type FetchServicePatch,
   type FetchProvider,
   type PersonalContextConfig,
   type PersonalContextStatus,
-  clearGithubToken,
-  getGithubToken,
   pcApi,
-  setGithubToken,
 } from '../services/personalContextApi';
 
 export type InfoTab = 'graph' | 'services';
@@ -44,8 +42,6 @@ interface PersonalContextState {
   loadingStatus: boolean;
   loadingGraph: boolean;
   loadingServices: boolean;
-  /** GitHub PAT 是否已存（localStorage mock；飞书态在 authByProvider.feishu）。 */
-  githubAuthorized: boolean;
   /** 按字段记录正在提交中的写操作，用于禁用对应控件。 */
   pendingWrites: Record<string, boolean>;
 
@@ -64,7 +60,9 @@ interface PersonalContextState {
   setStrategyProfile: (profile: PersonalContextConfig['strategy_profile']) => Promise<void>;
   selectModel: (modelIndex: number) => Promise<void>;
 
-  createService: (service: Omit<FetchServiceConfig, 'state' | 'last_error'>) => Promise<void>;
+  createService: (service: FetchServiceConfig) => Promise<void>;
+  /** 保存（编辑）已有采集任务：只更新参数，名称/来源不可改。 */
+  updateService: (serviceId: string, patch: FetchServicePatch) => Promise<void>;
   deleteService: (serviceId: string) => Promise<void>;
   setServiceEnabled: (serviceId: string, enabled: boolean) => Promise<void>;
   runOne: (serviceId: string) => Promise<void>;
@@ -72,12 +70,12 @@ interface PersonalContextState {
   stopRun: (serviceId: string) => Promise<void>;
 
   loadAuthStatus: (provider: string) => Promise<void>;
-  authorizeProvider: (provider: string) => Promise<AuthorizationResult>;
-  /** 保存 GitHub PAT 到 localStorage（后端无 GitHub 授权接口，前端 mock）。 */
-  saveGithubAuth: (token: string) => void;
-  /** 清除 GitHub PAT。 */
-  clearGithubAuth: () => void;
-  /** 派生：provider 是否已授权（飞书真态 / github localStorage / 其余 true）。 */
+  /** 授权（飞书 OAuth 设备流不带 credentials；github/gitcode 传 {token}/{pat}）。 */
+  authorizeProvider: (
+    provider: string,
+    credentials?: Record<string, string>,
+  ) => Promise<AuthorizationResult>;
+  /** 派生：provider 是否已授权（飞书/github/gitcode 走 authByProvider 真实态，其余无需授权）。 */
   isProviderAuthorized: (provider: FetchProvider) => boolean;
 }
 
@@ -92,7 +90,6 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   loadingStatus: false,
   loadingGraph: false,
   loadingServices: false,
-  githubAuthorized: !!getGithubToken(),
   pendingWrites: {},
 
   setInfoTab: (tab) => set({ infoTab: tab }),
@@ -227,6 +224,18 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     }
   },
 
+  updateService: async (serviceId, patch) => {
+    set({ pendingWrites: { ...get().pendingWrites, [`patch:${serviceId}`]: true } });
+    try {
+      await pcApi.patchService(serviceId, patch);
+      await get().loadServices();
+    } finally {
+      const next = { ...get().pendingWrites };
+      delete next[`patch:${serviceId}`];
+      set({ pendingWrites: next });
+    }
+  },
+
   deleteService: async (serviceId) => {
     set({ pendingWrites: { ...get().pendingWrites, [`del:${serviceId}`]: true } });
     try {
@@ -298,10 +307,10 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     }
   },
 
-  authorizeProvider: async (provider) => {
+  authorizeProvider: async (provider, credentials) => {
     set({ pendingWrites: { ...get().pendingWrites, [`auth:${provider}`]: true } });
     try {
-      const result = await pcApi.authorizeProvider(provider);
+      const result = await pcApi.authorizeProvider(provider, credentials);
       set({ authByProvider: { ...get().authByProvider, [provider]: result } });
       return result;
     } finally {
@@ -311,22 +320,9 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     }
   },
 
-  saveGithubAuth: (token) => {
-    setGithubToken(token);
-    set({ githubAuthorized: true });
-  },
-
-  clearGithubAuth: () => {
-    clearGithubToken();
-    set({ githubAuthorized: false });
-  },
-
   isProviderAuthorized: (provider) => {
-    if (provider === 'feishu') {
-      return get().authByProvider.feishu?.state === 'authorized';
-    }
-    if (provider === 'github') {
-      return get().githubAuthorized;
+    if (provider === 'feishu' || provider === 'github' || provider === 'gitcode') {
+      return get().authByProvider[provider]?.state === 'authorized';
     }
     return true;
   },

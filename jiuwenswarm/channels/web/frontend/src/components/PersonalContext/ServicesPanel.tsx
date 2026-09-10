@@ -23,9 +23,8 @@ import {
   PROVIDER_LABEL_KEYS,
   PROVIDER_ORDER,
   FREQUENCY_SECONDS,
-  isProviderAuthorized,
-  pcApi,
 } from '../../services/personalContextApi';
+import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { AddContentDrawer } from './AddContentDrawer';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
@@ -33,6 +32,7 @@ import zhihuIcon from '../../assets/settings/channels/zhihu.svg';
 import toutiaoIcon from '../../assets/settings/channels/toutiao.svg';
 import feishuIcon from '../../assets/settings/channels/feishu.svg';
 import githubIcon from '../../assets/settings/channels/GitHub.svg';
+import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
 import './ServicesPanel.css';
 
 const POLL_INTERVAL_MS = 5000;
@@ -44,6 +44,7 @@ const PROVIDER_ICON: Record<FetchProvider, string> = {
   toutiao_reader: toutiaoIcon,
   feishu: feishuIcon,
   github: githubIcon,
+  gitcode: gitcodeIcon,
 };
 
 interface PersonalContextServicesPanelProps {
@@ -72,7 +73,7 @@ export function PersonalContextServicesPanel({
     stopRun,
     authByProvider,
     loadAuthStatus,
-    authorizeProvider,
+    isProviderAuthorized,
   } = usePersonalContextStore();
   const [error, setError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -91,19 +92,22 @@ export function PersonalContextServicesPanel({
     void loadStatus().catch(() => {
       // 进度刷新失败不阻断列表展示
     });
-    // 同步飞书授权状态（设备流异步，后端需用户完成浏览器授权后才会变 authorized）
-    void loadAuthStatus('feishu').catch(() => {});
-  }, [loadServices, loadStatus, loadAuthStatus]);
+  }, [loadServices, loadStatus]);
 
   useEffect(() => {
     if (!isConnected || !isActive) return;
     refresh();
+    // 授权态进页只读一次：github/gitcode 后端会真实校验 PAT（打外部 API），
+    // 飞书也只需进页同步一次（authorizing 态另有专用轮询），均不宜随 5s 轮询反复调用。
+    void loadAuthStatus('feishu').catch(() => {});
+    void loadAuthStatus('github').catch(() => {});
+    void loadAuthStatus('gitcode').catch(() => {});
     pollRef.current = window.setInterval(refresh, POLL_INTERVAL_MS);
     return () => {
       if (pollRef.current != null) window.clearInterval(pollRef.current);
       pollRef.current = null;
     };
-  }, [isConnected, isActive, refresh]);
+  }, [isConnected, isActive, refresh, loadAuthStatus]);
 
   const services = config.fetch_services;
 
@@ -166,17 +170,10 @@ export function PersonalContextServicesPanel({
 
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
 
-  const handleAuthorize = useCallback((provider: FetchProvider) => {
-    if (provider !== 'feishu') return;
-    setError(null);
-    void authorizeProvider('feishu').then((result) => {
-      if (result?.verification_url) {
-        window.open(result.verification_url, '_blank', 'noopener,noreferrer');
-      }
-    }).catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : String(e));
-    });
-  }, [authorizeProvider]);
+  // 未授权来源统一「去授权」跳转设置页：飞书走设置页 OAuth、GitHub/GitCode 走设置页 PAT 录入。
+  const handleGoAuthorize = useCallback(() => {
+    requestSettingsModule('personalContext');
+  }, []);
 
   const feishuState = authByProvider.feishu?.state;
 
@@ -237,7 +234,7 @@ export function PersonalContextServicesPanel({
             {PROVIDER_ORDER.map((p) => {
               const count = services.filter((s) => s.provider === p).length;
               const active = p === selectedProvider;
-              const authorized = isProviderAuthorized(p, authByProvider);
+              const authorized = isProviderAuthorized(p);
               return (
                 <button
                   key={p}
@@ -245,14 +242,20 @@ export function PersonalContextServicesPanel({
                   className={`pc-services__cat${active ? ' is-active' : ''}${!authorized ? ' is-disabled' : ''}`}
                   onClick={() => { setSelectedProvider(p); setUserTouched(true); }}
                 >
-                  <span className="pc-services__cat-icon">
+                  <span className={'pc-services__cat-icon' + (p === 'gitcode' ? ' pc-services__cat-icon--gitcode' : '')}>
                     <img src={PROVIDER_ICON[p]} alt="" />
                   </span>
                   <span className="pc-services__cat-name">{t(PROVIDER_LABEL_KEYS[p])}</span>
                   {authorized ? (
                     <span className="pc-services__cat-count">{count}</span>
                   ) : (
-                    <button type="button" className="pc-services__cat-authorize" onClick={(e) => { e.stopPropagation(); handleAuthorize(p); }}>{t('personalContext.authorization.authorize')}</button>
+                    <span
+                      role="button"
+                      className="pc-services__cat-authorize"
+                      onClick={(e) => { e.stopPropagation(); handleGoAuthorize(); }}
+                    >
+                      {t('personalContext.authorization.goAuthorize')}
+                    </span>
                   )}
                 </button>
               );
@@ -263,7 +266,7 @@ export function PersonalContextServicesPanel({
           <section className="pc-services__list">
             <div className="pc-services__list-head">
               <div className="pc-services__list-head-left">
-                <span className="pc-services__list-icon">
+                <span className={'pc-services__list-icon' + (selectedProvider === 'gitcode' ? ' pc-services__list-icon--gitcode' : '')}>
                   <img src={PROVIDER_ICON[selectedProvider]} alt="" />
                 </span>
                 <h3 className="pc-services__list-title">{t(PROVIDER_LABEL_KEYS[selectedProvider])}</h3>
@@ -333,10 +336,10 @@ export function PersonalContextServicesPanel({
       )}
 
       {editing && (
-        <ServiceEditModal
-          service={editing}
+        <AddContentDrawer
+          editService={editing}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); refresh(); }}
+          onCreated={() => { setEditing(null); refresh(); }}
         />
       )}
     </div>
@@ -425,14 +428,16 @@ function ServiceCard({
   const { t } = useTranslation();
   const runState = progress?.run_state;
   const serviceRunning = state === 'STARTING' || state === 'RUNNING' || state === 'STOPPING';
+  // 采集运行态：run_state 有值时以小写进度态为准；快照尚未带进度时回退到大写服务态。
+  // running / stopping 都算"采集中"，保证采集期间进度条与「停止采集」按钮持续可见。
   const isCollecting = runState != null
-    ? runState === 'running'
-    : serviceRunning && state !== 'RUNNING';
+    ? runState === 'running' || runState === 'stopping'
+    : serviceRunning;
   const isFailed = runState != null
     ? runState === 'failed'
     : state === 'FAILED' || (!!lastError && state === 'STOPPED');
 
-  const isStopping = state === 'STOPPING' || stopping;
+  const isStopping = state === 'STOPPING' || stopping || runState === 'stopping';
 
   const statusKey = isStopping
     ? 'stateStopping'
@@ -447,7 +452,8 @@ function ServiceCard({
             : 'stateWaiting';
 
   const percent = progress?.progress_percent;
-  const hasProgress = isCollecting && typeof percent === 'number' && percent > 0;
+  // 采集中即展示进度条（含 0%），避免后端尚未上报总量时进度条消失，让用户看到"采集中"进度占位。
+  const hasProgress = isCollecting && typeof percent === 'number';
 
   const interval = service.interval_seconds;
   const isHour = interval % FREQUENCY_SECONDS.hour === 0;
@@ -522,102 +528,6 @@ function ServiceCard({
             disabled={pending}
             title={service.enabled ? t('personalContext.services.autoOffHint') : t('personalContext.services.autoOnHint')}
           />
-        </div>
-      </div>
-    </div>
-  );
-}
-function ServiceEditModal({
-  service,
-  onClose,
-  onSaved,
-}: {
-  service: FetchServiceConfig;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const { t } = useTranslation();
-  const [intervalSeconds, setIntervalSeconds] = useState(service.interval_seconds);
-  const [maxItems, setMaxItems] = useState<number | null>(service.max_items_per_run);
-  const [sourceJson, setSourceJson] = useState(JSON.stringify(service.source, null, 2));
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const handleSave = async () => {
-    setError(null);
-    if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0 || intervalSeconds > 31536000) {
-      setError(t('personalContext.services.intervalRangeError'));
-      return;
-    }
-    let source = service.source;
-    if (sourceJson.trim()) {
-      try {
-        source = JSON.parse(sourceJson);
-        if (!source || typeof source !== 'object' || Array.isArray(source)) {
-          setError(t('personalContext.services.sourceJsonObjectError'));
-          return;
-        }
-      } catch {
-        setError(t('personalContext.services.sourceJsonInvalidError'));
-        return;
-      }
-    }
-    setSaving(true);
-    try {
-      await pcApi.patchService(service.service_id, {
-        interval_seconds: intervalSeconds,
-        max_items_per_run: maxItems,
-        source,
-      });
-      onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="pc-services__modal-overlay" onClick={onClose}>
-      <div className="pc-services__modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="pc-services__modal-title">
-          {t('personalContext.services.actionEdit')} — {service.service_id}
-        </h3>
-        <div className="pc-services__field">
-          <label>{t('personalContext.services.intervalSeconds')}</label>
-          <input
-            type="number"
-            className="pc-services__input"
-            value={intervalSeconds}
-            onChange={(e) => setIntervalSeconds(Number(e.target.value))}
-          />
-        </div>
-        <div className="pc-services__field">
-          <label>{t('personalContext.services.maxItems')}</label>
-          <input
-            type="number"
-            className="pc-services__input"
-            value={maxItems ?? ''}
-            onChange={(e) => setMaxItems(e.target.value ? Number(e.target.value) : null)}
-          />
-        </div>
-        <div className="pc-services__field">
-          <label>source (JSON)</label>
-          <textarea
-            className="pc-services__textarea"
-            rows={4}
-            value={sourceJson}
-            onChange={(e) => setSourceJson(e.target.value)}
-          />
-        </div>
-        {error && <div className="pc-services__error">{error}</div>}
-        <div className="pc-services__modal-actions">
-          <button type="button" className="btn" onClick={onClose} disabled={saving}>
-            {t('personalContext.services.cancel')}
-          </button>
-          <button type="button" className="btn primary" onClick={handleSave} disabled={saving}>
-            {saving ? <Loader2 className="spin" size={14} /> : t('personalContext.services.save')}
-          </button>
         </div>
       </div>
     </div>
