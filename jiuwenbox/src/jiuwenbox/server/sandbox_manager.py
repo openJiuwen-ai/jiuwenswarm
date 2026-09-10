@@ -370,6 +370,12 @@ class SandboxManager:
                     sandbox_id,
                 )
 
+    def drop_all_host_uplinks(self) -> None:
+        """Best-effort: drop isolated-mode host veths without waiting on daemons."""
+        drop = getattr(self.runtime, "drop_all_host_uplinks", None)
+        if callable(drop):
+            drop()
+
     def start_idle_reaper(self) -> None:
         """Spin up the background idle-sandbox reaper task if configured.
 
