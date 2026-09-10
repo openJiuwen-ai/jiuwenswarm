@@ -217,20 +217,19 @@ class A2AOutboundDiscoveryService:
     def __init__(
         self,
         *,
-        allow_loopback_http: bool = False,
+        allow_loopback: bool = False,
+        allow_http: bool = False,
         address_resolver: AddressResolver = _resolve_addresses,
         transport_factory: TransportFactory = _pinned_transport_factory,
     ) -> None:
-        self._allow_loopback_http = allow_loopback_http
+        self._allow_loopback = allow_loopback
+        self._allow_http = allow_http
         self._address_resolver = address_resolver
         self._transport_factory = transport_factory
 
-    @property
-    def allow_loopback_http(self) -> bool:
-        return self._allow_loopback_http
-
-    def set_allow_loopback_http(self, enabled: bool) -> None:
-        self._allow_loopback_http = bool(enabled)
+    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+        self._allow_loopback = allow_loopback
+        self._allow_http = allow_http
 
     async def discover(self, url: str, card_path: str | None = None) -> DiscoveredCard:
         source_url, normalized_path, card_url = self._normalize(url, card_path)
@@ -420,15 +419,13 @@ class A2AOutboundDiscoveryService:
         )
         public_only = all(_is_public_address(item) for item in addresses)
         if network_policy is None:
-            if scheme == "http" and not (self._allow_loopback_http and loopback_only):
+            if scheme == "http" and not self._allow_http:
                 raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
-            if not public_only and not (self._allow_loopback_http and loopback_only):
+            if not public_only and not (self._allow_loopback and loopback_only):
                 raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
         else:
             private_only = _is_rfc1918_ipv4_only(addresses)
             allowed_address = public_only
-            if network_policy.get("allow_loopback") is True and loopback_only:
-                allowed_address = True
             if network_policy.get("allow_private_network") is True and private_only:
                 allowed_address = True
             if not allowed_address:

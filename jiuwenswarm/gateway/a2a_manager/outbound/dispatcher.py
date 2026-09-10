@@ -161,8 +161,8 @@ class A2AOutboundDispatcher:
         self._last_retention_monotonic: float | None = None
         self._retention_task: asyncio.Task[None] | None = None
 
-    def set_allow_loopback_http(self, enabled: bool) -> None:
-        self._discovery.set_allow_loopback_http(enabled)
+    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+        self._discovery.set_network_settings(allow_loopback=allow_loopback, allow_http=allow_http)
 
     async def _update_runtime_state(
         self,

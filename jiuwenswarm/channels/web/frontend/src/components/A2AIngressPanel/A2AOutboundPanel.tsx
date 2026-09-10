@@ -39,8 +39,10 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
   const [discovery, setDiscovery] = useState<A2AOutboundDiscovery | null>(null);
   const [discoveryDrawerOpen, setDiscoveryDrawerOpen] = useState(false);
   const [agents, setAgents] = useState<A2AOutboundAgent[]>([]);
-  const [allowLoopbackHttp, setAllowLoopbackHttp] = useState(false);
-  const [savedAllowLoopbackHttp, setSavedAllowLoopbackHttp] = useState(false);
+  const [allowLoopback, setAllowLoopback] = useState(false);
+  const [savedAllowLoopback, setSavedAllowLoopback] = useState(false);
+  const [allowHttp, setAllowHttp] = useState(false);
+  const [savedAllowHttp, setSavedAllowHttp] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [displayName, setDisplayName] = useState('');
   const [credential, setCredential] = useState('');
@@ -79,8 +81,10 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
       if (!next || (!enterpriseMode && !settings)) throw new Error(t('a2aIngress.outbound.errors.invalidResponse'));
       setAgents(next);
       if (settings) {
-        setAllowLoopbackHttp(settings.allow_loopback_http);
-        setSavedAllowLoopbackHttp(settings.allow_loopback_http);
+        setAllowLoopback(settings.allow_loopback);
+        setSavedAllowLoopback(settings.allow_loopback);
+        setAllowHttp(settings.allow_http);
+        setSavedAllowHttp(settings.allow_http);
       }
       setError(null);
     } catch (nextError) {
@@ -133,28 +137,36 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
     }
   };
 
-  const updateAllowLoopbackHttp = async (nextEnabled: boolean) => {
+  const updateNetworkSettings = async (field: 'allow_loopback' | 'allow_http', nextEnabled: boolean) => {
     if (busy || !isConnected) return;
     const generation = generationRef.current.next();
-    const previous = savedAllowLoopbackHttp;
-    setAllowLoopbackHttp(nextEnabled);
+    const previous = savedAllowLoopback;
+    const previousHttp = savedAllowHttp;
+    const nextLoopback = field === 'allow_loopback' ? nextEnabled : savedAllowLoopback;
+    const nextHttp = field === 'allow_http' ? nextEnabled : savedAllowHttp;
+    setAllowLoopback(nextLoopback);
+    setAllowHttp(nextHttp);
     setBusy('settings');
     setError(null);
     setNotice(null);
     try {
       const settings = normalizeA2AOutboundSettings(
         await request('a2a.outbound.settings.update', {
-          allow_loopback_http: nextEnabled,
+          allow_loopback: nextLoopback,
+          allow_http: nextHttp,
         }),
       );
       if (!settings) throw new Error(t('a2aIngress.outbound.errors.invalidResponse'));
       if (!generationRef.current.accepts(generation)) return;
-      setAllowLoopbackHttp(settings.allow_loopback_http);
-      setSavedAllowLoopbackHttp(settings.allow_loopback_http);
+      setAllowLoopback(settings.allow_loopback);
+      setSavedAllowLoopback(settings.allow_loopback);
+      setAllowHttp(settings.allow_http);
+      setSavedAllowHttp(settings.allow_http);
       setNotice(t('a2aIngress.outbound.localDebug.saved'));
     } catch (nextError) {
       if (!generationRef.current.accepts(generation)) return;
-      setAllowLoopbackHttp(previous);
+      setAllowLoopback(previous);
+      setAllowHttp(previousHttp);
       setError(errorMessage(nextError));
     } finally {
       setBusy(null);
@@ -379,14 +391,29 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                             <p className="mt-1 text-xs text-text-muted">{t('a2aIngress.outbound.localDebug.description')}</p>
                           </div>
                           <Switch
-                            checked={allowLoopbackHttp}
-                            onChange={nextEnabled => void updateAllowLoopbackHttp(nextEnabled)}
+                            checked={allowLoopback}
+                            onChange={nextEnabled => void updateNetworkSettings('allow_loopback', nextEnabled)}
                             disabled={!isConnected || !!busy}
                             title={t('a2aIngress.outbound.localDebug.allow')}
                           />
                         </div>
-                        {allowLoopbackHttp && (
-                          <p className="mt-3 border-t border-warn/20 pt-3 text-xs text-warn">{t('a2aIngress.outbound.localDebug.warning')}</p>
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-text">{t('a2aIngress.outbound.localDebug.allowHttp')}</div>
+                            <p className="mt-1 text-xs text-text-muted">{t('a2aIngress.outbound.localDebug.httpDescription')}</p>
+                          </div>
+                          <Switch
+                            checked={allowHttp}
+                            onChange={nextEnabled => void updateNetworkSettings('allow_http', nextEnabled)}
+                            disabled={!isConnected || !!busy}
+                            title={t('a2aIngress.outbound.localDebug.allowHttp')}
+                          />
+                        </div>
+                        {(allowLoopback || allowHttp) && (
+                          <div className="mt-3 space-y-1 border-t border-warn/20 pt-3 text-xs text-warn">
+                            {allowLoopback && <p>{t('a2aIngress.outbound.localDebug.warning')}</p>}
+                            {allowHttp && <p>{t('a2aIngress.outbound.localDebug.httpWarning')}</p>}
+                          </div>
                         )}
                       </div>
                     )}

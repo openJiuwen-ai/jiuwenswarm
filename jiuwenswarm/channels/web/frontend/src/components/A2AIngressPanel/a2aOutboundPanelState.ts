@@ -44,7 +44,8 @@ export interface A2AOutboundAgent {
 }
 
 export interface A2AOutboundSettings {
-  allow_loopback_http: boolean;
+  allow_loopback: boolean;
+  allow_http: boolean;
 }
 
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -129,8 +130,10 @@ export function normalizeA2AOutboundList(value: unknown): A2AOutboundAgent[] | n
 
 export function normalizeA2AOutboundSettings(value: unknown): A2AOutboundSettings | null {
   if (!value || typeof value !== 'object') return null;
-  const enabled = (value as Record<string, unknown>).allow_loopback_http;
-  return typeof enabled === 'boolean' ? { allow_loopback_http: enabled } : null;
+  const { allow_loopback, allow_http } = value as Record<string, unknown>;
+  return typeof allow_loopback === 'boolean' && typeof allow_http === 'boolean'
+    ? { allow_loopback, allow_http }
+    : null;
 }
 
 export const shouldAcceptA2AOutboundResponse = (generation: number, current: number): boolean => generation === current;
