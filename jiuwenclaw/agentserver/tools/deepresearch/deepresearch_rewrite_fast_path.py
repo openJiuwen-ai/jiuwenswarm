@@ -24,6 +24,11 @@ _JSON_FENCE_RE = re.compile(
 )
 _IGNORED_SLOT_OUTPUT_KEYS = {"format", "link_id"}
 _REQUEST_KEYS = {"report_path", "action", "selection", "instruction"}
+_OPTIONAL_REQUEST_KEYS = {"base_revision"}
+_BASE_REVISION_KEYS = {"document_id", "revision_id", "content_sha256"}
+_DOCUMENT_ID_RE = re.compile(r"doc_[A-Za-z0-9_-]{1,128}")
+_REVISION_ID_RE = re.compile(r"rev_[A-Za-z0-9_-]{1,128}")
+_CONTENT_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ACTIONS = {"polish", "expand", "shorten"}
 _PROMPT_FIELDS = (
     "action",
@@ -123,6 +128,7 @@ class RewriteRequest:
     action: str
     selection: dict[str, Any]
     instruction: str
+    base_revision: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +155,19 @@ def _invalid_request() -> RewriteFastPathError:
     return RewriteFastPathError("BAD_REQUEST", "invalid rewrite request")
 
 
+def _valid_base_revision(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == _BASE_REVISION_KEYS
+        and isinstance(value.get("document_id"), str)
+        and _DOCUMENT_ID_RE.fullmatch(value["document_id"]) is not None
+        and isinstance(value.get("revision_id"), str)
+        and _REVISION_ID_RE.fullmatch(value["revision_id"]) is not None
+        and isinstance(value.get("content_sha256"), str)
+        and _CONTENT_SHA256_RE.fullmatch(value["content_sha256"]) is not None
+    )
+
+
 def parse_rewrite_envelope(query: object) -> RewriteRequest | None:
     """Parse an exact rewrite envelope, or return None for unrelated messages."""
     if not isinstance(query, str):
@@ -160,13 +179,19 @@ def parse_rewrite_envelope(query: object) -> RewriteRequest | None:
         payload = json.loads(match.group("body"))
     except (json.JSONDecodeError, TypeError) as exc:
         raise _invalid_request() from exc
-    if not isinstance(payload, dict) or set(payload) != _REQUEST_KEYS:
+    if not isinstance(payload, dict):
+        raise _invalid_request()
+    payload_keys = set(payload)
+    if not _REQUEST_KEYS.issubset(payload_keys) or not payload_keys.issubset(
+        _REQUEST_KEYS | _OPTIONAL_REQUEST_KEYS
+    ):
         raise _invalid_request()
 
     report_path = payload.get("report_path")
     action = payload.get("action")
     selection = payload.get("selection")
     instruction = payload.get("instruction")
+    base_revision = payload.get("base_revision")
     if (
         not isinstance(report_path, str)
         or not report_path
@@ -175,11 +200,14 @@ def parse_rewrite_envelope(query: object) -> RewriteRequest | None:
         raise _invalid_request()
     if not isinstance(selection, dict) or not isinstance(instruction, str):
         raise _invalid_request()
+    if "base_revision" in payload and not _valid_base_revision(base_revision):
+        raise _invalid_request()
     return RewriteRequest(
         report_path=report_path,
         action=action,
         selection=selection,
         instruction=instruction,
+        base_revision=base_revision,
     )
 
 
@@ -414,6 +442,7 @@ async def run_rewrite_fast_path(
                     action=request.action,
                     selection=request.selection,
                     instruction=request.instruction,
+                    base_revision=request.base_revision,
                 ),
                 timeout=_remaining_seconds(deadline),
             )

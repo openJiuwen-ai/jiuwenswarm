@@ -62,6 +62,25 @@ _PREPARE_INPUT_SCHEMA = {
             "additionalProperties": False,
         },
         "instruction": {"type": "string", "maxLength": 2_000, "default": ""},
+        "base_revision": {
+            "type": "object",
+            "properties": {
+                "document_id": {
+                    "type": "string",
+                    "pattern": "^doc_[A-Za-z0-9_-]{1,128}$",
+                },
+                "revision_id": {
+                    "type": "string",
+                    "pattern": "^rev_[A-Za-z0-9_-]{1,128}$",
+                },
+                "content_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+            },
+            "required": ["document_id", "revision_id", "content_sha256"],
+            "additionalProperties": False,
+        },
     },
     "required": ["report_path", "action", "selection"],
     "additionalProperties": False,
@@ -180,6 +199,7 @@ def _validate_prepare_contract(
     action: object,
     selection: object,
     instruction: object,
+    base_revision: object = None,
 ) -> None:
     def invalid_request_shape() -> bool:
         return (
@@ -229,6 +249,25 @@ def _validate_prepare_contract(
     source_sha256 = selection["source_sha256"]
     if invalid_selection_fields():
         raise RewriteError("BAD_REQUEST", "invalid rewrite selection")
+    if base_revision is not None and (
+        not isinstance(base_revision, dict)
+        or set(base_revision)
+        != {"document_id", "revision_id", "content_sha256"}
+        or not isinstance(base_revision.get("document_id"), str)
+        or re.fullmatch(
+            r"doc_[A-Za-z0-9_-]{1,128}", base_revision["document_id"]
+        )
+        is None
+        or not isinstance(base_revision.get("revision_id"), str)
+        or re.fullmatch(
+            r"rev_[A-Za-z0-9_-]{1,128}", base_revision["revision_id"]
+        )
+        is None
+        or not isinstance(base_revision.get("content_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", base_revision["content_sha256"])
+        is None
+    ):
+        raise RewriteError("BAD_REQUEST", "invalid rewrite request")
 
 
 def _validate_commit_contract(context_token: object, structured_result: object) -> None:
@@ -279,9 +318,12 @@ async def deepresearch_prepare_rewrite(
     action: str,
     selection: dict,
     instruction: str = "",
+    base_revision: dict | None = None,
 ) -> str:
     try:
-        _validate_prepare_contract(report_path, action, selection, instruction)
+        _validate_prepare_contract(
+            report_path, action, selection, instruction, base_revision
+        )
     except RewriteError as exc:
         logger.info("deepresearch prepare rewrite rejected: code=%s", exc.code)
         return _error(exc)
@@ -295,14 +337,17 @@ async def deepresearch_prepare_rewrite(
             "error": "rewrite workspace or session is unavailable",
         })
     try:
-        result = prepare_rewrite(
-            workspace_root=output_dir,
-            report_path=report_path,
-            action=action,
-            selection=selection,
-            instruction=instruction,
-            session_id=session_id,
-        )
+        prepare_kwargs = {
+            "workspace_root": output_dir,
+            "report_path": report_path,
+            "action": action,
+            "selection": selection,
+            "instruction": instruction,
+            "session_id": session_id,
+        }
+        if base_revision is not None:
+            prepare_kwargs["base_revision"] = base_revision
+        result = prepare_rewrite(**prepare_kwargs)
     except RewriteError as exc:
         logger.info("deepresearch prepare rewrite rejected: code=%s", exc.code)
         return _error(exc)

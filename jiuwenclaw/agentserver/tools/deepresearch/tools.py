@@ -1692,7 +1692,7 @@ async def _call_deepresearch_stream_impl(
         "进度经 chat 通道(chat.reasoning/task.start/task.complete/"
         "processing_status)实时推送到前端。执行到人机交互节点时返回 interrupted outcome,"
         "由 agent 调 ask_user_question 处理后,再以 action=resume 调本工具恢复。"
-        "outline_interaction 由工具内部以 accepted 自动恢复，不返回给 agent；"
+        "outline_interaction 中断返回 Main Agent，由 Main Agent 调 ask_user_question 处理后再以 action=resume 恢复；"
         "feedback_handler 恢复时须把 ask_user_question 完整返回值作为"
         " interaction_result 传入；工具会把 skipped 或 answered+空答案"
         ' 归一化为 feedback={"feedback":"","interaction_status":"skipped"}，'
@@ -1723,9 +1723,9 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
 
     Returns:
         JSON 串:
-          {"status":"interrupted","conversation_id":"...","node_id":"...","marker":{...},"prompt":"..."}
+            {"status":"interrupted","conversation_id":"...","node_id":"...","marker":{...},"prompt":"..."}
             feedback_handler 的 marker 结构化透传给 agent 建交互卡；
-            outline_interaction 在工具内部固定接受并继续，不返回该 outcome。
+            outline_interaction 中断返回 Main Agent，marker.outline_markdown 含格式化大纲供卡片 preview。
           {"status":"completed","conversation_id":"...","report_delivered":true,"report_chars":123}
             正常 chat 路由下报告已通过 chat.file 作为 Markdown 文件交付,不进入 tool outcome。
           {"status":"error","error":"..."}
@@ -1736,8 +1736,11 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     from jiuwenclaw.agentserver.deep_agent.ask_user_question_registry import (  # pylint: disable=import-outside-toplevel
         get_ask_request_context,
     )
+    # ponytail: 跨模块私有访问，stream_router 重构需同步
     from jiuwenclaw.agentserver.tools.deepresearch.stream_router import (  # pylint: disable=import-outside-toplevel
         RouterState,
+        _as_json_object,
+        _format_outline_markdown,
         advance_stage,
         build_interrupt_prompt,
         collected_questions,
@@ -1993,13 +1996,18 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 if node_id == "user_feedback_processor" and state.report_parts:
                     rpt = "".join(state.report_parts)
                     marker["report"] = rpt[:6000] + ("…\n(完整报告见最终产物)" if len(rpt) > 6000 else "")
+                if node_id == "outline_interaction":
+                    outline_json_str = "".join(state.outline_parts)
+                    outline_data = _as_json_object(outline_json_str)
+                    markdown_text = _format_outline_markdown(outline_data) if outline_data is not None else None
+                    if not markdown_text:
+                        markdown_text = "(大纲内容未能从流中获取，请直接确认或手动输入修改意见)"
+                    marker["outline_markdown"] = markdown_text
                 outcome = {"status": "interrupted",
                            "conversation_id": resolved_cid,
                            "node_id": node_id,
                            "marker": marker,
                            "prompt": build_interrupt_prompt(node_id, state, marker, query)}
-                if node_id == "outline_interaction":
-                    outcome["interaction_policy"] = "silent_auto_accept"
                 # The runner emits this marker before its async cleanup persists the
                 # graph checkpoint. Keep consuming to EOF so it can exit naturally;
                 # breaking here makes finally terminate the resumable subprocess.
@@ -2138,11 +2146,26 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     # terminates the parent request before the Agent can explain the failure.
     if outcome.get("status") in {"completed", "error", "cancelled"}:
         _clear_outline_title_cache(route, outcome.get("conversation_id", outcome_cid))
+    # outline_interaction interrupted outcome is returned to Main Agent for review.
+    # Loop guard fires ONLY on TRUE accepted-loop (accepted resume → still interrupted).
+    # All other cases (revise_*, missing, malformed JSON) fail-open: return outcome
+    # so the Main Agent can dispatch ask_user_question and resume with the user's choice.
     if (
         outcome.get("status") == "interrupted"
         and outcome.get("node_id") == "outline_interaction"
+        and action == "resume"
+        and node == "outline_interaction"
     ):
-        if action == "resume" and node == "outline_interaction":
+        try:
+            envelope = json.loads(feedback) if feedback else {}
+            interrupt_feedback = (
+                envelope.get("interrupt_feedback")
+                if isinstance(envelope, dict)
+                else None
+            )
+        except (json.JSONDecodeError, TypeError):
+            interrupt_feedback = None
+        if interrupt_feedback == "accepted":
             loop_error = {
                 "error_code": "outline_auto_resume_loop",
                 "error": "outline_interaction repeated after automatic acceptance",
@@ -2155,14 +2178,6 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 },
                 ensure_ascii=False,
             )
-        return await _call_deepresearch_stream_impl(
-            action="resume",
-            conversation_id=str(outcome.get("conversation_id", outcome_cid)),
-            feedback='{"interrupt_feedback":"accepted","feedback":""}',
-            node="outline_interaction",
-            file_name=file_name,
-            _router_state=state,
-        )
     return json.dumps(outcome, ensure_ascii=False)
 
 
