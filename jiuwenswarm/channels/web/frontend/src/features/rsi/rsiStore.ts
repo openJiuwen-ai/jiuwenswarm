@@ -10,6 +10,7 @@ import type {
   RsiTreeGetResult,
   RsiReportGetResult,
   RsiUsageGetResult,
+  RsiUsage,
   RsiTaskStatus,
   RsiTrainingStatusChangedPayload,
   RsiTrainingProgressPayload,
@@ -28,6 +29,7 @@ interface RsiDetailState {
     total: number;
     score: number | null;
     baseline: number | null;
+    usage: RsiUsage | null;
     usageCost: number | null;
   } | null;
   // P3 可能先于首次 tree.get 到达；先缓存，避免丢掉实时节点。
@@ -246,6 +248,7 @@ export const useRsiStore = create<RsiState>((set, get) => ({
               total: payload.total_iterations,
               score: payload.score,
               baseline: payload.baseline,
+              usage: payload.usage ?? cur.liveProgress?.usage ?? null,
               usageCost: payload.usage?.cost_estimate ?? cur.liveProgress?.usageCost ?? null,
             },
           },

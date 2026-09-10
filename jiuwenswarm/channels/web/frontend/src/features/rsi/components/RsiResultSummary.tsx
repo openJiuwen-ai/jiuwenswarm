@@ -62,7 +62,9 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
   const iterations = queued
     ? null
     : (liveProgress?.iteration ?? report?.metrics.iterations ?? task.progress?.iteration ?? null);
-  const tokenUsage = usage?.usage ?? task.usage ?? null;
+  const tokenUsage = task.status === 'RUNNING'
+    ? liveProgress?.usage ?? usage?.usage ?? task.usage ?? null
+    : usage?.usage ?? task.usage ?? liveProgress?.usage ?? null;
 
   // 指标列顺序：基线分数 → 用量 → 迭代次数 →（组合评测、剪枝，均不含程序优化）
   const isProgram = task.artifact_type === 'PROGRAM';

@@ -2,7 +2,7 @@
 
 分发：
 - ``progress.metric`` → 节流合并 → 投影 metric 快照 → P2（推送由调用方注入回调）
-- ``progress.usage`` → ``RsiUsageRecorder.record``
+- ``progress.usage`` → ``RsiUsageRecorder.record`` + 实时 P2 用量推送
 - ``node.created`` → 采纳时快照 + 投影 → P3
 - ``node.stage`` → 投影描述更新 → P3
 
@@ -142,6 +142,13 @@ class RsiEventConsumer:
                     "model_call": getattr(event, "model_call", None),
                 },
             )
+            if self._on_progress is not None:
+                progress = self.projector.derive_progress(self.task_id)
+                usage = self.usage_recorder.usage_summary(self.task_id)
+                await self._on_progress(
+                    self.task_id,
+                    _progress_push_payload(progress, usage),
+                )
             return
         if getattr(event, "is_progress_metric", False):
             self.projector.on_progress_metric(self.task_id, event.payload)
@@ -155,6 +162,13 @@ class RsiEventConsumer:
             return
         if getattr(event, "is_progress_usage", False):
             self.usage_recorder.record_engine_event(self.task_id, event.payload)
+            if self._on_progress is not None:
+                progress = self.projector.derive_progress(self.task_id)
+                usage = self.usage_recorder.usage_summary(self.task_id)
+                await self._on_progress(
+                    self.task_id,
+                    _progress_push_payload(progress, usage),
+                )
             return
         if getattr(event, "is_node_created", False):
             payload = event.payload

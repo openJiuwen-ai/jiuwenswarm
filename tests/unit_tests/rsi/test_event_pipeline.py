@@ -238,6 +238,35 @@ class TestEventConsumer:
         assert data["usage"]["tokens"]["output"] == 3
         assert data["usage"]["tokens"]["cache_hit"] == 2
 
+    def test_agent_core_usage_dataclass_event_pushes_live_usage(self, projector, usage, artifacts):
+        projector.register_root("rsi-t1", baseline=0.5)
+        consumer = RsiEventConsumer("rsi-t1", usage, projector, artifacts)
+        pushed = []
+
+        async def on_progress(task_id, payload):
+            pushed.append((task_id, payload))
+
+        consumer.bind_push(on_progress=on_progress)
+        event = EventUsage(
+            event_id=1,
+            task_id="rsi-t1",
+            ts="2026-09-07T01:00:00+00:00",
+            call_id="call-live-1",
+            model_call=EngineRsiModelCall(
+                model="m",
+                call_count=1,
+                tokens=RsiUsageTokens(input=7, output=3, cache_hit=2),
+            ),
+            node_ref="epoch-001",
+        )
+
+        import asyncio
+
+        asyncio.run(consumer.on_engine_event(event))
+        assert pushed
+        assert pushed[-1][0] == "rsi-t1"
+        assert pushed[-1][1]["usage"]["tokens"] == {"input": 7, "output": 3, "cache_hit": 2}
+
     def test_node_created_with_artifacts(self, projector, usage, artifacts, tmp_path):
         task_dir = tmp_path / "rsi-t1"
         task_dir.mkdir()
