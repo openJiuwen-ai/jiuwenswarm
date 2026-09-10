@@ -79,7 +79,8 @@ def _patch_memory_rail_register() -> None:
             )
 
             # Read-only flag: reuse MemoryRail's runtime _is_read_only state
-            read_only_flag = lambda: getattr(self, "_is_read_only", False)
+            def read_only_flag() -> bool:
+                return bool(getattr(self, "_is_read_only", False))
             tool = FlashMemoryTool(
                 self._tool_ctx,  # pylint: disable=protected-access
                 read_only_flag=read_only_flag,
@@ -138,8 +139,11 @@ def _patch_memory_rail_prompt() -> None:
                             content=new_content,
                             priority=section.priority,
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "[FlashMemory] rebuild memory section failed, keeping original: %s",
+                            exc,
+                        )
             return section
 
         _mem_section.build_memory_section = _rewriting_build

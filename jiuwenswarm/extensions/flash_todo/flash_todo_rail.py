@@ -306,8 +306,10 @@ class FlashTodoRail(DeepAgentRail):
                     if name:
                         try:
                             ability_manager.remove_ability(name)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug(
+                                "[FlashTodoRail] remove_ability %s failed: %s", name, exc
+                            )
         except Exception as exc:
             logger.warning("[FlashTodoRail] uninit failed: %s", exc)
 

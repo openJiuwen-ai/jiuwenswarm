@@ -17,8 +17,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
+
+from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 
 logger = logging.getLogger(__name__)
 
