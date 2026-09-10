@@ -1203,6 +1203,17 @@ class AgentRuntime:
                                 control_id,
                             )
                         ):
+                            # No live Heartbeat execution owns this question, so
+                            # nobody will ever answer it. Say why it vanished
+                            # instead of dropping it silently.
+                            logger.warning(
+                                "[Runtime] dropping heartbeat interaction with no "
+                                "live execution: session_id=%s request_id=%s "
+                                "control_id=%s",
+                                request.session_id or "default",
+                                request.request_id,
+                                control_id,
+                            )
                             continue
                     else:
                         await self._mark_pending_interaction(event)

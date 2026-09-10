@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -20,7 +21,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.plan import PlanStateResult
-from jiuwenswarm.runtime.session import SessionWorkKind
+from jiuwenswarm.runtime.session import SessionExecutionEndedError, SessionWorkKind
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
 SESSION = "existing-session"
@@ -902,8 +903,11 @@ async def test_late_control_result_from_closed_generation_is_discarded(make_chai
         )
         await chain.heartbeat.abort_session_delete(SESSION, channel_id="web")
         release.set()
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(SessionExecutionEndedError) as excinfo:
             await answer
+        # A void answer is a failure the client must hear about. Reporting it as
+        # a cancellation would let upstream stream handlers drop it silently.
+        assert not isinstance(excinfo.value, asyncio.CancelledError)
 
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
         assert not chain.runtime.session_coordinator.has_control_target(
@@ -1192,4 +1196,67 @@ async def test_heartbeat_does_not_serialize_active_goal_execution(make_chain):
     finally:
         goal_release.set()
         await asyncio.wait_for(task, 2)
+        await _finish(chain)
+
+
+async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
+    make_chain, caplog
+):
+    """A question nobody owns must be logged, and must not steal the slot."""
+    chain = await make_chain(behavior="ask_live")
+    third_emitted = asyncio.Event()
+    release_heartbeat = asyncio.Event()
+
+    async def heartbeat_stream(request):
+        yield chain.agent._chunk(
+            request,
+            {"event_type": "chat.ask_user_question", "request_id": "question-1"},
+            complete=False,
+        )
+        await chain.agent.answered.wait()
+        yield chain.agent._chunk(
+            request,
+            {"event_type": "chat.ask_user_question", "request_id": "question-3"},
+        )
+        third_emitted.set()
+        await release_heartbeat.wait()
+
+    async def deliver(request):
+        yield chain.agent._chunk(
+            request,
+            {"event_type": "chat.ask_user_question", "request_id": "question-2"},
+        )
+
+    chain.agent.process_message_stream = heartbeat_stream
+    chain.agent.deliver_control_input = deliver
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(chain.agent.question_seen.wait(), 2)
+        await _user_turn(
+            chain,
+            query="",
+            request_id="question-1",
+            source="ask_user_interrupt",
+            answers=[{"question": "choose", "selected_options": ["A"]}],
+        )
+        # The follow-up answer parked the Heartbeat in waiting_for_control, so
+        # no RUNNING execution is left to own a further question.
+        heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
+        assert heartbeat.waiting_control_id == "question-2"
+
+        with caplog.at_level(logging.WARNING, logger="jiuwenswarm.runtime.service"):
+            chain.agent.answered.set()
+            await asyncio.wait_for(third_emitted.wait(), 2)
+
+        assert "dropping heartbeat interaction" in caplog.text
+        assert "question-3" in caplog.text
+        # The dropped question must not overwrite the slot the user still owes.
+        parked = next(
+            item
+            for item in _executions(chain)
+            if item.work_kind is SessionWorkKind.HEARTBEAT
+        )
+        assert parked.waiting_control_id == "question-2"
+    finally:
+        release_heartbeat.set()
         await _finish(chain)

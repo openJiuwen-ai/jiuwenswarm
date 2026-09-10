@@ -9,6 +9,15 @@ from enum import Enum
 from typing import Any
 
 
+class SessionExecutionEndedError(RuntimeError):
+    """Control input completed after the execution that asked for it was gone.
+
+    Deliberately not an ``asyncio.CancelledError``: the delivering task was
+    never cancelled, and reporting cancellation would make upstream stream
+    handlers treat a real, user-visible failure as a silent abort.
+    """
+
+
 class RuntimeSessionState(str, Enum):
     READY = "ready"
     ACTIVE = "active"

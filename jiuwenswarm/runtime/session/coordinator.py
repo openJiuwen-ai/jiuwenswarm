@@ -14,6 +14,7 @@ from jiuwenswarm.runtime.session.model import (
     CloseSessionResult,
     RuntimeSessionSnapshot,
     RuntimeSessionState,
+    SessionExecutionEndedError,
     SessionExecutionHandle,
     SessionExecutionSnapshot,
     SessionExecutionState,
@@ -201,20 +202,24 @@ class RuntimeSessionCoordinator:
             raise RuntimeError(f"session has no active execution: {session_id}")
         claim = (session_id, record.generation, parent.execution_id, request_id)
         self._control_claims.add(claim)
-        parent_was_waiting = (
-            parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-        )
-        if parent_was_waiting:
-            self._registry.resume_waiting(parent)
-        handle = self._new_execution(
-            record,
-            request_id,
-            SessionWorkKind.CONTROL_INPUT,
-            parent_execution_id=parent.execution_id,
-        )
-        handle.task = asyncio.current_task()
-        self._registry.mark_running(handle)
+        # Everything below belongs to the finally: _new_execution can still
+        # fail, and a leaked claim would make every later answer for this
+        # request_id look already-in-flight. Resuming the parent is deferred
+        # until the child exists, so a failure leaves the parent resumable.
         try:
+            handle = self._new_execution(
+                record,
+                request_id,
+                SessionWorkKind.CONTROL_INPUT,
+                parent_execution_id=parent.execution_id,
+            )
+            parent_was_waiting = (
+                parent.state is SessionExecutionState.WAITING_FOR_CONTROL
+            )
+            if parent_was_waiting:
+                self._registry.resume_waiting(parent)
+            handle.task = asyncio.current_task()
+            self._registry.mark_running(handle)
             try:
                 value = await operation()
             except asyncio.CancelledError as exc:
@@ -245,7 +250,10 @@ class RuntimeSessionCoordinator:
                 self._registry.mark_terminal(
                     handle, SessionExecutionState.CANCELLED
                 )
-                raise asyncio.CancelledError("parent execution ended")
+                raise SessionExecutionEndedError(
+                    "control input arrived after its execution ended: "
+                    f"session={session_id} request={request_id}"
+                )
 
             control_id = suspension_key(value) if suspension_key is not None else None
             heartbeat_root = self._heartbeat_root(parent)
@@ -688,15 +696,21 @@ class RuntimeSessionCoordinator:
             return
         for handle in descendants:
             handle.cancellation_requested = True
-        await self._cancel_direct_handles(
-            descendants,
-            wait_timeout=self._cancel_timeout,
-        )
-        for handle in descendants:
-            if not handle.state.terminal:
-                self._registry.mark_terminal(
-                    handle, SessionExecutionState.CANCELLED
-                )
+        try:
+            await self._cancel_direct_handles(
+                descendants,
+                wait_timeout=self._cancel_timeout,
+            )
+        finally:
+            # Both callers are already unwinding an exception, so the await above
+            # can be interrupted before the children settle. They are cancelled
+            # either way -- skipping this bookkeeping would leave them active in
+            # the registry and pin the Session in ACTIVE forever.
+            for handle in descendants:
+                if not handle.state.terminal:
+                    self._registry.mark_terminal(
+                        handle, SessionExecutionState.CANCELLED
+                    )
 
     def _refresh_session_state(self, record: _SessionRecord) -> None:
         if self._sessions.get(record.session_id) is not record:
