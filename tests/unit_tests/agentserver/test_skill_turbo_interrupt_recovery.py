@@ -102,7 +102,7 @@ async def test_prepare_interrupt_artifacts_injects_hint_and_clears_once(
     # 摘要注入 supplementary_info，LLM 可见
     supplementary = request.params.get("supplementary_info")
     assert isinstance(supplementary, str)
-    assert "中断恢复提示" in supplementary
+    assert "已有产物提示" in supplementary
     assert "p1_outline" in supplementary
     # 一次性 hint 挂到 request.metadata，供 skill_acceleration_exec 工具守卫读取
     hint = (request.metadata or {}).get(_RECOVERY_HINT_KEY)
