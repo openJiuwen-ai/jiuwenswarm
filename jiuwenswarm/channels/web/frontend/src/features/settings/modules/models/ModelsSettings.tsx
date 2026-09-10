@@ -112,7 +112,7 @@ export function ModelsSettings() {
       const payload = await request('models.list');
       if (currentRequestId !== modelsRequestId.current) return;
       const parsed = parseModelsPayload(payload);
-      setModels(parsed.models.filter((model) => model.is_free !== true));
+      setModels(parsed.models);
       setAvailableModels(parsed.models, parsed.activeModel);
     } catch (error) {
       if (currentRequestId === modelsRequestId.current) {
@@ -216,7 +216,7 @@ export function ModelsSettings() {
       }
       const refreshedPayload = await request('models.list');
       const parsed = parseModelsPayload(refreshedPayload);
-      setModels(parsed.models.filter((model) => model.is_free !== true));
+      setModels(parsed.models);
       setAvailableModels(parsed.models, parsed.activeModel);
       showValidationToast({
         success: true,

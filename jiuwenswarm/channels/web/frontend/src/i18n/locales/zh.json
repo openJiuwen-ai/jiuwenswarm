@@ -106,7 +106,6 @@
       }
     },
     "models": {
-      "freeModels": "免费模型",
       "primaryModels": "对话模型",
       "empty": "尚未配置模型",
       "emptyDescription": "添加模型后，可在这里测试连接并管理主模型。",
@@ -320,10 +319,6 @@
         "title": "ASR 模型",
         "description": "用于通用语音转写的模型名称。",
         "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
-      },
-      "enable_free_models": {
-        "title": "启用免费模型",
-        "description": "开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。免费模型来源于 Opencode Zen 网关（https://opencode.ai/zen），由 models.dev 目录（https://models.opencode.ai/api.json）与 Zen 实时模型列表取交集得到（判定标准：输入价格为 0）。"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
       "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
@@ -697,7 +692,6 @@
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
       "configured": "已配置模型",
-      "free": "免费模型",
       "addModel": "添加自定义模型",
       "empty": "暂无可用模型，请先在设置中添加模型",
       "placeholder": "选择模型"
@@ -1142,10 +1136,6 @@
     "skip": "跳过",
     "open": "配置指引",
     "steps": {
-      "0": {
-        "title": "欢迎使用 jiuwenswarm",
-        "description": "你已获得免费体验额度！选择下方方式开始配置你的模型服务。"
-      },
       "1": {
         "title": "配置你的首个模型",
         "description": "模型配置位于「设置」中的「模型」页面。"
@@ -1154,26 +1144,6 @@
         "title": "完成模型配置",
         "description": "点击「添加模型」，选择模型提供商，按提示完成配置后保存。"
       }
-    },
-    "quickSetup": {
-      "title": "一键配置华为云 MaaS",
-      "description": "自动引导你完成华为云购买和 API 配置",
-      "steps": {
-        "openConsole": "打开华为云 MaaS 控制台",
-        "updateAuth": "自动更新服务授权权限",
-        "createApiKey": "创建 API Key（用于 JiuwenSwarm 调用模型）",
-        "enableModels": "开通预置模型服务（按调用量计费）"
-      },
-      "agreementPrefix": "点击「一键配置」即表示您同意",
-      "agreementMaas": "《MaaS 模型即服务声明》",
-      "agreementAnd": "和",
-      "agreementCloud": "《华为云用户协议》",
-      "agreementSuffix": "。",
-      "billingNote": "模型开通本身不产生费用，实际调用按用量计费。"
-    },
-    "manualSetup": {
-      "title": "手动配置",
-      "description": "已有 API Key，手动填入配置"
     }
   },
   "config": {

@@ -618,7 +618,7 @@ interface UseWebSocketOptions {
   onDisconnect?: () => void;
   onError?: (error: string) => void;
   onConfigChanged?: (updatedKeys?: string[]) => void;
-  /** 免费模型后台重试成功后触发，前端自动刷新模型列表 */
+  /** 后端模型目录更新后触发，前端同步刷新模型列表。 */
   onModelsUpdated?: () => void;
   /** cron 最终结果（非占位）广播到达后触发，用于自动跳转到执行会话并加载完整历史 */
   onCronResultArrived?: (sessionId: string, jobId: string) => void;

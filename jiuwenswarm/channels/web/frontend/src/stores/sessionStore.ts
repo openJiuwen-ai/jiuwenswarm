@@ -188,12 +188,7 @@ export function resolveEffectiveModel(
 ): ModelEntry | null {
   if (chatAvailableModels.length === 0) return null;
   const displayed = selectedModelName || defaultModelName;
-  // selectedModelName 可能存的是展示名（用户从下拉框选择时存的是 alias），
-  // 也可能存的是真实 API id（后端 session.metadata.model 回传恢复时是
-  // model_name，例如 Zen 免费模型的 "deepseek-v4-flash-free"）。两者都要能
-  // 命中同一个 entry，否则后端回传 model_name 后无法匹配有 alias 的免费
-  // 模型，会回退到 chatAvailableModels[0]（首个配置模型），表现为"对话
-  // 完成后下拉框自动切回配置的模型"。
+  // 兼容历史保存的 alias 和后端会话元数据中的 model_name，使展示与请求命中同一条目。
   return (
     chatAvailableModels.find(
       (m) => m.alias === displayed || m.model_name === displayed,
@@ -650,8 +645,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 后端 team_helpers 会把它透传给未显式配置 per-agent model 的团队成员。
     //
     // 注意：这里返回的是 model_name 而非 alias。后端 _model_cache 以 model_name 为
-    // key 查找（包括 Zen 免费模型如 "laguna-s-2.1-free"）；alias 只是展示名（如
-    // "Laguna S 2.1"），后端无法据此解析，会回退到默认模型。
+    // key 查找；alias 只是展示名，后端无法据此解析。
     const resolved = resolveEffectiveModel(
       state.chatAvailableModels,
       runtime.selectedModelName,
@@ -1680,8 +1674,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setAvailableModels: (models, activeModel) => {
     set((state) => {
       const defaultModels = models.filter((m) => m.is_default !== false);
-      // 过滤为空时回退到全量列表，保证聊天下拉框始终有可选项（例如用户自配模型
-      // 均未设为 is_default、且关闭了 Opencode Zen 免费模型时，不至于无模型可选）。
+      // 没有组内默认配置时，使用其余已配置模型。
       const chatModels = defaultModels.length > 0 ? defaultModels : models;
       // 优先使用后端返回的 activeModel（默认模型），其次取第一个；状态统一保存真实
       // model_name，alias 只用于界面展示。各会话 runtime 的 selectedModelName 不在这里

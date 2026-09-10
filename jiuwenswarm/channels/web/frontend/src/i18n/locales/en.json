@@ -106,7 +106,6 @@
       }
     },
     "models": {
-      "freeModels": "Free models",
       "primaryModels": "Chat models",
       "empty": "No models configured",
       "emptyDescription": "Add a model to test its connection and manage the primary model here.",
@@ -320,10 +319,6 @@
         "title": "ASR model",
         "description": "Model used for general speech transcription.",
         "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
-      },
-      "enable_free_models": {
-        "title": "Enable free models",
-        "description": "When enabled, available free models are fetched live. Note that free models may have limitations such as rate limits or restricted context window size. Free models are sourced from the Opencode Zen gateway (https://opencode.ai/zen), obtained by intersecting the models.dev catalog (https://models.opencode.ai/api.json) with the Zen live model list (criterion: input price is 0)."
       },
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
@@ -715,7 +710,6 @@
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
       "configured": "Configured Models",
-      "free": "Free Models",
       "addModel": "Add Custom Model",
       "empty": "No models available. Add a model in Settings first.",
       "placeholder": "Select Model"
@@ -1160,10 +1154,6 @@
     "skip": "Skip",
     "open": "Setup guide",
     "steps": {
-      "0": {
-        "title": "Welcome to jiuwenswarm",
-        "description": "You have free credits! Choose a way to configure your model service below."
-      },
       "1": {
         "title": "Configure your first model",
         "description": "Model configuration is on the Models page in Settings."
@@ -1172,26 +1162,6 @@
         "title": "Complete model configuration",
         "description": "Select Add model, choose a model provider, complete the required fields, then select Save."
       }
-    },
-    "quickSetup": {
-      "title": "Auto-setup Huawei Cloud MaaS",
-      "description": "Guided Huawei Cloud purchase and API configuration",
-      "steps": {
-        "openConsole": "Open Huawei Cloud MaaS console",
-        "updateAuth": "Update service authorization automatically",
-        "createApiKey": "Create an API key for JiuwenSwarm model calls",
-        "enableModels": "Enable preset models (pay-as-you-go)"
-      },
-      "agreementPrefix": "By clicking \"Auto-setup\" you agree to the ",
-      "agreementMaas": "MaaS Model-as-a-Service Statement",
-      "agreementAnd": " and the ",
-      "agreementCloud": "Huawei Cloud User Agreement",
-      "agreementSuffix": ".",
-      "billingNote": "Enabling models is free; you only pay for actual usage."
-    },
-    "manualSetup": {
-      "title": "Manual setup",
-      "description": "Already have an API key, configure manually"
     }
   },
   "config": {
