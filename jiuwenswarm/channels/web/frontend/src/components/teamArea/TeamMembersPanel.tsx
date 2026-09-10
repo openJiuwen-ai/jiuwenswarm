@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message, TeamMemberContextCompressionState } from '../../types';
 import type { TeamMemberExecutionEvent, TeamTask as SessionTeamTask } from '../../stores/sessionStore';
@@ -351,6 +352,19 @@ function GroupChatDetail({
   const groupMemberIds = getGroupMemberIds(members);
   const memberNames = [t('team.leader'), ...groupMemberIds.map(getMemberDisplayName)].join(t('team.memberSeparator'));
   const avatarMemberIds = [GROUP_LEADER_MEMBER_ID, ...groupMemberIds];
+  const memberNamesRef = useRef<HTMLDivElement>(null);
+  const [memberNamesTruncated, setMemberNamesTruncated] = useState(false);
+  const { tooltip: memberNamesTooltip, handlers: memberNamesTooltipHandlers } = useAdaptiveTooltip();
+
+  useLayoutEffect(() => {
+    const element = memberNamesRef.current;
+    if (!element) return;
+    const checkOverflow = () => setMemberNamesTruncated(element.scrollWidth > element.clientWidth);
+    checkOverflow();
+    const observer = new ResizeObserver(checkOverflow);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [memberNames]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -380,7 +394,14 @@ function GroupChatDetail({
             <div className="text-base font-semibold text-text" data-testid="team-area-group-chat-title">
               {t('team.groupChat')}
             </div>
-            <div className="mt-1 truncate text-xs text-text-muted" data-testid="team-area-group-chat-member-names">
+            <div
+              ref={memberNamesRef}
+              className="mt-1 truncate text-xs text-text-muted"
+              data-testid="team-area-group-chat-member-names"
+              data-tooltip={memberNamesTruncated ? memberNames : undefined}
+              tabIndex={memberNamesTruncated ? 0 : undefined}
+              {...memberNamesTooltipHandlers}
+            >
               {memberNames}
             </div>
           </div>
@@ -390,6 +411,7 @@ function GroupChatDetail({
         </div>
       </div>
 
+      {memberNamesTooltip}
       <div
         ref={scrollContainerRef}
         className="team-group-chat-message-list min-h-0 flex-1 overflow-y-auto px-7 py-6"

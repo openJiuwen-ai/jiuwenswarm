@@ -89,7 +89,8 @@ export function ArtifactExpandedPanel({
           {t('artifacts.title')}
         </h2>
       </div>
-      <ArtifactList selectedArtifactId={selectedArtifactId} onSelectArtifact={onSelectArtifact} className="shrink-0" />
+      {/* 负 margin 让滚动容器延伸到面板右缘，滚动条贴到最右侧；pr-6 保持列表内容与滚动条之间原有的右侧间距 */}
+      <ArtifactList selectedArtifactId={selectedArtifactId} onSelectArtifact={onSelectArtifact} className="-mr-6 flex-1 pr-6" />
     </div>
   );
 }
