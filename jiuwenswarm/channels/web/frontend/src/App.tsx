@@ -1319,10 +1319,7 @@ function AppContent({
           settle({ pageIdx, totalPages, result });
         },
         onEmpty: (emptyTotalPages) => {
-          if (pageIdx > 1) {
-            settle(null);
-            return;
-          }
+          // 已正常结束的页面即使没有主对话展示项，也必须推进页码。
           const totalPages = emptyTotalPages ?? fallbackTotalPages;
           settle({ pageIdx, totalPages, result: null });
         },
