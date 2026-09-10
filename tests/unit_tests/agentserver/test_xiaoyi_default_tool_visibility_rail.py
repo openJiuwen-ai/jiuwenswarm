@@ -25,6 +25,7 @@ def test_default_tool_filter_removes_optional_platform_groups():
         _function_tool("read_skill_experiences"),
         _function_tool("evolve_skill_experiences"),
         _function_tool("simplify_skill_experiences"),
+        _function_tool("code"),
         _function_tool("fetch_webpage"),
         _function_tool("read_file"),
     ]
