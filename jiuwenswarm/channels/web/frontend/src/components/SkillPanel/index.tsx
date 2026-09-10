@@ -1407,7 +1407,8 @@ export function SkillPanel({
         const data = await webRequest<SkillRebuildResponse>(
           'skills.rebuild',
           withSession({ name: skillName, version }),
-          { timeoutMs: 5 * 60_000 },
+          // 重建会同步跑静默 Agent，给足前端等待窗口（与 Gateway unary 默认 600s / 知识转技能同量级）。
+          { timeoutMs: 600_000 },
         );
         if (data.success) {
           showMessage('success', t('skills.messages.rebuildCompleted'));
