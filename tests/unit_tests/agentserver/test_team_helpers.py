@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -5730,3 +5731,194 @@ async def test_team_stall_watchdog_resets_on_stream_activity(monkeypatch: pytest
     bumper.cancel()
 
     assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_quiet_when_members_starting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """成员在拉起/重启途中（status=starting/restarting，拉起链可超 90s）→ 算在途，
+    不误判停摆（"成员还在跑却被判死"主场景）。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(
+        members=[
+            {"member_id": "m1", "status": "starting", "execution_status": "idle"},
+            {"member_id": "m2", "status": "restarting", "execution_status": "idle"},
+        ],
+        tasks=[{"task_id": "t1", "status": "pending"}],
+    )
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-starting", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        broadcast=_broadcast_recorder(broadcasted),
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_quiet_when_recent_task_activity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """窗口内有任务流转（updated_at 新鲜）= 刚发生认领/推进 → 不停摆。"""
+    broadcasted: list[dict] = []
+    now_ms = int(time.time() * 1000)
+    handler = _StallFakeMonitorHandler(
+        tasks=[{"task_id": "t1", "status": "in_progress", "updated_at": now_ms}],
+    )
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-recent", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        broadcast=_broadcast_recorder(broadcasted),
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_quiet_when_db_shows_in_flight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """live 快照判零在途但 DB 对照显示有成员在途（live 内存视图滞后于 DAO 直写）
+    → 不停摆。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _db_in_flight(_cid, _sid):
+        return (1, 1, False)  # DB：1 个在途成员
+
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_in_flight)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-dbcheck", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        broadcast=_broadcast_recorder(broadcasted),
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_fires_when_db_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DB 对照不可用（team_name 解析不到/读取失败）→ 退回 live-only 判定，
+    真停摆照常补终态（不因此赦免）。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _db_none(_cid, _sid):
+        return None
+
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_none)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-dbfail", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        broadcast=_broadcast_recorder(broadcasted),
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    terminals = [
+        e for e in broadcasted
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete")
+    ]
+    assert len(terminals) == 1
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_quiet_when_leader_kernel_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """leader kernel 协调循环 running = 回合仍在推进（agentic 迭代间隙/leader 长考
+    期间成员与 leader 的状态采样都是 ready，快照判定必误判）→ 不停摆。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _alive(_cid, _sid):
+        return True
+
+    monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _alive)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-kernel", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        broadcast=_broadcast_recorder(broadcasted),
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_fires_when_leader_kernel_stopped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """kernel 存在但非 running（paused/stopped）= leader 确实停了（有效停摆证据）
+    → 真停摆照常补终态。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _stopped(_cid, _sid):
+        return False
+
+    monkeypatch.setattr(team_stall_watchdog, "team_runtime_liveness", _stopped)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-kstopped", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        broadcast=_broadcast_recorder(broadcasted),
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    terminals = [
+        e for e in broadcasted
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete")
+    ]
+    assert len(terminals) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_hint_teammate_chunk_carries_member_name(monkeypatch):
+    """成员重试提示帧改道 chat.retry_status 时带 member_name 归因（chunk.source_member），
+    前端据此把重试状态路由到成员行；leader 帧不带（走主对话重试行）。"""
+
+    manager = _RecordingTeamManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+
+    def _fake_parse(chunk):
+        if getattr(chunk, "type", None) == "llm_output":
+            payload = chunk.payload
+            return {
+                "event_type": "chat.delta",
+                "content": payload.get("content") if isinstance(payload, dict) else payload,
+            }
+        return None
+
+    monkeypatch.setattr(team_helpers, "parse_stream_chunk", _fake_parse)
+
+    async def _fake_stream(**kwargs):
+        # 成员重试帧（teammate 角色 + source_member 归因）
+        yield SimpleNamespace(
+            type="llm_output",
+            payload={"content": "[Retry 2/10] [181001] model call failed", "retrying": True,
+                     "attempt": 2, "max_attempts": 10},
+            role=TeamRole.TEAMMATE,
+            source_member="qa",
+        )
+        # leader 重试帧（无 source_member）
+        yield SimpleNamespace(
+            type="llm_output",
+            payload={"content": "[Retry 1/10] [181001] model call failed", "retrying": True,
+                     "attempt": 1, "max_attempts": 10},
+            role=TeamRole.LEADER,
+        )
+        yield _completion_chunk("正文")
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", _fake_stream)
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web", "sess-retry-member", SimpleNamespace(team_name="spec-team"), "问",
+    )
+
+    retry_events = [e for e in manager.events if e.get("event_type") == "chat.retry_status"]
+    assert len(retry_events) == 2
+    member_event = next(e for e in retry_events if e.get("attempt") == 2)
+    leader_event = next(e for e in retry_events if e.get("attempt") == 1)
+    assert member_event.get("member_name") == "qa"
+    assert "member_name" not in leader_event

@@ -164,6 +164,54 @@ from jiuwenswarm.server.reverse_rpc import (
 
 logger = logging.getLogger(__name__)
 
+# 快照读时归一：desktop 退出=后端被 taskkill 强杀（无 Python 清理机会），
+# team.db 里成员活态永久滞留且无任何自愈（快照纯读、运行时只在 chat.send 才拉起、
+# Runner pool 重启即空）。会话无活跃运行时时读时归一（不改 DB）：
+# busy 且名下有非终态任务→paused（确有挂起现场被中断，前端「已暂停·任务
+# 挂起 ×N」）；busy 但任务已清（干完了没来得及回 ready 就被杀）/拉起途中
+# （starting/restarting）→ready（无挂起现场，显示「空闲」——原样透传会被
+# 前端映射成 busy 绿点永远"工作中"）。
+_STALE_BUSY_STATUS = "busy"
+_STALE_SPAWNING_STATUSES = frozenset({"starting", "restarting"})
+_STALE_LIVE_EXEC_STATUSES = frozenset({"starting", "running", "completing"})
+_TASK_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+
+def normalize_stale_member_statuses(payload: dict, has_runtime: bool) -> dict:
+    """读时归一 team.snapshot 的滞留成员活态（不改 DB）。无活跃运行时时
+    busy（有未终态任务）→ paused、busy（无挂起任务）/starting/restarting
+    → ready、execution 活态 → idle。"""
+    if has_runtime or not isinstance(payload, dict):
+        return payload
+    members = payload.get("members")
+    if not isinstance(members, list):
+        return payload
+    # 成员 → 是否有挂起（非终态）任务
+    members_with_open_tasks: set[str] = set()
+    tasks = payload.get("tasks")
+    if isinstance(tasks, list):
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            if str(task.get("status") or "") in _TASK_TERMINAL_STATUSES:
+                continue
+            assignee = str(task.get("assignee") or task.get("assignee_id") or "")
+            if assignee:
+                members_with_open_tasks.add(assignee)
+    for member in members:
+        if not isinstance(member, dict):
+            continue
+        status = str(member.get("status") or "")
+        member_id = str(member.get("member_id") or member.get("member_name") or "")
+        if status == _STALE_BUSY_STATUS and member_id in members_with_open_tasks:
+            member["status"] = "paused"
+        elif status == _STALE_BUSY_STATUS or status in _STALE_SPAWNING_STATUSES:
+            member["status"] = "ready"
+        if str(member.get("execution_status") or "") in _STALE_LIVE_EXEC_STATUSES:
+            member["execution_status"] = "idle"
+    return payload
+
+
 _DESKTOP_SESSION_LIMIT_MESSAGE = (
     "当前检测到多个会话正在并行处理，可能会导致所有任务的响应变慢或机器性能下降，"
     "请等待其他会话结束后再发起新会话。"
@@ -5220,6 +5268,17 @@ class AgentWebSocketServer:
                     source = "db"
 
         payload = snapshot or empty_payload
+        # 滞留活态读时归一（见模块头 _STALE_LIVE_MEMBER_STATUSES 注释）
+        if session_id:
+            try:
+                normalize_stale_member_statuses(
+                    payload, await team_manager.session_has_runtime(session_id)
+                )
+            except Exception as e:
+                logger.warning(
+                    "[AgentWebSocketServer] team.snapshot stale-status normalize failed: "
+                    "session_id=%s error=%s", session_id, e,
+                )
         members = payload.get("members") if isinstance(payload, dict) else []
         tasks = _snapshot_tasks(payload if isinstance(payload, dict) else None)
         logger.info(
