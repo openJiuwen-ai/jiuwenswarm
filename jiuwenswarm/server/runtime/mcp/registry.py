@@ -929,7 +929,7 @@ def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
     return CliConnectError(
         CODE_CLI_INCOMPLETE,
         f"mcp '{n}' CLI version check failed: got {inst.version!r}, "
-        f"min {inst.min_version!r}; {inst.error}",
+        f"expected {inst.min_version!r}; {inst.error}",
         runtime=runtime, install_cmd=install_cmd,
     )
 

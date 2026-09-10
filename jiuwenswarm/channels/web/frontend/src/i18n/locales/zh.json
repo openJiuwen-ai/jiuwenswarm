@@ -498,6 +498,7 @@
       "created": "任务已创建",
       "cancelled": "任务已取消",
       "unblocked": "任务解除阻塞",
+      "paused": "任务已暂停",
       "updated": "任务状态更新"
     },
     "taskDetail": {
@@ -2453,6 +2454,8 @@
       "skillNetInstallFailedHint": "SkillNet 安装失败，请检查 skill URL 或依赖",
       "importFailed": "导入失败",
       "importFailedHint": "导入失败，请检查路径或权限",
+      "knowledgeSkillExists": "技能「{{name}}」已存在，请更换名称或先卸载后再试",
+      "knowledgeSkillExistsGeneric": "同名技能已存在，请更换名称或先卸载后再试",
       "uploadFailed": "文件上传失败，请重试",
       "uploadUnsafePath": "文件名包含不允许的字符或使用了系统保留名称，请重命名后上传",
       "uploadInvalidRequest": "上传请求无效或缺少文件，请重新选择文件后上传",
@@ -3227,6 +3230,8 @@
       "content-creation": "内容创作",
       "security": "安全过滤",
       "communication": "通话沟通",
+      "Engineering": "工程开发",
+      "Design": "设计创意",
       "other": "其他"
     },
     "search": {
@@ -3573,6 +3578,13 @@
     "layoutGraph": "流程图",
     "pauseResumeHint": "暂停/恢复",
     "stopHint": "停止",
+    "controlAlreadyCompleted": "工作流已完成",
+    "controlAlreadyStopped": "工作流已停止",
+    "controlAlreadyFailed": "工作流已失败",
+    "controlAlreadyPaused": "工作流已暂停",
+    "controlUnavailable": "工作流正在运行，控制暂不可用",
+    "controlNotFound": "未找到工作流运行",
+    "controlsDisabledHint": "团队未在运行，工作流暂不可直接操作；请在主会话发送消息以恢复或停止",
     "sessionBudget": "会话预算（团队共享，不随运行重置）",
     "runBudget": "本次运行预算（META.workflow_token_limit）",
     "sessionBudgetShort": "会话累计",

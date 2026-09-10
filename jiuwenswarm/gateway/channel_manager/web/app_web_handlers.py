@@ -132,6 +132,9 @@ logger = logging.getLogger(__name__)
 
 
 _WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
+_SEARCH_RELOAD_ENV_KEYS = {
+    "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
+}
 _MODEL_RELOAD_ENV_KEYS = {
     "MODEL_PROVIDER",
     "MODEL_NAME",
@@ -200,6 +203,8 @@ class _ConfigChangeSet:
             scopes.add("multimodal")
         if _ASR_ENV_KEYS & set(self.env_updates):
             scopes.add("web_ui")
+        if _SEARCH_RELOAD_ENV_KEYS & set(self.env_updates):
+            scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
             if key_text == "skill_retrieval_index_recommendation_shown":
@@ -5030,7 +5035,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     )
 
     async def _path_get(ws, req_id, params, session_id, user_id=None):
-        """读 browser.chrome_path / browser_type 并返回给前端（会解析环境变量）。"""
+        """读 browser.chrome_path 并返回给前端（会解析环境变量）。"""
         from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -5049,7 +5054,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws,
                 req_id,
                 ok=True,
-                payload={"chrome_path": "", "browser_type": "auto", "headless": True},
+                payload={"chrome_path": "", "headless": True},
             )
             return
 
@@ -5059,31 +5064,21 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         config = _resolve_env_vars(config_base)
         browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
         chrome_path = ""
-        browser_type = "auto"
         headless = True
         if isinstance(browser_cfg, dict):
             value = browser_cfg.get("chrome_path", "")
             if isinstance(value, str):
                 chrome_path = value
-            raw_type = browser_cfg.get("browser_type", "auto")
-            if isinstance(raw_type, str) and raw_type.strip():
-                normalized = raw_type.strip().lower()
-                if normalized in {"chrome", "google-chrome", "google_chrome"}:
-                    browser_type = "chrome"
-                elif normalized in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-                    browser_type = "msedge"
-                else:
-                    browser_type = "auto"
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless},
         )
 
     async def _path_set(ws, req_id, params, session_id, user_id=None):
-        """更新 browser.chrome_path / browser_type / headless 并写回 config。"""
+        """更新 browser.chrome_path / headless 并写回 config。"""
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
@@ -5093,27 +5088,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="chrome_path must be string", code="BAD_REQUEST")
             return
         chrome_path = chrome_path.strip()
-
-        raw_browser_type = params.get("browser_type", "auto")
-        if not isinstance(raw_browser_type, str):
-            await channel.send_response(ws, req_id, ok=False, error="browser_type must be string", code="BAD_REQUEST")
-            return
-        normalized_type = raw_browser_type.strip().lower()
-        if normalized_type in {"chrome", "google-chrome", "google_chrome"}:
-            browser_type = "chrome"
-        elif normalized_type in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-            browser_type = "msedge"
-        elif normalized_type in {"", "auto"}:
-            browser_type = "auto"
-        else:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="browser_type must be one of: auto, chrome, msedge",
-                code="BAD_REQUEST",
-            )
-            return
 
         raw_headless = params.get("headless", True)
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
@@ -5170,7 +5144,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                params={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+                params={"chrome_path": chrome_path, "headless": headless},
                 session_id=session_id, user_id=user_id,
                 req_method=ReqMethod.PATH_SET, label="path.set",
                 on_done=_on_path_set_done,
@@ -5191,7 +5165,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         try:
-            update_browser_in_config({"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless})
+            update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
             resolved_agent_client = _resolve(agent_client)
             await _clear_agent_config_cache(resolved_agent_client)
         except Exception as e:  # noqa: BLE001
@@ -5213,7 +5187,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless},
         )
 
     async def _path_select_directory(ws, req_id, params, session_id, user_id=None):

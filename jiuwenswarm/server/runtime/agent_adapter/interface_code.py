@@ -47,7 +47,7 @@ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_confi
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
-from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool
+from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool, is_paid_search_enabled
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -2327,10 +2327,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_paid_search_tool(self, agent_id: str) -> WebPaidSearchTool | None:
         """条件注册付费搜索工具：有任意一个付费 API Key 才注册."""
-        if not any(
-            os.environ.get(key)
-            for key in ("BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY")
-        ):
+        if not is_paid_search_enabled():
             logger.info("[JiuwenSwarmCodeAdapter] web_paid_search skipped: no paid search API key")
             return None
         tool = WebPaidSearchTool(
@@ -2342,6 +2339,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid search while respecting ``modes.code.tools``."""
+        self._invalidate_stale_paid_search_tool()
         configured_tools = (
             self._active_code_config()
             .get("modes", {})
@@ -2349,18 +2347,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             .get("tools")
             or []
         )
-        paid_search_env_keys = (
-            "BOCHA_API_KEY",
-            "PERPLEXITY_API_KEY",
-            "SERPER_API_KEY",
-            "JINA_API_KEY",
-        )
-        has_paid_search_key = False
-        for key in paid_search_env_keys:
-            if os.environ.get(key):
-                has_paid_search_key = True
-                break
-        enabled = "web_paid_search" in configured_tools and has_paid_search_key
+        enabled = "web_paid_search" in configured_tools and is_paid_search_enabled()
         agent_id = self._tool_owner_id()
         tools, self._paid_search_registered = self._sync_tool_group(
             current_tools=(

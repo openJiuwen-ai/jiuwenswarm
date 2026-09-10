@@ -443,7 +443,7 @@ export function OnlineSkillSearchPanel({
                   {viewMode === 'list' ? (
                     <>
                       <div className='flex min-w-0 flex-1 items-center gap-3'>
-                        <div data-testid='online-skill-search-panel-item-avatar' className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${avatar.color} font-semibold text-text-inverse`}>
+                        <div data-testid='online-skill-search-panel-item-avatar' className='flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[10px] font-semibold text-text-inverse' style={avatar.style}>
                           {avatar.firstChar}
                         </div>
                         <div className='min-w-0 flex-1'>
@@ -496,7 +496,8 @@ export function OnlineSkillSearchPanel({
                       <div className='flex flex-shrink-0 items-start gap-3'>
                         <div
                           data-testid='online-skill-search-panel-item-avatar'
-                          className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg ${avatar.color} text-sm font-semibold text-text-inverse`}
+                          className='flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-[10px] text-sm font-semibold text-text-inverse'
+                          style={avatar.style}
                         >
                           {avatar.firstChar}
                         </div>

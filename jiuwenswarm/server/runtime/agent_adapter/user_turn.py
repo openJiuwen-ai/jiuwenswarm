@@ -121,6 +121,7 @@ class UserTurn:
             envelope["trusted_dirs"] = json.dumps(self.trusted_dirs, ensure_ascii=False)
         envelope.update(self._sender_fields())
         envelope.update(self._skill_scene_fields())
+        envelope.update(self._prefer_mcp_field())
         return envelope
 
     def _prompt_channel(self) -> str:
@@ -177,6 +178,28 @@ class UserTurn:
         if target_skill_type:
             fields["target_skill_type"] = target_skill_type
         return fields
+
+    def _prefer_mcp_field(self) -> dict[str, str]:
+        """Return a hidden 'prefer this MCP' directive from request metadata.
+
+        MCP 推荐问题入口把 ``prefer_mcp`` 放进一次性 metadata，本方法把它翻译成一条
+        模型可见、但用户看不见的指令，提示模型优先用该 MCP 的工具/技能（而非直接回答
+        或改用其它能力）。skill-only 与 stdio/remote 工具类 MCP 都适用。
+        """
+        if not self.metadata:
+            return {}
+        prefer = self.metadata.get("prefer_mcp")
+        if not isinstance(prefer, dict):
+            return {}
+        name = str(prefer.get("display_name") or prefer.get("id") or "").strip()
+        if not name:
+            return {}
+        return {
+            "prefer_mcp": (
+                f"本次任务请优先使用已启用的 MCP「{name}」提供的工具或技能来完成；"
+                "若该 MCP 能力不足，再考虑其它方式。"
+            )
+        }
 
     def _interaction_prefix(self) -> str:
         """Return the interaction-context preamble, or an empty string."""

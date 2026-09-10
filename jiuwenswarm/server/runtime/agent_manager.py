@@ -1222,7 +1222,7 @@ class AgentManager:
         使用 ``self._reload_lock`` 串行化, 避免高频触发(如批量 MCP 增删)时多个
         reload 并发叠加, 同时重建大量 agent 实例导致内存暴涨被 OOM kill.
 
-        ``reload_scopes`` 含 ``"model"`` 或 ``"multimodal"`` 时, 配置属于所有
+        ``reload_scopes`` 含 ``"model"``、``"multimodal"`` 或 ``"search"`` 时, 配置属于所有
         channel 共享的全局配置段, 此时忽略 ``target_channel_id`` 的窄化,
         fan-out 到全部 channel。否则 web 保存后只有 web 通道被热更新,
         IM 长连接通道的 session adapter 会继续使用旧配置。
@@ -1238,16 +1238,29 @@ class AgentManager:
 
             target_channel = str(target_channel_id or "").strip() or None
             target_session = str(target_session_id or "").strip() or None
-            # 对话模型和多模态工具都是全局共享配置，必须广播到所有 channel。
+            # 对话模型、多模态和搜索工具都是全局共享配置，必须广播到所有 channel。
             scope_set = set(reload_scopes) if reload_scopes else set()
+            search_changed = any(
+                f"{provider}_API_KEY" in self._latest_env_overrides
+                for provider in ("BOCHA", "PERPLEXITY", "SERPER", "JINA")
+            )
+            # Older callers can omit scopes; keep their full-reload semantics.
+            if search_changed and scope_set:
+                scope_set.add("search")
             model_scope = "model" in scope_set
-            global_scope = bool(scope_set & {"model", "multimodal"})
+            global_scope = search_changed or bool(scope_set & {"model", "multimodal", "search"})
+            if not scope_set or "search" in scope_set:
+                from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import refresh_mcp_paid_search_tools
+
+                refresh_mcp_paid_search_tools()
             effective_target_channel = None if global_scope else target_channel
+            if search_changed or "search" in scope_set:
+                target_session = None
             if target_channel and global_scope:
                 logger.info(
                     "[AgentManager] global config scopes=%s changed via channel=%s; "
                     "fan-out reload to all channels",
-                    sorted(scope_set & {"model", "multimodal"}),
+                    sorted(scope_set & {"model", "multimodal", "search"}),
                     target_channel,
                 )
             effective_config = config

@@ -120,7 +120,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   if (!detail) {
     return (
       <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-plugin-detail-state">
-        <button type="button" onClick={onBack} className="detail-back mb-[35px]">
+        <button type="button" onClick={onBack} className="detail-back">
           <BackIcon aria-hidden="true" />
           {t('connectorMarket.common.back')}
         </button>
@@ -179,12 +179,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-plugin-detail">
-      <button
-        type="button"
-        onClick={onBack}
-        className="detail-back mb-[35px]"
-        data-testid="connector-market-plugin-detail-back"
-      >
+      <button type="button" onClick={onBack} className="detail-back" data-testid="connector-market-plugin-detail-back">
         <BackIcon aria-hidden="true" />
         {t('connectorMarket.common.back')}
       </button>
@@ -195,7 +190,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
             <EntityAvatar
               iconUrl={detail.avatar}
               avatar={avatar}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-semibold"
             />
             <div>
               <h1 className="text-[20px] font-semibold leading-8 text-text">{title}</h1>
@@ -407,7 +402,8 @@ function CapabilityGrid({
             <div className="mb-1.5 flex items-center gap-2.5">
               {skillStyle ? (
                 <span
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-black text-text-inverse ${avatar.color}`}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-black text-text-inverse"
+                  style={avatar.style}
                 >
                   {avatar.firstChar}
                 </span>
