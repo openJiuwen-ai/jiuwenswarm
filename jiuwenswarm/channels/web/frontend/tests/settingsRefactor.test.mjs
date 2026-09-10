@@ -1125,7 +1125,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'telegram',
     'discord',
     'slack',
-    'whatsapp',
   ]);
   const channelAdaptersFile = parseTsx('src/features/settings/modules/channels/channelAdapters.ts');
   const channelPayloadKeys = {
@@ -1828,7 +1827,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
     /<a[\s\S]*href=\{getSettingsChannelGuideUrl\(channel\.channel_id, guideLanguage\)\}[\s\S]*target="_blank"[\s\S]*rel="noopener noreferrer"/,
   );
   const catalog = source('src/features/settings/modules/channels/channelCatalog.ts');
-  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack', 'whatsapp'])
+  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack'])
     assert.match(catalog, new RegExp(`'${channelId}'`));
 });
 
