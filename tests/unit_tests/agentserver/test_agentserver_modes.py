@@ -284,6 +284,14 @@ def test_status_code_graph_absent_when_profile_off(monkeypatch):
     )
     assert payload == {"present": False, "state": "absent"}
     assert called["stats"] == 0
+    assert agent_ws_server_module.resolve_status_code_graph({}, "/tmp/project") == {
+        "present": False,
+        "state": "absent",
+    }
+    assert agent_ws_server_module.resolve_status_code_graph(None, "/tmp/project") == {
+        "present": False,
+        "state": "absent",
+    }
 
 
 def test_status_code_graph_reads_manager_when_profile_graph(monkeypatch):

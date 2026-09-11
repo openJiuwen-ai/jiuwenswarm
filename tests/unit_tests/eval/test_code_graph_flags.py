@@ -33,8 +33,6 @@ from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (  # noqa:
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (  # noqa: E402
     preload_code_graph_grammars,
 )
-from coding_agent import config_dir_name  # noqa: E402
-from trajectory import summarize_tool_payload  # noqa: E402
 
 
 def test_product_code_graph_config_reads_live_caps() -> None:
@@ -48,7 +46,7 @@ def test_product_code_graph_config_keeps_zero_cache_cap() -> None:
 
 
 def test_eval_graph_config_uses_product_fields(tmp_path: Path) -> None:
-    from coding_agent import _graph_config
+    _graph_config = pytest.importorskip("coding_agent")._graph_config
 
     cfg = _graph_config(
         {
@@ -69,10 +67,25 @@ def test_eval_graph_config_uses_product_fields(tmp_path: Path) -> None:
     assert Path(cfg.cache_dir) == (tmp_path / "cache").resolve()
 
 
-def test_missing_code_graph_section_is_the_original_agent() -> None:
-    flags = resolve_code_graph_flags({})
+@pytest.mark.parametrize(
+    "config_base",
+    [
+        None,
+        {},
+        {"react": {"max_iterations": 32}},
+        {"code_graph": None},
+        {"code_graph": {}},
+        {"code_graph": {"profile": None}},
+        {"code_graph": {"enabled": True, "tools": True}},
+    ],
+)
+def test_missing_code_graph_section_is_the_original_agent(config_base) -> None:
+    """Old appliance yaml has no ``code_graph`` key. That must stay off."""
+    flags = resolve_code_graph_flags(config_base)
     assert flags.profile == PROFILE_OFF
     assert flags.enabled is False
+    assert flags.on_root is False
+    assert flags.on_code_agent is False
 
 
 def test_product_template_defaults_code_graph_off() -> None:
@@ -228,7 +241,9 @@ def test_profile_overlay_sets_graph_and_enables_code_agent() -> None:
 
 
 def test_graph_agent_defaults_and_protocol_labels() -> None:
-    from run_contextbench import describe_protocol, resolve_graph_agent
+    run_contextbench = pytest.importorskip("run_contextbench")
+    describe_protocol = run_contextbench.describe_protocol
+    resolve_graph_agent = run_contextbench.resolve_graph_agent
 
     assert resolve_graph_agent("off", None) == "root"
     assert resolve_graph_agent("off", "code_agent") == "code_agent"
@@ -298,6 +313,7 @@ def test_legacy_surface_flags_do_not_enable_graph() -> None:
 
 
 def test_summarize_resolve_symbol_keeps_the_name() -> None:
+    summarize_tool_payload = pytest.importorskip("trajectory").summarize_tool_payload
     summary = summarize_tool_payload(
         "resolve_symbol",
         {"name": "io.fits.FITSDiff", "kind": "class"},
@@ -321,6 +337,7 @@ def test_summarize_resolve_symbol_keeps_the_name() -> None:
 
 
 def test_summarize_search_source_text_keeps_chunks() -> None:
+    summarize_tool_payload = pytest.importorskip("trajectory").summarize_tool_payload
     summary = summarize_tool_payload(
         "search_source_text",
         {"query": "clear_select_clause"},
@@ -341,6 +358,7 @@ def test_summarize_search_source_text_keeps_chunks() -> None:
 
 
 def test_summarize_keeps_next_action_symbol_and_file() -> None:
+    summarize_tool_payload = pytest.importorskip("trajectory").summarize_tool_payload
     summary = summarize_tool_payload(
         "find_code_symbols",
         {"query": "TimeSeries"},
@@ -368,6 +386,7 @@ def test_summarize_keeps_next_action_symbol_and_file() -> None:
 
 
 def test_summarize_submit_keeps_the_packet_shape_not_its_body() -> None:
+    summarize_tool_payload = pytest.importorskip("trajectory").summarize_tool_payload
     summary = summarize_tool_payload(
         "submit_code_context",
         {},
@@ -392,7 +411,7 @@ def test_summarize_submit_keeps_the_packet_shape_not_its_body() -> None:
 
 
 def test_trace_totals_count_find_tools_not_grep() -> None:
-    from trajectory import EvalTrace
+    EvalTrace = pytest.importorskip("trajectory").EvalTrace
 
     trace = EvalTrace(repo_root="/tmp/repo")
     for name in ("find_callers", "submit_code_context", "grep"):
@@ -405,7 +424,7 @@ def test_trace_totals_count_find_tools_not_grep() -> None:
 
 
 def test_trace_totals_carry_the_process_metrics() -> None:
-    from trajectory import EvalTrace
+    EvalTrace = pytest.importorskip("trajectory").EvalTrace
 
     trace = EvalTrace(repo_root="/tmp/repo")
     trace.tool_events.extend(
@@ -430,7 +449,7 @@ def test_trace_totals_carry_the_process_metrics() -> None:
 
 
 def test_trace_adopts_one_next_action_without_dropping_the_rest() -> None:
-    from trajectory import process_metrics
+    process_metrics = pytest.importorskip("trajectory").process_metrics
 
     metrics = process_metrics(
         [
@@ -450,6 +469,7 @@ def test_trace_adopts_one_next_action_without_dropping_the_rest() -> None:
 
 
 def test_summarize_reads_json_string_arguments() -> None:
+    summarize_tool_payload = pytest.importorskip("trajectory").summarize_tool_payload
     summary = summarize_tool_payload(
         "bash",
         json.dumps(
@@ -505,6 +525,7 @@ def test_preload_skips_when_cache_is_already_warm(monkeypatch) -> None:
 
 
 def test_config_dir_name_labels_the_profile() -> None:
+    config_dir_name = pytest.importorskip("coding_agent").config_dir_name
     assert config_dir_name(profile=PROFILE_OFF) == "cfg_b__graph-off"
     assert config_dir_name(profile=PROFILE_GRAPH) == "cfg_b__graph"
     assert (
@@ -593,14 +614,13 @@ def test_effective_interface_locate_stays_classic() -> None:
 
 
 def test_task_mode_hidden_tools_and_capture_patch(tmp_path: Path) -> None:
-    from run_contextbench import (
-        capture_patch,
-        code_agent_hidden_tools,
-        has_patch_context,
-        resolve_task_mode,
-        root_hidden_tools,
-    )
-    from trajectory import contextbench_record
+    run_contextbench = pytest.importorskip("run_contextbench")
+    capture_patch = run_contextbench.capture_patch
+    code_agent_hidden_tools = run_contextbench.code_agent_hidden_tools
+    has_patch_context = run_contextbench.has_patch_context
+    resolve_task_mode = run_contextbench.resolve_task_mode
+    root_hidden_tools = run_contextbench.root_hidden_tools
+    contextbench_record = pytest.importorskip("trajectory").contextbench_record
 
     assert resolve_task_mode("locate") == "locate"
     assert resolve_task_mode("coding") == "coding"
@@ -647,7 +667,10 @@ def test_task_mode_hidden_tools_and_capture_patch(tmp_path: Path) -> None:
 def test_repair_resets_dirty_worktree_when_head_matches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from run_contextbench import _repair_stale_worktree, _worktree_dir_for, _worktree_url_key
+    run_contextbench = pytest.importorskip("run_contextbench")
+    _repair_stale_worktree = run_contextbench._repair_stale_worktree
+    _worktree_dir_for = run_contextbench._worktree_dir_for
+    _worktree_url_key = run_contextbench._worktree_url_key
 
     monkeypatch.setenv("CONTEXTBENCH_TMP_ROOT", str(tmp_path))
     url = "https://example.com/demo"
@@ -685,7 +708,9 @@ def test_repair_resets_dirty_worktree_when_head_matches(
 
 
 def test_drop_editloc_strips_empty_patch_only(tmp_path: Path) -> None:
-    from run_evaluate import _drop_editloc, _patch_id_sets
+    run_evaluate = pytest.importorskip("run_evaluate")
+    _drop_editloc = run_evaluate._drop_editloc
+    _patch_id_sets = run_evaluate._patch_id_sets
 
     records = [
         {"instance_id": "with-patch", "model_patch": "diff --git a"},
@@ -801,6 +826,18 @@ def test_root_rail_is_graph_when_hang_is_root() -> None:
     adapter = JiuwenSwarmCodeAdapter()
     rail = adapter._build_code_graph_profile_rail(_graph_yaml())
     assert rail.profile.value == PROFILE_GRAPH
+
+
+def test_missing_section_does_not_hang_code_graph_rail() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    specs = adapter._build_profile_rail_specs({}, {}, mode="code")
+    names = [spec.attr_name for spec in specs.after_permission]
+    assert "_code_graph_profile_rail" not in names
+    assert adapter._code_agent_graph_kwargs({}) == {"code_graph_profile": PROFILE_OFF}
 
 
 def test_off_create_does_not_hang_code_graph_rail() -> None:

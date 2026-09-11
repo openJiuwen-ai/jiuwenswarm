@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,17 +36,8 @@ from openjiuwen.harness.rails import (
     LspRail,
 )
 from openjiuwen.harness.rails.code_graph_profile_rail import CodeGraphProfileRail
-
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.lsp import InitializeOptions
-from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
-    CodeGraphFlags,
-    PROFILE_OFF,
-    admit_code_graph_workspace,
-    parse_source_volume_to_bytes,
-    resolve_code_graph_flags,
-    rewrite_code_graph_limit_message,
-)
 from openjiuwen.harness.schema.config import SubAgentConfig
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
@@ -55,6 +47,14 @@ from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 from openjiuwen.harness.workspace.workspace import Workspace
 
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+    CodeGraphFlags,
+    PROFILE_OFF,
+    admit_code_graph_workspace,
+    parse_source_volume_to_bytes,
+    resolve_code_graph_flags,
+    rewrite_code_graph_limit_message,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _AGENT_CARD_ID,
@@ -436,6 +436,28 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class _CodeGraphReloadLimits:
+    """Resource knobs that must remount the live rail when they change."""
+
+    max_files: int
+    max_source_bytes: int
+    max_build_rss_mb: int
+    max_cache_size_mb: int | None
+    cache_dir: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CodeGraphReloadKey:
+    """User-facing knobs that must remount the live rail when they change."""
+
+    profile: str
+    on_root: bool
+    on_code_agent: bool
+    retrieval_interface: str
+    limits: _CodeGraphReloadLimits
+
+
 class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     """Code 模式适配器 — 配置驱动注册 rails/tools.
 
@@ -480,7 +502,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._runtime_language_override: str | None = None
         self._force_english_runtime_prompt: bool = True
         self._code_graph_profile_rail: CodeGraphProfileRail | None = None
-        self._code_graph_reload_fingerprint: tuple[Any, ...] | None = None
+        self._code_graph_reload_fingerprint: _CodeGraphReloadKey | None = None
         self._code_graph_needs_warmup: bool = False
         self._code_graph_rail_needs_apply: bool = False
         self._code_graph_warmup_task: asyncio.Task[Any] | None = None
@@ -854,20 +876,22 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
         )
 
-    def _code_graph_reload_key(self, config_base: dict[str, Any] | None) -> tuple[Any, ...]:
+    def _code_graph_reload_key(self, config_base: dict[str, Any] | None) -> _CodeGraphReloadKey:
         """User-facing knobs that must remount the live rail when they change."""
         flags = self._code_graph_flags(config_base)
         cfg = self._build_code_graph_config(config_base)
-        return (
-            flags.profile,
-            flags.on_root,
-            flags.on_code_agent,
-            flags.retrieval_interface,
-            cfg.max_files,
-            cfg.max_source_bytes,
-            cfg.max_build_rss_mb,
-            cfg.max_cache_size_mb,
-            cfg.cache_dir,
+        return _CodeGraphReloadKey(
+            profile=flags.profile,
+            on_root=flags.on_root,
+            on_code_agent=flags.on_code_agent,
+            retrieval_interface=flags.retrieval_interface,
+            limits=_CodeGraphReloadLimits(
+                max_files=cfg.max_files,
+                max_source_bytes=cfg.max_source_bytes,
+                max_build_rss_mb=cfg.max_build_rss_mb,
+                max_cache_size_mb=cfg.max_cache_size_mb,
+                cache_dir=cfg.cache_dir,
+            ),
         )
 
     def _remember_code_graph_reload_fingerprint(self, config_base: dict[str, Any] | None) -> None:

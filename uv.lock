@@ -1999,6 +1999,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0,<3" },
     { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os" },
     { name = "openjiuwen", extras = ["claude"], git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os" },
+    { name = "openjiuwen", extras = ["code-graph"], marker = "extra == 'code-graph'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os" },
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?branch=agent_os" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<2" },
