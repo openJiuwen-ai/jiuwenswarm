@@ -404,12 +404,21 @@ class CronJobStore:
             if enabled_val and "expired" not in patch:
                 updated = replace(updated, expired=False)
         if "cron_expr" in patch:
-            updated = replace(
-                updated, cron_expr=str(patch.get("cron_expr") or "").strip()
-            )
+            new_cron_expr = str(patch.get("cron_expr") or "").strip()
+            updated = replace(updated, cron_expr=new_cron_expr)
             # Editing schedule implies it is no longer expired, unless caller explicitly sets expired.
             if "expired" not in patch:
                 updated = replace(updated, expired=False)
+            # 排程实际变更时重置 delete_after_run：该标记绑定的是旧排程的一次性语义
+            # （典型：agent 以 kind=at + deleteAfterRun 创建的提醒任务）。若换排程后保留，
+            # 循环任务会在首次执行后被调度器标记过期（web/TUI 编辑不含该字段，必然残留）。
+            # 调用方显式传 delete_after_run 时不覆盖；真正的一次性排程（有界 cron）执行后
+            # 仍走调度器的自然过期路径（无下一次触发时间），行为不变。
+            if (
+                new_cron_expr != existing.cron_expr
+                and "delete_after_run" not in patch
+            ):
+                updated = replace(updated, delete_after_run=False)
         if "timezone" in patch:
             updated = replace(
                 updated, timezone=str(patch.get("timezone") or "").strip()
