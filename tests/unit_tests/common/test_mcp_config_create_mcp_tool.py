@@ -646,6 +646,52 @@ class TestCreateMcpToolOpenapi:
         assert result.server_id == "custom-oa-id"
 
 
+class TestCreateMcpToolTimeoutPassthrough:
+    """前端下发的 timeout_s 必须透传进 params（供 _run_mcp_worker 按连接器超时调用）。"""
+
+    def test_stdio_timeout_s_passthrough(self):
+        cfg = json.dumps({
+            "name": "slow-stdio",
+            "command": "node",
+            "args": ["s.js"],
+            "timeout_s": 120,
+        })
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["timeout_s"] == 120
+
+    def test_sse_timeout_s_passthrough(self):
+        cfg = json.dumps({
+            "name": "slow-sse",
+            "type": "sse",
+            "url": "http://127.0.0.1:3001/sse",
+            "timeout_s": 300.5,
+        })
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "sse"
+        assert result.params["timeout_s"] == 300.5
+
+    @pytest.mark.parametrize("bad", [0, -5, "120", True, None])
+    def test_invalid_timeout_s_dropped(self, bad):
+        cfg = json.dumps({
+            "name": "bad-timeout",
+            "type": "sse",
+            "url": "http://127.0.0.1:3001/sse",
+            "timeout_s": bad,
+        })
+        result = create_mcp_tool(cfg)
+        assert "timeout_s" not in result.params
+
+    def test_no_timeout_s_no_param(self):
+        cfg = json.dumps({
+            "name": "no-timeout",
+            "command": "node",
+            "args": ["s.js"],
+        })
+        result = create_mcp_tool(cfg)
+        assert "timeout_s" not in result.params
+
+
 class TestCreateMcpToolDefaultType:
     def test_no_type_defaults_to_stdio(self):
         cfg = json.dumps({
