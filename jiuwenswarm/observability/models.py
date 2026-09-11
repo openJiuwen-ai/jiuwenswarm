@@ -140,25 +140,20 @@ class StreamFrameData:
     span_id: str
     sequence: int
     kind: str
+    # When the model produced the frame. A frame is written within
+    # milliseconds of that, so it carries no separate write timestamp.
     timestamp_unix_nano: int
-    created_at: int
     text: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     arguments_delta: str | None = None
 
     @classmethod
-    def from_core_frame(
-        cls,
-        record: StreamFrameRecordLike,
-        *,
-        created_at: int | None = None,
-    ) -> StreamFrameData:
+    def from_core_frame(cls, record: StreamFrameRecordLike) -> StreamFrameData:
         """Copy one stream frame emitted by Agent Core.
 
         Args:
             record: The frame as Agent Core published it.
-            created_at: Unix seconds to stamp; defaults to now.
 
         Returns:
             The immutable copy the writer thread persists.
@@ -191,7 +186,6 @@ class StreamFrameData:
             sequence=sequence,
             kind=kind,
             timestamp_unix_nano=timestamp,
-            created_at=int(created_at if created_at is not None else time.time()),
             text=_frame_text(record.text),
             tool_call_id=_normalize_text(getattr(record, "tool_call_id", None)),
             tool_name=_normalize_text(getattr(record, "tool_name", None)),

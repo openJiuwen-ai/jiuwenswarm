@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from jiuwenswarm.observability import store as store_module
-from jiuwenswarm.observability.models import TraceRecordData
+from jiuwenswarm.observability.models import StreamFrameData, TraceRecordData
 from jiuwenswarm.observability.store import (
     AsyncTrajectoryReader,
     TrajectoryCursorError,
@@ -199,25 +199,145 @@ def _frame_columns(database_path: Path) -> set[str]:
         connection.close()
 
 
-def test_frames_do_not_repeat_the_session_that_owns_the_whole_file(
+def _frame(
+    sequence: int,
+    *,
+    text: str = "x",
+    timestamp_unix_nano: int | None = None,
+) -> StreamFrameData:
+    return StreamFrameData(
+        session_id="session-1",
+        execution_subject_id="main",
+        trace_id=_TRACE_ID,
+        span_id=_ROOT_SPAN_ID,
+        sequence=sequence,
+        kind="text-delta",
+        timestamp_unix_nano=(
+            timestamp_unix_nano if timestamp_unix_nano is not None else 1_000 + sequence
+        ),
+        text=text,
+    )
+
+
+def test_frames_name_their_span_once_instead_of_on_every_row(
     tmp_path: Path,
 ) -> None:
-    """A writer opens one file per session, so no frame restates the session.
+    """A turn's frames all come from one span, so they say so once.
 
-    Naming the session on all 33,000 rows of a streaming turn cost more than
-    the frames' own content, and indexing (session_id, frame_seq) on top of
-    the rowid cost more again to save a filter that never rejects anything.
-    A database written before that was understood has to shed both when this
-    code opens it, or its NOT NULL column would reject every new frame.
+    Repeating a subject, a 32-character trace id and a 16-character span id on
+    every frame cost twenty times what the frames themselves said, and the
+    index over those three strings cost as much again. Both collapse to an
+    integer that names one row.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([], frames=[_frame(index) for index in range(64)])
+    finally:
+        store.close()
+
+    assert _frame_columns(database_path) == {
+        "frame_seq",
+        "span_ref",
+        "sequence",
+        "kind",
+        "text",
+        "tool_call_id",
+        "tool_name",
+        "arguments_delta",
+        "timestamp_unix_nano",
+    }
+    assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_ref"]
+
+    connection = sqlite3.connect(database_path)
+    try:
+        spans = connection.execute(
+            "SELECT execution_subject_id, trace_id, span_id FROM trajectory_frame_spans"
+        ).fetchall()
+        refs = connection.execute(
+            "SELECT DISTINCT span_ref FROM trajectory_stream_frames"
+        ).fetchall()
+        kinds = connection.execute(
+            "SELECT DISTINCT kind FROM trajectory_stream_frames"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert spans == [("main", _TRACE_ID, _ROOT_SPAN_ID)]
+    assert len(refs) == 1
+    # Stored as a code, not as the word spelled out 64 times.
+    assert kinds == [(1,)]
+    test_logger.info("64 frames name their span through one row")
+
+
+def test_a_span_name_lives_exactly_as_long_as_its_frames(tmp_path: Path) -> None:
+    """Nothing refers to a span once its frames are gone, so it goes with them.
+
+    Retention ages frames by when the model produced them -- the only
+    timestamp a frame carries -- and the row naming their span is swept in the
+    same pass, so an upgraded file does not accumulate names for frames that
+    no longer exist.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path, retention_days=1)
+    store.initialize()
+    try:
+        store.write_records(
+            [],
+            frames=[
+                _frame(0, timestamp_unix_nano=1_000 * 1_000_000_000),
+                _frame(1, timestamp_unix_nano=500_000 * 1_000_000_000),
+            ],
+        )
+        store.delete_expired(now=400_000)
+
+        connection = sqlite3.connect(database_path)
+        try:
+            frames = connection.execute(
+                "SELECT sequence FROM trajectory_stream_frames"
+            ).fetchall()
+            spans = connection.execute(
+                "SELECT COUNT(*) FROM trajectory_frame_spans"
+            ).fetchone()
+        finally:
+            connection.close()
+        # The recent frame still names this span, so the name stays.
+        assert frames == [(1,)]
+        assert spans == (1,)
+
+        store.delete_expired(now=900_000)
+        connection = sqlite3.connect(database_path)
+        try:
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM trajectory_frame_spans"
+            ).fetchone()
+        finally:
+            connection.close()
+        assert remaining == (0,)
+    finally:
+        store.close()
+    test_logger.info("span names are swept with the last frame that used them")
+
+
+def test_a_frame_table_that_names_a_span_per_row_is_discarded(
+    tmp_path: Path,
+) -> None:
+    """Frames expire on their own, so an older shape is dropped, not moved.
+
+    Retention clears frames within days and the records they accompany are
+    untouched, so rewriting every row of an older table would buy back
+    something that was about to go anyway. What has to keep working is the
+    file: opening it must not fail on an index over a column the old table
+    does not have.
     """
     database_path = tmp_path / "trajectory.sqlite3"
     store = TrajectoryStore(database_path)
     store.initialize()
     store.close()
-    assert "session_id" not in _frame_columns(database_path)
-    assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_sequence"]
 
-    # Rebuild the older shape: a session column plus the index over it.
+    # Rebuild the oldest shape: a session column, three identity columns per
+    # frame, a separate write timestamp, and the index over the session.
     connection = sqlite3.connect(database_path)
     connection.execute("DROP TABLE trajectory_stream_frames")
     connection.execute(
@@ -245,9 +365,9 @@ def test_frames_do_not_repeat_the_session_that_owns_the_whole_file(
     )
     connection.execute(
         "INSERT INTO trajectory_stream_frames ("
-        "  session_id, execution_subject_id, trace_id, span_id, sequence,"
-        "  kind, text, timestamp_unix_nano, created_at"
-        ") VALUES ('session-1', 'main', ?, ?, 0, 'text-delta', 'kept ', 1, 1)",
+        "  frame_seq, session_id, execution_subject_id, trace_id, span_id,"
+        "  sequence, kind, text, timestamp_unix_nano, created_at"
+        ") VALUES (7000, 'session-1', 'main', ?, ?, 0, 'text-delta', 'gone ', 1, 1)",
         (_TRACE_ID, _ROOT_SPAN_ID),
     )
     connection.commit()
@@ -256,20 +376,27 @@ def test_frames_do_not_repeat_the_session_that_owns_the_whole_file(
 
     store = TrajectoryStore(database_path)
     store.initialize()
-    store.close()
+    try:
+        store.write_records([], frames=[_frame(0, text="new ")])
+    finally:
+        store.close()
 
     assert "session_id" not in _frame_columns(database_path)
-    assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_sequence"]
-    # The frames themselves survive the migration.
+    assert "created_at" not in _frame_columns(database_path)
+    # The old index went with the table that owned it.
+    assert _frame_indexes(database_path) == ["idx_trajectory_frames_span_ref"]
+
     connection = sqlite3.connect(database_path)
     try:
-        kept = connection.execute(
-            "SELECT text FROM trajectory_stream_frames"
+        frames = connection.execute(
+            "SELECT frame_seq, kind, text FROM trajectory_stream_frames"
         ).fetchall()
     finally:
         connection.close()
-    assert [row[0] for row in kept] == ["kept "]
-    test_logger.info("frame table sheds the session column and its index")
+    # Only what this shape wrote, numbered from the start of the new table. A
+    # reader holding 7000 sees a watermark beyond the file and starts over.
+    assert frames == [(1, 1, "new ")]
+    test_logger.info("older frame table is discarded rather than rewritten")
 
 
 def test_store_preserves_exact_raw_and_records_hash_conflict(tmp_path: Path) -> None:

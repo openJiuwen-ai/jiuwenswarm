@@ -197,34 +197,50 @@ CREATE INDEX IF NOT EXISTS idx_trajectory_changes_session_change
 CREATE INDEX IF NOT EXISTS idx_trajectory_changes_trace_change
     ON trajectory_changes(trace_id, change_seq);
 
+-- The span a run of frames came from, named once instead of on every frame.
+-- One streaming turn emits hundreds of frames from a single span, and a
+-- 32-character trace id plus a 16-character span id on each of them cost
+-- twenty times what those frames actually say. Here they cost one row.
+CREATE TABLE IF NOT EXISTS trajectory_frame_spans (
+    span_ref INTEGER PRIMARY KEY AUTOINCREMENT,
+    execution_subject_id TEXT NOT NULL,
+    trace_id TEXT NOT NULL,
+    span_id TEXT NOT NULL,
+    UNIQUE (trace_id, span_id)
+);
+
 -- One model-stream frame. Frames are append-only and small: a frame states
 -- one increment of an answer, never the whole of it, so a streaming turn
 -- costs what it actually produced instead of its length squared.
+--
+-- What a frame says is text, arguments_delta and a tool's identity. Its own
+-- identity is span_ref and sequence, and nothing else about where it came
+-- from is repeated here.
 CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
     frame_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    execution_subject_id TEXT NOT NULL DEFAULT 'main',
-    trace_id TEXT NOT NULL,
-    span_id TEXT NOT NULL,
+    span_ref INTEGER NOT NULL REFERENCES trajectory_frame_spans(span_ref),
     sequence INTEGER NOT NULL,
-    kind TEXT NOT NULL,
+    -- A code for one of the kinds a model stream can state, never the word.
+    kind INTEGER NOT NULL,
     text TEXT,
     tool_call_id TEXT,
     tool_name TEXT,
     arguments_delta TEXT,
-    timestamp_unix_nano INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
+    -- When the frame was produced. No separate write timestamp: a frame is
+    -- queued and committed within milliseconds of being produced, and the
+    -- only thing that reads it -- retention -- measures in days.
+    timestamp_unix_nano INTEGER NOT NULL
 );
 
--- No session column and no session index: a writer opens one file per
+-- No session column and no session index either: a writer opens one file per
 -- session, so the session is a property of the file, not of each of its
 -- 33,000 rows. Catching up walks the file in commit order, which frame_seq
 -- already is -- it is the rowid, so that walk is a primary-key scan.
--- Databases written before this stop carrying either.
-DROP INDEX IF EXISTS idx_trajectory_frames_session_seq;
+--
 -- Replaying one answer, and discarding the frames of a span that turned out
 -- to be incomplete, both address frames by the span that produced them.
-CREATE INDEX IF NOT EXISTS idx_trajectory_frames_span_sequence
-    ON trajectory_stream_frames(trace_id, span_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_trajectory_frames_span_ref
+    ON trajectory_stream_frames(span_ref, sequence);
 
 -- One piece of content, stored once however many records state it. The GenAI
 -- convention has every model call restate its whole input; this is where that
@@ -260,6 +276,18 @@ CREATE TABLE IF NOT EXISTS trajectory_sequences (
 CREATE INDEX IF NOT EXISTS idx_trajectory_sequences_prev
     ON trajectory_sequences(prev_hash);
 """
+
+# What a model stream can say is a closed set, so storage names each kind by a
+# code rather than by a word spelled out on every one of a turn's hundreds of
+# frames. A kind outside this set is a bug in whoever produced it, and fails
+# loudly here rather than being stored as something no reader can render.
+_FRAME_KIND_CODES: dict[str, int] = {
+    "text-delta": 1,
+    "reasoning-delta": 2,
+    "tool-call-delta": 3,
+    "usage": 4,
+}
+_FRAME_KIND_NAMES: dict[int, str] = {code: kind for kind, code in _FRAME_KIND_CODES.items()}
 
 # A final span's payload already lives in otlp_span_records, so
 # trajectory_current_records stores it only while the span is still running and
@@ -339,10 +367,10 @@ class TrajectoryStore:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=NORMAL")
+            self._drop_superseded_frame_table(connection)
             connection.executescript(_SCHEMA_SQL)
             self._ensure_store_state_columns(connection)
             self._ensure_current_record_columns(connection)
-            self._drop_frame_session_column(connection)
             removed = self._remove_missing_final_current(connection)
             migrated = self._migrate_final_current(connection)
             self._abandon_running_current(connection)
@@ -558,31 +586,69 @@ class TrajectoryStore:
             Highest committed ``frame_seq`` keyed by session and trace.
         """
         watermarks: dict[tuple[str, str], int] = {}
+        span_refs: dict[tuple[str, str], int] = {}
         for frame in frames:
+            identity = (frame.trace_id, frame.span_id)
+            span_ref = span_refs.get(identity)
+            if span_ref is None:
+                span_ref = TrajectoryStore._resolve_frame_span(connection, frame)
+                span_refs[identity] = span_ref
             cursor = connection.execute(
                 """
                 INSERT INTO trajectory_stream_frames (
-                    execution_subject_id, trace_id, span_id,
-                    sequence, kind, text, tool_call_id, tool_name,
-                    arguments_delta, timestamp_unix_nano, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    span_ref, sequence, kind, text, tool_call_id,
+                    tool_name, arguments_delta, timestamp_unix_nano
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    frame.execution_subject_id,
-                    frame.trace_id,
-                    frame.span_id,
+                    span_ref,
                     frame.sequence,
-                    frame.kind,
+                    _FRAME_KIND_CODES[frame.kind],
                     frame.text,
                     frame.tool_call_id,
                     frame.tool_name,
                     frame.arguments_delta,
                     frame.timestamp_unix_nano,
-                    frame.created_at,
                 ),
             )
             watermarks[(frame.session_id, frame.trace_id)] = int(cursor.lastrowid)
         return watermarks
+
+    @staticmethod
+    def _resolve_frame_span(
+        connection: sqlite3.Connection,
+        frame: StreamFrameData,
+    ) -> int:
+        """Name the span a frame came from, registering it the first time.
+
+        No cache spans transactions: the batch a writer flushes almost always
+        carries one span, so the dictionary the caller keeps for that batch
+        already collapses this to one round trip per span per flush. Nothing
+        is lost by not caching further, because a span is registered by its
+        own identity -- registering it again finds what is already there.
+
+        Args:
+            connection: The open write transaction.
+            frame: Any frame of the span to name.
+
+        Returns:
+            The integer this database names that span by.
+        """
+        identity = (frame.trace_id, frame.span_id)
+        connection.execute(
+            """
+            INSERT INTO trajectory_frame_spans (
+                execution_subject_id, trace_id, span_id
+            ) VALUES (?, ?, ?)
+            ON CONFLICT (trace_id, span_id) DO NOTHING
+            """,
+            (frame.execution_subject_id, *identity),
+        )
+        row = connection.execute(
+            "SELECT span_ref FROM trajectory_frame_spans WHERE trace_id = ? AND span_id = ?",
+            identity,
+        ).fetchone()
+        return int(row["span_ref"])
 
     @staticmethod
     def _upsert_current_record(
@@ -865,9 +931,20 @@ class TrajectoryStore:
                 identity,
             )
             # The span this frame stream described is gone, so its frames
-            # describe nothing any reader can reach.
+            # describe nothing any reader can reach. The name goes with them:
+            # nothing else refers to a span once its frames are gone.
             connection.execute(
-                "DELETE FROM trajectory_stream_frames WHERE trace_id = ? AND span_id = ?",
+                """
+                DELETE FROM trajectory_stream_frames
+                WHERE span_ref IN (
+                    SELECT span_ref FROM trajectory_frame_spans
+                    WHERE trace_id = ? AND span_id = ?
+                )
+                """,
+                identity,
+            )
+            connection.execute(
+                "DELETE FROM trajectory_frame_spans WHERE trace_id = ? AND span_id = ?",
                 identity,
             )
         return len(rows)
@@ -1030,10 +1107,23 @@ class TrajectoryStore:
             )
             # Frames are kept past their span's completion so an answer can be
             # replayed, which makes them the one append-only table that grows
-            # with how much the models say. Retention has to reach them.
+            # with how much the models say. Retention has to reach them, and
+            # ages them by when the model said it -- the only timestamp a
+            # frame carries.
             connection.execute(
-                "DELETE FROM trajectory_stream_frames WHERE created_at < ?",
-                (cutoff,),
+                "DELETE FROM trajectory_stream_frames WHERE timestamp_unix_nano < ?",
+                (cutoff * 1_000_000_000,),
+            )
+            # A span is named so its frames can point at it, so its name is
+            # worth nothing once retention has taken the last of them.
+            connection.execute(
+                """
+                DELETE FROM trajectory_frame_spans
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM trajectory_stream_frames AS frames
+                    WHERE frames.span_ref = trajectory_frame_spans.span_ref
+                )
+                """
             )
             # Addressed content ages by when it was last referenced, not when
             # it first appeared: a tool definition restated all session long
@@ -1186,13 +1276,20 @@ class TrajectoryStore:
             )
 
     @staticmethod
-    def _drop_frame_session_column(connection: sqlite3.Connection) -> None:
-        """Remove the per-frame session column an older database still carries.
+    def _drop_superseded_frame_table(connection: sqlite3.Connection) -> None:
+        """Discard a frame table that names a span on every one of its rows.
 
-        A writer opens one file per session, so the session is a property of
-        the file. Repeating it on every frame cost more than the frame's own
-        content. Without this, an older database keeps a NOT NULL column that
-        the current insert no longer fills.
+        Frames are the one thing here with a short life: retention clears them
+        within days, and a reader that loses them resumes from the records,
+        which are untouched. Carrying the old shape forward would mean moving
+        every row of it to buy back something that expires on its own.
+
+        A reader holding a watermark from the discarded table sees one beyond
+        what the file now has and starts over, which is the same path it takes
+        for any rebuilt database.
+
+        This runs before the schema script, which cannot create an index on a
+        column the old table does not have.
         """
         columns = {
             str(row["name"])
@@ -1200,10 +1297,8 @@ class TrajectoryStore:
                 "PRAGMA table_info(trajectory_stream_frames)"
             ).fetchall()
         }
-        if "session_id" in columns:
-            connection.execute(
-                "ALTER TABLE trajectory_stream_frames DROP COLUMN session_id"
-            )
+        if "trace_id" in columns:
+            connection.execute("DROP TABLE trajectory_stream_frames")
 
     @staticmethod
     def _sync_max_ingest_seq(connection: sqlite3.Connection) -> None:
@@ -1949,8 +2044,10 @@ class AsyncTrajectoryReader:
                 SELECT MIN(frames.frame_seq) AS first_frame_seq,
                        MAX(frames.frame_seq) AS current_frame_seq
                 FROM trajectory_stream_frames AS frames
+                INNER JOIN trajectory_frame_spans AS spans
+                    ON spans.span_ref = frames.span_ref
                 INNER JOIN eligible_traces
-                    ON eligible_traces.trace_id = frames.trace_id
+                    ON eligible_traces.trace_id = spans.trace_id
                 """,
                 _trajectory_scope_params(),
             )
@@ -1976,9 +2073,9 @@ class AsyncTrajectoryReader:
                 f"""
                 WITH {_ELIGIBLE_TRACES_CTE}
                 SELECT frames.frame_seq AS frame_seq,
-                       frames.trace_id AS trace_id,
-                       frames.span_id AS span_id,
-                       frames.execution_subject_id AS execution_subject_id,
+                       spans.trace_id AS trace_id,
+                       spans.span_id AS span_id,
+                       spans.execution_subject_id AS execution_subject_id,
                        frames.sequence AS sequence,
                        frames.kind AS kind,
                        frames.text AS text,
@@ -1987,8 +2084,10 @@ class AsyncTrajectoryReader:
                        frames.arguments_delta AS arguments_delta,
                        frames.timestamp_unix_nano AS timestamp_unix_nano
                 FROM trajectory_stream_frames AS frames
+                INNER JOIN trajectory_frame_spans AS spans
+                    ON spans.span_ref = frames.span_ref
                 INNER JOIN eligible_traces
-                    ON eligible_traces.trace_id = frames.trace_id
+                    ON eligible_traces.trace_id = spans.trace_id
                 WHERE frames.frame_seq > ?
                 ORDER BY frames.frame_seq ASC
                 LIMIT ?
@@ -2580,7 +2679,7 @@ def _stream_frame_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         "span_id": str(row["span_id"]),
         "subject_id": str(row["execution_subject_id"]),
         "sequence": int(row["sequence"]),
-        "kind": str(row["kind"]),
+        "kind": _FRAME_KIND_NAMES[int(row["kind"])],
         "timestamp_unix_nano": int(row["timestamp_unix_nano"]),
     }
     for column in ("text", "tool_call_id", "tool_name", "arguments_delta"):
