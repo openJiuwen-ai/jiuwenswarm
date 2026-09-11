@@ -63,7 +63,6 @@ def test_persist_cli_trusted_directory_writes_file_guard(config_yaml, tmp_path):
     data = _load_yaml_round_trip(config_yaml)
     perms = data["permissions"]
     fg = perms["file_guard"]
-    assert fg["enabled"] is True
     dir_norm = trusted.resolve().as_posix().rstrip("/")
     assert any(
         isinstance(p, dict)
@@ -73,9 +72,8 @@ def test_persist_cli_trusted_directory_writes_file_guard(config_yaml, tmp_path):
         and p.get("exec") == "allow"
         for p in fg["paths"]
     )
-    ext = perms.get("external_directory") or {}
-    assert ext.get(dir_norm) != "allow"
-    assert ext.get(str(trusted.resolve())) != "allow"
+    overlay = config_yaml.with_name("config.user.yaml")
+    assert not overlay.is_file()
 
 
 def test_persist_cli_trusted_directory_with_overrides_keeps_shell_only(config_yaml, tmp_path):
@@ -119,3 +117,31 @@ def test_persist_external_directory_allow_writes_file_guard(config_yaml, tmp_pat
         and str(p.get("path", "")).replace("\\", "/").rstrip("/") == parent_norm
         for p in fg["paths"]
     )
+
+
+def test_persist_merged_allow_rule_snapshot_writes_yaml_not_overlay(
+    config_yaml, tmp_path
+):
+    pp = _load_permissions_persist()
+    from jiuwenswarm.common.config import _load_yaml_round_trip
+
+    ok = pp.persist_merged_allow_rule_snapshot(
+        {
+            "approval_overrides": [
+                {
+                    "id": "curl_post",
+                    "tools": ["bash"],
+                    "match_type": "command",
+                    "pattern": "curl *",
+                    "action": "allow",
+                }
+            ],
+            "file_guard": {"paths": [{"path": "C:/docs", "write": "allow"}]},
+        }
+    )
+    assert ok is True
+    system = _load_yaml_round_trip(config_yaml)
+    assert system["permissions"]["approval_overrides"][0]["id"] == "curl_post"
+    assert system["permissions"]["file_guard"]["paths"][0]["path"] == "C:/docs"
+    overlay = config_yaml.with_name("config.user.yaml")
+    assert not overlay.is_file()

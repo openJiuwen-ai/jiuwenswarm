@@ -43,17 +43,17 @@ _AXIS_RANK = {"deny": 0, "ask": 1, "allow": 2}
 
 
 def _load_config_yaml_round_trip() -> tuple[Any, Any]:
-    """Load 系统 config.yaml（不读 overlay）and return (data, yaml_path)."""
+    """Load config.yaml and return (data, yaml_path)."""
     from jiuwenswarm.common.config import _CONFIG_YAML_PATH, _load_yaml_round_trip
 
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH, follow_overlay=False)
+    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
     return data, _CONFIG_YAML_PATH
 
 
 def _dump_config_yaml_round_trip(yaml_path: Any, data: Any) -> None:
     from jiuwenswarm.common.config import _dump_yaml_round_trip
 
-    _dump_yaml_round_trip(yaml_path, data, follow_overlay=False)
+    _dump_yaml_round_trip(yaml_path, data)
 
 
 def _ensure_permissions_dict(data: Any) -> dict[str, Any]:
@@ -562,13 +562,80 @@ def get_permissions_with_session_overlay(
     return apply_session_permissions_overlay(base, overlay)
 
 
+def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
+    """HITL「永久记住」：把相对模板多出的场景 list 写入 config.yaml。"""
+    if not isinstance(permissions, dict):
+        return False
+    from jiuwenswarm.common.config import update_system_config
+    from jiuwenswarm.common.config_split import _get, _user_only_list_items, upsert_list_by_id
+    from jiuwenswarm.common.utils import get_package_config_file
+
+    overrides_path = ("permissions", "approval_overrides")
+    paths_path = ("permissions", "file_guard", "paths")
+    package: dict[str, Any] = {}
+    package_file = get_package_config_file()
+    if package_file is not None and package_file.is_file():
+        try:
+            import yaml
+
+            loaded = yaml.safe_load(package_file.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                package = loaded
+        except Exception:
+            package = {}
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        perms = _ensure_permissions_dict(data)
+        if "approval_overrides" in permissions:
+            perms["approval_overrides"] = upsert_list_by_id(
+                perms.get("approval_overrides"),
+                _user_only_list_items(
+                    permissions.get("approval_overrides"),
+                    _get(package, overrides_path),
+                    overrides_path,
+                ),
+                overrides_path,
+            )
+        fg = permissions.get("file_guard")
+        if isinstance(fg, dict) and "paths" in fg:
+            fg_dst = perms.get("file_guard")
+            if not isinstance(fg_dst, dict):
+                fg_dst = {}
+                perms["file_guard"] = fg_dst
+            fg_dst["paths"] = upsert_list_by_id(
+                fg_dst.get("paths"),
+                _user_only_list_items(
+                    fg.get("paths"),
+                    _get(package, paths_path),
+                    paths_path,
+                ),
+                paths_path,
+            )
+        return data
+
+    try:
+        update_system_config(mutator)
+        return True
+    except Exception:
+        logger.warning(
+            "[PermissionPersist] persist_merged_allow_rule_snapshot.failed",
+            exc_info=True,
+        )
+        return False
+
+
 def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool:
-    """用户选择「总是允许」时，将 allow 规则写入 config.yaml 的 permissions 段。"""
+    """用户选择「总是允许」时，将 allow 规则写入 config.yaml 的场景 list。"""
     tool_args = _normalize_tool_args(tool_args)
 
-    data, yaml_path = _load_config_yaml_round_trip()
-    permissions = data.get("permissions")
-    if not isinstance(permissions, dict):
+    from jiuwenswarm.common.config import get_config
+
+    try:
+        cfg = get_config()
+    except Exception:
+        cfg = {}
+    permissions = deepcopy(cfg.get("permissions") or {}) if isinstance(cfg, dict) else {}
+    if not isinstance(permissions, dict) or not permissions:
         logger.warning(
             "[PermissionPersist] persist_permission_allow_rule.abort reason=no_permissions_section tool=%s",
             tool_name,
@@ -578,9 +645,7 @@ def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool
     merged, ok = merge_permission_allow_rule_into_permissions(permissions, tool_name, tool_args)
     if not ok:
         return False
-    data["permissions"] = merged
-    _dump_config_yaml_round_trip(yaml_path, data)
-    return True
+    return persist_merged_allow_rule_snapshot(merged)
 
 
 def persist_external_directory_allow(
@@ -643,7 +708,7 @@ def persist_external_directory_allow(
 def persist_cli_trusted_directory(raw_path: str) -> dict[str, Any]:
     """CLI ``command.add_dir``：全局信任目录子树。
 
-    写入 ``permissions.file_guard.paths``：``read/write/exec: allow``。
+    写入系统 yaml ``permissions.file_guard.paths``：``read/write/exec: allow``。
     """
     if not isinstance(raw_path, str) or not raw_path.strip():
         return {"ok": False, "error": "path is empty"}
@@ -714,7 +779,6 @@ def persist_cli_trusted_directory_with_overrides(raw_path: str) -> dict[str, Any
 
     if tiered:
         overrides = _ensure_approval_overrides_list(permissions)
-        # 写回 list（_ensure 可能过滤）
         permissions["approval_overrides"] = overrides
         _append_override_if_missing(
             overrides,
@@ -745,6 +809,7 @@ __all__ = [
     "persist_cli_trusted_directory",
     "persist_cli_trusted_directory_with_overrides",
     "persist_external_directory_allow",
+    "persist_merged_allow_rule_snapshot",
     "persist_permission_allow_rule",
     "persist_session_allow_rule",
     "session_permissions_overlay_path",

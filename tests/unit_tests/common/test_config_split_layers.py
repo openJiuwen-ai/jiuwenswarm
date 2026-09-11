@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""用户 yaml 为基底 + overlay 稀疏合并；系统文件按内容覆盖。"""
+"""升级按模板哈希戳 copy2；白名单键写回 config.yaml；遗留 overlay 折进 yaml。"""
 
 from __future__ import annotations
 
@@ -9,32 +9,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from jiuwenswarm.common.config import get_config, merge_config_layers
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import (
     get_builtin_rules_file,
     get_package_config_file,
     get_package_resources_dir,
 )
-
-
-def test_merge_overlay_leaf_wins_and_keeps_base_and_extra() -> None:
-    base = {
-        "logging": {"level": "INFO", "file": "a.log"},
-        "tools": ["read_file", "bash"],
-        "sandbox": {"enabled": False, "policy_file": "windows-policy.yaml"},
-    }
-    overlay = {
-        "logging": {"level": "DEBUG"},
-        "tools": ["read_file"],
-        "preferred_language": "zh",
-    }
-    merged = merge_config_layers(base, overlay)
-    assert merged["logging"]["level"] == "DEBUG"
-    assert merged["logging"]["file"] == "a.log"
-    assert merged["tools"] == ["read_file"]
-    assert merged["sandbox"]["enabled"] is False
-    assert merged["preferred_language"] == "zh"
-    assert base["logging"]["level"] == "INFO"
 
 
 def test_package_resources_resolve_to_repo_templates() -> None:
@@ -45,7 +25,7 @@ def test_package_resources_resolve_to_repo_templates() -> None:
     assert get_builtin_rules_file().name == "builtin_rules.yaml"
 
 
-def test_get_config_merges_user_yaml_with_overlay(
+def test_get_config_reads_yaml_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user_dir = tmp_path / "user"
@@ -54,209 +34,104 @@ def test_get_config_merges_user_yaml_with_overlay(
         yaml.safe_dump(
             {
                 "execution_guard": {"llm_retry_rail": {"enabled": True}},
-                "logging": {"level": "INFO"},
+                "sandbox": {"enabled": True, "policy_file": "windows-policy.yaml"},
+                "permissions": {
+                    "enabled": True,
+                    "permission_mode": "normal",
+                    "approval_overrides": [{"id": "curl_post", "action": "allow"}],
+                },
             },
             allow_unicode=True,
         ),
         encoding="utf-8",
     )
     (user_dir / "config.user.yaml").write_text(
-        yaml.safe_dump({"logging": {"level": "ERROR"}}, allow_unicode=True),
+        yaml.safe_dump(
+            {
+                "sandbox": {"enabled": False},
+                "channels": {"xiaoyi": {"enabled": True}},
+            },
+            allow_unicode=True,
+        ),
         encoding="utf-8",
     )
 
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config_file", lambda: user_dir / "config.yaml"
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_user_overlay_file",
-        lambda: user_dir / "config.user.yaml",
-    )
 
     cfg = get_config()
-    assert cfg["logging"]["level"] == "ERROR"
+    assert cfg["sandbox"]["enabled"] is True
+    assert cfg["sandbox"]["policy_file"] == "windows-policy.yaml"
+    assert cfg["permissions"]["enabled"] is True
+    assert cfg["permissions"]["approval_overrides"] == [
+        {"id": "curl_post", "action": "allow"}
+    ]
     assert cfg["execution_guard"]["llm_retry_rail"]["enabled"] is True
+    assert "xiaoyi" not in (cfg.get("channels") or {})
 
 
-def test_get_config_prefers_sparse_user_overlay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    user_dir = tmp_path / "user"
-    user_dir.mkdir()
-    (user_dir / "config.yaml").write_text("logging:\n  level: WARN\n", encoding="utf-8")
-    (user_dir / "config.user.yaml").write_text(
-        "logging:\n  level: DEBUG\n", encoding="utf-8"
-    )
-
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config_file", lambda: user_dir / "config.yaml"
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_user_overlay_file",
-        lambda: user_dir / "config.user.yaml",
-    )
-
-    cfg = get_config()
-    assert cfg["logging"]["level"] == "DEBUG"
-
-
-def test_extract_allowlist_keeps_ui_knobs_not_system_lists() -> None:
-    from jiuwenswarm.common.config_split import extract_overlay_from_legacy
+def test_extract_allowlist_keeps_ui_knobs_not_auto_patches() -> None:
+    from jiuwenswarm.common.config_split import extract_user_keep_from_legacy
 
     package = {
         "preferred_language": "zh",
         "logging": {"level": "INFO", "path": "app.log"},
-        "progressive_tool_always_visible_tools": ["todo_create"],
         "auto_memory_enabled": True,
         "channels": {
-            "desktop": {"send_file_allowed": True},
-            "xiaoyi": {"enabled": False, "ws_url1": "wss://old", "file_upload_url": ""},
-            "feishu": {"enabled": False, "app_id": ""},
+            "xiaoyi": {"enabled": False, "ws_url1": "wss://old"},
         },
         "permissions": {
             "enabled": True,
             "permission_mode": "normal",
-            "tools": {"bash": "allow", "write": "allow"},
-            "file_guard": {"defaults": {"read": "allow", "write": "allow", "exec": "allow"}},
+            "tools": {"bash": "allow"},
+            "file_guard": {"defaults": {"read": "allow", "write": "allow"}},
+            "rules": [{"id": "shell_allow_ls", "pattern": "ls *"}],
         },
         "sandbox": {"enabled": False},
         "mcp": {"servers": []},
     }
     user = {
         "preferred_language": "en",
-        "logging": {"level": "DEBUG", "path": "app.log"},
-        "progressive_tool_always_visible_tools": ["bash"],
         "auto_memory_enabled": False,
         "channels": {
-            "desktop": {"send_file_allowed": True},
-            "xiaoyi": {
-                "enabled": True,
-                "ws_url1": "np://claw-relay",
-                "file_upload_url": "http://up",
-            },
-            "feishu": {"enabled": True, "app_id": "cli_user"},
+            "xiaoyi": {"enabled": True, "ws_url1": "np://claw-relay"},
         },
         "permissions": {
             "enabled": True,
             "permission_mode": "strict",
-            "tools": {"bash": "ask", "write": "deny"},
-            "file_guard": {"defaults": {"read": "ask", "write": "ask", "exec": "deny"}},
+            "tools": {"bash": "ask"},
+            "file_guard": {
+                "defaults": {"read": "ask", "write": "ask"},
+                "paths": [{"path": "C:/docs", "write": "allow"}],
+            },
+            "approval_overrides": [
+                {"id": "user_curl", "tools": ["bash"], "action": "allow"}
+            ],
+            "rules": [
+                {"id": "shell_allow_ls", "pattern": "ls *"},
+                {"id": "ui_rule_1", "pattern": "curl *"},
+            ],
         },
-        "sandbox": {"enabled": False},
-        "mcp": {
-            "servers": [
-                {
-                    "name": "celiamcp",
-                    "transport": "stdio",
-                    "command": "${CELIA_MCP_EXE}",
-                    "enabled": True,
-                }
-            ]
-        },
-        "execution_guard": {"llm_retry_rail": {"enabled": False}},
+        "sandbox": {"enabled": True},
+        "mcp": {"servers": [{"name": "gausspd-memory"}]},
     }
-    overlay = extract_overlay_from_legacy(user, package)
-    assert "preferred_language" not in overlay
-    assert "logging" not in overlay
-    assert "progressive_tool_always_visible_tools" not in overlay
-    assert "execution_guard" not in overlay
-    assert overlay["auto_memory_enabled"] is False
-    assert overlay["channels"]["xiaoyi"]["enabled"] is True
-    assert overlay["channels"]["xiaoyi"]["ws_url1"] == "np://claw-relay"
-    assert "feishu" not in overlay.get("channels", {})
-    assert "permissions" not in overlay
-    assert "sandbox" not in overlay
-    assert overlay["mcp"]["servers"][0]["name"] == "celiamcp"
-    assert list(overlay["mcp"]["servers"][0].keys()) == [
-        "name",
-        "transport",
-        "command",
-        "enabled",
+    keep = extract_user_keep_from_legacy(user, package)
+    assert "preferred_language" not in keep
+    assert "auto_memory_enabled" not in keep
+    assert "channels" not in keep
+    assert "mcp" not in keep
+    assert keep["sandbox"]["enabled"] is True
+    assert keep["permissions"]["approval_overrides"] == [
+        {"id": "user_curl", "tools": ["bash"], "action": "allow"}
     ]
-
-
-def test_drop_permissions_from_overlay(tmp_path: Path) -> None:
-    from jiuwenswarm.common.config_split import drop_permissions_from_overlay
-
-    overlay = tmp_path / "config.user.yaml"
-    overlay.write_text(
-        "auto_memory_enabled: false\npermissions:\n  enabled: false\n",
-        encoding="utf-8",
-    )
-    assert drop_permissions_from_overlay(overlay) is True
-    data = yaml.safe_load(overlay.read_text(encoding="utf-8"))
-    assert data["auto_memory_enabled"] is False
-    assert "permissions" not in data
-    assert drop_permissions_from_overlay(overlay) is False
-
-
-def test_extract_user_overlay_is_idempotent_and_keeps_legacy_yaml(tmp_path: Path) -> None:
-    from jiuwenswarm.common.config_split import extract_user_overlay
-
-    package = tmp_path / "pkg.yaml"
-    user = tmp_path / "config.yaml"
-    overlay = tmp_path / "config.user.yaml"
-    package.write_text("auto_memory_enabled: true\n", encoding="utf-8")
-    user.write_text("auto_memory_enabled: false\nlogging:\n  level: ERROR\n", encoding="utf-8")
-    assert extract_user_overlay(user_yaml=user, overlay_yaml=overlay, package_yaml=package) is True
-    first = overlay.read_text(encoding="utf-8")
-    assert user.is_file()
-    assert extract_user_overlay(user_yaml=user, overlay_yaml=overlay, package_yaml=package) is False
-    assert overlay.read_text(encoding="utf-8") == first
-    data = yaml.safe_load(first)
-    assert data["auto_memory_enabled"] is False
-    assert "logging" not in data
-
-
-def test_extract_keeps_mcp_server_key_order_and_four_space_list(tmp_path: Path) -> None:
-    from jiuwenswarm.common.config_split import extract_user_overlay
-
-    package = tmp_path / "pkg.yaml"
-    user = tmp_path / "config.yaml"
-    overlay = tmp_path / "config.user.yaml"
-    package.write_text("auto_memory_enabled: true\nmcp:\n  servers: []\n", encoding="utf-8")
-    user.write_text(
-        "\n".join(
-            [
-                "auto_memory_enabled: false",
-                "mcp:",
-                "  servers:",
-                "    - name: celiamcp",
-                "      transport: stdio",
-                "      command: ${CELIA_MCP_EXE}",
-                "      enabled: true",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    assert extract_user_overlay(user_yaml=user, overlay_yaml=overlay, package_yaml=package) is True
-    text = overlay.read_text(encoding="utf-8")
-    name_i = text.index("name: celiamcp")
-    assert text.index("transport: stdio") > name_i
-    assert text.index("command:") > text.index("transport: stdio")
-    assert text.index("enabled: true") > text.index("command:")
-    assert "    - name: celiamcp" in text
-    assert not any(line.startswith("  - ") for line in text.splitlines())
-
-
-def test_get_config_reads_user_yaml_only_when_no_overlay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    user_dir = tmp_path / "user"
-    user_dir.mkdir()
-    (user_dir / "config.yaml").write_text("sandbox:\n  enabled: false\n", encoding="utf-8")
-
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config_file", lambda: user_dir / "config.yaml"
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_user_overlay_file",
-        lambda: user_dir / "config.user.yaml",
-    )
-
-    cfg = get_config()
-    assert cfg["sandbox"]["enabled"] is False
+    assert keep["permissions"]["file_guard"]["paths"] == [
+        {"path": "C:/docs", "write": "allow"}
+    ]
+    assert "rules" not in keep["permissions"]
+    assert "enabled" not in keep["permissions"]
+    assert "permission_mode" not in keep["permissions"]
+    assert "tools" not in keep["permissions"]
 
 
 def test_copy_if_missing_or_changed(tmp_path: Path) -> None:
@@ -273,62 +148,335 @@ def test_copy_if_missing_or_changed(tmp_path: Path) -> None:
     assert dest.read_text(encoding="utf-8") == "a: 2\n"
 
 
-def test_patch_user_config_and_dump_write_overlay_only(
+def test_upgrade_restores_allowlist_onto_yaml_and_drops_overlay(tmp_path: Path) -> None:
+    from jiuwenswarm.common.config_split import sync_system_files_from_package
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg.write_text(
+        "sandbox:\n  enabled: false\nchannels:\n  xiaoyi:\n    enabled: false\n"
+        "permissions:\n  file_guard:\n    defaults:\n      read: allow\n",
+        encoding="utf-8",
+    )
+    user.write_text("sandbox:\n  enabled: false\nstale: true\n", encoding="utf-8")
+    overlay.write_text(
+        "sandbox:\n  enabled: true\nchannels:\n  xiaoyi:\n    enabled: true\n"
+        "permissions:\n  approval_overrides:\n    - id: curl_post\n      action: allow\n",
+        encoding="utf-8",
+    )
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+    restored = yaml.safe_load(user.read_text(encoding="utf-8"))
+    assert restored["sandbox"]["enabled"] is True
+    assert restored["permissions"]["approval_overrides"] == [
+        {"id": "curl_post", "action": "allow"}
+    ]
+    assert restored["permissions"]["file_guard"]["defaults"]["read"] == "allow"
+    assert "stale" not in restored
+    assert restored["channels"]["xiaoyi"]["enabled"] is False
+    assert not overlay.is_file()
+
+
+def test_dump_writes_yaml_not_overlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jiuwenswarm.common.config import (
-        dump_yaml_round_trip,
-        get_user_config,
-        load_yaml_round_trip,
-        patch_user_config,
-    )
+    from jiuwenswarm.common.config import dump_yaml_round_trip, load_yaml_round_trip
 
     user_dir = tmp_path / "user"
     user_dir.mkdir()
     legacy = user_dir / "config.yaml"
     overlay = user_dir / "config.user.yaml"
     legacy.write_text("logging:\n  level: INFO\n", encoding="utf-8")
-    overlay.write_text("logging:\n  level: DEBUG\n", encoding="utf-8")
+    overlay.write_text("sandbox:\n  enabled: false\n", encoding="utf-8")
 
     monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", legacy)
-    monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_user_overlay_file", lambda: overlay
-    )
 
     loaded = load_yaml_round_trip(legacy)
-    assert loaded["logging"]["level"] == "DEBUG"
+    assert loaded["logging"]["level"] == "INFO"
     loaded["preferred_language"] = "en"
     dump_yaml_round_trip(legacy, loaded)
-    assert "preferred_language" not in yaml.safe_load(legacy.read_text(encoding="utf-8"))
-    assert yaml.safe_load(overlay.read_text(encoding="utf-8"))["preferred_language"] == "en"
-
-    patch_user_config(lambda data: {**data, "auto_memory_enabled": False})
-    assert get_user_config()["auto_memory_enabled"] is False
+    assert yaml.safe_load(legacy.read_text(encoding="utf-8"))["preferred_language"] == "en"
+    assert yaml.safe_load(overlay.read_text(encoding="utf-8"))["sandbox"]["enabled"] is False
 
 
-def test_sparse_merge_keeps_system_lists_and_index_merges_temperature() -> None:
-    base = {
-        "progressive_tool_always_visible_tools": ["todo_create", "bash"],
-        "modes": {"agent": {"tools": ["read_file", "write_file"]}},
-        "models": {
-            "defaults": [
-                {
-                    "model_client_config": {"timeout": 360},
-                    "model_config_obj": {"temperature": 0.95},
-                }
+def test_skip_system_file_sync_folds_overlay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.common import config_split as split
+
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg = tmp_path / "pkg.yaml"
+    pkg.write_text("sandbox:\n  enabled: false\n", encoding="utf-8")
+    user.write_text("stale: true\n", encoding="utf-8")
+    overlay.write_text(
+        "sandbox:\n  enabled: true\nauto_memory_enabled: false\n"
+        "permissions:\n  approval_overrides:\n    - id: curl_post\n      action: allow\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(split, "get_config_file", lambda: user)
+    monkeypatch.setattr(split, "get_user_overlay_file", lambda: overlay)
+    monkeypatch.setattr(split, "get_package_config_file", lambda: pkg)
+    monkeypatch.setenv("JIUWENSWARM_SKIP_SYSTEM_FILE_SYNC", "1")
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_OVERLAY_EXTRACT", "1")
+    assert split.maybe_fold_legacy_overlay() is True
+    data = yaml.safe_load(user.read_text(encoding="utf-8"))
+    assert data["stale"] is True
+    assert data["sandbox"]["enabled"] is True
+    assert data["permissions"]["approval_overrides"] == [
+        {"id": "curl_post", "action": "allow"}
+    ]
+    assert "auto_memory_enabled" not in data
+    assert not overlay.is_file()
+
+
+def test_write_template_stamp_uses_lf_and_reads_crlf(tmp_path: Path) -> None:
+    from jiuwenswarm.common.config_split import (
+        compute_template_stamp,
+        read_template_stamp,
+        write_template_stamp,
+    )
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    pkg.write_text("sandbox:\n  enabled: false\n", encoding="utf-8")
+    user.write_text("sandbox:\n  enabled: false\n", encoding="utf-8")
+    write_template_stamp(user, pkg, None)
+    stamp = user.with_name(".template.sha256")
+    raw = stamp.read_bytes()
+    assert b"\r\n" not in raw
+    expected = compute_template_stamp(pkg, None)
+    assert raw.decode("utf-8") == expected
+    stamp.write_bytes(expected.replace("\n", "\r\n").encode("utf-8"))
+    assert read_template_stamp(user) == expected
+
+
+def test_restart_same_stamp_does_not_copy_and_keeps_last(tmp_path: Path) -> None:
+    from jiuwenswarm.common.config_split import (
+        compute_template_stamp,
+        sync_system_files_from_package,
+        template_stamp_path,
+    )
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg.write_text(
+        "sandbox:\n  enabled: false\nchannels:\n  xiaoyi:\n    enabled: false\n",
+        encoding="utf-8",
+    )
+    user_text = "\n".join(
+        [
+            "sandbox:",
+            "  enabled: false",
+            "channels:",
+            "  xiaoyi:",
+            "    enabled: true",
+            "    last_session_id: sess-keep",
+            "    last_task_id: task-keep",
+            "    last_message_id: msg-keep",
+            "    push_id: push-keep",
+            "stale: true",
+            "",
+        ]
+    )
+    user.write_text(user_text, encoding="utf-8")
+    stamp = template_stamp_path(user)
+    stamp.write_text(compute_template_stamp(pkg, None), encoding="utf-8")
+    stamp_text = stamp.read_text(encoding="utf-8")
+
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is False
+    assert user.read_text(encoding="utf-8") == user_text
+    assert stamp.read_text(encoding="utf-8") == stamp_text
+
+
+def test_restart_folds_leftover_overlay_without_copy(tmp_path: Path) -> None:
+    from jiuwenswarm.common.config_split import (
+        compute_template_stamp,
+        sync_system_files_from_package,
+        template_stamp_path,
+    )
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg.write_text(
+        "sandbox:\n  enabled: false\nchannels:\n  xiaoyi:\n    enabled: false\n",
+        encoding="utf-8",
+    )
+    user.write_text(
+        "sandbox:\n  enabled: false\nchannels:\n  xiaoyi:\n    last_session_id: sess-keep\n",
+        encoding="utf-8",
+    )
+    overlay.write_text(
+        "sandbox:\n  enabled: true\nchannels:\n  xiaoyi:\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    stamp = template_stamp_path(user)
+    stamp.write_text(compute_template_stamp(pkg, None), encoding="utf-8")
+
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+    data = yaml.safe_load(user.read_text(encoding="utf-8"))
+    assert data["sandbox"]["enabled"] is True
+    assert data["channels"]["xiaoyi"]["last_session_id"] == "sess-keep"
+    assert "enabled" not in data["channels"]["xiaoyi"]
+    assert not overlay.is_file()
+
+
+def test_upgrade_copies_and_restores_keep_set(tmp_path: Path) -> None:
+    from jiuwenswarm.common.config_split import (
+        compute_template_stamp,
+        sync_system_files_from_package,
+        template_stamp_path,
+    )
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    old_pkg = (
+        "sandbox:\n  enabled: false\nevolution:\n  enabled: true\n"
+        "channels:\n  xiaoyi:\n    enabled: false\n    apps:\n"
+        "      - name: default\n        api_id: api-1\n"
+    )
+    new_pkg = (
+        "sandbox:\n  enabled: false\nevolution:\n  enabled: false\n"
+        "channels:\n  xiaoyi:\n    enabled: false\n    apps:\n"
+        "      - name: default\n        api_id: api-1\n"
+        "permissions:\n  file_guard:\n    defaults:\n      read: allow\n"
+    )
+    pkg.write_text(old_pkg, encoding="utf-8")
+    user.write_text(
+        "\n".join(
+            [
+                "sandbox:",
+                "  enabled: false",
+                "evolution:",
+                "  enabled: true",
+                "channels:",
+                "  xiaoyi:",
+                "    enabled: true",
+                "    last_session_id: sess-1",
+                "    last_task_id: task-1",
+                "    last_message_id: msg-1",
+                "    push_id: hook-1",
+                "    apps:",
+                "      - name: default",
+                "        api_id: api-1",
+                "        push_id: app-hook",
+                "",
             ]
-        },
-        "mcp": {"servers": []},
-    }
-    overlay = {
-        "progressive_tool_always_visible_tools": ["only_user"],
-        "modes": {"agent": {"tools": ["bash"]}},
-        "models": {"defaults": [{"model_config_obj": {"temperature": 0.1}}]},
-        "mcp": {"servers": [{"name": "celiamcp"}]},
-    }
-    merged = merge_config_layers(base, overlay, sparse=True)
-    assert merged["progressive_tool_always_visible_tools"] == ["todo_create", "bash"]
-    assert merged["modes"]["agent"]["tools"] == ["read_file", "write_file"]
-    assert merged["models"]["defaults"][0]["model_client_config"]["timeout"] == 360
-    assert merged["models"]["defaults"][0]["model_config_obj"]["temperature"] == 0.1
-    assert merged["mcp"]["servers"][0]["name"] == "celiamcp"
+        ),
+        encoding="utf-8",
+    )
+    overlay.write_text(
+        "\n".join(
+            [
+                "sandbox:",
+                "  enabled: true",
+                "permissions:",
+                "  enabled: false",
+                "  file_guard:",
+                "    paths:",
+                "      - path: C:/docs",
+                "        write: allow",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    stamp = template_stamp_path(user)
+    stamp.write_text(compute_template_stamp(pkg, None), encoding="utf-8")
+    pkg.write_text(new_pkg, encoding="utf-8")
+
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+    restored = yaml.safe_load(user.read_text(encoding="utf-8"))
+    assert restored["evolution"]["enabled"] is False
+    assert restored["sandbox"]["enabled"] is True
+    assert restored["channels"]["xiaoyi"]["last_session_id"] == "sess-1"
+    assert restored["channels"]["xiaoyi"]["last_task_id"] == "task-1"
+    assert restored["channels"]["xiaoyi"]["last_message_id"] == "msg-1"
+    assert restored["channels"]["xiaoyi"]["push_id"] == "hook-1"
+    assert restored["channels"]["xiaoyi"]["apps"][0]["push_id"] == "app-hook"
+    assert restored["permissions"]["file_guard"]["paths"] == [
+        {"path": "C:/docs", "write": "allow"}
+    ]
+    assert restored["permissions"]["file_guard"]["defaults"]["read"] == "allow"
+    assert "enabled" not in restored.get("permissions", {})
+    assert not overlay.is_file()
+    assert stamp.read_text(encoding="utf-8") == compute_template_stamp(pkg, None)
+
+
+def test_missing_stamp_with_existing_yaml_is_upgrade(tmp_path: Path) -> None:
+    from jiuwenswarm.common.config_split import (
+        compute_template_stamp,
+        sync_system_files_from_package,
+        template_stamp_path,
+    )
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg.write_text(
+        "sandbox:\n  enabled: false\nevolution:\n  enabled: false\n",
+        encoding="utf-8",
+    )
+    user.write_text(
+        "\n".join(
+            [
+                "sandbox:",
+                "  enabled: false",
+                "evolution:",
+                "  enabled: true",
+                "channels:",
+                "  xiaoyi:",
+                "    last_session_id: sess-legacy",
+                "    push_id: push-legacy",
+                "stale: true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    overlay.write_text("sandbox:\n  enabled: true\n", encoding="utf-8")
+
+    assert not template_stamp_path(user).is_file()
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+    restored = yaml.safe_load(user.read_text(encoding="utf-8"))
+    assert restored["evolution"]["enabled"] is False
+    assert restored["sandbox"]["enabled"] is True
+    assert "stale" not in restored
+    assert restored["channels"]["xiaoyi"]["last_session_id"] == "sess-legacy"
+    assert restored["channels"]["xiaoyi"]["push_id"] == "push-legacy"
+    assert not overlay.is_file()
+    assert template_stamp_path(user).read_text(
+        encoding="utf-8"
+    ) == compute_template_stamp(pkg, None)
+
+
+def test_removed_from_allowlist_follows_template_on_upgrade(tmp_path: Path) -> None:
+    """名单外键（含昨日 overlay 管道）升级后跟模板，不写回。"""
+    from jiuwenswarm.common.config_split import sync_system_files_from_package
+
+    pkg = tmp_path / "pkg.yaml"
+    user = tmp_path / "config.yaml"
+    overlay = tmp_path / "config.user.yaml"
+    pkg.write_text("sandbox:\n  enabled: false\nauto_memory_enabled: true\n", encoding="utf-8")
+    user.write_text("sandbox:\n  enabled: false\nauto_memory_enabled: false\n", encoding="utf-8")
+    overlay.write_text("auto_memory_enabled: false\n", encoding="utf-8")
+    assert sync_system_files_from_package(
+        user_yaml=user, overlay_yaml=overlay, package_yaml=pkg
+    ) is True
+    restored = yaml.safe_load(user.read_text(encoding="utf-8"))
+    assert restored["auto_memory_enabled"] is True
+    assert restored["sandbox"]["enabled"] is False
+    assert not overlay.is_file()

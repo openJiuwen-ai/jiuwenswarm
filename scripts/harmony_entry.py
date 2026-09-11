@@ -199,12 +199,11 @@ def main() -> None:
 
     try:
         from jiuwenswarm.common.utils import get_user_workspace_dir, prepare_workspace
-        from jiuwenswarm.common.config_split import maybe_extract_user_overlay
+        from jiuwenswarm.common.config_split import maybe_fold_legacy_overlay
         workspace = get_user_workspace_dir()
-        maybe_extract_user_overlay()
+        maybe_fold_legacy_overlay()
         config_path = workspace / "config" / "config.yaml"
-        overlay_path = workspace / "config" / "config.user.yaml"
-        if not config_path.exists() and not overlay_path.exists():
+        if not config_path.exists():
             print("HARMONY_STARTING:workspace_init")
             sys.stdout.flush()
             prepare_workspace(overwrite=False)

@@ -311,5 +311,5 @@ Output: `dist/JiuwenSwarm-<version>.dmg`
 
 ## 7. Config layers
 
-How user `config.yaml` / `config.user.yaml` are overwritten on upgrade, which keys belong in the overlay, and which write API to use: [Config layers and upgrades](ConfigLayersAndUpgrade.md).
+How user `config.yaml` is overwritten on upgrade, which keys are on the allowlist, and which write API to use: [Config layers and upgrades](ConfigLayersAndUpgrade.md).
 

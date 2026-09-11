@@ -28,10 +28,15 @@ def _config(engine="external", provider="celia", mode="cloud", agent=False, code
     }
 
 
-def _write_overlay(data, config):
+def _write_user_config(data, config):
     config_dir = data / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config.user.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+    path = config_dir / "config.yaml"
+    existing = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing.update(config)
+    path.write_text(yaml.safe_dump(existing, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 @pytest.mark.parametrize("language", ["zh", "en"])
@@ -68,7 +73,9 @@ def test_disabling_legacy_memory_preserves_existing_files(tmp_path, overwrite):
 @pytest.mark.parametrize("config", [_config(provider="old-celia", mode="local"), _config(engine="builtin", mode="local", agent=True)])
 def test_enabling_legacy_memory_initializes_templates(tmp_path, config):
     data = tmp_path / "data"
-    _write_overlay(data, config)
+    # 先落模板并写戳，再改 yaml：无戳会被当成升级 copy2，memory 不在白名单会被冲掉。
+    prepare_workspace(overwrite=False, workspace_dir=data)
+    _write_user_config(data, config)
     prepare_workspace(overwrite=False, workspace_dir=data)
     workspace = data / "agent/workspace"
     assert (workspace / "USER.md").is_file()
@@ -86,7 +93,7 @@ def test_old_daily_files_are_only_migrated_when_legacy_memory_is_enabled(tmp_pat
     assert (old / "2026-09-11.md").read_text() == "2026-09-11.md"
     workspace = data / "agent/workspace"
     assert not (workspace / "memory").exists()
-    _write_overlay(data, _config(engine="builtin", mode="local", agent=True))
+    _write_user_config(data, _config(engine="builtin", mode="local", agent=True))
     prepare_workspace(overwrite=False, workspace_dir=data)
     assert (workspace / "USER.md").read_text() == "USER.md"
     assert (workspace / "memory/daily_memory/2026-09-11.md").read_text() == "2026-09-11.md"
@@ -133,9 +140,8 @@ async def test_sdk_initialization_respects_memory_switches(tmp_path, assembly, c
 ])
 def test_missing_user_file_only_triggers_initialization_for_legacy_memory(tmp_path, config, expected):
     data = tmp_path / "data"
-    _write_overlay(data, config)
+    _write_user_config(data, config)
     config_file = data / "config/config.yaml"
-    config_file.write_text("{}")
     workspace = data / "agent/workspace"
     workspace.mkdir(parents=True)
     for filename in ("AGENT.md", "SOUL.md", "HEARTBEAT.md", "IDENTITY.md"):

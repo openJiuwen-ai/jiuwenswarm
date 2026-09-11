@@ -86,13 +86,10 @@ def _save_state(state: dict[str, bool]) -> None:
 
 def _get_persisted_external_dirs() -> list[str]:
     """读取已信任目录：优先 ``file_guard.paths``（read/write allow），过渡期兼容 ``external_directory`` allow。"""
-    from jiuwenswarm.common.config import CONFIG_YAML_PATH, load_yaml_round_trip
+    from jiuwenswarm.common.config import get_config_raw
 
-    cfg_path = Path(CONFIG_YAML_PATH) if not isinstance(CONFIG_YAML_PATH, Path) else CONFIG_YAML_PATH
-    if not cfg_path.exists():
-        return []
     try:
-        data = load_yaml_round_trip(cfg_path)
+        data = get_config_raw()
     except Exception:
         return []
     if not isinstance(data, dict):
@@ -137,26 +134,8 @@ def _get_persisted_external_dirs() -> list[str]:
     return result
 
 
-def _remove_dir_from_config(dir_path: str) -> bool:
-    """从 config.yaml 移除信任目录（``file_guard.paths`` 及过渡期 ``external_directory``）。"""
-    from jiuwenswarm.common.config import CONFIG_YAML_PATH, load_yaml_round_trip, dump_yaml_round_trip
-
-    cfg_path = Path(CONFIG_YAML_PATH) if not isinstance(CONFIG_YAML_PATH, Path) else CONFIG_YAML_PATH
-    if not cfg_path.exists():
-        return False
-    try:
-        data = load_yaml_round_trip(cfg_path)
-    except Exception:
-        return False
-    if not isinstance(data, dict):
-        return False
-    perms = data.get("permissions")
-    if not isinstance(perms, dict):
-        return False
-
-    target = _normalize_dir(dir_path)
+def _strip_trusted_dir_from_permissions(perms: dict, target: str) -> bool:
     removed = False
-
     fg = perms.get("file_guard")
     if isinstance(fg, dict):
         paths = fg.get("paths")
@@ -184,14 +163,30 @@ def _remove_dir_from_config(dir_path: str) -> bool:
         if key_to_remove is not None:
             del ext[key_to_remove]
             removed = True
+    return removed
 
-    if not removed:
-        return False
-    try:
-        dump_yaml_round_trip(cfg_path, data)
-    except Exception:
-        return False
-    return True
+
+def _remove_dir_from_config(dir_path: str) -> bool:
+    """从系统 yaml 移除信任目录。"""
+    from jiuwenswarm.common.config import (
+        CONFIG_YAML_PATH,
+        update_system_config,
+    )
+
+    target = _normalize_dir(dir_path)
+    removed = False
+
+    def system_mutator(data: dict) -> dict:
+        nonlocal removed
+        perms = data.get("permissions")
+        if isinstance(perms, dict) and _strip_trusted_dir_from_permissions(perms, target):
+            removed = True
+        return data
+
+    cfg_path = Path(CONFIG_YAML_PATH) if not isinstance(CONFIG_YAML_PATH, Path) else CONFIG_YAML_PATH
+    if cfg_path.exists():
+        update_system_config(system_mutator)
+    return removed
 
 
 async def _persist_trusted_dirs(client: GatewayClient, trusted_dirs: list[str]) -> None:

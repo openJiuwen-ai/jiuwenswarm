@@ -500,13 +500,12 @@ def _preferred_language_from_yaml(path: Path) -> Optional[str]:
 def _resolve_preferred_language(
     config_yaml_dest: Path,
     explicit: Optional[str],
-    overlay_yaml: Optional[Path] = None,
 ) -> str:
-    """确定初始化使用的语言：显式参数优先，否则 overlay / 旧 yaml / 包内，默认 zh。"""
+    """确定初始化使用的语言：显式参数优先，否则用户 yaml / 包内，默认 zh。"""
     if explicit is not None:
         lang = str(explicit).strip().lower()
         return lang if lang in ("zh", "en") else "zh"
-    candidates = [p for p in (overlay_yaml, config_yaml_dest) if p is not None]
+    candidates = [config_yaml_dest]
     package = get_package_config_file()
     if package is not None:
         candidates.append(package)
@@ -1174,7 +1173,7 @@ def prepare_workspace(
     # buggy migration — merge them back into agent/home/cron_jobs.json.
     _recover_gateway_cron_jobs(workspace_dir)
 
-    # ----- config：缺则拷模板；与模板内容不同则整文件覆盖（含 permissions） -----
+    # ----- config：与 Agent 入口同一套（戳分重启/升级；init -f 强制升级） -----
     resources_dir = package_root / "resources"
     config_yaml_src_candidates = [
         resources_dir / "config.yaml",
@@ -1192,42 +1191,52 @@ def prepare_workspace(
     config_dest_dir = workspace_dir / "config"
     config_dest_dir.mkdir(parents=True, exist_ok=True)
     config_yaml_dest = config_dest_dir / "config.yaml"
-    overlay_yaml_dest = config_dest_dir / "config.user.yaml"
+    overlay_yaml_dest = config_dest_dir / "config.user.yaml"  # 遗留 overlay；启动折进 yaml 后删除
 
-    from jiuwenswarm.common.config_split import extract_user_overlay
-
-    extract_user_overlay(
-        user_yaml=config_yaml_dest,
-        overlay_yaml=overlay_yaml_dest,
-        package_yaml=config_yaml_src,
-    )
-
-    def _copy_system_file(src: Path, dest: Path) -> None:
-        if not src.is_file():
-            return
-        if not overwrite and dest.is_file() and dest.read_bytes() == src.read_bytes():
-            return
-        with TrackCopyDiff(
-            dest=dest,
-            is_file=True,
-            cumulative=cumulative_diff,
-            overwrite=overwrite,
-        ):
-            shutil.copy2(src, dest)
-
-    _copy_system_file(config_yaml_src, config_yaml_dest)
-
+    from jiuwenswarm.common.config_split import sync_system_files_from_package
     from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
         is_legacy_workspace_memory_enabled, is_old_celia_enabled,
     )
     from jiuwenswarm.agents.harness.common.memory.workspace import load_workspace_memory_config
+
+    builtin_rules_src = resources_dir / "builtin_rules.yaml"
+    builtin_rules_dest = config_dest_dir / "builtin_rules.yaml"
+    pkg_rules = builtin_rules_src if builtin_rules_src.is_file() else None
+
+    def _file_mtime(dest: Path) -> tuple[bool, float | None]:
+        if dest.is_file():
+            return True, dest.stat().st_mtime
+        return False, None
+
+    yaml_existed, yaml_mtime = _file_mtime(config_yaml_dest)
+    rules_existed, rules_mtime = _file_mtime(builtin_rules_dest)
+
+    # 与 Agent 入口同一套：重启不覆盖；升级（或 init -f）才 copy2。
+    sync_system_files_from_package(
+        user_yaml=config_yaml_dest,
+        overlay_yaml=overlay_yaml_dest,
+        package_yaml=config_yaml_src,
+        user_builtin_rules=builtin_rules_dest,
+        package_builtin_rules=pkg_rules,
+        force_upgrade=overwrite,
+    )
+
+    def _record_copy(dest: Path, existed: bool, mtime: float | None) -> None:
+        if overwrite or not dest.is_file():
+            return
+        if not existed:
+            cumulative_diff.added_files.append(str(dest))
+        elif dest.stat().st_mtime != mtime:
+            cumulative_diff.overwritten_files.append(str(dest))
+
+    _record_copy(config_yaml_dest, yaml_existed, yaml_mtime)
+    _record_copy(builtin_rules_dest, rules_existed, rules_mtime)
 
     memory_config = load_workspace_memory_config(config_yaml_dest)
     legacy_memory_enabled = is_legacy_workspace_memory_enabled(memory_config)
 
     if legacy_dirs_exist and not overwrite:
         _migrate_legacy_workspace(workspace_dir, preferred_language, memory_enabled=legacy_memory_enabled)
-    # If overwrite (init command), clean up old legacy directories first
     elif overwrite:
         try:
             if old_home.exists():
@@ -1243,9 +1252,7 @@ def prepare_workspace(
         except OSError as e:
             logger.warning(f"Failed to remove some old directories: {e}")
 
-    resolved_lang = _resolve_preferred_language(
-        config_yaml_dest, preferred_language, overlay_yaml_dest
-    )
+    resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
     # ----- 内置模板根目录：<package>/resources（含 agent/、skills_state.json）-----
     template_root = resources_dir
@@ -1396,7 +1403,7 @@ def prepare_workspace(
 
     from jiuwenswarm.common.config import set_preferred_language_in_config_file
 
-    set_preferred_language_in_config_file(overlay_yaml_dest, resolved_lang)
+    set_preferred_language_in_config_file(config_yaml_dest, resolved_lang)
 
     if celia_preserve is not None:
         preserve_root = Path(celia_preserve.name)
@@ -1486,8 +1493,8 @@ def init_user_workspace(
     - 数据模板:   <package_root>/resources/agent（含各技能模板）、skills_state.json
 
     用户根:
-    - ~/.jiuwenswarm/config/config.yaml（系统默认副本）
-    - ~/.jiuwenswarm/config/config.user.yaml（稀疏 overlay）
+    - ~/.jiuwenswarm/config/config.yaml（活配置；升级 copy2 后写回白名单与 keep-set）
+    - ~/.jiuwenswarm/config/builtin_rules.yaml（内置 shell 安全规则模板，与 config 同目录）
     - ~/.jiuwenswarm/config/.env
     - ~/.jiuwenswarm/agent/...
 
@@ -1948,7 +1955,7 @@ def get_builtin_rules_file() -> Path:
 
 
 def get_user_overlay_file() -> Path:
-    """用户稀疏 overlay（``config.user.yaml``）。阶段 A 文件可不存在。"""
+    """遗留 ``config.user.yaml`` 路径（现网 overlay；启动折进 yaml 后删除）。"""
     return get_config_dir() / "config.user.yaml"
 
 

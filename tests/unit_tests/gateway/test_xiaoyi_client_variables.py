@@ -18,6 +18,7 @@ import os
 import time
 
 import pytest
+import yaml
 
 import jiuwenswarm.common.config as cfgmod
 from jiuwenswarm.common.permission_profile import (
@@ -203,19 +204,25 @@ def test_with_workspace_directive(workspace):
 
 
 def test_update_permission_profile_in_config(cfg_file):
+    overlay = cfg_file.with_name("config.user.yaml")
     assert cfgmod.update_permission_profile_in_config("default") is True
-    data = cfgmod.load_yaml_round_trip(cfg_file)
-    assert data["permissions"]["enabled"] is True
-    assert data["permissions"]["permission_mode"] == "strict"
-    assert data["permissions"]["tools"]["bash"] == "ask"
-    assert data["permissions"]["tools"]["mcp_free_search"] == "ask"
-    assert data["permissions"]["file_guard"]["defaults"]["read"] == "ask"
-    assert data["permissions"]["file_guard"]["defaults"]["exec"] == "ask"
-    assert data["permissions"]["rules"] == [{"id": "keepme"}]
-    # 幂等：同档位再次应用无变更（调用方据此跳过热重载）
+    assert not overlay.is_file()
+    system = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert system["permissions"]["enabled"] is True
+    assert system["permissions"]["permission_mode"] == "strict"
+    assert system["permissions"]["tools"]["bash"] == "ask"
+    assert system["permissions"]["tools"]["mcp_free_search"] == "ask"
+    assert system["permissions"]["file_guard"]["defaults"]["read"] == "ask"
+    assert system["permissions"]["rules"] == [{"id": "keepme"}]
+    assert system["permissions"]["file_guard"]["defaults"]["exec"] == "ask"
+    merged = cfgmod.get_config_raw()
+    assert merged["permissions"]["enabled"] is True
+    assert merged["permissions"]["permission_mode"] == "strict"
+    assert merged["permissions"]["rules"] == [{"id": "keepme"}]
+    assert merged["permissions"]["file_guard"]["defaults"]["exec"] == "ask"
     assert cfgmod.update_permission_profile_in_config("默认权限") is False
     assert cfgmod.update_permission_profile_in_config("完全访问权限") is True
-    assert cfgmod.load_yaml_round_trip(cfg_file)["permissions"]["enabled"] is False
+    assert yaml.safe_load(cfg_file.read_text(encoding="utf-8"))["permissions"]["enabled"] is False
     assert cfgmod.update_permission_profile_in_config("未识别") is False
 
 
