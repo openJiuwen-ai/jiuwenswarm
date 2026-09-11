@@ -54,6 +54,20 @@ def test_modelarts_qwen_disables_unsupported_auto_tool_choice():
     assert client_class()._build_request_params()["tool_choice"] == "none"
 
 
+def test_modelarts_qwen30b_a3b_disables_unsupported_auto_tool_choice():
+    client_class = _client_class(
+        {
+            "model": "qwen3-30b-a3b",
+            "tools": [{"type": "function"}],
+            "tool_choice": "auto",
+        }
+    )
+
+    _patch_openai_modelarts_tool_choice(client_class)
+
+    assert client_class()._build_request_params()["tool_choice"] == "none"
+
+
 def test_other_openai_model_or_host_keeps_auto_tool_choice():
     params = {"model": "other-model", "tools": [{}], "tool_choice": "auto"}
     modelarts_client = _client_class(params.copy())
