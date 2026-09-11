@@ -20,6 +20,7 @@ import {
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
 import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
 import {
+  addEditableModel,
   getEditableModels,
   getModelDisplayGroups,
   promotePrimaryModel,
@@ -452,6 +453,22 @@ test('default and deletion operations preserve identity, group semantics, and re
   assert.equal(groupDefault[0].alias, 'second');
   assert.equal(groupDefault.filter((model) => model.model_name === 'same' && model.is_default).length, 1);
   assert.throws(() => removeEditableModel([primary, agentOs], primary), /LAST_EDITABLE_MODEL/);
+});
+
+test('adding a model replaces only the placeholder primary model', () => {
+  const placeholder = { model_name: 'your-model-name', alias: 'placeholder', is_default: true };
+  const existing = { model_name: 'existing', alias: 'existing', is_default: true };
+  const added = { model_name: 'new-model', alias: 'new', is_default: false };
+  const agentOs = { model_name: 'backup', alias: 'backup', is_agentos: true };
+
+  const replaced = addEditableModel([placeholder, existing, agentOs], added);
+  assert.deepEqual(replaced.map((model) => model.alias), ['new', 'existing', 'backup']);
+  assert.equal(replaced[0].is_default, true);
+  assert.equal(replaced.includes(placeholder), false);
+
+  const appended = addEditableModel([existing, agentOs], added);
+  assert.deepEqual(appended, [existing, agentOs, added]);
+  assert.equal(appended[0], existing);
 });
 
 test('model Settings sources use the required RPCs without hardcoded vendor options or unsupported tiers', () => {
