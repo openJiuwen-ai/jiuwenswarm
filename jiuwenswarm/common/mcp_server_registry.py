@@ -23,6 +23,7 @@ from jiuwenswarm.common.mcp_config import (
     _PooledMcpWorker,
     _normalize_mcp_client_type,
     _run_mcp_worker,
+    _validate_request_scoped_remote_mcp,
     create_mcp_tool,
     list_request_mcp_server_tools,
     shutdown_pooled_mcp_worker,
@@ -137,6 +138,14 @@ def is_remote_mcp_config(config: Mapping[str, Any]) -> bool:
 
     client_type = _normalize_mcp_client_type(config.get("type"))
     return client_type in _REMOTE_SCAN_CLIENT_TYPES
+
+
+def _admit_server_config(name: str, config: Mapping[str, Any]) -> None:
+    """CRUD 准入：create_mcp_tool 白名单/危险参数；sse/http 再做 SSRF 主机屏蔽。"""
+
+    create_mcp_tool(json.dumps({**dict(config), "name": name}, ensure_ascii=False))
+    if is_remote_mcp_config(config):
+        _validate_request_scoped_remote_mcp(name, dict(config))
 
 
 def redact_mcp_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -267,7 +276,7 @@ class McpServerRegistry:
                 continue
             config = {k: copy.deepcopy(v) for k, v in item.items() if k != "name"}
             try:
-                create_mcp_tool(json.dumps({**config, "name": name}, ensure_ascii=False))
+                _admit_server_config(name, config)
             except ValueError as exc:
                 results[index] = {"name": name, "ok": False, "error": str(exc)}
                 continue
@@ -348,7 +357,7 @@ class McpServerRegistry:
                 continue
             config = {k: copy.deepcopy(v) for k, v in item.items() if k != "name"}
             try:
-                create_mcp_tool(json.dumps({**config, "name": name}, ensure_ascii=False))
+                _admit_server_config(name, config)
             except ValueError as exc:
                 results.append({"name": name, "ok": False, "error": str(exc)})
                 continue

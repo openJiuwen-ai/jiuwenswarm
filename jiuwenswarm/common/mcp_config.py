@@ -1737,8 +1737,8 @@ async def list_request_mcp_server_tools(
     交给 RequestScopedOfficeClawMcpTool。任意失败返回 ([], {}) 以免单个坏连接器中断注册。
     """
 
-    # 经 create_mcp_tool 安全层（危险参数过滤/stdio 命令校验/SSRF 主机屏蔽），
-    # 而非 office-claw 身份 pin（validate_office_claw_mcp_config，专用于 Relay 自带 office-claw）。
+    # 经 create_mcp_tool 安全层（危险参数过滤/stdio 命令白名单）；sse/http 再过
+    # _validate_request_scoped_remote_mcp（SSRF）。不是 office-claw 身份 pin。
     config_with_name = {**dict(config), "name": server_name}
     try:
         server_cfg = create_mcp_tool(json.dumps(config_with_name))
@@ -1752,6 +1752,15 @@ async def list_request_mcp_server_tools(
 
     client_type = str(getattr(server_cfg, "client_type", "") or "").lower()
     if client_type == "sse" or client_type == "streamable-http":
+        try:
+            _validate_request_scoped_remote_mcp(server_name, dict(config))
+        except ValueError as exc:
+            logger.warning(
+                "request-scoped MCP connector '%s' rejected by SSRF check: %s",
+                server_name,
+                exc,
+            )
+            return [], {}
         return await _list_remote_mcp_connector_tools(server_name, server_cfg, client_type)
 
     if client_type != "stdio":

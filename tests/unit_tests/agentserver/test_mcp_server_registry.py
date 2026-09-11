@@ -107,6 +107,27 @@ async def test_add_duplicate_and_invalid(registry: McpServerRegistry, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_add_rejects_private_remote_url_without_scanning(registry, monkeypatch) -> None:
+    called: list[str] = []
+
+    async def discover(name, config):
+        called.append(name)
+        return [], {}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        discover,
+    )
+    results = await registry.add_servers(
+        [{"name": "ssrf", "type": "streamable-http", "url": "http://10.0.0.1/mcp"}]
+    )
+    assert results[0]["ok"] is False
+    assert "内网" in results[0]["error"] or "SSRF" in results[0]["error"]
+    assert called == []
+    assert await registry.list_servers() == []
+
+
+@pytest.mark.asyncio
 async def test_add_scan_failure_does_not_write(registry: McpServerRegistry, monkeypatch) -> None:
     async def fail_discover(name, config):
         return [], {}
