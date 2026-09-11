@@ -76,6 +76,9 @@ _SENSITIVE_KEY_COMPACTS = (
 
 
 def _is_sensitive_key(key: str) -> bool:
+    # A2A protocol metadata describes credential placement, not a credential value.
+    if key == "apiKeySecurityScheme":
+        return False
     normalized = key.strip().lower().replace("-", "_")
     compact = normalized.replace("_", "")
     return (

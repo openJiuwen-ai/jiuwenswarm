@@ -1022,3 +1022,40 @@ def test_credential_receiver_network_policy(a2a_receiver, host, scheme, flags):
         response = client.post("/api/v1/a2a-outbound-templates", json=payload)
     assert response.status_code == (200 if allowed else 400)
     assert bool(secrets.values) is allowed
+
+
+@pytest.mark.parametrize("location", ["header", "query", "cookie"])
+def test_api_key_scheme_survives_persistence_and_builds_auth(a2a_receiver, location):
+    from jiuwenswarm.gateway.a2a_manager.outbound.credentials import A2AOutboundCredentialStore
+    from jiuwenswarm.gateway.a2a_manager.outbound.models import sanitize_persisted_value
+
+    client, repos, _ = a2a_receiver
+    payload = _outbound_payload()
+    payload["agent_card"]["securitySchemes"] = {
+        "ingress": {"apiKeySecurityScheme": {
+            "location": location, "name": "X-API-Key", "api_key": "must-redact",
+        }},
+    }
+    payload["agent_card"]["securityRequirements"] = [{"schemes": {"ingress": []}}]
+    path = "/api/v1/a2a-outbound-templates"
+    assert client.post(path, json=payload).status_code == 200
+    stored = repos["a2a_outbound_template"]
+    row = client.portal.call(lambda: stored.get(template_id="a2a-weather"))
+    scheme = row["agent_card"]["securitySchemes"]["ingress"]["apiKeySecurityScheme"]
+    assert scheme == {"location": location, "name": "X-API-Key", "api_key": "******"}
+    card = sanitize_persisted_value(row["agent_card"])
+    assert card == row["agent_card"]
+    credential = A2AOutboundCredentialStore().get(row["credential_ref"])
+    assert credential == "secret"
+    headers, params, cookies = A2AOutboundDispatcher._credential_transport_options(card, credential)
+    assert {"header": headers, "query": params, "cookie": cookies}[location] == {
+        "X-API-Key": "secret",
+    }
+    # Replaying a complete Card repairs an already-redacted stored definition.
+    broken = {**card, "securitySchemes": {"ingress": {"apiKeySecurityScheme": "******"}}}
+    client.portal.call(lambda: stored.update(
+        {"template_id": "a2a-weather"}, {"agent_card": broken},
+    ))
+    assert client.post(path, json=payload).status_code == 200
+    restored = client.portal.call(lambda: stored.get(template_id="a2a-weather"))
+    assert restored["agent_card"] == card
