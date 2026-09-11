@@ -59,6 +59,16 @@ def test_modelarts_qwen_disables_unsupported_auto_tool_choice():
     assert params["tool_choice"] == "none"
 
 
+def test_modelarts_qwen30b_a3b_disables_unsupported_auto_tool_choice():
+    _patch_openai_modelarts_tool_choice(_FakeOpenAIClient)
+    params = _FakeOpenAIClient(
+        "https://api.modelarts-maas.com/openai/v1",
+        model="qwen3-30b-a3b",
+    )._build_request_params()
+
+    assert params["tool_choice"] == "none"
+
+
 def test_other_models_and_hosts_keep_auto_tool_choice():
     _patch_openai_modelarts_tool_choice(_FakeOpenAIClient)
 

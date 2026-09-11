@@ -11,7 +11,7 @@ from weakref import WeakSet
 
 logger = logging.getLogger("jiuwenswarm.llm_provider_compat_patch")
 
-_MODELARTS_TOOLS_NONE_MODELS = frozenset({"qwen3-32b"})
+_MODELARTS_TOOLS_NONE_MODELS = frozenset({"qwen3-30b-a3b", "qwen3-32b"})
 _ANTHROPIC_PATCHED_CLASSES: WeakSet[type] = WeakSet()
 _OPENAI_PATCHED_CLASSES: WeakSet[type] = WeakSet()
 
