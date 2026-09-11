@@ -59,9 +59,9 @@ async def ensure_dispatch_user_column(engine: AsyncEngine) -> None:
     try:
         async with engine.begin() as connection:
             await connection.run_sync(upgrade)
-    except DBAPIError:
+    except DBAPIError as exc:
         # Another Gateway may have added or widened it concurrently. Verify after rollback;
         # all other failures must prevent startup with a partially upgraded table.
         async with engine.connect() as connection:
             if not await connection.run_sync(owner_ready):
-                raise
+                raise exc
