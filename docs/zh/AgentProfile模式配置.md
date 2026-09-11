@@ -62,6 +62,7 @@ agent_profiles:
         - _context_processor_rail
         - _ask_user_rail
         - _filesystem_rail        # SysOperationRail：init() 注册 ReadFile/WriteFile/EditFile/Glob/ListDir/Grep/Bash 工具，丢了=无文件/shell 能力
+        - _progressive_tool_rail   # ProgressiveToolRail：系统提示词中的渐进式工具引导/导航
 ```
 
 - `default` 取值：`flash` → 默认精简模式；`normal` → 默认完整模式；留空或 `null` → 不激活 profile（使用全局 `react`，等价 normal 行为）。

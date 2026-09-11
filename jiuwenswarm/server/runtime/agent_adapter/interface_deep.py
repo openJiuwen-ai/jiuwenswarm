@@ -8492,8 +8492,9 @@ class JiuWenSwarmDeepAdapter:
             )
         return out
 
+    @staticmethod
     def _coerce_rail_name_list(
-        self, raw: Any, field_name: str
+        raw: Any, field_name: str
     ) -> set[str]:
         """Coerce a profile ``rails.keep``/``drop`` value into a set of names.
 
@@ -8514,12 +8515,18 @@ class JiuWenSwarmDeepAdapter:
             )
             return set()
         if isinstance(raw, (list, tuple, set)):
-            names = {str(n) for n in raw if isinstance(n, str) and n.strip()}
-            if len(names) != len([n for n in raw if isinstance(n, str) and n.strip()]):
+            names: set[str] = set()
+            skipped = 0
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    names.add(item.strip())
+                else:
+                    skipped += 1
+            if skipped:
                 logger.warning(
-                    "[JiuWenSwarmDeepAdapter] profile rails.%s contains "
-                    "non-string entries; kept only the string entries: %s",
-                    field_name, sorted(names),
+                    "[JiuWenSwarmDeepAdapter] profile rails.%s skipped %d "
+                    "non-string/empty entries; kept: %s",
+                    field_name, skipped, sorted(names),
                 )
             return names
         logger.warning(

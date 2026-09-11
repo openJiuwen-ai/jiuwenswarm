@@ -1614,6 +1614,7 @@ agent_profiles:
         - _context_processor_rail
         - _ask_user_rail
         - _filesystem_rail        # SysOperationRail: registers ReadFile/WriteFile/EditFile/Glob/ListDir/Grep/Bash tools in init(); dropping it leaves the agent with NO file/shell tools
+        - _progressive_tool_rail   # ProgressiveToolRail: progressive tool guidance/navigation in the system prompt
   # breed_map maps agent_id -> profile kind (normal/flash). It is an active key
   # (not just a comment) so migrate_config_from_template keeps it across restarts;
   # user-dir values override this empty default. NOTE: agent_id is only set in
