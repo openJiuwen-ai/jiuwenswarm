@@ -13,8 +13,13 @@ COPY jiuwenbox/src ./src
 RUN uv pip install --system --break-system-packages \
     ${PIP_EXTRA_ARGS} \
     -e .
+
+COPY docker/sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint.sh
+RUN chmod +x /usr/local/bin/sandbox-entrypoint.sh
+
 EXPOSE 8321
 EXPOSE 8322
 
 ENV JIUWENBOX_LISTEN=http://0.0.0.0:8321
+ENTRYPOINT ["/usr/local/bin/sandbox-entrypoint.sh"]
 CMD ["python3", "-m", "jiuwenbox.server.launcher"]
