@@ -299,7 +299,7 @@ const MARKETPLACE_CATEGORIES = [
 /** 技能广场首页：团队 / 普通技能各拉取条数 */
 const HUB_HOME_TOP_K = 6;
 /** 技能广场「更多」专页：单类型最多拉取条数 */
-const HUB_MORE_TOP_K = 30;
+const HUB_MORE_TOP_K = 500;
 
 type HubRecommendSkill = {
   asset_id: string;
