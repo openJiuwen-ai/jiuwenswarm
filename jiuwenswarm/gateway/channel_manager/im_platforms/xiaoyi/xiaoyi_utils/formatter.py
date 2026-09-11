@@ -5,6 +5,7 @@
 """
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -562,6 +563,23 @@ def should_send_as_status_update(event_type: EventType | None) -> bool:
     }
 
     return event_type in status_events
+
+
+# 重试通知是 LLMRetryRail 的过程性广播（如"模型调用异常，将在 0.5 秒后进行第 1 次重试
+# （共 2 次）"、"正在进行第 N 次重试（共 2 次）…"），属于过程而非终态：渠道不得据此
+# 把任务判成 failed，否则一次自动重试就会在手机/镜像侧把任务判死。
+_RETRY_NOTICE_RE = re.compile(
+    r"(将在\s*[\d.]+\s*秒后进行.{0,8}重试"
+    r"|正在进行第\s*\d+\s*次重试"
+    r"|进行第\s*\d+\s*次重试)"
+)
+
+
+def is_retry_notice_text(text: str | None) -> bool:
+    """判断文案是否为模型重试通知（过程性文案，不是终态）。"""
+    if not text:
+        return False
+    return bool(_RETRY_NOTICE_RE.search(str(text)))
 
 
 def get_status_state_for_event(event_type: EventType | None, payload: dict | None = None) -> str:

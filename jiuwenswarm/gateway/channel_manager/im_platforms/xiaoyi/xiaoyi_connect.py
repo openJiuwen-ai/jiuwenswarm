@@ -45,6 +45,7 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push i
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.formatter import (
     get_status_state_for_event,
     get_status_text_for_event,
+    is_retry_notice_text,
     should_send_as_reasoning_text,
     should_send_as_status_update,
     should_send_as_text,
@@ -1172,6 +1173,18 @@ class XiaoyiChannel(BaseChannel):
                 error_detail = msg.payload.get("error", "")
                 if error_detail:
                     error_text = str(error_detail)
+
+            # 重试通知是过程性文案（LLMRetryRail 广播）：不能作为 failed 终态外发，
+            # 否则一次自动重试就会把手机/镜像侧的任务判死。终态仍由后续真错误/真结束驱动。
+            if is_retry_notice_text(error_text):
+                logger.info(
+                    "[GUI_AGENT_DIAG] phase=XIAOYI_RETRY_NOTICE_SKIPPED "
+                    "message_id=%s session_id=%s error=%r",
+                    msg.id,
+                    session_id,
+                    error_text,
+                )
+                return
 
             # 发送 failed 状态更新
             for url_key in list(self._ws_connections.keys()):
