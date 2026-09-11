@@ -10,6 +10,7 @@ from jiuwenswarm.extensions.sdk.skill_source import (
     ArtifactDescriptor,
     ArtifactRef,
     DownloadPolicy,
+    SkillCandidate,
     SkillRef,
     SkillSearchRequest,
     SkillSearchResult,
@@ -210,3 +211,213 @@ async def test_source_update_keeps_target_marketplace_version_and_author_in_list
     assert skill["author"] == "Architecture Team v2"
     assert detail["version"] == "1.1.0"
     assert detail["author"] == "Architecture Team v2"
+
+
+def _skill_zip_bytes(name: str, *, author: str = "", version: str = "0.1") -> bytes:
+    lines = [f"name: {name}", f"version: {version}"]
+    if author:
+        lines.append(f"author: {author}")
+    body = "---\n" + "\n".join(lines) + f"\n---\n# {name}\n"
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr(f"{name}/SKILL.md", body)
+    return stream.getvalue()
+
+
+class _AuthorAwareProvider(SkillSourceProvider):
+    """Catalogue stub for prebuilt author resolution tests."""
+
+    source_id = "hub-author"
+    provider_type = "customhub"
+    display_name = "AuthorHub"
+    capabilities = frozenset({"search", "get_artifact"})
+
+    def __init__(
+        self,
+        *,
+        descriptor_metadata: dict | None = None,
+        skill_md_author: str = "",
+        search_author: str = "",
+        search_error: BaseException | None = None,
+        skill_id: str = "asset-1",
+        skill_name: str = "demo-skill",
+    ) -> None:
+        self.descriptor_metadata = dict(descriptor_metadata or {})
+        self.skill_md_author = skill_md_author
+        self.search_author = search_author
+        self.search_error = search_error
+        self.skill_id = skill_id
+        self.skill_name = skill_name
+        self.search_calls = 0
+
+    async def search(self, request: SkillSearchRequest, context) -> SkillSearchResult:
+        del request, context
+        self.search_calls += 1
+        if self.search_error is not None:
+            raise self.search_error
+        if not self.search_author:
+            return SkillSearchResult(items=())
+        return SkillSearchResult(
+            items=(
+                SkillCandidate(
+                    source_id=self.source_id,
+                    skill_id=self.skill_id,
+                    version_id="v1",
+                    name=self.skill_name,
+                    owner_display_name=self.search_author,
+                ),
+            )
+        )
+
+    async def get_artifact(self, skill_ref: SkillRef, version_id: str, context) -> ArtifactDescriptor:
+        del context
+        return ArtifactDescriptor(
+            artifact_ref=ArtifactRef(skill_ref=skill_ref, version_id=version_id),
+            download_url="https://example.com/demo-skill.zip",
+            metadata=self.descriptor_metadata,
+        )
+
+    async def download_artifact(self, descriptor, download_policy=None) -> bytes:
+        del descriptor, download_policy
+        return _skill_zip_bytes(self.skill_name, author=self.skill_md_author)
+
+    async def verify_artifact(self, descriptor, content):
+        del descriptor, content
+        return {"verified": True}
+
+
+def _manager_with_author_provider(tmp_path, monkeypatch, provider: _AuthorAwareProvider) -> SkillManager:
+    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    registry = SourceRegistry()
+    registry.register(
+        SourceConfig(
+            source_id=provider.source_id,
+            provider_type=provider.provider_type,
+            capabilities=frozenset({"search", "get_artifact"}),
+            download_policy=DownloadPolicy(allowed_hosts=("example.com",)),
+        ),
+        provider,
+    )
+    manager._source_registry = registry
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_prebuilt_provider_install_prefers_descriptor_author_over_template(
+    tmp_path, monkeypatch
+):
+    provider = _AuthorAwareProvider(
+        descriptor_metadata={"author": "Descriptor Author"},
+        skill_md_author="Package Author",
+        search_author="Search Author",
+    )
+    manager = _manager_with_author_provider(tmp_path, monkeypatch, provider)
+
+    result = await manager.install_prebuilt_from_provider(
+        source_id="hub-author",
+        skill_id="asset-1",
+        version_id="v1",
+        author="Template Author",
+    )
+
+    assert result["ok"] is True
+    assert result["row"]["author"] == "Descriptor Author"
+    assert provider.search_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_lookup_source_skill_author_returns_empty_on_provider_error(
+    tmp_path, monkeypatch
+):
+    provider = _AuthorAwareProvider(search_error=RuntimeError("hub down"))
+    manager = _manager_with_author_provider(tmp_path, monkeypatch, provider)
+
+    author = await manager.lookup_source_skill_author(
+        source_id="hub-author", skill_id="asset-1"
+    )
+
+    assert author == ""
+    assert provider.search_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_lookup_source_skill_author_returns_empty_on_miss(
+    tmp_path, monkeypatch
+):
+    provider = _AuthorAwareProvider(search_author="")
+    manager = _manager_with_author_provider(tmp_path, monkeypatch, provider)
+
+    author = await manager.lookup_source_skill_author(
+        source_id="hub-author", skill_id="asset-1"
+    )
+
+    assert author == ""
+    assert provider.search_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_prebuilt_provider_install_continues_when_author_search_fails(
+    tmp_path, monkeypatch
+):
+    provider = _AuthorAwareProvider(search_error=RuntimeError("hub down"))
+    manager = _manager_with_author_provider(tmp_path, monkeypatch, provider)
+
+    result = await manager.install_prebuilt_from_provider(
+        source_id="hub-author",
+        skill_id="asset-1",
+        version_id="v1",
+        author="",
+    )
+
+    assert result["ok"] is True
+    assert result["skill_name"] == "demo-skill"
+    assert "author" not in result["row"]
+    assert provider.search_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_prebuilt_provider_install_falls_back_to_search_author(
+    tmp_path, monkeypatch
+):
+    provider = _AuthorAwareProvider(
+        skill_md_author="",
+        search_author="Search Author",
+    )
+    manager = _manager_with_author_provider(tmp_path, monkeypatch, provider)
+
+    result = await manager.install_prebuilt_from_provider(
+        source_id="hub-author",
+        skill_id="asset-1",
+        version_id="v1",
+        author="",
+    )
+
+    assert result["ok"] is True
+    assert result["row"]["author"] == "Search Author"
+    assert provider.search_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_source_install_does_not_search_catalogue_for_author(
+    tmp_path, monkeypatch
+):
+    provider = _AuthorAwareProvider(
+        skill_md_author="Package Author",
+        search_author="Search Author",
+        search_error=RuntimeError("search must not run on user install"),
+    )
+    manager = _manager_with_author_provider(tmp_path, monkeypatch, provider)
+
+    result = await manager.handle_skills_source_install(
+        {
+            "source_id": "hub-author",
+            "skill_id": "asset-1",
+            "version_id": "v1",
+            "author": "Market Author",
+        }
+    )
+
+    assert result["success"] is True
+    assert result["skill"]["author"] == "Market Author"
+    assert provider.search_calls == 0

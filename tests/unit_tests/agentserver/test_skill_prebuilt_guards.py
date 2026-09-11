@@ -110,7 +110,7 @@ def test_workspace_state_sync_records_prebuilt_and_skips_same_version(
     calls = {"count": 0}
 
     async def _provider_install(
-        *, source_id: str, skill_id: str, version_id: str, force: bool = True
+        *, source_id: str, skill_id: str, version_id: str, force: bool = True, **_kwargs: Any
     ) -> dict[str, Any]:
         del force
         calls["count"] += 1
@@ -244,6 +244,194 @@ def test_workspace_state_sync_backfills_matching_prebuilt_without_download(
         "source_id": "customer-skillhub",
         "skill_id": "asset-1",
     }]
+
+
+def test_url_prebuilt_prefers_template_author_over_skill_md(tmp_path: Path) -> None:
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
+        AgentSkillPrebuiltConfig,
+        SkillPrebuiltItem,
+        SkillPrebuiltSynchronizer,
+    )
+
+    workspace = tmp_path / "tenant_ws"
+    manager = SkillManager(workspace_dir=str(workspace))
+
+    def _url_install(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        skill_dir = workspace / "skills" / "url-skill"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: url-skill\nversion: 1.0.0\nauthor: Package Author\n---\n# url\n",
+            encoding="utf-8",
+        )
+        return {
+            "ok": True,
+            "skill_name": "url-skill",
+            "meta": {"name": "url-skill", "version": "1.0.0", "author": "Package Author"},
+        }
+
+    manager.install_skill_sync = _url_install  # type: ignore[method-assign]
+    result = asyncio.run(
+        SkillPrebuiltSynchronizer(
+            workspace, "svc", "bot", skill_manager=manager
+        ).sync(
+            AgentSkillPrebuiltConfig(
+                agent_id="bot",
+                service_id="svc",
+                skills=[
+                    SkillPrebuiltItem(
+                        id="asset-url",
+                        version="1.0.0",
+                        source="https://example.com/url-skill.zip",
+                        author="Template Author",
+                    )
+                ],
+            )
+        )
+    )
+
+    assert result.ok is True, result.errors
+    record = manager.list_skill_installations()[0]
+    assert record["author"] == "Template Author"
+
+
+def _seed_provider_prebuilt(
+    workspace: Path,
+    manager,
+    *,
+    name: str = "managed-skill",
+    author: str = "",
+    skill_md_author: str = "",
+) -> None:
+    skill_dir = workspace / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    lines = [f"name: {name}", "description: managed"]
+    if skill_md_author:
+        lines.append(f"author: {skill_md_author}")
+    (skill_dir / "SKILL.md").write_text(
+        "---\n" + "\n".join(lines) + f"\n---\n# {name}\n",
+        encoding="utf-8",
+    )
+    manager.record_skill_installation(
+        name=name,
+        source_type="prebuilt",
+        source="customer-skillhub",
+        origin="customer-skillhub:asset-1",
+        version="1.0.0",
+        skill_id="asset-1",
+        source_id="customer-skillhub",
+        version_id="version-1",
+        author=author or None,
+        replace_by_name=True,
+    )
+
+
+def _provider_reconcile_config(**item_kwargs: Any) -> Any:
+    from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
+        AgentSkillPrebuiltConfig,
+        SkillPrebuiltItem,
+    )
+
+    fields = {
+        "id": "asset-1",
+        "version": "1.0.0",
+        "source_id": "customer-skillhub",
+        "version_id": "version-1",
+    }
+    fields.update(item_kwargs)
+    return AgentSkillPrebuiltConfig(
+        agent_id="bot",
+        service_id="svc",
+        skills=[SkillPrebuiltItem(**fields)],
+    )
+
+
+def test_same_version_provider_reconcile_does_not_search_hub(tmp_path: Path) -> None:
+    """同版本调和只走账本/模板/SKILL.md，不得 catalogue search。"""
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    from jiuwenswarm.server.runtime.skill.skill_prebuilt import SkillPrebuiltSynchronizer
+
+    workspace = tmp_path / "tenant_ws"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _seed_provider_prebuilt(workspace, manager)
+
+    async def _unexpected_search(*_args: Any, **_kwargs: Any) -> str:
+        pytest.fail("same-version reconcile must not search the catalogue for author")
+
+    async def _unexpected_provider(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        pytest.fail("same-version reconcile must not re-download")
+
+    manager.lookup_source_skill_author = _unexpected_search  # type: ignore[method-assign]
+    manager.install_prebuilt_from_provider = _unexpected_provider  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        SkillPrebuiltSynchronizer(
+            workspace, "svc", "bot", skill_manager=manager
+        ).sync(_provider_reconcile_config())
+    )
+
+    assert result.ok is True, result.errors
+    assert "author" not in manager.list_skill_installations()[0]
+
+
+def test_same_version_reconcile_keeps_ledger_author(tmp_path: Path) -> None:
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    from jiuwenswarm.server.runtime.skill.skill_prebuilt import SkillPrebuiltSynchronizer
+
+    workspace = tmp_path / "tenant_ws"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _seed_provider_prebuilt(
+        workspace, manager, author="Ledger Author", skill_md_author="Package Author"
+    )
+
+    async def _unexpected_search(*_args: Any, **_kwargs: Any) -> str:
+        pytest.fail("same-version reconcile must not search the catalogue for author")
+
+    manager.lookup_source_skill_author = _unexpected_search  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        SkillPrebuiltSynchronizer(
+            workspace, "svc", "bot", skill_manager=manager
+        ).sync(_provider_reconcile_config(author="Template Author"))
+    )
+
+    assert result.ok is True, result.errors
+    assert manager.list_skill_installations()[0]["author"] == "Ledger Author"
+
+
+def test_same_version_reconcile_backfills_template_then_skill_md(tmp_path: Path) -> None:
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    from jiuwenswarm.server.runtime.skill.skill_prebuilt import SkillPrebuiltSynchronizer
+
+    workspace = tmp_path / "tenant_ws"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _seed_provider_prebuilt(workspace, manager, skill_md_author="Package Author")
+
+    async def _unexpected_search(*_args: Any, **_kwargs: Any) -> str:
+        pytest.fail("same-version reconcile must not search the catalogue for author")
+
+    manager.lookup_source_skill_author = _unexpected_search  # type: ignore[method-assign]
+    synchronizer = SkillPrebuiltSynchronizer(
+        workspace, "svc", "bot", skill_manager=manager
+    )
+
+    templated = asyncio.run(
+        synchronizer.sync(_provider_reconcile_config(author="Template Author"))
+    )
+    assert templated.ok is True, templated.errors
+    assert manager.list_skill_installations()[0]["author"] == "Template Author"
+
+    workspace_b = tmp_path / "tenant_ws_md"
+    manager_b = SkillManager(workspace_dir=str(workspace_b))
+    _seed_provider_prebuilt(workspace_b, manager_b, skill_md_author="Package Author")
+    manager_b.lookup_source_skill_author = _unexpected_search  # type: ignore[method-assign]
+    md_only = asyncio.run(
+        SkillPrebuiltSynchronizer(
+            workspace_b, "svc", "bot", skill_manager=manager_b
+        ).sync(_provider_reconcile_config())
+    )
+    assert md_only.ok is True, md_only.errors
+    assert manager_b.list_skill_installations()[0]["author"] == "Package Author"
 
 
 def test_workspace_state_failed_refresh_preserves_previous_record(

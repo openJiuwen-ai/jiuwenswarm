@@ -2376,6 +2376,21 @@ class SkillManager:
             raise SourceRegistryError(exc.code, str(exc)) from exc
         return descriptor, body, dict(verification) if verification is not None else None
 
+    @staticmethod
+    def _resolve_source_skill_author(*sources: Any) -> str:
+        """Pick the first non-empty author from descriptor metadata, SKILL.md, or a string."""
+        for source in sources:
+            if isinstance(source, dict):
+                for key in ("author", "publisher_name", "owner_display_name"):
+                    value = str(source.get(key) or "").strip()
+                    if value:
+                        return value[:200]
+                continue
+            value = str(source or "").strip()
+            if value:
+                return value[:200]
+        return ""
+
     @_state_transactional
     def _commit_source_skill_entity(
         self,
@@ -2462,6 +2477,72 @@ class SkillManager:
         self._refresh_agent_data_indexes()
         return self._skill_installation_dto(record)
 
+    def lookup_skill_md_author(self, skill_name: str) -> str:
+        """Read author from a local SKILL.md (prebuilt author backfill).
+
+        Public entry so collaborating classes do not call ``_parse_skill_md``
+        or ``_resolve_source_skill_author`` (G.CLS.11).
+        """
+        skill_name = str(skill_name or "").strip()
+        if not skill_name:
+            return ""
+        skill_md = self._skills_dir / skill_name / "SKILL.md"
+        parsed = self._parse_skill_md(skill_md) if skill_md.is_file() else None
+        if not isinstance(parsed, dict):
+            return ""
+        return self._resolve_source_skill_author(parsed)
+
+    async def lookup_source_skill_author(
+        self,
+        *,
+        source_id: str,
+        skill_id: str,
+    ) -> str:
+        """Look up a catalogue publisher name for one skill (prebuilt author backfill).
+
+        Download-install path only. Same-version reconcile stays on ledger /
+        template / SKILL.md and must not call this.
+        """
+        source_id = str(source_id or "").strip()
+        skill_id = str(skill_id or "").strip()
+        if not source_id or not skill_id:
+            return ""
+        try:
+            provider = await self._source_registry.get(source_id, "search")
+            result = await provider.search(
+                SkillSearchRequest(
+                    q="",
+                    page=1,
+                    page_size=5,
+                    filters={"asset_id": skill_id},
+                ),
+                self._source_context({}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "source skill author lookup failed: source_id=%s skill_id=%s error=%s",
+                source_id,
+                skill_id,
+                exc,
+            )
+            return ""
+        for candidate in result.items:
+            if str(getattr(candidate, "skill_id", "") or "").strip() != skill_id:
+                continue
+            metadata = dict(getattr(candidate, "metadata", None) or {})
+            author = self._resolve_source_skill_author(
+                {
+                    **metadata,
+                    "owner_display_name": (
+                        getattr(candidate, "owner_display_name", None)
+                        or metadata.get("owner_display_name")
+                    ),
+                }
+            )
+            if author:
+                return author
+        return ""
+
     async def install_prebuilt_from_provider(
         self,
         *,
@@ -2469,6 +2550,7 @@ class SkillManager:
         skill_id: str,
         version_id: str,
         force: bool = True,
+        author: str = "",
     ) -> dict[str, Any]:
         """Install one Provider artifact as ``source_type=prebuilt`` (enterprise reconcile)."""
         source_id = str(source_id or "").strip()
@@ -2502,11 +2584,20 @@ class SkillManager:
                 skill_name = _safe_path_name(
                     str(metadata.get("name") or skill_dir.name), "skill"
                 )
+                descriptor_metadata = dict(descriptor.metadata or {})
                 version = str(
                     metadata.get("version")
-                    or descriptor.metadata.get("version")
+                    or descriptor_metadata.get("version")
                     or version_id
                 ).strip()
+                author = self._resolve_source_skill_author(
+                    descriptor_metadata, author, metadata
+                )
+                if not author:
+                    author = await self.lookup_source_skill_author(
+                        source_id=source_id,
+                        skill_id=skill_id,
+                    )
                 record = await asyncio.to_thread(
                     self._commit_source_skill_entity,
                     skill_dir,
@@ -2518,6 +2609,7 @@ class SkillManager:
                     force=force,
                     fingerprint=descriptor.fingerprint,
                     verification=verification,
+                    author=author,
                     source_type="prebuilt",
                 )
             return {
