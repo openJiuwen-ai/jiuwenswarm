@@ -114,6 +114,17 @@ server {
     location = /index.html {
         add_header Cache-Control "no-cache, must-revalidate";
     }
+    # SPA 子路径刷新的相对资源兼容(vite base:'./'):刷新 /chat/<会话> 时
+    # 浏览器把 index.html 里的 ./assets/x.js 解析为 /chat/assets/x.js,
+    # dist 下不存在。Python 版 app_web.py 对静态扩展名逐级剥前缀重试;
+    # nginx 等价实现:剥掉第一段 SPA 路由前缀。仅匹配静态资源扩展名
+    # (对齐 Python 版 static_exts);剥前缀后仍找不到 → 404 而非回落
+    # index.html,避免 HTML 冒充 JS module 导致白屏。
+    # 注:实际 vite 产物只有 assets/ 一层,剥一段即可;若未来 SPA 挂更深
+    # 前缀需按需增加层级。
+    location ~* ^/[^/]+(?<spa_asset>/assets/.+\.(?:js|mjs|css|map|svg|png|jpe?g|ico|webp|gif|woff2?|ttf|eot|json|webmanifest))$ {
+        try_files $spa_asset =404;
+    }
     location / {
         try_files $uri $uri/ /index.html;
         add_header Cache-Control "no-cache, must-revalidate";

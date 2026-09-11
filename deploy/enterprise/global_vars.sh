@@ -249,7 +249,7 @@ declare -A DEPLOY_VARS=(
     ["JIUWENBOX_ENABLED"]="true"
     ["JIUWENBOX_NAME"]="jiuwenbox"
     ["JIUWENBOX_PORT"]="8321"
-    ["JIUWENBOX_HOME"]="/home/app"
+    ["JIUWENBOX_HOME"]="/root"
     ["APPLY_PATCH"]="false"
     ["LOGIN_AUTH_SIMULATE"]="false"
 )
