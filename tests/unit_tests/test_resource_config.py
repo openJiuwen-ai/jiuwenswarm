@@ -3,6 +3,16 @@ from pathlib import Path
 import yaml
 
 
+def test_default_model_config_does_not_set_context_window():
+    repo_root = Path(__file__).resolve().parents[2]
+    config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
+
+    data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+
+    model_config = data["models"]["defaults"][0]["model_config_obj"]
+    assert "context_window" not in model_config
+
+
 def test_default_team_config_enables_managed_worktrees():
     repo_root = Path(__file__).resolve().parents[2]
     config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"

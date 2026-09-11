@@ -275,7 +275,7 @@ models:
         stream_idle_timeout: 120
         verify_ssl: true
         custom_headers: {}
-      model_config_obj:
+      model_config_obj: {}
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
         # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
@@ -288,7 +288,8 @@ models:
         # （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
         # jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
         # 不填 = core 按模型名查表 / 兜底 200000。
-        context_window: 131072
+        # 如需覆盖 core 的自动识别结果，可在 model_config_obj 下配置：
+        # context_window: 131072
       is_default: true
   video:
       model_client_config:
