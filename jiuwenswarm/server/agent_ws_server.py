@@ -2412,6 +2412,7 @@ class AgentWebSocketServer:
             clear_extension_prompt_context,
             set_extension_prompt_context,
         )
+        from jiuwenswarm.server.xiaoyi_invocation import request_billing_trace_id
 
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):
@@ -2422,6 +2423,7 @@ class AgentWebSocketServer:
             channel_id=request.channel_id,
             session_id=request.session_id,
             req_method=request.req_method.value if request.req_method is not None else None,
+            trace_id=request_billing_trace_id(request),
             params=params,
         )
 

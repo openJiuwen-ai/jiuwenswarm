@@ -86,7 +86,7 @@ class McpProjectIdRail(DeepAgentRail):
         }
         tool_args.update(applied)
         logger.info(
-            "[MCP Scope] tool=%s session=%s project_id=%s "
+            "[MCP Scope] tool=%s sessionid=%s project_id=%s "
             "project_dir=%s applied=%s replaced=%s removed=%s",
             tool_name,
             binding.get(self.SESSION_ID_KEY, "<missing>"),

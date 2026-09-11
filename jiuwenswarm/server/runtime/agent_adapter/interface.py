@@ -52,6 +52,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentRe
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.extensions.hooks_context import MemoryHookContext
+from jiuwenswarm.server.xiaoyi_invocation import request_billing_trace_id
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.server.utils.stream_utils import is_retry_notice_payload
 from jiuwenswarm.common.utils import (
@@ -2200,6 +2201,7 @@ class JiuWenSwarm:
                 channel_id=request.channel_id,
                 agent_name="main_agent",
                 workspace_dir=str(get_agent_home_dir()),
+                trace_id=request_billing_trace_id(request),
                 extra=_memory_hook_extra(request),
             )
             await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
@@ -2254,6 +2256,7 @@ class JiuWenSwarm:
                     channel_id=request.channel_id,
                     agent_name="main_agent",
                     workspace_dir=str(get_agent_home_dir()),
+                    trace_id=request_billing_trace_id(request),
                     assistant_message=content_str,
                     extra=_memory_hook_extra(request),
                 )
@@ -2478,6 +2481,7 @@ class JiuWenSwarm:
                 channel_id=request.channel_id,
                 agent_name="main_agent",
                 workspace_dir=str(get_agent_home_dir()),
+                trace_id=request_billing_trace_id(request),
                 extra=_memory_hook_extra(request),
             )
             await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
@@ -3156,6 +3160,7 @@ class JiuWenSwarm:
                 channel_id=request.channel_id,
                 agent_name="main_agent",
                 workspace_dir=str(get_agent_home_dir()),
+                trace_id=request_billing_trace_id(request),
                 assistant_message=assistant_message,
                 extra=_memory_hook_extra(request),
             )

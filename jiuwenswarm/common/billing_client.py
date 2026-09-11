@@ -193,7 +193,7 @@ async def _run_report(status: str, trace_id: str, payload: dict[str, Any]) -> No
     if cfg is None:
         return
     np_base, token, _uid, _device_id = cfg
-    tag = f"[billing] status={status} trace={trace_id}"
+    tag = f"[billing] status={status} traceid={trace_id}"
     for attempt in (1, 2):
         try:
             ok = await _post_once(np_base, token, trace_id, payload)
@@ -215,7 +215,7 @@ def _schedule_report(status: str, trace_id: str, payload: dict[str, Any]) -> boo
         task = asyncio.create_task(coro)
     except Exception:  # noqa: BLE001 - 无运行中事件循环等
         coro.close()
-        logger.debug("[billing] 上报派发失败: %s trace=%s", status, trace_id, exc_info=True)
+        logger.debug("[billing] 上报派发失败: %s traceid=%s", status, trace_id, exc_info=True)
         return False
     _REPORT_TASKS.add(task)
     task.add_done_callback(_REPORT_TASKS.discard)
