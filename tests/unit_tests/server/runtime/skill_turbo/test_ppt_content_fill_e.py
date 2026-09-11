@@ -7,6 +7,8 @@ from __future__ import annotations
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
     _CONTENT_FILL_DENSITY_CHECKLIST,
     _build_content_template_fill_prompt,
+    _build_content_template_fill_system_prompt,
+    _chart_activation_incomplete,
     _count_filled_chart_options,
     _count_null_chart_options,
     _extract_designer_section,
@@ -15,6 +17,9 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import 
     _layout_patch_still_unfilled_chart_options,
     _uses_content_template_fill,
     _validate_custom_content_template_fill_output,
+)
+from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.slide_designer_worker import (
+    SlideDesignerWorker,
 )
 
 # _is_valid_html requires len >= 200
@@ -113,6 +118,69 @@ def test_count_filled_chart_options_ignores_comment_and_null():
     assert _count_filled_chart_options(empty) == 0
     assert _count_null_chart_options(empty) == 1
     assert _count_null_chart_options(filled) == 0
+
+
+def test_chart_activation_incomplete_dormant_scaffold_with_chart_shell():
+    """有 chart 壳 + 注释内 option=null：须判未激活（不能靠 null 计数）。"""
+    html = (
+        '<div id="chart-1"></div>\n'
+        "<!-- CHART_SCAFFOLD_BEGIN\n"
+        "<script>\n"
+        "  const option = null;\n"
+        "  if (!option) return;\n"
+        "</script>\n"
+        "CHART_SCAFFOLD_END -->\n"
+    )
+    assert _count_null_chart_options(html) == 0  # 注释内不可见
+    assert _chart_activation_incomplete(html) is True
+
+
+def test_chart_activation_incomplete_activated_ok():
+    html = (
+        '<div id="chart-1"></div>\n'
+        "<script>\n"
+        "  const option = { series: [{ type: 'bar', data: [1] }] };\n"
+        "  echarts.init(el).setOption(option);\n"
+        "</script>\n"
+    )
+    assert _chart_activation_incomplete(html) is False
+
+
+def test_chart_activation_incomplete_no_chart_container_keeps_dormant():
+    html = (
+        "<div id='kpi-1'></div>\n"
+        "<!-- CHART_SCAFFOLD_BEGIN\n"
+        "<script>const option = null;</script>\n"
+        "CHART_SCAFFOLD_END -->\n"
+    )
+    assert _chart_activation_incomplete(html) is False
+
+
+def test_chart_activation_incomplete_peeled_but_null():
+    html = (
+        '<div id="chart-funnel"></div>\n'
+        "<script>\n"
+        "  const option = null;\n"
+        "  if (!option) return;\n"
+        "</script>\n"
+    )
+    assert _chart_activation_incomplete(html) is True
+
+
+def test_rewrite_hint_chart_scaffold_not_activated():
+    hint = SlideDesignerWorker._build_rewrite_hint("chart_scaffold_not_activated")
+    assert "CHART_SCAFFOLD" in hint
+    assert "const option" in hint
+
+
+def test_system_prompt_mentions_multi_chart_scaffold():
+    text = _build_content_template_fill_system_prompt(
+        style_id="business-classic",
+        page_type="data",
+        outline_page="趋势对比数据",
+        research_page="指标与基准测试",
+    )
+    assert "CHART_SCAFFOLD_*" in text
 
 
 def test_layout_patch_regressed_chart_options_detects_null_rollback():

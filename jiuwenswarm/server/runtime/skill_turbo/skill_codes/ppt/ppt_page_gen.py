@@ -132,6 +132,15 @@ def _postprocess_content_template_fill_html(
             repaired = _fix_chart_height_chain(repaired)
             ok_repaired, reason_repaired = validate_fn(seed_html, repaired)
             if ok_repaired:
+                if _chart_activation_incomplete(repaired):
+                    logger.warning(
+                        "[P8.1] 内容页图表 scaffold 未激活（本轮重试） page=%d style=%s "
+                        "from_reason=%s",
+                        ctx.page_num,
+                        ctx.style_id,
+                        reason,
+                    )
+                    return "", repaired, "chart_scaffold_not_activated"
                 _warn_chart_mount_mismatch_soft(repaired, page_num=ctx.page_num)
                 logger.info(
                     "[P8.1] repaired=content_template_chrome page=%d style=%s "
@@ -157,6 +166,13 @@ def _postprocess_content_template_fill_html(
             reason,
         )
         return "", html, reason
+    if _chart_activation_incomplete(html):
+        logger.warning(
+            "[P8.1] 内容页图表 scaffold 未激活（本轮重试） page=%d style=%s",
+            ctx.page_num,
+            ctx.style_id,
+        )
+        return "", html, "chart_scaffold_not_activated"
     _warn_chart_mount_mismatch_soft(html, page_num=ctx.page_num)
     logger.info(
         "[P8.1] 内容页官方模板填槽完成 page=%d style=%s",
@@ -1413,6 +1429,7 @@ def _build_content_template_fill_system_prompt(
         if is_chart:
             prompt += (
                 "图表候选页还须编辑 </body> 前 CHART_SCAFFOLD（删定界符、填 option）；"
+                "多图须独立 CHART_SCAFFOLD_* 与各自 const option；"
                 "CHART_SCAFFOLD 不在 Page Chrome 锁内。"
             )
         prompt += "只输出完整 HTML 原文，不要解释、不要 Markdown 代码块。"
@@ -1423,7 +1440,8 @@ def _build_content_template_fill_system_prompt(
     )
     if is_chart:
         prompt += (
-            "图表候选页还须编辑 </body> 前 CHART_SCAFFOLD（删定界符、填 option）。"
+            "图表候选页还须编辑 </body> 前 CHART_SCAFFOLD（删定界符、填 option）；"
+            "多图须独立 CHART_SCAFFOLD_* 与各自 const option。"
             "Page Chrome（head/header/`<main>` 开标签/footer 骨架）须与预铺稿一致；"
             "CHART_SCAFFOLD 不在 Chrome 锁内。"
         )
@@ -2388,6 +2406,23 @@ def _count_filled_chart_options(html: str) -> int:
 def _count_null_chart_options(html: str) -> int:
     """统计可执行的 `const option = null`（忽略注释内说明文字）。"""
     return len(_CHART_OPTION_NULL_RE.findall(_chart_option_scan_text(html)))
+
+
+def _chart_activation_incomplete(html: str) -> bool:
+    """charts.md §激活镜像：有 chart 壳却未剥定界符 / 无非注释 option 对象 / 仍可执行 null。
+
+    仅作填槽重试信号；不得单独升级为 missing_pages / P9 拒导。
+    """
+    if not html or not _CHART_DIV_RE.search(html):
+        return False
+    if _COMMENTED_CHART_SCAFFOLD_BLOCK_RE.search(html):
+        return True
+    scan = _chart_option_scan_text(html)
+    if not _CHART_OPTION_OBJ_RE.search(scan):
+        return True
+    if _CHART_OPTION_NULL_RE.search(scan):
+        return True
+    return False
 
 
 def _layout_patch_regressed_chart_options(before: str, after: str) -> bool:
@@ -3697,6 +3732,11 @@ _REWRITE_ACTIONS = {
     "footer_missing": "保留 footer 结构并填入 PAGE_FOOTER",
     "footer_invalid": "将 PAGE_FOOTER 替换为有效页脚文案，禁止占位敷衍文案",
     "llm_failed": "重新生成完整页面 HTML，确保输出可解析",
+    "chart_scaffold_not_activated": (
+        "本页已有 chart 容器：必须成对删除 CHART_SCAFFOLD_* 定界符，"
+        "并将 const option = null 替换为配置对象 const option = {…}；"
+        "禁止手写 echarts.init / var optionN"
+    ),
 }
 
 
@@ -4641,6 +4681,24 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             if html:
                 break
         if not html:
+            # 与 SlideDesignerWorker 对齐：图表未激活不得升格 missing → P9 拒导
+            if (
+                last_fail_reason == "chart_scaffold_not_activated"
+                and last_raw_html.strip()
+            ):
+                logger.warning(
+                    "[P8.1] 图表 scaffold 未激活，重试耗尽仍交付 page=%d",
+                    page_num,
+                )
+                ok = await self._write_file(path, last_raw_html)
+                if not ok:
+                    return {"missing": True, "low_density": False, "report": {}}
+                return {
+                    "missing": False,
+                    "layout_warning": True,
+                    "low_density": False,
+                    "report": {},
+                }
             return {"missing": True, "low_density": False, "report": {}}
 
         ok = await self._write_file(path, html)
