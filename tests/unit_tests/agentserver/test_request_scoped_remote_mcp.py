@@ -264,6 +264,78 @@ async def test_remote_call_result_dict_serialized_as_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_remote_call_tool_honors_connector_timeout_s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """params["timeout_s"]（前端下发的单连接器超时）必须覆盖 30s 默认值：
+    未超 30s 但超连接器 timeout_s 的调用要被打断；反之连接器 timeout_s
+    大于默认值时调用要在 30s 后仍存活。"""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    # 连接器超时 0.3s（远小于 30s 默认）：挂在 10s 的调用应在 ~0.3s 失败。
+    _, params = await list_request_mcp_server_tools(
+        "baidu-netdisk", {**_sse_config(), "timeout_s": 0.3}
+    )
+    assert params["timeout_s"] == 0.3
+
+    async def _hang(*a, **kw):
+        await asyncio.sleep(10)
+
+    inner = MagicMock()
+    inner.call_tool = AsyncMock(side_effect=_hang)
+    inner.connect = AsyncMock(return_value=True)
+    inner.disconnect = AsyncMock(return_value=True)
+    inner.list_tools = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        mcp_config, "_remote_mcp_client_cls", lambda client_type: lambda cfg: inner
+    )
+
+    worker = _PooledMcpWorker("baidu-netdisk")
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    worker.queue.put_nowait(
+        SimpleNamespace(tool_name="netdisk_list", arguments={}, future=fut)
+    )
+    worker.queue.put_nowait(None)
+
+    await asyncio.wait_for(_run_mcp_worker(params, worker), timeout=10)
+
+    # 若仍按 30s 默认，wait_for(10) 会先超时；走到这里即证明用了 0.3s 连接器超时。
+    assert fut.done() and isinstance(fut.exception(), TimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_remote_call_tool_invalid_timeout_s_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非法 timeout_s（0/负数/非数值）必须回落到 _MCP_CALL_TOOL_TIMEOUT_S。"""
+    for bad in (0, -5, "120", True):
+        _FakeRemoteClient.reset()
+        _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+        _patch_remote_client(monkeypatch)
+
+        _, params = await list_request_mcp_server_tools(
+            "baidu-netdisk", {**_sse_config(), "timeout_s": bad}
+        )
+        # 非法值被 create_mcp_tool 丢弃，params 不带 timeout_s。
+        assert "timeout_s" not in params
+
+
+@pytest.mark.asyncio
+async def test_remote_call_tool_no_timeout_s_uses_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未下发 timeout_s 时沿用 _MCP_CALL_TOOL_TIMEOUT_S 默认 30s。"""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    _, params = await list_request_mcp_server_tools("baidu-netdisk", _sse_config())
+    assert "timeout_s" not in params
+
+
+@pytest.mark.asyncio
 async def test_remote_call_tool_timeout_breaks_worker_and_drains(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
