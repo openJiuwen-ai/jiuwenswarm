@@ -644,15 +644,25 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
           loadedRevisions,
           subjectWindow.summaries,
         );
-        await loadSummaries(summaries, signal, generation);
-        if (signal.aborted
-          || !coordinator.isCurrent(generation)
-          || windowStateRef.current.storeEpoch !== expectedStoreEpoch) return;
-        await refreshSessionUsage(signal, generation);
-        if (signal.aborted || !coordinator.isCurrent(generation)) return;
-        windowStateRef.current.listWindowInitialized = true;
-        windowStateRef.current.watermark = subjectWindow.watermark;
-        await catchUpStreamFrames(signal, generation);
+        // Detail, usage and frames answer three questions of their own and
+        // resume from three cursors of their own, so they travel together
+        // instead of one round trip after another. Frames are what a reader
+        // watches in real time; they no longer wait behind the other two.
+        await Promise.all([
+          (async () => {
+            await loadSummaries(summaries, signal, generation);
+            if (signal.aborted
+              || !coordinator.isCurrent(generation)
+              || windowStateRef.current.storeEpoch !== expectedStoreEpoch) return;
+            // The listing watermark advances only once the detail behind it
+            // is held: a subject skipped here is one the next listing would
+            // not name again.
+            windowStateRef.current.listWindowInitialized = true;
+            windowStateRef.current.watermark = subjectWindow.watermark;
+          })(),
+          refreshSessionUsage(signal, generation),
+          catchUpStreamFrames(signal, generation),
+        ]);
         if (signal.aborted || !coordinator.isCurrent(generation)) return;
         setError(null);
       } catch (refreshError) {
