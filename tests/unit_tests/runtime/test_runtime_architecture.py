@@ -246,7 +246,7 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_handle_session_delete"
+        and node.name == "_handle_lifecycle_request"
     ]
     assert len(handlers) == 1
     handler = handlers[0]
@@ -255,12 +255,9 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         for node in ast.walk(handler)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "delete_session"
-        and isinstance(node.func.value, ast.Call)
-        and isinstance(node.func.value.func, ast.Attribute)
-        and isinstance(node.func.value.func.value, ast.Name)
-        and node.func.value.func.value.id == "self"
-        and node.func.value.func.attr == "_execution_runtime"
+        and node.func.attr == "session"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "service"
     ]
     assert len(runtime_delete_calls) == 1
 
@@ -302,7 +299,6 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         "openjiuwen.core.runner",
         "jiuwenswarm.agents.harness.team",
         "jiuwenswarm.observability.session_delete",
-        "jiuwenswarm.server.runtime.session",
         "jiuwenswarm.server.runtime.team_binding_store",
         "shutil",
     )

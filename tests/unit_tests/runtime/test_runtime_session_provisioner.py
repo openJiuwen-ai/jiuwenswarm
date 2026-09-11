@@ -594,7 +594,7 @@ async def test_kvc_restore_failure_preserves_primary_delete_failure(
 
 
 @pytest.mark.asyncio
-async def test_team_unbind_failure_does_not_flip_committed_delete(
+async def test_team_unbind_failure_propagates_for_cleanup_retry(
     delete_env: _DeleteEnvironment,
 ) -> None:
     session_id = "team-unbind-failure"
@@ -606,12 +606,11 @@ async def test_team_unbind_failure_does_not_flip_committed_delete(
     }
     delete_env.state.failures["team.unbind"] = RuntimeError("unbind failed")
 
-    result = await delete_env.runtime.delete_session(
-        channel_id="request-channel",
-        session_id=session_id,
-    )
-
-    assert result.ok is True
+    with pytest.raises(RuntimeError, match="unbind failed"):
+        await delete_env.runtime.delete_session(
+            channel_id="request-channel",
+            session_id=session_id,
+        )
     assert not session_dir.exists()
     assert ("team.unbind", "research-team", session_id) in delete_env.state.events
     assert session_id not in delete_env.plan.active_sessions
@@ -757,7 +756,7 @@ async def test_cancelled_delete_rolls_back_and_propagates_same_exception(
 
 
 @pytest.mark.asyncio
-async def test_commit_observer_failures_do_not_flip_committed_delete(
+async def test_commit_observer_failure_keeps_remaining_cleanup_pending(
     delete_env: _DeleteEnvironment,
 ) -> None:
     session_id = "observer-failure-session"
@@ -769,21 +768,15 @@ async def test_commit_observer_failures_do_not_flip_committed_delete(
         "lifecycle commit failed"
     )
 
-    result = await delete_env.runtime.delete_session(
-        channel_id="request-channel",
-        session_id=session_id,
-    )
-
-    assert result.ok is True
+    with pytest.raises(RuntimeError, match="trajectory commit failed"):
+        await delete_env.runtime.delete_session(
+            channel_id="request-channel",
+            session_id=session_id,
+        )
     assert not session_dir.exists()
-    assert delete_env.state.events[-4:] == [
-        ("trajectory.commit", session_id),
-        ("lifecycle.commit", session_id),
-        ("plan.reset", session_id),
-        ("metadata.remove", session_id),
-    ]
-    assert session_id not in delete_env.plan.active_sessions
-    assert session_id not in delete_env.plan.exited_sessions
+    assert delete_env.state.events[-1] == ("trajectory.commit", session_id)
+    assert session_id in delete_env.plan.active_sessions
+    assert session_id in delete_env.plan.exited_sessions
 
 
 def test_commit_rejects_failed_result_without_mutating_runtime_state(
@@ -804,6 +797,32 @@ def test_commit_rejects_failed_result_without_mutating_runtime_state(
     assert delete_env.plan.active_sessions == {session_id}
     assert delete_env.plan.exited_sessions == {session_id}
     assert delete_env.state.events == []
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_retry_finishes_cleanup_after_directory_is_gone(delete_env):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
+
+    sid = 'delete-retry-after-directory'
+    directory = delete_env.create_session(sid)
+    delete_env.runtime.stop_session_for_archive = AsyncMock()
+    service = SessionArchiveService(delete_env.runtime)
+    delete_env.state.failures['trajectory.commit'] = RuntimeError('retry me')
+    with pytest.raises(lc.LifecycleError, match='retry me'):
+        await service.session(sid, 'delete', 'web')
+    assert not directory.exists()
+    record = lc.state('session', sid)['operation']
+    assert record['status'] == 'failed'
+    assert record['delete_metadata']['channel_id'] == 'metadata-channel'
+    delete_env.state.failures.clear()
+    result = await service.session(sid, 'delete', 'web')
+    assert result['ok']
+    record = lc.state('session', sid)['operation']
+    assert record['status'] == 'completed'
+    assert 'delete_metadata' not in record
+    assert ('plan.reset', sid) in delete_env.state.events
 
 
 @pytest.mark.asyncio

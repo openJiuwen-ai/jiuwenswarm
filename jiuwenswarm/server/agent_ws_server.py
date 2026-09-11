@@ -1053,6 +1053,8 @@ class AgentWebSocketServer:
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
         # 图像模态探针重探任务 (模型配置变更时拉起, stop() 时 cancel)
         self._image_modality_refresh_task: Optional[asyncio.Task] = None
+        # Archive service for session/project lifecycle management
+        self._archive_service = None
         # Proactive recommendation engine (set by app_agentserver for debug trigger)
         self._proactive_engine: Any = None
         get_acp_output_manager().set_send_push_callback(
@@ -1195,6 +1197,10 @@ class AgentWebSocketServer:
         )
 
         get_kv_cache_runtime()
+
+        from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
+        self._archive_service = SessionArchiveService(self._execution_runtime())
+        self._archive_service.start_recovery()
 
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
@@ -1616,6 +1622,10 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        archive_service = getattr(self, "_archive_service", None)
+        if archive_service is not None:
+            await archive_service.close()
+            self._archive_service = None
         tokenizer_tasks = tuple(self._tokenizer_warmup_tasks)
         self._tokenizer_warmup_tasks.clear()
         for task in tokenizer_tasks:
@@ -2036,6 +2046,33 @@ class AgentWebSocketServer:
             if await self._handle_gateway_cron_callback(ws, request, send_lock):
                 return
 
+            if await self._handle_lifecycle_request(ws, request, send_lock):
+                return
+            from jiuwenswarm.server.runtime.session.lifecycle import guard, LifecycleError
+            guarded_params = request.params if isinstance(request.params, dict) else {}
+            guarded_method = request.req_method.value if request.req_method else ""
+            unguarded_methods = {
+                "session.list", "project.list", "project.info", "project.get_sessions",
+                "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
+                "session.stop",
+            }
+            if guarded_method not in unguarded_methods and not guarded_method.startswith(
+                "trajectory."
+            ):
+                try:
+                    guard(
+                        str(guarded_params.get("session_id") or request.session_id or ""),
+                        str(guarded_params.get("project_id") or ""),
+                    )
+                except LifecycleError as exc:
+                    resp = AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                                         payload={"code": exc.code, "error": str(exc)}, metadata=request.metadata)
+                    async with send_lock:
+                        await send_wire_payload(
+                            ws, encode_agent_response_for_wire(resp, response_id=request.request_id)
+                        )
+                    return
+
             if await self._dispatch_gateway_adapter_request(ws, request, send_lock):
                 return
 
@@ -2065,9 +2102,6 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_KVC_PREPARE:
                 await self._handle_session_kvc_prepare(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.SESSION_DELETE:
-                await self._handle_session_delete(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_REWIND:
                 await self._handle_session_rewind_full(ws, request, send_lock)
@@ -4635,37 +4669,90 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _handle_session_delete(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Delete a single session and its recoverable runtime state."""
+    async def _handle_lifecycle_request(self, ws, request, send_lock) -> bool:
+        from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        method = request.req_method.value if request.req_method else ""
+        methods = {
+            "session.archive", "session.unarchive", "session.archived.list",
+            "session.delete",
+            "project.archive", "project.unarchive", "project.archived.list",
+            "project.delete", "project.lifecycle",
+        }
+        if method not in methods:
+            return False
+        service = getattr(self, "_archive_service", None)
+        if service is None:
+            service = self._archive_service = SessionArchiveService(self._execution_runtime())
         params = request.params if isinstance(request.params, dict) else {}
-        target = str(params.get("session_id") or "").strip()
-        result = await self._execution_runtime().delete_session(
-            channel_id=request.channel_id or "",
-            session_id=target,
+        ok = True
+        try:
+            if method == "session.archived.list":
+                payload = service.list_sessions(params)
+            elif method == "project.archived.list":
+                payload = service.list_projects(params)
+            elif method == "project.lifecycle" and params.get("events"):
+                payload = {"events": lc.event_snapshots()}
+            elif method == "project.lifecycle" and params.get("inventory"):
+                from jiuwenswarm.server.runtime.session.project_store import list_projects
+                payload = {"projects": [dict(project_id=p.project_id, hidden=p.hidden,
+                            operation=lc.state("project", p.project_id).get("operation"))
+                            for p in list_projects(include_hidden=True, cache_bust=True)]}
+                known = {item["project_id"] for item in payload["projects"]}
+                directory = lc.get_agent_root_dir() / "lifecycle" / "resources"
+                for path in directory.glob("project_*.json"):
+                    operation = lc.read_json(path).get("operation") or {}
+                    project_id = operation.get("resource_id")
+                    if project_id and project_id not in known and operation.get("status") != "completed":
+                        payload["projects"].append(dict(project_id=project_id, hidden=True, operation=operation))
+            elif method == "project.lifecycle":
+                project_id = lc.validate_id(params.get("project_id"))
+                payload = lc.projection("project", project_id)
+                from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+                payload["exists"] = get_project_by_id(project_id, cache_bust=True) is not None
+                payload["operation"] = lc.state("project", project_id).get("operation")
+                if any(key in params for key in ("completed_cron_job_ids", "planned_cron_job_ids", "failed")):
+                    payload["operation"] = lc.checkpoint_project(project_id, params)
+                    payload.update(lc.projection("project", project_id))
+            elif method.startswith("session."):
+                ids = lc.parse_ids(params, delete=method == "session.delete")
+                results = []
+                for sid in ids:
+                    try:
+                        results.append(await service.session(sid, method.split(".")[1], request.channel_id or ""))
+                    except lc.LifecycleError as exc:
+                        results.append(dict(session_id=sid, ok=False, code=exc.code, error=str(exc), **exc.details))
+                if method == "session.delete" and "session_ids" not in params:
+                    ok = results[0]["ok"]
+                    # project_id 超出 §5.10.5 单条字段表，但 Gateway 需要
+                    # 它发出符合 §5.10.11 契约的 session.deleted 事件。
+                    payload = {"session_id": ids[0], "project_id": results[0].get("project_id", "")} if ok else {
+                        key: value for key, value in results[0].items()
+                        if key not in {"session_id", "ok"}
+                    }
+                else:
+                    succeeded = sum(item["ok"] for item in results)
+                    payload = dict(succeeded_count=succeeded, failed_count=len(results) - succeeded, results=results)
+            else:
+                payload = await service.project(
+                    params.get("project_id"), method.split(".")[1],
+                    request.channel_id or "", params,
+                )
+        except lc.LifecycleError as exc:
+            ok, payload = False, dict(code=exc.code, error=str(exc), **exc.details)
+        except Exception as exc:
+            logger.exception("lifecycle operation failed")
+            ok, payload = False, dict(code="INTERNAL_ERROR", error=str(exc))
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
         )
-        if result.ok:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload={"session_id": result.session_id},
-                metadata=request.metadata,
-            )
-        else:
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={
-                    "error": result.error_message,
-                    "code": result.error_code,
-                },
-                metadata=request.metadata,
-            )
-
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
-            await send_wire_payload(ws, wire)
+            await send_wire_payload(ws, encode_agent_response_for_wire(resp, response_id=request.request_id))
+        return True
 
     async def _resolve_rewind_agent(
         self,

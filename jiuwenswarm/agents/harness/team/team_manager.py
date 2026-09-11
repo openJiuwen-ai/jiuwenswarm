@@ -2967,6 +2967,16 @@ class TeamManager:
 _team_manager: TeamManager | None = None
 
 
+def is_team_session_running(session_id: str) -> bool:
+    """Inspect existing team state without creating or stopping a runtime."""
+    manager = _team_manager
+    return bool(manager and (
+        manager.has_stream_task(session_id)
+        or manager.is_runtime_active(session_id)
+        or manager.is_runtime_pending(session_id)
+    ))
+
+
 def get_team_manager(channel_id: str | None = None) -> TeamManager:
     """Return the singleton TeamManager instance (channel_id is ignored)."""
     global _team_manager

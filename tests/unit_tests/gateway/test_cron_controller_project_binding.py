@@ -32,6 +32,8 @@ class _RecordingStore:
             timezone="Asia/Shanghai",
             targets="web",
             work_mode="work",
+            project_id="default",
+            user_id=None,
         )
 
     async def update_job(self, job_id: str, patch: dict):
@@ -40,6 +42,9 @@ class _RecordingStore:
 
 
 class _FakeScheduler:
+    async def project_execution_allowed(self, project_id, user_id=None) -> bool:
+        return True
+
     async def reload(self) -> None:
         return None
 

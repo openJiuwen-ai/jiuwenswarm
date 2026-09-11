@@ -118,7 +118,7 @@ async def test_plan_session_delete_releases_kvc_without_blocking_cleanup(
         req_method=ReqMethod.SESSION_DELETE,
         params={"session_id": "plan-root"},
     )
-    await server._handle_session_delete(ws, request, asyncio.Lock())
+    await server._handle_lifecycle_request(ws, request, asyncio.Lock())
 
     assert events == ["release-kvc", "runner-release:plan-root"]
     assert not (sessions_root / "plan-root").exists()
@@ -166,7 +166,7 @@ async def test_team_session_delete_orders_drain_kvc_and_runner_delete(
         req_method=ReqMethod.SESSION_DELETE,
         params={"session_id": "team-root"},
     )
-    await server._handle_session_delete(ws, request, asyncio.Lock())
+    await server._handle_lifecycle_request(ws, request, asyncio.Lock())
 
     assert events == ["drain:False", "release-kvc", "runner-delete"]
     assert not (sessions_root / "team-root").exists()

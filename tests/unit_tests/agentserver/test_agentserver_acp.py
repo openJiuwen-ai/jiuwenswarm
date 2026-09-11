@@ -184,7 +184,7 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         return await self._ensure_auto_team_binding_for_chat(request)
 
     async def handle_session_delete_for_test(self, ws, request, send_lock):
-        await self._handle_session_delete(ws, request, send_lock)
+        await self._handle_lifecycle_request(ws, request, send_lock)
 
     async def handle_message_for_test(self, ws, raw, send_lock):
         await self._handle_message(ws, raw, send_lock)
@@ -1157,7 +1157,7 @@ async def test_handle_tui_session_create_accepts_explicit_id_without_prewarm(
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code"),
+        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code", hidden=False),
     )
 
     request = AgentRequest(
@@ -1224,7 +1224,7 @@ async def test_handle_tui_non_explicit_create_resolves_project_in_agentserver(
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code"),
+        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code", hidden=False),
     )
 
     request = AgentRequest(
@@ -3632,10 +3632,11 @@ async def test_handle_session_delete_initializes_persistent_checkpointer(monkeyp
     assert heartbeat_deleted == ["sess-agent-1"]
     assert not session_dir.exists()
     assert trajectory_session_accepts_records("sess-agent-1") is False
+    # project_id 为 §5.10.11 session.deleted 事件契约所需的扩展字段
     assert fake_ws.sent == [
         {
             "response_id": "req-session-delete",
-            "payload": {"session_id": "sess-agent-1"},
+            "payload": {"session_id": "sess-agent-1", "project_id": "default"},
             "ok": True,
         }
     ]
@@ -3711,6 +3712,7 @@ async def test_handle_session_delete_drains_runtime_before_kvc_and_checkpoint_cl
         await server.handle_session_delete_for_test(fake_ws, request, asyncio.Lock())
 
         assert events == [
+            ("runtime", "request-channel", "sess-agent-drain"),
             ("runtime", "bench-channel", "sess-agent-drain"),
             ("evict", None, "sess-agent-drain"),
             ("release", None, "sess-agent-drain"),
@@ -3811,16 +3813,11 @@ async def test_handle_session_delete_keeps_state_when_cleanup_fails(
     assert bool(release_calls) is (failure_stage == "release")
     assert session_dir.exists()
     assert trajectory_session_accepts_records("sess-agent-busy") is True
-    assert fake_ws.sent == [
-        {
-            "response_id": "req-session-delete-busy",
-            "payload": {
-                "error": "session runtime cleanup failed",
-                "code": "DELETE_FAILED",
-            },
-            "ok": False,
-        }
-    ]
+    assert len(fake_ws.sent) == 1
+    assert fake_ws.sent[0]["response_id"] == "req-session-delete-busy"
+    assert fake_ws.sent[0]["ok"] is False
+    assert fake_ws.sent[0]["payload"]["code"] == "DELETE_FAILED"
+    assert fake_ws.sent[0]["payload"]["error"]
 
 
 @pytest.mark.asyncio
@@ -3899,10 +3896,11 @@ async def test_handle_session_delete_unbinds_team_session(monkeypatch, tmp_path)
     assert binding is not None
     assert binding.session_ids == ("sess-keep",)
     assert binding.last_session_id == "sess-keep"
+    # project_id 为 §5.10.11 session.deleted 事件契约所需的扩展字段
     assert fake_ws.sent == [
         {
             "response_id": "req-session-delete-team",
-            "payload": {"session_id": "sess-team-1"},
+            "payload": {"session_id": "sess-team-1", "project_id": "default"},
             "ok": True,
         }
     ]

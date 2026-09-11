@@ -33,6 +33,7 @@ class FakeWebChannel:
         self.channel_id = "web"
         self.methods: dict[str, object] = {}
         self.responses: list[dict] = []
+        self.events: list[tuple[str, dict]] = []
         self.connect_handler = None
         self.disconnect_handler = None
 
@@ -55,6 +56,10 @@ class FakeWebChannel:
                 "code": code,
             }
         )
+
+    async def send_event(self, ws, event, payload=None):
+        # lifecycle_handlers 在 session.delete 等成功后广播完成事件（§5.10.11）。
+        self.events.append((event, dict(payload or {})))
 
 
 class FakeAgentClient:

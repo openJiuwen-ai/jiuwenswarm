@@ -218,6 +218,15 @@ class FakeAgentClient:
                 ok=True,
                 payload={"session_id": "cron_agentserver_allocated"},
             )
+        if envelope.method == "project.lifecycle":
+            # scheduler.project_execution_allowed 的准入查询：
+            # 默认按"项目存在且未归档"放行，归档拦截场景由专项测试覆盖。
+            return AgentResponse(
+                request_id=envelope.request_id or "",
+                channel_id=envelope.channel or "",
+                ok=True,
+                payload={"exists": True, "execution_blocked": False},
+            )
         return AgentResponse(
             request_id=envelope.request_id or "",
             channel_id=envelope.channel or "",
@@ -1251,8 +1260,11 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        create_env = agent.unary_requests[0]
-        assert create_env.method == "session.create"
+        # 唤醒前 scheduler 会先发 project.lifecycle 准入查询，session.create
+        # 不再是第一条 unary 请求，按 method 定位。
+        create_env = next(
+            env for env in agent.unary_requests if env.method == "session.create"
+        )
         # 不再本地反查 project_dir（Gateway 不访问用户目录项目表）
         assert "project_dir" not in create_env.params
         assert create_env.params["project_id"] == "proj-1"

@@ -595,6 +595,8 @@ class AgentRuntime:
         """
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
+        from jiuwenswarm.server.runtime.session.lifecycle import claim_runtime
+        claim_runtime(session_id)
         await self._session_coordinator.register_session(
             session_id,
             channel_id,
@@ -1340,6 +1342,28 @@ class AgentRuntime:
         if reset_plan_state:
             self._plan_controller.reset_session(session_id)
         return cleaned
+
+    def is_session_running(self, session_id: str) -> bool:
+        """Read current execution state without cancelling work or fencing admission."""
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot and any(not execution.state.terminal for execution in snapshot.executions):
+            return True
+        from jiuwenswarm.agents.harness.team.team_manager import is_team_session_running
+
+        return is_team_session_running(session_id)
+
+    async def stop_session_for_archive(self, *, channel_id: str, session_id: str) -> None:
+        """Drain runtime writers for deletion; archive now only checks state."""
+        from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, assert_runtime_owner, release_runtime
+        assert_runtime_owner(session_id)
+        closed = await self._session_coordinator.close_session(session_id, wait_timeout=10)
+        if closed.timed_out:
+            raise LifecycleError("STOP_TIMEOUT", "runtime executions have not stopped")
+        await self._agent_manager.release_subagent_runtime_for_session(
+            channel_id=channel_id, session_id=session_id, reason="session_archived",
+        )
+        await self.cleanup_session(channel_id=channel_id, session_id=session_id, reset_plan_state=False)
+        release_runtime(session_id)
 
     async def delete_session(
         self,

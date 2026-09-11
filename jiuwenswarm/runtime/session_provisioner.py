@@ -1293,23 +1293,32 @@ class RuntimeSessionProvisioner:
             resolve_session_dir,
         )
 
-        session_dir, invalid_reason = resolve_session_dir(
-            target,
-            sessions_root=get_agent_sessions_dir(),
+        from jiuwenswarm.server.runtime.session.lifecycle import (
+            session_paths, LifecycleError, state as lifecycle_state, update as lifecycle_update,
         )
+        try:
+            session_dir, invalid_reason = resolve_session_dir(target, sessions_root=get_agent_sessions_dir())
+            if session_dir is not None:
+                _, archived_dir = session_paths(target)
+                if archived_dir.exists():
+                    session_dir = archived_dir
+        except LifecycleError as exc:
+            return SessionDeleteResult.failure(target, code=exc.code, message=str(exc))
         if session_dir is None:
             return SessionDeleteResult.failure(
                 target,
                 code="BAD_REQUEST",
                 message=invalid_reason or "invalid session_id",
             )
-        if not session_dir.exists():
+        delete_operation = lifecycle_state("session", target).get("operation", {})
+        recovering_delete = delete_operation.get("kind") == "delete" and delete_operation.get("status") != "completed"
+        if not session_dir.exists() and not recovering_delete:
             return SessionDeleteResult.failure(
                 target,
                 code="NOT_FOUND",
                 message="session not found",
             )
-        if not session_dir.is_dir():
+        if session_dir.exists() and not session_dir.is_dir():
             return SessionDeleteResult.failure(
                 target,
                 code="BAD_REQUEST",
@@ -1333,7 +1342,9 @@ class RuntimeSessionProvisioner:
             get_session_metadata,
         )
 
-        metadata = get_session_metadata(target)
+        metadata = get_session_metadata(target) or delete_operation.get("delete_metadata", {})
+        if recovering_delete and not delete_operation.get("delete_metadata"):
+            lifecycle_update("session", target, delete_metadata=metadata)
         is_team_session = is_team_mode(metadata.get("mode"))
         team_name = str(metadata.get("team_name") or "").strip()
         resolved_channel_id = (
@@ -1362,7 +1373,9 @@ class RuntimeSessionProvisioner:
                 await delete_lifecycle.begin_session_delete(target)
                 lifecycle_prepared = True
 
-            if is_team_session:
+            if not session_dir.exists() and recovering_delete:
+                deleted = True
+            elif is_team_session:
                 deleted = await self._delete_team_session(result)
             else:
                 await self._delete_agent_session(
@@ -1370,8 +1383,10 @@ class RuntimeSessionProvisioner:
                     cleanup_session=cleanup_session,
                 )
                 deleted = True
-            if deleted:
+            if deleted and session_dir.exists():
                 shutil.rmtree(session_dir)
+            if deleted and recovering_delete:
+                lifecycle_update("session", target, phase="cleanup")
         except BaseException as exc:
             await self._abort_delete(
                 result,
@@ -1435,6 +1450,7 @@ class RuntimeSessionProvisioner:
                 result.team_name,
                 exc,
             )
+            raise
 
     async def _ensure_delete_dependencies(
         self,
@@ -1608,6 +1624,7 @@ class RuntimeSessionProvisioner:
                     result.session_id,
                     exc,
                 )
+                raise
         if lifecycle_prepared and delete_lifecycle is not None:
             try:
                 await delete_lifecycle.commit_session_delete(
@@ -1620,6 +1637,7 @@ class RuntimeSessionProvisioner:
                     result.session_id,
                     exc,
                 )
+                raise
 
 
 __all__ = [

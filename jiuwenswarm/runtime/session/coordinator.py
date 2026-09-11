@@ -447,6 +447,8 @@ class RuntimeSessionCoordinator:
             raise errors[0]
 
     def _require_open_session(self, session_id: str) -> _SessionRecord:
+        from jiuwenswarm.server.runtime.session.lifecycle import guard
+        guard(session_id)
         if not self._accepting:
             raise RuntimeError("session coordinator is closed")
         record = self._sessions.get(session_id)

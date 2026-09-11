@@ -4648,42 +4648,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="session.pin",
         )
 
-    async def _session_delete(ws, req_id, params, session_id, user_id=None):
-        """删除一个 session（统一薄代理 E2A 转发 + 单用户共享目录适配器 fallback）。
-
-        手写 E2A 与本地 ``_delete_from_shared_dir`` 收敛到
-        ``proxy_unary_request``——单用户 WebSocket 客户端在 AgentServer 不可达时
-        由薄代理跑 SessionAdapter 的文件级删除（共享目录等价）；AgentOS 与
-        client 未构造（ac=None）时返回可重试 SERVICE_UNAVAILABLE（决策 D8）。
-        """
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST",
-            )
-            return
-        session_id_to_delete = params.get("session_id")
-        if not isinstance(session_id_to_delete, str) or not session_id_to_delete.strip():
-            await channel.send_response(
-                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST",
-            )
-            return
-
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.SESSION_DELETE,
-            label="session.delete",
-        )
-
     async def _project_list(ws, req_id, params, session_id, user_id=None):
+        channel.ensure_lifecycle_watch(user_id)
         """获取项目列表(含统计),已排序,包含默认项目。
 
         filter: ``"all"``(默认) / ``"pinned"`` / ``"unpinned"``
@@ -4765,6 +4731,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_CREATE,
             label="project.create",
+            # PROJECT_ARCHIVED 失败明细携带 project_id，前端据此调用
+            # project.unarchive 恢复归档项目，不能在 Gateway 丢弃。
+            preserve_error_payload=True,
             on_done=lambda ok, _payload: (
                 _schedule_agent_prewarm_sync("project.create") if ok else None
             ),
@@ -4810,54 +4779,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_PIN,
             label="project.pin",
-        )
-
-    async def _project_remove(ws, req_id, params, session_id, user_id=None):
-        """Forward project soft-deletion; clean Gateway Git watchers on success."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        project_id = str((params or {}).get("project_id") or "").strip()
-
-        def _after_remove(ok: bool, _payload: object) -> None:
-            if not ok:
-                return
-            registry = getattr(channel, "git_watcher_registry", None)
-            if registry is not None and project_id:
-                registry.cleanup_project(project_id)
-            _schedule_agent_prewarm_sync("project.remove")
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params if isinstance(params, dict) else {},
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.PROJECT_REMOVE,
-            label="project.remove",
-            on_done=_after_remove,
-        )
-
-    async def _project_restore(ws, req_id, params, session_id, user_id=None):
-        """Forward project restoration to the target AgentServer."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params if isinstance(params, dict) else {},
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.PROJECT_RESTORE,
-            label="project.restore",
-            on_done=lambda ok, _payload: (
-                _schedule_agent_prewarm_sync("project.restore") if ok else None
-            ),
         )
 
     async def _project_info(ws, req_id, params, session_id, user_id=None):
@@ -6714,7 +6635,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("session.list", _session_list)
     channel.register_method("session.create", _session_create)
-    channel.register_method("session.delete", _session_delete)
     channel.register_method("session.get_metadata", _session_get_metadata)
     channel.register_method("session.plan_status", _session_plan_status)
     channel.register_method("session.rename", _session_rename)
@@ -6727,8 +6647,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("project.create", _project_create)
     channel.register_method("project.rename", _project_rename)
     channel.register_method("project.pin", _project_pin)
-    channel.register_method("project.remove", _project_remove)
-    channel.register_method("project.restore", _project_restore)
+    from jiuwenswarm.gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
+    register_lifecycle_handlers(channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller))
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)
 
     # Git RPC handlers (设计文档 §4.1.11-§4.1.15)

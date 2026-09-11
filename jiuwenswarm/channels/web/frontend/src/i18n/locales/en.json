@@ -3110,13 +3110,14 @@
       "rename": "Rename",
       "renamePlaceholder": "Enter a new name",
       "deleteProject": "Delete project",
-      "deleteProjectDescription": "Remove “<name>{{projectName}}</name>”? Unpinned conversations in this project will temporarily move to the default project.",
+      "deleteProjectDescription": "Remove “<name>{{projectName}}</name>”? Finish any running conversations first. Archiving hides the project and its conversations and disables cron jobs. Re-selecting the project directory restores it.",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
       "errors": {
         "pathExists": "This project path already exists. Choose another directory or start a new conversation from the existing project.",
         "nameExists": "This project name already exists. Please choose another name.",
-        "pathMissing": "Project directory does not exist. Choose an existing directory."
+        "pathMissing": "Project directory does not exist. Choose an existing directory.",
+        "projectArchived": "This directory belongs to an archived project. Restoring it failed, please retry."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

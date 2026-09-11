@@ -67,6 +67,16 @@ function findProject(projects: ProjectInfo[], projectId: string): ProjectInfo | 
   return projects.find((project) => project.project_id === projectId) ?? null;
 }
 
+// project.create 命中同目录已归档项目时，后端返回 PROJECT_ARCHIVED，
+// 错误 payload 携带 project_id 供恢复流程使用（见 webClient WebError.payload）。
+function extractArchivedProjectId(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const webError = error as { code?: unknown; payload?: unknown };
+  if (webError.code !== 'PROJECT_ARCHIVED') return null;
+  const projectId = (webError.payload as { project_id?: unknown } | undefined)?.project_id;
+  return typeof projectId === 'string' && projectId ? projectId : null;
+}
+
 function isDefaultProject(project: ProjectInfo): boolean {
   return project.is_default
     || project.project_id === DEFAULT_PROJECT_ID
@@ -366,11 +376,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   })),
 
   createProject: async (name, projectDir) => {
-    const { project_id: projectId } = await projectRegistryClient.create(
-      name,
-      projectDir,
-      get().workMode,
-    );
+    let projectId: string;
+    try {
+      projectId = (await projectRegistryClient.create(
+        name,
+        projectDir,
+        get().workMode,
+      )).project_id;
+    } catch (error) {
+      // 重新选择已归档项目的目录：旧版由 project.create 后端自动恢复，
+      // 现改为显式调用 project.unarchive（错误明细携带 project_id）。
+      const archivedProjectId = extractArchivedProjectId(error);
+      if (!archivedProjectId) throw error;
+      await projectRegistryClient.unarchive(archivedProjectId);
+      // 旧版恢复会同步采用本次输入的名称；unarchive 不改名，这里补一次
+      // 尽力重命名，失败（如名称冲突）时保留项目原名，不阻断恢复。
+      await projectRegistryClient.rename(archivedProjectId, name).catch(() => undefined);
+      projectId = archivedProjectId;
+    }
     await get().loadProjects();
     const project = findProject(get().projects, projectId);
     if (!project) throw new Error('project.create returned a project that is missing from project.list');
