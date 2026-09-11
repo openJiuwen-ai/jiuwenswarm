@@ -1303,6 +1303,33 @@ function projectInferenceInputs(
   return { inputsBySpanId, toolResultById, toolResultBySpanId, diagnostics }
 }
 
+/** One model call a compaction spent, stated as its own cell. */
+function compactionAttemptCell(span: ProjectedSpan, attempt: number): TrajectoryCell {
+  const error = statusError(span)
+  const usageValue = usage(span.attributes)
+  const label = `Attempt ${attempt}`
+  return {
+    ...spanCellBase(span, `compaction-attempt-${attempt}`),
+    kind: 'message',
+    text: error === undefined ? `${label} · summarized` : `${label} · failed`,
+    ...(error === undefined ? {} : { isError: true, result: error }),
+    assistantMetrics: {
+      timingRecorded: true,
+      streaming: span.attributes.requestStream ?? null,
+      stepStartTime: startedAt(span),
+      ...(usageValue === undefined ? {} : { usage: usageValue }),
+    },
+  } as TrajectoryCell
+}
+
+/** Title one compaction by its number, so a reader can place it in the run. */
+function compactionGroupTitle(attempts: readonly ProjectedSpan[]): string {
+  const numbered = attempts
+    .map(span => positiveSafeInteger(span.attributes.compactionNumber))
+    .find(value => value !== undefined)
+  return numbered === undefined ? 'Compaction' : `Compaction #${numbered}`
+}
+
 function compactionCell(span: ProjectedSpan, inference: ProjectedSpan | undefined): TrajectoryCell {
   const summary = span.attributes.compactionSummary
     ?? (inference === undefined
@@ -1700,7 +1727,7 @@ export function projectOtelTrajectory(
       )
     ) rootByTrace.set(span.traceId, span)
   }
-  const compactionInferences = new Map<string, ProjectedSpan>()
+  const compactionInferences = new Map<string, ProjectedSpan[]>()
   const compactions = new Map<string, ProjectedSpan>()
   const toolSchemaByTurnAndName = new Map<string, string>()
   const inferenceById = new Map(spans.filter(isInference).flatMap((span): Array<[
@@ -1730,7 +1757,12 @@ export function projectOtelTrajectory(
     if (isInference(span)) {
       const purpose = span.attributes.requestPurpose
       if (purpose === 'compaction') {
-        compactionInferences.set(span.turnKey, span)
+        // Every attempt is kept. A throttled compaction is retried, and
+        // showing only the last one hid both the retries and the reason the
+        // request numbers around it appeared to skip.
+        const attempts = compactionInferences.get(span.turnKey) ?? []
+        attempts.push(span)
+        compactionInferences.set(span.turnKey, attempts)
         requests.push(requestFor(
           span,
           'compaction',
@@ -1885,13 +1917,20 @@ export function projectOtelTrajectory(
       .filter(value => value.cells.length > 0)
     if (groups.length > 0) turns.push({ turn: turn.turn, groups })
     const compaction = compactions.get(turnKey)
-    if (compaction !== undefined) {
+    const attempts = compactionInferences.get(turnKey) ?? []
+    if (compaction !== undefined || attempts.length > 0) {
+      const ordered = [...attempts].sort(comparePhysicalInference)
+      // The attempts come first and the outcome last, so the group reads as
+      // what the compaction actually did rather than only how it ended.
+      const cells = [
+        ...ordered.map((span, index) => compactionAttemptCell(span, index + 1)),
+        ...(compaction === undefined
+          ? []
+          : [compactionCell(compaction, ordered[ordered.length - 1])]),
+      ]
       turns.push({
         turn: null,
-        groups: [{
-          title: 'Compaction',
-          cells: [compactionCell(compaction, compactionInferences.get(turnKey))],
-        }],
+        groups: [{ title: compactionGroupTitle(ordered), cells }],
       })
     }
   }

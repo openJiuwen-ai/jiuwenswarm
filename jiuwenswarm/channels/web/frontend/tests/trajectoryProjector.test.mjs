@@ -2576,3 +2576,81 @@ test('schema-v2 reports a delta-only commit whose base was never read', () => {
   assert.deepEqual(cellsOf(projected).map(cell => cell.text), []);
   assert.ok((projected.diagnostics ?? []).some(item => item.code === 'v2.missing_base_window'));
 });
+
+function compactionAttemptRecord({
+  sequence,
+  compactionNumber,
+  failed,
+  turnId = 'turn-compaction-attempts',
+  stepId = 'step-compaction-attempts',
+  subjectId = 'main',
+  traceId = '77777777777777777777777777777777',
+}) {
+  const time = sequence * 1_000_000;
+  const attributes = [
+    v2Attribute('gen_ai.operation.name', 'chat'),
+    v2Attribute('gen_ai.conversation.id', 'session-compaction'),
+    v2Attribute('openjiuwen.trajectory.record.kind', 'inference'),
+    v2Attribute('openjiuwen.request.purpose', 'compaction'),
+    v2Attribute('openjiuwen.compaction.number', compactionNumber, true),
+    v2Attribute('openjiuwen.context.operation.id', `operation-${compactionNumber}`),
+    v2Attribute('openjiuwen.execution.subject.id', subjectId),
+    v2Attribute('openjiuwen.execution.subject.request.number', sequence, true),
+    v2Attribute('openjiuwen.request.number', sequence, true),
+    v2Attribute('openjiuwen.turn.id', turnId),
+    v2Attribute('openjiuwen.step.id', stepId),
+    v2Attribute('openjiuwen.step.number', 4, true),
+    v2Attribute('openjiuwen.inference.id', `inference-compaction-${sequence}`),
+  ];
+  return {
+    resourceSpans: [{
+      scopeSpans: [{
+        spans: [{
+          traceId,
+          spanId: String(sequence).padStart(16, '0'),
+          name: 'chat',
+          startTimeUnixNano: String(time),
+          endTimeUnixNano: String(time + 1),
+          attributes,
+          status: failed
+            ? { code: 2, message: "Error code: 429 - {'error': {'code': '429'}}" }
+            : { code: 1 },
+        }],
+      }],
+    }],
+  };
+}
+
+test('every attempt of one compaction is shown under its own numbered group', () => {
+  // The real shape behind a request number that appeared to skip: one
+  // compaction the provider throttled four times before it succeeded.
+  const records = [1, 2, 3, 4, 5].map(sequence => compactionAttemptRecord({
+    sequence,
+    compactionNumber: 2,
+    failed: sequence < 5,
+  }));
+  const snapshot = projectOtelTrajectory(records);
+
+  const groups = snapshot.turns.flatMap(turn => turn.groups)
+    .filter(group => group.title.startsWith('Compaction'));
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].title, 'Compaction #2');
+  // All five attempts survive; showing only the last one is what hid the
+  // retries and made the surrounding request numbers look discontinuous.
+  assert.equal(groups[0].cells.length, 5);
+  assert.deepEqual(groups[0].cells.map(cell => cell.isError === true), [
+    true, true, true, true, false,
+  ]);
+  assert.ok(groups[0].cells[0].text.includes('Attempt 1'));
+  assert.ok(groups[0].cells[4].text.includes('Attempt 5'));
+});
+
+test('a compaction still groups when its number is absent', () => {
+  const records = [compactionAttemptRecord({ sequence: 1, compactionNumber: 0, failed: false })];
+  const snapshot = projectOtelTrajectory(records);
+  const groups = snapshot.turns.flatMap(turn => turn.groups)
+    .filter(group => group.title.startsWith('Compaction'));
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].title, 'Compaction');
+});

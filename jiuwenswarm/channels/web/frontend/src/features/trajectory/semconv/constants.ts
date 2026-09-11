@@ -98,6 +98,8 @@ export const OPENJIUWEN_ATTRIBUTES = {
   executionSubjectRequestNumber: 'openjiuwen.execution.subject.request.number',
   trajectoryKind: 'openjiuwen.trajectory.record.kind',
   requestPurpose: 'openjiuwen.request.purpose',
+  contextOperationId: 'openjiuwen.context.operation.id',
+  compactionNumber: 'openjiuwen.compaction.number',
   requestNumber: 'openjiuwen.request.number',
   requestRetryCount: 'openjiuwen.request.retry_count',
   requestMaxRetries: 'openjiuwen.request.max_retries',

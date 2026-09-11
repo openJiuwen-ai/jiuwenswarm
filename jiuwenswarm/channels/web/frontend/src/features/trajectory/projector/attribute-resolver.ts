@@ -107,6 +107,8 @@ export interface NormalizedTrajectoryAttributes {
   messageSourcePlugin?: string
   compactionInputTokens?: bigint
   compactionSummary?: string
+  compactionNumber?: bigint
+  contextOperationId?: string
   langfuseObservationType?: string
   errorType?: string
   errorMessage?: string
@@ -773,6 +775,12 @@ export function normalizeTrajectoryAttributes(
   ]))
   assign(target, 'compactionSummary', resolveString(raw, [
     DSH_ATTRIBUTES.compactionSummary,
+  ]))
+  assign(target, 'compactionNumber', resolvePositiveInt64(raw, [
+    OPENJIUWEN_ATTRIBUTES.compactionNumber,
+  ]))
+  assign(target, 'contextOperationId', resolveString(raw, [
+    OPENJIUWEN_ATTRIBUTES.contextOperationId,
   ]))
   assign(target, 'langfuseObservationType', resolveString(raw, [
     COMPATIBILITY.langfuseObservationType,
