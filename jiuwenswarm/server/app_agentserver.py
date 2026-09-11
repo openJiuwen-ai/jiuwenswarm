@@ -25,6 +25,30 @@ import sys
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
 
+# --- HarmonyOS (OHOS) runtime adaptations ---------------------------------
+# Applied only when running on an OHOS runtime (JIUWENSWARM_RUNTIME_PLATFORM /
+# legacy JIUWENCLAW_RUNTIME_PLATFORM / sys.platform == 'ohos' / HNP marker).
+# On other platforms this block is a no-op, keeping behaviour unchanged.
+# Must run before any import that could trigger openjiuwen.core.memory.
+from jiuwenswarm.common.platform import is_ohos_runtime
+
+if is_ohos_runtime():
+    # Defer openjiuwen.core.memory heavy chain (~560ms) - significant on
+    # weak OHOS devices; harmless on other platforms but gated anyway to
+    # keep non-OHOS startup behaviour identical.
+    from jiuwenswarm.server.runtime.lazy_memory_patch import apply_lazy_memory_patch
+
+    apply_lazy_memory_patch()
+
+    # Route agent shell commands (python/pip) to the isolated runtime venv
+    # under the user workspace.
+    from jiuwenswarm.server.runtime.shell_pip_patch import (
+        apply_shell_pip_isolation_patch,
+    )
+
+    apply_shell_pip_isolation_patch()
+# --- End HarmonyOS (OHOS) runtime adaptations -----------------------------
+
 
 from jiuwenswarm.common.utils import (
     get_env_file,
