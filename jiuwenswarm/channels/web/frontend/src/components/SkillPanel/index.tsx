@@ -2446,16 +2446,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                           {t('skills.mySkillsTabs.all')}
                         </button>
                         <button
-                          onClick={() => setMySkillsSubTab("builtin")}
-                          className={`px-4 text-sm font-medium  ${
-                            mySkillsSubTab === "builtin"
-                              ? "rounded-[8px] bg-secondary h-8 text-text"
-                              : "text-text-muted hover:text-text"
-                          }`}
-                        >
-                          {t('skills.mySkillsTabs.builtin')}
-                        </button>
-                        <button
                           onClick={() => setMySkillsSubTab("prebuilt")}
                           className={`px-4 text-sm font-medium  ${
                             mySkillsSubTab === "prebuilt"
