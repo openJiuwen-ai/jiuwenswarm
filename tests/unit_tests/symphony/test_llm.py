@@ -61,6 +61,22 @@ def _llm_config():
     )
 
 
+def test_model_request_kwargs_force_kimi_sampling_through_aggregator() -> None:
+    config = LLMConfig(
+        model="kimi-k3",
+        model_client_config={
+            "api_key": "key",
+            "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "client_provider": "OpenAI",
+        },
+        temperature=0.0,
+        top_p=1.0,
+    )
+
+    assert config.model_request_kwargs()["temperature"] == 1.0
+    assert config.model_request_kwargs()["top_p"] == 0.95
+
+
 def test_thinking_disabled_request_overrides_returns_isolated_compatibility_fields():
     first = thinking_disabled_request_overrides()
     second = thinking_disabled_request_overrides()
