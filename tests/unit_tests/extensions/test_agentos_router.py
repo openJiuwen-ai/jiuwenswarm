@@ -13,8 +13,10 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+    AgentCreating,
     AgentManager,
     AgentRuntime,
+    is_openclaw_agent_type,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
@@ -48,8 +50,10 @@ from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     _extract_placement_ips,
     _is_agent_network_error,
     _is_ws_connect_retryable,
+    _third_agent_probe_port,
     _third_agent_ssh_probe_port,
     _with_default_third_agent_probes,
+    _with_web_access_cmds,
 )
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
@@ -518,6 +522,46 @@ def test_with_default_third_agent_probes_keeps_third_defaults_when_unconfigured(
     assert overridden["probes"]["startup"]["initialDelaySeconds"] == 3
 
 
+def test_with_web_access_cmds_fills_from_access_mode_web() -> None:
+    spec = {"runtime": "python3.11"}
+    filled = _with_web_access_cmds(
+        spec,
+        image_metadata={
+            "access_mode": [
+                {"name": "tui", "port": "2222", "cmd": "openclaw"},
+                {
+                    "name": "web",
+                    "port": "18979",
+                    "cmd": "openclaw gateway \\   --bind lan \\   --port 18979 run",
+                },
+            ]
+        },
+    )
+    assert filled["cmds"] == [
+        ["openclaw", "gateway", "--bind", "lan", "--port", "18979", "run"]
+    ]
+
+
+def test_with_web_access_cmds_prepends_registry_cmds() -> None:
+    spec = {"cmds": [["echo", "keep"], ["sleep", "1"]]}
+    filled = _with_web_access_cmds(
+        spec,
+        image_metadata={
+            "access_mode": [{"name": "web", "port": "18979", "cmd": "serve"}],
+        },
+    )
+    assert filled["cmds"] == [["serve"], ["echo", "keep"], ["sleep", "1"]]
+
+
+def test_with_web_access_cmds_skips_without_web_cmd() -> None:
+    spec = {"cmds": []}
+    empty = _with_web_access_cmds(
+        spec,
+        image_metadata={"access_mode": [{"name": "tui", "port": "2222", "cmd": "cli"}]},
+    )
+    assert "cmds" not in empty
+
+
 def test_is_ws_connect_retryable_for_cold_start_proxy_errors() -> None:
     assert _is_ws_connect_retryable(_Http502("HTTP 502"))
     assert _is_ws_connect_retryable(ConnectionRefusedError())
@@ -817,6 +861,51 @@ async def test_third_party_keeps_registry_probes() -> None:
         assert yuanrong.create_payloads[0]["runtime_spec"]["probes"] == {
             "startup": {"tcpSocket": {"port": 22}, "initialDelaySeconds": 9},
         }
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_third_party_web_access_mode_probes_web_port() -> None:
+    class RegistryWithWeb(FakeRegistryClient):
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            info = await super().get_image_info(image_name)
+            info.metadata["access_mode"] = [
+                {"name": "web", "port": "18979", "cmd": "openclaw gateway"},
+            ]
+            return info
+
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong, RegistryWithWeb(), AgentManager())
+    try:
+        await client.send_request(_envelope(agent_type="openclaw"))
+        probes = yuanrong.create_payloads[0]["runtime_spec"]["probes"]
+        assert probes["startup"]["tcpSocket"]["port"] == 18979
+        assert probes["liveness"]["tcpSocket"]["port"] == 18979
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_third_party_web_access_mode_from_launch_spec_probes_web_port() -> None:
+    class RegistryWithLaunchSpecWeb(FakeRegistryClient):
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            info = await super().get_image_info(image_name)
+            info.metadata["launch_spec"] = {
+                "access_mode": [
+                    {"name": "tui", "port": "2222", "cmd": "ssh"},
+                    {"name": "web", "port": "18979", "cmd": "openclaw gateway"},
+                ],
+            }
+            return info
+
+    yuanrong = FakeYuanRongClient()
+    client = _router_client(yuanrong, RegistryWithLaunchSpecWeb(), AgentManager())
+    try:
+        await client.send_request(_envelope(agent_type="openclaw"))
+        probes = yuanrong.create_payloads[0]["runtime_spec"]["probes"]
+        assert probes["startup"]["tcpSocket"]["port"] == 18979
+        assert probes["liveness"]["tcpSocket"]["port"] == 18979
     finally:
         await client.shutdown()
 
@@ -1257,6 +1346,33 @@ def test_third_agent_ssh_probe_port_falls_back_without_backend_port() -> None:
     assert _third_agent_ssh_probe_port(SimpleNamespace(backend_port=0)) == 2222
     assert _third_agent_ssh_probe_port(SimpleNamespace(backend_port="bad")) == 2222
     assert _third_agent_ssh_probe_port(StubSshRelay()) == 2222
+
+
+def test_third_agent_probe_port_prefers_web_access_mode() -> None:
+    ssh = SimpleNamespace(backend_port=2222)
+    assert _third_agent_probe_port(ssh) == 2222
+    assert _third_agent_probe_port(
+        ssh,
+        image_metadata={"access_mode": [{"name": "tui", "port": "2222"}]},
+    ) == 2222
+    assert _third_agent_probe_port(
+        ssh,
+        image_metadata={
+            "access_mode": [{"name": "web", "port": "18979", "cmd": "openclaw"}],
+        },
+    ) == 18979
+    assert _third_agent_probe_port(
+        ssh,
+        image_metadata={
+            "launch_spec": {
+                "access_mode": [{"name": "web", "port": "18979"}],
+            },
+        },
+    ) == 18979
+    assert _third_agent_probe_port(
+        ssh,
+        image_metadata={"access_mode": [{"name": "web", "port": "0"}]},
+    ) == 2222
 
 
 @pytest.mark.asyncio
@@ -3165,3 +3281,262 @@ async def test_apply_remote_overrides_keeps_reaper_running_on_value_change() -> 
     assert client._sandbox_idle_timeout_seconds == 120.0
     assert client._idle_reaper_task is existing  # same task, not restarted
     await client._stop_idle_reaper_task()
+
+
+def test_is_openclaw_agent_type() -> None:
+    assert is_openclaw_agent_type("openclaw") is True
+    assert is_openclaw_agent_type("OpenClaw") is True
+    assert is_openclaw_agent_type("opencode") is False
+    assert is_openclaw_agent_type("") is False
+
+
+@pytest.mark.asyncio
+async def test_openclaw_create_does_not_default_web_port() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(
+        yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
+    )
+    try:
+        response = await client.thirdagent_switch(
+            user_id="u1",
+            agent_type="openclaw",
+        )
+        assert response["ok"] is True
+        ports = yuanrong.create_payloads[0]["runtime_spec"]["rootfs"]["ports"]
+        assert "tcp:22" in ports
+        runtime = await agent_manager.get_agent("u1", "openclaw")
+        assert runtime is not None
+        assert "web_port" not in runtime.info.metadata
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_http_web_access_mode_records_web_port() -> None:
+    class RegistryWithHttpWeb(FakeRegistryClient):
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            info = await super().get_image_info(image_name)
+            info.metadata["access_mode"] = [
+                {"name": "tui", "port": "2222", "cmd": "claude"},
+                {"name": "web", "port": "18789", "protocol": "http", "cmd": "serve"},
+            ]
+            return info
+
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        RegistryWithHttpWeb(),
+        agent_manager,
+        ssh_channel_endpoint=_ssh_channel(),
+    )
+    try:
+        response = await client.thirdagent_switch(
+            user_id="u1",
+            agent_type="claude-code",
+        )
+        assert response["ok"] is True
+        ports = yuanrong.create_payloads[0]["runtime_spec"]["rootfs"]["ports"]
+        assert "tcp:22" in ports
+        assert "tcp:18789" not in ports
+        assert yuanrong.create_payloads[0]["runtime_spec"]["cmds"] == [["serve"]]
+        runtime = await agent_manager.get_agent("u1", "claude-code")
+        assert runtime is not None
+        assert runtime.info.metadata.get("web_port") == 18789
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_http_and_ws() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.READY,
+        sandbox_id="sbx-web",
+        metadata={"web_port": 18789},
+    )
+    agent_manager._runtimes[key] = AgentRuntime(info=info, key=key)
+    try:
+        http_url = await client.resolve_web_endpoint("u1", "openclaw", "http")
+        ws_url = await client.resolve_web_endpoint("u1", "openclaw", "ws")
+        assert http_url == (
+            "http://yuanrong.test:8888/serverless/v1/http"
+            "?instance=sbx-web&tenant_id=default&port=18789"
+        )
+        assert ws_url == (
+            "ws://yuanrong.test:8888/serverless/v1/ws"
+            "?instance=sbx-web&tenant_id=default&port=18789"
+        )
+        stored = agent_manager._runtimes[key]
+        assert stored.task_count == 0
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_acquire_holds_idle_reaper() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        agent_manager,
+        sandbox_idle_timeout_seconds=0.01,
+    )
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.READY,
+        sandbox_id="sbx-web",
+        metadata={"web_port": 18789},
+    )
+    runtime = AgentRuntime(info=info, key=key)
+    runtime.last_active_at = 0.0
+    agent_manager._runtimes[key] = runtime
+    try:
+        url = await client.resolve_web_endpoint(
+            "u1", "openclaw", "http", acquire=True
+        )
+        assert url is not None
+        assert agent_manager._runtimes[key].task_count == 1
+        await asyncio.sleep(0.05)
+        assert await client._reap_idle_once() == 0
+        assert "sbx-web" not in yuanrong.delete_calls
+        await client.release_web_endpoint("u1", "openclaw")
+        assert agent_manager._runtimes[key].task_count == 0
+        agent_manager._runtimes[key].last_active_at = 0.0
+        await asyncio.sleep(0.05)
+        assert await client._reap_idle_once() == 1
+        assert yuanrong.delete_calls == ["sbx-web"]
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_acquire_without_port_does_not_hold() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.READY,
+        sandbox_id="sbx-web",
+        metadata={},
+    )
+    agent_manager._runtimes[key] = AgentRuntime(info=info, key=key)
+    try:
+        assert await client.resolve_web_endpoint(
+            "u1", "openclaw", "http", acquire=True
+        ) is None
+        assert agent_manager._runtimes[key].task_count == 0
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_requires_web_port() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.READY,
+        sandbox_id="sbx-web",
+        metadata={},
+    )
+    agent_manager._runtimes[key] = AgentRuntime(info=info, key=key)
+    try:
+        assert await client.resolve_web_endpoint("u1", "openclaw", "http") is None
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_creates_when_missing() -> None:
+    class RegistryWithHttpWeb(FakeRegistryClient):
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            info = await super().get_image_info(image_name)
+            info.metadata["access_mode"] = [
+                {"name": "web", "port": "18789", "protocol": "http", "cmd": "serve"},
+            ]
+            return info
+
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, RegistryWithHttpWeb(), agent_manager)
+    try:
+        url = await client.resolve_web_endpoint("u1", "claude-code", "http")
+        assert yuanrong.create_calls == 1
+        assert url == (
+            "http://yuanrong.test:8888/serverless/v1/http"
+            "?instance=sbx-1&tenant_id=default&port=18789"
+        )
+        runtime = await agent_manager.get_agent("u1", "claude-code")
+        assert runtime is not None
+        assert runtime.info.metadata.get("web_port") == 18789
+        again = await client.resolve_web_endpoint("u1", "claude-code", "http")
+        assert again == url
+        assert yuanrong.create_calls == 1
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_creating_raises_busy() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.CREATING,
+        metadata={},
+    )
+    agent_manager._runtimes[key] = AgentRuntime(info=info, key=key)
+    try:
+        with pytest.raises(AgentCreating) as exc_info:
+            await client.resolve_web_endpoint("u1", "openclaw", "http")
+        assert exc_info.value.retry_after_seconds == 5
+        assert yuanrong.create_calls == 0
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agentos_router_extension_delegates_web_endpoint() -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        async def resolve_web_endpoint(
+            self, user_id: str, agent_type: str, protocol: str, *, acquire: bool = False
+        ) -> str | None:
+            captured["args"] = (user_id, agent_type, protocol, acquire)
+            return "http://example/http"
+
+    ext = AgentOSRouter.__new__(AgentOSRouter)
+    ext._router_client = _FakeClient()  # type: ignore[attr-defined]
+    url = await ext.resolve_web_endpoint("u1", "openclaw", "http", acquire=True)
+    assert url == "http://example/http"
+    assert captured["args"] == ("u1", "openclaw", "http", True)

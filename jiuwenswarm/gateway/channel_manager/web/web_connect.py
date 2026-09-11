@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
+import aiohttp
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter, ConnectHook
@@ -141,6 +142,13 @@ class WebChannel(BaseWsChannel):
         self.git_watcher_registry: Any = None
         # AgentOSRouterClient for same-port HTTP container file APIs (set by handlers).
         self.container_file_client: Any = None
+        # 3rd-agent Web UI proxy on the same port (set by app_gateway).
+        self.web_proxy_enabled: bool = False
+        self.web_proxy_auth_enabled: bool = True
+        self.web_resolver: Any = None
+        self.web_runtime_release: Any = None
+        self.web_proxy_session: Any = None
+        self._web_proxy_session_lock = asyncio.Lock()
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -592,6 +600,24 @@ class WebChannel(BaseWsChannel):
         )
         await self._uvicorn_server.serve()
 
+    async def ensure_web_proxy_session(self) -> aiohttp.ClientSession:
+        """Return the shared aiohttp session, creating it once per channel.
+
+        Double-checked under ``_web_proxy_session_lock`` so a burst of HTTP/WS
+        proxy requests after start (or after the previous session closed) cannot
+        each construct a ClientSession and leak the overwritten ones.
+        """
+        session = self.web_proxy_session
+        if session is not None and not session.closed:
+            return session
+        async with self._web_proxy_session_lock:
+            session = self.web_proxy_session
+            if session is not None and not session.closed:
+                return session
+            session = aiohttp.ClientSession()
+            self.web_proxy_session = session
+            return session
+
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
         self._running = False
@@ -602,6 +628,14 @@ class WebChannel(BaseWsChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
 
+        session = getattr(self, "web_proxy_session", None)
+        if session is not None:
+            try:
+                if not session.closed:
+                    await session.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.web_proxy_session = None
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
