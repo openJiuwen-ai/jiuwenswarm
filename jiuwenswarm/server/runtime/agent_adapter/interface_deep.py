@@ -17983,8 +17983,10 @@ class JiuWenSwarmDeepAdapter:
                     continue
 
                 if chunk_type == "llm_output":
+                    # openjiuwen llm_controller streams payload.output; SkillTurbo
+                    # uses payload.content. Accept either — same as llm_reasoning.
                     content = (
-                        chunk.payload.get("content", "")
+                        (chunk.payload.get("content", "") or chunk.payload.get("output", ""))
                         if isinstance(chunk.payload, dict)
                         else str(chunk.payload)
                     )
@@ -18792,8 +18794,11 @@ class JiuWenSwarmDeepAdapter:
                         return {"event_type": "chat.error", "error": error or "任务执行失败"}
 
                 if chunk_type == "llm_output":
+                    # Mirror llm_reasoning: openjiuwen uses "output", SkillTurbo "content".
                     content = (
-                        payload.get("content", "") if isinstance(payload, dict) else str(payload)
+                        (payload.get("content", "") or payload.get("output", ""))
+                        if isinstance(payload, dict)
+                        else str(payload)
                     )
                     delta_payload = JiuWenSwarmDeepAdapter._stream_text_payload(
                         "chat.delta", content
