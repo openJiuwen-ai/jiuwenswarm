@@ -8,7 +8,7 @@ from .a2a_models import A2A_OUTBOUND_DISPATCH_TABLE_DEF
 
 
 async def ensure_dispatch_user_column(engine: AsyncEngine) -> None:
-    """Add the nullable owner before init_table creates its declared index."""
+    """Add or widen the nullable owner without assigning legacy ownership."""
     table_name = A2A_OUTBOUND_DISPATCH_TABLE_DEF.table_name
     column = next(
         col
@@ -16,29 +16,52 @@ async def ensure_dispatch_user_column(engine: AsyncEngine) -> None:
         if col.name == "source_user_id"
     )
 
-    def has_owner(connection):
+    def owner_column(connection):
         inspector = inspect(connection)
-        return inspector.has_table(table_name) and any(
-            col["name"] == column.name for col in inspector.get_columns(table_name)
+        if not inspector.has_table(table_name):
+            return None
+        return next(
+            (col for col in inspector.get_columns(table_name) if col["name"] == column.name),
+            None,
+        )
+
+    def needs_widening(connection, owner):
+        # SQLite does not enforce VARCHAR length; no table rebuild is needed.
+        length = getattr(owner["type"], "length", None)
+        return (
+            connection.dialect.name in {"mysql", "postgresql"}
+            and length is not None and length < column.length
         )
 
     def upgrade(connection):
-        if not inspect(connection).has_table(table_name) or has_owner(connection):
+        if not inspect(connection).has_table(table_name):
             return
+        owner = owner_column(connection)
         quote = connection.dialect.identifier_preparer.quote
-        connection.execute(
-            text(
-                f"ALTER TABLE {quote(table_name)} ADD COLUMN "
-                f"{quote(column.name)} VARCHAR({column.length}) NULL"
+        prefix = f"ALTER TABLE {quote(table_name)}"
+        field = f"{quote(column.name)} VARCHAR({column.length})"
+        if owner is None:
+            statement = f"{prefix} ADD COLUMN {field} NULL"
+        elif not needs_widening(connection, owner):
+            return
+        elif connection.dialect.name == "mysql":
+            statement = f"{prefix} MODIFY COLUMN {field} NULL"
+        else:
+            statement = (
+                f"{prefix} ALTER COLUMN {quote(column.name)} TYPE VARCHAR({column.length})"
             )
-        )
+        connection.execute(text(statement))
+
+    def owner_ready(connection):
+        owner = owner_column(connection)
+        return owner is not None and not needs_widening(connection, owner)
 
     try:
         async with engine.begin() as connection:
             await connection.run_sync(upgrade)
     except DBAPIError:
-        # Another Gateway may have added it concurrently. Verify after rollback;
+        # Another Gateway may have added or widened it concurrently. Verify after rollback;
         # all other failures must prevent startup with a partially upgraded table.
         async with engine.connect() as connection:
-            if not await connection.run_sync(has_owner):
+            if not await connection.run_sync(owner_ready):
                 raise

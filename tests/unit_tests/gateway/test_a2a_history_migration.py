@@ -94,6 +94,7 @@ async def test_a2a_schema_upgrade_is_idempotent_and_does_not_claim_history(
             ("a1", "alice", 1),
             ("a2", "alice", 2),
             ("b1", "bob", 3),
+            ("long", "u" * 256, 4),
         ]:
             await handler.create(
                 table.table_name,
@@ -113,7 +114,100 @@ async def test_a2a_schema_upgrade_is_idempotent_and_does_not_claim_history(
         result = await A2AOutboundRegistry(repository).list_dispatches(
             limit=1, source_user_id="alice"
         )
+        long_result = await A2AOutboundRegistry(repository).list_dispatches(
+            limit=1, source_user_id="u" * 256
+        )
+        assert long_result["total"] == 1
+        assert long_result["items"][0]["dispatch_id"] == "long"
         assert result["total"] == 2
         assert [item["dispatch_id"] for item in result["items"]] == ["a2"]
     finally:
         await handler.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dialect_name,length,expected", [
+    ("postgresql", 64, "ALTER COLUMN source_user_id TYPE VARCHAR(256)"),
+    ("mysql", 64, "MODIFY COLUMN source_user_id VARCHAR(256) NULL"),
+    ("postgresql", 256, None), ("mysql", 512, None), ("sqlite", 64, None),
+])
+async def test_existing_owner_column_widening(monkeypatch, dialect_name, length, expected):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from sqlalchemy import String
+    from sqlalchemy.dialects import mysql, postgresql, sqlite
+    from jiuwenswarm.gateway.config.enterprise.tables import a2a_migration
+
+    dialect = {"mysql": mysql, "postgresql": postgresql, "sqlite": sqlite}[dialect_name].dialect()
+    owner = {"name": "source_user_id", "type": String(length)}
+    statements = []
+    inspector = SimpleNamespace(has_table=lambda name: True, get_columns=lambda name: [owner])
+    monkeypatch.setattr(a2a_migration, "inspect", lambda connection: inspector)
+
+    class Connection:
+        async def run_sync(self, callback):
+            return callback(self)
+
+        def execute(self, statement):
+            statements.append(str(statement))
+            owner["type"] = String(256)
+
+    connection = Connection()
+    connection.dialect = dialect
+
+    @asynccontextmanager
+    async def begin():
+        yield connection
+
+    engine = SimpleNamespace(begin=begin)
+    await a2a_migration.ensure_dispatch_user_column(engine)
+    await a2a_migration.ensure_dispatch_user_column(engine)
+    assert statements == ([] if expected is None else [f"ALTER TABLE a2a_outbound_dispatch {expected}"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_length", [64, 256])
+async def test_failed_widening_requires_verified_final_length(monkeypatch, final_length):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from sqlalchemy import String
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.exc import DBAPIError
+    from jiuwenswarm.gateway.config.enterprise.tables import a2a_migration
+
+    owner = {"name": "source_user_id", "type": String(64)}
+    events = []
+    failure = DBAPIError("ALTER TABLE", {}, Exception("DDL failed"))
+    inspector = SimpleNamespace(has_table=lambda name: True, get_columns=lambda name: [owner])
+    monkeypatch.setattr(a2a_migration, "inspect", lambda connection: inspector)
+
+    class Connection:
+        dialect = postgresql.dialect()
+
+        async def run_sync(self, callback):
+            return callback(self)
+
+        def execute(self, statement):
+            raise failure
+
+    @asynccontextmanager
+    async def begin():
+        try:
+            yield Connection()
+        finally:
+            events.append("rollback")
+            owner["type"] = String(final_length)
+
+    @asynccontextmanager
+    async def connect():
+        events.append("verify")
+        yield Connection()
+
+    engine = SimpleNamespace(begin=begin, connect=connect)
+    if final_length == 256:
+        await a2a_migration.ensure_dispatch_user_column(engine)
+    else:
+        with pytest.raises(DBAPIError) as caught:
+            await a2a_migration.ensure_dispatch_user_column(engine)
+        assert caught.value is failure
+    assert events == ["rollback", "verify"]
