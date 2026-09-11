@@ -1614,6 +1614,13 @@ agent_profiles:
         - _context_processor_rail
         - _ask_user_rail
         - _filesystem_rail        # SysOperationRail: registers ReadFile/WriteFile/EditFile/Glob/ListDir/Grep/Bash tools in init(); dropping it leaves the agent with NO file/shell tools
-  # breed_map:
-  #   agent-normal: normal
-  #   agent-flash: flash
+  # breed_map maps agent_id -> profile kind (normal/flash). It is an active key
+  # (not just a comment) so migrate_config_from_template keeps it across restarts;
+  # user-dir values override this empty default. NOTE: agent_id is only set in
+  # enterprise deployments (self._agent_id is None otherwise), so breed_map only
+  # has effect there — for non-enterprise use `default` or a per-request agent_kind.
+  breed_map: {}
+  # breed_map example (override in user-dir config):
+  #   breed_map:
+  #     agent-normal: normal
+  #     agent-flash: flash

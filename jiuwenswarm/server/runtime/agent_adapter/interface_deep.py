@@ -8348,10 +8348,22 @@ class JiuWenSwarmDeepAdapter:
         profiles = (config_base or {}).get("agent_profiles", {})
         if isinstance(profiles, dict):
             breed_map = profiles.get("breed_map", {})
-            if isinstance(breed_map, dict):
-                mapped = breed_map.get(self._agent_id)
-                if isinstance(mapped, str) and mapped.strip().lower() in ("normal", "flash"):
-                    return mapped.strip().lower()
+            if isinstance(breed_map, dict) and breed_map:
+                # breed_map keys on agent_id, which is only set in enterprise
+                # deployments (self._agent_id is None otherwise). Surface the
+                # silent no-op so non-enterprise users can diagnose a miss.
+                if self._agent_id is None:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] agent_profiles.breed_map is "
+                        "configured but _agent_id is None (non-enterprise "
+                        "deployment); breed_map signal cannot match. Use the "
+                        "`default` profile or a per-request agent_kind signal "
+                        "instead.",
+                    )
+                else:
+                    mapped = breed_map.get(self._agent_id)
+                    if isinstance(mapped, str) and mapped.strip().lower() in ("normal", "flash"):
+                        return mapped.strip().lower()
             default_kind = profiles.get("default")
             if isinstance(default_kind, str) and default_kind.strip().lower() in ("normal", "flash"):
                 return default_kind.strip().lower()
@@ -8381,11 +8393,17 @@ class JiuWenSwarmDeepAdapter:
     ) -> dict[str, Any] | None:
         """Merge the active profile's react/evolution overrides into config_base.
 
-        Only the react section (incl. the evolution sub-tree) is overlaid;
-        models, routing, etc. are untouched. Returns config_base unchanged when
-        no profile is active. Force-revive safe: the merge runs before
-        _resolve_enable_task_loop so a flash profile's
+        Only the react section (incl. nested sub-trees like evolution) is
+        overlaid; models, routing, etc. are untouched. Returns config_base
+        unchanged when no profile is active. Force-revive safe: the merge runs
+        before _resolve_enable_task_loop so a flash profile's
         evolution.skill_create=false keeps task_loop=false.
+
+        The merge is recursive: a profile sub-tree (e.g. ``react.evolution``)
+        is deep-merged into the base rather than wholesale-replacing it, so
+        global deep keys under a partially-overridden sub-tree are not silently
+        lost. Non-dict values (scalars/lists) replace outright, matching the
+        intent of an explicit override.
         """
         spec = self._active_profile_spec(config_base)
         if not spec:
@@ -8399,11 +8417,27 @@ class JiuWenSwarmDeepAdapter:
             base_react = {}
             out["react"] = base_react
         for k, v in react_ov.items():
-            if isinstance(v, dict) and isinstance(base_react.get(k), dict):
-                base_react[k] = {**base_react[k], **v}
-            else:
-                base_react[k] = v
+            base_react[k] = self._deep_merge_react_value(base_react.get(k), v)
         return out
+
+    @staticmethod
+    def _deep_merge_react_value(base: Any, override: Any) -> Any:
+        """Deep-merge ``override`` onto ``base`` for the profile react overlay.
+
+        Two dicts => recurse so a partially-overridden sub-tree keeps the base's
+        sibling keys (e.g. overriding react.evolution.skill_create keeps the
+        base's react.evolution.review_trigger). Anything else => the override
+        replaces the base (deepcopy so the merged config owns its own copy and
+        later mutation never leaks back into the profile spec).
+        """
+        if isinstance(base, dict) and isinstance(override, dict):
+            merged = {k: copy.deepcopy(v) for k, v in base.items()}
+            for k, v in override.items():
+                merged[k] = JiuWenSwarmDeepAdapter._deep_merge_react_value(
+                    merged.get(k), v
+                )
+            return merged
+        return copy.deepcopy(override)
 
     def _filter_rail_infos_by_profile(
         self,
@@ -8415,13 +8449,21 @@ class JiuWenSwarmDeepAdapter:
         keep: whitelist (attr_names); only these plus PROTECTED are built.
         drop: blacklist (attr_names); these are skipped (PROTECTED always kept).
         Both empty => no filtering (full set, e.g. normal profile).
+
+        keep/drop must be lists of strings. A scalar (common YAML typo like
+        ``keep: _filesystem_rail``) would be split per-character by set(),
+        whitelisting nothing real and dropping every non-PROTECTED rail — so
+        reject non-list values with a warning and fall back to no filtering
+        rather than silently stripping the agent's tools.
         """
         spec = self._active_profile_spec(config_base)
         rc = spec.get("rails", {}) if isinstance(spec, dict) else {}
         if not isinstance(rc, dict):
             rc = {}
-        keep = set(rc.get("keep", []) or [])
-        drop = set(rc.get("drop", []) or [])
+        keep_raw = rc.get("keep", [])
+        drop_raw = rc.get("drop", [])
+        keep = self._coerce_rail_name_list(keep_raw, "keep")
+        drop = self._coerce_rail_name_list(drop_raw, "drop")
         if not keep and not drop:
             return rail_infos
         for d in list(drop):
@@ -8449,6 +8491,42 @@ class JiuWenSwarmDeepAdapter:
                 dropped,
             )
         return out
+
+    def _coerce_rail_name_list(
+        self, raw: Any, field_name: str
+    ) -> set[str]:
+        """Coerce a profile ``rails.keep``/``drop`` value into a set of names.
+
+        Accepts a list/tuple/set of strings. A bare string is a common YAML
+        typo (``keep: _filesystem_rail``) that ``set(str)`` would split
+        per-character, whitelisting nothing and dropping every non-PROTECTED
+        rail — so reject it (warn + empty set) rather than risk that. An empty
+        set means "no filter on this field", which the caller handles.
+        """
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] profile rails.%s is a scalar string "
+                "(%r), expected a list of rail attr_names; ignoring it to avoid "
+                "per-character splitting. Use a YAML list, e.g. %s: [%s].",
+                field_name, raw, field_name, raw,
+            )
+            return set()
+        if isinstance(raw, (list, tuple, set)):
+            names = {str(n) for n in raw if isinstance(n, str) and n.strip()}
+            if len(names) != len([n for n in raw if isinstance(n, str) and n.strip()]):
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] profile rails.%s contains "
+                    "non-string entries; kept only the string entries: %s",
+                    field_name, sorted(names),
+                )
+            return names
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] profile rails.%s has unsupported type %s; "
+            "ignoring it.", field_name, type(raw).__name__,
+        )
+        return set()
 
     def _make_deep_agent_config(
         self,
@@ -9795,7 +9873,10 @@ class JiuWenSwarmDeepAdapter:
             # _apply_reload_config_snapshot resets both _config_base_cache and
             # _config_cache to the global react (no profile), which would flip a
             # normal (task_loop=true) session back to flash on hot reload.
-            if self._active_agent_kind is not None:
+            # Read defensively (getattr) for parity with _active_profile_spec:
+            # paths that bypass __init__ (e.g. unit-test object.__new__) never
+            # set the attribute and must not raise here.
+            if getattr(self, "_active_agent_kind", None) is not None:
                 config_base = self._apply_active_profile(config_base)
                 self._config_base_cache = config_base.copy()
                 self._config_cache = config_base.get("react", {}).copy()
