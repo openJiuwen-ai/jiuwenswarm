@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
+from openjiuwen.core.kv_cache.kv_cache_config import KVC_TERMINAL_CLEANUP_TIMEOUT_SECONDS
 from openjiuwen.core.kv_cache.kv_cache_runtime import KVCacheRuntime
 
 logger = logging.getLogger(__name__)
@@ -54,10 +56,35 @@ async def close_kv_cache_runtime() -> None:
     _default_model = None
     if runtime is None:
         return
+    task = asyncio.create_task(runtime.close(), name="kvc-runtime-close")
     try:
-        await runtime.close()
+        # asyncio.wait keeps the budget bounded even if provider cleanup is
+        # slow to acknowledge cancellation.
+        done, _pending = await asyncio.wait(
+            {task}, timeout=KVC_TERMINAL_CLEANUP_TIMEOUT_SECONDS
+        )
+        if done:
+            # Cancellation of this child task is a KVC result, not a request
+            # to cancel server.stop(). Cancellation of our caller still
+            # propagates from asyncio.wait above.
+            _consume_shutdown_result(task)
+        else:
+            logger.warning("KVC runtime shutdown timed out; continue server shutdown")
     except Exception as exc:
         logger.warning("KVC runtime shutdown failed; continue server shutdown: %s", exc)
+    finally:
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_consume_shutdown_result)
+
+
+def _consume_shutdown_result(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("KVC background shutdown failed: %s", exc)
 
 
 __all__ = ["close_kv_cache_runtime", "get_kv_cache_runtime"]

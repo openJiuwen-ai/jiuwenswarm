@@ -281,7 +281,7 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         "commit_session_delete",
         "commit_trajectory_session_delete",
         "delete_session_runtime",
-        "evict_plan_session",
+        "release_session_kvc",
         "get_agent_nowait",
         "get_agent_sessions_dir",
         "get_session_metadata",

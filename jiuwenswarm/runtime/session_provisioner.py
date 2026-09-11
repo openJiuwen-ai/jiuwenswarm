@@ -1530,10 +1530,10 @@ class RuntimeSessionProvisioner:
         )
 
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-            evict_plan_session,
+            release_session_kvc,
         )
 
-        await evict_plan_session(
+        await release_session_kvc(
             session_id=result.session_id,
         )
         from openjiuwen.core.runner import Runner

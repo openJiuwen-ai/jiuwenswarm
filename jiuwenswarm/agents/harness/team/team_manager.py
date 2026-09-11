@@ -2871,16 +2871,11 @@ class TeamManager:
 
         try:
             if affinity_enabled:
-                from openjiuwen.core.session.agent_team import create_agent_team_session
-                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-                    get_kv_cache_runtime,
+                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                    release_session_kvc,
                 )
 
-                session = create_agent_team_session(
-                    session_id=session_id,
-                    kv_cache_runtime=get_kv_cache_runtime(),
-                )
-                await session.release_kvc()
+                await release_session_kvc(session_id=session_id, is_team=True)
             if team_name:
                 await Runner.delete_agent_team(
                     team_name=team_name,

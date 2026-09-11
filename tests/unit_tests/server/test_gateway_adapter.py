@@ -433,10 +433,24 @@ class TestSessionAdapter:
         assert resp.payload["code"] == "NOT_FOUND"
         assert evict_calls == []
 
+    @pytest.mark.parametrize("affinity_enabled", [False, True])
+    @pytest.mark.parametrize("release_fails", [False, True])
     async def test_session_delete_offline_fallback_evicts_and_removes_dir(
-        self, monkeypatch, tmp_path,
+        self, monkeypatch, tmp_path, affinity_enabled, release_fails,
     ) -> None:
         """SessionAdapter.session.delete：普通会话的本地 fallback 触发 root evict 并删除目录。"""
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
+            lambda: affinity_enabled,
+        )
+        runtime = object()
+        def get_runtime():
+            assert affinity_enabled, "OFF must not look up or create KVC runtime"
+            return runtime
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime.get_kv_cache_runtime",
+            get_runtime,
+        )
         evict_calls: list[dict] = []
         session_root = tmp_path / "sessions" / "sess-del"
         session_root.mkdir(parents=True)
@@ -457,6 +471,8 @@ class TestSessionAdapter:
                         "parent_session_id": "sess-del",
                     }
                 )
+                if release_fails:
+                    raise RuntimeError("KVC unavailable")
                 return True
 
         monkeypatch.setattr(
@@ -468,9 +484,9 @@ class TestSessionAdapter:
         )
         assert resp.ok is True
         assert resp.payload == {"session_id": "sess-del"}
-        assert evict_calls == [
+        assert evict_calls == ([
             {"session_id": "sess-del", "parent_session_id": "sess-del"}
-        ]
+        ] if affinity_enabled else [])
         assert not session_root.exists()
 
 
