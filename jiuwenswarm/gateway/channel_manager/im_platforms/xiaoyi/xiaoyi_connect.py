@@ -1102,13 +1102,38 @@ class XiaoyiChannel(BaseChannel):
                 and msg.event_type == EventType.CHAT_PROCESSING_STATUS
                 and is_processing is False
             ):
-                logger.info(
-                    "[GUI_AGENT_DIAG] phase=XIAOYI_TEAM_STATUS_DEFERRED "
-                    "message_id=%s session_id=%s task_id=%s",
-                    msg.id,
-                    session_id,
-                    task_id,
+                # 团队会话的正常回合收尾由 team.completed 承担（防中途帧误结
+                # A2A 任务）。例外：携带 error 的终态帧（leader 死亡探针/停摆
+                # 看门狗补发的回合失败）必须放行——team.completed 不会来，
+                # 拦下的话手机端任务永远停在「正在处理中」。
+                _term_err = (
+                    str(msg.payload.get("error") or "").strip()
+                    if isinstance(msg.payload, dict)
+                    else ""
                 )
+                if _term_err:
+                    for url_key in list(self._ws_connections.keys()):
+                        await self._send_status_update_with_state(
+                            task_id, session_id, _term_err, "failed", url_key
+                        )
+                    if session_id:
+                        await self._finalize_session(session_id, task_id)
+                    logger.info(
+                        "[GUI_AGENT_DIAG] phase=XIAOYI_TEAM_STATUS_FAILED "
+                        "message_id=%s session_id=%s task_id=%s error=%r",
+                        msg.id,
+                        session_id,
+                        task_id,
+                        _term_err,
+                    )
+                else:
+                    logger.info(
+                        "[GUI_AGENT_DIAG] phase=XIAOYI_TEAM_STATUS_DEFERRED "
+                        "message_id=%s session_id=%s task_id=%s",
+                        msg.id,
+                        session_id,
+                        task_id,
+                    )
                 return
             if not is_processing and not self._is_session_active(session_id, task_id):
                 logger.info(

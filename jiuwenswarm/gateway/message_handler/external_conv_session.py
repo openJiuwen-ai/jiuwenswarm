@@ -121,3 +121,19 @@ def find_local_session_for_external_conv_id(
         return None
     candidates.sort()
     return candidates[0][2]
+
+
+def read_locked_session_mode(session_id: str) -> str:
+    """读取会话磁盘锁定的 mode（metadata.json 的 ``mode`` 字段），缺失返回 ``""``。
+
+    复用本机会话时 params 不注入 mode（保护锁定 mode 不被渠道默认覆盖），
+    需要会话真实模式的判定（如 GodView 注册的 team 判定）以此为准。
+    每次调用读盘（装团/退团会改写该字段，缓存会陈旧）。
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return ""
+    from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+    meta = _read_session_metadata_raw(get_agent_sessions_dir() / sid)
+    return str(meta.get("mode") or "").strip()

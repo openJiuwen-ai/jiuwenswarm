@@ -50,10 +50,13 @@ _expert_name_cache: dict[str, str] = {}
 
 
 def _resolve_expert_display_name(expert_id: str, expert_type: str) -> str:
-    """解析专家显示名快照：team → 主理人花名（缺省团名）；agent → agentCard.name。
+    """解析专家显示名快照：team → 主理人花名（缺省角色名「主理人」）；agent → agentCard.name。
 
     缓存包目录优先（get_cached_expert_package_dir），本地目录 override 回退
     本地 experts 目录；尽力而为，失败返回 ""（不阻塞历史落盘）。
+
+    team 取主理人花名（主对话答者=主理人，团名归会话/面板层）。兜底是角色名「主理人」而非团名；
+    花名竞态由前端发送前的列表就绪等待与常量兜底共同消除。
     """
     cached = _expert_name_cache.get(expert_id)
     if cached:
@@ -71,15 +74,12 @@ def _resolve_expert_display_name(expert_id: str, expert_type: str) -> str:
         if package_dir is not None:
             if expert_type == "team":
                 from jiuwenswarm.server.runtime.expert.agent_group import (
-                    read_group_display,
                     read_group_members,
                 )
 
                 members = read_group_members(package_dir)
                 lead = next((m for m in members if m.get("role") == "lead"), None)
-                name = str((lead or {}).get("name") or "").strip()
-                if not name:
-                    name = read_group_display(package_dir)["name"]
+                name = str((lead or {}).get("name") or "").strip() or "主理人"
             else:
                 manifest = json.loads(
                     (package_dir / "manifest.json").read_text(encoding="utf-8")

@@ -57,7 +57,10 @@ from jiuwenswarm.server.invocation_context_builder import build_invocation_conte
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk, is_retry_notice_payload
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from jiuwenswarm.server.runtime.agent_adapter.team_stall_watchdog import schedule_team_stall_watchdog
+from jiuwenswarm.server.runtime.agent_adapter.team_stall_watchdog import (
+    MEMBER_IN_FLIGHT_STATUSES,
+    schedule_team_stall_watchdog,
+)
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EvolutionProgressStatus,
     EvolutionPushContext,
@@ -2108,7 +2111,8 @@ _MEMBER_IN_FLIGHT_EXEC_STATUSES = frozenset({"starting", "running", "completing"
 
 
 async def _count_in_flight_members(channel_id: str | None, session_id: str) -> int:
-    """统计仍有在途工作的成员数（status=busy 或执行状态进行中）。
+    """统计仍有在途工作的成员数（在途口径与停摆看门狗一致：status ∈
+    {busy, starting, restarting}——拉起/重启途中也算在途——或执行状态进行中）。
 
     快照不可用按 0 处理——退化方向是维持旧行为（补终态），不会更糟。
     （get_team_snapshot 的 members 已剔除 leader，见 team_monitor_handler。）
@@ -2124,7 +2128,7 @@ async def _count_in_flight_members(channel_id: str | None, session_id: str) -> i
         count = 0
         for m in snapshot.get("members", []):
             if (
-                m.get("status") == "busy"
+                m.get("status") in MEMBER_IN_FLIGHT_STATUSES
                 or m.get("execution_status") in _MEMBER_IN_FLIGHT_EXEC_STATUSES
             ):
                 count += 1
@@ -2437,6 +2441,10 @@ async def _consume_stream_with_query(
                 and isinstance(_raw_payload, dict)
                 and _raw_payload.get("retrying")
             ):
+                # 成员归因：teammate chunk 带 source_member（同 _enrich_teammate_event
+                # 口径），前端据此把重试状态路由到成员行（成员重试不再挤占主对话
+                # 重试行——那行只显示 leader 自己的重试）
+                _source_member = getattr(chunk, "source_member", None)
                 await _broadcast_event(
                     channel_id,
                     session_id,
@@ -2447,6 +2455,11 @@ async def _consume_stream_with_query(
                         "attempt": _raw_payload.get("attempt"),
                         "max_attempts": _raw_payload.get("max_attempts"),
                         "error": str(_raw_payload.get("content") or "").strip(),
+                        **(
+                            {"member_name": str(_source_member)}
+                            if _source_member
+                            else {}
+                        ),
                     },
                 )
                 continue

@@ -154,6 +154,15 @@ class ChannelMode(str, Enum):
 class ChannelControlState:
     session_id: str | None = None
     mode: ChannelMode = ChannelMode.AGENT
+    # 用户是否显式表达过 mode 意图（/mode、/switch 指令，或 config.yaml 配了
+    # default_mode）。仅作渠道态记录；复用会话的注入闸门看 mode_from_command。
+    mode_explicit: bool = False
+    # 用户是否用 /mode、/switch 指令显式切过 mode（config default_mode 不算——
+    # 那是渠道级默认偏好，不是对某个已锁定会话的意图）。复用本机已有会话
+    # （conv_* 反查命中 desktop_* 等）时：无命令史不注入渠道 mode，让会话
+    # 锁定的 metadata mode 接管；有命令史仍注入（/mode 切换特性保留，
+    # 见 _apply_channel_state）。
+    mode_from_command: bool = False
 
 
 @dataclass
@@ -245,6 +254,10 @@ class MessageHandler(ABC):
         self._acp_session_alias_lock = asyncio.Lock()
         self._external_session_aliases: dict[tuple[str, str], str] = {}
         self._external_session_alias_lock = asyncio.Lock()
+        # 记录哪些 (channel, external_id) 命中了本机会话复用（conv_* 反查），
+        # 供 _apply_channel_state 区分「复用」与「新分配」——复用且未显式切过
+        # mode 时不注入渠道默认 mode，让会话锁定的 mode 生效。
+        self._external_session_reused: set[tuple[str, str]] = set()
 
         # per-channel 控制状态：支持 \new_session / \mode 指令。
         # 使用 ChannelType 的 value 作为标准键，避免散落的硬编码字符串。
@@ -424,7 +437,21 @@ class MessageHandler(ABC):
         _mode = str(_params.get("mode") or "")
         _session_has_subs = bool(self._session_sharing.lookup_all(msg.session_id))
         if not (ChannelMode.is_team_mode(_mode) or _session_has_subs):
-            return
+            # 复用本机会话时 params 不注入 mode（保护锁定 mode 不被渠道默认覆盖），
+            # 上面的 team 判定对复用会话失明——回退读磁盘锁定的 mode：手机续聊 PC
+            # 的团队会话也必须注册 GodView，否则 leader 内容帧（fan_out=godview）
+            # 在 dispatch_to_session 静默丢弃，手机端收不到正文。
+            if not (
+                isinstance(msg.metadata, dict)
+                and msg.metadata.get("reused_local_session")
+            ):
+                return
+            from jiuwenswarm.gateway.message_handler.external_conv_session import (
+                read_locked_session_mode,
+            )
+
+            if not ChannelMode.is_team_mode(read_locked_session_mode(msg.session_id)):
+                return
         godview_subs = self._session_sharing.lookup_member(msg.session_id, SubRole.GODVIEW)
         _ch = msg.channel_id or "web"
         _has_godview_for_this_channel = any(
@@ -615,7 +642,10 @@ class MessageHandler(ABC):
             "team.plan": ChannelMode.TEAM_PLAN,
         }
         mode = mode_map.get(mode_raw, ChannelMode.AGENT)
-        return ChannelControlState(session_id=sid, mode=mode)
+        # config.yaml 显式配置了 default_mode 视为显式意图：复用外部会话时
+        # 仍按它注入，不让会话锁定的 mode 接管。
+        mode_explicit = bool(str(ch_cfg.get("default_mode") or "").strip())
+        return ChannelControlState(session_id=sid, mode=mode, mode_explicit=mode_explicit)
 
     def _get_channel_state_key(self, channel_id: str, conversation_id: str | None) -> str:
         """生成 channel 状态的复合键：channel_id:conversation_id."""
@@ -744,6 +774,7 @@ class MessageHandler(ABC):
                     if reused:
                         resolved = reused
                         self._external_session_aliases[key] = resolved
+                        self._external_session_reused.add(key)
                         logger.info(
                             "[MessageHandler] 复用本机会话(conv 反查): channel=%s external=%s -> %s",
                             channel_id,
@@ -775,6 +806,8 @@ class MessageHandler(ABC):
                         )
         metadata = dict(msg.metadata or {})
         metadata.setdefault("external_session_id", external_id)
+        if key in self._external_session_reused:
+            metadata["reused_local_session"] = True
         msg.metadata = metadata
         msg.session_id = resolved
         if isinstance(msg.params, dict) and "session_id" in msg.params:
@@ -1652,6 +1685,8 @@ class MessageHandler(ABC):
                 state.mode = ChannelMode.CODE_TEAM
             elif mode_str == "team.plan":
                 state.mode = ChannelMode.TEAM_PLAN
+            state.mode_explicit = True
+            state.mode_from_command = True
             new_label = state.mode.value
             if old_mode != state.mode:
                 asyncio.create_task(
@@ -1729,6 +1764,8 @@ class MessageHandler(ABC):
             old_mode = state.mode
             old_sid = state.session_id
             state.mode = target_mode
+            state.mode_explicit = True
+            state.mode_from_command = True
             new_label = state.mode.value
             if old_mode != state.mode:
                 asyncio.create_task(
@@ -2230,7 +2267,20 @@ class MessageHandler(ABC):
         else:
             msg.session_id = None
 
-        # 将 mode 写入 params，后续 E2A / Agent 侧从 params["mode"] 读取
+        # 将 mode 写入 params，后续 E2A / Agent 侧从 params["mode"] 读取。
+        # 例外：复用本机已有会话（conv_* 反查命中 desktop_* 等，见
+        # _resolve_external_channel_session）且用户未用 /mode、/switch 指令显式
+        # 切过时，不注入渠道 mode——让 AgentServer 按会话锁定的 metadata mode
+        # 解析，手机续聊 PC 上的 team / design / code 会话不会被降级成单 agent。
+        # config.yaml 的 default_mode 只是渠道级默认偏好，不构成对复用会话的
+        # 显式意图（注入会被服务端当显式覆盖 metadata.mode，腐蚀 team 锁定）。
+        # /mode、/switch 指令是用户显式切换：保留注入，切换特性不受影响。
+        _reused_local = (
+            isinstance(msg.metadata, dict)
+            and bool(msg.metadata.get("reused_local_session"))
+        )
+        if _reused_local and not state.mode_from_command:
+            return
         if msg.params is None:
             msg.params = {}
         mode_value = state.mode.value
