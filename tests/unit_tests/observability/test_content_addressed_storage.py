@@ -251,3 +251,97 @@ def test_sequences_shared_by_several_records_are_walked_once(tmp_path: Path) -> 
     assert resolved["sequences"][short.seq_hash] == resolved["sequences"][long.seq_hash][:2]
     # Four distinct elements back two chains of two and four.
     assert len(resolved["blobs"]) == 4
+
+
+def test_the_default_export_leaves_no_reference_behind(tmp_path: Path) -> None:
+    """An export is read by tools that know nothing of this addressing.
+
+    A reference they cannot resolve is worse than the bytes it saved, so the
+    default format states every attribute in full.
+    """
+    import asyncio
+    import base64
+
+    from jiuwenswarm.observability.store import AsyncTrajectoryReader
+
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    sequence = _sequence("gen_ai.input.messages", ['{"role":"user"}', '{"role":"assistant"}'])
+    try:
+        record = _record("a" * 16, sequence)
+        store.write_records(
+            [
+                TraceRecordData(
+                    **{
+                        **{
+                            field: getattr(record, field)
+                            for field in record.__dataclass_fields__
+                            if field not in {"raw_json", "lifecycle"}
+                        },
+                        "raw_json": (
+                            b'{"resourceSpans":[{"scopeSpans":[{"spans":[{'
+                            b'"traceId":"' + _TRACE_ID.encode() + b'","spanId":"'
+                            + (b"a" * 16) + b'","name":"chat","attributes":[{'
+                            b'"key":"gen_ai.input.messages","value":{"stringValue":"@oj-seq:1:'
+                            + sequence.seq_hash.encode() + b':2"}}]}]}]}]}'
+                        ),
+                        "lifecycle": "final",
+                    }
+                )
+            ],
+            (),
+        )
+    finally:
+        store.close()
+
+    reader = AsyncTrajectoryReader(database_path, session_scoped=False)
+    records, _epoch, _revision, resolved = asyncio.run(
+        reader.get_session_archive_records("session-1", rehydrate=True)
+    )
+
+    assert records
+    import json
+
+    raw = base64.b64decode(records[0]["raw_json_base64"]).decode()
+    assert "@oj-seq:" not in raw
+    attribute = (
+        json.loads(raw)["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"][0]
+    )
+    assert json.loads(attribute["value"]["stringValue"]) == [
+        {"role": "user"},
+        {"role": "assistant"},
+    ]
+    # Nothing is left for the reader to resolve, so no dictionary is sent.
+    assert resolved == {"sequences": {}, "blobs": {}}
+
+
+def test_the_addressed_export_is_self_contained(tmp_path: Path) -> None:
+    """The small format still carries everything needed to read it."""
+    import asyncio
+
+    from jiuwenswarm.observability.store import AsyncTrajectoryReader
+
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    sequence = _sequence("gen_ai.input.messages", ["one", "two", "three"])
+    try:
+        store.write_records([_record("b" * 16, sequence)], ())
+    finally:
+        store.close()
+
+    reader = AsyncTrajectoryReader(database_path, session_scoped=False)
+    records, _epoch, _revision, resolved = asyncio.run(
+        reader.get_session_archive_records("session-1", rehydrate=False)
+    )
+
+    heads = {
+        reference["hash"]
+        for record in records
+        for reference in (record.get("sequences") or {}).values()
+    }
+    assert heads <= set(resolved["sequences"])
+    for elements in resolved["sequences"].values():
+        assert all(element in resolved["blobs"] for element in elements)
+    test_logger.info("addressed export carried %d chains", len(resolved["sequences"]))

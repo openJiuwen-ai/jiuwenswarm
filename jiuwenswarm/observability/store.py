@@ -1491,11 +1491,27 @@ class AsyncTrajectoryReader:
     async def get_session_archive_records(
         self,
         session_id: str,
-    ) -> tuple[list[dict[str, Any]], str, int]:
-        """Read every current record for one session from one SQLite snapshot."""
+        *,
+        rehydrate: bool = True,
+    ) -> tuple[list[dict[str, Any]], str, int, dict[str, Any]]:
+        """Read every current record for one session from one SQLite snapshot.
+
+        Args:
+            session_id: Session to export.
+            rehydrate: Put referenced content back into each record, so the
+                export is valid OTLP for a reader that knows nothing of this
+                store. False exports references plus the dictionaries that
+                resolve them: far smaller, still self-contained, but only
+                readable by a tool that understands the addressing.
+
+        Returns:
+            The records, the store epoch, the session revision, and the
+            resolution dictionaries -- empty when *rehydrate* is true, because
+            the records then state their content directly.
+        """
         connection = await self._connect(session_id)
         if connection is None:
-            return [], _ABSENT_STORE_EPOCH, 0
+            return [], _ABSENT_STORE_EPOCH, 0, {"sequences": {}, "blobs": {}}
         try:
             await connection.execute("BEGIN")
             store_epoch = await _read_store_epoch(connection)
@@ -1539,7 +1555,41 @@ class AsyncTrajectoryReader:
         finally:
             await connection.rollback()
             await connection.close()
-        return [_archive_record_from_row(row) for row in rows], store_epoch, revision
+        records = [_archive_record_from_row(row) for row in rows]
+        heads = sorted({
+            str(reference["hash"])
+            for record in records
+            for reference in (record.get("sequences") or {}).values()
+            if reference.get("hash")
+        })
+        empty: dict[str, Any] = {"sequences": {}, "blobs": {}}
+        if not heads:
+            return records, store_epoch, revision, empty
+        resolved = await self.resolve_sequences(session_id, heads, since_revision=0)
+        if resolved is None:
+            resolved = empty
+        if not rehydrate:
+            return records, store_epoch, revision, resolved
+        chains = {key: list(value) for key, value in resolved["sequences"].items()}
+        blobs = dict(resolved["blobs"])
+        rebuilt: list[dict[str, Any]] = []
+        for record in records:
+            raw = base64.b64decode(record["raw_json_base64"])
+            restored = _rehydrate_payload(raw, chains, blobs)
+            if restored is raw:
+                rebuilt.append(record)
+                continue
+            entry = dict(record)
+            entry["raw_json_base64"] = base64.b64encode(restored).decode("ascii")
+            try:
+                entry["otlp"] = _strict_otlp_payload(restored)
+                entry["raw_valid"] = True
+            except (RecursionError, TypeError, ValueError, OverflowError):
+                entry["otlp"] = None
+                entry["raw_valid"] = False
+            entry.pop("sequences", None)
+            rebuilt.append(entry)
+        return rebuilt, store_epoch, revision, empty
 
     async def list_subjects(
         self,
@@ -2366,6 +2416,80 @@ def _parse_sequence_reference(value: object) -> tuple[str, int] | None:
     return parts[2], depth
 
 
+def _rebuilt_sequence_value(elements: list[str], blobs: dict[str, str]) -> str | None:
+    """Return the attribute value a chain states, or None if an element is gone."""
+    parts: list[str] = []
+    for element in elements:
+        content = blobs.get(element)
+        if content is None:
+            return None
+        parts.append(content)
+    if not parts:
+        return None
+    if len(parts) == 1:
+        return parts[0]
+    return "[" + ",".join(parts) + "]"
+
+
+def _rehydrate_payload(
+    raw_json: bytes,
+    chains: dict[str, list[str]],
+    blobs: dict[str, str],
+) -> bytes:
+    """Put the content back where a stored record kept only a reference.
+
+    An export has to be valid OTLP on its own: it is read by tools that know
+    nothing of this store's addressing, and a reference they cannot resolve is
+    worse than the bytes it saved.
+
+    Args:
+        raw_json: The stored payload, carrying references.
+        chains: Element hashes of each chain, in order.
+        blobs: Element content by hash.
+
+    Returns:
+        The payload with every resolvable reference replaced, or the original
+        bytes when nothing needed replacing. A reference whose content is gone
+        is left as it is rather than dropping the span that carries it.
+    """
+    try:
+        payload = json.loads(raw_json)
+    except (TypeError, ValueError):
+        return raw_json
+    if not isinstance(payload, dict):
+        return raw_json
+    changed = False
+    for resource_span in payload.get("resourceSpans") or ():
+        if not isinstance(resource_span, dict):
+            continue
+        for scope_span in resource_span.get("scopeSpans") or ():
+            if not isinstance(scope_span, dict):
+                continue
+            for span in scope_span.get("spans") or ():
+                if not isinstance(span, dict):
+                    continue
+                for attribute in span.get("attributes") or ():
+                    if not isinstance(attribute, dict):
+                        continue
+                    value = attribute.get("value")
+                    if not isinstance(value, dict):
+                        continue
+                    parsed = _parse_sequence_reference(value.get("stringValue"))
+                    if parsed is None:
+                        continue
+                    elements = chains.get(parsed[0])
+                    if elements is None:
+                        continue
+                    rebuilt = _rebuilt_sequence_value(elements, blobs)
+                    if rebuilt is None:
+                        continue
+                    value["stringValue"] = rebuilt
+                    changed = True
+    if not changed:
+        return raw_json
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
 def _record_sequence_references(otlp: Any) -> dict[str, dict[str, Any]]:
     """Return the chains one record refers to, keyed by attribute.
 
@@ -2491,6 +2615,7 @@ def _archive_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         otlp = _strict_otlp_payload(raw_json)
     except (RecursionError, TypeError, ValueError, OverflowError):
         otlp = None
+    references = _record_sequence_references(otlp)
     return {
         "record_id": f'{row["trace_id"]}:{row["span_id"]}',
         "trace_id": str(row["trace_id"]),
@@ -2515,6 +2640,7 @@ def _archive_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         "raw_json_base64": base64.b64encode(raw_json).decode("ascii"),
         "otlp": otlp,
         "raw_valid": otlp is not None,
+        **({} if not references else {"sequences": references}),
     }
 
 

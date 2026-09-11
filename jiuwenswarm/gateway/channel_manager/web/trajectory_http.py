@@ -151,15 +151,32 @@ class TrajectoryHttpService:
             }
         )
 
-    async def export_archive(self, session_id: str) -> Response:
-        """Export a stable archive of every current record in one session."""
+    async def export_archive(
+        self,
+        session_id: str,
+        *,
+        addressed: bool = False,
+    ) -> Response:
+        """Export a stable archive of every current record in one session.
+
+        Args:
+            session_id: Session to export.
+            addressed: Export references plus the dictionaries that resolve
+                them, rather than putting every restated attribute back. The
+                file stays self-contained and is far smaller, but only a
+                reader that understands the addressing can open it -- so the
+                default remains plain OTLP, which any tool can.
+        """
         settings = self.settings
         error = self._validate_access(session_id, settings)
         if error is not None:
             return error
         try:
-            records, store_epoch, revision = (
-                await self._reader_for(settings).get_session_archive_records(session_id)
+            records, store_epoch, revision, resolved = (
+                await self._reader_for(settings).get_session_archive_records(
+                    session_id,
+                    rehydrate=not addressed,
+                )
             )
         except Exception:
             logger.exception(
@@ -183,10 +200,16 @@ class TrajectoryHttpService:
                 "store_epoch": store_epoch,
                 "revision": str(revision),
                 "records": records,
+                **({} if not addressed else {
+                    "content_addressed": True,
+                    "sequences": resolved.get("sequences", {}),
+                    "blobs": resolved.get("blobs", {}),
+                }),
             }
         )
+        suffix = ".addressed" if addressed else ""
         response.headers["Content-Disposition"] = (
-            f'attachment; filename="trajectory-{session_id}.archive.json"'
+            f'attachment; filename="trajectory-{session_id}{suffix}.archive.json"'
         )
         return response
 
@@ -641,13 +664,19 @@ def attach_trajectory_routes(
     async def export_trajectory_archive(
         session_id: str,
         request: Request,
+        archive_format: str = Query(default="otlp", alias="format"),
     ) -> Response:
         """Export all current trajectory records for one session."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        return await service.export_archive(session_id)
+        if archive_format not in ("otlp", "addressed"):
+            return _error_response("format must be otlp or addressed", "BAD_REQUEST", 400)
+        return await service.export_archive(
+            session_id,
+            addressed=archive_format == "addressed",
+        )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/usage")
     async def get_trajectory_session_usage(
