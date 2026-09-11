@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from openjiuwen.core.foundation.llm import UserMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
@@ -36,6 +37,12 @@ from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
     logger,
 )
+from jiuwenswarm.extensions.prompt_context import get_extension_prompt_context
+
+
+_EXTENSION_SYSTEM_POLICY_SECTION = "runtime.extension_system_policy"
+_EXTENSION_REFERENCE_MESSAGE_MARKER = "jiuwenswarm_extension_reference_context"
+_EXTENSION_REFERENCE_MUTATOR_MARKER = "_jiuwenswarm_extension_reference_mutator"
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -83,6 +90,7 @@ class RuntimePromptRail(DeepAgentRail):
             self.system_prompt_builder.remove_section("tui_current_project_policy")
             self.system_prompt_builder.remove_section("trusted_dirs_policy")
             self.system_prompt_builder.remove_section("runtime.binary_context")
+            self.system_prompt_builder.remove_section(_EXTENSION_SYSTEM_POLICY_SECTION)
         self._agent = None
         self.system_prompt_builder = None
         self.attachment_manager = None
@@ -224,7 +232,89 @@ class RuntimePromptRail(DeepAgentRail):
             return "code.normal"
         return configured_mode
 
+    def _resolve_callback_session_id(self, ctx: AgentCallbackContext) -> str:
+        """Resolve the model-call session used by server-owned extension context."""
+        session = getattr(ctx, "session", None)
+        if session is not None:
+            get_session_id = getattr(session, "get_session_id", None)
+            if callable(get_session_id):
+                session_id = get_session_id()
+                if session_id:
+                    return str(session_id)
+            session_id = getattr(session, "session_id", None)
+            if session_id:
+                return str(session_id)
+        return self._session_id or "default"
+
+    @staticmethod
+    def _sync_extension_reference_context(
+        ctx: AgentCallbackContext,
+        reference_blocks: tuple[str, ...],
+    ) -> None:
+        """Inject ephemeral extension context immediately before the current user input."""
+        context = getattr(ctx, "context", None)
+        mutators = getattr(context, "_window_mutators", None)
+        if not isinstance(mutators, list):
+            if reference_blocks:
+                logger.warning(
+                    "[ExtensionPromptContext] context window mutators unavailable; "
+                    "skip reference context"
+                )
+            return
+
+        mutators[:] = [
+            mutator
+            for mutator in mutators
+            if not bool(getattr(mutator, _EXTENSION_REFERENCE_MUTATOR_MARKER, False))
+        ]
+        if not reference_blocks:
+            return
+
+        rendered_context = "\n\n".join(reference_blocks)
+
+        async def inject_before_current_user(_context: Any, window: Any) -> Any:
+            messages = [
+                message
+                for message in list(getattr(window, "context_messages", []) or [])
+                if not bool(
+                    (getattr(message, "metadata", {}) or {}).get(
+                        _EXTENSION_REFERENCE_MESSAGE_MARKER
+                    )
+                )
+            ]
+            insert_at = len(messages)
+            for index in range(len(messages) - 1, -1, -1):
+                message = messages[index]
+                if isinstance(message, UserMessage):
+                    insert_at = index
+                    break
+            messages.insert(
+                insert_at,
+                UserMessage(
+                    content=rendered_context,
+                    metadata={
+                        _EXTENSION_REFERENCE_MESSAGE_MARKER: True,
+                    },
+                ),
+            )
+            model_copy = getattr(window, "model_copy", None)
+            if callable(model_copy):
+                return model_copy(update={"context_messages": messages})
+            window.context_messages = messages
+            return window
+
+        setattr(inject_before_current_user, _EXTENSION_REFERENCE_MUTATOR_MARKER, True)
+        # 先于 PromptAttachmentManager 等通用尾部附件执行，避免把附件消息
+        # 误认为当前用户问题；后续 mutator 仍可按原顺序处理其自身上下文。
+        mutators.insert(0, inject_before_current_user)
+
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        session_id = self._resolve_callback_session_id(ctx)
+        extension_context = get_extension_prompt_context(session_id)
+        self._sync_extension_reference_context(
+            ctx,
+            extension_context.reference_context_blocks,
+        )
         if not self.system_prompt_builder:
             return
 
@@ -234,8 +324,17 @@ class RuntimePromptRail(DeepAgentRail):
             "language_output",
             "env",
             "tui_current_project_policy",
-            "trusted_dirs_policy"):
+            "trusted_dirs_policy",
+            _EXTENSION_SYSTEM_POLICY_SECTION):
             self.system_prompt_builder.remove_section(name)
+
+        if extension_context.system_prompt_blocks:
+            policy = "\n\n".join(extension_context.system_prompt_blocks)
+            self.system_prompt_builder.add_section(PromptSection(
+                name=_EXTENSION_SYSTEM_POLICY_SECTION,
+                content={"cn": policy, "en": policy},
+                priority=54,
+            ))
 
         # ── runtime ──
         runtime_state: dict[str, Any] = {}
