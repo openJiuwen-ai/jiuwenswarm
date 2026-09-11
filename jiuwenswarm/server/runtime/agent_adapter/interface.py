@@ -112,6 +112,10 @@ class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
 
 
+class _InvalidAnswersTypeError(ValueError):
+    """Raised when HITL continuation answers is not a list."""
+
+
 def _schedule_symphony_session_feedback(session_id: str, request_id: str) -> None:
     """Submit session-based Symphony learning without delaying the response."""
 
@@ -1213,7 +1217,11 @@ class JiuWenSwarm:
         if isinstance(query, InteractiveInput):
             final_query = query
         else:
-            answers = params.get("answers", [])
+            answers = params.get("answers")
+            if answers is not None and not isinstance(answers, list):
+                raise _InvalidAnswersTypeError(
+                    f"answers must be a list, got {type(answers).__name__}"
+                )
             if answers:
                 request_id = params.get("request_id", "")
                 source = params.get("source", "")
@@ -2175,6 +2183,14 @@ class JiuWenSwarm:
                 payload={"error": str(exc)},
                 metadata=request.metadata,
             )
+        except _InvalidAnswersTypeError as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"status": "failed", "code": "INVALID_ARGUMENT", "error": str(exc)},
+                metadata=request.metadata,
+            )
 
         # cloud memory: before chat hook
         if memory_mode == "cloud":
@@ -2429,6 +2445,14 @@ class JiuWenSwarm:
                 request_id=rid,
                 channel_id=cid,
                 payload=None,
+                is_complete=True,
+            )
+            return
+        except _InvalidAnswersTypeError as exc:
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload={"event_type": "chat.error", "code": "INVALID_ARGUMENT", "error": str(exc)},
                 is_complete=True,
             )
             return
