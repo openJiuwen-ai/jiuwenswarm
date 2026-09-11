@@ -706,7 +706,9 @@
 
 .beta-expert-graph__visual-layout {
   display: grid;
+  height: clamp(540px, calc(100vh - 320px), 820px);
   grid-template-columns: 280px minmax(0, 1fr) 280px;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 540px;
   overflow: hidden;
   border: 1px solid var(--color-border-default);
@@ -718,6 +720,7 @@
 .beta-expert-graph__graph-controls {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
   gap: 14px;
   padding: 16px;
@@ -952,7 +955,7 @@
 
 .beta-expert-graph__node-detail {
   min-width: 0;
-  max-height: 540px;
+  height: 100%;
   overflow-y: auto;
   padding: 20px;
   border-left: 1px solid var(--color-border-default);
@@ -1368,9 +1371,15 @@
 
 @media (max-width: 1050px) {
   .beta-expert-graph__visual-layout {
+    height: auto;
     grid-template-columns: 250px minmax(0, 1fr);
+    grid-template-rows: 540px auto;
+  }
+  .beta-expert-graph__canvas-wrap {
+    height: 540px;
   }
   .beta-expert-graph__node-detail {
+    height: auto;
     grid-column: 1 / -1;
     max-height: none;
     border-top: 1px solid var(--color-border-default);
@@ -1392,6 +1401,7 @@
   }
   .beta-expert-graph__visual-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto 540px auto;
   }
   .beta-expert-graph__graph-controls {
     max-height: 300px;

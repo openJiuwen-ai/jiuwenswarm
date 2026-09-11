@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -9,6 +10,29 @@ import {
   normalizeExpertTeamMaterialization,
 } from '../node_modules/.cache/expert-graph/features/expertGraph.js';
 import { buildBetaExpertCallChain, normalizeBetaExpertCatalog } from '../node_modules/.cache/expert-graph/features/betaExpertCatalog.js';
+
+const expertGraphCss = readFileSync(new URL('../src/components/BetaExpertManagementPanel/betaExpertManagement.css', import.meta.url), 'utf8');
+
+function cssRule(selector, source = expertGraphCss) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return source.match(new RegExp(`${escapedSelector}\\s*\\{([^}]+)\\}`))?.[1] || '';
+}
+
+test('expert list cannot expand the bounded graph canvas row', () => {
+  const desktopLayout = cssRule('.beta-expert-graph__visual-layout');
+  const controls = cssRule('.beta-expert-graph__graph-controls');
+  const nodeList = cssRule('.beta-expert-graph__node-list');
+  const responsiveLayout = expertGraphCss.match(/@media \(max-width: 1050px\)\s*\{([\s\S]*?)@media \(max-width: 900px\)/)?.[1] || '';
+
+  assert.match(desktopLayout, /height:\s*clamp\(540px,\s*calc\(100vh - 320px\),\s*820px\)/);
+  assert.match(desktopLayout, /grid-template-rows:\s*minmax\(0,\s*1fr\)/);
+  assert.match(desktopLayout, /overflow:\s*hidden/);
+  assert.match(controls, /min-height:\s*0/);
+  assert.match(nodeList, /min-height:\s*0/);
+  assert.match(nodeList, /flex:\s*1/);
+  assert.match(nodeList, /overflow-y:\s*auto/);
+  assert.match(cssRule('.beta-expert-graph__visual-layout', responsiveLayout), /grid-template-rows:\s*540px auto/);
+});
 
 test('normalizeExpertGraph preserves original skill names and canonical contract', () => {
   const graph = normalizeExpertGraph({
