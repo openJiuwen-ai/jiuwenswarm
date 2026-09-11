@@ -312,7 +312,7 @@ function DetailTabSwitch({
 
   return (
     <div
-      className="grid grid-cols-2 rounded-md bg-[var(--color-connector-tag-surface)] p-1 text-sm"
+      className="grid grid-cols-2 rounded-md bg-[var(--color-tag-surface)] p-1 text-sm"
       data-testid="team-area-detail-tab-switch"
     >
       <button
@@ -749,7 +749,10 @@ function MemberTaskDetail({
         </div>
       </div>
 
-      <div className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7" data-testid="team-area-member-detail-body">
+      <div
+        className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7"
+        data-testid="team-area-member-detail-body"
+      >
         <ProcessListCard items={processItems} expandedIds={expandedProcessIds} onToggle={toggleProcess} />
         <FinalSummaryList events={finalEvents} />
       </div>
@@ -879,10 +882,7 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
   }
 
   return (
-    <div
-      className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4"
-      data-testid="team-area-final-summary"
-    >
+    <div className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4" data-testid="team-area-final-summary">
       <div className="mt-4 space-y-6">
         {events.map((event) => (
           <section
@@ -943,17 +943,20 @@ function ProcessListCard({
                   className="flex h-[22px] w-full items-center gap-3 px-3 pr-1 text-left hover:bg-secondary"
                 >
                   <ProcessIcon item={item} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-2 text-sm text-text-muted">
-                      <span className="shrink-0 text-muted-strong" data-testid="team-area-process-item-title">
+                  <div className="min-w-0 flex-1 text-sm text-text-muted">
+                    <div className="truncate" data-testid="team-area-process-item-title-row">
+                      <span className="text-muted-strong" data-testid="team-area-process-item-title">
                         {item.title}
                       </span>
                       {item.subtitle && (
                         <>
-                          <span className="flex" data-testid="team-area-process-item-separator">
+                          <span
+                            className="mx-1 inline-flex align-middle"
+                            data-testid="team-area-process-item-separator"
+                          >
                             <span className="w-[1px] h-[10px] bg-border" />
                           </span>
-                          <span className="truncate text-muted" data-testid="team-area-process-item-subtitle">
+                          <span className="text-muted" data-testid="team-area-process-item-subtitle">
                             {item.subtitle}
                           </span>
                         </>

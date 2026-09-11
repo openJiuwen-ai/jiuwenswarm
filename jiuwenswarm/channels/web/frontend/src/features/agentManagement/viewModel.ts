@@ -5,8 +5,6 @@ export type CatalogScope = 'catalog' | 'mine';
 export type CatalogViewModel = {
   items: AgentCatalogItem[];
   totalItems: number;
-  page: number;
-  totalPages: number;
 };
 
 const CATEGORY_ALIASES: Record<string, ReadonlySet<string>> = {
@@ -78,12 +76,10 @@ export function buildCatalogViewModel(
     scope: CatalogScope;
     category: string;
     query: string;
-    page: number;
-    pageSize: number;
   },
 ): CatalogViewModel {
   const query = options.query.trim().toLocaleLowerCase();
-  const filtered = catalog.filter((item) => {
+  const items = catalog.filter((item) => {
     if (options.scope === 'catalog' && item.source !== 'builtin' && item.source !== 'hub') {
       return false;
     }
@@ -98,13 +94,8 @@ export function buildCatalogViewModel(
     }
     return `${item.displayName} ${item.description} ${item.category}`.toLocaleLowerCase().includes(query);
   });
-  const totalPages = Math.max(1, Math.ceil(filtered.length / options.pageSize));
-  const page = Math.min(Math.max(options.page, 1), totalPages);
-  const start = (page - 1) * options.pageSize;
   return {
-    items: filtered.slice(start, start + options.pageSize),
-    totalItems: filtered.length,
-    page,
-    totalPages,
+    items,
+    totalItems: items.length,
   };
 }

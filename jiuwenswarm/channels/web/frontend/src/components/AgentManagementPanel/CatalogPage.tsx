@@ -1,12 +1,12 @@
 import { type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
 import { getAgentAvatarUrl } from '../../features/agentManagement';
 import { CategoryTabs, PageCard } from '../ui';
+import { getSkillAvatar } from '../../utils/skillAvatar';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import ReminderIcon from '../../assets/agent-management/remind.svg?react';
 
-const PAGE_SIZE = 15;
 const CATEGORIES = [
   'ProductDevelopment',
   'Marketing',
@@ -18,23 +18,16 @@ const CATEGORIES = [
   'Other',
 ];
 
-function getAvatarLetter(name: string): string {
-  return name.trim().slice(0, 1).toUpperCase() || '?';
-}
-
 type CatalogPageProps = {
   scope: 'catalog' | 'mine';
   items: AgentCatalogItem[];
   totalItems: number;
-  page: number;
-  totalPages: number;
   query: string;
   category: string;
   status: RequestStatus;
   error: string | null;
   busyId: string | null;
   onCategoryChange: (value: string) => void;
-  onPageChange: (page: number) => void;
   onRetry: () => void;
   onOpen: (id: string) => void;
   onUse: (id: string) => void;
@@ -48,15 +41,12 @@ export function CatalogPage({
   scope,
   items,
   totalItems,
-  page,
-  totalPages,
   query,
   category,
   status,
   error,
   busyId,
   onCategoryChange,
-  onPageChange,
   onRetry,
   onOpen,
   onUse,
@@ -129,7 +119,7 @@ export function CatalogPage({
 
                 const avatar = avatarUrl
                   ? <img src={avatarUrl} alt="" />
-                  : <span style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '10px', background: 'var(--color-action-primary-subtle)', color: 'var(--color-text-link)', fontWeight: 700, fontSize: '20px' }}>{getAvatarLetter(item.displayName)}</span>;
+                  : getSkillAvatar(item.displayName);
 
                 const labelTags: string[] | undefined = item.tags.length > 0
                   ? item.tags.map(tg => tg.label)
@@ -199,13 +189,7 @@ export function CatalogPage({
                     title={item.displayName}
                     titleEnd={
                       scope === 'mine' && item.updateAvailable ? (
-                        <span className="agent-management-card__update">
-                          <ReminderIcon aria-hidden="true" />
-                          <span className="agent-management-card__update-dot" aria-hidden="true" />
-                          <span className="agent-management-card__update-tooltip" role="status">
-                            {t('agentManagement.states.newVersion')}
-                          </span>
-                        </span>
+                        <UpdateBadge label={t('agentManagement.states.newVersion')} />
                       ) : undefined
                     }
                     label={labelTags}
@@ -214,37 +198,7 @@ export function CatalogPage({
                   />
                 );
               })}
-            </div>
-            {totalPages > 1 ? (
-              <div className="agent-management-pagination" aria-label={t('agentManagement.pagination.label')}>
-                <span>
-                  {t('agentManagement.pagination.range', {
-                    start: (page - 1) * PAGE_SIZE + 1,
-                    end: Math.min(page * PAGE_SIZE, totalItems),
-                    total: totalItems,
-                  })}
-                </span>
-                <div className="agent-management-pagination__buttons">
-                  <button
-                    type="button"
-                    disabled={page <= 1}
-                    onClick={() => onPageChange(page - 1)}
-                    aria-label={t('agentManagement.pagination.previous')}
-                  >
-                    <ChevronLeft size={16} aria-hidden="true" />
-                  </button>
-                  <span>{t('agentManagement.pagination.page', { page, total: totalPages })}</span>
-                  <button
-                    type="button"
-                    disabled={page >= totalPages}
-                    onClick={() => onPageChange(page + 1)}
-                    aria-label={t('agentManagement.pagination.next')}
-                  >
-                    <ChevronRight size={16} aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-            ) : null}
+             </div>
           </>
         )}
       </div>
@@ -252,4 +206,19 @@ export function CatalogPage({
   );
 }
 
-export { PAGE_SIZE };
+function UpdateBadge({ label }: { label: string }) {
+  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top' });
+  return (
+    <>
+      <span
+        className="agent-management-card__update"
+        data-tooltip={label}
+        {...handlers}
+      >
+        <ReminderIcon aria-hidden="true" />
+        <span className="agent-management-card__update-dot" aria-hidden="true" />
+      </span>
+      {tooltip}
+    </>
+  );
+}

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { AvatarStyle } from '../../utils/skillAvatar';
 import { NewConversationIcon } from './icons';
 import { PageCard, type PageCardActionProps } from '../ui';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { McpCardState } from './mcpState';
 import { busyLabelKey } from './mcpState';
 import type { McpBusyKind } from '../../types/connector';
@@ -37,19 +38,23 @@ export function MarketCard({
 }: MarketCardProps) {
   const { t } = useTranslation();
   const [imgFailed, setImgFailed] = useState(false);
+  const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
 
   const avatarProp = iconUrl && !imgFailed
     ? <img src={iconUrl} alt="" onError={() => setImgFailed(true)} />
     : avatar;
 
   const titleEndNode = state === 'error' ? (
-    <span
-      data-tooltip={t('connectorMarket.card.stateError')}
-      className="flex shrink-0 items-center justify-center text-danger"
-      title={t('connectorMarket.card.stateError')}
-    >
-      <AlertCircle size={14} />
-    </span>
+    <>
+      <span
+        data-tooltip={t('connectorMarket.card.stateError')}
+        className="flex shrink-0 items-center justify-center text-danger"
+        {...errorTooltipHandlers}
+      >
+        <AlertCircle size={14} />
+      </span>
+      {errorTooltip}
+    </>
   ) : undefined;
 
   // 单按钮统一走 PageCard action（page-card-action 32×32 统一样式）；

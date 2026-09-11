@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { AvatarStyle } from '../../utils/skillAvatar';
 import { NewConversationIcon } from './icons';
 import { PageCard, type PageCardActionProps } from '../ui';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { McpCardState } from './mcpState';
 import { busyLabelKey } from './mcpState';
 import type { McpBusyKind } from '../../types/connector';
@@ -40,19 +41,25 @@ export function MyMarketCard({
   const showUse = state === 'connected' && onUse !== undefined;
   const showInstall = (state === 'idle' || state === 'error') && onQuickInstall !== undefined;
   const showConnecting = state === 'connecting';
+  const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+  const { tooltip: useBtnTooltip, handlers: useBtnTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+  const { tooltip: installBtnTooltip, handlers: installBtnTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
 
   const avatarProp = iconUrl && !imgFailed
     ? <img src={iconUrl} alt="" onError={() => setImgFailed(true)} />
     : avatar;
 
   const titleEndNode = state === 'error' ? (
-    <span
-      data-tooltip={t('connectorMarket.card.stateError')}
-      className="flex shrink-0 items-center justify-center text-danger"
-      title={t('connectorMarket.card.stateError')}
-    >
-      <AlertCircle size={14} />
-    </span>
+    <>
+      <span
+        data-tooltip={t('connectorMarket.card.stateError')}
+        className="flex shrink-0 items-center justify-center text-danger"
+        {...errorTooltipHandlers}
+      >
+        <AlertCircle size={14} />
+      </span>
+      {errorTooltip}
+    </>
   ) : undefined;
 
   let action: PageCardActionProps | undefined;
@@ -73,8 +80,10 @@ export function MyMarketCard({
           onClick={(e) => { e.stopPropagation(); onUse(); }}
           data-tooltip={t('connectorMarket.card.use')}
           className="page-card-action"
+          {...useBtnTooltipHandlers}
         >
           <NewConversationIcon size={14} />
+          {useBtnTooltip}
         </button>
         <button
           type="button"
@@ -83,8 +92,10 @@ export function MyMarketCard({
             state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`)
           }
           className="page-card-action"
+          {...installBtnTooltipHandlers}
         >
           <Plus size={15} strokeWidth={2.5} />
+          {installBtnTooltip}
         </button>
       </div>
     );
