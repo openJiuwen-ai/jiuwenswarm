@@ -228,7 +228,7 @@ class MessageHandler(FileTransferMixin, ABC):
         self._running = False
         self._a2a_outbound_tool_manager: Any | None = None
         self._active_a2a_outbound_tool_tasks: dict[
-            str, tuple[asyncio.Task[Any], str, str]
+            str, tuple[asyncio.Task[Any], str, str, str]
         ] = {}
         self._forward_task: asyncio.Task | None = None
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
@@ -3085,6 +3085,7 @@ class MessageHandler(FileTransferMixin, ABC):
         current_task = asyncio.current_task()
         trusted_session_id = str(session_id or "").strip()
         source_resource_id = ""
+        source_user_id = ""
         resource_identity_invalid = False
         if is_enterprise():
             from jiuwenswarm.common.request_identity import web_routing_identity
@@ -3105,6 +3106,7 @@ class MessageHandler(FileTransferMixin, ABC):
                 if identities and all(item == identities[0] for item in identities):
                     source_identity = identities[0]
             source_resource_id = str(source_identity.get("bot_id") or "").strip()
+            source_user_id = str(source_identity.get("user_id") or "").strip()
             requested_resource_id = str(params.get("resource_id") or "").strip()
             missing_source = not source_resource_id
             if method == A2A_TOOL_CANCEL_CALL:
@@ -3133,6 +3135,8 @@ class MessageHandler(FileTransferMixin, ABC):
                 and not resource_identity_invalid
                 and active[1] == trusted_session_id
                 and active[2] == source_resource_id
+                and active[3] == source_user_id
+                and (not is_enterprise() or bool(source_user_id))
                 and target is not current_task
             )
             if canceled:
@@ -3155,10 +3159,13 @@ class MessageHandler(FileTransferMixin, ABC):
                 current_task,
                 trusted_session_id,
                 source_resource_id,
+                source_user_id,
             )
         try:
             if resource_identity_invalid:
                 raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
+            if is_enterprise() and method != A2A_TOOL_FIND_AGENTS and not source_user_id:
+                raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
             if manager is None:
                 raise A2AOutboundError(A2AOutboundErrorCode.MANAGER_UNAVAILABLE)
             source_session_id = trusted_session_id
@@ -3186,6 +3193,8 @@ class MessageHandler(FileTransferMixin, ABC):
                 }
                 if source_resource_id:
                     call_params["source_resource_id"] = source_resource_id
+                if source_user_id:
+                    call_params["source_user_id"] = source_user_id
                 result = await manager.outbound_dispatch_task(**call_params)
             elif method == A2A_TOOL_GET_DISPATCH:
                 call_params = {
@@ -3194,6 +3203,8 @@ class MessageHandler(FileTransferMixin, ABC):
                 }
                 if source_resource_id:
                     call_params["source_resource_id"] = source_resource_id
+                if source_user_id:
+                    call_params["source_user_id"] = source_user_id
                 result = await manager.outbound_get_dispatch(**call_params)
             response = {"jsonrpc": "2.0", "id": jsonrpc_id, "result": result}
         except A2AOutboundError as exc:

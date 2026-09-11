@@ -276,8 +276,12 @@ class A2AOutboundDispatcher:
         mode: A2AOutboundDispatchMode | str,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = str(source_user_id or "").strip() or None
+        if getattr(self._repository, "manager_owned", False) and not source_user_id:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
         reason_present = bool(str(reason or "").strip())
         task_text = str(task or "")
         if not task_text.strip() or len(task_text) > MAX_TASK_TEXT_LENGTH:
@@ -304,6 +308,7 @@ class A2AOutboundDispatcher:
             request_message_id=message_id,
             source_session_id=session_id,
             source_resource_id=str(source_resource_id or "").strip() or None,
+            source_user_id=source_user_id,
             created_at=stamp,
             updated_at=stamp,
             agent_name=agent.display_name,
@@ -366,11 +371,12 @@ class A2AOutboundDispatcher:
         *,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> dict[str, Any]:
         normalized_id = str(dispatch_id or "").strip()
         async with self._query_locks.hold(normalized_id):
             current = await self._require_owned_dispatch(
-                normalized_id, source_session_id, source_resource_id
+                normalized_id, source_session_id, source_resource_id, source_user_id
             )
             if current.is_terminal or not current.remote_task_id:
                 return self._public_dispatch(current)
@@ -421,10 +427,11 @@ class A2AOutboundDispatcher:
         *,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> dict[str, Any]:
         async with self._query_locks.hold(str(dispatch_id)):
             current = await self._require_owned_dispatch(
-                dispatch_id, source_session_id, source_resource_id
+                dispatch_id, source_session_id, source_resource_id, source_user_id
             )
             if current.is_terminal or not current.remote_task_id:
                 return self._public_dispatch(current)
@@ -839,9 +846,15 @@ class A2AOutboundDispatcher:
         dispatch_id: str,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> A2AOutboundDispatch:
+        expected_user = str(source_user_id or "").strip()
+        if getattr(self._repository, "manager_owned", False) and not expected_user:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
         dispatch = await self._repository.get_dispatch(str(dispatch_id or "").strip())
         if dispatch is None:
+            raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_NOT_FOUND)
+        if expected_user and dispatch.source_user_id != expected_user:
             raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_NOT_FOUND)
         if dispatch.source_session_id != str(source_session_id or "").strip():
             # Deliberately indistinguishable from a missing ID.

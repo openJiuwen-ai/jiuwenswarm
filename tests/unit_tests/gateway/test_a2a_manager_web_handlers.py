@@ -27,6 +27,100 @@ class _WebChannelProbe:
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["ws", "http"])
+async def test_enterprise_history_uses_connection_owner_for_list_and_details(
+    monkeypatch, transport
+):
+    from types import SimpleNamespace
+    from jiuwenswarm.gateway.a2a_manager.outbound import (
+        A2AOutboundDispatch,
+        A2AOutboundDispatchMode,
+        A2AOutboundDispatchStatus,
+        A2AOutboundDispatcher,
+        A2AOutboundRepository,
+    )
+    from jiuwenswarm.gateway.a2a_manager.outbound.registry import A2AOutboundRegistry
+    from jiuwenswarm.gateway.channel_manager.web.web_rpc_host import (
+        WebRpcHost,
+        MethodHandlerInvocation,
+    )
+    from jiuwenswarm.gateway.channel_manager.web.web_ws_transport import WebWsTransport
+    from jiuwenswarm.gateway.channel_manager.web.outbound import HttpJsonOutbound
+    from jiuwenswarm.gateway.storage.backends.memory_persistent import (
+        InMemoryPersistentBackend,
+    )
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    repository = A2AOutboundRepository(InMemoryPersistentBackend())
+    repository.manager_owned = True
+    for owner in ("alice", "bob", None):
+        await repository.create_dispatch(
+            A2AOutboundDispatch(
+                dispatch_id=owner or "legacy",
+                agent_id="agent-1",
+                agent_revision=1,
+                mode=A2AOutboundDispatchMode.ASYNC,
+                status=A2AOutboundDispatchStatus.COMPLETED,
+                request_message_id="message",
+                source_session_id="session",
+                source_resource_id="bot",
+                source_user_id=owner,
+                created_at="2026-09-01T00:00:00Z",
+                updated_at="2026-09-01T00:00:00Z",
+            )
+        )
+    manager = object.__new__(A2AManager)
+    manager._outbound = A2AOutboundRegistry(repository)
+    manager._outbound_dispatcher = A2AOutboundDispatcher(repository)
+    channel = _WebChannelProbe()
+    channel.ws = WebWsTransport
+    host = WebRpcHost(channel)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, a2a_manager=manager))
+    connection = (
+        HttpJsonOutbound(headers={}, session_id="session")
+        if transport == "http"
+        else SimpleNamespace()
+    )
+
+    async def invoke(method, user, **params):
+        setattr(connection, "_web_connection_user_id", user)
+        await host.invoke_method_handler(
+            MethodHandlerInvocation(
+                ws=connection,
+                method=method,
+                req_id="test",
+                session_id="session",
+                params={
+                    "user_id": "bob",
+                    "source_user_id": "bob",
+                    "bot_id": "bot",
+                    **params,
+                },
+                handler=channel.methods[method],
+            )
+        )
+        return channel.responses[-1]
+
+    for user in ("alice", "bob"):
+        response = await invoke("a2a.outbound.dispatch.list", user)
+        assert response["ok"] is True
+        assert response["payload"]["total"] == 1
+        assert [item["dispatch_id"] for item in response["payload"]["items"]] == [user]
+    for dispatch_id in ("bob", "legacy", "missing"):
+        response = await invoke(
+            "a2a.outbound.dispatch.get", "alice", dispatch_id=dispatch_id
+        )
+        assert response["ok"] is False
+        assert response["code"] == "A2A_DISPATCH_NOT_FOUND"
+    assert (await invoke("a2a.outbound.dispatch.get", "alice", dispatch_id="alice"))[
+        "ok"
+    ] is True
+    for method in ("a2a.outbound.dispatch.list", "a2a.outbound.dispatch.get"):
+        response = await invoke(method, None, dispatch_id="alice")
+        assert response["code"] == "A2A_USER_IDENTITY_REQUIRED"
+
+
 class _ChannelManagerProbe:
     def register_channel(self, channel) -> None:
         return None
@@ -86,7 +180,7 @@ class _OutboundRegistryProbe:
     async def get_dispatch(self, dispatch_id):
         return {"dispatch_id": dispatch_id}
 
-    async def list_dispatches(self, *, limit=200):
+    async def list_dispatches(self, *, limit=200, source_user_id=None):
         return {"items": [], "total": 0, "limit": limit}
 
 
@@ -427,6 +521,7 @@ async def test_enterprise_dispatch_get_passes_trusted_resource_scope(
         "dispatch-get",
         {"dispatch_id": "dispatch-1", "bot_id": "resource-1"},
         "session-1",
+        user_id="user-1",
     )
 
     assert calls == [
@@ -435,6 +530,7 @@ async def test_enterprise_dispatch_get_passes_trusted_resource_scope(
             {
                 "source_session_id": "session-1",
                 "source_resource_id": "resource-1",
+                "source_user_id": "user-1",
             },
         )
     ]

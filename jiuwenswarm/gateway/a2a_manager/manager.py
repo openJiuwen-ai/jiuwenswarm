@@ -222,7 +222,9 @@ class A2AManager:
         *,
         source_session_id: str | None = None,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
         if is_enterprise() and not str(source_resource_id or "").strip():
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
         if source_resource_id is not None:
@@ -230,11 +232,25 @@ class A2AManager:
                 dispatch_id,
                 source_session_id=str(source_session_id or ""),
                 source_resource_id=source_resource_id,
+                source_user_id=source_user_id,
             )
         return await self._require_outbound().get_dispatch(dispatch_id)
 
-    async def outbound_dispatch_list(self, *, limit: int = 200) -> dict[str, Any]:
-        return await self._require_outbound().list_dispatches(limit=limit)
+    @staticmethod
+    def _history_user_id(user_id: str | None) -> str | None:
+        if not is_enterprise():
+            return None
+        normalized = str(user_id or "").strip()
+        if not normalized:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
+        return normalized
+
+    async def outbound_dispatch_list(
+        self, *, limit: int = 200, source_user_id: str | None = None
+    ) -> dict[str, Any]:
+        return await self._require_outbound().list_dispatches(
+            limit=limit, source_user_id=self._history_user_id(source_user_id)
+        )
 
     async def outbound_find_agents(
         self,
@@ -260,8 +276,10 @@ class A2AManager:
         mode: str,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
         await self._require_a2a_agent_authorized(source_resource_id, agent_id)
         return await self._require_outbound_dispatcher().dispatch(
             agent_id=agent_id,
@@ -269,6 +287,7 @@ class A2AManager:
             mode=mode,
             source_session_id=source_session_id,
             source_resource_id=source_resource_id,
+            source_user_id=source_user_id,
             reason=reason,
         )
 
@@ -278,13 +297,16 @@ class A2AManager:
         dispatch_id: str,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
         if is_enterprise() and not str(source_resource_id or "").strip():
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
         return await self._require_outbound_dispatcher().query_dispatch(
             dispatch_id,
             source_session_id=source_session_id,
             source_resource_id=source_resource_id,
+            source_user_id=source_user_id,
         )
 
     async def _resolve_effective_a2a_agent_ids(

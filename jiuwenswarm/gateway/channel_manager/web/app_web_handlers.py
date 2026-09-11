@@ -2061,12 +2061,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws, req_id, lambda: a2a_manager.outbound_delete(str(params.get("agent_id") or ""))
         )
 
-    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id, user_id=None):
         await _send_a2a_outbound(
             ws,
             req_id,
             lambda: a2a_manager.outbound_dispatch_get(
                 str(params.get("dispatch_id") or ""),
+                source_user_id=user_id,
                 source_session_id=(session_id if is_enterprise() else None),
                 source_resource_id=(
                     str(params.get("bot_id") or "") if is_enterprise() else None
@@ -2074,7 +2075,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ),
         )
 
-    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id, user_id=None):
         try:
             limit = int(params.get("limit", 200))
         except (TypeError, ValueError):
@@ -2090,7 +2091,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(
             ws,
             req_id,
-            lambda: a2a_manager.outbound_dispatch_list(limit=limit),
+            lambda: a2a_manager.outbound_dispatch_list(
+                limit=limit, source_user_id=user_id
+            ),
         )
 
     channel.register_method("a2a.outbound.settings.get", _a2a_outbound_settings_get)
